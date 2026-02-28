@@ -17,6 +17,9 @@ const gh    = @import("gh.zig");
 const cache = @import("cache.zig");
 const state  = @import("state.zig");
 const search = @import("search.zig");
+const graph_query = @import("graph/query.zig");
+const graph_mod   = @import("graph/graph.zig");
+const graph_store = @import("graph/storage.zig");
 
 // ── Step 1: Tool enum ─────────────────────────────────────────────────────────
 
@@ -47,6 +50,11 @@ pub const Tool = enum {
     relevant_context,
     git_history_for,
     recently_changed,
+    // Graph queries
+    symbol_at,
+    find_callers,
+    find_callees,
+    find_dependents,
 };
 
 // ── Step 2: Tool schemas ──────────────────────────────────────────────────────
@@ -76,7 +84,11 @@ pub const tools_list =
     \\{"name":"blast_radius","description":"Find all files that reference symbols defined in a file or a specific symbol. Use this to understand the impact of changing a file or function before editing. Works offline with grep-based search.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Path to file to analyze (extracts symbols automatically)"},"symbol":{"type":"string","description":"Specific symbol name to search for"}},"required":[]}},
     \\{"name":"relevant_context","description":"Find files most related to a given file by analyzing symbol cross-references and imports. Use this to understand what other files you should read before modifying a file. Works offline with grep-based search.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Path to file to find context for"}},"required":["file"]}},
     \\{"name":"git_history_for","description":"Return the git commit history for a specific file. Use this to understand recent changes, who modified a file, and why. Works offline with local git.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Path to file to get history for"},"count":{"type":"integer","description":"Number of commits to return (default 20)"}},"required":["file"]}},
-    \\{"name":"recently_changed","description":"Return files that were recently modified across recent commits. Use this to understand what areas of the codebase are actively being worked on. Works offline with local git.","inputSchema":{"type":"object","properties":{"count":{"type":"integer","description":"Number of recent commits to scan (default 10)"}},"required":[]}}
+    \\{"name":"recently_changed","description":"Return files that were recently modified across recent commits. Use this to understand what areas of the codebase are actively being worked on. Works offline with local git.","inputSchema":{"type":"object","properties":{"count":{"type":"integer","description":"Number of recent commits to scan (default 10)"}},"required":[]}},
+    \\{"name":"symbol_at","description":"Find the symbol(s) defined at a given file path and line number in the CodeGraph. Returns symbol name, kind, scope, and location. Falls back to the closest symbol before the given line if no exact match. Requires a CodeGraph DB file at .codegraph/graph.bin.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path to look up"},"line":{"type":"integer","description":"Line number to look up"}},"required":["file","line"]}},
+    \\{"name":"find_callers","description":"Find all symbols that call/reference the given symbol ID. Returns caller name, location, edge kind, and weight. Requires a CodeGraph DB file at .codegraph/graph.bin.","inputSchema":{"type":"object","properties":{"symbol_id":{"type":"integer","description":"Symbol ID to find callers of"}},"required":["symbol_id"]}},
+    \\{"name":"find_callees","description":"Find all symbols that the given symbol calls/references. Returns callee name, location, edge kind, and weight. Requires a CodeGraph DB file at .codegraph/graph.bin.","inputSchema":{"type":"object","properties":{"symbol_id":{"type":"integer","description":"Symbol ID to find callees of"}},"required":["symbol_id"]}},
+    \\{"name":"find_dependents","description":"Find all symbols that transitively depend on the given symbol, ranked by Personalized PageRank score. Use this to understand the full blast radius of changing a symbol. Requires a CodeGraph DB file at .codegraph/graph.bin.","inputSchema":{"type":"object","properties":{"symbol_id":{"type":"integer","description":"Symbol ID to find dependents of"},"max_results":{"type":"integer","description":"Maximum number of results to return (default 10)"}},"required":["symbol_id"]}}
     \\]}
 ;
 
@@ -121,6 +133,11 @@ pub fn dispatch(
         .relevant_context      => handleRelevantContext(alloc, args, out),
         .git_history_for       => handleGitHistoryFor(alloc, args, out),
         .recently_changed      => handleRecentlyChanged(alloc, args, out),
+        // Graph queries
+        .symbol_at             => handleSymbolAt(alloc, args, out),
+        .find_callers          => handleFindCallers(alloc, args, out),
+        .find_callees          => handleFindCallees(alloc, args, out),
+        .find_dependents       => handleFindDependents(alloc, args, out),
     }
 }
 
@@ -1319,6 +1336,196 @@ fn handleRecentlyChanged(
     }
 
     out.appendSlice(alloc, "]}") catch {};
+}
+
+// ── Graph query handlers ──────────────────────────────────────────────────────
+
+const GRAPH_PATH = ".codegraph/graph.bin";
+
+fn loadGraph(alloc: std.mem.Allocator) ?graph_mod.CodeGraph {
+    return graph_store.loadFromFile(GRAPH_PATH, alloc) catch return null;
+}
+
+fn handleSymbolAt(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const file = mj.getStr(args, "file") orelse {
+        writeErr(alloc, out, "missing required parameter: file");
+        return;
+    };
+    const line_val = mj.getInt(args, "line") orelse {
+        writeErr(alloc, out, "missing required parameter: line");
+        return;
+    };
+    const line: u32 = @intCast(@max(line_val, 0));
+
+    var g = loadGraph(alloc) orelse {
+        writeErr(alloc, out, "no CodeGraph found at " ++ GRAPH_PATH ++ " — run ingestion first");
+        return;
+    };
+    defer g.deinit();
+
+    const results = graph_query.symbolAt(&g, file, line, alloc) catch {
+        writeErr(alloc, out, "query failed");
+        return;
+    };
+    defer alloc.free(results);
+
+    out.appendSlice(alloc, "{\"symbols\":[") catch return;
+    for (results, 0..) |r, i| {
+        if (i > 0) out.appendSlice(alloc, ",") catch {};
+        writeSymbolResultJson(alloc, out, r);
+    }
+    out.appendSlice(alloc, "]}") catch {};
+}
+
+fn handleFindCallers(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const sym_id = mj.getInt(args, "symbol_id") orelse {
+        writeErr(alloc, out, "missing required parameter: symbol_id");
+        return;
+    };
+    const id: u64 = @intCast(@max(sym_id, 0));
+
+    var g = loadGraph(alloc) orelse {
+        writeErr(alloc, out, "no CodeGraph found at " ++ GRAPH_PATH ++ " — run ingestion first");
+        return;
+    };
+    defer g.deinit();
+
+    const results = graph_query.findCallers(&g, id, alloc) catch {
+        writeErr(alloc, out, "query failed");
+        return;
+    };
+    defer alloc.free(results);
+
+    out.appendSlice(alloc, "{\"callers\":[") catch return;
+    for (results, 0..) |r, i| {
+        if (i > 0) out.appendSlice(alloc, ",") catch {};
+        writeCallerResultJson(alloc, out, r);
+    }
+    out.appendSlice(alloc, "]}") catch {};
+}
+
+fn handleFindCallees(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const sym_id = mj.getInt(args, "symbol_id") orelse {
+        writeErr(alloc, out, "missing required parameter: symbol_id");
+        return;
+    };
+    const id: u64 = @intCast(@max(sym_id, 0));
+
+    var g = loadGraph(alloc) orelse {
+        writeErr(alloc, out, "no CodeGraph found at " ++ GRAPH_PATH ++ " — run ingestion first");
+        return;
+    };
+    defer g.deinit();
+
+    const results = graph_query.findCallees(&g, id, alloc) catch {
+        writeErr(alloc, out, "query failed");
+        return;
+    };
+    defer alloc.free(results);
+
+    out.appendSlice(alloc, "{\"callees\":[") catch return;
+    for (results, 0..) |r, i| {
+        if (i > 0) out.appendSlice(alloc, ",") catch {};
+        writeCallerResultJson(alloc, out, r);
+    }
+    out.appendSlice(alloc, "]}") catch {};
+}
+
+fn handleFindDependents(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const sym_id = mj.getInt(args, "symbol_id") orelse {
+        writeErr(alloc, out, "missing required parameter: symbol_id");
+        return;
+    };
+    const id: u64 = @intCast(@max(sym_id, 0));
+
+    const max_results_val = mj.getInt(args, "max_results");
+    const max_results: usize = if (max_results_val) |v| @intCast(@max(v, 1)) else 10;
+
+    var g = loadGraph(alloc) orelse {
+        writeErr(alloc, out, "no CodeGraph found at " ++ GRAPH_PATH ++ " — run ingestion first");
+        return;
+    };
+    defer g.deinit();
+
+    const results = graph_query.findDependents(&g, id, max_results, alloc) catch {
+        writeErr(alloc, out, "query failed");
+        return;
+    };
+    defer alloc.free(results);
+
+    out.appendSlice(alloc, "{\"dependents\":[") catch return;
+    for (results, 0..) |r, i| {
+        if (i > 0) out.appendSlice(alloc, ",") catch {};
+        out.appendSlice(alloc, "{\"id\":") catch {};
+        var id_buf: [20]u8 = undefined;
+        const id_s = std.fmt.bufPrint(&id_buf, "{d}", .{r.id}) catch continue;
+        out.appendSlice(alloc, id_s) catch {};
+
+        // Try to resolve symbol name
+        if (g.getSymbol(r.id)) |sym| {
+            out.appendSlice(alloc, ",\"name\":\"") catch {};
+            mj.writeEscaped(alloc, out, sym.name);
+            out.appendSlice(alloc, "\"") catch {};
+        }
+
+        out.appendSlice(alloc, ",\"score\":") catch {};
+        var score_buf: [32]u8 = undefined;
+        const score_s = std.fmt.bufPrint(&score_buf, "{d:.6}", .{r.score}) catch continue;
+        out.appendSlice(alloc, score_s) catch {};
+        out.appendSlice(alloc, "}") catch {};
+    }
+    out.appendSlice(alloc, "]}") catch {};
+}
+
+fn writeSymbolResultJson(alloc: std.mem.Allocator, out: *std.ArrayList(u8), r: graph_query.SymbolResult) void {
+    out.appendSlice(alloc, "{\"id\":") catch return;
+    var buf: [20]u8 = undefined;
+    const id_s = std.fmt.bufPrint(&buf, "{d}", .{r.id}) catch return;
+    out.appendSlice(alloc, id_s) catch return;
+    out.appendSlice(alloc, ",\"name\":\"") catch return;
+    mj.writeEscaped(alloc, out, r.name);
+    out.appendSlice(alloc, "\",\"kind\":\"") catch return;
+    out.appendSlice(alloc, @tagName(r.kind)) catch return;
+    out.appendSlice(alloc, "\",\"file\":\"") catch return;
+    mj.writeEscaped(alloc, out, r.file_path);
+    out.appendSlice(alloc, "\",\"line\":") catch return;
+    const line_s = std.fmt.bufPrint(&buf, "{d}", .{r.line}) catch return;
+    out.appendSlice(alloc, line_s) catch return;
+    out.appendSlice(alloc, ",\"col\":") catch return;
+    const col_s = std.fmt.bufPrint(&buf, "{d}", .{r.col}) catch return;
+    out.appendSlice(alloc, col_s) catch return;
+    out.appendSlice(alloc, ",\"scope\":\"") catch return;
+    mj.writeEscaped(alloc, out, r.scope);
+    out.appendSlice(alloc, "\"}") catch return;
+}
+
+fn writeCallerResultJson(alloc: std.mem.Allocator, out: *std.ArrayList(u8), r: graph_query.CallerResult) void {
+    writeSymbolResultJson(alloc, out, r.symbol);
+    // Patch: replace trailing } with edge info + }
+    _ = out.pop();
+    out.appendSlice(alloc, ",\"edge_kind\":\"") catch return;
+    out.appendSlice(alloc, @tagName(r.edge_kind)) catch return;
+    out.appendSlice(alloc, "\",\"weight\":") catch return;
+    var buf: [32]u8 = undefined;
+    const w_s = std.fmt.bufPrint(&buf, "{d:.4}", .{r.weight}) catch return;
+    out.appendSlice(alloc, w_s) catch return;
+    out.appendSlice(alloc, "}") catch return;
 }
 
 const Symbol = struct {

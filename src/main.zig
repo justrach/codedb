@@ -238,4 +238,5 @@ test {
     _ = @import("graph/storage.zig");
     _ = @import("graph/wal.zig");
     _ = @import("graph/hot_cache.zig");
+    _ = @import("graph/query.zig");
 }
