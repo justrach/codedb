@@ -246,4 +246,5 @@ test {
     _ = @import("graph/tier_manager.zig");
     _ = @import("graph/tenant.zig");
     _ = @import("graph/watcher.zig");
+    _ = @import("graph/monorepo.zig");
 }
