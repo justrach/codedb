@@ -138,7 +138,7 @@ fn handleDecomposeFeature(
         out.appendSlice(alloc, "[]") catch {};
     }
     out.appendSlice(alloc,
-        \\,"instructions":"Use create_issues_batch to create the issues. Always include status:backlog. Add tier:1-harness or tier:2-codegraph where relevant. Return an array of objects with title, body, and labels fields."}
+        \\,"instructions":"Use create_issues_batch to create the issues. status:backlog is auto-applied by create_issue when available. For ordering, add one of priority:p0, priority:p1, priority:p2, or priority:p3 as needed. Return an array of objects with title, body, and labels fields."}
     ) catch {};
 }
 
@@ -337,7 +337,11 @@ fn handleCreateIssue(
             }
         }
     }
-    if (!has_status) argv.appendSlice(alloc, &.{ "--label", "status:backlog" }) catch return;
+    if (!has_status) {
+        if (cache.getLabel("status:backlog") != null) {
+            argv.appendSlice(alloc, &.{ "--label", "status:backlog" }) catch return;
+        }
+    }
     if (mj.getStr(args, "milestone")) |ms| argv.appendSlice(alloc, &.{ "--milestone", ms }) catch return;
 
     const r = gh.run(alloc, argv.items) catch |err| {
