@@ -242,4 +242,5 @@ test {
     _ = @import("graph/ipc.zig");
     _ = @import("graph/ingest.zig");
     _ = @import("auth.zig");
+    _ = @import("rate_limit.zig");
 }
