@@ -229,3 +229,8 @@ fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Val
         buf.appendSlice(alloc, "null") catch return;
     }
 }
+
+test {
+    _ = @import("graph/types.zig");
+    _ = @import("graph/graph.zig");
+}
