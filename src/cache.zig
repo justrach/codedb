@@ -10,6 +10,68 @@
 const std = @import("std");
 const gh  = @import("gh.zig");
 
+const BootstrapLabel = struct {
+    name: []const u8,
+    color: []const u8,
+    description: []const u8,
+};
+
+const default_labels = [_]BootstrapLabel{
+    .{ .name = "status:backlog", .color = "f6f8fa", .description = "Work item has not been started" },
+    .{ .name = "status:blocked", .color = "db6d28", .description = "Work item is blocked by dependency" },
+    .{ .name = "status:in-progress", .color = "fbca04", .description = "Work item is actively being worked on" },
+    .{ .name = "status:in-review", .color = "1d76db", .description = "Work item has an open PR" },
+    .{ .name = "status:done", .color = "0e8a16", .description = "Work item is complete" },
+    .{ .name = "priority:p0", .color = "b60205", .description = "Highest priority" },
+    .{ .name = "priority:p1", .color = "d93f0b", .description = "High priority" },
+    .{ .name = "priority:p2", .color = "fbca04", .description = "Medium priority" },
+    .{ .name = "priority:p3", .color = "0e8a16", .description = "Low priority" },
+};
+
+fn labelExists(name: []const u8) bool {
+    for (g_labels.items) |lbl| {
+        if (std.mem.eql(u8, lbl.name, name)) return true;
+    }
+    return false;
+}
+
+fn createMissingLabels(alloc: std.mem.Allocator) void {
+    for (default_labels) |label| {
+        if (labelExists(label.name)) continue;
+
+        const create_r = gh.run(alloc, &.{
+            "gh", "label", "create", label.name,
+            "--color", label.color,
+            "--description", label.description,
+        }) catch null;
+        if (create_r == null) continue;
+
+        defer create_r.?.deinit(alloc);
+        appendLabel(alloc, label.name, label.color, label.description);
+    }
+}
+
+fn appendLabel(alloc: std.mem.Allocator, name: []const u8, color: []const u8, description: []const u8) void {
+    const name_owned = alloc.dupe(u8, name) catch return;
+    errdefer alloc.free(name_owned);
+
+    const color_owned = alloc.dupe(u8, color) catch return;
+    errdefer alloc.free(color_owned);
+
+    const desc_owned = alloc.dupe(u8, description) catch return;
+    errdefer alloc.free(desc_owned);
+
+    g_labels.append(alloc, .{
+        .name = name_owned,
+        .color = color_owned,
+        .description = desc_owned,
+    }) catch {
+        alloc.free(name_owned);
+        alloc.free(color_owned);
+        alloc.free(desc_owned);
+    };
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 pub const Label = struct {
@@ -61,14 +123,12 @@ pub fn prefetch(alloc: std.mem.Allocator) void {
                     const name  = if (item.object.get("name"))        |v| (if (v == .string) v.string else continue) else continue;
                     const color = if (item.object.get("color"))       |v| (if (v == .string) v.string else "") else "";
                     const desc  = if (item.object.get("description")) |v| (if (v == .string) v.string else "") else "";
-                    g_labels.append(alloc, .{
-                        .name        = alloc.dupe(u8, name)  catch continue,
-                        .color       = alloc.dupe(u8, color) catch continue,
-                        .description = alloc.dupe(u8, desc)  catch continue,
-                    }) catch {};
+                    appendLabel(alloc, name, color, desc);
                 }
             }
         }
+
+        createMissingLabels(alloc);
     }
 
     g_ready = true;
@@ -107,7 +167,12 @@ pub fn isReady() bool {
 pub fn invalidate() void {
     g_mu.lock();
     defer g_mu.unlock();
+    if (!g_ready) return;
     g_ready = false;
-    // Labels and milestones freed when alloc arena is reset — not done here.
-    // Full re-implementation in issue #3.
+    for (g_labels.items) |label| {
+        g_alloc.free(label.name);
+        g_alloc.free(label.color);
+        g_alloc.free(label.description);
+    }
+    g_labels.clearRetainingCapacity();
 }
