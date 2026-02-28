@@ -235,6 +235,7 @@ test {
     _ = @import("graph/graph.zig");
     _ = @import("graph/edge_weights.zig");
     _ = @import("graph/ppr.zig");
+    _ = @import("graph/ppr_incremental.zig");
     _ = @import("graph/storage.zig");
     _ = @import("graph/wal.zig");
     _ = @import("graph/hot_cache.zig");
