@@ -241,4 +241,5 @@ test {
     _ = @import("graph/query.zig");
     _ = @import("graph/ipc.zig");
     _ = @import("graph/ingest.zig");
+    _ = @import("auth.zig");
 }
