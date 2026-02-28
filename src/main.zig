@@ -18,6 +18,15 @@ const tools = @import("tools.zig");
 const cache = @import("cache.zig");
 
 pub fn main() void {
+    // Ignore SIGPIPE so broken-pipe writes return error.BrokenPipe
+    // instead of killing the server process.
+    const act = std.posix.Sigaction{
+        .handler = .{ .handler = std.posix.SIG.IGN },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.PIPE, &act, null);
+
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
@@ -137,9 +146,15 @@ fn handleCall(
     // Wrap in MCP content envelope
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(alloc);
-    result.appendSlice(alloc, "{\"content\":[{\"type\":\"text\",\"text\":\"") catch return;
+    result.appendSlice(alloc, "{\"content\":[{\"type\":\"text\",\"text\":\"") catch {
+        writeError(alloc, stdout, id, -32603, "Internal error: out of memory");
+        return;
+    };
     mj.writeEscaped(alloc, &result, out.items);
-    result.appendSlice(alloc, "\"}],\"isError\":false}") catch return;
+    result.appendSlice(alloc, "\"}],\"isError\":false}") catch {
+        writeError(alloc, stdout, id, -32603, "Internal error: out of memory");
+        return;
+    };
 
     writeResult(alloc, stdout, id, result.items);
 }
@@ -165,7 +180,7 @@ fn writeResult(
         if (c != '\n' and c != '\r') buf.append(alloc, c) catch return;
     }
     buf.appendSlice(alloc, "}\n") catch return;
-    _ = stdout.write(buf.items) catch 0;
+    stdout.writeAll(buf.items) catch {};
 }
 
 fn writeError(
@@ -178,16 +193,23 @@ fn writeError(
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
 
-    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
+    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return writeStaticError(stdout);
     appendId(alloc, &buf, id);
-    buf.appendSlice(alloc, ",\"error\":{\"code\":") catch return;
+    buf.appendSlice(alloc, ",\"error\":{\"code\":") catch return writeStaticError(stdout);
     var tmp: [12]u8 = undefined;
     const cs = std.fmt.bufPrint(&tmp, "{d}", .{code}) catch return;
-    buf.appendSlice(alloc, cs) catch return;
-    buf.appendSlice(alloc, ",\"message\":\"") catch return;
+    buf.appendSlice(alloc, cs) catch return writeStaticError(stdout);
+    buf.appendSlice(alloc, ",\"message\":\"") catch return writeStaticError(stdout);
     mj.writeEscaped(alloc, &buf, msg);
-    buf.appendSlice(alloc, "\"}}\n") catch return;
-    _ = stdout.write(buf.items) catch 0;
+    buf.appendSlice(alloc, "\"}}\n") catch return writeStaticError(stdout);
+    stdout.writeAll(buf.items) catch {};
+}
+
+/// Last-resort error when dynamic allocation fails. Uses a static buffer
+/// so it never allocates. Ensures the client always gets *some* response.
+fn writeStaticError(stdout: std.fs.File) void {
+    const msg = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error: out of memory\"}}\n";
+    stdout.writeAll(msg) catch {};
 }
 
 fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Value) void {
