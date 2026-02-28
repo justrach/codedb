@@ -236,4 +236,5 @@ test {
     _ = @import("graph/edge_weights.zig");
     _ = @import("graph/ppr.zig");
     _ = @import("graph/storage.zig");
+    _ = @import("graph/wal.zig");
 }
