@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""End-to-end test for all 17 gitagent-mcp tools."""
+"""End-to-end test for all 21 gitagent-mcp tools."""
 import json, os, subprocess, sys
 from pathlib import Path
 
-BINARY = "/Users/rachpradhan/codedb/zig-out/bin/gitagent-mcp"
-REPO   = "/Users/rachpradhan/codedb"
+_DIR   = Path(__file__).resolve().parent
+BINARY = str(_DIR / "zig-out/bin/gitagent-mcp")
+REPO   = str(_DIR)
 
 class MCP:
     def __init__(self):
@@ -98,6 +99,41 @@ def run():
               detail=f"{len(r.get('available_labels',[]))} labels",
               available_labels=lambda x: isinstance(x, list) and len(x) > 0,
               instructions=lambda x: isinstance(x, str))
+
+        # -- Analysis tools (offline, no GitHub API) --
+        r = s.call("blast_radius", file="src/tools.zig")
+        check("blast_radius (file)", r,
+              detail=f"{len(r.get('symbols',[]))} symbols",
+              symbols=lambda x: isinstance(x, list) and len(x) > 0,
+              search_tool=lambda x: x in ("zigrep", "rg", "grep", "none"))
+
+        r = s.call("blast_radius", symbol="dispatch")
+        check("blast_radius (symbol)", r,
+              detail=f"{len(r.get('symbols',[]))} symbols",
+              symbols=lambda x: isinstance(x, list) and len(x) == 1 and x[0]["name"] == "dispatch")
+
+        r = s.call("blast_radius")
+        if isinstance(r, dict) and "error" in r:
+            ok("blast_radius (no args)", f"error={r['error'][:40]}")
+        else:
+            fail("blast_radius (no args)", f"expected error, got {r}")
+
+        r = s.call("relevant_context", file="src/tools.zig")
+        check("relevant_context", r,
+              detail=f"{len(r.get('context_files',[]))} context files",
+              context_files=lambda x: isinstance(x, list),
+              search_tool=lambda x: x in ("zigrep", "rg", "grep", "none"))
+
+        r = s.call("git_history_for", file="src/tools.zig", count=5)
+        check("git_history_for", r,
+              detail=f"{len(r.get('commits',[]))} commits",
+              commits=lambda x: isinstance(x, list) and len(x) > 0 and all(
+                  "hash" in c and "author" in c and "date" in c and "message" in c for c in x))
+
+        r = s.call("recently_changed", count=5)
+        check("recently_changed", r,
+              detail=f"{len(r.get('files',[]))} files",
+              files=lambda x: isinstance(x, list) and len(x) > 0)
 
         print("\n[2/5] Issue management")
 
@@ -253,7 +289,7 @@ def run():
         print("Failed:")
         for f in FAILED: print(f"  - {f}")
     else:
-        print("All 17+ tools passed!")
+        print("All 21+ tools passed!")
     return len(FAILED) == 0
 
 if __name__ == "__main__":
