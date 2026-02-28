@@ -3,8 +3,9 @@
 import json, os, subprocess, sys
 from pathlib import Path
 
-BINARY = "/Users/rachpradhan/codedb/zig-out/bin/gitagent-mcp"
-REPO   = "/Users/rachpradhan/codedb"
+_DIR   = Path(__file__).resolve().parent
+BINARY = str(_DIR / "zig-out/bin/gitagent-mcp")
+REPO   = str(_DIR)
 
 class MCP:
     def __init__(self):
