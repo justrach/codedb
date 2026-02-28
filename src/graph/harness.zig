@@ -681,3 +681,219 @@ test "getMode returns current mode" {
 
     try std.testing.expectEqual(QueryMode.local, h.getMode());
 }
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "dispatchLocal with missing params returns MissingParams" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    var h = Harness{
+        .mode = .local,
+        .socket_fd = null,
+        .graph_path = GRAPH_PATH,
+        .alloc = std.testing.allocator,
+    };
+    defer h.deinit();
+
+    // symbol_at without params
+    const result1 = h.dispatchLocal(&g, "{\"method\":\"symbol_at\"}");
+    try std.testing.expectError(error.MissingParams, result1);
+
+    // find_callers without symbol_id
+    const result2 = h.dispatchLocal(&g, "{\"method\":\"find_callers\",\"params\":{}}");
+    try std.testing.expectError(error.MissingParams, result2);
+
+    // find_callees without symbol_id
+    const result3 = h.dispatchLocal(&g, "{\"method\":\"find_callees\",\"params\":{}}");
+    try std.testing.expectError(error.MissingParams, result3);
+
+    // find_dependents without symbol_id
+    const result4 = h.dispatchLocal(&g, "{\"method\":\"find_dependents\",\"params\":{}}");
+    try std.testing.expectError(error.MissingParams, result4);
+}
+
+test "dispatchLocal shutdown returns ShutdownRequested" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    var h = Harness{
+        .mode = .local,
+        .socket_fd = null,
+        .graph_path = GRAPH_PATH,
+        .alloc = std.testing.allocator,
+    };
+    defer h.deinit();
+
+    const result = h.dispatchLocal(&g, "{\"method\":\"shutdown\",\"params\":{}}");
+    try std.testing.expectError(error.ShutdownRequested, result);
+}
+
+test "dispatchLocal with empty JSON object returns InvalidRequest" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    var h = Harness{
+        .mode = .local,
+        .socket_fd = null,
+        .graph_path = GRAPH_PATH,
+        .alloc = std.testing.allocator,
+    };
+    defer h.deinit();
+
+    // No "method" key
+    const result = h.dispatchLocal(&g, "{}");
+    try std.testing.expectError(error.InvalidRequest, result);
+}
+
+test "dispatchLocal with array JSON returns InvalidRequest" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    var h = Harness{
+        .mode = .local,
+        .socket_fd = null,
+        .graph_path = GRAPH_PATH,
+        .alloc = std.testing.allocator,
+    };
+    defer h.deinit();
+
+    const result = h.dispatchLocal(&g, "[1,2,3]");
+    try std.testing.expectError(error.InvalidRequest, result);
+}
+
+test "dispatchLocal symbol_at on empty graph returns empty symbols" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    var h = Harness{
+        .mode = .local,
+        .socket_fd = null,
+        .graph_path = GRAPH_PATH,
+        .alloc = std.testing.allocator,
+    };
+    defer h.deinit();
+
+    const result = try h.dispatchLocal(&g, "{\"method\":\"symbol_at\",\"params\":{\"file\":\"anything.ts\",\"line\":1}}");
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqualStrings("{\"symbols\":[]}", result);
+}
+
+test "dispatchLocal find_callers on empty graph returns empty results" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    var h = Harness{
+        .mode = .local,
+        .socket_fd = null,
+        .graph_path = GRAPH_PATH,
+        .alloc = std.testing.allocator,
+    };
+    defer h.deinit();
+
+    const result = try h.dispatchLocal(&g, "{\"method\":\"find_callers\",\"params\":{\"symbol_id\":999}}");
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqualStrings("{\"results\":[]}", result);
+}
+
+test "dispatchLocal find_callees on empty graph returns empty results" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    var h = Harness{
+        .mode = .local,
+        .socket_fd = null,
+        .graph_path = GRAPH_PATH,
+        .alloc = std.testing.allocator,
+    };
+    defer h.deinit();
+
+    const result = try h.dispatchLocal(&g, "{\"method\":\"find_callees\",\"params\":{\"symbol_id\":999}}");
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqualStrings("{\"results\":[]}", result);
+}
+
+test "mode detection with nonexistent socket path defaults to local" {
+    var h = Harness{
+        .mode = .daemon,
+        .socket_fd = null,
+        .graph_path = GRAPH_PATH,
+        .alloc = std.testing.allocator,
+    };
+    defer h.deinit();
+
+    const mode = h.detectMode("/tmp/definitely_nonexistent_socket_path_12345.sock");
+    try std.testing.expectEqual(QueryMode.local, mode);
+}
+
+test "fallbackToLocal from daemon with null socket_fd" {
+    var h = Harness{
+        .mode = .daemon,
+        .socket_fd = null,
+        .graph_path = GRAPH_PATH,
+        .alloc = std.testing.allocator,
+    };
+
+    h.fallbackToLocal();
+    try std.testing.expectEqual(QueryMode.local, h.mode);
+    try std.testing.expect(h.socket_fd == null);
+}
+
+test "appendEscaped with empty string" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+
+    try appendEscaped(&buf, std.testing.allocator, "");
+    try std.testing.expectEqual(@as(usize, 0), buf.items.len);
+}
+
+test "appendEscaped with tab and carriage return" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+
+    try appendEscaped(&buf, std.testing.allocator, "\t\r");
+    try std.testing.expectEqualStrings("\\t\\r", buf.items);
+}
+
+test "formatSymbolResults with multiple results produces valid JSON" {
+    const results = &[_]graph_query.SymbolResult{
+        .{ .id = 1, .name = "foo", .kind = .function, .file_path = "a.ts", .line = 1, .col = 0, .scope = "" },
+        .{ .id = 2, .name = "bar", .kind = .method, .file_path = "b.ts", .line = 5, .col = 3, .scope = "Cls" },
+    };
+    const json = try formatSymbolResults(std.testing.allocator, results);
+    defer std.testing.allocator.free(json);
+
+    // Should be valid JSON with two entries
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"foo\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"bar\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"symbols\":[") != null);
+}
+
+test "extractSymbolId with non-object params returns MissingParams" {
+    const json_str = "\"just_a_string\"";
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        json_str,
+        .{},
+    );
+    defer parsed.deinit();
+
+    try std.testing.expectError(error.MissingParams, extractSymbolId(parsed.value));
+}
+
+test "extractSymbolId with non-integer symbol_id returns MissingParams" {
+    const json_str = "{\"symbol_id\":\"not_a_number\"}";
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        json_str,
+        .{},
+    );
+    defer parsed.deinit();
+
+    try std.testing.expectError(error.MissingParams, extractSymbolId(parsed.value));
+}
