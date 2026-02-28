@@ -240,6 +240,7 @@ test {
     _ = @import("graph/hot_cache.zig");
     _ = @import("graph/query.zig");
     _ = @import("graph/ipc.zig");
+    _ = @import("graph/harness.zig");
     _ = @import("graph/ingest.zig");
     _ = @import("auth.zig");
     _ = @import("rate_limit.zig");

@@ -192,17 +192,26 @@ pub fn deserialize(reader: anytype, alloc: std.mem.Allocator) !CodeGraph {
 pub fn saveToFile(g: *const CodeGraph, path: []const u8) !void {
     const file = try std.fs.cwd().createFile(path, .{});
     defer file.close();
-    var bw = std.io.bufferedWriter(file.writer());
-    try serialize(g, bw.writer());
-    try bw.flush();
+    // Serialize to in-memory buffer, then write all at once
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc_for_save);
+    try serialize(g, buf.writer(alloc_for_save));
+    try file.writeAll(buf.items);
 }
+
+/// Temporary allocator for saveToFile — uses page_allocator since we
+/// don't have access to a caller-provided allocator in the current API.
+const alloc_for_save = std.heap.page_allocator;
 
 /// Load a CodeGraph from a file path.
 pub fn loadFromFile(path: []const u8, alloc: std.mem.Allocator) !CodeGraph {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
-    var br = std.io.bufferedReader(file.reader());
-    return deserialize(br.reader(), alloc);
+    // Read entire file into memory, then deserialize
+    const contents = try file.readToEndAlloc(alloc, 256 * 1024 * 1024); // 256MB max
+    defer alloc.free(contents);
+    var stream = std.io.fixedBufferStream(contents);
+    return deserialize(stream.reader(), alloc);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
