@@ -76,6 +76,14 @@ pub const TierManager = struct {
 
     /// Register a repo as COLD (path known, not loaded).
     pub fn registerCold(self: *TierManager, repo_id: u32, path: []const u8) !void {
+        // Free old entry's path if overwriting an existing registration
+        if (self.entries.getPtr(repo_id)) |existing| {
+            self.alloc.free(existing.path);
+            if (existing.graph) |*g| g.deinit();
+            // Adjust tier counts for the entry being replaced
+            if (existing.tier == .hot) self.hot_count -= 1;
+            if (existing.tier == .warm) self.warm_count -= 1;
+        }
         const duped = try self.alloc.dupe(u8, path);
         errdefer self.alloc.free(duped);
         try self.entries.put(repo_id, .{
@@ -449,4 +457,258 @@ test "constants are reasonable" {
     try std.testing.expectEqual(@as(u32, 16), DEFAULT_WARM_CAPACITY);
     try std.testing.expectEqual(@as(u32, 3), PROMOTE_THRESHOLD);
     try std.testing.expectEqual(@as(i64, 600_000), DEMOTE_IDLE_MS);
+}
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "register same repo twice overwrites" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try tm.registerCold(1, "/repo/a/graph.bin");
+    try tm.registerCold(1, "/repo/b/graph.bin"); // overwrite
+
+    try std.testing.expectEqual(@as(u32, 1), tm.totalCount());
+    try std.testing.expectEqual(Tier.cold, tm.getTier(1).?);
+
+    // Verify the path was updated (can check via getEntry)
+    const entry = tm.getEntry(1).?;
+    try std.testing.expectEqualStrings("/repo/b/graph.bin", entry.path);
+}
+
+test "promote already-HOT repo is no-op (returns graph)" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try tm.registerCold(1, "/repo/a/graph.bin");
+
+    // Manually set to hot for testing
+    const entry = tm.entries.getPtr(1).?;
+    entry.tier = .hot;
+    tm.hot_count = 1;
+
+    // promoteToHot on already-hot entry — graph is null so returns null
+    // but should not crash or double-count
+    const result = try tm.promoteToHot(1);
+    try std.testing.expect(result == null); // no actual graph loaded
+    try std.testing.expectEqual(@as(u32, 1), tm.hot_count);
+    try std.testing.expectEqual(Tier.hot, tm.getTier(1).?);
+}
+
+test "demote already-COLD repo is no-op" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try tm.registerCold(1, "/repo/a/graph.bin");
+    try std.testing.expectEqual(Tier.cold, tm.getTier(1).?);
+
+    // Demote cold → should be no-op
+    tm.demoteToCold(1);
+    try std.testing.expectEqual(Tier.cold, tm.getTier(1).?);
+    try std.testing.expectEqual(@as(u32, 0), tm.warm_count);
+    try std.testing.expectEqual(@as(u32, 0), tm.hot_count);
+}
+
+test "demote warm to warm via demoteToWarm is no-op" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try tm.registerCold(1, "/repo/a/graph.bin");
+    const entry = tm.entries.getPtr(1).?;
+    entry.tier = .warm;
+    tm.warm_count = 1;
+
+    // demoteToWarm only applies to .hot entries
+    tm.demoteToWarm(1);
+    try std.testing.expectEqual(Tier.warm, tm.getTier(1).?);
+    try std.testing.expectEqual(@as(u32, 1), tm.warm_count);
+}
+
+test "evict when no entries are idle" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try tm.registerCold(1, "/a");
+    try tm.registerCold(2, "/b");
+
+    const e1 = tm.entries.getPtr(1).?;
+    e1.tier = .warm;
+    e1.last_access_ms = 9000; // very recent
+    tm.warm_count += 1;
+
+    const e2 = tm.entries.getPtr(2).?;
+    e2.tier = .warm;
+    e2.last_access_ms = 9500; // very recent
+    tm.warm_count += 1;
+
+    // Now = 10000, idle_ms = 2000, so entries idle > 2000ms would be evicted
+    // But both entries are recent (idle 1000ms and 500ms)
+    const evicted = tm.evictIdleAt(2000, 10000);
+    try std.testing.expectEqual(@as(u32, 0), evicted);
+    try std.testing.expectEqual(Tier.warm, tm.getTier(1).?);
+    try std.testing.expectEqual(Tier.warm, tm.getTier(2).?);
+}
+
+test "access nonexistent repo returns null" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try std.testing.expectEqual(@as(?Tier, null), tm.recordAccessAt(999, 1000));
+    try std.testing.expectEqual(@as(?Tier, null), tm.getTier(0));
+    try std.testing.expect(tm.getEntry(42) == null);
+}
+
+test "stats on empty manager" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    const s = tm.stats();
+    try std.testing.expectEqual(@as(u32, 0), s.hot_count);
+    try std.testing.expectEqual(@as(u32, 0), s.warm_count);
+    try std.testing.expectEqual(@as(u32, 0), s.cold_count);
+    try std.testing.expectEqual(@as(u32, 0), tm.totalCount());
+}
+
+test "register up to max capacity" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    // Register 50 repos
+    for (0..50) |i| {
+        try tm.registerCold(@intCast(i), "/repo");
+    }
+
+    try std.testing.expectEqual(@as(u32, 50), tm.totalCount());
+
+    const s = tm.stats();
+    try std.testing.expectEqual(@as(u32, 50), s.cold_count);
+    try std.testing.expectEqual(@as(u32, 0), s.hot_count);
+    try std.testing.expectEqual(@as(u32, 0), s.warm_count);
+}
+
+test "rapid promote/demote cycles" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try tm.registerCold(1, "/repo/a/graph.bin");
+
+    // Manually set to warm
+    const entry = tm.entries.getPtr(1).?;
+    entry.tier = .warm;
+    tm.warm_count = 1;
+
+    // Rapid demote to cold and back to warm
+    for (0..10) |_| {
+        tm.demoteToCold(1);
+        try std.testing.expectEqual(Tier.cold, tm.getTier(1).?);
+        try std.testing.expectEqual(@as(u32, 0), tm.warm_count);
+
+        // Simulate re-promotion to warm by manually setting
+        const e = tm.entries.getPtr(1).?;
+        e.tier = .warm;
+        tm.warm_count = 1;
+        try std.testing.expectEqual(Tier.warm, tm.getTier(1).?);
+    }
+
+    try std.testing.expectEqual(@as(u32, 1), tm.totalCount());
+}
+
+test "rapid hot/warm demote cycles" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try tm.registerCold(1, "/a");
+
+    for (0..10) |_| {
+        // Set to hot manually
+        const entry = tm.entries.getPtr(1).?;
+        entry.tier = .hot;
+        entry.graph = null; // no actual graph, just testing tier tracking
+        tm.hot_count += 1;
+
+        // Demote to warm
+        tm.demoteToWarm(1);
+        try std.testing.expectEqual(Tier.warm, tm.getTier(1).?);
+        try std.testing.expectEqual(@as(u32, 0), tm.hot_count);
+
+        // Demote to cold
+        tm.demoteToCold(1);
+        try std.testing.expectEqual(Tier.cold, tm.getTier(1).?);
+        try std.testing.expectEqual(@as(u32, 0), tm.warm_count);
+    }
+}
+
+test "evict idle demotes hot to warm and warm to cold" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try tm.registerCold(1, "/hot_repo");
+    try tm.registerCold(2, "/warm_repo");
+    try tm.registerCold(3, "/fresh_repo");
+
+    // Set repo 1 to hot with old access
+    const e1 = tm.entries.getPtr(1).?;
+    e1.tier = .hot;
+    e1.last_access_ms = 1000;
+    tm.hot_count += 1;
+
+    // Set repo 2 to warm with old access
+    const e2 = tm.entries.getPtr(2).?;
+    e2.tier = .warm;
+    e2.last_access_ms = 1000;
+    tm.warm_count += 1;
+
+    // Set repo 3 to warm with recent access
+    const e3 = tm.entries.getPtr(3).?;
+    e3.tier = .warm;
+    e3.last_access_ms = 9000;
+    tm.warm_count += 1;
+
+    const evicted = tm.evictIdleAt(5000, 10000);
+    try std.testing.expectEqual(@as(u32, 2), evicted); // repos 1 and 2
+
+    try std.testing.expectEqual(Tier.warm, tm.getTier(1).?); // hot → warm
+    try std.testing.expectEqual(Tier.cold, tm.getTier(2).?); // warm → cold
+    try std.testing.expectEqual(Tier.warm, tm.getTier(3).?); // unchanged
+}
+
+test "demote nonexistent repo is no-op" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    // These should not crash or change any state
+    tm.demoteToWarm(999);
+    tm.demoteToCold(999);
+
+    try std.testing.expectEqual(@as(u32, 0), tm.totalCount());
+    try std.testing.expectEqual(@as(u32, 0), tm.hot_count);
+    try std.testing.expectEqual(@as(u32, 0), tm.warm_count);
+}
+
+test "access count increments correctly" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try tm.registerCold(1, "/a");
+
+    for (0..10) |i| {
+        _ = tm.recordAccessAt(1, @intCast(i * 1000));
+    }
+
+    const entry = tm.getEntry(1).?;
+    try std.testing.expectEqual(@as(u32, 10), entry.access_count);
+    try std.testing.expectEqual(@as(i64, 9000), entry.last_access_ms);
+}
+
+test "cold entries with zero last_access_ms are not evicted" {
+    var tm = TierManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try tm.registerCold(1, "/a");
+    // Cold entry, never accessed (last_access_ms = 0)
+    try std.testing.expectEqual(@as(i64, 0), tm.getEntry(1).?.last_access_ms);
+
+    // Should not be evicted (it's already cold, and last_access_ms check: 0 > 0 is false)
+    const evicted = tm.evictIdleAt(1, 999999);
+    try std.testing.expectEqual(@as(u32, 0), evicted);
 }

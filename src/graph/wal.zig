@@ -250,18 +250,19 @@ const ParseResult = struct {
 
 fn parseRecord(data: []const u8, start: usize, op_byte: u8) !ParseResult {
     var pos = start;
-    const op: OpType = @enumFromInt(op_byte);
+    const op: OpType = std.meta.intToEnum(OpType, op_byte) catch return error.InvalidOp;
 
     switch (op) {
         .add_symbol => {
-            const id = readU64(data, &pos);
-            const name = readBytesView(data, &pos);
+            const id = try readU64(data, &pos);
+            const name = try readBytesView(data, &pos);
+            if (pos >= data.len) return error.Truncated;
             const kind: SymbolKind = @enumFromInt(data[pos]);
             pos += 1;
-            const file_id = readU32(data, &pos);
-            const line = readU32(data, &pos);
-            const col = readU16(data, &pos);
-            const scope = readBytesView(data, &pos);
+            const file_id = try readU32(data, &pos);
+            const line = try readU32(data, &pos);
+            const col = try readU16(data, &pos);
+            const scope = try readBytesView(data, &pos);
 
             return .{ .end_pos = pos, .action = .{ .add_symbol = .{
                 .id = id,
@@ -274,11 +275,13 @@ fn parseRecord(data: []const u8, start: usize, op_byte: u8) !ParseResult {
             } } };
         },
         .add_file => {
-            const id = readU32(data, &pos);
-            const path = readBytesView(data, &pos);
+            const id = try readU32(data, &pos);
+            const path = try readBytesView(data, &pos);
+            if (pos >= data.len) return error.Truncated;
             const language: Language = @enumFromInt(data[pos]);
             pos += 1;
-            const last_modified = readI64(data, &pos);
+            const last_modified = try readI64(data, &pos);
+            if (pos + 32 > data.len) return error.Truncated;
             var hash: [32]u8 = undefined;
             @memcpy(&hash, data[pos..][0..32]);
             pos += 32;
@@ -292,13 +295,14 @@ fn parseRecord(data: []const u8, start: usize, op_byte: u8) !ParseResult {
             } } };
         },
         .add_commit => {
-            const id = readU32(data, &pos);
+            const id = try readU32(data, &pos);
+            if (pos + 40 > data.len) return error.Truncated;
             var hash: [40]u8 = undefined;
             @memcpy(&hash, data[pos..][0..40]);
             pos += 40;
-            const timestamp = readI64(data, &pos);
-            const author = readBytesView(data, &pos);
-            const message = readBytesView(data, &pos);
+            const timestamp = try readI64(data, &pos);
+            const author = try readBytesView(data, &pos);
+            const message = try readBytesView(data, &pos);
 
             return .{ .end_pos = pos, .action = .{ .add_commit = .{
                 .id = id,
@@ -309,10 +313,12 @@ fn parseRecord(data: []const u8, start: usize, op_byte: u8) !ParseResult {
             } } };
         },
         .add_edge => {
-            const src = readU64(data, &pos);
-            const dst = readU64(data, &pos);
+            const src = try readU64(data, &pos);
+            const dst = try readU64(data, &pos);
+            if (pos >= data.len) return error.Truncated;
             const kind: EdgeKind = @enumFromInt(data[pos]);
             pos += 1;
+            if (pos + 4 > data.len) return error.Truncated;
             const weight: f32 = @bitCast(data[pos..][0..4].*);
             pos += 4;
 
@@ -324,7 +330,7 @@ fn parseRecord(data: []const u8, start: usize, op_byte: u8) !ParseResult {
             } } };
         },
         .file_invalidate => {
-            const file_id = readU32(data, &pos);
+            const file_id = try readU32(data, &pos);
             return .{ .end_pos = pos, .action = .{ .file_invalidate = file_id } };
         },
         .checkpoint => {
@@ -335,25 +341,29 @@ fn parseRecord(data: []const u8, start: usize, op_byte: u8) !ParseResult {
 
 // ── Read helpers ────────────────────────────────────────────────────────────
 
-fn readU16(data: []const u8, pos: *usize) u16 {
+fn readU16(data: []const u8, pos: *usize) !u16 {
+    if (pos.* + 2 > data.len) return error.Truncated;
     const v = std.mem.readInt(u16, data[pos.*..][0..2], .little);
     pos.* += 2;
     return v;
 }
 
-fn readU32(data: []const u8, pos: *usize) u32 {
+fn readU32(data: []const u8, pos: *usize) !u32 {
+    if (pos.* + 4 > data.len) return error.Truncated;
     const v = std.mem.readInt(u32, data[pos.*..][0..4], .little);
     pos.* += 4;
     return v;
 }
 
-fn readU64(data: []const u8, pos: *usize) u64 {
+fn readU64(data: []const u8, pos: *usize) !u64 {
+    if (pos.* + 8 > data.len) return error.Truncated;
     const v = std.mem.readInt(u64, data[pos.*..][0..8], .little);
     pos.* += 8;
     return v;
 }
 
-fn readI64(data: []const u8, pos: *usize) i64 {
+fn readI64(data: []const u8, pos: *usize) !i64 {
+    if (pos.* + 8 > data.len) return error.Truncated;
     const v = std.mem.readInt(i64, data[pos.*..][0..8], .little);
     pos.* += 8;
     return v;
@@ -361,8 +371,9 @@ fn readI64(data: []const u8, pos: *usize) i64 {
 
 /// Zero-copy: returns a slice directly into the WAL data buffer.
 /// Safe as long as the WAL data outlives the returned slice (true during replay).
-fn readBytesView(data: []const u8, pos: *usize) []const u8 {
-    const len = readU32(data, pos);
+fn readBytesView(data: []const u8, pos: *usize) ![]const u8 {
+    const len = try readU32(data, pos);
+    if (pos.* + len > data.len) return error.Truncated;
     const slice = data[pos.*..][0..len];
     pos.* += len;
     return slice;
@@ -544,4 +555,245 @@ test "WAL reset clears buffer" {
 
     w.reset();
     try std.testing.expectEqual(@as(usize, 0), w.data().len);
+}
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "WAL single record replay" {
+    var w = WalWriter.init(std.testing.allocator);
+    defer w.deinit();
+
+    try w.logAddFile(.{
+        .id = 42,
+        .path = "only_file.zig",
+        .language = .zig,
+        .last_modified = 999,
+        .hash = [_]u8{0xCC} ** 32,
+    });
+
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var result = try replay(w.data(), &g, std.testing.allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.records_applied);
+    try std.testing.expectEqual(@as(usize, 0), result.checkpoints_seen);
+    const f = g.getFile(42).?;
+    try std.testing.expectEqualStrings("only_file.zig", f.path);
+    try std.testing.expectEqual(@as(i64, 999), f.last_modified);
+}
+
+test "WAL truncated record stops replay gracefully" {
+    var w = WalWriter.init(std.testing.allocator);
+    defer w.deinit();
+
+    try w.logAddSymbol(.{ .id = 1, .name = "good", .kind = .function, .file_id = 0, .line = 1, .col = 0, .scope = "" });
+    try w.logAddSymbol(.{ .id = 2, .name = "truncated", .kind = .method, .file_id = 0, .line = 2, .col = 0, .scope = "" });
+
+    // Truncate mid-way through the second record
+    const full_data = w.data();
+    const truncated_len = full_data.len - 10; // cut off last 10 bytes
+    const data = try std.testing.allocator.alloc(u8, truncated_len);
+    defer std.testing.allocator.free(data);
+    @memcpy(data, full_data[0..truncated_len]);
+
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var result = try replay(data, &g, std.testing.allocator);
+    defer result.deinit();
+
+    // First record succeeds, second is truncated — stops
+    try std.testing.expectEqual(@as(usize, 1), result.records_applied);
+    try std.testing.expectEqual(@as(usize, 1), g.symbolCount());
+    try std.testing.expectEqualStrings("good", g.getSymbol(1).?.name);
+}
+
+test "WAL multiple checkpoints in sequence" {
+    var w = WalWriter.init(std.testing.allocator);
+    defer w.deinit();
+
+    try w.logCheckpoint();
+    try w.logCheckpoint();
+    try w.logCheckpoint();
+    try w.logAddSymbol(.{ .id = 1, .name = "after_checkpoints", .kind = .function, .file_id = 0, .line = 1, .col = 0, .scope = "" });
+    try w.logCheckpoint();
+
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var result = try replay(w.data(), &g, std.testing.allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 5), result.records_applied);
+    try std.testing.expectEqual(@as(usize, 4), result.checkpoints_seen);
+    try std.testing.expectEqual(@as(usize, 1), g.symbolCount());
+}
+
+test "WAL FILE_INVALIDATE for nonexistent file" {
+    var w = WalWriter.init(std.testing.allocator);
+    defer w.deinit();
+
+    // Invalidate files that were never added to the graph
+    try w.logFileInvalidate(99999);
+    try w.logFileInvalidate(0);
+    try w.logFileInvalidate(std.math.maxInt(u32));
+
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var result = try replay(w.data(), &g, std.testing.allocator);
+    defer result.deinit();
+
+    // All three should be applied (invalidation is just metadata tracking)
+    try std.testing.expectEqual(@as(usize, 3), result.records_applied);
+    try std.testing.expect(result.invalidated_files.get(99999) != null);
+    try std.testing.expect(result.invalidated_files.get(0) != null);
+    try std.testing.expect(result.invalidated_files.get(std.math.maxInt(u32)) != null);
+
+    // Graph itself should be empty
+    try std.testing.expectEqual(@as(usize, 0), g.symbolCount());
+    try std.testing.expect(g.getFile(99999) == null);
+}
+
+test "WAL very long symbol names" {
+    var w = WalWriter.init(std.testing.allocator);
+    defer w.deinit();
+
+    const long_name = "x" ** 5000;
+    const long_scope = "y" ** 3000;
+
+    try w.logAddSymbol(.{
+        .id = 1,
+        .name = long_name,
+        .kind = .function,
+        .file_id = 0,
+        .line = 1,
+        .col = 0,
+        .scope = long_scope,
+    });
+
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var result = try replay(w.data(), &g, std.testing.allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.records_applied);
+    const sym = g.getSymbol(1).?;
+    try std.testing.expectEqual(@as(usize, 5000), sym.name.len);
+    try std.testing.expectEqual(@as(usize, 3000), sym.scope.len);
+}
+
+test "WAL replay order matters — add file then symbol referencing it" {
+    var w = WalWriter.init(std.testing.allocator);
+    defer w.deinit();
+
+    // Add file first
+    try w.logAddFile(.{
+        .id = 10,
+        .path = "src/lib.zig",
+        .language = .zig,
+        .last_modified = 1000,
+        .hash = [_]u8{0} ** 32,
+    });
+
+    // Then add symbol referencing that file
+    try w.logAddSymbol(.{
+        .id = 1,
+        .name = "init",
+        .kind = .function,
+        .file_id = 10,
+        .line = 5,
+        .col = 4,
+        .scope = "lib",
+    });
+
+    // Then add edge referencing that symbol
+    try w.logAddEdge(.{ .src = 1, .dst = 1, .kind = .references, .weight = 1.0 });
+
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var result = try replay(w.data(), &g, std.testing.allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), result.records_applied);
+    // Verify all were added correctly
+    const f = g.getFile(10).?;
+    try std.testing.expectEqualStrings("src/lib.zig", f.path);
+    const sym = g.getSymbol(1).?;
+    try std.testing.expectEqual(@as(u32, 10), sym.file_id);
+    try std.testing.expectEqual(@as(usize, 1), g.edgeCount());
+}
+
+test "WAL corrupt CRC in first record stops all replay" {
+    var w = WalWriter.init(std.testing.allocator);
+    defer w.deinit();
+
+    try w.logAddSymbol(.{ .id = 1, .name = "a", .kind = .function, .file_id = 0, .line = 1, .col = 0, .scope = "" });
+
+    var data = try std.testing.allocator.alloc(u8, w.data().len);
+    defer std.testing.allocator.free(data);
+    @memcpy(data, w.data());
+    // Corrupt the CRC (last 4 bytes of the record)
+    data[data.len - 1] ^= 0xFF;
+
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var result = try replay(data, &g, std.testing.allocator);
+    defer result.deinit();
+
+    // No records should be applied
+    try std.testing.expectEqual(@as(usize, 0), result.records_applied);
+    try std.testing.expectEqual(@as(usize, 0), g.symbolCount());
+}
+
+test "WAL replay with all record types interleaved" {
+    var w = WalWriter.init(std.testing.allocator);
+    defer w.deinit();
+
+    try w.logAddFile(.{ .id = 1, .path = "f.zig", .language = .zig, .last_modified = 0, .hash = [_]u8{0} ** 32 });
+    try w.logAddSymbol(.{ .id = 1, .name = "s1", .kind = .function, .file_id = 1, .line = 1, .col = 0, .scope = "" });
+    try w.logAddCommit(.{ .id = 1, .hash = ("a" ** 40).*, .timestamp = 100, .author = "dev", .message = "msg" });
+    try w.logAddEdge(.{ .src = 1, .dst = 1, .kind = .calls, .weight = 2.0 });
+    try w.logFileInvalidate(1);
+    try w.logCheckpoint();
+
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var result = try replay(w.data(), &g, std.testing.allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 6), result.records_applied);
+    try std.testing.expectEqual(@as(usize, 1), result.checkpoints_seen);
+    try std.testing.expect(result.invalidated_files.get(1) != null);
+    try std.testing.expect(g.getFile(1) != null);
+    try std.testing.expect(g.getSymbol(1) != null);
+    try std.testing.expect(g.getCommit(1) != null);
+    try std.testing.expectEqual(@as(usize, 1), g.edgeCount());
+}
+
+test "WAL write, reset, write produces only second batch" {
+    var w = WalWriter.init(std.testing.allocator);
+    defer w.deinit();
+
+    try w.logAddSymbol(.{ .id = 1, .name = "first", .kind = .function, .file_id = 0, .line = 1, .col = 0, .scope = "" });
+    w.reset();
+
+    try w.logAddSymbol(.{ .id = 2, .name = "second", .kind = .method, .file_id = 0, .line = 2, .col = 0, .scope = "" });
+
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var result = try replay(w.data(), &g, std.testing.allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.records_applied);
+    try std.testing.expect(g.getSymbol(1) == null); // first was reset away
+    try std.testing.expectEqualStrings("second", g.getSymbol(2).?.name);
+}
+
+test "WAL single byte of garbage produces zero records" {
+    const garbage = [_]u8{0x42};
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var result = try replay(&garbage, &g, std.testing.allocator);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), result.records_applied);
 }

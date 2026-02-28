@@ -405,3 +405,477 @@ test "full graph round-trip" {
     try std.testing.expectEqual(g.commits.count(), g2.commits.count());
     try std.testing.expectEqual(g.edgeCount(), g2.edgeCount());
 }
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "round-trip empty graph has zero counts" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    var g2 = try deserialize(stream.reader(), std.testing.allocator);
+    defer g2.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), g2.symbolCount());
+    try std.testing.expectEqual(@as(usize, 0), g2.edgeCount());
+    try std.testing.expectEqual(@as(usize, 0), g2.files.count());
+    try std.testing.expectEqual(@as(usize, 0), g2.commits.count());
+    // Verify queries on empty graph return null
+    try std.testing.expect(g2.getSymbol(1) == null);
+    try std.testing.expect(g2.getFile(1) == null);
+    try std.testing.expect(g2.getCommit(1) == null);
+}
+
+test "round-trip with maximum-length strings (1000+ chars)" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    const long_name = "A" ** 1200;
+    const long_scope = "B" ** 1500;
+
+    try g.addSymbol(.{
+        .id = 1,
+        .name = long_name,
+        .kind = .function,
+        .file_id = 1,
+        .line = 1,
+        .col = 0,
+        .scope = long_scope,
+    });
+
+    const long_path = "src/" ++ "deep/" ** 200 ++ "file.zig";
+    try g.addFile(.{
+        .id = 1,
+        .path = long_path,
+        .language = .zig,
+        .last_modified = 0,
+        .hash = [_]u8{0} ** 32,
+    });
+
+    const long_author = "C" ** 1000;
+    const long_message = "D" ** 2000;
+    try g.addCommit(.{
+        .id = 1,
+        .hash = ("z" ** 40).*,
+        .timestamp = 0,
+        .author = long_author,
+        .message = long_message,
+    });
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    var g2 = try deserialize(stream.reader(), std.testing.allocator);
+    defer g2.deinit();
+
+    const sym = g2.getSymbol(1).?;
+    try std.testing.expectEqual(@as(usize, 1200), sym.name.len);
+    try std.testing.expectEqualStrings(long_name, sym.name);
+    try std.testing.expectEqual(@as(usize, 1500), sym.scope.len);
+    try std.testing.expectEqualStrings(long_scope, sym.scope);
+
+    const f = g2.getFile(1).?;
+    try std.testing.expectEqualStrings(long_path, f.path);
+
+    const c = g2.getCommit(1).?;
+    try std.testing.expectEqualStrings(long_author, c.author);
+    try std.testing.expectEqualStrings(long_message, c.message);
+}
+
+test "round-trip with special characters in strings (unicode, newlines)" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    // Unicode, newlines, tabs, emoji
+    const special_name = "fn_\xc3\xa9\xc3\xa0\xc3\xbc_\xe2\x9c\x93\n\ttab";
+    const special_scope = "\xe4\xb8\xad\xe6\x96\x87::method\r\n";
+
+    try g.addSymbol(.{
+        .id = 1,
+        .name = special_name,
+        .kind = .class,
+        .file_id = 1,
+        .line = 1,
+        .col = 0,
+        .scope = special_scope,
+    });
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    var g2 = try deserialize(stream.reader(), std.testing.allocator);
+    defer g2.deinit();
+
+    const sym = g2.getSymbol(1).?;
+    try std.testing.expectEqualStrings(special_name, sym.name);
+    try std.testing.expectEqualStrings(special_scope, sym.scope);
+}
+
+test "round-trip with null bytes in strings" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    const name_with_nulls = "hello\x00world\x00end";
+    try g.addSymbol(.{
+        .id = 1,
+        .name = name_with_nulls,
+        .kind = .variable,
+        .file_id = 1,
+        .line = 1,
+        .col = 0,
+        .scope = "scope\x00here",
+    });
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    var g2 = try deserialize(stream.reader(), std.testing.allocator);
+    defer g2.deinit();
+
+    const sym = g2.getSymbol(1).?;
+    try std.testing.expectEqualStrings(name_with_nulls, sym.name);
+    try std.testing.expectEqualStrings("scope\x00here", sym.scope);
+}
+
+test "truncated data returns error (incomplete header)" {
+    // Only 6 bytes — not enough for the full 24-byte header
+    const truncated = "CGDB\x01\x00";
+    var stream = std.io.fixedBufferStream(truncated);
+    const result = deserialize(stream.reader(), std.testing.allocator);
+    try std.testing.expectError(error.EndOfStream, result);
+}
+
+test "truncated data in symbol section" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addSymbol(.{ .id = 1, .name = "foo", .kind = .function, .file_id = 10, .line = 42, .col = 8, .scope = "main" });
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    // Truncate partway through the symbol data (after header but before symbol ends)
+    const truncated = buf.items[0..28]; // header is 24 bytes, only 4 bytes of symbol
+    var stream = std.io.fixedBufferStream(truncated);
+    const result = deserialize(stream.reader(), std.testing.allocator);
+    try std.testing.expectError(error.EndOfStream, result);
+}
+
+test "corrupted magic bytes with valid length" {
+    // Construct a buffer with wrong magic but otherwise valid header
+    var buf: [24]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+    w.writeAll("XGDB") catch unreachable; // wrong magic
+    w.writeInt(u32, FORMAT_VERSION, .little) catch unreachable;
+    w.writeInt(u32, 0, .little) catch unreachable; // 0 symbols
+    w.writeInt(u32, 0, .little) catch unreachable; // 0 files
+    w.writeInt(u32, 0, .little) catch unreachable; // 0 commits
+    w.writeInt(u32, 0, .little) catch unreachable; // 0 edges
+
+    stream.pos = 0;
+    const result = deserialize(stream.reader(), std.testing.allocator);
+    try std.testing.expectError(error.InvalidFormat, result);
+}
+
+test "version number 0 rejected" {
+    var buf: [24]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+    w.writeAll(&MAGIC) catch unreachable;
+    w.writeInt(u32, 0, .little) catch unreachable; // version 0
+    w.writeInt(u32, 0, .little) catch unreachable;
+    w.writeInt(u32, 0, .little) catch unreachable;
+    w.writeInt(u32, 0, .little) catch unreachable;
+    w.writeInt(u32, 0, .little) catch unreachable;
+
+    stream.pos = 0;
+    const result = deserialize(stream.reader(), std.testing.allocator);
+    try std.testing.expectError(error.UnsupportedVersion, result);
+}
+
+test "version number 255 rejected" {
+    var buf: [24]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+    w.writeAll(&MAGIC) catch unreachable;
+    w.writeInt(u32, 255, .little) catch unreachable; // version 255
+    w.writeInt(u32, 0, .little) catch unreachable;
+    w.writeInt(u32, 0, .little) catch unreachable;
+    w.writeInt(u32, 0, .little) catch unreachable;
+    w.writeInt(u32, 0, .little) catch unreachable;
+
+    stream.pos = 0;
+    const result = deserialize(stream.reader(), std.testing.allocator);
+    try std.testing.expectError(error.UnsupportedVersion, result);
+}
+
+test "round-trip graph with many edges (50+)" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    // Add symbols first
+    for (0..60) |i| {
+        try g.addSymbol(.{
+            .id = @intCast(i),
+            .name = "sym",
+            .kind = .function,
+            .file_id = 0,
+            .line = @intCast(i),
+            .col = 0,
+            .scope = "",
+        });
+    }
+
+    // Add 59 edges: 0->1, 1->2, ..., 58->59
+    for (0..59) |i| {
+        try g.addEdge(.{
+            .src = @intCast(i),
+            .dst = @intCast(i + 1),
+            .kind = .calls,
+            .weight = @floatFromInt(i),
+        });
+    }
+
+    try std.testing.expectEqual(@as(usize, 59), g.edgeCount());
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    var g2 = try deserialize(stream.reader(), std.testing.allocator);
+    defer g2.deinit();
+
+    try std.testing.expectEqual(@as(usize, 60), g2.symbolCount());
+    try std.testing.expectEqual(@as(usize, 59), g2.edgeCount());
+
+    // Verify first and last edge weights
+    const out0 = g2.outEdges(0);
+    try std.testing.expectEqual(@as(usize, 1), out0.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), out0[0].weight, 1e-6);
+
+    const out58 = g2.outEdges(58);
+    try std.testing.expectEqual(@as(usize, 1), out58.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 58.0), out58[0].weight, 1e-6);
+}
+
+test "symbols with extreme line/col values (u32 max, u16 max)" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addSymbol(.{
+        .id = 1,
+        .name = "extreme",
+        .kind = .function,
+        .file_id = std.math.maxInt(u32),
+        .line = std.math.maxInt(u32),
+        .col = std.math.maxInt(u16),
+        .scope = "max_scope",
+    });
+
+    try g.addSymbol(.{
+        .id = 2,
+        .name = "zero",
+        .kind = .method,
+        .file_id = 0,
+        .line = 0,
+        .col = 0,
+        .scope = "",
+    });
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    var g2 = try deserialize(stream.reader(), std.testing.allocator);
+    defer g2.deinit();
+
+    const s1 = g2.getSymbol(1).?;
+    try std.testing.expectEqual(std.math.maxInt(u32), s1.file_id);
+    try std.testing.expectEqual(std.math.maxInt(u32), s1.line);
+    try std.testing.expectEqual(std.math.maxInt(u16), s1.col);
+
+    const s2 = g2.getSymbol(2).?;
+    try std.testing.expectEqual(@as(u32, 0), s2.file_id);
+    try std.testing.expectEqual(@as(u32, 0), s2.line);
+    try std.testing.expectEqual(@as(u16, 0), s2.col);
+}
+
+test "round-trip with all edge kinds and special weights" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls, .weight = 0.0 });
+    try g.addEdge(.{ .src = 2, .dst = 3, .kind = .imports, .weight = std.math.inf(f32) });
+    try g.addEdge(.{ .src = 3, .dst = 4, .kind = .defines, .weight = -1.0 });
+    try g.addEdge(.{ .src = 4, .dst = 5, .kind = .modifies, .weight = std.math.floatMin(f32) });
+    try g.addEdge(.{ .src = 5, .dst = 6, .kind = .references, .weight = std.math.floatMax(f32) });
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    var g2 = try deserialize(stream.reader(), std.testing.allocator);
+    defer g2.deinit();
+
+    try std.testing.expectEqual(@as(usize, 5), g2.edgeCount());
+
+    const e1 = g2.outEdges(1);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), e1[0].weight, 1e-6);
+    try std.testing.expectEqual(EdgeKind.calls, e1[0].kind);
+
+    const e2 = g2.outEdges(2);
+    try std.testing.expect(std.math.isInf(e2[0].weight));
+
+    const e3 = g2.outEdges(3);
+    try std.testing.expectApproxEqAbs(@as(f32, -1.0), e3[0].weight, 1e-6);
+    try std.testing.expectEqual(EdgeKind.defines, e3[0].kind);
+
+    const e5 = g2.outEdges(5);
+    try std.testing.expectEqual(EdgeKind.references, e5[0].kind);
+}
+
+test "round-trip with all SymbolKind variants" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    const kinds = [_]SymbolKind{ .function, .method, .class, .variable, .constant, .type_def, .interface, .module };
+    for (kinds, 0..) |kind, i| {
+        try g.addSymbol(.{
+            .id = @intCast(i + 1),
+            .name = "sym",
+            .kind = kind,
+            .file_id = 0,
+            .line = 0,
+            .col = 0,
+            .scope = "",
+        });
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    var g2 = try deserialize(stream.reader(), std.testing.allocator);
+    defer g2.deinit();
+
+    try std.testing.expectEqual(@as(usize, 8), g2.symbolCount());
+    for (kinds, 0..) |kind, i| {
+        const sym = g2.getSymbol(@intCast(i + 1)).?;
+        try std.testing.expectEqual(kind, sym.kind);
+    }
+}
+
+test "round-trip with all Language variants" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    const langs = [_]Language{ .typescript, .javascript, .zig, .python, .unknown };
+    for (langs, 0..) |lang, i| {
+        try g.addFile(.{
+            .id = @intCast(i + 1),
+            .path = "file",
+            .language = lang,
+            .last_modified = 0,
+            .hash = [_]u8{0} ** 32,
+        });
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    var g2 = try deserialize(stream.reader(), std.testing.allocator);
+    defer g2.deinit();
+
+    for (langs, 0..) |lang, i| {
+        const f = g2.getFile(@intCast(i + 1)).?;
+        try std.testing.expectEqual(lang, f.language);
+    }
+}
+
+test "round-trip with extreme timestamps" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addFile(.{
+        .id = 1,
+        .path = "a.zig",
+        .language = .zig,
+        .last_modified = std.math.maxInt(i64),
+        .hash = [_]u8{0xFF} ** 32,
+    });
+    try g.addFile(.{
+        .id = 2,
+        .path = "b.zig",
+        .language = .zig,
+        .last_modified = std.math.minInt(i64),
+        .hash = [_]u8{0} ** 32,
+    });
+    try g.addCommit(.{
+        .id = 1,
+        .hash = ("0" ** 40).*,
+        .timestamp = std.math.maxInt(i64),
+        .author = "",
+        .message = "",
+    });
+    try g.addCommit(.{
+        .id = 2,
+        .hash = ("F" ** 40).*,
+        .timestamp = std.math.minInt(i64),
+        .author = "",
+        .message = "",
+    });
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    var g2 = try deserialize(stream.reader(), std.testing.allocator);
+    defer g2.deinit();
+
+    try std.testing.expectEqual(std.math.maxInt(i64), g2.getFile(1).?.last_modified);
+    try std.testing.expectEqual(std.math.minInt(i64), g2.getFile(2).?.last_modified);
+    try std.testing.expectEqual(std.math.maxInt(i64), g2.getCommit(1).?.timestamp);
+    try std.testing.expectEqual(std.math.minInt(i64), g2.getCommit(2).?.timestamp);
+}
+
+test "round-trip with empty strings everywhere" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addSymbol(.{ .id = 1, .name = "", .kind = .function, .file_id = 0, .line = 0, .col = 0, .scope = "" });
+    try g.addFile(.{ .id = 1, .path = "", .language = .unknown, .last_modified = 0, .hash = [_]u8{0} ** 32 });
+    try g.addCommit(.{ .id = 1, .hash = (" " ** 40).*, .timestamp = 0, .author = "", .message = "" });
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try serialize(&g, buf.writer(std.testing.allocator));
+
+    var stream = std.io.fixedBufferStream(buf.items);
+    var g2 = try deserialize(stream.reader(), std.testing.allocator);
+    defer g2.deinit();
+
+    try std.testing.expectEqualStrings("", g2.getSymbol(1).?.name);
+    try std.testing.expectEqualStrings("", g2.getSymbol(1).?.scope);
+    try std.testing.expectEqualStrings("", g2.getFile(1).?.path);
+    try std.testing.expectEqualStrings("", g2.getCommit(1).?.author);
+    try std.testing.expectEqualStrings("", g2.getCommit(1).?.message);
+}
