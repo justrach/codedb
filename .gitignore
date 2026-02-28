@@ -1,0 +1,7 @@
+.zig-cache/
+zig-out/
+.mcp-e2e-test
+
+# Ignore markdown files and python folder
+*.md
+python/
