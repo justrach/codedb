@@ -63,6 +63,8 @@ pub const Tool = enum {
     run_reviewer,
     run_explorer,
     run_zig_infra,
+    // Swarm — parallel multi-agent execution
+    run_swarm,
 };
 
 // ── Step 2: Tool schemas ──────────────────────────────────────────────────────
@@ -100,7 +102,8 @@ pub const tools_list =
     \\{"name":"set_repo","description":"Switch the active repository path. All subsequent tool calls will operate against this repo. Invalidates the session cache.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the git repository root"}},"required":["path"]}},
     \\{"name":"run_reviewer","description":"Invoke the Codex reviewer subagent on the current branch. Checks errdefer gaps, RwLock ordering, Zig 0.15.x API misuse, and missing test coverage. Returns the agent's full findings.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"Override the default review prompt"}},"required":[]}},
     \\{"name":"run_explorer","description":"Invoke the Codex explorer subagent to trace execution paths through the codebase. Read-only — maps affected code paths and gathers evidence without proposing fixes.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"What to explore, e.g. 'trace how get_next_task flows through gh.zig'"}},"required":["prompt"]}},
-    \\{"name":"run_zig_infra","description":"Invoke the Codex zig_infra subagent to review build.zig module graph, named @import wiring, and test step coverage.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"Override the default build wiring check prompt"}},"required":[]}}
+    \\{"name":"run_zig_infra","description":"Invoke the Codex zig_infra subagent to review build.zig module graph, named @import wiring, and test step coverage.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"Override the default build wiring check prompt"}},"required":[]}},
+    \\{"name":"run_swarm","description":"Spawn a self-organizing swarm of parallel Codex sub-agents to tackle a task. An orchestrator agent decomposes the task into sub-tasks, up to max_agents run concurrently via Zig threads, and a synthesis agent combines their outputs. Best for broad research, multi-file analysis, multi-angle reviews, or any task that parallelises naturally.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"The high-level task for the swarm to solve"},"max_agents":{"type":"integer","description":"Maximum parallel sub-agents (default 5, hard cap 100)"}},"required":["prompt"]}}
     \\]}
 ;
 
@@ -156,8 +159,11 @@ pub fn dispatch(
         .run_reviewer          => handleRunReviewer(alloc, args, out),
         .run_explorer          => handleRunExplorer(alloc, args, out),
         .run_zig_infra         => handleRunZigInfra(alloc, args, out),
+        // Swarm
+        .run_swarm             => handleRunSwarm(alloc, args, out),
     }
 }
+
 
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -1698,4 +1704,19 @@ fn handleSetRepo(
     out.appendSlice(alloc, "{\"ok\":true,\"repo\":\"") catch return;
     mj.writeEscaped(alloc, out, path);
     out.appendSlice(alloc, "\"}") catch return;
+}
+
+fn handleRunSwarm(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8)) void {
+    const swarm = @import("swarm.zig");
+    const prompt = mj.getStr(args, "prompt") orelse {
+        writeErr(alloc, out, "missing required argument: prompt");
+        return;
+    };
+    const max_agents: u32 = blk: {
+        if (args.get("max_agents")) |v| {
+            if (v == .integer and v.integer > 0) break :blk @intCast(@min(v.integer, swarm.HARD_MAX));
+        }
+        break :blk 5; // default
+    };
+    swarm.runSwarm(alloc, prompt, max_agents, out);
 }
