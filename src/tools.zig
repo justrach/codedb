@@ -1,11 +1,11 @@
 // gitagent-mcp — Tool definitions
 //
-// Implements all 17 GitHub workflow tools across 5 groups:
+// Implements all 21 GitHub workflow tools across 5 groups:
 //   Planning    → decompose_feature, get_project_state, get_next_task, prioritize_issues
 //   Issues      → create_issue, create_issues_batch, update_issue, close_issue, link_issues
 //   Branches    → create_branch, get_current_branch, commit_with_context, push_branch
 //   Pull Reqs   → create_pr, get_pr_status, list_open_prs
-//   Analysis    → review_pr_impact
+//   Analysis    → review_pr_impact, blast_radius, relevant_context, git_history_for, recently_changed
 //
 // Each handler writes its result to `out: *std.ArrayList(u8)`.
 // Whatever ends up in `out` becomes the tool response text shown to the model.
@@ -43,6 +43,10 @@ pub const Tool = enum {
     list_open_prs,
     // Analysis
     review_pr_impact,
+    blast_radius,
+    relevant_context,
+    git_history_for,
+    recently_changed,
 };
 
 // ── Step 2: Tool schemas ──────────────────────────────────────────────────────
@@ -68,7 +72,11 @@ pub const tools_list =
     \\{"name":"create_pr","description":"Open a pull request from the current branch to main. Auto-generates title and body from the linked issue if not provided. Sets status:in-review on the issue.","inputSchema":{"type":"object","properties":{"title":{"type":"string","description":"PR title (defaults to linked issue title)"},"body":{"type":"string","description":"PR body (defaults to issue summary + Closes #N)"}},"required":[]}},
     \\{"name":"get_pr_status","description":"Get CI status, review state, and merge readiness for a PR. Defaults to the PR for the current branch.","inputSchema":{"type":"object","properties":{"pr_number":{"type":"integer","description":"PR number (defaults to current branch's PR)"}},"required":[]}},
     \\{"name":"list_open_prs","description":"List all open PRs with their CI status, review state, and linked issue numbers.","inputSchema":{"type":"object","properties":{},"required":[]}},
-    \\{"name":"review_pr_impact","description":"Analyze a PR's blast radius: extracts changed files and function symbols from the diff, then searches the codebase for all references to those symbols. Call this before approving or merging a PR to understand what other code might be affected by the changes. Also useful after creating a PR to self-review impact. Returns files changed, symbols modified, and which files reference each symbol.","inputSchema":{"type":"object","properties":{"pr_number":{"type":"integer","description":"PR number (defaults to current branch's PR)"}},"required":[]}}
+    \\{"name":"review_pr_impact","description":"Analyze a PR's blast radius: extracts changed files and function symbols from the diff, then searches the codebase for all references to those symbols. Call this before approving or merging a PR to understand what other code might be affected by the changes. Also useful after creating a PR to self-review impact. Returns files changed, symbols modified, and which files reference each symbol.","inputSchema":{"type":"object","properties":{"pr_number":{"type":"integer","description":"PR number (defaults to current branch's PR)"}},"required":[]}},
+    \\{"name":"blast_radius","description":"Find all files that reference symbols defined in a file or a specific symbol. Use this to understand the impact of changing a file or function before editing. Works offline with grep-based search.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Path to file to analyze (extracts symbols automatically)"},"symbol":{"type":"string","description":"Specific symbol name to search for"}},"required":[]}},
+    \\{"name":"relevant_context","description":"Find files most related to a given file by analyzing symbol cross-references and imports. Use this to understand what other files you should read before modifying a file. Works offline with grep-based search.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Path to file to find context for"}},"required":["file"]}},
+    \\{"name":"git_history_for","description":"Return the git commit history for a specific file. Use this to understand recent changes, who modified a file, and why. Works offline with local git.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Path to file to get history for"},"count":{"type":"integer","description":"Number of commits to return (default 20)"}},"required":["file"]}},
+    \\{"name":"recently_changed","description":"Return files that were recently modified across recent commits. Use this to understand what areas of the codebase are actively being worked on. Works offline with local git.","inputSchema":{"type":"object","properties":{"count":{"type":"integer","description":"Number of recent commits to scan (default 10)"}},"required":[]}}
     \\]}
 ;
 
@@ -109,6 +117,10 @@ pub fn dispatch(
         .list_open_prs         => handleListOpenPrs(alloc, args, out),
         // Analysis
         .review_pr_impact      => handleReviewPrImpact(alloc, args, out),
+        .blast_radius          => handleBlastRadius(alloc, args, out),
+        .relevant_context      => handleRelevantContext(alloc, args, out),
+        .git_history_for       => handleGitHistoryFor(alloc, args, out),
+        .recently_changed      => handleRecentlyChanged(alloc, args, out),
     }
 }
 
@@ -982,8 +994,12 @@ fn handleReviewPrImpact(
         // Search for references
         out.appendSlice(alloc, ",\"referenced_by\":[") catch {};
         if (tool != .none) {
-            const refs: std.ArrayList([]const u8) = search.searchRefs(alloc, tool, sym.name, sym.file) catch
+            var refs: std.ArrayList([]const u8) = search.searchRefs(alloc, tool, sym.name, sym.file) catch
                 .empty;
+            defer {
+                for (refs.items) |ref_s| alloc.free(ref_s);
+                refs.deinit(alloc);
+            }
             for (refs.items, 0..) |ref, j| {
                 if (j > 0) out.appendSlice(alloc, ",") catch {};
                 out.appendSlice(alloc, "\"") catch {};
@@ -997,6 +1013,312 @@ fn handleReviewPrImpact(
     out.appendSlice(alloc, "],\"search_tool\":\"") catch return;
     out.appendSlice(alloc, search.toolName(tool)) catch return;
     out.appendSlice(alloc, "\"}") catch {};
+}
+
+fn handleBlastRadius(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const file_arg = mj.getStr(args, "file");
+    const sym_arg = mj.getStr(args, "symbol");
+
+    if (file_arg == null and sym_arg == null) {
+        writeErr(alloc, out, "provide at least one of: file, symbol");
+        return;
+    }
+
+    const tool = search.probe(alloc);
+
+    // Collect symbols to search
+    var syms: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (syms.items) |s| alloc.free(s);
+        syms.deinit(alloc);
+    }
+
+    if (sym_arg) |s| {
+        const owned = alloc.dupe(u8, s) catch { writeErr(alloc, out, "alloc failed"); return; };
+        syms.append(alloc, owned) catch { alloc.free(owned); writeErr(alloc, out, "alloc failed"); return; };
+    }
+
+    if (file_arg) |f| {
+        const r = gh.run(alloc, &.{ "cat", f }) catch |err| {
+            writeErr(alloc, out, gh.errorMessage(err)); return;
+        };
+        defer r.deinit(alloc);
+
+        var extracted = search.extractSymbolsFromContent(alloc, r.stdout, 50);
+        defer extracted.deinit(alloc);
+        for (extracted.items) |s| {
+            // Dupe: extracted slices point into r.stdout which is freed by defer above
+            const owned = alloc.dupe(u8, s) catch continue;
+            syms.append(alloc, owned) catch { alloc.free(owned); continue; };
+        }
+    }
+
+    // Build JSON
+    out.appendSlice(alloc, "{\"file\":") catch return;
+    if (file_arg) |f| {
+        out.appendSlice(alloc, "\"") catch {};
+        mj.writeEscaped(alloc, out, f);
+        out.appendSlice(alloc, "\"") catch {};
+    } else {
+        out.appendSlice(alloc, "null") catch {};
+    }
+
+    out.appendSlice(alloc, ",\"symbols\":[") catch return;
+    for (syms.items, 0..) |sym, i| {
+        if (i > 0) out.appendSlice(alloc, ",") catch {};
+        out.appendSlice(alloc, "{\"name\":\"") catch {};
+        mj.writeEscaped(alloc, out, sym);
+        out.appendSlice(alloc, "\",\"referenced_by\":[") catch {};
+
+        if (tool != .none) {
+            var refs: std.ArrayList([]const u8) = search.searchRefs(alloc, tool, sym, file_arg) catch .empty;
+            defer {
+                for (refs.items) |ref_s| alloc.free(ref_s);
+                refs.deinit(alloc);
+            }
+            for (refs.items, 0..) |ref, j| {
+                if (j > 0) out.appendSlice(alloc, ",") catch {};
+                out.appendSlice(alloc, "\"") catch {};
+                mj.writeEscaped(alloc, out, ref);
+                out.appendSlice(alloc, "\"") catch {};
+            }
+        }
+        out.appendSlice(alloc, "]}") catch {};
+    }
+
+    out.appendSlice(alloc, "],\"search_tool\":\"") catch return;
+    out.appendSlice(alloc, search.toolName(tool)) catch return;
+    out.appendSlice(alloc, "\"}") catch {};
+}
+
+fn handleRelevantContext(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const file_arg = mj.getStr(args, "file") orelse {
+        writeErr(alloc, out, "missing file"); return;
+    };
+
+    const r = gh.run(alloc, &.{ "cat", file_arg }) catch |err| {
+        writeErr(alloc, out, gh.errorMessage(err)); return;
+    };
+    defer r.deinit(alloc);
+
+    const tool = search.probe(alloc);
+
+    // Extract symbols
+    var extracted = search.extractSymbolsFromContent(alloc, r.stdout, 50);
+    defer extracted.deinit(alloc);
+
+    // Score files by reference count — keys are owned (duped) strings
+    var scores = std.StringHashMap(i32).init(alloc);
+    defer {
+        var kit = scores.keyIterator();
+        while (kit.next()) |kp| {
+            const key = kp.*;
+            alloc.free(@constCast(key.ptr)[0..key.len]);
+        }
+        scores.deinit();
+    }
+
+    for (extracted.items) |sym| {
+        var refs: std.ArrayList([]const u8) = search.searchRefs(alloc, tool, sym, file_arg) catch .empty;
+        defer {
+            for (refs.items) |ref_s| alloc.free(ref_s);
+            refs.deinit(alloc);
+        }
+        for (refs.items) |ref| {
+            if (scores.contains(ref)) {
+                if (scores.getPtr(ref)) |vp| vp.* += 1;
+            } else {
+                const owned = alloc.dupe(u8, ref) catch continue;
+                scores.put(owned, 1) catch { alloc.free(owned); continue; };
+            }
+        }
+    }
+
+    // Boost @import targets
+    var import_lines = std.mem.splitScalar(u8, r.stdout, '\n');
+    while (import_lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "@import(\"")) |idx| {
+            const rest = line[idx + 9 ..];
+            if (std.mem.indexOf(u8, rest, "\"")) |end| {
+                const import_path = rest[0..end];
+                // Try to resolve relative import to a path
+                if (std.mem.lastIndexOf(u8, file_arg, "/")) |dir_end| {
+                    var path_buf: [512]u8 = undefined;
+                    const full = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ file_arg[0..dir_end], import_path }) catch continue;
+                    if (scores.contains(full)) {
+                        if (scores.getPtr(full)) |vp| vp.* += 10;
+                    } else {
+                        const owned = alloc.dupe(u8, full) catch continue;
+                        scores.put(owned, 10) catch { alloc.free(owned); continue; };
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by score
+    const Entry = struct { path: []const u8, score: i32 };
+    var entries: std.ArrayList(Entry) = .empty;
+    defer entries.deinit(alloc);
+
+    var it = scores.iterator();
+    while (it.next()) |kv| {
+        entries.append(alloc, .{ .path = kv.key_ptr.*, .score = kv.value_ptr.* }) catch continue;
+    }
+
+    std.mem.sort(Entry, entries.items, {}, struct {
+        fn lessThan(_: void, a: Entry, b: Entry) bool {
+            return a.score > b.score;
+        }
+    }.lessThan);
+
+    const max_results: usize = 20;
+    const count = @min(entries.items.len, max_results);
+
+    // Build JSON
+    out.appendSlice(alloc, "{\"file\":\"") catch return;
+    mj.writeEscaped(alloc, out, file_arg);
+    out.appendSlice(alloc, "\",\"context_files\":[") catch return;
+
+    for (entries.items[0..count], 0..) |entry, i| {
+        if (i > 0) out.appendSlice(alloc, ",") catch {};
+        out.appendSlice(alloc, "{\"path\":\"") catch {};
+        mj.writeEscaped(alloc, out, entry.path);
+        out.appendSlice(alloc, "\",\"score\":") catch {};
+        var sb: [16]u8 = undefined;
+        const ns = std.fmt.bufPrint(&sb, "{d}", .{entry.score}) catch "0";
+        out.appendSlice(alloc, ns) catch {};
+        out.appendSlice(alloc, "}") catch {};
+    }
+
+    out.appendSlice(alloc, "],\"search_tool\":\"") catch return;
+    out.appendSlice(alloc, search.toolName(tool)) catch return;
+    out.appendSlice(alloc, "\"}") catch {};
+}
+
+fn handleGitHistoryFor(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const file_arg = mj.getStr(args, "file") orelse {
+        writeErr(alloc, out, "missing file"); return;
+    };
+
+    var count_buf: [8]u8 = undefined;
+    const count_str = blk: {
+        if (args.get("count")) |cv| {
+            if (cv == .integer and cv.integer > 0) {
+                break :blk std.fmt.bufPrint(&count_buf, "{d}", .{cv.integer}) catch "20";
+            }
+        }
+        break :blk "20";
+    };
+
+    const r = gh.run(alloc, &.{
+        "git", "log", "--follow", "--format=%h%x00%an%x00%ai%x00%s",
+        "-n", count_str, "--", file_arg,
+    }) catch |err| {
+        writeErr(alloc, out, gh.errorMessage(err)); return;
+    };
+    defer r.deinit(alloc);
+
+    out.appendSlice(alloc, "{\"file\":\"") catch return;
+    mj.writeEscaped(alloc, out, file_arg);
+    out.appendSlice(alloc, "\",\"commits\":[") catch return;
+
+    const trimmed = std.mem.trim(u8, r.stdout, " \t\n\r");
+    var lines = std.mem.splitScalar(u8, trimmed, '\n');
+    var first = true;
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+
+        // Split by null byte (0x00)
+        var fields = std.mem.splitScalar(u8, line, 0);
+        const hash = fields.next() orelse continue;
+        const author = fields.next() orelse continue;
+        const date_full = fields.next() orelse continue;
+        const message = fields.next() orelse continue;
+
+        // Trim date to YYYY-MM-DD (first 10 chars)
+        const date = if (date_full.len >= 10) date_full[0..10] else date_full;
+
+        if (!first) out.appendSlice(alloc, ",") catch {};
+        first = false;
+
+        out.appendSlice(alloc, "{\"hash\":\"") catch {};
+        mj.writeEscaped(alloc, out, hash);
+        out.appendSlice(alloc, "\",\"author\":\"") catch {};
+        mj.writeEscaped(alloc, out, author);
+        out.appendSlice(alloc, "\",\"date\":\"") catch {};
+        mj.writeEscaped(alloc, out, date);
+        out.appendSlice(alloc, "\",\"message\":\"") catch {};
+        mj.writeEscaped(alloc, out, message);
+        out.appendSlice(alloc, "\"}") catch {};
+    }
+
+    out.appendSlice(alloc, "]}") catch {};
+}
+
+fn handleRecentlyChanged(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    var count_buf: [8]u8 = undefined;
+    const count_str = blk: {
+        if (args.get("count")) |cv| {
+            if (cv == .integer and cv.integer > 0) {
+                break :blk std.fmt.bufPrint(&count_buf, "{d}", .{cv.integer}) catch "10";
+            }
+        }
+        break :blk "10";
+    };
+
+    const r = gh.run(alloc, &.{
+        "git", "log", "--name-only", "--pretty=format:", "-n", count_str,
+    }) catch |err| {
+        writeErr(alloc, out, gh.errorMessage(err)); return;
+    };
+    defer r.deinit(alloc);
+
+    // Deduplicate file paths
+    var seen = std.StringHashMap(void).init(alloc);
+    defer seen.deinit();
+    var file_list: std.ArrayList([]const u8) = .empty;
+    defer file_list.deinit(alloc);
+
+    const trimmed = std.mem.trim(u8, r.stdout, " \t\n\r");
+    var lines = std.mem.splitScalar(u8, trimmed, '\n');
+    while (lines.next()) |line| {
+        const path = std.mem.trim(u8, line, " \t\r");
+        if (path.len == 0) continue;
+        if (seen.contains(path)) continue;
+        seen.put(path, {}) catch continue;
+        file_list.append(alloc, path) catch continue;
+    }
+
+    // Build JSON
+    out.appendSlice(alloc, "{\"since_commits\":") catch return;
+    out.appendSlice(alloc, count_str) catch return;
+    out.appendSlice(alloc, ",\"files\":[") catch return;
+
+    for (file_list.items, 0..) |f, i| {
+        if (i > 0) out.appendSlice(alloc, ",") catch {};
+        out.appendSlice(alloc, "\"") catch {};
+        mj.writeEscaped(alloc, out, f);
+        out.appendSlice(alloc, "\"") catch {};
+    }
+
+    out.appendSlice(alloc, "]}") catch {};
 }
 
 const Symbol = struct {
