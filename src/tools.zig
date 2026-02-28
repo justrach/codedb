@@ -59,6 +59,10 @@ pub const Tool = enum {
     find_dependents,
     // Repository management
     set_repo,
+    // Agents — invoke Codex subagents as MCP tool calls
+    run_reviewer,
+    run_explorer,
+    run_zig_infra,
 };
 
 // ── Step 2: Tool schemas ──────────────────────────────────────────────────────
@@ -93,7 +97,10 @@ pub const tools_list =
     \\{\"name\":\"find_callers\",\"description\":\"Find all symbols that call/reference the given symbol ID. Returns caller name, location, edge kind, and weight. Requires a CodeGraph DB file at .codegraph/graph.bin.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"symbol_id\":{\"type\":\"integer\",\"description\":\"Symbol ID to find callers of\"}},\"required\":[\"symbol_id\"]}},
     \\{\"name\":\"find_callees\",\"description\":\"Find all symbols that the given symbol calls/references. Returns callee name, location, edge kind, and weight. Requires a CodeGraph DB file at .codegraph/graph.bin.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"symbol_id\":{\"type\":\"integer\",\"description\":\"Symbol ID to find callees of\"}},\"required\":[\"symbol_id\"]}},
     \\{\"name\":\"find_dependents\",\"description\":\"Find all symbols that transitively depend on the given symbol, ranked by Personalized PageRank score. Use this to understand the full blast radius of changing a symbol. Requires a CodeGraph DB file at .codegraph/graph.bin.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"symbol_id\":{\"type\":\"integer\",\"description\":\"Symbol ID to find dependents of\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Maximum number of results to return (default 10)\"}},\"required\":[\"symbol_id\"]}},
-    \\{\"name\":\"set_repo\",\"description\":\"Switch the active repository path. All subsequent tool calls will operate against this repo. Invalidates the session cache.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute path to the git repository root\"}},\"required\":[\"path\"]}}
+    \\{\"name\":\"set_repo\",\"description\":\"Switch the active repository path. All subsequent tool calls will operate against this repo. Invalidates the session cache.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute path to the git repository root\"}},\"required\":[\"path\"]}},
+    \\{\"name\":\"run_reviewer\",\"description\":\"Invoke the Codex reviewer subagent on the current branch. Checks errdefer gaps, RwLock ordering, Zig 0.15.x API misuse, and missing test coverage. Returns the agent's full findings.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Override the default review prompt\"}},\"required\":[]}},
+    \\{\"name\":\"run_explorer\",\"description\":\"Invoke the Codex explorer subagent to trace execution paths through the codebase. Read-only — maps affected code paths and gathers evidence without proposing fixes.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"What to explore, e.g. 'trace how get_next_task flows through gh.zig'\"}},\"required\":[\"prompt\"]}},
+    \\{\"name\":\"run_zig_infra\",\"description\":\"Invoke the Codex zig_infra subagent to review build.zig module graph, named @import wiring, and test step coverage.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Override the default build wiring check prompt\"}},\"required\":[]}}
     \\]}
 ;
 
@@ -145,6 +152,10 @@ pub fn dispatch(
         .find_dependents       => handleFindDependents(alloc, args, out),
         // Repository management
         .set_repo              => handleSetRepo(alloc, args, out),
+        // Agents
+        .run_reviewer          => handleRunReviewer(alloc, args, out),
+        .run_explorer          => handleRunExplorer(alloc, args, out),
+        .run_zig_infra         => handleRunZigInfra(alloc, args, out),
     }
 }
 
@@ -1609,6 +1620,66 @@ fn writeErr(alloc: std.mem.Allocator, out: *std.ArrayList(u8), msg: []const u8) 
 }
 
 // ── Repository management ─────────────────────────────────────────────────────
+
+
+// ── Agent runners ─────────────────────────────────────────────────────────────
+//
+// Each handler shells out to `codex exec` with the appropriate prompt.
+// `-c mcp_servers={}` prevents the inner Codex from starting unnecessary MCP
+// servers (including gitagent-mcp itself), keeping the subprocess fast.
+
+fn runCodexAgent(
+    alloc: std.mem.Allocator,
+    prompt: []const u8,
+    out: *std.ArrayList(u8),
+) void {
+    const argv = [_][]const u8{ "codex", "exec", "-c", "mcp_servers={}", prompt };
+    const r = gh.run(alloc, &argv) catch |err| {
+        writeErr(alloc, out, gh.errorMessage(err));
+        return;
+    };
+    defer r.deinit(alloc);
+    out.appendSlice(alloc, r.stdout) catch {};
+}
+
+fn handleRunReviewer(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const prompt = mj.getStr(args, "prompt") orelse
+        "Review the current branch for correctness and memory safety. " ++
+        "Check: errdefer on every allocation, RwLock ordering, " ++
+        "Zig 0.15.x API (ArrayList.empty, append(alloc,v), deinit(alloc)), " ++
+        "PPR push rule correctness, and missing test coverage. " ++
+        "Lead with concrete findings, include file:line references.";
+    runCodexAgent(alloc, prompt, out);
+}
+
+fn handleRunExplorer(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const prompt = mj.getStr(args, "prompt") orelse {
+        writeErr(alloc, out, "run_explorer requires a prompt argument");
+        return;
+    };
+    runCodexAgent(alloc, prompt, out);
+}
+
+fn handleRunZigInfra(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const prompt = mj.getStr(args, "prompt") orelse
+        "Review build.zig: check every module uses @import(\"name\") not relative paths, " ++
+        "every module with tests is wired into test_step, no circular deps exist in " ++
+        "types->graph->ppr / types->edge_weights / graph+types->ingest->registry. " ++
+        "Flag any @import(\"../path\") that crosses module boundaries.";
+    runCodexAgent(alloc, prompt, out);
+}
 
 fn handleSetRepo(
     alloc: std.mem.Allocator,
