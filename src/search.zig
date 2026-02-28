@@ -172,6 +172,34 @@ fn extractWord(input: []const u8) ?[]const u8 {
     return input[0..end];
 }
 
+// ── Symbol extraction from file content ──────────────────────────────────────
+
+/// Extract definition symbols from source content by scanning each line
+/// for definition keywords (fn, def, class, const, etc.).
+/// Returns slices into `content` — caller must NOT free `content` while using results.
+pub fn extractSymbolsFromContent(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    max: usize,
+) std.ArrayList([]const u8) {
+    var result: std.ArrayList([]const u8) = .empty;
+    var seen = std.StringHashMap(void).init(alloc);
+    defer seen.deinit();
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (result.items.len >= max) break;
+        if (extractIdentifierFromContext(line)) |sym| {
+            if (!seen.contains(sym)) {
+                seen.put(sym, {}) catch continue;
+                result.append(alloc, sym) catch continue;
+            }
+        }
+    }
+
+    return result;
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 test "toolName returns correct strings" {
@@ -291,4 +319,42 @@ test "searchRefs: none tool returns empty" {
     const refs = try searchRefs(alloc, .none, "handleFoo", null);
     defer refs.deinit(alloc);
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
+}
+
+test "extractSymbolsFromContent: mixed definitions" {
+    const alloc = std.testing.allocator;
+    const content =
+        \\pub fn handleFoo(alloc: Allocator) void {
+        \\    // body
+        \\}
+        \\fn helperBar() void {}
+        \\const MY_CONST = 42;
+        \\def python_func(self):
+        \\class Widget {
+        \\    var x = 5;
+    ;
+    var syms = extractSymbolsFromContent(alloc, content, 100);
+    defer syms.deinit(alloc);
+    // Should find: handleFoo, helperBar, MY_CONST, python_func, Widget (not var x)
+    try std.testing.expectEqual(@as(usize, 5), syms.items.len);
+    try std.testing.expectEqualStrings("handleFoo", syms.items[0]);
+    try std.testing.expectEqualStrings("helperBar", syms.items[1]);
+    try std.testing.expectEqualStrings("MY_CONST", syms.items[2]);
+    try std.testing.expectEqualStrings("python_func", syms.items[3]);
+    try std.testing.expectEqualStrings("Widget", syms.items[4]);
+}
+
+test "extractSymbolsFromContent: max cap respected" {
+    const alloc = std.testing.allocator;
+    const content =
+        \\fn alpha() void {}
+        \\fn beta() void {}
+        \\fn gamma() void {}
+        \\fn delta() void {}
+    ;
+    var syms = extractSymbolsFromContent(alloc, content, 2);
+    defer syms.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 2), syms.items.len);
+    try std.testing.expectEqualStrings("alpha", syms.items[0]);
+    try std.testing.expectEqualStrings("beta", syms.items[1]);
 }
