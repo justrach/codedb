@@ -240,4 +240,5 @@ test {
     _ = @import("graph/hot_cache.zig");
     _ = @import("graph/query.zig");
     _ = @import("graph/ipc.zig");
+    _ = @import("graph/ingest.zig");
 }
