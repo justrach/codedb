@@ -21,6 +21,8 @@ const graph_query = @import("graph/query.zig");
 const graph_mod   = @import("graph/graph.zig");
 const graph_store = @import("graph/storage.zig");
 
+const DEFAULT_REPO = "justrach/codedb";
+
 // ── Step 1: Tool enum ─────────────────────────────────────────────────────────
 
 pub const Tool = enum {
@@ -55,6 +57,8 @@ pub const Tool = enum {
     find_callers,
     find_callees,
     find_dependents,
+    // Repository management
+    set_repo,
 };
 
 // ── Step 2: Tool schemas ──────────────────────────────────────────────────────
@@ -80,15 +84,16 @@ pub const tools_list =
     \\{"name":"create_pr","description":"Open a pull request from the current branch to main. Auto-generates title and body from the linked issue if not provided. Sets status:in-review on the issue.","inputSchema":{"type":"object","properties":{"title":{"type":"string","description":"PR title (defaults to linked issue title)"},"body":{"type":"string","description":"PR body (defaults to issue summary + Closes #N)"}},"required":[]}},
     \\{"name":"get_pr_status","description":"Get CI status, review state, and merge readiness for a PR. Defaults to the PR for the current branch.","inputSchema":{"type":"object","properties":{"pr_number":{"type":"integer","description":"PR number (defaults to current branch's PR)"}},"required":[]}},
     \\{"name":"list_open_prs","description":"List all open PRs with their CI status, review state, and linked issue numbers.","inputSchema":{"type":"object","properties":{},"required":[]}},
-    \\{"name":"review_pr_impact","description":"Analyze a PR's blast radius: extracts changed files and function symbols from the diff, then searches the codebase for all references to those symbols. Call this before approving or merging a PR to understand what other code might be affected by the changes. Also useful after creating a PR to self-review impact. Returns files changed, symbols modified, and which files reference each symbol.","inputSchema":{"type":"object","properties":{"pr_number":{"type":"integer","description":"PR number (defaults to current branch's PR)"}},"required":[]}},
-    \\{"name":"blast_radius","description":"Find all files that reference symbols defined in a file or a specific symbol. Use this to understand the impact of changing a file or function before editing. Works offline with grep-based search.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Path to file to analyze (extracts symbols automatically)"},"symbol":{"type":"string","description":"Specific symbol name to search for"}},"required":[]}},
-    \\{"name":"relevant_context","description":"Find files most related to a given file by analyzing symbol cross-references and imports. Use this to understand what other files you should read before modifying a file. Works offline with grep-based search.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Path to file to find context for"}},"required":["file"]}},
-    \\{"name":"git_history_for","description":"Return the git commit history for a specific file. Use this to understand recent changes, who modified a file, and why. Works offline with local git.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Path to file to get history for"},"count":{"type":"integer","description":"Number of commits to return (default 20)"}},"required":["file"]}},
-    \\{"name":"recently_changed","description":"Return files that were recently modified across recent commits. Use this to understand what areas of the codebase are actively being worked on. Works offline with local git.","inputSchema":{"type":"object","properties":{"count":{"type":"integer","description":"Number of recent commits to scan (default 10)"}},"required":[]}},
-    \\{"name":"symbol_at","description":"Find the symbol(s) defined at a given file path and line number in the CodeGraph. Returns symbol name, kind, scope, and location. Falls back to the closest symbol before the given line if no exact match. Requires a CodeGraph DB file at .codegraph/graph.bin.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path to look up"},"line":{"type":"integer","description":"Line number to look up"}},"required":["file","line"]}},
-    \\{"name":"find_callers","description":"Find all symbols that call/reference the given symbol ID. Returns caller name, location, edge kind, and weight. Requires a CodeGraph DB file at .codegraph/graph.bin.","inputSchema":{"type":"object","properties":{"symbol_id":{"type":"integer","description":"Symbol ID to find callers of"}},"required":["symbol_id"]}},
-    \\{"name":"find_callees","description":"Find all symbols that the given symbol calls/references. Returns callee name, location, edge kind, and weight. Requires a CodeGraph DB file at .codegraph/graph.bin.","inputSchema":{"type":"object","properties":{"symbol_id":{"type":"integer","description":"Symbol ID to find callees of"}},"required":["symbol_id"]}},
-    \\{"name":"find_dependents","description":"Find all symbols that transitively depend on the given symbol, ranked by Personalized PageRank score. Use this to understand the full blast radius of changing a symbol. Requires a CodeGraph DB file at .codegraph/graph.bin.","inputSchema":{"type":"object","properties":{"symbol_id":{"type":"integer","description":"Symbol ID to find dependents of"},"max_results":{"type":"integer","description":"Maximum number of results to return (default 10)"}},"required":["symbol_id"]}}
+    \\{\"name\":\"review_pr_impact\",\"description\":\"Analyze a PR's blast radius: extracts changed files and function symbols from the diff, then searches the codebase for all references to those symbols. Call this before approving or merging a PR to understand what other code might be affected by the changes. Also useful after creating a PR to self-review impact. Returns files changed, symbols modified, and which files reference each symbol.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"pr_number\":{\"type\":\"integer\",\"description\":\"PR number (defaults to current branch's PR)\"}},\"required\":[]}},
+    \\{\"name\":\"blast_radius\",\"description\":\"Find all files that reference symbols defined in a file or a specific symbol. Use this to understand the impact of changing a file or function before editing. Works offline with grep-based search.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"file\":{\"type\":\"string\",\"description\":\"Path to file to analyze (extracts symbols automatically)\"},\"symbol\":{\"type\":\"string\",\"description\":\"Specific symbol name to search for\"}},\"required\":[]}},
+    \\{\"name\":\"relevant_context\",\"description\":\"Find files most related to a given file by analyzing symbol cross-references and imports. Use this to understand what other files you should read before modifying a file. Works offline with grep-based search.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"file\":{\"type\":\"string\",\"description\":\"Path to file to find context for\"}},\"required\":[\"file\"]}},
+    \\{\"name\":\"git_history_for\",\"description\":\"Return the git commit history for a specific file. Use this to understand recent changes, who modified a file, and why. Works offline with local git.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"file\":{\"type\":\"string\",\"description\":\"Path to file to get history for\"},\"count\":{\"type\":\"integer\",\"description\":\"Number of commits to return (default 20)\"}},\"required\":[\"file\"]}},
+    \\{\"name\":\"recently_changed\",\"description\":\"Return files that were recently modified across recent commits. Use this to understand what areas of the codebase are actively being worked on. Works offline with local git.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"count\":{\"type\":\"integer\",\"description\":\"Number of recent commits to scan (default 10)\"}},\"required\":[]}},
+    \\{\"name\":\"symbol_at\",\"description\":\"Find the symbol(s) defined at a given file path and line number in the CodeGraph. Returns symbol name, kind, scope, and location. Falls back to the closest symbol before the given line if no exact match. Requires a CodeGraph DB file at .codegraph/graph.bin.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"file\":{\"type\":\"string\",\"description\":\"File path to look up\"},\"line\":{\"type\":\"integer\",\"description\":\"Line number to look up\"}},\"required\":[\"file\",\"line\"]}},
+    \\{\"name\":\"find_callers\",\"description\":\"Find all symbols that call/reference the given symbol ID. Returns caller name, location, edge kind, and weight. Requires a CodeGraph DB file at .codegraph/graph.bin.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"symbol_id\":{\"type\":\"integer\",\"description\":\"Symbol ID to find callers of\"}},\"required\":[\"symbol_id\"]}},
+    \\{\"name\":\"find_callees\",\"description\":\"Find all symbols that the given symbol calls/references. Returns callee name, location, edge kind, and weight. Requires a CodeGraph DB file at .codegraph/graph.bin.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"symbol_id\":{\"type\":\"integer\",\"description\":\"Symbol ID to find callees of\"}},\"required\":[\"symbol_id\"]}},
+    \\{\"name\":\"find_dependents\",\"description\":\"Find all symbols that transitively depend on the given symbol, ranked by Personalized PageRank score. Use this to understand the full blast radius of changing a symbol. Requires a CodeGraph DB file at .codegraph/graph.bin.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"symbol_id\":{\"type\":\"integer\",\"description\":\"Symbol ID to find dependents of\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Maximum number of results to return (default 10)\"}},\"required\":[\"symbol_id\"]}},
+    \\{\"name\":\"set_repo\",\"description\":\"Switch the active repository path. All subsequent tool calls will operate against this repo. Invalidates the session cache.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute path to the git repository root\"}},\"required\":[\"path\"]}}
     \\]}
 ;
 
@@ -138,8 +143,11 @@ pub fn dispatch(
         .find_callers          => handleFindCallers(alloc, args, out),
         .find_callees          => handleFindCallees(alloc, args, out),
         .find_dependents       => handleFindDependents(alloc, args, out),
+        // Repository management
+        .set_repo              => handleSetRepo(alloc, args, out),
     }
 }
+
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 //
@@ -160,6 +168,7 @@ fn handleDecomposeFeature(
     };
     const labels_r = gh.run(alloc, &.{
         "gh", "label", "list",
+        "--repo", DEFAULT_REPO,
         "--json", "name,description,color",
         "--limit", "100",
     }) catch null;
@@ -186,6 +195,7 @@ fn handleGetProjectState(
     _ = args;
     const issues_r = gh.run(alloc, &.{
         "gh", "issue", "list",
+        "--repo", DEFAULT_REPO,
         "--json", "number,title,labels,state,url",
         "--limit", "200",
     }) catch |err| {
@@ -196,6 +206,7 @@ fn handleGetProjectState(
 
     const prs_r = gh.run(alloc, &.{
         "gh", "pr", "list",
+        "--repo", DEFAULT_REPO,
         "--json", "number,title,state,headRefName,url",
         "--limit", "50",
     }) catch |err| {
@@ -223,6 +234,7 @@ fn handleGetNextTask(
     // Lightweight fetch — just number + labels needed for priority + block filtering
     const parsed = gh.runJson(alloc, &.{
         "gh", "issue", "list",
+        "--repo", DEFAULT_REPO,
         "--label", "status:backlog",
         "--json", "number,labels",
         "--limit", "100",
@@ -272,6 +284,7 @@ fn handleGetNextTask(
     const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{num}) catch return;
     const detail_r = gh.run(alloc, &.{
         "gh", "issue", "view", num_str,
+        "--repo", DEFAULT_REPO,
         "--json", "number,title,body,labels,url,state",
     }) catch |err| {
         writeErr(alloc, out, gh.errorMessage(err));
@@ -304,12 +317,14 @@ fn handlePrioritizeIssues(
         // Strip old priority labels (ignore error — label may not exist)
         const rm = gh.run(alloc, &.{
             "gh", "issue", "edit", num_str,
+            "--repo", DEFAULT_REPO,
             "--remove-label", "priority:p0,priority:p1,priority:p2,priority:p3",
         }) catch null;
         if (rm) |r| r.deinit(alloc);
 
         const r = gh.run(alloc, &.{
             "gh", "issue", "edit", num_str, "--add-label", prio,
+            "--repo", DEFAULT_REPO,
         }) catch |err| {
             if (!first) out.appendSlice(alloc, ",") catch {};
             first = false;
@@ -361,7 +376,7 @@ fn handleCreateIssue(
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(alloc);
     // Note: gh issue create does NOT support --json; stdout is the new issue URL
-    argv.appendSlice(alloc, &.{ "gh", "issue", "create", "--title", title, "--body", body }) catch return;
+    argv.appendSlice(alloc, &.{ "gh", "issue", "create", "--repo", DEFAULT_REPO, "--title", title, "--body", body }) catch return;
 
     var has_status = false;
     if (args.get("labels")) |lv| {
@@ -444,7 +459,7 @@ fn handleUpdateIssue(
 
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(alloc);
-    argv.appendSlice(alloc, &.{ "gh", "issue", "edit", num_str }) catch return;
+    argv.appendSlice(alloc, &.{ "gh", "issue", "edit", num_str, "--repo", DEFAULT_REPO }) catch return;
 
     if (mj.getStr(args, "title")) |t| argv.appendSlice(alloc, &.{ "--title", t }) catch return;
     if (mj.getStr(args, "body"))  |b| argv.appendSlice(alloc, &.{ "--body",  b }) catch return;
@@ -464,7 +479,7 @@ fn handleUpdateIssue(
         }
     }
 
-    if (argv.items.len == 4) { // only "gh issue edit N" — nothing to do
+    if (argv.items.len == 6) { // only "gh issue edit N --repo owner/repo" — nothing to do
         writeErr(alloc, out, "no fields to update"); return;
     }
 
@@ -495,12 +510,12 @@ fn handleCloseIssue(
         if (pr_val == .integer) {
             var comment_buf: [64]u8 = undefined;
             const comment = std.fmt.bufPrint(&comment_buf, "Resolved by PR #{d}.", .{pr_val.integer}) catch "";
-            const cr = gh.run(alloc, &.{ "gh", "issue", "comment", num_str, "--body", comment }) catch null;
+            const cr = gh.run(alloc, &.{ "gh", "issue", "comment", num_str, "--repo", DEFAULT_REPO, "--body", comment }) catch null;
             if (cr) |r| r.deinit(alloc);
         }
     }
 
-    const close_r = gh.run(alloc, &.{ "gh", "issue", "close", num_str }) catch |err| {
+    const close_r = gh.run(alloc, &.{ "gh", "issue", "close", num_str, "--repo", DEFAULT_REPO }) catch |err| {
         writeErr(alloc, out, gh.errorMessage(err)); return;
     };
     close_r.deinit(alloc);
@@ -508,6 +523,7 @@ fn handleCloseIssue(
     // Transition label: remove all status labels, apply status:done
     const edit_r = gh.run(alloc, &.{
         "gh", "issue", "edit", num_str,
+        "--repo", DEFAULT_REPO,
         "--remove-label", "status:backlog,status:in-progress,status:in-review,status:blocked",
         "--add-label",    "status:done",
     }) catch null;
@@ -560,7 +576,7 @@ fn handleLinkIssues(
     var blocker_buf: [16]u8 = undefined;
     const blocker_str = std.fmt.bufPrint(&blocker_buf, "{d}", .{blocker}) catch "?";
     const bc = gh.run(alloc, &.{
-        "gh", "issue", "comment", blocker_str, "--body", comment.items,
+        "gh", "issue", "comment", blocker_str, "--repo", DEFAULT_REPO, "--body", comment.items,
     }) catch null;
     if (bc) |r| r.deinit(alloc);
 
@@ -571,13 +587,13 @@ fn handleLinkIssues(
     for (0..count) |i| {
         const ns = num_strs[i];
         const edit_r = gh.run(alloc, &.{
-            "gh", "issue", "edit", ns, "--add-label", "status:blocked",
+            "gh", "issue", "edit", ns, "--repo", DEFAULT_REPO, "--add-label", "status:blocked",
         }) catch null;
         if (edit_r) |r| r.deinit(alloc);
 
         var cb_buf: [64]u8 = undefined;
         const cb = std.fmt.bufPrint(&cb_buf, "Blocked by: #{s}.", .{blocker_str}) catch "";
-        const cr = gh.run(alloc, &.{ "gh", "issue", "comment", ns, "--body", cb }) catch null;
+        const cr = gh.run(alloc, &.{ "gh", "issue", "comment", ns, "--repo", DEFAULT_REPO, "--body", cb }) catch null;
         if (cr) |r| r.deinit(alloc);
 
         if (!first) out.appendSlice(alloc, ",") catch {};
@@ -605,6 +621,7 @@ fn handleCreateBranch(
     // Fetch issue title
     const issue_r = gh.run(alloc, &.{
         "gh", "issue", "view", num_str, "--json", "title",
+        "--repo", DEFAULT_REPO,
     }) catch |err| { writeErr(alloc, out, gh.errorMessage(err)); return; };
     defer issue_r.deinit(alloc);
 
@@ -639,6 +656,7 @@ fn handleCreateBranch(
     // Transition issue to in-progress
     const edit_r = gh.run(alloc, &.{
         "gh", "issue", "edit", num_str,
+        "--repo", DEFAULT_REPO,
         "--remove-label", "status:backlog,status:blocked",
         "--add-label",    "status:in-progress",
     }) catch null;
@@ -778,7 +796,7 @@ fn handleCreatePr(
         if (issue_num) |n| {
             var nb: [16]u8 = undefined;
             const ns = std.fmt.bufPrint(&nb, "{d}", .{n}) catch break :blk branch;
-            const ir = gh.run(alloc, &.{ "gh", "issue", "view", ns, "--json", "title,body" }) catch break :blk branch;
+            const ir = gh.run(alloc, &.{ "gh", "issue", "view", ns, "--repo", DEFAULT_REPO, "--json", "title,body" }) catch break :blk branch;
             defer ir.deinit(alloc);
             const ip = std.json.parseFromSlice(std.json.Value, alloc, ir.stdout, .{}) catch break :blk branch;
             defer ip.deinit();
@@ -821,6 +839,7 @@ fn handleCreatePr(
 
     const pr_r = gh.run(alloc, &.{
         "gh", "pr", "create",
+        "--repo", DEFAULT_REPO,
         "--base",  "main",
         "--head",  branch,
         "--title", title,
@@ -840,6 +859,7 @@ fn handleCreatePr(
         const ns = std.fmt.bufPrint(&nb, "{d}", .{n}) catch "";
         const er = gh.run(alloc, &.{
             "gh", "issue", "edit", ns,
+            "--repo", DEFAULT_REPO,
             "--remove-label", "status:in-progress",
             "--add-label",    "status:in-review",
         }) catch null;
@@ -870,11 +890,11 @@ fn handleGetPrStatus(
                 const ns = std.fmt.bufPrint(&nb, "{d}", .{pv.integer}) catch {
                     writeErr(alloc, out, "bad pr_number"); return;
                 };
-                break :blk gh.run(alloc, &.{ "gh", "pr", "view", ns, "--json", fields });
+                break :blk gh.run(alloc, &.{ "gh", "pr", "view", ns, "--repo", DEFAULT_REPO, "--json", fields });
             }
         }
         // Default: PR for current branch
-        break :blk gh.run(alloc, &.{ "gh", "pr", "view", "--json", fields });
+        break :blk gh.run(alloc, &.{ "gh", "pr", "view", "--repo", DEFAULT_REPO, "--json", fields });
     } catch |err| { writeErr(alloc, out, gh.errorMessage(err)); return; };
     defer r.deinit(alloc);
     out.appendSlice(alloc, std.mem.trim(u8, r.stdout, " \t\n\r")) catch {};
@@ -888,6 +908,7 @@ fn handleListOpenPrs(
     _ = args;
     const r = gh.run(alloc, &.{
         "gh", "pr", "list",
+        "--repo", DEFAULT_REPO,
         "--json", "number,title,state,headRefName,url,statusCheckRollup",
         "--limit", "50",
     }) catch |err| { writeErr(alloc, out, gh.errorMessage(err)); return; };
@@ -1585,4 +1606,30 @@ fn writeErr(alloc: std.mem.Allocator, out: *std.ArrayList(u8), msg: []const u8) 
         return;
     };
     out.appendSlice(alloc, s) catch {};
+}
+
+// ── Repository management ─────────────────────────────────────────────────────
+
+fn handleSetRepo(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const path = mj.getStr(args, "path") orelse {
+        writeErr(alloc, out, "missing required argument: path");
+        return;
+    };
+    std.posix.chdir(path) catch |err| {
+        var msg: [256]u8 = undefined;
+        const s = std.fmt.bufPrint(&msg, "chdir failed: {}", .{err}) catch "chdir failed";
+        writeErr(alloc, out, s);
+        return;
+    };
+    // Invalidate then re-prime the cache for the new repo
+    cache.invalidate();
+    cache.prefetch(alloc);
+    // Return success
+    out.appendSlice(alloc, "{\"ok\":true,\"repo\":\"") catch return;
+    mj.writeEscaped(alloc, out, path);
+    out.appendSlice(alloc, "\"}") catch return;
 }
