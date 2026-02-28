@@ -371,3 +371,176 @@ test "constants are reasonable" {
     try std.testing.expectEqualStrings("graph.bin", GRAPH_FILE);
     try std.testing.expectEqualStrings("wal.log", WAL_FILE);
 }
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "register MAX_REPOS+1 repos returns TooManyRepos" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    // Register exactly MAX_REPOS repos
+    for (0..MAX_REPOS) |i| {
+        var path_buf: [64]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/repo/{d}", .{i}) catch unreachable;
+        var name_buf: [32]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "repo-{d}", .{i}) catch unreachable;
+        _ = try tm.registerRepo(name, path);
+    }
+    try std.testing.expectEqual(@as(u32, MAX_REPOS), tm.count());
+
+    // The next registration should fail
+    const result = tm.registerRepo("overflow", "/repo/overflow");
+    try std.testing.expectError(error.TooManyRepos, result);
+}
+
+test "unregister nonexistent repo returns RepoNotFound" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    const result = tm.unregisterRepo(999);
+    try std.testing.expectError(error.RepoNotFound, result);
+}
+
+test "releaseRead more times than acquired does not underflow" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    const id = try tm.registerRepo("app", "/repos/app");
+    try tm.acquireRead(id);
+    // readers = 1
+
+    tm.releaseRead(id);
+    // readers = 0
+
+    // Extra release — should not underflow (the guard prevents it)
+    tm.releaseRead(id);
+
+    const handle = tm.getRepo(id).?;
+    try std.testing.expectEqual(@as(u32, 0), handle.readers);
+}
+
+test "concurrent reads followed by write attempt fails" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    const id = try tm.registerRepo("app", "/repos/app");
+    try tm.acquireRead(id);
+    try tm.acquireRead(id);
+    try tm.acquireRead(id);
+
+    // Write should fail while readers are active
+    try std.testing.expectError(error.ReadLocked, tm.acquireWrite(id));
+
+    // Release all readers
+    tm.releaseRead(id);
+    tm.releaseRead(id);
+    tm.releaseRead(id);
+
+    // Now write should succeed
+    try tm.acquireWrite(id);
+    tm.releaseWrite(id);
+}
+
+test "path lookup after unregister returns null" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    const id = try tm.registerRepo("app", "/repos/app");
+    try std.testing.expect(tm.findByPath("/repos/app") != null);
+
+    try tm.unregisterRepo(id);
+    try std.testing.expectEqual(@as(?u32, null), tm.findByPath("/repos/app"));
+}
+
+test "repo with empty name and path" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    const id = try tm.registerRepo("", "");
+    const handle = tm.getRepo(id).?;
+    try std.testing.expectEqualStrings("", handle.name);
+    try std.testing.expectEqualStrings("", handle.path);
+}
+
+test "multiple markSynced calls update correctly" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    const id = try tm.registerRepo("app", "/repos/app");
+
+    tm.markSynced(id, 1000);
+    try std.testing.expectEqual(@as(i64, 1000), tm.getRepo(id).?.last_sync_ms);
+
+    tm.markSynced(id, 2000);
+    try std.testing.expectEqual(@as(i64, 2000), tm.getRepo(id).?.last_sync_ms);
+
+    tm.markSynced(id, 3000);
+    try std.testing.expectEqual(@as(i64, 3000), tm.getRepo(id).?.last_sync_ms);
+}
+
+test "markSynced on nonexistent repo is no-op" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    // Should not crash — function silently returns
+    tm.markSynced(999, 42000);
+}
+
+test "listRepoIds on empty manager returns empty" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    const ids = try tm.listRepoIds();
+    defer std.testing.allocator.free(ids);
+    try std.testing.expectEqual(@as(usize, 0), ids.len);
+}
+
+test "acquireRead on nonexistent repo returns RepoNotFound" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try std.testing.expectError(error.RepoNotFound, tm.acquireRead(999));
+}
+
+test "acquireWrite on nonexistent repo returns RepoNotFound" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try std.testing.expectError(error.RepoNotFound, tm.acquireWrite(999));
+}
+
+test "releaseWrite on nonexistent repo is no-op" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    // Should not crash
+    tm.releaseWrite(999);
+}
+
+test "releaseRead on nonexistent repo is no-op" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    // Should not crash
+    tm.releaseRead(999);
+}
+
+test "repoDataDir on nonexistent repo returns error" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    try std.testing.expectError(error.RepoNotFound, tm.repoDataDir(999));
+}
+
+test "re-register path after unregister succeeds" {
+    var tm = TenantManager.init(std.testing.allocator);
+    defer tm.deinit();
+
+    const id1 = try tm.registerRepo("app", "/repos/app");
+    try tm.unregisterRepo(id1);
+
+    // Same path should now be allowed again
+    const id2 = try tm.registerRepo("app-v2", "/repos/app");
+    try std.testing.expect(id2 != id1); // new ID assigned
+    try std.testing.expectEqualStrings("app-v2", tm.getRepo(id2).?.name);
+}

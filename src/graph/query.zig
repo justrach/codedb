@@ -272,3 +272,161 @@ test "findCallers on node with no callers returns empty" {
 
     try std.testing.expectEqual(@as(usize, 0), callers.len);
 }
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "symbolAt on empty graph returns empty" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    const results = try symbolAt(&g, "anything.ts", 1, std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), results.len);
+}
+
+test "symbolAt with line=0 finds symbol at line 0" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addFile(.{ .id = 1, .path = "f.ts", .language = .typescript, .last_modified = 0, .hash = [_]u8{0} ** 32 });
+    try g.addSymbol(.{ .id = 1, .name = "top", .kind = .variable, .file_id = 1, .line = 0, .col = 0, .scope = "" });
+
+    const results = try symbolAt(&g, "f.ts", 0, std.testing.allocator);
+    defer std.testing.allocator.free(results);
+
+    try std.testing.expectEqual(@as(usize, 1), results.len);
+    try std.testing.expectEqualStrings("top", results[0].name);
+}
+
+test "symbolAt with line=maxInt returns closest symbol" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addFile(.{ .id = 1, .path = "f.ts", .language = .typescript, .last_modified = 0, .hash = [_]u8{0} ** 32 });
+    try g.addSymbol(.{ .id = 1, .name = "last", .kind = .function, .file_id = 1, .line = 999, .col = 0, .scope = "" });
+
+    const results = try symbolAt(&g, "f.ts", std.math.maxInt(u32), std.testing.allocator);
+    defer std.testing.allocator.free(results);
+
+    // Should find closest symbol before maxInt — the only symbol at line 999
+    try std.testing.expectEqual(@as(usize, 1), results.len);
+    try std.testing.expectEqualStrings("last", results[0].name);
+}
+
+test "findCallers on nonexistent node returns empty" {
+    var g = try buildTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // Node 99999 does not exist in the graph
+    const callers = try findCallers(&g, 99999, std.testing.allocator);
+    defer std.testing.allocator.free(callers);
+
+    try std.testing.expectEqual(@as(usize, 0), callers.len);
+}
+
+test "findCallees on node with no callees returns empty" {
+    var g = try buildTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // formatOutput (30) has no outgoing edges
+    const callees = try findCallees(&g, 30, std.testing.allocator);
+    defer std.testing.allocator.free(callees);
+
+    try std.testing.expectEqual(@as(usize, 0), callees.len);
+}
+
+test "findCallees on nonexistent node returns empty" {
+    var g = try buildTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    const callees = try findCallees(&g, 99999, std.testing.allocator);
+    defer std.testing.allocator.free(callees);
+
+    try std.testing.expectEqual(@as(usize, 0), callees.len);
+}
+
+test "findDependents on isolated node returns empty" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addFile(.{ .id = 1, .path = "f.ts", .language = .typescript, .last_modified = 0, .hash = [_]u8{0} ** 32 });
+    try g.addSymbol(.{ .id = 1, .name = "lonely", .kind = .function, .file_id = 1, .line = 1, .col = 0, .scope = "" });
+
+    // Node exists but has no edges — PPR should return no dependents
+    const deps = try findDependents(&g, 1, 10, std.testing.allocator);
+    defer std.testing.allocator.free(deps);
+
+    try std.testing.expectEqual(@as(usize, 0), deps.len);
+}
+
+test "findDependents with max_results=0 returns empty" {
+    var g = try buildTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // Requesting 0 results should return empty
+    const deps = try findDependents(&g, 10, 0, std.testing.allocator);
+    defer std.testing.allocator.free(deps);
+
+    try std.testing.expectEqual(@as(usize, 0), deps.len);
+}
+
+test "graph with edges but no matching symbols — findCallers skips missing" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    // Add edges referencing symbols that don't exist in the symbol table
+    try g.addEdge(.{ .src = 100, .dst = 200, .kind = .calls });
+    try g.addEdge(.{ .src = 300, .dst = 200, .kind = .calls });
+
+    // findCallers for node 200 — edges exist but src symbols 100, 300 not in graph
+    const callers = try findCallers(&g, 200, std.testing.allocator);
+    defer std.testing.allocator.free(callers);
+
+    // Should return empty since the source symbols can't be resolved
+    try std.testing.expectEqual(@as(usize, 0), callers.len);
+}
+
+test "multiple symbols on same line all returned" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addFile(.{ .id = 1, .path = "f.ts", .language = .typescript, .last_modified = 0, .hash = [_]u8{0} ** 32 });
+    // Two symbols at the same line (e.g., destructured assignment)
+    try g.addSymbol(.{ .id = 1, .name = "alpha", .kind = .variable, .file_id = 1, .line = 5, .col = 0, .scope = "" });
+    try g.addSymbol(.{ .id = 2, .name = "beta", .kind = .variable, .file_id = 1, .line = 5, .col = 10, .scope = "" });
+
+    const results = try symbolAt(&g, "f.ts", 5, std.testing.allocator);
+    defer std.testing.allocator.free(results);
+
+    try std.testing.expectEqual(@as(usize, 2), results.len);
+}
+
+test "symbolAt closest match prefers nearest line before query" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addFile(.{ .id = 1, .path = "f.ts", .language = .typescript, .last_modified = 0, .hash = [_]u8{0} ** 32 });
+    try g.addSymbol(.{ .id = 1, .name = "early", .kind = .function, .file_id = 1, .line = 1, .col = 0, .scope = "" });
+    try g.addSymbol(.{ .id = 2, .name = "mid", .kind = .function, .file_id = 1, .line = 50, .col = 0, .scope = "" });
+    try g.addSymbol(.{ .id = 3, .name = "late", .kind = .function, .file_id = 1, .line = 100, .col = 0, .scope = "" });
+
+    // Query line 55 — closest before is "mid" at line 50
+    const results = try symbolAt(&g, "f.ts", 55, std.testing.allocator);
+    defer std.testing.allocator.free(results);
+
+    try std.testing.expectEqual(@as(usize, 1), results.len);
+    try std.testing.expectEqualStrings("mid", results[0].name);
+}
+
+test "symbolAt returns empty when line is before all symbols" {
+    var g = CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addFile(.{ .id = 1, .path = "f.ts", .language = .typescript, .last_modified = 0, .hash = [_]u8{0} ** 32 });
+    try g.addSymbol(.{ .id = 1, .name = "later", .kind = .function, .file_id = 1, .line = 100, .col = 0, .scope = "" });
+
+    // Query line 1 — no symbol at or before line 1 (symbol is at 100)
+    const results = try symbolAt(&g, "f.ts", 1, std.testing.allocator);
+    defer std.testing.allocator.free(results);
+
+    try std.testing.expectEqual(@as(usize, 0), results.len);
+}
