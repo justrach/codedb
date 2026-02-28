@@ -199,3 +199,192 @@ test "constants match spec" {
     try std.testing.expectEqual(@as(f32, 20.0), MODIFIES_BOOST);
     try std.testing.expectEqual(@as(f32, 90.0), DEFAULT_HALF_LIFE_DAYS);
 }
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "recencyDecayAt with very large age approaches zero" {
+    const now: i64 = 1_700_000_000_000;
+    // 10 years ago in ms
+    const ten_years_ms: i64 = 10 * 365 * 24 * 60 * 60 * 1000;
+    const decay = recencyDecayAt(now - ten_years_ms, 90.0, now);
+    // After 10 years (40+ half-lives), decay should be extremely small
+    try std.testing.expect(decay < 1e-10);
+    try std.testing.expect(decay >= 0.0);
+}
+
+test "recencyDecayAt with exactly two half-lives equals 0.25" {
+    const now: i64 = 1_700_000_000_000;
+    const two_half_lives_ms: i64 = 2 * 90 * 24 * 60 * 60 * 1000;
+    const decay = recencyDecayAt(now - two_half_lives_ms, 90.0, now);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), decay, 1e-4);
+}
+
+test "recencyDecayAt with very small positive age is close to 1.0" {
+    const now: i64 = 1_700_000_000_000;
+    // 1 millisecond ago
+    const decay = recencyDecayAt(now - 1, 90.0, now);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), decay, 1e-6);
+}
+
+test "recencyDecayAt with large negative diff (future) returns 1.0" {
+    const now: i64 = 1_700_000_000_000;
+    // Modified far in the future
+    const future: i64 = now + 365 * 24 * 60 * 60 * 1000;
+    const decay = recencyDecayAt(future, 90.0, now);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), decay, 1e-6);
+}
+
+test "callsWeightAt with frequency zero returns zero" {
+    const now: i64 = 1_700_000_000_000;
+    const w = callsWeightAt(0, now, 1, 90.0, now);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), w, 1e-6);
+}
+
+test "callsWeightAt with very high frequency" {
+    const now: i64 = 1_700_000_000_000;
+    // freq=1000000, age=0, depth=1 → 1000000 * 1.0 / 1 = 1000000.0
+    const w = callsWeightAt(1_000_000, now, 1, 90.0, now);
+    try std.testing.expectApproxEqAbs(@as(f32, 1_000_000.0), w, 1.0);
+}
+
+test "callsWeightAt with very large depth reduces weight" {
+    const now: i64 = 1_700_000_000_000;
+    // freq=100, age=0, depth=100 → 100 * 1.0 / 100 = 1.0
+    const w = callsWeightAt(100, now, 100, 90.0, now);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), w, 1e-6);
+}
+
+test "callsWeightAt with max u32 frequency" {
+    const now: i64 = 1_700_000_000_000;
+    const w = callsWeightAt(std.math.maxInt(u32), now, 1, 90.0, now);
+    // Should be a very large number but finite
+    try std.testing.expect(std.math.isFinite(w));
+    try std.testing.expect(w > 0.0);
+}
+
+test "modifiesWeight with both zero returns zero" {
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), modifiesWeight(0, 0), 1e-6);
+}
+
+test "modifiesWeight with both_touching > total is valid ratio > 1" {
+    // This is an edge case — semantically invalid but the function doesn't guard it
+    const w = modifiesWeight(20, 10);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), w, 1e-6);
+}
+
+test "modifiesWeight with very large counts" {
+    const w = modifiesWeight(500_000, 1_000_000);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), w, 1e-4);
+}
+
+test "modifiesWeight with 1 total commit" {
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), modifiesWeight(1, 1), 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), modifiesWeight(0, 1), 1e-6);
+}
+
+test "normaliseOutEdges with single edge sets weight to 1.0" {
+    var edges = [_]Edge{
+        .{ .src = 1, .dst = 2, .kind = .calls, .weight = 42.0 },
+    };
+    normaliseOutEdges(&edges);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), edges[0].weight, 1e-6);
+}
+
+test "normaliseOutEdges with single zero-weight edge sets to 1.0 (uniform)" {
+    var edges = [_]Edge{
+        .{ .src = 1, .dst = 2, .kind = .calls, .weight = 0.0 },
+    };
+    normaliseOutEdges(&edges);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), edges[0].weight, 1e-6);
+}
+
+test "normaliseOutEdges preserves proportions" {
+    var edges = [_]Edge{
+        .{ .src = 1, .dst = 2, .kind = .calls, .weight = 1.0 },
+        .{ .src = 1, .dst = 3, .kind = .calls, .weight = 1.0 },
+        .{ .src = 1, .dst = 4, .kind = .calls, .weight = 1.0 },
+        .{ .src = 1, .dst = 5, .kind = .calls, .weight = 1.0 },
+    };
+    normaliseOutEdges(&edges);
+
+    // All equal → each should be 0.25
+    for (edges) |e| {
+        try std.testing.expectApproxEqAbs(@as(f32, 0.25), e.weight, 1e-6);
+    }
+}
+
+test "normaliseOutEdges with very large weights" {
+    var edges = [_]Edge{
+        .{ .src = 1, .dst = 2, .kind = .calls, .weight = 1e30 },
+        .{ .src = 1, .dst = 3, .kind = .calls, .weight = 1e30 },
+    };
+    normaliseOutEdges(&edges);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), edges[0].weight, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), edges[1].weight, 1e-6);
+}
+
+test "normaliseOutEdges with very small weights" {
+    var edges = [_]Edge{
+        .{ .src = 1, .dst = 2, .kind = .calls, .weight = 1e-30 },
+        .{ .src = 1, .dst = 3, .kind = .calls, .weight = 1e-30 },
+    };
+    normaliseOutEdges(&edges);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), edges[0].weight, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), edges[1].weight, 1e-6);
+}
+
+test "normaliseOutEdges with mixed zero and nonzero weights" {
+    var edges = [_]Edge{
+        .{ .src = 1, .dst = 2, .kind = .calls, .weight = 0.0 },
+        .{ .src = 1, .dst = 3, .kind = .calls, .weight = 4.0 },
+    };
+    normaliseOutEdges(&edges);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), edges[0].weight, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), edges[1].weight, 1e-6);
+}
+
+test "normaliseOutEdges result sums to 1.0 for many edges" {
+    var edges: [10]Edge = undefined;
+    for (&edges, 0..) |*e, i| {
+        e.* = .{ .src = 1, .dst = @as(u64, i) + 2, .kind = .calls, .weight = @as(f32, @floatFromInt(i + 1)) };
+    }
+    normaliseOutEdges(&edges);
+
+    var sum: f32 = 0.0;
+    for (edges) |e| sum += e.weight;
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), sum, 1e-5);
+}
+
+test "stantonConditionHolds with k=0" {
+    // k=0: threshold = 3 * (0 + 0 + 1) * 1.0 * 1.0 = 3.0
+    try std.testing.expect(stantonConditionHolds(4.0, 1.0, 0, 1.0));
+    try std.testing.expect(!stantonConditionHolds(3.0, 1.0, 0, 1.0));
+    try std.testing.expect(!stantonConditionHolds(2.0, 1.0, 0, 1.0));
+}
+
+test "stantonConditionHolds with q=0 threshold is zero" {
+    // threshold = 3 * (...) * l * 0 = 0
+    // Any positive p should exceed 0
+    try std.testing.expect(stantonConditionHolds(0.001, 0.0, 5, 1.0));
+}
+
+test "stantonConditionHolds with l=0 threshold is zero" {
+    // threshold = 3 * (...) * 0 * q = 0
+    try std.testing.expect(stantonConditionHolds(0.001, 1.0, 5, 0.0));
+}
+
+test "recencyDecayAt monotonically decreasing with age" {
+    const now: i64 = 1_700_000_000_000;
+    const day_ms: i64 = 24 * 60 * 60 * 1000;
+    var prev_decay: f32 = 1.0;
+    for (1..20) |days| {
+        const modified = now - @as(i64, @intCast(days)) * day_ms;
+        const decay = recencyDecayAt(modified, 90.0, now);
+        try std.testing.expect(decay < prev_decay);
+        try std.testing.expect(decay > 0.0);
+        prev_decay = decay;
+    }
+}

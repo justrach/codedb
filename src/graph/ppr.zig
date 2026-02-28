@@ -78,6 +78,12 @@ pub fn pprPush(
             if (!p_entry.found_existing) p_entry.value_ptr.* = 0;
             p_entry.value_ptr.* += alpha * r_u;
 
+            // Zero r[u] BEFORE distributing to neighbours.
+            // This is critical for correctness with self-loops: if u has
+            // an edge to itself, the distributed share must accumulate on
+            // top of 0, not be wiped out by a later zeroing.
+            r.putAssumeCapacity(u, 0);
+
             // Distribute residual to out-neighbours
             const edges = g.outEdges(u);
             if (edges.len > 0) {
@@ -94,9 +100,6 @@ pub fn pprPush(
                     }
                 }
             }
-
-            // r[u] = 0
-            r.putAssumeCapacity(u, 0);
         }
     }
 
@@ -279,4 +282,291 @@ test "empty graph returns empty scores" {
     // Query node still gets α from the initial push
     const s = scores.get(999).?;
     try std.testing.expectApproxEqAbs(DEFAULT_ALPHA, s, 1e-4);
+}
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "PPR on graph with self-loop" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // Node 1 points to itself
+    try g.addEdge(.{ .src = 1, .dst = 1, .kind = .references });
+
+    var scores = try pprPush(&g, 1, DEFAULT_ALPHA, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    // Self-loop: all residual stays on node 1
+    // Score should converge to 1.0 (all probability mass stays on node 1)
+    const s = scores.get(1).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), s, 1e-2);
+    // Should only have node 1 in scores
+    try std.testing.expectEqual(@as(u32, 1), scores.count());
+}
+
+test "PPR with alpha=1 — all score stays on query node" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls });
+    try g.addEdge(.{ .src = 2, .dst = 3, .kind = .calls });
+
+    var scores = try pprPush(&g, 1, 1.0, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    // With alpha=1.0, teleport probability is 100% — no distribution to neighbours
+    // p[1] = 1.0 * r[1] = 1.0, and (1-alpha) * r[1] = 0 so nothing flows out
+    const s1 = scores.get(1).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), s1, 1e-4);
+    // Neighbours should get no score (or null)
+    const s2 = scores.get(2) orelse 0.0;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), s2, 1e-6);
+}
+
+test "PPR with alpha=0 — all score distributed to neighbours" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // 1 → 2 (single edge, no cycles)
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls });
+
+    var scores = try pprPush(&g, 1, 0.0, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    // alpha=0 means p[u] += 0 * r[u] = 0 for the query node on first push
+    // but all residual flows to node 2: r[2] += (1-0) * 1.0 = 1.0
+    // Then node 2 has no out-edges, so p[2] += 0 * 1.0 = 0
+    // Actually: p[u] += alpha * r[u] = 0, so no node gets any p score!
+    const s1 = scores.get(1) orelse 0.0;
+    const s2 = scores.get(2) orelse 0.0;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), s1, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), s2, 1e-6);
+}
+
+test "PPR with very small epsilon converges more precisely" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // 1 → 2 → 3 → 1 (cycle)
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls });
+    try g.addEdge(.{ .src = 2, .dst = 3, .kind = .calls });
+    try g.addEdge(.{ .src = 3, .dst = 1, .kind = .calls });
+
+    // Run with smaller epsilon for tighter convergence
+    var scores = try pprPush(&g, 1, DEFAULT_ALPHA, 1e-6, std.testing.allocator);
+    defer scores.deinit();
+
+    // All nodes should have positive score
+    const s1 = scores.get(1).?;
+    const s2 = scores.get(2).?;
+    const s3 = scores.get(3).?;
+    try std.testing.expect(s1 > 0);
+    try std.testing.expect(s2 > 0);
+    try std.testing.expect(s3 > 0);
+
+    // Total score should be close to 1.0 for well-converged PPR
+    const total = s1 + s2 + s3;
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), total, 0.01);
+}
+
+test "PPR on larger disconnected graph — only reachable component scored" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // Component A: 1 → 2 → 3
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls });
+    try g.addEdge(.{ .src = 2, .dst = 3, .kind = .calls });
+    // Component B: 10 → 11 → 12
+    try g.addEdge(.{ .src = 10, .dst = 11, .kind = .calls });
+    try g.addEdge(.{ .src = 11, .dst = 12, .kind = .calls });
+    // Isolated node: 20
+    try g.addSymbol(.{ .id = 20, .name = "isolated", .kind = .function, .file_id = 0, .line = 1, .col = 0, .scope = "" });
+
+    var scores = try pprPush(&g, 1, DEFAULT_ALPHA, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    // Component A reachable
+    try std.testing.expect((scores.get(1) orelse 0) > 0);
+    try std.testing.expect((scores.get(2) orelse 0) > 0);
+    try std.testing.expect((scores.get(3) orelse 0) > 0);
+    // Component B unreachable
+    try std.testing.expectEqual(@as(?f32, null), scores.get(10));
+    try std.testing.expectEqual(@as(?f32, null), scores.get(11));
+    try std.testing.expectEqual(@as(?f32, null), scores.get(12));
+    // Isolated node unreachable
+    try std.testing.expectEqual(@as(?f32, null), scores.get(20));
+}
+
+test "PPR on graph with multiple self-loops" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // 1 → 1 (self), 1 → 2, 2 → 2 (self)
+    try g.addEdge(.{ .src = 1, .dst = 1, .kind = .references });
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls });
+    try g.addEdge(.{ .src = 2, .dst = 2, .kind = .references });
+
+    var scores = try pprPush(&g, 1, DEFAULT_ALPHA, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    // Both nodes should have positive scores
+    const s1 = scores.get(1) orelse 0.0;
+    const s2 = scores.get(2) orelse 0.0;
+    try std.testing.expect(s1 > 0);
+    try std.testing.expect(s2 > 0);
+    // Node 2 has a self-loop that retains 100% of its residual, while node 1
+    // splits its residual 50/50 between self and node 2. So node 2 may
+    // accumulate more score than node 1. We just verify both are scored.
+    try std.testing.expect(s1 + s2 > 0.5);
+}
+
+test "topK with k=0 returns empty slice" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls });
+
+    var scores = try pprPush(&g, 1, DEFAULT_ALPHA, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    const top = try topK(&scores, 0, null, std.testing.allocator);
+    defer std.testing.allocator.free(top);
+
+    try std.testing.expectEqual(@as(usize, 0), top.len);
+}
+
+test "topK with exclude matching all nodes returns empty" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // Single node, no edges — only query node gets a score
+    var scores = try pprPush(&g, 1, DEFAULT_ALPHA, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    // Exclude the only node that has a score
+    const top = try topK(&scores, 10, 1, std.testing.allocator);
+    defer std.testing.allocator.free(top);
+
+    try std.testing.expectEqual(@as(usize, 0), top.len);
+}
+
+test "topK on empty scores map returns empty" {
+    var scores = std.AutoHashMap(u64, f32).init(std.testing.allocator);
+    defer scores.deinit();
+
+    const top = try topK(&scores, 10, null, std.testing.allocator);
+    defer std.testing.allocator.free(top);
+
+    try std.testing.expectEqual(@as(usize, 0), top.len);
+}
+
+test "topK with k=1 returns highest scorer" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls, .weight = 1.0 });
+    try g.addEdge(.{ .src = 1, .dst = 3, .kind = .calls, .weight = 10.0 });
+
+    var scores = try pprPush(&g, 1, DEFAULT_ALPHA, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    const top = try topK(&scores, 1, 1, std.testing.allocator); // exclude query
+    defer std.testing.allocator.free(top);
+
+    try std.testing.expectEqual(@as(usize, 1), top.len);
+    // Node 3 should be ranked highest (higher weight edge)
+    try std.testing.expectEqual(@as(u64, 3), top[0].id);
+}
+
+test "PPR scores are all non-negative" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // Build a small complex graph
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls });
+    try g.addEdge(.{ .src = 2, .dst = 3, .kind = .calls });
+    try g.addEdge(.{ .src = 3, .dst = 4, .kind = .calls });
+    try g.addEdge(.{ .src = 4, .dst = 1, .kind = .calls });
+    try g.addEdge(.{ .src = 1, .dst = 3, .kind = .imports });
+    try g.addEdge(.{ .src = 2, .dst = 4, .kind = .references });
+
+    var scores = try pprPush(&g, 1, DEFAULT_ALPHA, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    var it = scores.iterator();
+    while (it.next()) |entry| {
+        try std.testing.expect(entry.value_ptr.* >= 0.0);
+    }
+}
+
+test "PPR with weighted edges distributes proportionally" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // Node 1 → 2 with weight 9, Node 1 → 3 with weight 1
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls, .weight = 9.0 });
+    try g.addEdge(.{ .src = 1, .dst = 3, .kind = .calls, .weight = 1.0 });
+
+    var scores = try pprPush(&g, 1, DEFAULT_ALPHA, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    const s2 = scores.get(2) orelse 0.0;
+    const s3 = scores.get(3) orelse 0.0;
+    // Node 2 should get ~9x the score of node 3
+    try std.testing.expect(s2 > s3);
+    // Rough proportionality check: s2/s3 should be close to 9
+    if (s3 > 1e-10) {
+        const ratio = s2 / s3;
+        try std.testing.expect(ratio > 5.0); // generous tolerance
+        try std.testing.expect(ratio < 15.0);
+    }
+}
+
+test "PPR on long chain — scores decrease with distance" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // Chain: 1 → 2 → 3 → 4 → 5
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls });
+    try g.addEdge(.{ .src = 2, .dst = 3, .kind = .calls });
+    try g.addEdge(.{ .src = 3, .dst = 4, .kind = .calls });
+    try g.addEdge(.{ .src = 4, .dst = 5, .kind = .calls });
+
+    var scores = try pprPush(&g, 1, DEFAULT_ALPHA, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    const s1 = scores.get(1) orelse 0.0;
+    const s2 = scores.get(2) orelse 0.0;
+    const s3 = scores.get(3) orelse 0.0;
+    const s4 = scores.get(4) orelse 0.0;
+    const s5 = scores.get(5) orelse 0.0;
+
+    // Scores should monotonically decrease along the chain
+    try std.testing.expect(s1 > s2);
+    try std.testing.expect(s2 > s3);
+    try std.testing.expect(s3 > s4);
+    try std.testing.expect(s4 > s5);
+    try std.testing.expect(s5 > 0);
+}
+
+test "PPR constants have expected values" {
+    try std.testing.expectApproxEqAbs(@as(f32, 0.15), DEFAULT_ALPHA, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1e-4), DEFAULT_EPSILON, 1e-10);
+}
+
+test "topK preserves score values" {
+    var scores = std.AutoHashMap(u64, f32).init(std.testing.allocator);
+    defer scores.deinit();
+
+    try scores.put(1, 0.5);
+    try scores.put(2, 0.3);
+    try scores.put(3, 0.2);
+
+    const top = try topK(&scores, 3, null, std.testing.allocator);
+    defer std.testing.allocator.free(top);
+
+    try std.testing.expectEqual(@as(usize, 3), top.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), top[0].score, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), top[1].score, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), top[2].score, 1e-6);
 }
