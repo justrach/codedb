@@ -233,4 +233,5 @@ fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Val
 test {
     _ = @import("graph/types.zig");
     _ = @import("graph/graph.zig");
+    _ = @import("graph/edge_weights.zig");
 }
