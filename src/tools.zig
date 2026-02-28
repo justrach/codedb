@@ -1,10 +1,11 @@
 // gitagent-mcp — Tool definitions
 //
-// Implements all 16 GitHub workflow tools across 4 groups:
+// Implements all 17 GitHub workflow tools across 5 groups:
 //   Planning    → decompose_feature, get_project_state, get_next_task, prioritize_issues
 //   Issues      → create_issue, create_issues_batch, update_issue, close_issue, link_issues
 //   Branches    → create_branch, get_current_branch, commit_with_context, push_branch
 //   Pull Reqs   → create_pr, get_pr_status, list_open_prs
+//   Analysis    → review_pr_impact
 //
 // Each handler writes its result to `out: *std.ArrayList(u8)`.
 // Whatever ends up in `out` becomes the tool response text shown to the model.
@@ -14,7 +15,8 @@ const std   = @import("std");
 const mj    = @import("mcp").json;
 const gh    = @import("gh.zig");
 const cache = @import("cache.zig");
-const state = @import("state.zig");
+const state  = @import("state.zig");
+const search = @import("search.zig");
 
 // ── Step 1: Tool enum ─────────────────────────────────────────────────────────
 
@@ -39,6 +41,8 @@ pub const Tool = enum {
     create_pr,
     get_pr_status,
     list_open_prs,
+    // Analysis
+    review_pr_impact,
 };
 
 // ── Step 2: Tool schemas ──────────────────────────────────────────────────────
@@ -63,7 +67,8 @@ pub const tools_list =
     \\{"name":"push_branch","description":"Push the current branch to origin.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"create_pr","description":"Open a pull request from the current branch to main. Auto-generates title and body from the linked issue if not provided. Sets status:in-review on the issue.","inputSchema":{"type":"object","properties":{"title":{"type":"string","description":"PR title (defaults to linked issue title)"},"body":{"type":"string","description":"PR body (defaults to issue summary + Closes #N)"}},"required":[]}},
     \\{"name":"get_pr_status","description":"Get CI status, review state, and merge readiness for a PR. Defaults to the PR for the current branch.","inputSchema":{"type":"object","properties":{"pr_number":{"type":"integer","description":"PR number (defaults to current branch's PR)"}},"required":[]}},
-    \\{"name":"list_open_prs","description":"List all open PRs with their CI status, review state, and linked issue numbers.","inputSchema":{"type":"object","properties":{},"required":[]}}
+    \\{"name":"list_open_prs","description":"List all open PRs with their CI status, review state, and linked issue numbers.","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"review_pr_impact","description":"Analyze a PR's blast radius: extracts changed files and function symbols from the diff, then searches the codebase for all references to those symbols. Call this before approving or merging a PR to understand what other code might be affected by the changes. Also useful after creating a PR to self-review impact. Returns files changed, symbols modified, and which files reference each symbol.","inputSchema":{"type":"object","properties":{"pr_number":{"type":"integer","description":"PR number (defaults to current branch's PR)"}},"required":[]}}
     \\]}
 ;
 
@@ -102,6 +107,8 @@ pub fn dispatch(
         .create_pr             => handleCreatePr(alloc, args, out),
         .get_pr_status         => handleGetPrStatus(alloc, args, out),
         .list_open_prs         => handleListOpenPrs(alloc, args, out),
+        // Analysis
+        .review_pr_impact      => handleReviewPrImpact(alloc, args, out),
     }
 }
 
@@ -858,6 +865,144 @@ fn handleListOpenPrs(
     defer r.deinit(alloc);
     out.appendSlice(alloc, std.mem.trim(u8, r.stdout, " \t\n\r")) catch {};
 }
+
+// ── Analysis ──────────────────────────────────────────────────────────────────
+
+fn handleReviewPrImpact(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    // 1. Get PR diff
+    const diff_r = blk: {
+        if (args.get("pr_number")) |pv| {
+            if (pv == .integer) {
+                var nb: [16]u8 = undefined;
+                const ns = std.fmt.bufPrint(&nb, "{d}", .{pv.integer}) catch {
+                    writeErr(alloc, out, "bad pr_number"); return;
+                };
+                break :blk gh.run(alloc, &.{ "gh", "pr", "diff", ns });
+            }
+        }
+        break :blk gh.run(alloc, &.{ "gh", "pr", "diff" });
+    } catch |err| { writeErr(alloc, out, gh.errorMessage(err)); return; };
+    defer diff_r.deinit(alloc);
+
+    const diff = std.mem.trim(u8, diff_r.stdout, " \t\n\r");
+
+    // 2. Parse diff for files and symbols
+    var files: std.ArrayList([]const u8) = .empty;
+    defer files.deinit(alloc);
+    var symbols: std.ArrayList(Symbol) = .empty;
+    defer symbols.deinit(alloc);
+    var seen_files = std.StringHashMap(void).init(alloc);
+    defer seen_files.deinit();
+    var seen_syms = std.StringHashMap(void).init(alloc);
+    defer seen_syms.deinit();
+
+    var current_file: ?[]const u8 = null;
+    var sym_count: usize = 0;
+    const max_symbols: usize = 50;
+
+    var lines = std.mem.splitScalar(u8, diff, '\n');
+    while (lines.next()) |line| {
+        // Extract file paths from diff headers
+        if (std.mem.startsWith(u8, line, "diff --git ")) {
+            if (search.extractFilePath(line)) |path| {
+                if (!seen_files.contains(path)) {
+                    const owned = alloc.dupe(u8, path) catch continue;
+                    files.append(alloc, owned) catch { alloc.free(owned); continue; };
+                    seen_files.put(owned, {}) catch {};
+                    current_file = owned;
+                } else {
+                    current_file = path;
+                }
+            }
+            continue;
+        }
+
+        if (sym_count >= max_symbols) continue;
+
+        // Extract symbols from hunk headers
+        if (std.mem.startsWith(u8, line, "@@")) {
+            if (search.extractHunkSymbol(line)) |sym| {
+                if (!seen_syms.contains(sym)) {
+                    const owned_sym = alloc.dupe(u8, sym) catch continue;
+                    symbols.append(alloc, .{ .name = owned_sym, .file = current_file }) catch {
+                        alloc.free(owned_sym); continue;
+                    };
+                    seen_syms.put(owned_sym, {}) catch {};
+                    sym_count += 1;
+                }
+            }
+            continue;
+        }
+
+        // Extract symbols from added lines (new function definitions)
+        if (std.mem.startsWith(u8, line, "+") and !std.mem.startsWith(u8, line, "+++")) {
+            if (search.extractIdentifierFromContext(line[1..])) |sym| {
+                if (!seen_syms.contains(sym)) {
+                    const owned_sym = alloc.dupe(u8, sym) catch continue;
+                    symbols.append(alloc, .{ .name = owned_sym, .file = current_file }) catch {
+                        alloc.free(owned_sym); continue;
+                    };
+                    seen_syms.put(owned_sym, {}) catch {};
+                    sym_count += 1;
+                }
+            }
+        }
+    }
+
+    // 3. Probe for search tool
+    const tool = search.probe(alloc);
+
+    // 4. Build JSON response
+    out.appendSlice(alloc, "{\"files_changed\":[") catch return;
+    for (files.items, 0..) |f, i| {
+        if (i > 0) out.appendSlice(alloc, ",") catch {};
+        out.appendSlice(alloc, "\"") catch {};
+        mj.writeEscaped(alloc, out, f);
+        out.appendSlice(alloc, "\"") catch {};
+    }
+    out.appendSlice(alloc, "],\"symbols\":[") catch return;
+
+    for (symbols.items, 0..) |sym, i| {
+        if (i > 0) out.appendSlice(alloc, ",") catch {};
+        out.appendSlice(alloc, "{\"name\":\"") catch {};
+        mj.writeEscaped(alloc, out, sym.name);
+        out.appendSlice(alloc, "\",\"file\":") catch {};
+        if (sym.file) |f| {
+            out.appendSlice(alloc, "\"") catch {};
+            mj.writeEscaped(alloc, out, f);
+            out.appendSlice(alloc, "\"") catch {};
+        } else {
+            out.appendSlice(alloc, "null") catch {};
+        }
+
+        // Search for references
+        out.appendSlice(alloc, ",\"referenced_by\":[") catch {};
+        if (tool != .none) {
+            const refs: std.ArrayList([]const u8) = search.searchRefs(alloc, tool, sym.name, sym.file) catch
+                .empty;
+            for (refs.items, 0..) |ref, j| {
+                if (j > 0) out.appendSlice(alloc, ",") catch {};
+                out.appendSlice(alloc, "\"") catch {};
+                mj.writeEscaped(alloc, out, ref);
+                out.appendSlice(alloc, "\"") catch {};
+            }
+        }
+        out.appendSlice(alloc, "]}") catch {};
+    }
+
+    out.appendSlice(alloc, "],\"search_tool\":\"") catch return;
+    out.appendSlice(alloc, search.toolName(tool)) catch return;
+    out.appendSlice(alloc, "\"}") catch {};
+}
+
+const Symbol = struct {
+    name: []const u8,
+    file: ?[]const u8,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
