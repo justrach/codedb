@@ -512,3 +512,159 @@ test "multiple deltaUpdates converge" {
     try std.testing.expect(s1_second >= s1_first);
     try std.testing.expect(s1_second - s1_first < 0.1);
 }
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "deltaUpdate on empty dirty set is no-op" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls });
+
+    var ippr = IncrementalPpr.init(std.testing.allocator);
+    defer ippr.deinit();
+
+    // Add some scores but no dirty nodes or residuals
+    try ippr.scores.put(1, 0.5);
+    try ippr.scores.put(2, 0.3);
+
+    const s1_before = ippr.getScore(1);
+    const s2_before = ippr.getScore(2);
+
+    try ippr.deltaUpdate(&g);
+
+    // Scores should be unchanged
+    try std.testing.expectApproxEqAbs(s1_before, ippr.getScore(1), 1e-6);
+    try std.testing.expectApproxEqAbs(s2_before, ippr.getScore(2), 1e-6);
+}
+
+test "onEdgeAdded with weight=0 does not inject residual" {
+    var ippr = IncrementalPpr.init(std.testing.allocator);
+    defer ippr.deinit();
+
+    try ippr.scores.put(1, 0.5);
+
+    ippr.onEdgeAdded(1, 2, 0.0);
+
+    // injection = (1-alpha) * 0.5 * 0.0 = 0, so no residual injected
+    // But dirty node is still marked
+    try std.testing.expectEqual(@as(usize, 1), ippr.dirtyCount());
+    // Residual should be null or 0
+    const r = ippr.residuals.get(1);
+    try std.testing.expect(r == null or r.? == 0);
+}
+
+test "onEdgeRemoved for nodes with no scores" {
+    var ippr = IncrementalPpr.init(std.testing.allocator);
+    defer ippr.deinit();
+
+    // Neither node has scores
+    ippr.onEdgeRemoved(42, 43);
+
+    // Should mark both dirty without crashing
+    try std.testing.expectEqual(@as(usize, 2), ippr.dirtyCount());
+    // No residuals since scores are 0
+    try std.testing.expectEqual(@as(?f32, null), ippr.residuals.get(42));
+    try std.testing.expectEqual(@as(?f32, null), ippr.residuals.get(43));
+}
+
+test "multiple rapid edge additions accumulate residual" {
+    var ippr = IncrementalPpr.init(std.testing.allocator);
+    defer ippr.deinit();
+
+    try ippr.scores.put(1, 1.0);
+
+    // Add 5 edges rapidly from same source
+    ippr.onEdgeAdded(1, 10, 1.0);
+    ippr.onEdgeAdded(1, 11, 1.0);
+    ippr.onEdgeAdded(1, 12, 1.0);
+    ippr.onEdgeAdded(1, 13, 1.0);
+    ippr.onEdgeAdded(1, 14, 1.0);
+
+    // Each injection adds (1-alpha)*score*weight to residual
+    // Total = 5 * (1-0.15) * 1.0 * 1.0 = 4.25
+    const r = ippr.residuals.get(1) orelse 0;
+    try std.testing.expectApproxEqAbs(@as(f32, 4.25), r, 1e-4);
+}
+
+test "onFileInvalidated with empty symbol list" {
+    var ippr = IncrementalPpr.init(std.testing.allocator);
+    defer ippr.deinit();
+
+    try ippr.scores.put(1, 0.5);
+
+    const empty_ids = [_]u64{};
+    ippr.onFileInvalidated(&empty_ids);
+
+    // Should be a no-op
+    try std.testing.expectEqual(@as(usize, 0), ippr.dirtyCount());
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), ippr.getScore(1), 1e-6);
+}
+
+test "topK on empty scores returns empty" {
+    var ippr = IncrementalPpr.init(std.testing.allocator);
+    defer ippr.deinit();
+
+    const top = try ippr.topK(10, std.testing.allocator);
+    defer std.testing.allocator.free(top);
+
+    try std.testing.expectEqual(@as(usize, 0), top.len);
+}
+
+test "topK with k=0 returns empty" {
+    var ippr = IncrementalPpr.init(std.testing.allocator);
+    defer ippr.deinit();
+
+    try ippr.scores.put(1, 0.5);
+    try ippr.scores.put(2, 0.3);
+
+    const top = try ippr.topK(0, std.testing.allocator);
+    defer std.testing.allocator.free(top);
+
+    try std.testing.expectEqual(@as(usize, 0), top.len);
+}
+
+test "getScore for nonexistent node returns 0" {
+    var ippr = IncrementalPpr.init(std.testing.allocator);
+    defer ippr.deinit();
+
+    try std.testing.expectEqual(@as(f32, 0), ippr.getScore(999));
+    try std.testing.expectEqual(@as(f32, 0), ippr.getScore(0));
+    try std.testing.expectEqual(@as(f32, 0), ippr.getScore(std.math.maxInt(u64)));
+}
+
+test "topK excludes zero-score nodes" {
+    var ippr = IncrementalPpr.init(std.testing.allocator);
+    defer ippr.deinit();
+
+    try ippr.scores.put(1, 0.5);
+    try ippr.scores.put(2, 0.0); // zero score
+    try ippr.scores.put(3, 0.3);
+
+    const top = try ippr.topK(10, std.testing.allocator);
+    defer std.testing.allocator.free(top);
+
+    // Node 2 with score 0 should be excluded
+    try std.testing.expectEqual(@as(usize, 2), top.len);
+    for (top) |node| {
+        try std.testing.expect(node.id != 2);
+    }
+}
+
+test "deltaUpdate with disconnected node and residual" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // Node 1 has no outgoing edges
+    var ippr = IncrementalPpr.init(std.testing.allocator);
+    defer ippr.deinit();
+
+    try ippr.residuals.put(1, 1.0);
+    try ippr.dirty_nodes.put(1, {});
+
+    try ippr.deltaUpdate(&g);
+
+    // Score should absorb alpha * residual since no neighbours to distribute to
+    try std.testing.expect(ippr.getScore(1) > 0);
+    try std.testing.expectEqual(@as(usize, 0), ippr.dirtyCount());
+}

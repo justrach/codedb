@@ -244,3 +244,82 @@ test "constants are correct" {
     try std.testing.expectEqual(@as(i64, 7), TRIAL_DAYS);
     try std.testing.expectEqualStrings("ZIGTOOLS_TOKEN", ENV_TOKEN);
 }
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "parseStartedAt with malformed JSON" {
+    // Truncated JSON
+    try std.testing.expectEqual(@as(?i64, null), parseStartedAt("{\"started_at\":"));
+    // No number after colon
+    try std.testing.expectEqual(@as(?i64, null), parseStartedAt("{\"started_at\":abc}"));
+    // Just the marker with nothing after
+    try std.testing.expectEqual(@as(?i64, null), parseStartedAt("\"started_at\":"));
+    // Garbage content
+    try std.testing.expectEqual(@as(?i64, null), parseStartedAt("not json at all"));
+    // Only opening brace
+    try std.testing.expectEqual(@as(?i64, null), parseStartedAt("{"));
+}
+
+test "parseStartedAt with negative timestamp" {
+    // The parser only matches digits 0-9, so negative sign is not parsed
+    const json = "{\"started_at\":-100}";
+    try std.testing.expectEqual(@as(?i64, null), parseStartedAt(json));
+}
+
+test "parseStartedAt with very large number" {
+    // Max i64 value
+    const json = "{\"started_at\":9223372036854775807}";
+    try std.testing.expectEqual(@as(?i64, 9223372036854775807), parseStartedAt(json));
+}
+
+test "parseStartedAt with number overflow returns null" {
+    // Larger than max i64
+    const json = "{\"started_at\":99999999999999999999}";
+    try std.testing.expectEqual(@as(?i64, null), parseStartedAt(json));
+}
+
+test "parseStartedAt with spaces around value" {
+    const json = "{\"started_at\": 1700000000}";
+    try std.testing.expectEqual(@as(?i64, 1700000000), parseStartedAt(json));
+}
+
+test "parseStartedAt with zero" {
+    const json = "{\"started_at\":0}";
+    try std.testing.expectEqual(@as(?i64, 0), parseStartedAt(json));
+}
+
+test "parseStartedAt with extra fields" {
+    const json = "{\"version\":1,\"started_at\":1700000000,\"other\":true}";
+    try std.testing.expectEqual(@as(?i64, 1700000000), parseStartedAt(json));
+}
+
+test "checkAuth in clean environment returns no_auth or valid_token" {
+    // In CI/test env, no token file or trial is expected
+    const result = checkAuth(std.testing.allocator);
+    // Should be one of these — never crashes
+    try std.testing.expect(
+        result.status == .no_auth or
+            result.status == .valid_token or
+            result.status == .valid_trial or
+            result.status == .expired_trial,
+    );
+    try std.testing.expect(result.message.len > 0);
+}
+
+test "AuthResult fields are accessible" {
+    const result = AuthResult{
+        .status = .no_auth,
+        .days_remaining = null,
+        .message = "test",
+    };
+    try std.testing.expectEqual(AuthStatus.no_auth, result.status);
+    try std.testing.expectEqual(@as(?i64, null), result.days_remaining);
+    try std.testing.expectEqualStrings("test", result.message);
+}
+
+test "noAuth returns consistent result" {
+    const r1 = noAuth();
+    const r2 = noAuth();
+    try std.testing.expectEqual(r1.status, r2.status);
+    try std.testing.expectEqualStrings(r1.message, r2.message);
+}

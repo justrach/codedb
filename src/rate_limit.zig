@@ -224,3 +224,111 @@ test "constants are reasonable" {
     try std.testing.expectEqual(@as(u32, 500), WARN_THRESHOLD);
     try std.testing.expectEqual(@as(u64, 60_000), MAX_BACKOFF_MS);
 }
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "RateLimiter with capacity=0 is immediately limited" {
+    var rl = RateLimiter.init(0);
+    try std.testing.expect(!rl.tryAcquire()); // no tokens available
+    try std.testing.expect(rl.isLimited());
+    try std.testing.expect(!rl.shouldWarn()); // 0 remaining, shouldWarn is false
+}
+
+test "RateLimiter with capacity=1" {
+    var rl = RateLimiter.init(1);
+    // remaining=1, which is <= WARN_THRESHOLD (500) and > 0 → shouldWarn is true
+    try std.testing.expect(rl.shouldWarn());
+
+    try std.testing.expect(rl.tryAcquire()); // first acquire succeeds
+    try std.testing.expect(!rl.tryAcquire()); // second fails
+    try std.testing.expectEqual(@as(u32, 0), rl.remaining);
+}
+
+test "Backoff delay values are always bounded by max_ms" {
+    var b = Backoff.init();
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        const delay = b.nextDelayMs();
+        try std.testing.expect(delay <= MAX_BACKOFF_MS);
+    }
+}
+
+test "Backoff after reset returns to base delay range" {
+    var b = Backoff.init();
+    // Exhaust several attempts
+    _ = b.nextDelayMs();
+    _ = b.nextDelayMs();
+    _ = b.nextDelayMs();
+    try std.testing.expectEqual(@as(u32, 3), b.attempt);
+
+    b.reset();
+    try std.testing.expectEqual(@as(u32, 0), b.attempt);
+
+    // First delay after reset should be bounded by base
+    const d = b.nextDelayMs();
+    try std.testing.expect(d <= BASE_BACKOFF_MS);
+}
+
+test "parseRateLimitRemaining with malformed header" {
+    // Header name present but no number
+    try std.testing.expectEqual(@as(?u32, null), parseRateLimitRemaining("X-RateLimit-Remaining: \n"));
+    // Header name present but followed by letters
+    try std.testing.expectEqual(@as(?u32, null), parseRateLimitRemaining("X-RateLimit-Remaining: abc\n"));
+    // Partial header name
+    try std.testing.expectEqual(@as(?u32, null), parseRateLimitRemaining("X-RateLimit-Remaining\n"));
+    // Empty string
+    try std.testing.expectEqual(@as(?u32, null), parseRateLimitRemaining(""));
+}
+
+test "parseRateLimitRemaining with very large number" {
+    // u32 max = 4294967295
+    try std.testing.expectEqual(@as(?u32, 4294967295), parseRateLimitRemaining("X-RateLimit-Remaining: 4294967295\n"));
+    // Overflow u32
+    try std.testing.expectEqual(@as(?u32, null), parseRateLimitRemaining("X-RateLimit-Remaining: 4294967296\n"));
+}
+
+test "multiple headers in same response" {
+    const response = "Content-Type: application/json\r\nX-RateLimit-Remaining: 4200\r\nX-RateLimit-Reset: 1700003600\r\n";
+
+    try std.testing.expectEqual(@as(?u32, 4200), parseRateLimitRemaining(response));
+    try std.testing.expectEqual(@as(?i64, 1700003600), parseRateLimitReset(response));
+}
+
+test "RateLimiter msUntilReset is non-negative" {
+    var rl = RateLimiter.init(100);
+    // reset_at_ms is set to now + refill_interval, so should be positive
+    try std.testing.expect(rl.msUntilReset() >= 0);
+
+    // Simulate past reset time
+    rl.reset_at_ms = 0;
+    try std.testing.expectEqual(@as(i64, 0), rl.msUntilReset());
+}
+
+test "RateLimiter updateFromHeaders converts seconds to ms" {
+    var rl = RateLimiter.init(5000);
+    rl.updateFromHeaders(100, 1000);
+    try std.testing.expectEqual(@as(u32, 100), rl.remaining);
+    try std.testing.expectEqual(@as(i64, 1000000), rl.reset_at_ms); // 1000 * 1000
+}
+
+test "Backoff exhausted boundary" {
+    var b = Backoff.init();
+    b.attempt = 5;
+    try std.testing.expect(!b.exhausted()); // 5 < 6
+
+    b.attempt = 6;
+    try std.testing.expect(b.exhausted()); // 6 >= 6
+
+    b.attempt = 100;
+    try std.testing.expect(b.exhausted()); // 100 >= 6
+}
+
+test "parseRateLimitReset with malformed header" {
+    try std.testing.expectEqual(@as(?i64, null), parseRateLimitReset("X-RateLimit-Reset: abc\n"));
+    try std.testing.expectEqual(@as(?i64, null), parseRateLimitReset("X-RateLimit-Reset: \n"));
+    try std.testing.expectEqual(@as(?i64, null), parseRateLimitReset(""));
+}
+
+test "parseHeaderValue with number at end of string (no newline)" {
+    try std.testing.expectEqual(@as(?u32, 42), parseRateLimitRemaining("X-RateLimit-Remaining: 42"));
+}
