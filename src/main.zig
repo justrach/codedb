@@ -31,8 +31,62 @@ pub fn main() void {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    // chdir to REPO_PATH so all git/gh subprocesses operate on the right repo.
-    const repo_path = std.process.getEnvVarOwned(alloc, "REPO_PATH") catch null;
+    // Check for --mcp flag. Without it, print usage and exit.
+    var mcp_mode = false;
+    var args_iter = std.process.argsWithAllocator(alloc) catch {
+        std.debug.print("error: out of memory\n", .{});
+        return;
+    };
+    defer args_iter.deinit();
+    _ = args_iter.next(); // skip argv[0]
+    while (args_iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--mcp")) {
+            mcp_mode = true;
+        }
+    }
+    if (!mcp_mode) {
+        std.debug.print(
+            \\gitagent-mcp — GitHub workflow + code analysis MCP server
+            \\
+            \\Usage:
+            \\  gitagent-mcp --mcp        Start MCP server (stdio JSON-RPC)
+            \\
+            \\Register in ~/.claude.json:
+            \\  "mcpServers": {{
+            \\    "gitagent": {{
+            \\      "command": "/path/to/gitagent-mcp",
+            \\      "args": ["--mcp"],
+            \\      "env": {{ "REPO_PATH": "/path/to/repo" }}
+            \\    }}
+            \\  }}
+            \\
+            \\REPO_PATH is optional — if unset, the server auto-detects the repo
+            \\from the current working directory via `git rev-parse --show-toplevel`.
+            \\
+        , .{});
+        return;
+    }
+
+    // Resolve working directory:
+    //   1. REPO_PATH env var (explicit, takes priority)
+    //   2. git rev-parse --show-toplevel (auto-detect from CWD)
+    const repo_path = std.process.getEnvVarOwned(alloc, "REPO_PATH") catch blk: {
+        var child = std.process.Child.init(
+            &.{ "git", "rev-parse", "--show-toplevel" },
+            alloc,
+        );
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Close;
+        child.stdin_behavior  = .Close;
+        if (child.spawn()) |_| {
+            const stdout = child.stdout orelse break :blk null;
+            var buf: [4096]u8 = undefined;
+            const n = stdout.read(&buf) catch break :blk null;
+            _ = child.wait() catch {};
+            const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
+            break :blk alloc.dupe(u8, trimmed) catch null;
+        } else |_| break :blk null;
+    };
     if (repo_path) |path| {
         defer alloc.free(path);
         std.posix.chdir(path) catch |err| {
