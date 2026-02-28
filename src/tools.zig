@@ -1629,17 +1629,12 @@ fn writeErr(alloc: std.mem.Allocator, out: *std.ArrayList(u8), msg: []const u8) 
 // servers (including gitagent-mcp itself), keeping the subprocess fast.
 
 fn runCodexAgent(
-    alloc: std.mem.Allocator,
+    alloc:  std.mem.Allocator,
     prompt: []const u8,
-    out: *std.ArrayList(u8),
+    out:    *std.ArrayList(u8),
 ) void {
-    const argv = [_][]const u8{ "codex", "exec", "-c", "mcp_servers={}", prompt };
-    const r = gh.run(alloc, &argv) catch |err| {
-        writeErr(alloc, out, gh.errorMessage(err));
-        return;
-    };
-    defer r.deinit(alloc);
-    out.appendSlice(alloc, r.stdout) catch {};
+    const cas = @import("codex_appserver.zig");
+    cas.runTurn(alloc, prompt, out);
 }
 
 fn handleRunReviewer(
