@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end test for all 16 gitagent-mcp tools."""
+"""End-to-end test for all 17 gitagent-mcp tools."""
 import json, os, subprocess, sys
 from pathlib import Path
 
@@ -73,7 +73,7 @@ def run():
     branch_name = None; pr_num = None; orig_branch = "main"
 
     try:
-        print("\n[1/4] Read-only tools")
+        print("\n[1/5] Read-only tools")
 
         r = s.call("get_project_state")
         check("get_project_state", r,
@@ -99,7 +99,7 @@ def run():
               available_labels=lambda x: isinstance(x, list) and len(x) > 0,
               instructions=lambda x: isinstance(x, str))
 
-        print("\n[2/4] Issue management")
+        print("\n[2/5] Issue management")
 
         r = s.call("create_issue", title="[TEST] MCP e2e alpha",
                    body="E2E test.", labels=["type:infra"])
@@ -140,7 +140,7 @@ def run():
             r = s.call("close_issue", issue_number=gamma)
             check("close_issue", r, detail=f"#{gamma}", closed=lambda x: x==gamma)
 
-        print("\n[3/4] Branch & commit workflow")
+        print("\n[3/5] Branch & commit workflow")
 
         if alpha:
             r = s.call("create_branch", issue_number=alpha, branch_type="fix")
@@ -169,7 +169,7 @@ def run():
             if isinstance(r, list): ok("list_open_prs", f"{len(r)} PRs")
             else: fail("list_open_prs", f"not a list: {r}")
 
-            print("\n[4/4] PR tools")
+            print("\n[4/5] PR tools")
 
             r = s.call("create_pr",
                        title=f"[TEST] MCP e2e PR #{alpha}",
@@ -190,6 +190,43 @@ def run():
                     ok("list_open_prs (with PR)", f"PR #{pr_num} in {len(r)} PRs")
                 else:
                     fail("list_open_prs (with PR)", f"PR #{pr_num} not found")
+
+                # Inline impact test after PR creation
+                r = s.call("review_pr_impact", pr_number=pr_num)
+                check("review_pr_impact", r,
+                      detail=f"{len(r.get('files_changed',[]))} files, {len(r.get('symbols',[]))} syms, tool={r.get('search_tool','')}",
+                      files_changed=lambda x: isinstance(x, list) and len(x) > 0,
+                      search_tool=lambda x: x in ("zigrep", "rg", "grep", "none"))
+
+        print("\n[5/5] PR impact analysis")
+
+        if pr_num:
+            # Test 1: Valid PR — should return files, symbols, and references
+            r_valid = s.call("review_pr_impact", pr_number=pr_num)
+            check("review_pr_impact (valid PR)", r_valid,
+                  files_changed=lambda x: isinstance(x, list) and len(x) > 0,
+                  symbols=lambda x: isinstance(x, list),
+                  search_tool=lambda x: x in ("zigrep", "rg", "grep", "none"))
+
+            # Test 2: Non-existent PR — should return error
+            r_bad = s.call("review_pr_impact", pr_number=999999)
+            if isinstance(r_bad, dict) and "error" in r_bad and isinstance(r_bad["error"], str) and len(r_bad["error"]) > 0:
+                ok("review_pr_impact (bad PR)", f"error={r_bad['error'][:40]}")
+            else:
+                fail("review_pr_impact (bad PR)", f"expected error, got {r_bad}")
+
+            # Test 3: Structure validation — every symbol must have name, file, referenced_by
+            if isinstance(r_valid, dict) and isinstance(r_valid.get("symbols"), list):
+                valid = True
+                for sym in r_valid["symbols"]:
+                    if not ("name" in sym and "file" in sym and "referenced_by" in sym):
+                        valid = False; break
+                if valid:
+                    ok("review_pr_impact (schema)", f"{len(r_valid['symbols'])} symbols validated")
+                else:
+                    fail("review_pr_impact (schema)", "symbol missing required fields")
+            else:
+                ok("review_pr_impact (schema)", "no symbols to validate")
 
     finally:
         s.close()
@@ -216,7 +253,7 @@ def run():
         print("Failed:")
         for f in FAILED: print(f"  - {f}")
     else:
-        print("All 16 tools passed!")
+        print("All 17+ tools passed!")
     return len(FAILED) == 0
 
 if __name__ == "__main__":
