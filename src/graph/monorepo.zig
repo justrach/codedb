@@ -569,3 +569,181 @@ test "struct sizes are reasonable" {
     try std.testing.expect(@sizeOf(Package) <= 64);
     try std.testing.expect(@sizeOf(CrossRepoEdge) <= 32);
 }
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "addPackage with empty name" {
+    var mgr = MonorepoManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    const id = try mgr.addPackage("", "packages/empty", .unknown);
+    try std.testing.expectEqual(@as(u32, 1), id);
+    const pkg = mgr.getPackage(id).?;
+    try std.testing.expectEqualStrings("", pkg.name);
+}
+
+test "removePackage for nonexistent ID does not crash" {
+    var mgr = MonorepoManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    // Remove from empty manager
+    mgr.removePackage(0);
+    mgr.removePackage(1);
+    mgr.removePackage(999999);
+    try std.testing.expectEqual(@as(u32, 0), mgr.packageCount());
+}
+
+test "findPackageByPath with no packages registered" {
+    var mgr = MonorepoManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    try std.testing.expectEqual(@as(?u32, null), mgr.findPackageByPath("any/path/file.ts"));
+    try std.testing.expectEqual(@as(?u32, null), mgr.findPackageByPath(""));
+}
+
+test "cross edges referencing removed package still exist" {
+    var mgr = MonorepoManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    const id1 = try mgr.addPackage("a", "pkg/a", .unknown);
+    const id2 = try mgr.addPackage("b", "pkg/b", .unknown);
+
+    try mgr.addCrossEdge(.{
+        .src_package = id1,
+        .src_symbol = 10,
+        .dst_package = id2,
+        .dst_symbol = 20,
+        .kind = .imports,
+    });
+
+    // Remove package b — cross edge still in the list (orphaned)
+    mgr.removePackage(id2);
+    try std.testing.expectEqual(@as(u32, 1), mgr.crossEdgeCount());
+
+    // crossEdgesFrom still returns the orphaned edge
+    const from_a = try mgr.crossEdgesFrom(id1, std.testing.allocator);
+    defer std.testing.allocator.free(from_a);
+    try std.testing.expectEqual(@as(usize, 1), from_a.len);
+}
+
+test "findCrossDependents with depth=0 returns empty" {
+    var mgr = MonorepoManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    _ = try mgr.addPackage("a", "pkg/a", .unknown);
+    _ = try mgr.addPackage("b", "pkg/b", .unknown);
+
+    try mgr.addCrossEdge(.{ .src_package = 2, .src_symbol = 10, .dst_package = 1, .dst_symbol = 1, .kind = .imports });
+
+    // depth=0 means no hops allowed
+    const deps = try mgr.findCrossDependents(1, 1, 0, std.testing.allocator);
+    defer std.testing.allocator.free(deps);
+
+    try std.testing.expectEqual(@as(usize, 0), deps.len);
+}
+
+test "findCrossDependents with circular cross-edges between 3 packages" {
+    var mgr = MonorepoManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    _ = try mgr.addPackage("a", "pkg/a", .unknown);
+    _ = try mgr.addPackage("b", "pkg/b", .unknown);
+    _ = try mgr.addPackage("c", "pkg/c", .unknown);
+
+    // a:1 -> b:2 -> c:3 -> a:1 (circular)
+    try mgr.addCrossEdge(.{ .src_package = 2, .src_symbol = 2, .dst_package = 1, .dst_symbol = 1, .kind = .imports });
+    try mgr.addCrossEdge(.{ .src_package = 3, .src_symbol = 3, .dst_package = 2, .dst_symbol = 2, .kind = .imports });
+    try mgr.addCrossEdge(.{ .src_package = 1, .src_symbol = 1, .dst_package = 3, .dst_symbol = 3, .kind = .imports });
+
+    const deps = try mgr.findCrossDependents(1, 1, 10, std.testing.allocator);
+    defer std.testing.allocator.free(deps);
+
+    // Should find b:2 and c:3 without infinite loop
+    try std.testing.expectEqual(@as(usize, 2), deps.len);
+}
+
+test "many packages (20+)" {
+    var mgr = MonorepoManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    var ids: [25]u32 = undefined;
+    for (0..25) |i| {
+        // Use a fixed name for all since we only need unique IDs
+        ids[i] = try mgr.addPackage("pkg", "packages/pkg", .package_json);
+    }
+
+    try std.testing.expectEqual(@as(u32, 25), mgr.packageCount());
+    // IDs should be sequential
+    try std.testing.expectEqual(@as(u32, 1), ids[0]);
+    try std.testing.expectEqual(@as(u32, 25), ids[24]);
+
+    // All packages should be retrievable
+    for (ids) |id| {
+        try std.testing.expect(mgr.getPackage(id) != null);
+    }
+}
+
+test "detectManifest with unusual paths" {
+    // Deeply nested
+    try std.testing.expectEqual(ManifestKind.package_json, detectManifest("a/b/c/d/e/f/package.json"));
+    // Just the filename
+    try std.testing.expectEqual(ManifestKind.cargo_toml, detectManifest("Cargo.toml"));
+    // Path with dots
+    try std.testing.expectEqual(ManifestKind.go_mod, detectManifest("my.project/go.mod"));
+    // Filename that contains manifest name as substring but is not exact
+    try std.testing.expectEqual(ManifestKind.unknown, detectManifest("not-package.json.bak"));
+    // Path with spaces
+    try std.testing.expectEqual(ManifestKind.build_zig, detectManifest("path with spaces/build.zig"));
+}
+
+test "addPackage with very long name and path" {
+    var mgr = MonorepoManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    const long_name = "x" ** 1000;
+    const long_path = "p" ** 1000;
+    const id = try mgr.addPackage(long_name, long_path, .unknown);
+    const pkg = mgr.getPackage(id).?;
+    try std.testing.expectEqual(@as(usize, 1000), pkg.name.len);
+    try std.testing.expectEqual(@as(usize, 1000), pkg.root_path.len);
+}
+
+test "crossEdgesFrom and crossEdgesTo with no edges" {
+    var mgr = MonorepoManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    const from = try mgr.crossEdgesFrom(1, std.testing.allocator);
+    defer std.testing.allocator.free(from);
+    try std.testing.expectEqual(@as(usize, 0), from.len);
+
+    const to = try mgr.crossEdgesTo(1, std.testing.allocator);
+    defer std.testing.allocator.free(to);
+    try std.testing.expectEqual(@as(usize, 0), to.len);
+}
+
+test "findPackageByPath with empty root path never matches" {
+    var mgr = MonorepoManager.init(std.testing.allocator);
+    defer mgr.deinit();
+
+    // A package with empty root_path: root.len=0 but the comparison
+    // requires root.len > best_len (0 > 0 is false), so empty root
+    // can never be selected as best match. This is a known edge case.
+    _ = try mgr.addPackage("root", "", .unknown);
+
+    // Even exact empty match fails because 0 > 0 is false
+    const result = mgr.findPackageByPath("");
+    try std.testing.expectEqual(@as(?u32, null), result);
+
+    // Non-empty paths also fail
+    const result2 = mgr.findPackageByPath("src/main.ts");
+    try std.testing.expectEqual(@as(?u32, null), result2);
+}
+
+test "compositeKey produces unique keys" {
+    const k1 = compositeKey(1, 100);
+    const k2 = compositeKey(1, 101);
+    const k3 = compositeKey(2, 100);
+    try std.testing.expect(k1 != k2);
+    try std.testing.expect(k1 != k3);
+    try std.testing.expect(k2 != k3);
+}

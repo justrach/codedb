@@ -535,3 +535,260 @@ test "empty source produces no symbols" {
     _ = try ing.ingestSource("empty.ts", "");
     try std.testing.expectEqual(@as(usize, 0), g.symbolCount());
 }
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "ingest file with only comments produces no symbols" {
+    const source =
+        \\// This is a comment
+        \\/* This is a block comment */
+        \\* @param foo - bar
+        \\// function fakeFunc() {}
+        \\// class FakeClass {}
+    ;
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    const file_id = try ing.ingestSource("comments.ts", source);
+    try std.testing.expect(file_id != null);
+    try std.testing.expectEqual(@as(usize, 0), g.symbolCount());
+}
+
+test "ingest file with very long function name" {
+    const long_name = "a" ** 500;
+    const source = "function " ++ long_name ++ "() {}";
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    _ = try ing.ingestSource("long.ts", source);
+    try std.testing.expectEqual(@as(usize, 1), g.symbolCount());
+    const sym = g.getSymbol(1).?;
+    try std.testing.expectEqual(@as(usize, 500), sym.name.len);
+}
+
+test "nested functions inside class get method kind" {
+    const source =
+        \\class Outer {
+        \\  function inner() {}
+        \\  async function asyncInner() {}
+        \\}
+    ;
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    _ = try ing.ingestSource("nested.ts", source);
+    // Outer is a class, inner and asyncInner are methods (inside class scope)
+    try std.testing.expect(g.symbolCount() >= 2);
+    const outer = g.getSymbol(1).?;
+    try std.testing.expectEqual(SymbolKind.class, outer.kind);
+    try std.testing.expectEqualStrings("Outer", outer.name);
+    const inner = g.getSymbol(2).?;
+    try std.testing.expectEqual(SymbolKind.method, inner.kind);
+    try std.testing.expectEqualStrings("inner", inner.name);
+}
+
+test "arrow functions with various patterns" {
+    const source =
+        \\const simple = (x) => x;
+        \\const noArgs = () => null;
+        \\export const typed = <T>(x: T) => x;
+        \\const asyncArrow = async (data) => { return data; };
+    ;
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    _ = try ing.ingestSource("arrows.ts", source);
+    // simple, noArgs, typed, asyncArrow should all be detected
+    try std.testing.expectEqual(@as(usize, 4), g.symbolCount());
+}
+
+test "import with empty path" {
+    const source =
+        \\import '' ;
+        \\import "" ;
+        \\import { x } from '';
+    ;
+
+    const imports = try extractImports(source, std.testing.allocator);
+    defer {
+        for (imports) |i| std.testing.allocator.free(i);
+        std.testing.allocator.free(imports);
+    }
+    // Empty paths are valid string matches — parser returns them
+    for (imports) |imp| {
+        try std.testing.expectEqual(@as(usize, 0), imp.len);
+    }
+}
+
+test "duplicate symbol names on different lines" {
+    const source =
+        \\function handler() {}
+        \\function handler() {}
+    ;
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    _ = try ing.ingestSource("dups.ts", source);
+    // Both get added as separate symbols (different IDs)
+    try std.testing.expectEqual(@as(usize, 2), g.symbolCount());
+    const s1 = g.getSymbol(1).?;
+    const s2 = g.getSymbol(2).?;
+    try std.testing.expectEqualStrings("handler", s1.name);
+    try std.testing.expectEqualStrings("handler", s2.name);
+    try std.testing.expect(s1.line != s2.line);
+}
+
+test "file with no recognizable symbols" {
+    const source =
+        \\console.log("hello");
+        \\if (true) { doSomething(); }
+        \\for (let i = 0; i < 10; i++) {}
+        \\switch (x) { case 1: break; }
+    ;
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    _ = try ing.ingestSource("noSymbols.ts", source);
+    // "let i" on the for line is trimmed and starts with "for", not "let"
+    // so no symbols should be detected for most lines
+    // The "for" loop line with "let i = 0" would not match because the trimmed line
+    // starts with "for", not "let"
+    try std.testing.expectEqual(@as(usize, 0), g.symbolCount());
+}
+
+test "mixed indentation tabs vs spaces" {
+    const source = "function tabFunc() {}\n" ++
+        "\tfunction indentedTab() {}\n" ++
+        "    function indentedSpaces() {}\n" ++
+        "\t  function mixedIndent() {}";
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    _ = try ing.ingestSource("mixed.ts", source);
+    // All should be detected since we trim leading whitespace
+    try std.testing.expectEqual(@as(usize, 4), g.symbolCount());
+}
+
+test "export default function and class" {
+    const source =
+        \\export default function main() {}
+        \\export default class App {}
+    ;
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    _ = try ing.ingestSource("defaults.ts", source);
+    try std.testing.expectEqual(@as(usize, 2), g.symbolCount());
+    const s1 = g.getSymbol(1).?;
+    try std.testing.expectEqualStrings("main", s1.name);
+    try std.testing.expectEqual(SymbolKind.function, s1.kind);
+    const s2 = g.getSymbol(2).?;
+    try std.testing.expectEqualStrings("App", s2.name);
+    try std.testing.expectEqual(SymbolKind.class, s2.kind);
+}
+
+test "whitespace-only source produces no symbols" {
+    const source = "   \n\t\n   \n\n";
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    _ = try ing.ingestSource("whitespace.ts", source);
+    try std.testing.expectEqual(@as(usize, 0), g.symbolCount());
+}
+
+test "extractImports with no imports returns empty" {
+    const source =
+        \\function foo() {}
+        \\const x = 42;
+    ;
+
+    const imports = try extractImports(source, std.testing.allocator);
+    defer std.testing.allocator.free(imports);
+    try std.testing.expectEqual(@as(usize, 0), imports.len);
+}
+
+test "require with template literal is not matched" {
+    const source =
+        \\const x = require(`dynamic`);
+    ;
+
+    const imports = try extractImports(source, std.testing.allocator);
+    defer {
+        for (imports) |i| std.testing.allocator.free(i);
+        std.testing.allocator.free(imports);
+    }
+    // backtick is not a valid quote character for our parser
+    try std.testing.expectEqual(@as(usize, 0), imports.len);
+}
+
+test "abstract class declaration" {
+    const source =
+        \\export abstract class BaseService {
+        \\}
+        \\abstract class AbstractParser {
+        \\}
+    ;
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    _ = try ing.ingestSource("abstract.ts", source);
+    try std.testing.expectEqual(@as(usize, 2), g.symbolCount());
+    try std.testing.expectEqualStrings("BaseService", g.getSymbol(1).?.name);
+    try std.testing.expectEqualStrings("AbstractParser", g.getSymbol(2).?.name);
+}
+
+test "const function assigned to existing function keyword" {
+    const source =
+        \\const wrapper = function namedExpr() {};
+    ;
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    _ = try ing.ingestSource("funcexpr.ts", source);
+    // matchConstFunction checks rhs starts with "function" so "wrapper" is detected
+    try std.testing.expectEqual(@as(usize, 1), g.symbolCount());
+    try std.testing.expectEqualStrings("wrapper", g.getSymbol(1).?.name);
+}
+
+test "scope resets on closing brace at column 0" {
+    const source =
+        \\class MyClass {
+        \\  function insideClass() {}
+        \\}
+        \\function outsideClass() {}
+    ;
+
+    var g = graph_mod.CodeGraph.init(std.testing.allocator);
+    defer g.deinit();
+    var ing = Ingester.init(&g, std.testing.allocator);
+
+    _ = try ing.ingestSource("scope.ts", source);
+    // MyClass (class), insideClass (method, scope=MyClass), outsideClass (function, scope="")
+    try std.testing.expect(g.symbolCount() >= 3);
+    const s2 = g.getSymbol(2).?;
+    try std.testing.expectEqual(SymbolKind.method, s2.kind);
+    const s3 = g.getSymbol(3).?;
+    try std.testing.expectEqual(SymbolKind.function, s3.kind);
+}

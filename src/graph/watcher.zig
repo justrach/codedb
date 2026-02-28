@@ -297,3 +297,106 @@ test "poll detects new file creation" {
     defer std.testing.allocator.free(events3);
     try std.testing.expectEqual(@as(usize, 1), events3.len);
 }
+
+// ── Edge case tests ─────────────────────────────────────────────────────────
+
+test "watch empty string path" {
+    var fw = FileWatcher.init(std.testing.allocator);
+    defer fw.deinit();
+
+    // Watching empty string should not crash
+    try fw.watch("");
+    try std.testing.expectEqual(@as(u32, 1), fw.watchCount());
+    try std.testing.expect(fw.isWatching(""));
+}
+
+test "poll with no watched files returns empty" {
+    var fw = FileWatcher.init(std.testing.allocator);
+    defer fw.deinit();
+
+    const events = try fw.pollAt(1000);
+    defer std.testing.allocator.free(events);
+    try std.testing.expectEqual(@as(usize, 0), events.len);
+}
+
+test "unwatch file not being watched is safe" {
+    var fw = FileWatcher.init(std.testing.allocator);
+    defer fw.deinit();
+
+    // Should not crash or leak
+    fw.unwatch("never_watched.zig");
+    fw.unwatch("");
+    try std.testing.expectEqual(@as(u32, 0), fw.watchCount());
+}
+
+test "poll multiple times with no changes returns empty each time" {
+    var fw = FileWatcher.init(std.testing.allocator);
+    defer fw.deinit();
+
+    try fw.watch("nonexistent_stability_test.xyz");
+
+    // Poll 5 times — should always return empty since file never exists/changes
+    var i: i64 = 0;
+    while (i < 5) : (i += 1) {
+        const events = try fw.pollAt(1000 + i * 1000);
+        defer std.testing.allocator.free(events);
+        try std.testing.expectEqual(@as(usize, 0), events.len);
+    }
+}
+
+test "watchMany with duplicates counts correctly" {
+    var fw = FileWatcher.init(std.testing.allocator);
+    defer fw.deinit();
+
+    const paths = [_][]const u8{ "a.zig", "b.zig", "a.zig", "c.zig", "b.zig" };
+    const added = try fw.watchMany(&paths);
+    // First "a.zig" and "b.zig" are added, second occurrences are skipped
+    try std.testing.expectEqual(@as(u32, 5), added); // watchMany increments for each non-error call
+    // But actual watch count should only be 3 unique paths
+    try std.testing.expectEqual(@as(u32, 3), fw.watchCount());
+}
+
+test "clear then re-watch is safe" {
+    var fw = FileWatcher.init(std.testing.allocator);
+    defer fw.deinit();
+
+    try fw.watch("a.zig");
+    try fw.watch("b.zig");
+    fw.clear();
+    try std.testing.expectEqual(@as(u32, 0), fw.watchCount());
+
+    // Re-watch after clear
+    try fw.watch("c.zig");
+    try std.testing.expectEqual(@as(u32, 1), fw.watchCount());
+    try std.testing.expect(fw.isWatching("c.zig"));
+}
+
+test "debounce window prevents immediate reporting" {
+    var fw = FileWatcher.init(std.testing.allocator);
+    defer fw.deinit();
+
+    // Watch a nonexistent file, then simulate it appearing
+    try fw.watch("_test_debounce_tmp.txt");
+    defer fw.unwatch("_test_debounce_tmp.txt");
+
+    // Create the file
+    const file = std.fs.cwd().createFile("_test_debounce_tmp.txt", .{}) catch return;
+    file.close();
+    defer std.fs.cwd().deleteFile("_test_debounce_tmp.txt") catch {};
+
+    // Poll detects creation — but marks pending, debounce window starts at now_ms
+    const events1 = try fw.pollAt(5000);
+    defer std.testing.allocator.free(events1);
+    // Change was just detected at time=5000, debounce requires 300ms, so 0ms elapsed = not ready
+    try std.testing.expectEqual(@as(usize, 0), events1.len);
+
+    // Poll just before debounce expires (5000 + 299 = 5299)
+    const events2 = try fw.pollAt(5299);
+    defer std.testing.allocator.free(events2);
+    try std.testing.expectEqual(@as(usize, 0), events2.len);
+
+    // Poll at exactly debounce boundary (5000 + 300 = 5300)
+    const events3 = try fw.pollAt(5300);
+    defer std.testing.allocator.free(events3);
+    try std.testing.expectEqual(@as(usize, 1), events3.len);
+}
