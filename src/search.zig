@@ -172,6 +172,33 @@ fn extractWord(input: []const u8) ?[]const u8 {
     return input[0..end];
 }
 
+// ── Symbol extraction from file content ───────────────────────────────────────
+
+/// Scan content line-by-line for definition keywords, returning unique symbol names.
+/// Returns slices into `content` (no allocation needed for symbol strings themselves).
+/// Caps at `max` symbols.
+pub fn extractSymbolsFromContent(
+    alloc: std.mem.Allocator,
+    content: []const u8,
+    max: usize,
+) std.ArrayList([]const u8) {
+    var result: std.ArrayList([]const u8) = .empty;
+    var seen = std.StringHashMap(void).init(alloc);
+    defer seen.deinit();
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (result.items.len >= max) break;
+        if (extractIdentifierFromContext(line)) |sym| {
+            if (!seen.contains(sym)) {
+                seen.put(sym, {}) catch continue;
+                result.append(alloc, sym) catch continue;
+            }
+        }
+    }
+    return result;
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 test "toolName returns correct strings" {
@@ -291,4 +318,39 @@ test "searchRefs: none tool returns empty" {
     const refs = try searchRefs(alloc, .none, "handleFoo", null);
     defer refs.deinit(alloc);
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
+}
+
+test "extractSymbolsFromContent: mixed definitions" {
+    const content =
+        \\pub fn handleFoo(alloc: Allocator) void {}
+        \\const bar = 42;
+        \\fn helper() void {}
+        \\var x = 5;
+        \\class Widget {}
+        \\pub fn handleFoo(alloc: Allocator) void {}
+    ;
+    const alloc = std.testing.allocator;
+    const syms = extractSymbolsFromContent(alloc, content, 50);
+    defer syms.deinit(alloc);
+    // Should find: handleFoo, bar, helper, Widget (4 unique, var is not a keyword, duplicate skipped)
+    try std.testing.expectEqual(@as(usize, 4), syms.items.len);
+    try std.testing.expectEqualStrings("handleFoo", syms.items[0]);
+    try std.testing.expectEqualStrings("bar", syms.items[1]);
+    try std.testing.expectEqualStrings("helper", syms.items[2]);
+    try std.testing.expectEqualStrings("Widget", syms.items[3]);
+}
+
+test "extractSymbolsFromContent: max cap respected" {
+    const content =
+        \\fn alpha() void {}
+        \\fn beta() void {}
+        \\fn gamma() void {}
+        \\fn delta() void {}
+    ;
+    const alloc = std.testing.allocator;
+    const syms = extractSymbolsFromContent(alloc, content, 2);
+    defer syms.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 2), syms.items.len);
+    try std.testing.expectEqualStrings("alpha", syms.items[0]);
+    try std.testing.expectEqualStrings("beta", syms.items[1]);
 }
