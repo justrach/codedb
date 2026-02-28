@@ -244,4 +244,5 @@ test {
     _ = @import("auth.zig");
     _ = @import("rate_limit.zig");
     _ = @import("graph/tier_manager.zig");
+    _ = @import("graph/tenant.zig");
 }
