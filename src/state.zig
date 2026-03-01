@@ -80,16 +80,16 @@ pub fn slugify(alloc: std.mem.Allocator, title: []const u8) ![]u8 {
         }
     }
 
+    // Cap at 50 chars (trim in the ArrayList before toOwnedSlice so the
+    // returned allocation has the correct length and can be safely freed).
+    if (out.items.len > 50) out.items.len = 50;
+
     // Trim trailing hyphen
-    var result = try out.toOwnedSlice(alloc);
-    if (result.len > 0 and result[result.len - 1] == '-') {
-        result = result[0 .. result.len - 1];
+    while (out.items.len > 0 and out.items[out.items.len - 1] == '-') {
+        out.items.len -= 1;
     }
 
-    // Cap at 50 chars to keep branch names sane
-    if (result.len > 50) result = result[0..50];
-
-    return result;
+    return out.toOwnedSlice(alloc);
 }
 
 /// Validate a branch name against the naming convention.

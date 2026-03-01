@@ -1,8 +1,8 @@
 // gitagent-mcp — Tool definitions
 //
-// Implements all 21 GitHub workflow tools across 5 groups:
+// Implements all 22 GitHub workflow tools across 5 groups:
 //   Planning    → decompose_feature, get_project_state, get_next_task, prioritize_issues
-//   Issues      → create_issue, create_issues_batch, update_issue, close_issue, link_issues
+//   Issues      → create_issue, create_issues_batch, update_issue, close_issue, link_issues, get_issue
 //   Branches    → create_branch, get_current_branch, commit_with_context, push_branch
 //   Pull Reqs   → create_pr, get_pr_status, list_open_prs
 //   Analysis    → review_pr_impact, blast_radius, relevant_context, git_history_for, recently_changed
@@ -73,6 +73,7 @@ pub const Tool = enum {
     close_issues_batch,
     close_issue,
     link_issues,
+    get_issue,
     // Branches & commits
     create_branch,
     get_current_branch,
@@ -120,6 +121,7 @@ pub const tools_list =
     \\{"name":"close_issues_batch","description":"Close multiple issues at once. Each issue is marked status:done. Use this instead of calling close_issue N times.","inputSchema":{"type":"object","properties":{"issue_numbers":{"type":"array","items":{"type":"integer"},"description":"Issue numbers to close"},"pr_number":{"type":"integer","description":"PR number that resolves all these issues (optional)"}},"required":["issue_numbers"]}},
     \\{"name":"close_issue","description":"Close an issue and mark it status:done. Optionally reference the PR that resolved it.","inputSchema":{"type":"object","properties":{"issue_number":{"type":"integer"},"pr_number":{"type":"integer","description":"PR number that resolves this issue"}},"required":["issue_number"]}},
     \\{"name":"link_issues","description":"Mark one issue as blocked by others. Adds status:blocked to each blocked issue and writes dependency references into issue bodies.","inputSchema":{"type":"object","properties":{"issue_number":{"type":"integer","description":"The issue that blocks others"},"blocks":{"type":"array","items":{"type":"integer"},"description":"Issue numbers that are blocked by issue_number"}},"required":["issue_number","blocks"]}},
+    \\{"name":"get_issue","description":"Fetch a single GitHub issue by number. Returns title, body, state, labels, and comments. Use this to read any issue — including closed ones — when you only have the number.","inputSchema":{"type":"object","properties":{"issue_number":{"type":"integer","description":"Issue number to fetch"}},"required":["issue_number"]}},
     \\{"name":"create_branch","description":"Create a feature or fix branch linked to an issue. Branch name: {type}/{issue_number}-{slugified-title}. Sets status:in-progress on the issue.","inputSchema":{"type":"object","properties":{"issue_number":{"type":"integer"},"branch_type":{"type":"string","enum":["feature","fix"],"description":"Branch prefix type"}},"required":["issue_number"]}},
     \\{"name":"get_current_branch","description":"Return the current git branch name and the issue number parsed from it (null if not a convention branch).","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"commit_with_context","description":"Stage all changes and commit with a message referencing the current issue. Auto-detects issue number from branch name if not provided.","inputSchema":{"type":"object","properties":{"message":{"type":"string","description":"Commit message body"},"issue_number":{"type":"integer","description":"Issue to reference (auto-detected from branch if omitted)"}},"required":["message"]}},
@@ -171,6 +173,7 @@ pub fn dispatch(
         .close_issues_batch    => handleCloseIssuesBatch(alloc, args, out),
         .close_issue           => handleCloseIssue(alloc, args, out),
         .link_issues           => handleLinkIssues(alloc, args, out),
+        .get_issue             => handleGetIssue(alloc, args, out),
         // Branches & commits
         .create_branch         => handleCreateBranch(alloc, args, out),
         .get_current_branch    => handleGetCurrentBranch(alloc, args, out),
@@ -691,6 +694,33 @@ fn handleLinkIssues(
     }
     out.appendSlice(alloc, "]}") catch {};
 }
+
+fn handleGetIssue(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const num_val = args.get("issue_number") orelse {
+        writeErr(alloc, out, "missing issue_number"); return;
+    };
+    if (num_val != .integer) { writeErr(alloc, out, "issue_number must be integer"); return; }
+    var num_buf: [16]u8 = undefined;
+    const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{num_val.integer}) catch {
+        writeErr(alloc, out, "issue_number out of range"); return;
+    };
+
+    const r = gh.run(alloc, &.{
+        "gh", "issue", "view", num_str,
+        "--repo", currentRepo(),
+        "--json", "number,title,body,state,labels,url,comments",
+    }) catch |err| {
+        writeErr(alloc, out, gh.errorMessage(err)); return;
+    };
+    defer r.deinit(alloc);
+
+    out.appendSlice(alloc, std.mem.trim(u8, r.stdout, " \t\n\r")) catch {};
+}
+
 
 // ── Branches & commits ────────────────────────────────────────────────────────
 

@@ -15,12 +15,45 @@ const cas = @import("codex_appserver.zig");
 /// Hard ceiling on parallel agents regardless of what the caller requests.
 pub const HARD_MAX: u32 = 100;
 
+/// Prepended to every writable-worker prompt so agents use the correct muonry
+/// shell tools instead of falling back to sed/awk/patch/heredocs.
+const WRITABLE_PREAMBLE =
+    \\ENVIRONMENT: The following shell commands are on PATH and MUST be used for all file I/O:
+    \\
+    \\  zigrep  "pattern" path/          # search code (NOT ziggrep — the command is zigrep)
+    \\  zigread FILE                     # read file with line numbers
+    \\  zigread -o FILE                  # structural outline
+    \\  zigread -s SYMBOL FILE           # extract function by name
+    \\  zigread -L FROM-TO FILE          # read line range
+    \\  zigpatch FILE FROM-TO <<'EOF'    # replace line range (PREFERRED for edits)
+    \\    new content
+    \\  EOF
+    \\  zigpatch FILE -s SYMBOL <<'EOF'  # replace function by name (immune to line drift)
+    \\    new content
+    \\  EOF
+    \\  zigcreate FILE --content "..."   # create new file
+    \\  zigdiff FILE                     # verify edit landed correctly
+    \\
+    \\RULES:
+    \\  - NEVER use sed, awk, patch, tee, echo/printf redirects (>, >>), or heredocs to write files
+    \\  - NEVER write raw diff/patch syntax into source files
+    \\  - Always zigread before zigpatch; always zigdiff after zigpatch
+    \\  - One focused change per file; do not rewrite files wholesale
+    \\  - Cite file:line for every finding
+    \\
+    \\MCP TOOLS (also available): mcp__muonry__read, mcp__muonry__search, mcp__muonry__edit
+    \\
+    \\Task:
+    \\
+;
+
 // ── Worker ────────────────────────────────────────────────────────────────────
 
 const Worker = struct {
-    role:   []const u8,         // borrowed from parsed JSON (valid until parsed.deinit)
-    prompt: []const u8,         // borrowed from parsed JSON
-    out:    std.ArrayList(u8) = .empty,  // written by worker thread, freed by collector
+    role:             []const u8,        // borrowed from parsed JSON (valid until parsed.deinit)
+    prompt:           []const u8,        // borrowed from parsed JSON
+    allocated_prompt: ?[]u8 = null,      // non-null for writable workers; freed after thread join
+    out:              std.ArrayList(u8) = .empty,  // written by worker thread, freed by collector
 };
 
 const WorkerArgs = struct {
@@ -29,13 +62,28 @@ const WorkerArgs = struct {
 };
 
 fn workerFn(args: *WorkerArgs) void {
-    cas.runTurnPolicy(std.heap.page_allocator, args.worker.prompt, &args.worker.out, args.policy);
+    const prompt = args.worker.allocated_prompt orelse args.worker.prompt;
+    cas.runTurnPolicy(std.heap.page_allocator, prompt, &args.worker.out, args.policy);
+}
+
+/// Build the writable-worker preamble. Includes the resolved absolute path to
+/// the zig tools bin dir so agents don't need PATH to be perfect.
+fn buildPreamble(alloc: std.mem.Allocator) []u8 {
+    const tools_dir = cas.toolsBinDir();
+    const abs_note = if (tools_dir.len > 0)
+        std.fmt.allocPrint(alloc,
+            "TOOLS BIN: {s}  (absolute path — use this if bare names fail)\n\n",
+            .{tools_dir},
+        ) catch ""
+    else
+        "";
+    defer if (abs_note.len > 0) alloc.free(abs_note);
+    return std.fmt.allocPrint(alloc, "{s}{s}", .{ abs_note, WRITABLE_PREAMBLE }) catch
+        alloc.dupe(u8, WRITABLE_PREAMBLE) catch "";
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Run an agent swarm for `task`. Blocks until all sub-agents finish and
-/// the synthesis agent has written its result to `out`.
 /// Run an agent swarm for `task`. Blocks until all sub-agents finish and
 /// the synthesis agent has written its result to `out`.
 pub fn runSwarm(
@@ -52,7 +100,7 @@ pub fn runSwarm(
         "You are a task orchestrator. Decompose the task below into at most {d} " ++
         "independent, self-contained sub-tasks that can execute in parallel.\n" ++
         "Reply with ONLY a JSON array — no markdown, no prose:\n" ++
-        "[{{\"role\":\"<role label>\",\"prompt\":\"<full sub-task prompt>\"}},...]\n\n" ++
+        "[{{\"role\":\"<role label>\",\"prompt\":\"<full sub-task prompt>\"}},...]\\n\\n" ++
         "Task: {s}",
         .{ cap, task },
     ) catch { appendErr(alloc, out, "OOM: orchestrator prompt"); return; };
@@ -102,9 +150,19 @@ pub fn runSwarm(
         const obj   = switch (item) { .object => |o| o, else => continue };
         const p_val = obj.get("prompt") orelse continue;
         const r_val = obj.get("role")   orelse std.json.Value{ .string = "agent" };
+        const base  = switch (p_val) { .string => |s| s, else => continue };
+        // For writable workers, prepend the tool-use preamble (with resolved
+        // absolute tools path) so agents use zigrep/zigpatch instead of sed/awk.
+        const allocated: ?[]u8 = if (policy == .writable) blk: {
+            const preamble = buildPreamble(alloc);
+            const full = std.fmt.allocPrint(alloc, "{s}{s}", .{ preamble, base }) catch null;
+            alloc.free(preamble);
+            break :blk full;
+        } else null;
         workers[count] = .{
-            .role   = switch (r_val) { .string => |s| s, else => "agent" },
-            .prompt = switch (p_val) { .string => |s| s, else => continue },
+            .role             = switch (r_val) { .string => |s| s, else => "agent" },
+            .prompt           = base,
+            .allocated_prompt = allocated,
         };
         worker_args[count] = .{ .worker = &workers[count], .policy = policy };
         threads[count] = std.Thread.spawn(.{}, workerFn, .{&worker_args[count]}) catch null;
@@ -116,6 +174,10 @@ pub fn runSwarm(
     // ── Phase 3: Join all worker threads ──────────────────────────────────
     for (threads[0..count]) |maybe_t| {
         if (maybe_t) |t| t.join();
+    }
+    // Free preamble-prefixed prompts now that threads have finished.
+    for (workers[0..count]) |w| {
+        if (w.allocated_prompt) |p| alloc.free(p);
     }
 
     // ── Phase 4: Build synthesis prompt from worker results ───────────────
