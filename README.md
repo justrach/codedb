@@ -246,6 +246,11 @@ Labels are managed automatically as you use the tools:
 - Blast radius analysis, dependency-aware prioritization
 - Write-ahead log, binary storage with CRC32
 
+## Contributors
+
+- Rach Pradhan
+- Yuxi Lim
+
 ## License
 
-See [LICENSE](LICENSE) for details.
+This project is licensed under the GNU Affero General Public License, version 3 (AGPL-3.0). See [LICENSE](LICENSE) for the full terms.
