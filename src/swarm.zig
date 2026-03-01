@@ -15,12 +15,34 @@ const cas = @import("codex_appserver.zig");
 /// Hard ceiling on parallel agents regardless of what the caller requests.
 pub const HARD_MAX: u32 = 100;
 
+/// Prepended to every writable-worker prompt so agents use muonry MCP tools
+/// instead of raw shell commands (sed/awk/patch/heredocs) for file edits.
+const WRITABLE_PREAMBLE =
+    \\TOOLS: You have muonry MCP tools available. For ALL file operations use ONLY these:
+    \\  - Read:   zigread <file>  (or mcp__muonry__read)
+    \\  - Search: zigrep <pattern> <path>  (or mcp__muonry__search)
+    \\  - Edit:   zigpatch <file> <from>-<to>  (or mcp__muonry__edit, mode=symbol preferred)
+    \\  - Create: zigcreate <file>  (or mcp__muonry__create)
+    \\  - Verify: zigdiff <file>  (or mcp__muonry__diff) — run after EVERY edit
+    \\
+    \\NEVER use sed, awk, patch, echo-redirect, or shell heredocs to write files.
+    \\NEVER output raw diff/patch syntax into a source file.
+    \\
+    \\Workflow: zigread FILE → understand code → zigpatch FILE RANGE <<'EOF' ... EOF → zigdiff FILE
+    \\Always read a file before editing it. Always verify with zigdiff after editing.
+    \\Cite file:line for every finding. One focused change per file — do not rewrite files wholesale.
+    \\
+    \\Task:
+    \\
+;
+
 // ── Worker ────────────────────────────────────────────────────────────────────
 
 const Worker = struct {
-    role:   []const u8,         // borrowed from parsed JSON (valid until parsed.deinit)
-    prompt: []const u8,         // borrowed from parsed JSON
-    out:    std.ArrayList(u8) = .empty,  // written by worker thread, freed by collector
+    role:             []const u8,        // borrowed from parsed JSON (valid until parsed.deinit)
+    prompt:           []const u8,        // borrowed from parsed JSON
+    allocated_prompt: ?[]u8 = null,      // non-null for writable workers; freed after thread join
+    out:              std.ArrayList(u8) = .empty,  // written by worker thread, freed by collector
 };
 
 const WorkerArgs = struct {
@@ -29,13 +51,12 @@ const WorkerArgs = struct {
 };
 
 fn workerFn(args: *WorkerArgs) void {
-    cas.runTurnPolicy(std.heap.page_allocator, args.worker.prompt, &args.worker.out, args.policy);
+    const prompt = args.worker.allocated_prompt orelse args.worker.prompt;
+    cas.runTurnPolicy(std.heap.page_allocator, prompt, &args.worker.out, args.policy);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Run an agent swarm for `task`. Blocks until all sub-agents finish and
-/// the synthesis agent has written its result to `out`.
 /// Run an agent swarm for `task`. Blocks until all sub-agents finish and
 /// the synthesis agent has written its result to `out`.
 pub fn runSwarm(
@@ -52,7 +73,7 @@ pub fn runSwarm(
         "You are a task orchestrator. Decompose the task below into at most {d} " ++
         "independent, self-contained sub-tasks that can execute in parallel.\n" ++
         "Reply with ONLY a JSON array — no markdown, no prose:\n" ++
-        "[{{\"role\":\"<role label>\",\"prompt\":\"<full sub-task prompt>\"}},...]\n\n" ++
+        "[{{\"role\":\"<role label>\",\"prompt\":\"<full sub-task prompt>\"}},...]\\n\\n" ++
         "Task: {s}",
         .{ cap, task },
     ) catch { appendErr(alloc, out, "OOM: orchestrator prompt"); return; };
@@ -102,9 +123,17 @@ pub fn runSwarm(
         const obj   = switch (item) { .object => |o| o, else => continue };
         const p_val = obj.get("prompt") orelse continue;
         const r_val = obj.get("role")   orelse std.json.Value{ .string = "agent" };
+        const base  = switch (p_val) { .string => |s| s, else => continue };
+        // For writable workers, prepend the tool-use preamble so agents don't
+        // fall back to raw shell commands (sed/patch/heredocs) for file edits.
+        const allocated: ?[]u8 = if (policy == .writable)
+            std.fmt.allocPrint(alloc, "{s}{s}", .{ WRITABLE_PREAMBLE, base }) catch null
+        else
+            null;
         workers[count] = .{
-            .role   = switch (r_val) { .string => |s| s, else => "agent" },
-            .prompt = switch (p_val) { .string => |s| s, else => continue },
+            .role             = switch (r_val) { .string => |s| s, else => "agent" },
+            .prompt           = base,
+            .allocated_prompt = allocated,
         };
         worker_args[count] = .{ .worker = &workers[count], .policy = policy };
         threads[count] = std.Thread.spawn(.{}, workerFn, .{&worker_args[count]}) catch null;
@@ -116,6 +145,10 @@ pub fn runSwarm(
     // ── Phase 3: Join all worker threads ──────────────────────────────────
     for (threads[0..count]) |maybe_t| {
         if (maybe_t) |t| t.join();
+    }
+    // Free preamble-prefixed prompts now that threads have finished.
+    for (workers[0..count]) |w| {
+        if (w.allocated_prompt) |p| alloc.free(p);
     }
 
     // ── Phase 4: Build synthesis prompt from worker results ───────────────
