@@ -236,9 +236,13 @@ fn readLineAlloc(alloc: std.mem.Allocator, file: std.fs.File) ?[]u8 {
         const n = file.read(&buf) catch { line.deinit(alloc); return null; };
         if (n == 0) {
             if (line.items.len == 0) { line.deinit(alloc); return null; }
-            return line.toOwnedSlice(alloc) catch null;
+            const owned = line.toOwnedSlice(alloc) catch { line.deinit(alloc); return null; };
+            return owned;
         }
-        if (buf[0] == '\n') return line.toOwnedSlice(alloc) catch null;
+        if (buf[0] == '\n') {
+            const owned = line.toOwnedSlice(alloc) catch { line.deinit(alloc); return null; };
+            return owned;
+        }
         line.append(alloc, buf[0]) catch { line.deinit(alloc); return null; };
         if (line.items.len > 4 * 1024 * 1024) { line.deinit(alloc); return null; }
     }
