@@ -66,6 +66,22 @@ fn workerFn(args: *WorkerArgs) void {
     cas.runTurnPolicy(std.heap.page_allocator, prompt, &args.worker.out, args.policy);
 }
 
+/// Build the writable-worker preamble. Includes the resolved absolute path to
+/// the zig tools bin dir so agents don't need PATH to be perfect.
+fn buildPreamble(alloc: std.mem.Allocator) []u8 {
+    const tools_dir = cas.toolsBinDir();
+    const abs_note = if (tools_dir.len > 0)
+        std.fmt.allocPrint(alloc,
+            "TOOLS BIN: {s}  (absolute path — use this if bare names fail)\n\n",
+            .{tools_dir},
+        ) catch ""
+    else
+        "";
+    defer if (abs_note.len > 0) alloc.free(abs_note);
+    return std.fmt.allocPrint(alloc, "{s}{s}", .{ abs_note, WRITABLE_PREAMBLE }) catch
+        alloc.dupe(u8, WRITABLE_PREAMBLE) catch "";
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Run an agent swarm for `task`. Blocks until all sub-agents finish and
@@ -135,12 +151,14 @@ pub fn runSwarm(
         const p_val = obj.get("prompt") orelse continue;
         const r_val = obj.get("role")   orelse std.json.Value{ .string = "agent" };
         const base  = switch (p_val) { .string => |s| s, else => continue };
-        // For writable workers, prepend the tool-use preamble so agents use
-        // zigrep/zigpatch/zigread instead of sed/awk/patch/heredocs.
-        const allocated: ?[]u8 = if (policy == .writable)
-            std.fmt.allocPrint(alloc, "{s}{s}", .{ WRITABLE_PREAMBLE, base }) catch null
-        else
-            null;
+        // For writable workers, prepend the tool-use preamble (with resolved
+        // absolute tools path) so agents use zigrep/zigpatch instead of sed/awk.
+        const allocated: ?[]u8 = if (policy == .writable) blk: {
+            const preamble = buildPreamble(alloc);
+            const full = std.fmt.allocPrint(alloc, "{s}{s}", .{ preamble, base }) catch null;
+            alloc.free(preamble);
+            break :blk full;
+        } else null;
         workers[count] = .{
             .role             = switch (r_val) { .string => |s| s, else => "agent" },
             .prompt           = base,

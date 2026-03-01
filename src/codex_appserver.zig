@@ -1,14 +1,65 @@
 // codex_appserver.zig — Codex app-server JSON-RPC 2.0 client
 //
-// Spawns `codex app-server`, performs the initialize/thread/turn handshake,
-// streams `item/agentMessage/delta` notifications into `out`, and returns
-// when `turn/completed` is received.
+// Spawns `codex app-server` inside a login shell so the full user PATH
+// (including $HOME/bin, Homebrew, nix, etc.) is inherited regardless of
+// how gitagent-mcp itself was launched.  Also resolves the zig tools
+// directory once at startup and prepends it explicitly as a second line
+// of defence.
 //
 // Protocol: https://github.com/openai/codex/tree/main/codex-rs/app-server
 // Wire format: newline-delimited JSON, `"jsonrpc":"2.0"` header omitted.
 
 const std = @import("std");
 const mj  = @import("mcp").json;
+
+// ── Startup: resolve zig tools directory once ─────────────────────────────────
+//
+// Walks the current process PATH to find zigrep.  Cached after the first
+// call so every subsequent runTurnPolicy call is allocation-free here.
+const ToolsDir = struct {
+    var buf:     [std.fs.max_path_bytes]u8 = undefined;
+    var len:     usize = 0;
+    var found:   bool  = false;
+    var checked: bool  = false;
+    var mu:      std.Thread.Mutex = .{};
+
+    /// Returns the directory that contains zigrep, or null if not found.
+    /// Thread-safe; resolves at most once.
+    fn get() ?[]const u8 {
+        mu.lock();
+        defer mu.unlock();
+        if (checked) return if (found) buf[0..len] else null;
+        checked = true;
+        const path_env = std.process.getEnvVarOwned(
+            std.heap.page_allocator, "PATH",
+        ) catch return null;
+        defer std.heap.page_allocator.free(path_env);
+        var it = std.mem.splitScalar(u8, path_env, ':');
+        while (it.next()) |dir| {
+            var cbuf: [std.fs.max_path_bytes]u8 = undefined;
+            const candidate = std.fmt.bufPrint(
+                &cbuf, "{s}/zigrep", .{dir},
+            ) catch continue;
+            std.fs.accessAbsolute(candidate, .{}) catch continue;
+            const n = @min(dir.len, buf.len);
+            @memcpy(buf[0..n], dir[0..n]);
+            len = n;
+            found = true;
+            return buf[0..len];
+        }
+        return null;
+    }
+};
+
+/// Returns the resolved zig tools bin directory, or empty string if unknown.
+/// Exposed so swarm.zig can embed absolute paths in the WRITABLE_PREAMBLE.
+pub fn toolsBinDir() []const u8 {
+    return ToolsDir.get() orelse "";
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+pub const SandboxPolicy = enum { read_only, writable };
 
 /// Run a single agent turn via `codex app-server`.
 /// Blocks until `turn/completed`. Accumulated agent reply is appended to `out`.
@@ -20,9 +71,7 @@ pub fn runTurn(
     runTurnPolicy(alloc, prompt, out, .read_only);
 }
 
-pub const SandboxPolicy = enum { read_only, writable };
-
-/// Run a single agent turn via `codex app-server`.
+/// Run a single agent turn via `codex app-server` inside a login shell.
 /// Blocks until `turn/completed`. Accumulated agent reply is appended to `out`.
 pub fn runTurnPolicy(
     alloc:  std.mem.Allocator,
@@ -36,16 +85,37 @@ pub fn runTurnPolicy(
     };
     defer alloc.free(cwd);
 
-    // Build a child env that forwards the full current environment but
-    // prepends $HOME/bin to PATH so zigrep/zigread/zigpatch/zigdiff are
-    // findable inside each codex app-server subprocess.  Also ensures HOME
-    // is set so codex can locate ~/.codex/config.toml and connect to the
-    // muonry MCP server configured there.
+    // ── Option 1: resolve tools dir and inject into PATH ──────────────────
+    // Belt-and-suspenders: even if the login shell already has the right
+    // PATH, we explicitly prepend the resolved tools dir so zigrep/zigpatch
+    // etc. are always findable.
     var env_map = std.process.getEnvMap(alloc) catch std.process.EnvMap.init(alloc);
     defer env_map.deinit();
-    prependHomeBin(alloc, &env_map);
+    if (ToolsDir.get()) |tools_dir| {
+        const old_path = env_map.get("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
+        const new_path = std.fmt.allocPrint(
+            alloc, "{s}:{s}", .{ tools_dir, old_path },
+        ) catch null;
+        if (new_path) |np| {
+            defer alloc.free(np);
+            env_map.put("PATH", np) catch {};
+        }
+    }
 
-    var child = std.process.Child.init(&.{"codex", "app-server"}, alloc);
+    // ── Option 2: spawn via login shell ───────────────────────────────────
+    // `$SHELL -lc 'exec codex app-server'` loads .zshrc/.bash_profile so
+    // the full user PATH is inherited regardless of how gitagent-mcp was
+    // launched.  `exec` replaces the shell process so our stdio pipes
+    // attach directly to codex app-server.
+    const shell = std.process.getEnvVarOwned(alloc, "SHELL") catch
+        alloc.dupe(u8, "/bin/zsh") catch {
+            appendErr(alloc, out, "OOM: shell");
+            return;
+        };
+    defer alloc.free(shell);
+
+    const argv = [_][]const u8{ shell, "-lc", "exec codex app-server" };
+    var child = std.process.Child.init(&argv, alloc);
     child.stdin_behavior  = .Pipe;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Close;
@@ -54,8 +124,8 @@ pub fn runTurnPolicy(
         appendErr(alloc, out, "could not spawn codex app-server — is codex installed and on PATH?");
         return;
     };
-    defer _ = child.wait()  catch {};
-    defer _ = child.kill()  catch {};
+    defer _ = child.wait() catch {};
+    defer _ = child.kill() catch {};
 
     const proc_in  = child.stdin  orelse { appendErr(alloc, out, "no stdin pipe");  return; };
     const proc_out = child.stdout orelse { appendErr(alloc, out, "no stdout pipe"); return; };
@@ -90,7 +160,9 @@ pub fn runTurnPolicy(
         msg.appendSlice(alloc, ",\"cwd\":\"") catch return;
         mj.writeEscaped(alloc, &msg, cwd);
         msg.appendSlice(alloc, "\"}}") catch return;
-        writeMsgSlice(proc_in, msg.items) catch { appendErr(alloc, out, "write thread/start failed"); return; };
+        writeMsgSlice(proc_in, msg.items) catch {
+            appendErr(alloc, out, "write thread/start failed"); return;
+        };
     }
 
     const thread_id = readThreadId(alloc, proc_out) orelse {
@@ -110,7 +182,9 @@ pub fn runTurnPolicy(
         msg.appendSlice(alloc, "\",\"input\":[{\"type\":\"text\",\"text\":\"") catch return;
         mj.writeEscaped(alloc, &msg, prompt);
         msg.appendSlice(alloc, "\"}]}}") catch return;
-        writeMsgSlice(proc_in, msg.items) catch { appendErr(alloc, out, "write turn/start failed"); return; };
+        writeMsgSlice(proc_in, msg.items) catch {
+            appendErr(alloc, out, "write turn/start failed"); return;
+        };
     }
 
     // ── 5. Stream until turn/completed ────────────────────────────────────
@@ -129,7 +203,6 @@ fn writeMsgSlice(file: std.fs.File, s: []const u8) !void {
 }
 
 /// Read one newline-delimited line from a File. Returns owned slice; caller frees.
-/// Mirrors mcp-zig json.readLine — byte-by-byte, works on Zig 0.15.
 fn readLineAlloc(alloc: std.mem.Allocator, file: std.fs.File) ?[]u8 {
     var buf: [1]u8 = undefined;
     var line: std.ArrayList(u8) = .empty;
@@ -147,7 +220,6 @@ fn readLineAlloc(alloc: std.mem.Allocator, file: std.fs.File) ?[]u8 {
 
 // ── Protocol helpers ──────────────────────────────────────────────────────────
 
-/// Discard lines until a JSON-RPC response with `id == target_id` arrives.
 fn drainUntilId(alloc: std.mem.Allocator, rd: anytype, target_id: i64) bool {
     while (true) {
         const line = readLineAlloc(alloc, rd) orelse return false;
@@ -161,8 +233,6 @@ fn drainUntilId(alloc: std.mem.Allocator, rd: anytype, target_id: i64) bool {
     }
 }
 
-/// Read lines until the `id:1` (thread/start) response arrives.
-/// Returns an owned copy of `result.thread.id`, or null on failure.
 fn readThreadId(alloc: std.mem.Allocator, rd: anytype) ?[]u8 {
     while (true) {
         const line = readLineAlloc(alloc, rd) orelse return null;
@@ -171,12 +241,10 @@ fn readThreadId(alloc: std.mem.Allocator, rd: anytype) ?[]u8 {
         defer p.deinit();
         if (p.value != .object) continue;
         const obj = &p.value.object;
-        // Must be a response (has "id") to request 1.
         const id_v = obj.get("id") orelse continue;
         const id: i64 = switch (id_v) { .integer => |n| n, else => continue };
         if (id != 1) continue;
-        // Navigate result.thread.id
-        const result = obj.get("result")         orelse continue;
+        const result = obj.get("result")          orelse continue;
         if (result != .object) continue;
         const thread = result.object.get("thread") orelse continue;
         if (thread != .object) continue;
@@ -186,8 +254,6 @@ fn readThreadId(alloc: std.mem.Allocator, rd: anytype) ?[]u8 {
     }
 }
 
-/// Read notifications until `turn/completed`. Append `item/agentMessage/delta`
-/// text to `out`. On failure, append an error JSON object.
 fn streamTurn(alloc: std.mem.Allocator, rd: anytype, out: *std.ArrayList(u8)) void {
     while (true) {
         const line = readLineAlloc(alloc, rd) orelse return;
@@ -202,7 +268,6 @@ fn streamTurn(alloc: std.mem.Allocator, rd: anytype, out: *std.ArrayList(u8)) vo
         const method = method_v.string;
 
         if (std.mem.eql(u8, method, "item/agentMessage/delta")) {
-            // params.delta contains the streamed text chunk.
             const params = obj.get("params") orelse continue;
             if (params != .object) continue;
             const delta = params.object.get("delta") orelse continue;
@@ -211,7 +276,6 @@ fn streamTurn(alloc: std.mem.Allocator, rd: anytype, out: *std.ArrayList(u8)) vo
         }
 
         if (std.mem.eql(u8, method, "turn/completed")) {
-            // Check for failure and surface error message.
             const params = obj.get("params") orelse return;
             if (params != .object) return;
             const turn   = params.object.get("turn")   orelse return;
@@ -232,20 +296,6 @@ fn streamTurn(alloc: std.mem.Allocator, rd: anytype, out: *std.ArrayList(u8)) vo
 }
 
 // ── Error helper ──────────────────────────────────────────────────────────────
-
-/// Prepend $HOME/bin to PATH inside `env` so shell tools installed there
-/// (zigrep, zigread, zigpatch, zigcreate, zigdiff) are findable by the
-/// codex app-server child process.  Also guarantees HOME is present so
-/// codex can locate ~/.codex/config.toml and start the muonry MCP daemon.
-fn prependHomeBin(alloc: std.mem.Allocator, env: *std.process.EnvMap) void {
-    const home = env.get("HOME") orelse return;
-    const home_bin = std.fmt.allocPrint(alloc, "{s}/bin", .{home}) catch return;
-    defer alloc.free(home_bin);
-    const old_path = env.get("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
-    const new_path = std.fmt.allocPrint(alloc, "{s}:{s}", .{ home_bin, old_path }) catch return;
-    defer alloc.free(new_path);
-    env.put("PATH", new_path) catch {};
-}
 
 fn appendErr(alloc: std.mem.Allocator, out: *std.ArrayList(u8), msg: []const u8) void {
     out.appendSlice(alloc, "{\"error\":\"") catch return;
