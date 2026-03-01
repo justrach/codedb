@@ -26,6 +26,26 @@ class MCP:
         self.proc.stdin.write((json.dumps(obj) + "\n").encode())
         self.proc.stdin.flush()
 
+    def _send_raw(self, payload):
+        if isinstance(payload, str):
+            payload = payload.encode()
+        self.proc.stdin.write(payload)
+        self.proc.stdin.flush()
+
+    def send_raw_request(self, method, **kwargs):
+        self._n += 1
+        request = {
+            "id": self._n,
+            "jsonrpc": "2.0",
+            "method": method,
+        }
+        if kwargs:
+            request["params"] = kwargs
+        body = json.dumps(request).encode()
+        frame = f"Content-Length: {len(body)}\r\n\r\n".encode() + body
+        self._send_raw(frame)
+        return self._n
+
     def _recv(self):
         line = self.proc.stdout.readline()
         if not line: raise RuntimeError("MCP server closed")
@@ -74,6 +94,22 @@ def run():
     branch_name = None; pr_num = None; orig_branch = "main"
 
     try:
+        print("\n[1/5] Transport framing recovery")
+
+        s._send_raw(b"Content-Length: abc\r\n\r\n{}\r\n")
+        r = s._recv()
+        if not isinstance(r, dict) or "error" not in r or r["error"].get("code") != -32700:
+            fail("transport_invalid_framing", f"expected -32700 error frame response, got {r}")
+        else:
+            ok("transport_invalid_framing", "invalid header rejected")
+
+        header_id = s.send_raw_request("ping")
+        r = s._recv()
+        if isinstance(r, dict) and r.get("id") == header_id and "result" in r:
+            ok("transport_header_request", f"id={header_id}")
+        else:
+            fail("transport_header_request", f"expected result for id {header_id}, got {r}")
+
         print("\n[1/5] Read-only tools")
 
         r = s.call("get_project_state")
