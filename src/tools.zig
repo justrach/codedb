@@ -103,7 +103,7 @@ pub const tools_list =
     \\{"name":"run_reviewer","description":"Invoke the Codex reviewer subagent on the current branch. Checks errdefer gaps, RwLock ordering, Zig 0.15.x API misuse, and missing test coverage. Returns the agent's full findings.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"Override the default review prompt"}},"required":[]}},
     \\{"name":"run_explorer","description":"Invoke the Codex explorer subagent to trace execution paths through the codebase. Read-only — maps affected code paths and gathers evidence without proposing fixes.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"What to explore, e.g. 'trace how get_next_task flows through gh.zig'"}},"required":["prompt"]}},
     \\{"name":"run_zig_infra","description":"Invoke the Codex zig_infra subagent to review build.zig module graph, named @import wiring, and test step coverage.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"Override the default build wiring check prompt"}},"required":[]}},
-    \\{"name":"run_swarm","description":"Spawn a self-organizing swarm of parallel Codex sub-agents to tackle a task. An orchestrator agent decomposes the task into sub-tasks, up to max_agents run concurrently via Zig threads, and a synthesis agent combines their outputs. Best for broad research, multi-file analysis, multi-angle reviews, or any task that parallelises naturally.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"The high-level task for the swarm to solve"},"max_agents":{"type":"integer","description":"Maximum parallel sub-agents (default 5, hard cap 100)"}},"required":["prompt"]}}
+    \\{"name":"run_swarm","description":"Spawn a self-organizing swarm of parallel Codex sub-agents to tackle a task. An orchestrator agent decomposes the task into sub-tasks, up to max_agents run concurrently via Zig threads, and a synthesis agent combines their outputs. Set writable=true to allow agents to edit files (for bug fixes, refactors). Best for broad research, multi-file analysis, multi-angle reviews, or parallel bug fixing.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"The high-level task for the swarm to solve"},"max_agents":{"type":"integer","description":"Maximum parallel sub-agents (default 5, hard cap 100)"},"writable":{"type":"boolean","description":"Allow agents to edit files and run shell commands (default false = read-only analysis)"}},"required":["prompt"]}}
     \\]}
 ;
 
@@ -1708,6 +1708,7 @@ fn handleSetRepo(
 
 fn handleRunSwarm(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8)) void {
     const swarm = @import("swarm.zig");
+    const cas   = @import("codex_appserver.zig");
     const prompt = mj.getStr(args, "prompt") orelse {
         writeErr(alloc, out, "missing required argument: prompt");
         return;
@@ -1716,7 +1717,13 @@ fn handleRunSwarm(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
         if (args.get("max_agents")) |v| {
             if (v == .integer and v.integer > 0) break :blk @intCast(@min(v.integer, swarm.HARD_MAX));
         }
-        break :blk 5; // default
+        break :blk 5;
     };
-    swarm.runSwarm(alloc, prompt, max_agents, out);
+    const policy: cas.SandboxPolicy = blk: {
+        if (args.get("writable")) |v| {
+            if (v == .bool and v.bool) break :blk .writable;
+        }
+        break :blk .read_only;
+    };
+    swarm.runSwarm(alloc, prompt, max_agents, out, policy);
 }

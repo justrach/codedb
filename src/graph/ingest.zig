@@ -170,7 +170,6 @@ pub const Ingester = struct {
 
     fn addSymbol(self: *Ingester, name: []const u8, kind: SymbolKind, file_id: u32, line: u32, scope: []const u8) !void {
         const id = self.next_symbol_id;
-        self.next_symbol_id += 1;
         try self.graph.addSymbol(.{
             .id = id,
             .name = name,
@@ -180,6 +179,7 @@ pub const Ingester = struct {
             .col = 0,
             .scope = scope,
         });
+        self.next_symbol_id += 1;
     }
 };
 

@@ -72,6 +72,30 @@ fn appendLabel(alloc: std.mem.Allocator, name: []const u8, color: []const u8, de
     };
 }
 
+fn milestoneExists(title: []const u8) bool {
+    for (g_milestones.items) |ms| {
+        if (std.mem.eql(u8, ms.title, title)) return true;
+    }
+    return false;
+}
+
+fn appendMilestone(alloc: std.mem.Allocator, number: u32, title: []const u8, state: []const u8) void {
+    const title_owned = alloc.dupe(u8, title) catch return;
+    errdefer alloc.free(title_owned);
+
+    const state_owned = alloc.dupe(u8, state) catch return;
+    errdefer alloc.free(state_owned);
+
+    g_milestones.append(alloc, .{
+        .number = number,
+        .title = title_owned,
+        .state = state_owned,
+    }) catch {
+        alloc.free(title_owned);
+        alloc.free(state_owned);
+    };
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 pub const Label = struct {
@@ -131,6 +155,48 @@ pub fn prefetch(alloc: std.mem.Allocator) void {
         createMissingLabels(alloc);
     }
 
+    const milestones_r = gh.run(alloc, &.{
+        "gh", "milestone", "list", 
+        "--json", "number,title,state", 
+        "--state", "all"
+    }) catch null;
+    if (milestones_r) |r| {
+        defer r.deinit(alloc);
+        const parsed = std.json.parseFromSlice(std.json.Value, alloc, r.stdout, .{}) catch null;
+        if (parsed) |p| {
+            defer p.deinit();
+            if (p.value == .array) {
+                for (p.value.array.items) |item| {
+                    if (item != .object) continue;
+
+                    const number: u32 = blk: {
+                        const val = item.object.get("number") orelse continue;
+                        break :blk switch (val) {
+                            .integer => |i| if (i <= 0) continue else @as(u32, @intCast(i)),
+                            else => continue,
+                        };
+                    };
+                    const title = blk: {
+                        const val = item.object.get("title") orelse continue;
+                        break :blk switch (val) {
+                            .string => val.string,
+                            else => continue,
+                        };
+                    };
+                    const state = blk: {
+                        const val = item.object.get("state") orelse continue;
+                        break :blk switch (val) {
+                            .string => val.string,
+                            else => "",
+                        };
+                    };
+                    if (milestoneExists(title)) continue;
+                    appendMilestone(alloc, number, title, state);
+                }
+            }
+        }
+    }
+
     g_ready = true;
 }
 
@@ -175,4 +241,9 @@ pub fn invalidate() void {
         g_alloc.free(label.description);
     }
     g_labels.clearRetainingCapacity();
+    for (g_milestones.items) |ms| {
+        g_alloc.free(ms.title);
+        g_alloc.free(ms.state);
+    }
+    g_milestones.clearRetainingCapacity();
 }

@@ -40,11 +40,13 @@ pub const OpType = enum(u8) {
 pub const WalWriter = struct {
     buf: std.ArrayList(u8),
     alloc: std.mem.Allocator,
+    crc_start: usize = 0,  // tracks start of current record's payload (per-instance, not global)
 
     pub fn init(alloc: std.mem.Allocator) WalWriter {
         return .{
             .buf = .empty,
             .alloc = alloc,
+            .crc_start = 0,
         };
     }
 
@@ -120,18 +122,16 @@ pub const WalWriter = struct {
         self.buf.clearRetainingCapacity();
     }
 
-    // ── Internal helpers ────────────────────────────────────────────────
 
-    /// crc_start tracks where the current record's payload begins (after the op byte).
-    var crc_start: usize = 0;
+    // ── Internal helpers ────────────────────────────────────────────────
 
     fn beginRecord(self: *WalWriter, op: OpType) !void {
         try self.buf.append(self.alloc, @intFromEnum(op));
-        crc_start = self.buf.items.len;
+        self.crc_start = self.buf.items.len;
     }
 
     fn endRecord(self: *WalWriter) !void {
-        const payload = self.buf.items[crc_start..];
+        const payload = self.buf.items[self.crc_start..];
         const crc = std.hash.crc.Crc32.hash(payload);
         try self.buf.appendSlice(self.alloc, &std.mem.toBytes(crc));
     }
@@ -257,7 +257,7 @@ fn parseRecord(data: []const u8, start: usize, op_byte: u8) !ParseResult {
             const id = try readU64(data, &pos);
             const name = try readBytesView(data, &pos);
             if (pos >= data.len) return error.Truncated;
-            const kind: SymbolKind = @enumFromInt(data[pos]);
+            const kind: SymbolKind = std.meta.intToEnum(SymbolKind, data[pos]) catch return error.InvalidOp;
             pos += 1;
             const file_id = try readU32(data, &pos);
             const line = try readU32(data, &pos);

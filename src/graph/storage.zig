@@ -109,7 +109,7 @@ pub fn deserialize(reader: anytype, alloc: std.mem.Allocator) !CodeGraph {
         const id = try reader.readInt(u64, .little);
         const name = try readBytes(reader, alloc);
         defer alloc.free(name);
-        const kind: SymbolKind = @enumFromInt(try reader.readByte());
+        const kind: SymbolKind = std.meta.intToEnum(SymbolKind, try reader.readByte()) catch return error.InvalidFormat;
         const file_id = try reader.readInt(u32, .little);
         const line = try reader.readInt(u32, .little);
         const col = try reader.readInt(u16, .little);
@@ -132,7 +132,7 @@ pub fn deserialize(reader: anytype, alloc: std.mem.Allocator) !CodeGraph {
         const id = try reader.readInt(u32, .little);
         const path = try readBytes(reader, alloc);
         defer alloc.free(path);
-        const language: Language = @enumFromInt(try reader.readByte());
+        const language: Language = std.meta.intToEnum(Language, try reader.readByte()) catch return error.InvalidFormat;
         const last_modified = try reader.readInt(i64, .little);
         var hash: [32]u8 = undefined;
         try reader.readNoEof(&hash);
@@ -170,7 +170,7 @@ pub fn deserialize(reader: anytype, alloc: std.mem.Allocator) !CodeGraph {
     for (0..num_edges) |_| {
         const src = try reader.readInt(u64, .little);
         const dst = try reader.readInt(u64, .little);
-        const kind: EdgeKind = @enumFromInt(try reader.readByte());
+        const kind: EdgeKind = std.meta.intToEnum(EdgeKind, try reader.readByte()) catch return error.InvalidFormat;
         var weight_bytes: [4]u8 = undefined;
         try reader.readNoEof(&weight_bytes);
         const weight: f32 = @bitCast(weight_bytes);

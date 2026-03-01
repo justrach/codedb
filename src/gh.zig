@@ -79,8 +79,14 @@ pub fn run(alloc: std.mem.Allocator, argv: []const []const u8) GhError!GhResult 
     var stderr_ctx = DrainerCtx{ .alloc = alloc };
 
     // Spawn drainer threads BEFORE child.wait() to prevent pipe deadlock.
-    const t_out = std.Thread.spawn(.{}, drainThread, .{ &stdout_ctx, stdout_file }) catch null;
-    const t_err = std.Thread.spawn(.{}, drainThread, .{ &stderr_ctx, stderr_file }) catch null;
+    const t_out = std.Thread.spawn(.{}, drainThread, .{ &stdout_ctx, stdout_file }) catch blk: {
+        drainThread(&stdout_ctx, stdout_file);
+        break :blk null;
+    };
+    const t_err = std.Thread.spawn(.{}, drainThread, .{ &stderr_ctx, stderr_file }) catch blk: {
+        drainThread(&stderr_ctx, stderr_file);
+        break :blk null;
+    };
 
     // Join BEFORE child.wait(). Drainers reach EOF naturally when the child
     // exits and closes its write ends. child.wait() → cleanupStreams() then

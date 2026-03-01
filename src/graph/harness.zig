@@ -30,6 +30,7 @@ pub const Harness = struct {
     mode: QueryMode,
     socket_fd: ?std.posix.fd_t,
     graph_path: []const u8,
+    socket_path: []const u8,
     alloc: std.mem.Allocator,
 
     /// Initialize a new harness. Detects whether daemon mode is available
@@ -48,6 +49,7 @@ pub const Harness = struct {
             .mode = .local,
             .socket_fd = null,
             .graph_path = graph_path,
+            .socket_path = socket_path,
             .alloc = alloc,
         };
 
@@ -87,7 +89,7 @@ pub const Harness = struct {
         if (self.socket_fd != null) return true;
 
         // Attempt reconnection
-        const stream = std.net.connectUnixSocket(DAEMON_SOCKET_PATH) catch return false;
+        const stream = std.net.connectUnixSocket(self.socket_path) catch return false;
         self.socket_fd = stream.handle;
         return true;
     }
@@ -479,6 +481,7 @@ test "detectMode returns local when socket does not exist" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -492,6 +495,7 @@ test "fallbackToLocal switches mode" {
         .mode = .daemon,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
 
@@ -552,6 +556,7 @@ test "querySymbolAt returns error when no graph file" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = "nonexistent/graph.bin",
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -565,6 +570,7 @@ test "queryCallers returns error when no graph file" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = "nonexistent/graph.bin",
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -578,6 +584,7 @@ test "queryCallees returns error when no graph file" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = "nonexistent/graph.bin",
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -591,6 +598,7 @@ test "queryDependents returns error when no graph file" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = "nonexistent/graph.bin",
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -613,6 +621,7 @@ test "local query with in-memory graph via dispatchLocal" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -647,6 +656,7 @@ test "dispatchLocal returns error for invalid JSON" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -663,6 +673,7 @@ test "dispatchLocal returns error for unknown method" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -676,6 +687,7 @@ test "getMode returns current mode" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
 
@@ -692,6 +704,7 @@ test "dispatchLocal with missing params returns MissingParams" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -721,6 +734,7 @@ test "dispatchLocal shutdown returns ShutdownRequested" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -737,6 +751,7 @@ test "dispatchLocal with empty JSON object returns InvalidRequest" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -754,6 +769,7 @@ test "dispatchLocal with array JSON returns InvalidRequest" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -770,6 +786,7 @@ test "dispatchLocal symbol_at on empty graph returns empty symbols" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -788,6 +805,7 @@ test "dispatchLocal find_callers on empty graph returns empty results" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -806,6 +824,7 @@ test "dispatchLocal find_callees on empty graph returns empty results" {
         .mode = .local,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -821,6 +840,7 @@ test "mode detection with nonexistent socket path defaults to local" {
         .mode = .daemon,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
     defer h.deinit();
@@ -834,6 +854,7 @@ test "fallbackToLocal from daemon with null socket_fd" {
         .mode = .daemon,
         .socket_fd = null,
         .graph_path = GRAPH_PATH,
+        .socket_path = DAEMON_SOCKET_PATH,
         .alloc = std.testing.allocator,
     };
 
