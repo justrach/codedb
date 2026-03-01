@@ -227,13 +227,13 @@ fn writeResult(
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
 
-    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
+    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return writeStaticError(stdout);
     appendId(alloc, &buf, id);
-    buf.appendSlice(alloc, ",\"result\":") catch return;
+    buf.appendSlice(alloc, ",\"result\":") catch return writeStaticError(stdout);
     for (result) |c| {
-        if (c != '\n' and c != '\r') buf.append(alloc, c) catch return;
+        if (c != '\n' and c != '\r') buf.append(alloc, c) catch return writeStaticError(stdout);
     }
-    buf.appendSlice(alloc, "}\n") catch return;
+    buf.appendSlice(alloc, "}\n") catch return writeStaticError(stdout);
     stdout.writeAll(buf.items) catch {};
 }
 

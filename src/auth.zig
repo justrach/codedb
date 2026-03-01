@@ -164,7 +164,7 @@ fn checkTrial(alloc: std.mem.Allocator) AuthResult {
     // Parse started_at from JSON
     const started_at = parseStartedAt(content) orelse return noAuth();
     const now = std.time.timestamp();
-    const elapsed_days = @divTrunc(now - started_at, 86400);
+    const elapsed_days = @divTrunc(@max(now - started_at, 0), 86400);
     const remaining = TRIAL_DAYS - elapsed_days;
 
     if (remaining > 0) {

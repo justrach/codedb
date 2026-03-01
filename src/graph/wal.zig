@@ -257,7 +257,7 @@ fn parseRecord(data: []const u8, start: usize, op_byte: u8) !ParseResult {
             const id = try readU64(data, &pos);
             const name = try readBytesView(data, &pos);
             if (pos >= data.len) return error.Truncated;
-            const kind: SymbolKind = @enumFromInt(data[pos]);
+            const kind: SymbolKind = std.meta.intToEnum(SymbolKind, data[pos]) catch return error.InvalidOp;
             pos += 1;
             const file_id = try readU32(data, &pos);
             const line = try readU32(data, &pos);
