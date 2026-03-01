@@ -13,10 +13,12 @@ const std = @import("std");
 
 pub const GhResult = struct {
     stdout: []u8, // caller owns — free with alloc.free()
+    stderr: []u8, // caller owns — free with alloc.free()
     exit_code: u8,
 
     pub fn deinit(self: GhResult, alloc: std.mem.Allocator) void {
         alloc.free(self.stdout);
+        alloc.free(self.stderr);
     }
 };
 
@@ -65,6 +67,18 @@ fn drainThread(ctx: *DrainerCtx, file: std.fs.File) void {
 /// Spawn a gh subprocess, drain stdout+stderr concurrently, return result.
 /// argv[0] should be "gh" (found via PATH) or an absolute path.
 pub fn run(alloc: std.mem.Allocator, argv: []const []const u8) GhError!GhResult {
+    const result = try runWithOutput(alloc, argv);
+
+    if (result.exit_code != 0) {
+        const err = classifyError(result.stderr);
+        result.deinit(alloc);
+        return err;
+    }
+
+    return result;
+}
+
+pub fn runWithOutput(alloc: std.mem.Allocator, argv: []const []const u8) GhError!GhResult {
     var child = std.process.Child.init(argv, alloc);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
@@ -105,6 +119,7 @@ pub fn run(alloc: std.mem.Allocator, argv: []const []const u8) GhError!GhResult 
 
     if (stdout_ctx.oom or stderr_ctx.oom) {
         stdout_ctx.buf.deinit(alloc);
+        stderr_ctx.buf.deinit(alloc);
         return GhError.OutOfMemory;
     }
 
@@ -113,14 +128,19 @@ pub fn run(alloc: std.mem.Allocator, argv: []const []const u8) GhError!GhResult 
         else    => 1,
     };
 
-    if (exit_code != 0) {
-        const err = classifyError(stderr_ctx.buf.items);
-        stdout_ctx.buf.deinit(alloc);
-        return err;
-    }
+    const stdout = stdout_ctx.buf.toOwnedSlice(alloc) catch {
+        stdout_ctx.deinit(alloc);
+        stderr_ctx.buf.deinit(alloc);
+        return GhError.OutOfMemory;
+    };
+    const stderr = stderr_ctx.buf.toOwnedSlice(alloc) catch {
+        alloc.free(stdout);
+        return GhError.OutOfMemory;
+    };
 
     return GhResult{
-        .stdout    = stdout_ctx.buf.toOwnedSlice(alloc) catch return GhError.OutOfMemory,
+        .stdout    = stdout,
+        .stderr    = stderr,
         .exit_code = exit_code,
     };
 }
@@ -137,8 +157,7 @@ pub fn runJson(
 }
 
 // ── Error classifier ──────────────────────────────────────────────────────────
-
-fn classifyError(stderr: []const u8) GhError {
+pub fn classifyError(stderr: []const u8) GhError {
     if (containsAny(stderr, &.{ "not logged in", "authentication", "GITHUB_TOKEN" }))
         return GhError.AuthRequired;
     if (containsAny(stderr, &.{ "not found", "Could not resolve", "No such" }))

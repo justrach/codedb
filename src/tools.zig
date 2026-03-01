@@ -1151,8 +1151,10 @@ fn handleReviewPrImpact(
         // Search for references
         out.appendSlice(alloc, ",\"referenced_by\":[") catch {};
         if (tool != .none) {
-            var refs: std.ArrayList([]const u8) = search.searchRefs(alloc, tool, sym.name, sym.file) catch
-                .empty;
+            var refs: std.ArrayList([]const u8) = search.searchRefs(alloc, tool, sym.name, sym.file) catch |err| {
+                writeErr(alloc, out, gh.errorMessage(err));
+                return;
+            };
             defer {
                 for (refs.items) |ref_s| alloc.free(ref_s);
                 refs.deinit(alloc);
@@ -1232,7 +1234,10 @@ fn handleBlastRadius(
         out.appendSlice(alloc, "\",\"referenced_by\":[") catch {};
 
         if (tool != .none) {
-            var refs: std.ArrayList([]const u8) = search.searchRefs(alloc, tool, sym, file_arg) catch .empty;
+            var refs: std.ArrayList([]const u8) = search.searchRefs(alloc, tool, sym, file_arg) catch |err| {
+                writeErr(alloc, out, gh.errorMessage(err));
+                return;
+            };
             defer {
                 for (refs.items) |ref_s| alloc.free(ref_s);
                 refs.deinit(alloc);
@@ -1284,7 +1289,10 @@ fn handleRelevantContext(
     }
 
     for (extracted.items) |sym| {
-        var refs: std.ArrayList([]const u8) = search.searchRefs(alloc, tool, sym, file_arg) catch .empty;
+        var refs: std.ArrayList([]const u8) = search.searchRefs(alloc, tool, sym, file_arg) catch |err| {
+            writeErr(alloc, out, gh.errorMessage(err));
+            return;
+        };
         defer {
             for (refs.items) |ref_s| alloc.free(ref_s);
             refs.deinit(alloc);
