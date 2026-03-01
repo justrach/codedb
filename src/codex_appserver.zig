@@ -85,10 +85,9 @@ pub fn runTurnPolicy(
     };
     defer alloc.free(cwd);
 
-    // ── Option 1: resolve tools dir and inject into PATH ──────────────────
-    // Belt-and-suspenders: even if the login shell already has the right
-    // PATH, we explicitly prepend the resolved tools dir so zigrep/zigpatch
-    // etc. are always findable.
+    // Build env: full current environment with the resolved zig tools dir
+    // prepended to PATH (option 1).  If ToolsDir.get() returns null the env
+    // is still forwarded as-is — HOME is present so codex finds its config.
     var env_map = std.process.getEnvMap(alloc) catch std.process.EnvMap.init(alloc);
     defer env_map.deinit();
     if (ToolsDir.get()) |tools_dir| {
@@ -102,28 +101,55 @@ pub fn runTurnPolicy(
         }
     }
 
-    // ── Option 2: spawn via login shell ───────────────────────────────────
-    // `$SHELL -lc 'exec codex app-server'` loads .zshrc/.bash_profile so
-    // the full user PATH is inherited regardless of how gitagent-mcp was
-    // launched.  `exec` replaces the shell process so our stdio pipes
-    // attach directly to codex app-server.
-    const shell = std.process.getEnvVarOwned(alloc, "SHELL") catch
-        alloc.dupe(u8, "/bin/zsh") catch {
-            appendErr(alloc, out, "OOM: shell");
-            return;
-        };
-    defer alloc.free(shell);
-
-    const argv = [_][]const u8{ shell, "-lc", "exec codex app-server" };
-    var child = std.process.Child.init(&argv, alloc);
+    // ── Option 1: direct spawn ────────────────────────────────────────────
+    // Spawn `codex app-server` directly.  Fast path — no shell overhead.
+    var child = std.process.Child.init(&.{ "codex", "app-server" }, alloc);
     child.stdin_behavior  = .Pipe;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Close;
     child.env_map         = &env_map;
-    child.spawn() catch {
-        appendErr(alloc, out, "could not spawn codex app-server — is codex installed and on PATH?");
+
+    const spawned = child.spawn();
+    if (spawned) |_| {
+        // Option 1 succeeded — run the turn normally.
+        runTurn_(&child, alloc, cwd, prompt, policy, out);
+        return;
+    } else |_| {}
+
+    // ── Option 2: login shell fallback ────────────────────────────────────
+    // Direct spawn failed (codex not on current PATH).  Retry via the login
+    // shell so .zshrc/.bash_profile are sourced and the full user PATH is
+    // available.  `exec` replaces the shell with codex so our stdio pipes
+    // attach directly.
+    const shell = std.process.getEnvVarOwned(alloc, "SHELL") catch
+        alloc.dupe(u8, "/bin/zsh") catch {
+            appendErr(alloc, out, "could not spawn codex app-server — is codex on PATH?");
+            return;
+        };
+    defer alloc.free(shell);
+
+    const argv2 = [_][]const u8{ shell, "-lc", "exec codex app-server" };
+    var child2 = std.process.Child.init(&argv2, alloc);
+    child2.stdin_behavior  = .Pipe;
+    child2.stdout_behavior = .Pipe;
+    child2.stderr_behavior = .Close;
+    child2.env_map         = &env_map;
+    child2.spawn() catch {
+        appendErr(alloc, out, "could not spawn codex app-server via login shell — is codex installed?");
         return;
     };
+    runTurn_(&child2, alloc, cwd, prompt, policy, out);
+}
+
+/// Shared turn logic once a child process is spawned.
+fn runTurn_(
+    child:  *std.process.Child,
+    alloc:  std.mem.Allocator,
+    cwd:    []const u8,
+    prompt: []const u8,
+    policy: SandboxPolicy,
+    out:    *std.ArrayList(u8),
+) void {
     defer _ = child.wait() catch {};
     defer _ = child.kill() catch {};
 
@@ -145,7 +171,7 @@ pub fn runTurnPolicy(
         \\{"method":"initialized","params":{}}
     ) catch { appendErr(alloc, out, "write initialized failed"); return; };
 
-    // ── 3. thread/start (policy-dependent) ────────────────────────────────
+    // ── 3. thread/start ────────────────────────────────────────────────────
     {
         const policy_json: []const u8 = switch (policy) {
             .read_only => "{\"type\":\"readOnly\"}",
