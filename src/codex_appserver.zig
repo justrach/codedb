@@ -36,10 +36,20 @@ pub fn runTurnPolicy(
     };
     defer alloc.free(cwd);
 
+    // Build a child env that forwards the full current environment but
+    // prepends $HOME/bin to PATH so zigrep/zigread/zigpatch/zigdiff are
+    // findable inside each codex app-server subprocess.  Also ensures HOME
+    // is set so codex can locate ~/.codex/config.toml and connect to the
+    // muonry MCP server configured there.
+    var env_map = std.process.getEnvMap(alloc) catch std.process.EnvMap.init(alloc);
+    defer env_map.deinit();
+    prependHomeBin(alloc, &env_map);
+
     var child = std.process.Child.init(&.{"codex", "app-server"}, alloc);
     child.stdin_behavior  = .Pipe;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Close;
+    child.env_map         = &env_map;
     child.spawn() catch {
         appendErr(alloc, out, "could not spawn codex app-server — is codex installed and on PATH?");
         return;
@@ -222,6 +232,20 @@ fn streamTurn(alloc: std.mem.Allocator, rd: anytype, out: *std.ArrayList(u8)) vo
 }
 
 // ── Error helper ──────────────────────────────────────────────────────────────
+
+/// Prepend $HOME/bin to PATH inside `env` so shell tools installed there
+/// (zigrep, zigread, zigpatch, zigcreate, zigdiff) are findable by the
+/// codex app-server child process.  Also guarantees HOME is present so
+/// codex can locate ~/.codex/config.toml and start the muonry MCP daemon.
+fn prependHomeBin(alloc: std.mem.Allocator, env: *std.process.EnvMap) void {
+    const home = env.get("HOME") orelse return;
+    const home_bin = std.fmt.allocPrint(alloc, "{s}/bin", .{home}) catch return;
+    defer alloc.free(home_bin);
+    const old_path = env.get("PATH") orelse "/usr/local/bin:/usr/bin:/bin";
+    const new_path = std.fmt.allocPrint(alloc, "{s}:{s}", .{ home_bin, old_path }) catch return;
+    defer alloc.free(new_path);
+    env.put("PATH", new_path) catch {};
+}
 
 fn appendErr(alloc: std.mem.Allocator, out: *std.ArrayList(u8), msg: []const u8) void {
     out.appendSlice(alloc, "{\"error\":\"") catch return;

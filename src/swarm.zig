@@ -15,22 +15,33 @@ const cas = @import("codex_appserver.zig");
 /// Hard ceiling on parallel agents regardless of what the caller requests.
 pub const HARD_MAX: u32 = 100;
 
-/// Prepended to every writable-worker prompt so agents use muonry MCP tools
-/// instead of raw shell commands (sed/awk/patch/heredocs) for file edits.
+/// Prepended to every writable-worker prompt so agents use the correct muonry
+/// shell tools instead of falling back to sed/awk/patch/heredocs.
 const WRITABLE_PREAMBLE =
-    \\TOOLS: You have muonry MCP tools available. For ALL file operations use ONLY these:
-    \\  - Read:   zigread <file>  (or mcp__muonry__read)
-    \\  - Search: zigrep <pattern> <path>  (or mcp__muonry__search)
-    \\  - Edit:   zigpatch <file> <from>-<to>  (or mcp__muonry__edit, mode=symbol preferred)
-    \\  - Create: zigcreate <file>  (or mcp__muonry__create)
-    \\  - Verify: zigdiff <file>  (or mcp__muonry__diff) — run after EVERY edit
+    \\ENVIRONMENT: The following shell commands are on PATH and MUST be used for all file I/O:
     \\
-    \\NEVER use sed, awk, patch, echo-redirect, or shell heredocs to write files.
-    \\NEVER output raw diff/patch syntax into a source file.
+    \\  zigrep  "pattern" path/          # search code (NOT ziggrep — the command is zigrep)
+    \\  zigread FILE                     # read file with line numbers
+    \\  zigread -o FILE                  # structural outline
+    \\  zigread -s SYMBOL FILE           # extract function by name
+    \\  zigread -L FROM-TO FILE          # read line range
+    \\  zigpatch FILE FROM-TO <<'EOF'    # replace line range (PREFERRED for edits)
+    \\    new content
+    \\  EOF
+    \\  zigpatch FILE -s SYMBOL <<'EOF'  # replace function by name (immune to line drift)
+    \\    new content
+    \\  EOF
+    \\  zigcreate FILE --content "..."   # create new file
+    \\  zigdiff FILE                     # verify edit landed correctly
     \\
-    \\Workflow: zigread FILE → understand code → zigpatch FILE RANGE <<'EOF' ... EOF → zigdiff FILE
-    \\Always read a file before editing it. Always verify with zigdiff after editing.
-    \\Cite file:line for every finding. One focused change per file — do not rewrite files wholesale.
+    \\RULES:
+    \\  - NEVER use sed, awk, patch, tee, echo/printf redirects (>, >>), or heredocs to write files
+    \\  - NEVER write raw diff/patch syntax into source files
+    \\  - Always zigread before zigpatch; always zigdiff after zigpatch
+    \\  - One focused change per file; do not rewrite files wholesale
+    \\  - Cite file:line for every finding
+    \\
+    \\MCP TOOLS (also available): mcp__muonry__read, mcp__muonry__search, mcp__muonry__edit
     \\
     \\Task:
     \\
@@ -124,8 +135,8 @@ pub fn runSwarm(
         const p_val = obj.get("prompt") orelse continue;
         const r_val = obj.get("role")   orelse std.json.Value{ .string = "agent" };
         const base  = switch (p_val) { .string => |s| s, else => continue };
-        // For writable workers, prepend the tool-use preamble so agents don't
-        // fall back to raw shell commands (sed/patch/heredocs) for file edits.
+        // For writable workers, prepend the tool-use preamble so agents use
+        // zigrep/zigpatch/zigread instead of sed/awk/patch/heredocs.
         const allocated: ?[]u8 = if (policy == .writable)
             std.fmt.allocPrint(alloc, "{s}{s}", .{ WRITABLE_PREAMBLE, base }) catch null
         else
