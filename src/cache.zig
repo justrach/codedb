@@ -1,14 +1,10 @@
 // gitagent-mcp — Session cache
 //
-// Prefetches labels and milestones once per session (2 gh calls on startup).
-// All tool handlers read from this cache — no repeated gh calls for static data.
-// Issue reads (get_project_state) use a 60s TTL cache entry.
-//
-// Populated in main.zig on notifications/initialized — after MCP handshake.
-// See issue #3 for full implementation.
+// Prefetches labels and milestones once per MCP session and keeps them available
+// to all handlers for quicker, deterministic behavior.
 
 const std = @import("std");
-const gh  = @import("gh.zig");
+const gh = @import("gh.zig");
 
 const BootstrapLabel = struct {
     name: []const u8,
@@ -28,9 +24,50 @@ const default_labels = [_]BootstrapLabel{
     .{ .name = "priority:p3", .color = "0e8a16", .description = "Low priority" },
 };
 
+pub const Label = struct {
+    name: []const u8,
+    color: []const u8,
+    description: []const u8,
+};
+
+pub const Milestone = struct {
+    number: u32,
+    title: []const u8,
+    state: []const u8,
+};
+
+var g_mu: std.Thread.Mutex = .{};
+var g_ready: bool = false;
+var g_has_data: bool = false;
+var g_labels: std.ArrayList(Label) = .empty;
+var g_milestones: std.ArrayList(Milestone) = .empty;
+var g_alloc: std.mem.Allocator = undefined;
+
+fn clearCachedData() void {
+    for (g_labels.items) |lbl| {
+        g_alloc.free(lbl.name);
+        g_alloc.free(lbl.color);
+        g_alloc.free(lbl.description);
+    }
+    g_labels.clearAndFree(g_alloc);
+
+    for (g_milestones.items) |ms| {
+        g_alloc.free(ms.title);
+        g_alloc.free(ms.state);
+    }
+    g_milestones.clearAndFree(g_alloc);
+}
+
 fn labelExists(name: []const u8) bool {
     for (g_labels.items) |lbl| {
         if (std.mem.eql(u8, lbl.name, name)) return true;
+    }
+    return false;
+}
+
+fn milestoneExists(title: []const u8) bool {
+    for (g_milestones.items) |ms| {
+        if (std.mem.eql(u8, ms.title, title)) return true;
     }
     return false;
 }
@@ -72,13 +109,6 @@ fn appendLabel(alloc: std.mem.Allocator, name: []const u8, color: []const u8, de
     };
 }
 
-fn milestoneExists(title: []const u8) bool {
-    for (g_milestones.items) |ms| {
-        if (std.mem.eql(u8, ms.title, title)) return true;
-    }
-    return false;
-}
-
 fn appendMilestone(alloc: std.mem.Allocator, number: u32, title: []const u8, state: []const u8) void {
     const title_owned = alloc.dupe(u8, title) catch return;
     errdefer alloc.free(title_owned);
@@ -96,41 +126,16 @@ fn appendMilestone(alloc: std.mem.Allocator, number: u32, title: []const u8, sta
     };
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-pub const Label = struct {
-    name:        []const u8,
-    color:       []const u8,
-    description: []const u8,
-};
-
-pub const Milestone = struct {
-    number: u32,
-    title:  []const u8,
-    state:  []const u8,
-};
-
-// ── Global session state ──────────────────────────────────────────────────────
-// Single instance per server process. Guarded by a simple mutex for the
-// prefetch path (called once, from the MCP notification handler thread).
-
-var g_mu:         std.Thread.Mutex  = .{};
-var g_ready:      bool              = false;
-var g_labels:     std.ArrayList(Label)     = .empty;
-var g_milestones: std.ArrayList(Milestone) = .empty;
-var g_alloc:      std.mem.Allocator = undefined;
-
-// ── Public API ────────────────────────────────────────────────────────────────
-
 /// Called once on notifications/initialized. Fetches labels + milestones.
 /// Subsequent calls are no-ops (guarded by g_ready).
 pub fn prefetch(alloc: std.mem.Allocator) void {
     g_mu.lock();
     defer g_mu.unlock();
+
     if (g_ready) return;
     g_alloc = alloc;
 
-    // gh label list — ignore failure (e.g. no auth), tools degrade gracefully
+    var labels_ok = false;
     const labels_r = gh.run(alloc, &.{
         "gh", "label", "list",
         "--json", "name,color,description",
@@ -144,21 +149,24 @@ pub fn prefetch(alloc: std.mem.Allocator) void {
             if (p.value == .array) {
                 for (p.value.array.items) |item| {
                     if (item != .object) continue;
-                    const name  = if (item.object.get("name"))        |v| (if (v == .string) v.string else continue) else continue;
-                    const color = if (item.object.get("color"))       |v| (if (v == .string) v.string else "") else "";
-                    const desc  = if (item.object.get("description")) |v| (if (v == .string) v.string else "") else "";
+
+                    const name = if (item.object.get("name")) |v| if (v == .string) v.string else continue else continue;
+                    const color = if (item.object.get("color")) |v| if (v == .string) v.string else "" else "";
+                    const desc = if (item.object.get("description")) |v| if (v == .string) v.string else "" else "";
                     appendLabel(alloc, name, color, desc);
                 }
             }
         }
 
         createMissingLabels(alloc);
+        labels_ok = true;
     }
 
+    var milestones_ok = false;
     const milestones_r = gh.run(alloc, &.{
-        "gh", "milestone", "list", 
-        "--json", "number,title,state", 
-        "--state", "all"
+        "gh", "milestone", "list",
+        "--json", "number,title,state",
+        "--state", "all",
     }) catch null;
     if (milestones_r) |r| {
         defer r.deinit(alloc);
@@ -190,20 +198,31 @@ pub fn prefetch(alloc: std.mem.Allocator) void {
                             else => "",
                         };
                     };
+
                     if (milestoneExists(title)) continue;
                     appendMilestone(alloc, number, title, state);
                 }
             }
         }
+        milestones_ok = true;
+    }
+
+    if (!labels_ok or !milestones_ok) {
+        clearCachedData();
+        g_ready = false;
+        g_has_data = false;
+        return;
     }
 
     g_ready = true;
+    g_has_data = true;
 }
 
 /// Look up a label by name. Returns null if not in cache or cache not ready.
 pub fn getLabel(name: []const u8) ?Label {
     g_mu.lock();
     defer g_mu.unlock();
+
     if (!g_ready) return null;
     for (g_labels.items) |lbl| {
         if (std.mem.eql(u8, lbl.name, name)) return lbl;
@@ -215,6 +234,7 @@ pub fn getLabel(name: []const u8) ?Label {
 pub fn getMilestone(title: []const u8) ?Milestone {
     g_mu.lock();
     defer g_mu.unlock();
+
     if (!g_ready) return null;
     for (g_milestones.items) |ms| {
         if (std.mem.eql(u8, ms.title, title)) return ms;
@@ -233,17 +253,11 @@ pub fn isReady() bool {
 pub fn invalidate() void {
     g_mu.lock();
     defer g_mu.unlock();
-    if (!g_ready) return;
+
     g_ready = false;
-    for (g_labels.items) |label| {
-        g_alloc.free(label.name);
-        g_alloc.free(label.color);
-        g_alloc.free(label.description);
-    }
-    g_labels.clearRetainingCapacity();
-    for (g_milestones.items) |ms| {
-        g_alloc.free(ms.title);
-        g_alloc.free(ms.state);
-    }
-    g_milestones.clearRetainingCapacity();
+    if (!g_has_data) return;
+
+    clearCachedData();
+
+    g_has_data = false;
 }

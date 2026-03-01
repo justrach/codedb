@@ -7,7 +7,7 @@
 - **Agent Swarm** (`run_swarm`) — spawn up to 100 parallel Codex sub-agents via Zig threads. An orchestrator decomposes your task, workers execute in parallel, a synthesis agent combines results. 4–5× faster than sequential for broad research and multi-file analysis.
 - **Subagent Tools** — `run_reviewer`, `run_explorer`, `run_zig_infra` invoke specialized Codex agents directly as MCP tools
 - **Runtime Repo Switch** (`set_repo`) — change the active repository without restarting the server
-- **`--mcp` flag** — binary now requires explicit `--mcp` to enter MCP mode; auto-detects repo via `git rev-parse` when `REPO_PATH` is unset
+- MCP mode starts directly; `REPO_PATH` is optional when the binary can auto-detect via `git rev-parse`
 - **Codex app-server protocol** — subagents now use the full JSON-RPC 2.0 app-server protocol with streaming `item/agentMessage/delta` instead of blocking `codex exec`
 - **30 MCP tools** (up from 21)
 
@@ -21,6 +21,7 @@
 - **Write-Ahead Log** for crash recovery and deterministic replay
 - **Binary Storage Format** with CRC32 checksums and versioning
 - **Session Caching** for zero-latency GitHub label/milestone lookups
+- **Threaded repo sessions** (`thread_id`) so one MCP process can keep separate working repos per thread without requiring `repo` on every tool call
 
 ## Requirements
 
@@ -41,11 +42,47 @@ zig build
 
 ```bash
 # Explicit repo path
-REPO_PATH=/path/to/your/repo ./zig-out/bin/gitagent-mcp --mcp
+REPO_PATH=/path/to/your/repo ./zig-out/bin/gitagent-mcp
 
 # Auto-detect from git (must run inside a git repo)
-./zig-out/bin/gitagent-mcp --mcp
+./zig-out/bin/gitagent-mcp
 ```
+
+### Push safety checks (pre-push hook)
+
+Use the checked-in hook at `.githooks/pre-push` to run `zig build test` before every `git push`:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Use the checked-in hook at `.githooks/pre-commit` to run focused MCP protocol regression tests before every `git commit`:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+If you need an emergency push, skip checks with:
+
+```bash
+SKIP_MCP_TESTS=1 git push
+```
+
+Useful local test commands:
+
+- `zig build test-mcp` — MCP protocol regression tests (line/header framing parsing and framing selection)
+- `zig build test` — full unit test suite (including thread-context tests)
+- `zig build test -- --test-filter "thread"` — run only thread-related tests in `src/main.zig`
+
+### Threaded sessions (multi-repo / multi-user)
+
+- Send a stable `thread_id` once (inside `tools/call.params` or `tools/call.params.arguments`).
+- On the first call with that `thread_id`, include a one-time repo location in either:
+  - `working_directory`
+  - `repo_path`
+  - `repo`
+- On subsequent calls for the same `thread_id`, the server restores and reuses that thread's repo automatically.
+- Different `thread_id` values are kept separate (up to 32 active threads) with independent current-repo state.
 
 ### Test
 
@@ -64,7 +101,6 @@ Add to your Claude Code config (`~/.claude.json`):
     "gitagent": {
       "type": "stdio",
       "command": "/path/to/gitagent-mcp",
-      "args": ["--mcp"],
       "env": {
         "REPO_PATH": "/path/to/your/repo"
       }
@@ -183,7 +219,7 @@ run_swarm(prompt, max_agents=5)
 
 ```
 src/
-├── main.zig              # MCP server entry point (JSON-RPC 2.0 over stdio, --mcp flag)
+├── main.zig              # MCP server entry point (JSON-RPC 2.0 over stdio)
 ├── tools.zig             # All 30 tool implementations + dispatch
 ├── swarm.zig             # Agent swarm: orchestrator → N threads → synthesis
 ├── codex_appserver.zig   # Codex app-server JSON-RPC 2.0 client (streaming)
@@ -235,7 +271,7 @@ Labels are managed automatically as you use the tools:
 - `run_swarm`: parallel agent swarm via Zig threads (up to 100 agents)
 - `run_reviewer`, `run_explorer`, `run_zig_infra`: Codex subagent tools
 - `set_repo`: runtime repository switching without server restart
-- `--mcp` flag required to enter MCP mode; auto-detect repo via `git rev-parse`
+- MCP mode starts directly; repo auto-detection still uses `git rev-parse` when `REPO_PATH` is unset
 - Codex app-server JSON-RPC 2.0 protocol with streaming delta output
 - 30 tools total (up from 21)
 - Fix: spurious backslash-escapes in `tools_list` multiline strings
