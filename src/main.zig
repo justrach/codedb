@@ -130,8 +130,9 @@ fn run(alloc: std.mem.Allocator) void {
             handleInitialize(alloc, stdout, id);
         } else if (mj.eql(method, "notifications/initialized")) {
             // Warm the session cache now that the client is ready.
-            // Runs gh label list + milestones — 2 calls, <500ms.
+            // Also detect the current repo slug from the CWD git remote.
             cache.prefetch(alloc);
+            tools.detectAndUpdateRepo(alloc);
         } else if (mj.eql(method, "tools/list")) {
             writeResult(alloc, stdout, id, tools.tools_list);
         } else if (mj.eql(method, "tools/call")) {

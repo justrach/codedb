@@ -21,7 +21,42 @@ const graph_query = @import("graph/query.zig");
 const graph_mod   = @import("graph/graph.zig");
 const graph_store = @import("graph/storage.zig");
 
-const DEFAULT_REPO = "justrach/codedb";
+// ── Dynamic repo slug ─────────────────────────────────────────────────────────
+// Updated from CWD on startup (notifications/initialized) and on every set_repo.
+// MCP dispatch is single-threaded; mutex is belt-and-suspenders for drainer threads.
+var g_repo_mu:  std.Thread.Mutex = .{};
+var g_repo_buf: [512]u8          = undefined;
+var g_repo_len: usize            = 0;
+
+/// Returns the current GitHub repo slug (owner/repo).
+/// Falls back to "justrach/codedb" until detectAndUpdateRepo() is called.
+pub fn currentRepo() []const u8 {
+    g_repo_mu.lock();
+    defer g_repo_mu.unlock();
+    return if (g_repo_len == 0) "justrach/codedb" else g_repo_buf[0..g_repo_len];
+}
+
+fn setCurrentRepo(slug: []const u8) void {
+    if (slug.len == 0 or slug.len > g_repo_buf.len) return;
+    g_repo_mu.lock();
+    defer g_repo_mu.unlock();
+    @memcpy(g_repo_buf[0..slug.len], slug);
+    g_repo_len = slug.len;
+}
+
+/// Detect the GitHub repo slug from the CWD git remote and update the global.
+/// Call after any chdir to keep --repo in sync with the active repository.
+pub fn detectAndUpdateRepo(alloc: std.mem.Allocator) void {
+    const result = gh.run(alloc, &.{ "gh", "repo", "view", "--json", "nameWithOwner" }) catch return;
+    defer result.deinit(alloc);
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, result.stdout, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value == .object) {
+        if (parsed.value.object.get("nameWithOwner")) |v| {
+            if (v == .string) setCurrentRepo(v.string);
+        }
+    }
+}
 
 // ── Step 1: Tool enum ─────────────────────────────────────────────────────────
 
@@ -35,6 +70,7 @@ pub const Tool = enum {
     create_issue,
     create_issues_batch,
     update_issue,
+    close_issues_batch,
     close_issue,
     link_issues,
     // Branches & commits
@@ -81,6 +117,7 @@ pub const tools_list =
     \\{"name":"create_issue","description":"Create a single GitHub issue with title, body, labels, and optional milestone. Automatically applies status:backlog if no status label is provided.","inputSchema":{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"milestone":{"type":"string"},"parent_issue":{"type":"integer","description":"Issue number this is a subtask of"}},"required":["title"]}},
     \\{"name":"create_issues_batch","description":"Create multiple GitHub issues in one call. Issues are fired concurrently in batches of 5 with a 200ms collection window. Use this after decompose_feature to create all issues at once.","inputSchema":{"type":"object","properties":{"issues":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"milestone":{"type":"string"}},"required":["title"]}}},"required":["issues"]}},
     \\{"name":"update_issue","description":"Update an existing issue's title, body, or labels.","inputSchema":{"type":"object","properties":{"issue_number":{"type":"integer"},"title":{"type":"string"},"body":{"type":"string"},"add_labels":{"type":"array","items":{"type":"string"}},"remove_labels":{"type":"array","items":{"type":"string"}}},"required":["issue_number"]}},
+    \\{"name":"close_issues_batch","description":"Close multiple issues at once. Each issue is marked status:done. Use this instead of calling close_issue N times.","inputSchema":{"type":"object","properties":{"issue_numbers":{"type":"array","items":{"type":"integer"},"description":"Issue numbers to close"},"pr_number":{"type":"integer","description":"PR number that resolves all these issues (optional)"}},"required":["issue_numbers"]}},
     \\{"name":"close_issue","description":"Close an issue and mark it status:done. Optionally reference the PR that resolved it.","inputSchema":{"type":"object","properties":{"issue_number":{"type":"integer"},"pr_number":{"type":"integer","description":"PR number that resolves this issue"}},"required":["issue_number"]}},
     \\{"name":"link_issues","description":"Mark one issue as blocked by others. Adds status:blocked to each blocked issue and writes dependency references into issue bodies.","inputSchema":{"type":"object","properties":{"issue_number":{"type":"integer","description":"The issue that blocks others"},"blocks":{"type":"array","items":{"type":"integer"},"description":"Issue numbers that are blocked by issue_number"}},"required":["issue_number","blocks"]}},
     \\{"name":"create_branch","description":"Create a feature or fix branch linked to an issue. Branch name: {type}/{issue_number}-{slugified-title}. Sets status:in-progress on the issue.","inputSchema":{"type":"object","properties":{"issue_number":{"type":"integer"},"branch_type":{"type":"string","enum":["feature","fix"],"description":"Branch prefix type"}},"required":["issue_number"]}},
@@ -131,6 +168,7 @@ pub fn dispatch(
         .create_issue          => handleCreateIssue(alloc, args, out),
         .create_issues_batch   => handleCreateIssuesBatch(alloc, args, out),
         .update_issue          => handleUpdateIssue(alloc, args, out),
+        .close_issues_batch    => handleCloseIssuesBatch(alloc, args, out),
         .close_issue           => handleCloseIssue(alloc, args, out),
         .link_issues           => handleLinkIssues(alloc, args, out),
         // Branches & commits
@@ -185,7 +223,7 @@ fn handleDecomposeFeature(
     };
     const labels_r = gh.run(alloc, &.{
         "gh", "label", "list",
-        "--repo", DEFAULT_REPO,
+        "--repo", currentRepo(),
         "--json", "name,description,color",
         "--limit", "100",
     }) catch null;
@@ -212,7 +250,7 @@ fn handleGetProjectState(
     _ = args;
     const issues_r = gh.run(alloc, &.{
         "gh", "issue", "list",
-        "--repo", DEFAULT_REPO,
+        "--repo", currentRepo(),
         "--json", "number,title,labels,state,url",
         "--limit", "200",
     }) catch |err| {
@@ -223,7 +261,7 @@ fn handleGetProjectState(
 
     const prs_r = gh.run(alloc, &.{
         "gh", "pr", "list",
-        "--repo", DEFAULT_REPO,
+        "--repo", currentRepo(),
         "--json", "number,title,state,headRefName,url",
         "--limit", "50",
     }) catch |err| {
@@ -251,7 +289,7 @@ fn handleGetNextTask(
     // Lightweight fetch — just number + labels needed for priority + block filtering
     const parsed = gh.runJson(alloc, &.{
         "gh", "issue", "list",
-        "--repo", DEFAULT_REPO,
+        "--repo", currentRepo(),
         "--label", "status:backlog",
         "--json", "number,labels",
         "--limit", "100",
@@ -301,7 +339,7 @@ fn handleGetNextTask(
     const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{num}) catch return;
     const detail_r = gh.run(alloc, &.{
         "gh", "issue", "view", num_str,
-        "--repo", DEFAULT_REPO,
+        "--repo", currentRepo(),
         "--json", "number,title,body,labels,url,state",
     }) catch |err| {
         writeErr(alloc, out, gh.errorMessage(err));
@@ -334,14 +372,14 @@ fn handlePrioritizeIssues(
         // Strip old priority labels (ignore error — label may not exist)
         const rm = gh.run(alloc, &.{
             "gh", "issue", "edit", num_str,
-            "--repo", DEFAULT_REPO,
+            "--repo", currentRepo(),
             "--remove-label", "priority:p0,priority:p1,priority:p2,priority:p3",
         }) catch null;
         if (rm) |r| r.deinit(alloc);
 
         const r = gh.run(alloc, &.{
             "gh", "issue", "edit", num_str, "--add-label", prio,
-            "--repo", DEFAULT_REPO,
+            "--repo", currentRepo(),
         }) catch |err| {
             if (!first) out.appendSlice(alloc, ",") catch {};
             first = false;
@@ -393,7 +431,7 @@ fn handleCreateIssue(
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(alloc);
     // Note: gh issue create does NOT support --json; stdout is the new issue URL
-    argv.appendSlice(alloc, &.{ "gh", "issue", "create", "--repo", DEFAULT_REPO, "--title", title, "--body", body }) catch return;
+    argv.appendSlice(alloc, &.{ "gh", "issue", "create", "--repo", currentRepo(), "--title", title, "--body", body }) catch return;
 
     var has_status = false;
     if (args.get("labels")) |lv| {
@@ -476,7 +514,7 @@ fn handleUpdateIssue(
 
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(alloc);
-    argv.appendSlice(alloc, &.{ "gh", "issue", "edit", num_str, "--repo", DEFAULT_REPO }) catch return;
+    argv.appendSlice(alloc, &.{ "gh", "issue", "edit", num_str, "--repo", currentRepo() }) catch return;
 
     if (mj.getStr(args, "title")) |t| argv.appendSlice(alloc, &.{ "--title", t }) catch return;
     if (mj.getStr(args, "body"))  |b| argv.appendSlice(alloc, &.{ "--body",  b }) catch return;
@@ -510,6 +548,40 @@ fn handleUpdateIssue(
     out.appendSlice(alloc, s) catch {};
 }
 
+
+fn handleCloseIssuesBatch(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const numbers_val = args.get("issue_numbers") orelse {
+        writeErr(alloc, out, "missing issue_numbers array"); return;
+    };
+    if (numbers_val != .array) { writeErr(alloc, out, "issue_numbers must be array"); return; }
+
+    out.appendSlice(alloc, "[") catch return;
+    var first = true;
+    for (numbers_val.array.items) |item| {
+        if (item != .integer) continue;
+
+        // Build a synthetic single-issue args map
+        var single_map = std.json.ObjectMap.init(alloc);
+        defer single_map.deinit();
+        single_map.put("issue_number", item) catch continue;
+        // Forward optional pr_number if provided
+        if (args.get("pr_number")) |pr| single_map.put("pr_number", pr) catch {};
+
+        var single_out: std.ArrayList(u8) = .empty;
+        defer single_out.deinit(alloc);
+        handleCloseIssue(alloc, &single_map, &single_out);
+
+        if (!first) out.appendSlice(alloc, ",") catch {};
+        first = false;
+        out.appendSlice(alloc, single_out.items) catch {};
+    }
+    out.appendSlice(alloc, "]") catch {};
+}
+
 fn handleCloseIssue(
     alloc: std.mem.Allocator,
     args: *const std.json.ObjectMap,
@@ -527,12 +599,12 @@ fn handleCloseIssue(
         if (pr_val == .integer) {
             var comment_buf: [64]u8 = undefined;
             const comment = std.fmt.bufPrint(&comment_buf, "Resolved by PR #{d}.", .{pr_val.integer}) catch "";
-            const cr = gh.run(alloc, &.{ "gh", "issue", "comment", num_str, "--repo", DEFAULT_REPO, "--body", comment }) catch null;
+            const cr = gh.run(alloc, &.{ "gh", "issue", "comment", num_str, "--repo", currentRepo(), "--body", comment }) catch null;
             if (cr) |r| r.deinit(alloc);
         }
     }
 
-    const close_r = gh.run(alloc, &.{ "gh", "issue", "close", num_str, "--repo", DEFAULT_REPO }) catch |err| {
+    const close_r = gh.run(alloc, &.{ "gh", "issue", "close", num_str, "--repo", currentRepo() }) catch |err| {
         writeErr(alloc, out, gh.errorMessage(err)); return;
     };
     close_r.deinit(alloc);
@@ -540,7 +612,7 @@ fn handleCloseIssue(
     // Transition label: remove all status labels, apply status:done
     const edit_r = gh.run(alloc, &.{
         "gh", "issue", "edit", num_str,
-        "--repo", DEFAULT_REPO,
+        "--repo", currentRepo(),
         "--remove-label", "status:backlog,status:in-progress,status:in-review,status:blocked",
         "--add-label",    "status:done",
     }) catch null;
@@ -593,7 +665,7 @@ fn handleLinkIssues(
     var blocker_buf: [16]u8 = undefined;
     const blocker_str = std.fmt.bufPrint(&blocker_buf, "{d}", .{blocker}) catch "?";
     const bc = gh.run(alloc, &.{
-        "gh", "issue", "comment", blocker_str, "--repo", DEFAULT_REPO, "--body", comment.items,
+        "gh", "issue", "comment", blocker_str, "--repo", currentRepo(), "--body", comment.items,
     }) catch null;
     if (bc) |r| r.deinit(alloc);
 
@@ -604,13 +676,13 @@ fn handleLinkIssues(
     for (0..count) |i| {
         const ns = num_strs[i];
         const edit_r = gh.run(alloc, &.{
-            "gh", "issue", "edit", ns, "--repo", DEFAULT_REPO, "--add-label", "status:blocked",
+            "gh", "issue", "edit", ns, "--repo", currentRepo(), "--add-label", "status:blocked",
         }) catch null;
         if (edit_r) |r| r.deinit(alloc);
 
         var cb_buf: [64]u8 = undefined;
         const cb = std.fmt.bufPrint(&cb_buf, "Blocked by: #{s}.", .{blocker_str}) catch "";
-        const cr = gh.run(alloc, &.{ "gh", "issue", "comment", ns, "--repo", DEFAULT_REPO, "--body", cb }) catch null;
+        const cr = gh.run(alloc, &.{ "gh", "issue", "comment", ns, "--repo", currentRepo(), "--body", cb }) catch null;
         if (cr) |r| r.deinit(alloc);
 
         if (!first) out.appendSlice(alloc, ",") catch {};
@@ -638,7 +710,7 @@ fn handleCreateBranch(
     // Fetch issue title
     const issue_r = gh.run(alloc, &.{
         "gh", "issue", "view", num_str, "--json", "title",
-        "--repo", DEFAULT_REPO,
+        "--repo", currentRepo(),
     }) catch |err| { writeErr(alloc, out, gh.errorMessage(err)); return; };
     defer issue_r.deinit(alloc);
 
@@ -673,7 +745,7 @@ fn handleCreateBranch(
     // Transition issue to in-progress
     const edit_r = gh.run(alloc, &.{
         "gh", "issue", "edit", num_str,
-        "--repo", DEFAULT_REPO,
+        "--repo", currentRepo(),
         "--remove-label", "status:backlog,status:blocked",
         "--add-label",    "status:in-progress",
     }) catch null;
@@ -813,7 +885,7 @@ fn handleCreatePr(
         if (issue_num) |n| {
             var nb: [16]u8 = undefined;
             const ns = std.fmt.bufPrint(&nb, "{d}", .{n}) catch break :blk branch;
-            const ir = gh.run(alloc, &.{ "gh", "issue", "view", ns, "--repo", DEFAULT_REPO, "--json", "title,body" }) catch break :blk branch;
+            const ir = gh.run(alloc, &.{ "gh", "issue", "view", ns, "--repo", currentRepo(), "--json", "title,body" }) catch break :blk branch;
             defer ir.deinit(alloc);
             const ip = std.json.parseFromSlice(std.json.Value, alloc, ir.stdout, .{}) catch break :blk branch;
             defer ip.deinit();
@@ -856,7 +928,7 @@ fn handleCreatePr(
 
     const pr_r = gh.run(alloc, &.{
         "gh", "pr", "create",
-        "--repo", DEFAULT_REPO,
+        "--repo", currentRepo(),
         "--base",  "main",
         "--head",  branch,
         "--title", title,
@@ -876,7 +948,7 @@ fn handleCreatePr(
         const ns = std.fmt.bufPrint(&nb, "{d}", .{n}) catch "";
         const er = gh.run(alloc, &.{
             "gh", "issue", "edit", ns,
-            "--repo", DEFAULT_REPO,
+            "--repo", currentRepo(),
             "--remove-label", "status:in-progress",
             "--add-label",    "status:in-review",
         }) catch null;
@@ -907,11 +979,11 @@ fn handleGetPrStatus(
                 const ns = std.fmt.bufPrint(&nb, "{d}", .{pv.integer}) catch {
                     writeErr(alloc, out, "bad pr_number"); return;
                 };
-                break :blk gh.run(alloc, &.{ "gh", "pr", "view", ns, "--repo", DEFAULT_REPO, "--json", fields });
+                break :blk gh.run(alloc, &.{ "gh", "pr", "view", ns, "--repo", currentRepo(), "--json", fields });
             }
         }
         // Default: PR for current branch
-        break :blk gh.run(alloc, &.{ "gh", "pr", "view", "--repo", DEFAULT_REPO, "--json", fields });
+        break :blk gh.run(alloc, &.{ "gh", "pr", "view", "--repo", currentRepo(), "--json", fields });
     } catch |err| { writeErr(alloc, out, gh.errorMessage(err)); return; };
     defer r.deinit(alloc);
     out.appendSlice(alloc, std.mem.trim(u8, r.stdout, " \t\n\r")) catch {};
@@ -925,7 +997,7 @@ fn handleListOpenPrs(
     _ = args;
     const r = gh.run(alloc, &.{
         "gh", "pr", "list",
-        "--repo", DEFAULT_REPO,
+        "--repo", currentRepo(),
         "--json", "number,title,state,headRefName,url,statusCheckRollup",
         "--limit", "50",
     }) catch |err| { writeErr(alloc, out, gh.errorMessage(err)); return; };
@@ -1697,9 +1769,10 @@ fn handleSetRepo(
         writeErr(alloc, out, s);
         return;
     };
-    // Invalidate then re-prime the cache for the new repo
+    // Invalidate cache, re-prime for new repo, detect GitHub slug
     cache.invalidate();
     cache.prefetch(alloc);
+    detectAndUpdateRepo(alloc);
     // Return success
     out.appendSlice(alloc, "{\"ok\":true,\"repo\":\"") catch return;
     mj.writeEscaped(alloc, out, path);
