@@ -40,11 +40,13 @@ pub const OpType = enum(u8) {
 pub const WalWriter = struct {
     buf: std.ArrayList(u8),
     alloc: std.mem.Allocator,
+    crc_start: usize = 0,  // tracks start of current record's payload (per-instance, not global)
 
     pub fn init(alloc: std.mem.Allocator) WalWriter {
         return .{
             .buf = .empty,
             .alloc = alloc,
+            .crc_start = 0,
         };
     }
 
@@ -120,18 +122,16 @@ pub const WalWriter = struct {
         self.buf.clearRetainingCapacity();
     }
 
-    // ── Internal helpers ────────────────────────────────────────────────
 
-    /// crc_start tracks where the current record's payload begins (after the op byte).
-    var crc_start: usize = 0;
+    // ── Internal helpers ────────────────────────────────────────────────
 
     fn beginRecord(self: *WalWriter, op: OpType) !void {
         try self.buf.append(self.alloc, @intFromEnum(op));
-        crc_start = self.buf.items.len;
+        self.crc_start = self.buf.items.len;
     }
 
     fn endRecord(self: *WalWriter) !void {
-        const payload = self.buf.items[crc_start..];
+        const payload = self.buf.items[self.crc_start..];
         const crc = std.hash.crc.Crc32.hash(payload);
         try self.buf.appendSlice(self.alloc, &std.mem.toBytes(crc));
     }

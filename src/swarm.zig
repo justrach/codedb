@@ -23,13 +23,19 @@ const Worker = struct {
     out:    std.ArrayList(u8) = .empty,  // written by worker thread, freed by collector
 };
 
-fn workerFn(w: *Worker) void {
-    // Each worker owns its own page_allocator-backed memory; no lock needed.
-    cas.runTurn(std.heap.page_allocator, w.prompt, &w.out);
+const WorkerArgs = struct {
+    worker: *Worker,
+    policy: cas.SandboxPolicy,
+};
+
+fn workerFn(args: *WorkerArgs) void {
+    cas.runTurnPolicy(std.heap.page_allocator, args.worker.prompt, &args.worker.out, args.policy);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Run an agent swarm for `task`. Blocks until all sub-agents finish and
+/// the synthesis agent has written its result to `out`.
 /// Run an agent swarm for `task`. Blocks until all sub-agents finish and
 /// the synthesis agent has written its result to `out`.
 pub fn runSwarm(
@@ -37,6 +43,7 @@ pub fn runSwarm(
     task:       []const u8,
     max_agents: u32,
     out:        *std.ArrayList(u8),
+    policy:     cas.SandboxPolicy,
 ) void {
     const cap: usize = @min(max_agents, HARD_MAX);
 
@@ -53,7 +60,7 @@ pub fn runSwarm(
 
     var orch_out: std.ArrayList(u8) = .empty;
     defer orch_out.deinit(alloc);
-    cas.runTurn(alloc, orch_prompt, &orch_out);
+    cas.runTurnPolicy(alloc, orch_prompt, &orch_out, .read_only); // orchestrator only reads
 
     // ── Phase 2: Parse sub-tasks from orchestrator output ─────────────────
     const raw = orch_out.items;
@@ -75,11 +82,15 @@ pub fn runSwarm(
         else   => { appendErr(alloc, out, "swarm: orchestrator value is not an array"); return; },
     };
 
-    // Collect valid sub-tasks (may be fewer than arr.items.len if some are malformed)
     var workers = alloc.alloc(Worker, @min(arr.items.len, cap)) catch {
         appendErr(alloc, out, "OOM: workers"); return;
     };
     defer alloc.free(workers);
+
+    var worker_args = alloc.alloc(WorkerArgs, workers.len) catch {
+        appendErr(alloc, out, "OOM: worker_args"); return;
+    };
+    defer alloc.free(worker_args);
 
     var threads = alloc.alloc(?std.Thread, workers.len) catch {
         appendErr(alloc, out, "OOM: threads"); return;
@@ -95,7 +106,8 @@ pub fn runSwarm(
             .role   = switch (r_val) { .string => |s| s, else => "agent" },
             .prompt = switch (p_val) { .string => |s| s, else => continue },
         };
-        threads[count] = std.Thread.spawn(.{}, workerFn, .{&workers[count]}) catch null;
+        worker_args[count] = .{ .worker = &workers[count], .policy = policy };
+        threads[count] = std.Thread.spawn(.{}, workerFn, .{&worker_args[count]}) catch null;
         count += 1;
     }
 
@@ -129,7 +141,7 @@ pub fn runSwarm(
     synth.appendSlice(alloc, "Synthesize the above into a final answer.") catch {};
 
     // ── Phase 5: Synthesis agent ──────────────────────────────────────────
-    cas.runTurn(alloc, synth.items, out);
+    cas.runTurnPolicy(alloc, synth.items, out, .read_only); // synthesis only reads
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

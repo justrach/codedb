@@ -17,6 +17,19 @@ pub fn runTurn(
     prompt: []const u8,
     out:    *std.ArrayList(u8),
 ) void {
+    runTurnPolicy(alloc, prompt, out, .read_only);
+}
+
+pub const SandboxPolicy = enum { read_only, writable };
+
+/// Run a single agent turn via `codex app-server`.
+/// Blocks until `turn/completed`. Accumulated agent reply is appended to `out`.
+pub fn runTurnPolicy(
+    alloc:  std.mem.Allocator,
+    prompt: []const u8,
+    out:    *std.ArrayList(u8),
+    policy: SandboxPolicy,
+) void {
     const cwd = std.process.getCwdAlloc(alloc) catch {
         appendErr(alloc, out, "could not get cwd");
         return;
@@ -52,13 +65,19 @@ pub fn runTurn(
         \\{"method":"initialized","params":{}}
     ) catch { appendErr(alloc, out, "write initialized failed"); return; };
 
-    // ── 3. thread/start ────────────────────────────────────────────────────
+    // ── 3. thread/start (policy-dependent) ────────────────────────────────
     {
+        const policy_json: []const u8 = switch (policy) {
+            .read_only => "{\"type\":\"readOnly\"}",
+            .writable  => "{\"type\":\"unrestricted\"}",
+        };
         var msg: std.ArrayList(u8) = .empty;
         defer msg.deinit(alloc);
         msg.appendSlice(alloc,
-            \\{"method":"thread/start","id":1,"params":{"approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"},"cwd":"
+            \\{"method":"thread/start","id":1,"params":{"approvalPolicy":"never","sandboxPolicy":
         ) catch return;
+        msg.appendSlice(alloc, policy_json) catch return;
+        msg.appendSlice(alloc, ",\"cwd\":\"") catch return;
         mj.writeEscaped(alloc, &msg, cwd);
         msg.appendSlice(alloc, "\"}}") catch return;
         writeMsgSlice(proc_in, msg.items) catch { appendErr(alloc, out, "write thread/start failed"); return; };
