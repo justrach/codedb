@@ -31,4 +31,9 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(exe_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+
+    const run_protocol_tests = b.addRunArtifact(exe_tests);
+    run_protocol_tests.addArgs(&.{ "--test-filter", "protocol" });
+    const test_mcp_step = b.step("test-mcp", "Run MCP protocol regression tests");
+    test_mcp_step.dependOn(&run_protocol_tests.step);
 }
