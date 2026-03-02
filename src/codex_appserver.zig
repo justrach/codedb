@@ -173,9 +173,11 @@ fn runTurn_(
 
     // ── 3. thread/start ────────────────────────────────────────────────────
     {
+        // "dangerFullAccess" is the correct type for unrestricted agents.
+        // approvalPolicy:"never" suppresses all approval prompts.
         const policy_json: []const u8 = switch (policy) {
             .read_only => "{\"type\":\"readOnly\"}",
-            .writable  => "{\"type\":\"unrestricted\"}",
+            .writable  => "{\"type\":\"dangerFullAccess\"}",
         };
         var msg: std.ArrayList(u8) = .empty;
         defer msg.deinit(alloc);
@@ -213,8 +215,48 @@ fn runTurn_(
         };
     }
 
-    // ── 5. Stream until turn/completed ────────────────────────────────────
-    streamTurn(alloc, proc_out, out);
+    // ── 5. Stream; auto-compact and retry once on ContextWindowExceeded ───
+    if (!streamTurn(alloc, proc_out, out)) return;
+
+    // Context window exceeded: clear partial output, compact, retry once.
+    out.clearRetainingCapacity();
+
+    // thread/compact/start — returns {} immediately; compaction streams as turn events
+    {
+        var msg: std.ArrayList(u8) = .empty;
+        defer msg.deinit(alloc);
+        msg.appendSlice(alloc,
+            \\{"method":"thread/compact/start","id":3,"params":{"threadId":"
+        ) catch return;
+        mj.writeEscaped(alloc, &msg, thread_id);
+        msg.appendSlice(alloc, "\"}}") catch return;
+        writeMsgSlice(proc_in, msg.items) catch {
+            appendErr(alloc, out, "write thread/compact/start failed"); return;
+        };
+    }
+
+    // Drain the compaction turn (discard its output)
+    var discard: std.ArrayList(u8) = .empty;
+    defer discard.deinit(alloc);
+    _ = streamTurn(alloc, proc_out, &discard);
+
+    // Retry the original turn (id:4; don't recurse on a second failure)
+    {
+        var msg: std.ArrayList(u8) = .empty;
+        defer msg.deinit(alloc);
+        msg.appendSlice(alloc,
+            \\{"method":"turn/start","id":4,"params":{"threadId":"
+        ) catch return;
+        mj.writeEscaped(alloc, &msg, thread_id);
+        msg.appendSlice(alloc, "\",\"input\":[{\"type\":\"text\",\"text\":\"") catch return;
+        mj.writeEscaped(alloc, &msg, prompt);
+        msg.appendSlice(alloc, "\"}]}}") catch return;
+        writeMsgSlice(proc_in, msg.items) catch {
+            appendErr(alloc, out, "write retry turn/start failed"); return;
+        };
+    }
+
+    _ = streamTurn(alloc, proc_out, out);
 }
 
 // ── Wire helpers ──────────────────────────────────────────────────────────────
@@ -284,9 +326,11 @@ fn readThreadId(alloc: std.mem.Allocator, rd: anytype) ?[]u8 {
     }
 }
 
-fn streamTurn(alloc: std.mem.Allocator, rd: anytype, out: *std.ArrayList(u8)) void {
+// Returns true if the turn failed due to ContextWindowExceeded — caller should
+// compact the thread and retry. Returns false for all other outcomes (ok or error).
+fn streamTurn(alloc: std.mem.Allocator, rd: anytype, out: *std.ArrayList(u8)) bool {
     while (true) {
-        const line = readLineAlloc(alloc, rd) orelse return;
+        const line = readLineAlloc(alloc, rd) orelse return false;
         defer alloc.free(line);
         const p = std.json.parseFromSlice(std.json.Value, alloc, line, .{}) catch continue;
         defer p.deinit();
@@ -306,21 +350,37 @@ fn streamTurn(alloc: std.mem.Allocator, rd: anytype, out: *std.ArrayList(u8)) vo
         }
 
         if (std.mem.eql(u8, method, "turn/completed")) {
-            const params = obj.get("params") orelse return;
-            if (params != .object) return;
-            const turn   = params.object.get("turn")   orelse return;
-            if (turn != .object) return;
-            const status = turn.object.get("status")   orelse return;
+            const params = obj.get("params") orelse return false;
+            if (params != .object) return false;
+            const turn   = params.object.get("turn")   orelse return false;
+            if (turn != .object) return false;
+            const status = turn.object.get("status")   orelse return false;
             if (status == .string and std.mem.eql(u8, status.string, "failed")) {
                 if (turn.object.get("error")) |err_v| {
                     if (err_v == .object) {
+                        // Canonical check: codexErrorInfo field
+                        if (err_v.object.get("codexErrorInfo")) |info_v| {
+                            if (info_v == .string and
+                                std.mem.eql(u8, info_v.string, "ContextWindowExceeded"))
+                            {
+                                return true; // signal caller to compact+retry
+                            }
+                        }
+                        // Fallback: message substring (older server versions)
                         if (err_v.object.get("message")) |msg_v| {
-                            if (msg_v == .string) appendErr(alloc, out, msg_v.string);
+                            if (msg_v == .string) {
+                                if (std.mem.indexOf(u8, msg_v.string, "context window") != null or
+                                    std.mem.indexOf(u8, msg_v.string, "context length") != null)
+                                {
+                                    return true;
+                                }
+                                appendErr(alloc, out, msg_v.string);
+                            }
                         }
                     }
                 }
             }
-            return;
+            return false;
         }
     }
 }
@@ -331,4 +391,168 @@ fn appendErr(alloc: std.mem.Allocator, out: *std.ArrayList(u8), msg: []const u8)
     out.appendSlice(alloc, "{\"error\":\"") catch return;
     mj.writeEscaped(alloc, out, msg);
     out.appendSlice(alloc, "\"}") catch {};
+}
+
+// ── Tests: process adapter internals (#128) ───────────────────────────────────
+
+test "appserver: toolsBinDir does not crash and returns a string" {
+    const dir = toolsBinDir();
+    // Either empty (codex not found) or a non-empty path — never panics
+    _ = dir.len;
+}
+
+test "appserver: readLineAlloc reads up to newline, strips newline" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll("hello world\n");
+writer.close();
+
+    const line = readLineAlloc(alloc, reader) orelse return error.TestExpectedLine;
+    defer alloc.free(line);
+    try std.testing.expectEqualStrings("hello world", line);
+}
+
+test "appserver: readLineAlloc returns null on immediate EOF" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    std.posix.close(fds[1]); // EOF immediately
+
+    const reader = std.fs.File{ .handle = fds[0] };
+    const line = readLineAlloc(alloc, reader);
+    try std.testing.expectEqual(@as(?[]u8, null), line);
+}
+
+test "appserver: readLineAlloc returns partial content on EOF without newline" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll("no-newline");
+writer.close();
+
+    const line = readLineAlloc(alloc, reader) orelse return error.TestExpectedLine;
+    defer alloc.free(line);
+    try std.testing.expectEqualStrings("no-newline", line);
+}
+
+test "appserver: drainUntilId finds target id after skipping earlier ids" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll("{\"id\":0,\"result\":{}}\n");
+    try writer.writeAll("{\"id\":1,\"result\":{}}\n");
+    try writer.writeAll("{\"id\":5,\"result\":{}}\n");
+writer.close();
+
+    const found = drainUntilId(alloc, reader, 5);
+    try std.testing.expect(found);
+}
+
+test "appserver: drainUntilId returns false on EOF before target id" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll("{\"id\":1,\"result\":{}}\n");
+writer.close();
+
+    const found = drainUntilId(alloc, reader, 99);
+    try std.testing.expect(!found);
+}
+
+test "appserver: readThreadId extracts id from thread/start response" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    // id=0 should be skipped (readThreadId looks for id=1)
+    try writer.writeAll("{\"id\":0,\"result\":{}}\n");
+    try writer.writeAll("{\"id\":1,\"result\":{\"thread\":{\"id\":\"thread-xyz\"}}}\n");
+writer.close();
+
+    const tid = readThreadId(alloc, reader) orelse return error.TestExpectedThreadId;
+    defer alloc.free(tid);
+    try std.testing.expectEqualStrings("thread-xyz", tid);
+}
+
+test "appserver: readThreadId returns null when thread.id is missing" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    // id=1 response but no thread.id field
+    try writer.writeAll("{\"id\":1,\"result\":{\"other\":\"data\"}}\n");
+writer.close();
+
+    const tid = readThreadId(alloc, reader);
+    try std.testing.expectEqual(@as(?[]u8, null), tid);
+}
+
+test "appserver: streamTurn accumulates agentMessage deltas and stops at turn/completed" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll("{\"method\":\"item/agentMessage/delta\",\"params\":{\"delta\":\"Hello, \"}}\n");
+    try writer.writeAll("{\"method\":\"item/agentMessage/delta\",\"params\":{\"delta\":\"world!\"}}\n");
+    try writer.writeAll("{\"method\":\"turn/completed\",\"params\":{\"turn\":{\"status\":\"completed\"}}}\n");
+writer.close();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    streamTurn(alloc, reader, &out);
+    try std.testing.expectEqualStrings("Hello, world!", out.items);
+}
+
+test "appserver: streamTurn appends error message on failed turn" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll(
+        \\{"method":"turn/completed","params":{"turn":{"status":"failed","error":{"message":"agent crashed"}}}}
+        ++ "\n",
+    );
+writer.close();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    streamTurn(alloc, reader, &out);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "agent crashed") != null);
 }
