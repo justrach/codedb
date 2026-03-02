@@ -68,12 +68,15 @@ pub fn searchRefs(
         .none   => return results,
     };
 
-    const r = gh.run(alloc, argv) catch |err| {
-        // exit code 1 = no matches for grep/rg
-        if (err == gh.GhError.Unexpected) return results;
+    const r = gh.runWithOutput(alloc, argv) catch |err| {
+        // Command launch/allocator failures are real errors.
         return err;
     };
     defer r.deinit(alloc);
+
+    // exit code 1 = no matches for grep/rg/zigrep in this context.
+    if (r.exit_code == 1) return results;
+    if (r.exit_code != 0) return gh.GhError.Unexpected;
 
     var seen = std.StringHashMap(void).init(alloc);
     defer seen.deinit();
