@@ -4,6 +4,11 @@ pub fn build(b: *std.Build) void {
     const target   = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Version: defaults to build.zig.zon value; override with -Dversion=X.Y.Z at release
+    const version = b.option([]const u8, "version", "Version string") orelse "dev";
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
+
     // mcp-zig: 131 KB MCP transport library, zero dependencies
     const mcp_dep = b.dependency("mcp_zig", .{});
 
@@ -15,7 +20,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    // mcp module available via @import("mcp") in all source files
+    exe.root_module.addOptions("build_options", build_options);
     exe.root_module.addImport("mcp", mcp_dep.module("mcp"));
     b.installArtifact(exe);
 
