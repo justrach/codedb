@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// postinstall: downloads the correct platform binary from GitHub Releases
+// postinstall: uses bundled binary if present, otherwise downloads from GitHub Releases
 'use strict';
 
 const https = require('https');
@@ -10,7 +10,7 @@ const os = require('os');
 const VERSION = require('./package.json').version;
 const REPO = 'justrach/codedb';
 const BIN_DIR = path.join(__dirname, 'bin');
-const BIN_PATH = path.join(BIN_DIR, 'gitagent-mcp');
+const BIN_PATH = path.join(BIN_DIR, 'devswarm');
 
 function getPlatformTarget() {
   const arch = os.arch();
@@ -40,16 +40,27 @@ function download(url, dest) {
 
 async function main() {
   const target = getPlatformTarget();
-  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/gitagent-mcp-${target}`;
   fs.mkdirSync(BIN_DIR, { recursive: true });
-  console.log(`[gitagent-mcp] Downloading ${target} binary...`);
+
+  // Use bundled platform binary if present (CI releases bundle them)
+  const bundled = path.join(BIN_DIR, `devswarm-${target}`);
+  if (fs.existsSync(bundled)) {
+    fs.copyFileSync(bundled, BIN_PATH);
+    fs.chmodSync(BIN_PATH, 0o755);
+    console.log(`[devswarm] Using bundled ${target} binary.`);
+    return;
+  }
+
+  // Otherwise download from GitHub Releases
+  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/devswarm-${target}`;
+  console.log(`[devswarm] Downloading ${target} binary...`);
   await download(url, BIN_PATH);
   fs.chmodSync(BIN_PATH, 0o755);
-  console.log(`[gitagent-mcp] Installed to ${BIN_PATH}`);
+  console.log(`[devswarm] Installed to ${BIN_PATH}`);
 }
 
 main().catch((err) => {
-  console.error(`[gitagent-mcp] Install failed: ${err.message}`);
+  console.error(`[devswarm] Install failed: ${err.message}`);
   console.error(`Build from source: https://github.com/${REPO}`);
   process.exit(1);
 });

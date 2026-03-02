@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
     const mcp_dep = b.dependency("mcp_zig", .{});
 
     const exe = b.addExecutable(.{
-        .name = "gitagent-mcp",
+        .name = "devswarm",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target   = target,
@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
-    const run_step = b.step("run", "Run gitagent-mcp server");
+    const run_step = b.step("run", "Run devswarm server");
     run_step.dependOn(&run_cmd.step);
 
     // zig build test

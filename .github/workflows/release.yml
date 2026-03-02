@@ -16,16 +16,16 @@ jobs:
         include:
           - target: x86_64-linux
             os: ubuntu-latest
-            asset: gitagent-mcp-x86_64-linux
+            asset: devswarm-x86_64-linux
           - target: aarch64-linux
             os: ubuntu-latest
-            asset: gitagent-mcp-aarch64-linux
+            asset: devswarm-aarch64-linux
           - target: x86_64-macos
             os: ubuntu-latest
-            asset: gitagent-mcp-x86_64-macos
+            asset: devswarm-x86_64-macos
           - target: aarch64-macos
             os: macos-latest
-            asset: gitagent-mcp-aarch64-macos
+            asset: devswarm-aarch64-macos
     steps:
       - uses: actions/checkout@v4
 
@@ -42,7 +42,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist
-          cp zig-out/bin/gitagent-mcp dist/${{ matrix.asset }}
+          cp zig-out/bin/devswarm dist/${{ matrix.asset }}
           cd dist
           sha256sum ${{ matrix.asset }} > ${{ matrix.asset }}.sha256
 
