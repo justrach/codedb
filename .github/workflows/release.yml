@@ -79,12 +79,10 @@ jobs:
           merge-multiple: true
           path: npm/bin/
 
-      - name: Set version and publish
+      - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          cd npm
-          npm version "$VERSION" --no-git-tag-version
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+          cd npm
           npm publish --access public
