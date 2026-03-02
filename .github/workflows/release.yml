@@ -21,12 +21,11 @@ jobs:
             os: ubuntu-latest
             asset: gitagent-mcp-aarch64-linux
           - target: x86_64-macos
-            os: macos-13
+            os: ubuntu-latest
             asset: gitagent-mcp-x86_64-macos
           - target: aarch64-macos
             os: macos-latest
             asset: gitagent-mcp-aarch64-macos
-    steps:
       - uses: actions/checkout@v4
 
       - name: Install Zig 0.15.1
