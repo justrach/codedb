@@ -532,7 +532,7 @@ writer.close();
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
-    streamTurn(alloc, reader, &out);
+    _ = streamTurn(alloc, reader, &out);
     try std.testing.expectEqualStrings("Hello, world!", out.items);
 }
 
@@ -553,6 +553,114 @@ writer.close();
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
-    streamTurn(alloc, reader, &out);
+    _ = streamTurn(alloc, reader, &out);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "agent crashed") != null);
+}
+
+test "appserver: streamTurn returns true on ContextWindowExceeded via codexErrorInfo" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll(
+        \\{"method":"turn/completed","params":{"turn":{"status":"failed","error":{"message":"context full","codexErrorInfo":"ContextWindowExceeded"}}}}
+        ++ "\n",
+    );
+    writer.close();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    const exceeded = streamTurn(alloc, reader, &out);
+    try std.testing.expect(exceeded);
+    // output should be empty — caller is responsible for compact+retry
+    try std.testing.expectEqualStrings("", out.items);
+}
+
+test "appserver: streamTurn returns true on context window message substring fallback" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll(
+        \\{"method":"turn/completed","params":{"turn":{"status":"failed","error":{"message":"Codex ran out of room in the model's context window. Start a new thread."}}}}
+        ++ "\n",
+    );
+    writer.close();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    const exceeded = streamTurn(alloc, reader, &out);
+    try std.testing.expect(exceeded);
+    try std.testing.expectEqualStrings("", out.items);
+}
+
+test "appserver: streamTurn returns false on non-context-window failure" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll(
+        \\{"method":"turn/completed","params":{"turn":{"status":"failed","error":{"message":"internal server error","codexErrorInfo":"InternalServerError"}}}}
+        ++ "\n",
+    );
+    writer.close();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    const exceeded = streamTurn(alloc, reader, &out);
+    try std.testing.expect(!exceeded);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "internal server error") != null);
+}
+
+test "appserver: streamTurn returns false on successful turn with no output" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll(
+        \\{"method":"turn/completed","params":{"turn":{"status":"completed"}}}
+        ++ "\n",
+    );
+    writer.close();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    const exceeded = streamTurn(alloc, reader, &out);
+    try std.testing.expect(!exceeded);
+    try std.testing.expectEqualStrings("", out.items);
+}
+
+test "appserver: streamTurn skips unknown notifications before turn/completed" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll("{\"method\":\"thread/status/changed\",\"params\":{}}\n");
+    try writer.writeAll("{\"method\":\"item/started\",\"params\":{\"item\":{\"type\":\"agentMessage\"}}}\n");
+    try writer.writeAll("{\"method\":\"item/agentMessage/delta\",\"params\":{\"delta\":\"result\"}}\n");
+    try writer.writeAll(
+        \\{"method":"turn/completed","params":{"turn":{"status":"completed"}}}
+        ++ "\n",
+    );
+    writer.close();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    _ = streamTurn(alloc, reader, &out);
+    try std.testing.expectEqualStrings("result", out.items);
 }
