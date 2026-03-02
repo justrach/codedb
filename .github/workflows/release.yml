@@ -78,9 +78,15 @@ jobs:
           merge-multiple: true
           path: npm/bin/
 
-      - name: Set version from tag
+      - name: Set version and publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION=${GITHUB_REF_NAME#v}
+          cd npm
+          npm version "$VERSION" --no-git-tag-version
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+          npm publish --access public
   # update-homebrew-tap: (uncomment when justrach/homebrew-gitagent tap is created)
   #   name: Update Homebrew tap
   #   needs: release

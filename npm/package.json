@@ -1,18 +1,23 @@
 {
-  "name": "mycelium",
-  "version": "0.0.2",
+  "name": "devswarm",
+  "version": "0.0.1",
   "description": "Orchestrate AI coding agents (Claude Code, Codex, Gemini CLI) with GitHub ops, swarm spawning, and code graph intelligence — over MCP",
   "keywords": ["mcp", "github", "ai", "claude", "codex", "swarm", "agents", "orchestration"],
   "homepage": "https://github.com/justrach/codedb",
   "repository": { "type": "git", "url": "https://github.com/justrach/codedb.git" },
   "license": "AGPL-3.0",
   "bin": {
-    "mycelium": "run.js",
+    "devswarm": "run.js",
     "gitagent-mcp": "run.js"
   },
   "scripts": {
     "postinstall": "node install.js"
   },
+  "files": [
+    "bin/",
+    "install.js",
+    "run.js"
+  ],
   "engines": {
     "node": ">=18"
   }
