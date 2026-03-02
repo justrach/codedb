@@ -33,7 +33,7 @@ pub fn main() void {
         .mask = std.posix.sigemptyset(),
         .flags = 0,
     };
-    std.posix.sigaction(std.posix.SIG.PIPE, &act, null) catch {};
+    std.posix.sigaction(std.posix.SIG.PIPE, &act, null);
 
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
     defer _ = gpa.deinit();
@@ -569,22 +569,22 @@ test "resolveRepoFromArgs supports repo_path, repo, and working_directory" {
     var params = std.json.ObjectMap.init(alloc);
     defer params.deinit();
 
-    try args.put("repo", "repo-a");
+    try args.put("repo", .{ .string = "repo-a" });
     try std.testing.expectEqualStrings("repo-a", resolveRepoFromArgs(&params, &args).?);
 
     args.clearRetainingCapacity();
-    try args.put("repo_path", "repo-b");
+    try args.put("repo_path", .{ .string = "repo-b" });
     try std.testing.expectEqualStrings("repo-b", resolveRepoFromArgs(&params, &args).?);
 
     args.clearRetainingCapacity();
-    try args.put("repo_path", "repo-b");
+    try args.put("repo_path", .{ .string = "repo-b" });
     try std.testing.expectEqualStrings("repo-b", resolveRepoFromArgs(&params, &args).?);
 
     args.clearRetainingCapacity();
-    try args.put("working_directory", "repo-c");
+    try args.put("working_directory", .{ .string = "repo-c" });
     try std.testing.expectEqualStrings("repo-c", resolveRepoFromArgs(&params, &args).?);
 
-    params.put("repo", "repo-p") catch return;
+    params.put("repo", .{ .string = "repo-p" }) catch return;
     try std.testing.expectEqualStrings("repo-p", resolveRepoFromArgs(&params, &args).?);
 }
 
@@ -605,19 +605,19 @@ test "thread table full falls back to default thread context" {
 
 test "protocol: readMessage accepts line-delimited JSON" {
     const alloc = std.testing.allocator;
-    var fds = try std.posix.pipe();
+    const fds = try std.posix.pipe();
     defer std.posix.close(fds[0]);
     defer std.posix.close(fds[1]);
 
-    var writer = std.fs.File{ .handle = fds[1] };
-    var reader = std.fs.File{ .handle = fds[0] };
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
 
     const payload = "{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}\n";
     try writer.writeAll(payload);
-    try writer.close();
+writer.close();
 
     var uses_headers = false;
-    const line = readMessage(alloc, reader, &uses_headers) orelse
+    const line = (try readMessage(alloc, reader, &uses_headers)) orelse
         return error.TestExpectedRead;
     defer alloc.free(line);
 
@@ -627,12 +627,12 @@ test "protocol: readMessage accepts line-delimited JSON" {
 
 test "protocol: readMessage accepts header-framed JSON" {
     const alloc = std.testing.allocator;
-    var fds = try std.posix.pipe();
+    const fds = try std.posix.pipe();
     defer std.posix.close(fds[0]);
     defer std.posix.close(fds[1]);
 
-    var writer = std.fs.File{ .handle = fds[1] };
-    var reader = std.fs.File{ .handle = fds[0] };
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
 
     const body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}";
     const frame = try std.fmt.allocPrint(
@@ -642,10 +642,10 @@ test "protocol: readMessage accepts header-framed JSON" {
     );
     defer alloc.free(frame);
     try writer.writeAll(frame);
-    try writer.close();
+writer.close();
 
     var uses_headers = false;
-    const read = readMessage(alloc, reader, &uses_headers) orelse
+    const read = (try readMessage(alloc, reader, &uses_headers)) orelse
         return error.TestExpectedRead;
     defer alloc.free(read);
 
@@ -671,16 +671,16 @@ test "protocol: writePayload emits selected framing mode" {
     const payload = "hello";
 
     {
-        var fds = try std.posix.pipe();
+        const fds = try std.posix.pipe();
         defer std.posix.close(fds[0]);
         defer std.posix.close(fds[1]);
 
-        var writer = std.fs.File{ .handle = fds[1] };
-        var reader = std.fs.File{ .handle = fds[0] };
+        const writer = std.fs.File{ .handle = fds[1] };
+        const reader = std.fs.File{ .handle = fds[0] };
 
         g_use_headers = false;
         try writePayload(writer, payload);
-        try writer.close();
+    writer.close();
 
         var got = std.ArrayList(u8).empty;
         defer got.deinit(alloc);
@@ -695,16 +695,16 @@ test "protocol: writePayload emits selected framing mode" {
     }
 
     {
-        var fds = try std.posix.pipe();
+        const fds = try std.posix.pipe();
         defer std.posix.close(fds[0]);
         defer std.posix.close(fds[1]);
 
-        var writer = std.fs.File{ .handle = fds[1] };
-        var reader = std.fs.File{ .handle = fds[0] };
+        const writer = std.fs.File{ .handle = fds[1] };
+        const reader = std.fs.File{ .handle = fds[0] };
 
         g_use_headers = true;
         try writePayload(writer, payload);
-        try writer.close();
+    writer.close();
 
         var got = std.ArrayList(u8).empty;
         defer got.deinit(alloc);
@@ -718,4 +718,207 @@ test "protocol: writePayload emits selected framing mode" {
         try std.testing.expect(std.mem.endsWith(u8, got.items, "\r\n"));
         try std.testing.expect(std.mem.containsAtLeast(u8, got.items, 1, payload));
     }
+}
+
+// ── Tests: protocol boundary / malformed inputs (#128) ───────────────────────
+
+test "protocol: readMessage returns null on immediate EOF" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    std.posix.close(fds[1]); // signal EOF immediately
+
+    const reader = std.fs.File{ .handle = fds[0] };
+    var uses_headers = false;
+    const line = try readMessage(alloc, reader, &uses_headers);
+    try std.testing.expectEqual(@as(?[]u8, null), line);
+}
+
+test "protocol: readMessage skips blank lines before JSON payload" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    try writer.writeAll("\r\n\n{\"method\":\"ping\"}\n");
+writer.close();
+
+    var uses_headers = false;
+    const line = try readMessage(alloc, reader, &uses_headers) orelse
+        return error.TestExpectedMessage;
+    defer alloc.free(line);
+    try std.testing.expectEqualStrings("{\"method\":\"ping\"}", line);
+}
+
+test "protocol: readMessage returns InvalidMessage when header has no Content-Length" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    // Non-JSON start triggers header mode; no Content-Length before blank line
+    try writer.writeAll("X-Custom-Header: value\r\n\r\n");
+writer.close();
+
+    var uses_headers = false;
+    try std.testing.expectError(
+        error.InvalidMessage,
+        readMessage(alloc, reader, &uses_headers),
+    );
+}
+
+test "protocol: readMessage returns InvalidMessage when Content-Length exceeds max frame" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    const oversized = try std.fmt.allocPrint(
+        alloc, "Content-Length: {d}\r\n\r\n", .{MaxFrameBytes + 1},
+    );
+    defer alloc.free(oversized);
+    try writer.writeAll(oversized);
+writer.close();
+
+    var uses_headers = false;
+    try std.testing.expectError(
+        error.InvalidMessage,
+        readMessage(alloc, reader, &uses_headers),
+    );
+}
+
+test "protocol: readMessage returns InvalidMessage on truncated body" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    // Claim 100-byte body but only send 10 then close
+    try writer.writeAll("Content-Length: 100\r\n\r\n");
+    try writer.writeAll("only10byte");
+writer.close();
+
+    var uses_headers = false;
+    try std.testing.expectError(
+        error.InvalidMessage,
+        readMessage(alloc, reader, &uses_headers),
+    );
+}
+
+test "protocol: appendId handles integer, string, null, and non-scalar types" {
+    const alloc = std.testing.allocator;
+
+    {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(alloc);
+        appendId(alloc, &buf, .{ .integer = 42 });
+        try std.testing.expectEqualStrings("42", buf.items);
+    }
+    {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(alloc);
+        appendId(alloc, &buf, .{ .string = "req-abc" });
+        try std.testing.expectEqualStrings("\"req-abc\"", buf.items);
+    }
+    {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(alloc);
+        appendId(alloc, &buf, null);
+        try std.testing.expectEqualStrings("null", buf.items);
+    }
+    {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(alloc);
+        // Non-scalar id (bool) → emits "null"
+        appendId(alloc, &buf, .{ .bool = true });
+        try std.testing.expectEqualStrings("null", buf.items);
+    }
+}
+
+test "protocol: writeError emits valid JSON-RPC 2.0 error structure" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const saved_headers = g_use_headers;
+    defer g_use_headers = saved_headers;
+    g_use_headers = false;
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    writeError(alloc, writer, .{ .integer = 7 }, -32600, "Invalid Request");
+writer.close();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    var buf: [1024]u8 = undefined;
+    while (true) {
+        const n = try reader.read(&buf);
+        if (n == 0) break;
+        try out.appendSlice(alloc, buf[0..n]);
+    }
+
+    const body = std.mem.trim(u8, out.items, " \r\n");
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
+    defer parsed.deinit();
+    const obj = &parsed.value.object;
+    try std.testing.expectEqualStrings("2.0",
+        (obj.get("jsonrpc") orelse return error.MissingJsonrpc).string);
+    try std.testing.expectEqual(@as(i64, 7),
+        (obj.get("id") orelse return error.MissingId).integer);
+    const err_obj = (obj.get("error") orelse return error.MissingError).object;
+    try std.testing.expectEqual(@as(i64, -32600),
+        (err_obj.get("code") orelse return error.MissingCode).integer);
+    try std.testing.expectEqualStrings("Invalid Request",
+        (err_obj.get("message") orelse return error.MissingMessage).string);
+}
+
+test "protocol: writeResult emits valid JSON-RPC 2.0 result structure" {
+    const alloc = std.testing.allocator;
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+
+    const saved_headers = g_use_headers;
+    defer g_use_headers = saved_headers;
+    g_use_headers = false;
+
+    const writer = std.fs.File{ .handle = fds[1] };
+    const reader = std.fs.File{ .handle = fds[0] };
+
+    writeResult(alloc, writer, .{ .string = "my-id" }, "{\"ok\":true}");
+writer.close();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    var buf: [1024]u8 = undefined;
+    while (true) {
+        const n = try reader.read(&buf);
+        if (n == 0) break;
+        try out.appendSlice(alloc, buf[0..n]);
+    }
+
+    const body = std.mem.trim(u8, out.items, " \r\n");
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
+    defer parsed.deinit();
+    const obj = &parsed.value.object;
+    try std.testing.expectEqualStrings("2.0",
+        (obj.get("jsonrpc") orelse return error.MissingJsonrpc).string);
+    try std.testing.expectEqualStrings("my-id",
+        (obj.get("id") orelse return error.MissingId).string);
+    try std.testing.expect(obj.get("result") != null);
 }

@@ -129,7 +129,7 @@ pub fn runWithOutput(alloc: std.mem.Allocator, argv: []const []const u8) GhError
     };
 
     const stdout = stdout_ctx.buf.toOwnedSlice(alloc) catch {
-        stdout_ctx.deinit(alloc);
+        stdout_ctx.buf.deinit(alloc);
         stderr_ctx.buf.deinit(alloc);
         return GhError.OutOfMemory;
     };
