@@ -261,3 +261,63 @@ pub fn invalidate() void {
 
     g_has_data = false;
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+test "cache: isReady returns false initially, getLabel/getMilestone return null" {
+    g_alloc = std.testing.allocator;
+    g_ready = false;
+    g_has_data = false;
+    g_labels = .empty;
+    g_milestones = .empty;
+
+    try std.testing.expect(!isReady());
+    try std.testing.expectEqual(@as(?Label, null), getLabel("status:backlog"));
+    try std.testing.expectEqual(@as(?Milestone, null), getMilestone("v1.0"));
+}
+
+test "cache: invalidate on clean state is safe and idempotent" {
+    g_alloc = std.testing.allocator;
+    g_ready = false;
+    g_has_data = false;
+    g_labels = .empty;
+    g_milestones = .empty;
+
+    invalidate(); // must not crash or leak
+    invalidate();
+    try std.testing.expect(!isReady());
+}
+
+test "cache: getLabel returns entry after direct state injection" {
+    g_alloc = std.testing.allocator;
+    g_ready = false;
+    g_has_data = false;
+    g_labels = .empty;
+    g_milestones = .empty;
+    defer invalidate();
+
+    try appendLabel("status:backlog", "f6f8fa", "not started");
+    g_ready = true;
+    g_has_data = true;
+
+    const lbl = getLabel("status:backlog") orelse return error.LabelNotFound;
+    try std.testing.expectEqualStrings("status:backlog", lbl.name);
+    try std.testing.expectEqualStrings("f6f8fa", lbl.color);
+}
+
+test "cache: invalidate clears injected labels" {
+    g_alloc = std.testing.allocator;
+    g_ready = false;
+    g_has_data = false;
+    g_labels = .empty;
+    g_milestones = .empty;
+
+    try appendLabel("status:done", "0e8a16", "complete");
+    g_ready = true;
+    g_has_data = true;
+
+    invalidate();
+
+    try std.testing.expect(!isReady());
+    try std.testing.expectEqual(@as(?Label, null), getLabel("status:done"));
+}
