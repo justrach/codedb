@@ -213,3 +213,34 @@ fn appendErr(alloc: std.mem.Allocator, out: *std.ArrayList(u8), msg: []const u8)
     mj.writeEscaped(alloc, out, msg);
     out.appendSlice(alloc, "\"}") catch {};
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+test "swarm: HARD_MAX is 100" {
+    try std.testing.expectEqual(@as(u32, 100), HARD_MAX);
+}
+
+test "swarm: buildPreamble references required zig tools" {
+    const alloc = std.testing.allocator;
+    const preamble = buildPreamble(alloc);
+    defer alloc.free(preamble);
+
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "zigrep") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "zigread") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "zigpatch") != null);
+    try std.testing.expect(std.mem.indexOf(u8, preamble, "zigdiff") != null);
+}
+
+test "swarm: appendErr writes JSON error object" {
+    const alloc = std.testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+
+    appendErr(alloc, &out, "something went wrong");
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.items, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+    const msg = parsed.value.object.get("error") orelse return error.MissingError;
+    try std.testing.expectEqualStrings("something went wrong", msg.string);
+}
