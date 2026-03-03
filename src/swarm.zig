@@ -68,7 +68,7 @@ fn workerFn(args: *WorkerArgs) void {
 
 /// Build the writable-worker preamble. Includes the resolved absolute path to
 /// the zig tools bin dir so agents don't need PATH to be perfect.
-fn buildPreamble(alloc: std.mem.Allocator) []u8 {
+pub fn buildPreamble(alloc: std.mem.Allocator) []u8 {
     const tools_dir = cas.toolsBinDir();
     const abs_note = if (tools_dir.len > 0)
         std.fmt.allocPrint(alloc,
