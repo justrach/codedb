@@ -292,3 +292,176 @@ test "agent_sdk: parseClaudeLine handles malformed JSON gracefully" {
     try std.testing.expect(!found);
     try std.testing.expect(out.items.len == 0);
 }
+
+test "agent_sdk: parseClaudeLine skips empty and whitespace-only lines" {
+    const alloc = std.testing.allocator;
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    var accumulated: std.ArrayList(u8) = .empty;
+    defer accumulated.deinit(alloc);
+    var found = false;
+
+    parseClaudeLine(alloc, "", &out, &accumulated, &found);
+    parseClaudeLine(alloc, "\r", &out, &accumulated, &found);
+
+    try std.testing.expect(!found);
+    try std.testing.expect(out.items.len == 0);
+    try std.testing.expect(accumulated.items.len == 0);
+}
+
+test "agent_sdk: error result is still captured in out" {
+    const alloc = std.testing.allocator;
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    var accumulated: std.ArrayList(u8) = .empty;
+    defer accumulated.deinit(alloc);
+    var found = false;
+
+    parseClaudeLine(alloc,
+        \\{"type":"result","subtype":"error_during_execution","is_error":true,"result":"partial before crash","session_id":"s1"}
+    , &out, &accumulated, &found);
+
+    try std.testing.expect(found);
+    try std.testing.expectEqualStrings("partial before crash", out.items);
+}
+
+test "agent_sdk: multi-turn assistant text accumulates, result event wins" {
+    const alloc = std.testing.allocator;
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    var accumulated: std.ArrayList(u8) = .empty;
+    defer accumulated.deinit(alloc);
+    var found = false;
+
+    parseClaudeLine(alloc,
+        \\{"type":"assistant","message":{"content":[{"type":"text","text":"Hello "}]},"session_id":"s1"}
+    , &out, &accumulated, &found);
+    parseClaudeLine(alloc,
+        \\{"type":"assistant","message":{"content":[{"type":"text","text":"world"}]},"session_id":"s1"}
+    , &out, &accumulated, &found);
+
+    try std.testing.expect(!found);
+    try std.testing.expectEqualStrings("Hello world", accumulated.items);
+
+    parseClaudeLine(alloc,
+        \\{"type":"result","subtype":"success","result":"Final answer","session_id":"s1"}
+    , &out, &accumulated, &found);
+
+    try std.testing.expect(found);
+    try std.testing.expectEqualStrings("Final answer", out.items);
+}
+
+test "agent_sdk: non-text content blocks in assistant message are skipped" {
+    const alloc = std.testing.allocator;
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    var accumulated: std.ArrayList(u8) = .empty;
+    defer accumulated.deinit(alloc);
+    var found = false;
+
+    parseClaudeLine(alloc,
+        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}},{"type":"text","text":"after tool"}]},"session_id":"s1"}
+    , &out, &accumulated, &found);
+
+    try std.testing.expect(!found);
+    try std.testing.expectEqualStrings("after tool", accumulated.items);
+}
+
+test "agent_sdk: streamClaudeOutput extracts result via pipe" {
+    const alloc = std.testing.allocator;
+
+    const pipe = try std.posix.pipe();
+    const read_fd  = std.fs.File{ .handle = pipe[0] };
+    const write_fd = std.fs.File{ .handle = pipe[1] };
+
+    const ndjson =
+        "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s1\"}\n" ++
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"thinking...\"}]},\"session_id\":\"s1\"}\n" ++
+        "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"pipe test passed\",\"session_id\":\"s1\"}\n";
+
+    _ = try write_fd.write(ndjson);
+    write_fd.close();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+
+    streamClaudeOutput(alloc, read_fd, &out);
+    read_fd.close();
+
+    try std.testing.expectEqualStrings("pipe test passed", out.items);
+}
+
+test "agent_sdk: streamClaudeOutput falls back to accumulated when no result event" {
+    const alloc = std.testing.allocator;
+
+    const pipe = try std.posix.pipe();
+    const read_fd  = std.fs.File{ .handle = pipe[0] };
+    const write_fd = std.fs.File{ .handle = pipe[1] };
+
+    _ = try write_fd.write(
+        "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"fallback text\"}]},\"session_id\":\"s1\"}\n"
+    );
+    write_fd.close();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+
+    streamClaudeOutput(alloc, read_fd, &out);
+    read_fd.close();
+
+    try std.testing.expectEqualStrings("fallback text", out.items);
+}
+
+test "agent_sdk: readLine reads lines delimited by newline" {
+    const alloc = std.testing.allocator;
+
+    const pipe = try std.posix.pipe();
+    const read_fd  = std.fs.File{ .handle = pipe[0] };
+    const write_fd = std.fs.File{ .handle = pipe[1] };
+
+    _ = try write_fd.write("hello\nworld\n");
+    write_fd.close();
+
+    const line1 = readLine(alloc, read_fd).?;
+    defer alloc.free(line1);
+    try std.testing.expectEqualStrings("hello", line1);
+
+    const line2 = readLine(alloc, read_fd).?;
+    defer alloc.free(line2);
+    try std.testing.expectEqualStrings("world", line2);
+
+    try std.testing.expect(readLine(alloc, read_fd) == null);
+    read_fd.close();
+}
+
+test "agent_sdk: readLine returns partial content on EOF without trailing newline" {
+    const alloc = std.testing.allocator;
+
+    const pipe = try std.posix.pipe();
+    const read_fd  = std.fs.File{ .handle = pipe[0] };
+    const write_fd = std.fs.File{ .handle = pipe[1] };
+
+    _ = try write_fd.write("no newline at end");
+    write_fd.close();
+
+    const line = readLine(alloc, read_fd).?;
+    defer alloc.free(line);
+    try std.testing.expectEqualStrings("no newline at end", line);
+    read_fd.close();
+}
+
+test "agent_sdk: readLine returns null on immediate EOF" {
+    const alloc = std.testing.allocator;
+
+    const pipe = try std.posix.pipe();
+    const read_fd  = std.fs.File{ .handle = pipe[0] };
+    const write_fd = std.fs.File{ .handle = pipe[1] };
+
+    write_fd.close();
+    try std.testing.expect(readLine(alloc, read_fd) == null);
+    read_fd.close();
+}
