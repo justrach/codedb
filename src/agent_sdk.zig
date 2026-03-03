@@ -57,6 +57,8 @@ pub fn runAgent(
 /// unavailable so the caller can fall back to codex_appserver.
 /// Attempts to run the turn via `claude -p`. Returns false when claude is
 /// unavailable so the caller can fall back to codex_appserver.
+/// Attempts to run the turn via `claude -p`. Returns false when claude is
+/// unavailable so the caller can fall back to codex_appserver.
 fn tryClaudeAgent(
     alloc: std.mem.Allocator,
     prompt: []const u8,
@@ -71,19 +73,19 @@ fn tryClaudeAgent(
     const perm_mode: []const u8 =
         opts.permission_mode orelse if (opts.writable) "bypassPermissions" else "default";
 
-    // Build argv in a fixed-size stack buffer (16 slots is sufficient).
-    var argv_buf: [16][]const u8 = undefined;
+    // Build argv in a fixed-size stack buffer (18 slots is sufficient).
+    var argv_buf: [18][]const u8 = undefined;
     var argc: usize = 0;
-    argv_buf[argc] = "claude";           argc += 1;
+    argv_buf[argc] = "claude";            argc += 1;
     argv_buf[argc] = "-p";               argc += 1;
     argv_buf[argc] = prompt;             argc += 1;
     argv_buf[argc] = "--output-format";  argc += 1;
     argv_buf[argc] = "stream-json";      argc += 1;
+    argv_buf[argc] = "--verbose";        argc += 1; // required by claude for stream-json
     argv_buf[argc] = "--permission-mode"; argc += 1;
     argv_buf[argc] = perm_mode;           argc += 1;
 
     if (opts.allowed_tools) |at| {
-        // `--allowedTools` accepts a comma-separated list, e.g. "Bash,Read,Edit".
         argv_buf[argc] = "--allowedTools"; argc += 1;
         argv_buf[argc] = at;               argc += 1;
     }
