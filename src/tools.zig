@@ -1869,35 +1869,41 @@ fn handleReviewFixLoop(
         break :blk 3;
     };
 
-    // Start JSON output
-    out.appendSlice(alloc, "{\"iterations\":[") catch return;
+    var out_json: std.ArrayList(u8) = .empty;
+    defer out_json.deinit(alloc);
 
     var converged = false;
+
+    // Start JSON output
+    out_json.appendSlice(alloc, "{\"iterations\":[") catch return;
+
     var i: u32 = 0;
     while (i < max_iter) : (i += 1) {
-        if (i > 0) out.appendSlice(alloc, ",") catch {};
+        var iter_json: std.ArrayList(u8) = .empty;
+        defer iter_json.deinit(alloc);
 
-        out.appendSlice(alloc, "{\"iteration\":") catch {};
-        const iter_str = std.fmt.allocPrint(alloc, "{d}", .{i + 1}) catch "?";
-        defer alloc.free(iter_str);
-        out.appendSlice(alloc, iter_str) catch {};
+        if (i > 0) iter_json.appendSlice(alloc, ",") catch return;
+
+        iter_json.appendSlice(alloc, "{\"iteration\":") catch return;
+        iter_json.writer(alloc).print("{d}", .{i + 1}) catch return;
 
         // ── Phase 1: Review (read-only) ───────────────────────────────────
+        iter_json.appendSlice(alloc, ",\"review\":\"") catch return;
         var review_out: std.ArrayList(u8) = .empty;
         defer review_out.deinit(alloc);
         cas.runTurnPolicy(alloc, review_prompt, &review_out, .read_only);
 
-        out.appendSlice(alloc, ",\"review\":\"") catch {};
-        mj.writeEscaped(alloc, out, review_out.items);
-        out.appendSlice(alloc, "\"") catch {};
+        mj.writeEscaped(alloc, &iter_json, review_out.items);
+        iter_json.appendSlice(alloc, "\"") catch return;
 
         // Check convergence: reviewer found no issues
         const review_text = review_out.items;
         if (std.mem.indexOf(u8, review_text, "NO_ISSUES_FOUND") != null or
             review_text.len == 0)
         {
+            iter_json.appendSlice(alloc, ",\"fix\":null}") catch return;
+            out_json.appendSlice(alloc, iter_json.items) catch return;
             converged = true;
-            out.appendSlice(alloc, ",\"fix\":null}") catch {};
             break;
         }
 
@@ -1914,7 +1920,8 @@ fn handleReviewFixLoop(
             "REVIEW FINDINGS:\n{s}",
             .{ preamble, review_text },
         ) catch {
-            out.appendSlice(alloc, ",\"fix\":\"OOM: fix prompt\"}") catch {};
+            iter_json.appendSlice(alloc, ",\"fix\":\"OOM: fix prompt\"}") catch return;
+            out_json.appendSlice(alloc, iter_json.items) catch return;
             break;
         };
         defer alloc.free(fix_prompt);
@@ -1923,20 +1930,23 @@ fn handleReviewFixLoop(
         defer fix_out.deinit(alloc);
         cas.runTurnPolicy(alloc, fix_prompt, &fix_out, .writable);
 
-        out.appendSlice(alloc, ",\"fix\":\"") catch {};
-        mj.writeEscaped(alloc, out, fix_out.items);
-        out.appendSlice(alloc, "\"}") catch {};
+        iter_json.appendSlice(alloc, ",\"fix\":\"") catch return;
+        mj.writeEscaped(alloc, &iter_json, fix_out.items);
+        iter_json.appendSlice(alloc, "\"}") catch return;
+
+        out_json.appendSlice(alloc, iter_json.items) catch return;
     }
 
-    // Close JSON
-    out.appendSlice(alloc, "],\"total_iterations\":") catch {};
-    const total = std.fmt.allocPrint(alloc, "{d}", .{i + @as(u32, if (converged) 1 else 0)}) catch "?";
+    out_json.appendSlice(alloc, "],\"total_iterations\":") catch return;
+    const total = std.fmt.allocPrint(alloc, "{d}", .{i + 1}) catch return;
     defer alloc.free(total);
-    out.appendSlice(alloc, total) catch {};
+    out_json.appendSlice(alloc, total) catch return;
 
     if (converged) {
-        out.appendSlice(alloc, ",\"converged\":true}") catch {};
+        out_json.appendSlice(alloc, ",\"converged\":true}") catch return;
     } else {
-        out.appendSlice(alloc, ",\"converged\":false}") catch {};
+        out_json.appendSlice(alloc, ",\"converged\":false}") catch return;
     }
+
+    out.appendSlice(alloc, out_json.items) catch return;
 }
