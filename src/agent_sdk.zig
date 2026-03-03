@@ -16,6 +16,7 @@ const std = @import("std");
 const mj  = @import("mcp").json;
 
 /// Options for a Claude agent run via `claude -p`.
+/// Options for a Claude agent run via `claude -p`.
 pub const AgentOptions = struct {
     /// Comma-separated tool allowlist, e.g. "Bash,Read,Edit".
     /// Null means all tools are permitted.
@@ -27,6 +28,9 @@ pub const AgentOptions = struct {
     /// Convenience flag: allow file writes.
     /// Maps to "bypassPermissions" when permission_mode is null.
     writable: bool = false,
+    /// Model alias or full ID, e.g. "sonnet", "opus", "claude-sonnet-4-6".
+    /// Null uses the model from Claude Code's settings.
+    model: ?[]const u8 = null,
 };
 
 /// Run one agent turn. Writes the agent's final text reply to `out`.
@@ -51,6 +55,8 @@ pub fn runAgent(
 
 /// Attempts to run the turn via `claude -p`. Returns false when claude is
 /// unavailable so the caller can fall back to codex_appserver.
+/// Attempts to run the turn via `claude -p`. Returns false when claude is
+/// unavailable so the caller can fall back to codex_appserver.
 fn tryClaudeAgent(
     alloc: std.mem.Allocator,
     prompt: []const u8,
@@ -65,8 +71,8 @@ fn tryClaudeAgent(
     const perm_mode: []const u8 =
         opts.permission_mode orelse if (opts.writable) "bypassPermissions" else "default";
 
-    // Build argv in a fixed-size stack buffer (12 slots is sufficient).
-    var argv_buf: [12][]const u8 = undefined;
+    // Build argv in a fixed-size stack buffer (16 slots is sufficient).
+    var argv_buf: [16][]const u8 = undefined;
     var argc: usize = 0;
     argv_buf[argc] = "claude";           argc += 1;
     argv_buf[argc] = "-p";               argc += 1;
@@ -82,10 +88,22 @@ fn tryClaudeAgent(
         argv_buf[argc] = at;               argc += 1;
     }
 
+    if (opts.model) |m| {
+        argv_buf[argc] = "--model"; argc += 1;
+        argv_buf[argc] = m;         argc += 1;
+    }
+
+    // Inherit the full environment but strip CLAUDECODE so that claude's
+    // nested-session guard doesn't fire when running inside Claude Code.
+    var env_map = std.process.getEnvMap(alloc) catch std.process.EnvMap.init(alloc);
+    defer env_map.deinit();
+    env_map.remove("CLAUDECODE");
+
     var child = std.process.Child.init(argv_buf[0..argc], alloc);
     child.stdin_behavior  = .Close;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Close;
+    child.env_map         = &env_map;
     if (opts.cwd) |cwd| child.cwd = cwd;
 
     child.spawn() catch return false;
