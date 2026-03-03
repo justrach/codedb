@@ -1,6 +1,6 @@
 {
   "name": "devswarm",
-  "version": "0.0.21",
+  "version": "0.0.23",
   "description": "Orchestrate AI coding agents (Claude Code, Codex, Gemini CLI) with GitHub ops, swarm spawning, and code graph intelligence — over MCP",
   "keywords": ["mcp", "github", "ai", "claude", "codex", "swarm", "agents", "orchestration"],
   "homepage": "https://github.com/justrach/codedb",
