@@ -1870,9 +1870,16 @@ fn handleReviewFixLoop(
     };
 
     var out_json: std.ArrayList(u8) = .empty;
-    defer out_json.deinit(alloc);
+    defer {
+        // Always flush whatever we have to `out`, even on early exit.
+        // This guarantees the caller gets partial JSON rather than nothing.
+        if (out_json.items.len > 0)
+            out.appendSlice(alloc, out_json.items) catch {};
+        out_json.deinit(alloc);
+    }
 
     var converged = false;
+    var completed: u32 = 0;
 
     // Start JSON output
     out_json.appendSlice(alloc, "{\"iterations\":[") catch return;
@@ -1903,6 +1910,7 @@ fn handleReviewFixLoop(
         {
             iter_json.appendSlice(alloc, ",\"fix\":null}") catch return;
             out_json.appendSlice(alloc, iter_json.items) catch return;
+            completed = i + 1;
             converged = true;
             break;
         }
@@ -1922,6 +1930,7 @@ fn handleReviewFixLoop(
         ) catch {
             iter_json.appendSlice(alloc, ",\"fix\":\"OOM: fix prompt\"}") catch return;
             out_json.appendSlice(alloc, iter_json.items) catch return;
+            completed = i + 1;
             break;
         };
         defer alloc.free(fix_prompt);
@@ -1935,18 +1944,16 @@ fn handleReviewFixLoop(
         iter_json.appendSlice(alloc, "\"}") catch return;
 
         out_json.appendSlice(alloc, iter_json.items) catch return;
+        completed = i + 1;
     }
 
+    // Close JSON — completed tracks actual iterations regardless of exit path
     out_json.appendSlice(alloc, "],\"total_iterations\":") catch return;
-    const total = std.fmt.allocPrint(alloc, "{d}", .{i + 1}) catch return;
-    defer alloc.free(total);
-    out_json.appendSlice(alloc, total) catch return;
+    out_json.writer(alloc).print("{d}", .{completed}) catch return;
 
     if (converged) {
         out_json.appendSlice(alloc, ",\"converged\":true}") catch return;
     } else {
         out_json.appendSlice(alloc, ",\"converged\":false}") catch return;
     }
-
-    out.appendSlice(alloc, out_json.items) catch return;
 }
