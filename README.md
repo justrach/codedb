@@ -1,19 +1,21 @@
 # CodeDB
 
-**v0.0.2** — A high-performance MCP server and code graph engine written in Zig. Provides AI-powered GitHub project management, agent swarm orchestration, blast radius analysis, and intelligent code navigation via the [Model Context Protocol](https://modelcontextprotocol.io/).
+**v0.0.22** — A high-performance MCP server, code graph engine, and evolutionary algorithm platform written in Zig. Provides AI-powered GitHub project management, agent swarm orchestration, iterative review-fix loops, blast radius analysis, and intelligent code navigation via the [Model Context Protocol](https://modelcontextprotocol.io/).
 
-## What's New in v0.0.2
+## What's New in v0.0.22
 
+- **Review-Fix Loop** (`review_fix_loop`) — iterative review → fix → re-review cycle using Codex subagents. Runs a read-only reviewer, feeds findings to a writable fixer, then re-reviews until clean or max iterations reached. Returns JSON with per-iteration history and convergence status.
+- **33 MCP tools** (up from 30)
 - **Agent Swarm** (`run_swarm`) — spawn up to 100 parallel Codex sub-agents via Zig threads. An orchestrator decomposes your task, workers execute in parallel, a synthesis agent combines results. 4–5× faster than sequential for broad research and multi-file analysis.
 - **Subagent Tools** — `run_reviewer`, `run_explorer`, `run_zig_infra` invoke specialized Codex agents directly as MCP tools
 - **Runtime Repo Switch** (`set_repo`) — change the active repository without restarting the server
 - MCP mode starts directly; `REPO_PATH` is optional when the binary can auto-detect via `git rev-parse`
 - **Codex app-server protocol** — subagents now use the full JSON-RPC 2.0 app-server protocol with streaming `item/agentMessage/delta` instead of blocking `codex exec`
-- **30 MCP tools** (up from 21)
+- **33 MCP tools** (up from 21)
 
 ## Features
 
-- **30 MCP Tools** for issue management, PR workflows, branching, commits, code analysis, graph queries, and agent orchestration
+- **33 MCP Tools** for issue management, PR workflows, branching, commits, code analysis, graph queries, agent orchestration, and iterative review-fix loops
 - **Agent Swarm** — self-organizing parallel sub-agents using Zig's `std.Thread`; orchestrator → N workers → synthesis pipeline
 - **Code Graph Engine** with Personalized PageRank ranking, edge weighting, and multi-language symbol extraction
 - **Blast Radius Analysis** — find all code affected by a change before you make it
@@ -27,7 +29,7 @@
 
 - [Zig](https://ziglang.org/) 0.15.1+
 - [GitHub CLI](https://cli.github.com/) (`gh`) — authenticated
-- [Codex CLI](https://github.com/openai/codex) (`codex`) — for subagent tools (`run_reviewer`, `run_explorer`, `run_zig_infra`, `run_swarm`)
+- [Codex CLI](https://github.com/openai/codex) (`codex`) — for subagent tools (`run_reviewer`, `run_explorer`, `run_zig_infra`, `run_swarm`, `review_fix_loop`)
 - One of: `zigrep`, `rg` (ripgrep), or `grep` — for symbol search
 
 ## Quick Start
@@ -216,7 +218,7 @@ zig build
 | `run_explorer` | Invoke a Codex explorer: trace execution paths read-only, gather evidence |
 | `run_zig_infra` | Invoke a Codex infra agent: review `build.zig` module graph, `@import` wiring, test step coverage |
 | `run_swarm` | Spawn N parallel sub-agents, synthesize results (see below) |
-
+| `review_fix_loop` | Iterative review → fix → re-review loop until clean or max iterations |
 ## Agent Swarm
 
 `run_swarm` implements a self-organizing parallel agent pipeline backed by Zig threads:
@@ -256,7 +258,7 @@ run_swarm(prompt, max_agents=5)
 ```
 src/
 ├── main.zig              # MCP server entry point (JSON-RPC 2.0 over stdio)
-├── tools.zig             # All 30 tool implementations + dispatch
+├── tools.zig             # All 33 tool implementations + dispatch
 ├── swarm.zig             # Agent swarm: orchestrator → N threads → synthesis
 ├── codex_appserver.zig   # Codex app-server JSON-RPC 2.0 client (streaming)
 ├── gh.zig                # GitHub CLI executor with concurrent output draining
@@ -303,11 +305,22 @@ Labels are managed automatically as you use the tools:
 
 ## Changelog
 
+See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+
+### v0.0.22
+- `review_fix_loop`: iterative review → fix → re-review cycle using Codex subagents
+- Atomic JSON output with deferred flush on early exit
+- 33 tools total (up from 30)
+
+### v0.0.21
+- Release pipeline for npm and Homebrew distribution
+- Binary renamed to `devswarm` end-to-end
+- CI: GitHub Actions test pipeline on every PR
+
 ### v0.0.2
 - `run_swarm`: parallel agent swarm via Zig threads (up to 100 agents)
 - `run_reviewer`, `run_explorer`, `run_zig_infra`: Codex subagent tools
 - `set_repo`: runtime repository switching without server restart
-- MCP mode starts directly; repo auto-detection still uses `git rev-parse` when `REPO_PATH` is unset
 - Codex app-server JSON-RPC 2.0 protocol with streaming delta output
 - 30 tools total (up from 21)
 - Fix: spurious backslash-escapes in `tools_list` multiline strings

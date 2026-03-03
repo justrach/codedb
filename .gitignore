@@ -7,4 +7,5 @@ zig-out/
 # Ignore markdown files and python folder
 *.md
 !README.md
+!CHANGELOG.md
 python/
