@@ -67,6 +67,8 @@ pub const TenantManager = struct {
     path_to_id: std.StringHashMap(u32),
     next_id: u32,
     alloc: std.mem.Allocator,
+    /// Guards all HashMap and counter accesses from concurrent threads.
+    mu: std.Thread.Mutex = .{},
 
     pub fn init(alloc: std.mem.Allocator) TenantManager {
         return .{
@@ -91,6 +93,9 @@ pub const TenantManager = struct {
 
     /// Register a new repository. Returns the assigned repo ID.
     pub fn registerRepo(self: *TenantManager, name: []const u8, path: []const u8) !u32 {
+        self.mu.lock();
+        defer self.mu.unlock();
+
         if (self.repos.count() >= MAX_REPOS) return error.TooManyRepos;
 
         // Check for duplicate path
@@ -122,6 +127,9 @@ pub const TenantManager = struct {
 
     /// Unregister a repository.
     pub fn unregisterRepo(self: *TenantManager, repo_id: u32) !void {
+        self.mu.lock();
+        defer self.mu.unlock();
+
         const handle = self.repos.get(repo_id) orelse return error.RepoNotFound;
         if (handle.readers > 0 or handle.writer_active) return error.RepoBusy;
 
@@ -132,17 +140,23 @@ pub const TenantManager = struct {
     }
 
     /// Look up a repo by its filesystem path.
-    pub fn findByPath(self: *const TenantManager, path: []const u8) ?u32 {
+    pub fn findByPath(self: *TenantManager, path: []const u8) ?u32 {
+        self.mu.lock();
+        defer self.mu.unlock();
         return self.path_to_id.get(path);
     }
 
-    /// Get a repo handle (read-only).
-    pub fn getRepo(self: *const TenantManager, repo_id: u32) ?RepoHandle {
+    /// Get a repo handle (read-only copy).
+    pub fn getRepo(self: *TenantManager, repo_id: u32) ?RepoHandle {
+        self.mu.lock();
+        defer self.mu.unlock();
         return self.repos.get(repo_id);
     }
 
     /// Acquire a read lock. Multiple readers allowed.
     pub fn acquireRead(self: *TenantManager, repo_id: u32) !void {
+        self.mu.lock();
+        defer self.mu.unlock();
         const handle = self.repos.getPtr(repo_id) orelse return error.RepoNotFound;
         if (handle.writer_active) return error.WriteLocked;
         handle.readers += 1;
@@ -150,12 +164,16 @@ pub const TenantManager = struct {
 
     /// Release a read lock.
     pub fn releaseRead(self: *TenantManager, repo_id: u32) void {
+        self.mu.lock();
+        defer self.mu.unlock();
         const handle = self.repos.getPtr(repo_id) orelse return;
         if (handle.readers > 0) handle.readers -= 1;
     }
 
     /// Acquire an exclusive write lock. Fails if any readers or writer active.
     pub fn acquireWrite(self: *TenantManager, repo_id: u32) !void {
+        self.mu.lock();
+        defer self.mu.unlock();
         const handle = self.repos.getPtr(repo_id) orelse return error.RepoNotFound;
         if (handle.writer_active) return error.WriteLocked;
         if (handle.readers > 0) return error.ReadLocked;
@@ -164,6 +182,8 @@ pub const TenantManager = struct {
 
     /// Release the write lock.
     pub fn releaseWrite(self: *TenantManager, repo_id: u32) void {
+        self.mu.lock();
+        defer self.mu.unlock();
         const handle = self.repos.getPtr(repo_id) orelse return;
         handle.writer_active = false;
     }
@@ -171,39 +191,49 @@ pub const TenantManager = struct {
     /// Get the data directory path for a repo.
     /// Returns a path like ".codegraph/repos/<hex-hash>".
     /// Caller owns the returned slice.
-    pub fn repoDataDir(self: *const TenantManager, repo_id: u32) ![]u8 {
-        const handle = self.repos.get(repo_id) orelse return error.RepoNotFound;
-        const hex = hashToHex(handle.dir_hash);
-        return std.fs.path.join(self.alloc, &.{ BASE_DIR, &hex });
+    pub fn repoDataDir(self: *TenantManager, repo_id: u32) ![]u8 {
+        self.mu.lock();
+        defer self.mu.unlock();
+        return self.repoDataDirLocked(repo_id);
     }
 
     /// Get the graph file path for a repo. Caller owns the returned slice.
-    pub fn repoGraphPath(self: *const TenantManager, repo_id: u32) ![]u8 {
-        const dir = try self.repoDataDir(repo_id);
+    pub fn repoGraphPath(self: *TenantManager, repo_id: u32) ![]u8 {
+        self.mu.lock();
+        defer self.mu.unlock();
+        const dir = try self.repoDataDirLocked(repo_id);
         defer self.alloc.free(dir);
         return std.fs.path.join(self.alloc, &.{ dir, GRAPH_FILE });
     }
 
     /// Get the WAL file path for a repo. Caller owns the returned slice.
-    pub fn repoWalPath(self: *const TenantManager, repo_id: u32) ![]u8 {
-        const dir = try self.repoDataDir(repo_id);
+    pub fn repoWalPath(self: *TenantManager, repo_id: u32) ![]u8 {
+        self.mu.lock();
+        defer self.mu.unlock();
+        const dir = try self.repoDataDirLocked(repo_id);
         defer self.alloc.free(dir);
         return std.fs.path.join(self.alloc, &.{ dir, WAL_FILE });
     }
 
     /// Update the last sync timestamp for a repo.
     pub fn markSynced(self: *TenantManager, repo_id: u32, now_ms: i64) void {
+        self.mu.lock();
+        defer self.mu.unlock();
         const handle = self.repos.getPtr(repo_id) orelse return;
         handle.last_sync_ms = now_ms;
     }
 
     /// Total number of registered repos.
-    pub fn count(self: *const TenantManager) u32 {
+    pub fn count(self: *TenantManager) u32 {
+        self.mu.lock();
+        defer self.mu.unlock();
         return @intCast(self.repos.count());
     }
 
     /// List all repo IDs.
-    pub fn listRepoIds(self: *const TenantManager) ![]u32 {
+    pub fn listRepoIds(self: *TenantManager) ![]u32 {
+        self.mu.lock();
+        defer self.mu.unlock();
         var ids = try self.alloc.alloc(u32, self.repos.count());
         var i: usize = 0;
         var it = self.repos.iterator();
@@ -212,6 +242,14 @@ pub const TenantManager = struct {
             i += 1;
         }
         return ids;
+    }
+
+    // ── Internal (caller must hold mu) ─────────────────────────────────────
+
+    fn repoDataDirLocked(self: *TenantManager, repo_id: u32) ![]u8 {
+        const handle = self.repos.get(repo_id) orelse return error.RepoNotFound;
+        const hex = hashToHex(handle.dir_hash);
+        return std.fs.path.join(self.alloc, &.{ BASE_DIR, &hex });
     }
 };
 

@@ -72,7 +72,10 @@ pub const IncrementalPpr = struct {
     /// Notify that an edge was added from src to dst with the given weight.
     /// Injects residual at the source node so the next deltaUpdate propagates
     /// the score change through the new edge.
-    pub fn onEdgeAdded(self: *IncrementalPpr, src: u64, dst: u64, weight: f32) void {
+    /// Notify that an edge was added from src to dst with the given weight.
+    /// Injects residual at the source node so the next deltaUpdate propagates
+    /// the score change through the new edge.
+    pub fn onEdgeAdded(self: *IncrementalPpr, src: u64, dst: u64, weight: f32) !void {
         _ = dst;
         // The source node's outgoing weight distribution changed, so its
         // current score needs to be partially redistributed. We inject
@@ -82,20 +85,24 @@ pub const IncrementalPpr = struct {
         const injection = (1.0 - self.alpha) * src_score * weight;
 
         if (injection > 0) {
-            const entry = self.residuals.getOrPut(src) catch return;
+            const entry = try self.residuals.getOrPut(src);
             if (!entry.found_existing) entry.value_ptr.* = 0;
             entry.value_ptr.* += injection;
         }
 
         // Mark source as dirty regardless (edge topology changed)
-        self.dirty_nodes.put(src, {}) catch {};
+        try self.dirty_nodes.put(src, {});
     }
 
     /// Notify that an edge from src to dst was removed.
     /// Marks the source node dirty so deltaUpdate can recompute its local
     /// neighbourhood. Also redistributes the score that was flowing through
     /// the removed edge back as residual on the source.
-    pub fn onEdgeRemoved(self: *IncrementalPpr, src: u64, dst: u64) void {
+    /// Notify that an edge from src to dst was removed.
+    /// Marks the source node dirty so deltaUpdate can recompute its local
+    /// neighbourhood. Also redistributes the score that was flowing through
+    /// the removed edge back as residual on the source.
+    pub fn onEdgeRemoved(self: *IncrementalPpr, src: u64, dst: u64) !void {
         // The score that was flowing to dst through this edge needs to be
         // reclaimed. We approximate by marking both nodes dirty and injecting
         // residual at the source.
@@ -104,7 +111,7 @@ pub const IncrementalPpr = struct {
 
         // Inject residual at source proportional to its score
         if (src_score > 0) {
-            const entry = self.residuals.getOrPut(src) catch return;
+            const entry = try self.residuals.getOrPut(src);
             if (!entry.found_existing) entry.value_ptr.* = 0;
             entry.value_ptr.* += (1.0 - self.alpha) * src_score;
         }
@@ -117,26 +124,34 @@ pub const IncrementalPpr = struct {
                 ptr.* -= reduction;
                 if (ptr.* < 0) ptr.* = 0;
             }
-            const dst_entry = self.residuals.getOrPut(dst) catch return;
+            const dst_entry = try self.residuals.getOrPut(dst);
             if (!dst_entry.found_existing) dst_entry.value_ptr.* = 0;
             dst_entry.value_ptr.* += reduction;
         }
 
-        self.dirty_nodes.put(src, {}) catch {};
-        self.dirty_nodes.put(dst, {}) catch {};
+        try self.dirty_nodes.put(src, {});
+        try self.dirty_nodes.put(dst, {});
     }
 
     /// Notify that a file was invalidated (e.g. modified on disk).
     /// All symbols belonging to that file are marked dirty with residual
     /// injected based on their current scores.
-    pub fn onFileInvalidated(self: *IncrementalPpr, symbol_ids: []const u64) void {
+    /// Notify that a file was invalidated (e.g. modified on disk).
+    /// All symbols belonging to that file are marked dirty with residual
+    /// injected based on their current scores.
+    /// Pre-ensures capacity so the loop never leaves partial state on OOM.
+    pub fn onFileInvalidated(self: *IncrementalPpr, symbol_ids: []const u64) !void {
+        // Pre-allocate worst-case capacity so the loop below cannot fail.
+        try self.dirty_nodes.ensureUnusedCapacity(@intCast(symbol_ids.len));
+        try self.residuals.ensureUnusedCapacity(@intCast(symbol_ids.len));
+
         for (symbol_ids) |id| {
-            self.dirty_nodes.put(id, {}) catch {};
+            self.dirty_nodes.putAssumeCapacity(id, {});
 
             // Inject residual so scores get recomputed
             const score = self.scores.get(id) orelse 0;
             if (score > 0) {
-                const entry = self.residuals.getOrPut(id) catch continue;
+                const entry = self.residuals.getOrPutAssumeCapacity(id);
                 if (!entry.found_existing) entry.value_ptr.* = 0;
                 entry.value_ptr.* += score;
             }
@@ -305,7 +320,7 @@ test "onEdgeAdded marks source dirty and injects residual" {
     // Seed a score for node 1
     try ippr.scores.put(1, 0.5);
 
-    ippr.onEdgeAdded(1, 2, 1.0);
+    try ippr.onEdgeAdded(1, 2, 1.0);
 
     try std.testing.expectEqual(@as(usize, 1), ippr.dirtyCount());
     // Residual should be injected at source
@@ -320,7 +335,7 @@ test "onEdgeRemoved marks both nodes dirty" {
     try ippr.scores.put(1, 0.5);
     try ippr.scores.put(2, 0.3);
 
-    ippr.onEdgeRemoved(1, 2);
+    try ippr.onEdgeRemoved(1, 2);
 
     try std.testing.expectEqual(@as(usize, 2), ippr.dirtyCount());
     // Residual should exist at source
@@ -336,7 +351,7 @@ test "onFileInvalidated marks all symbols dirty" {
     try ippr.scores.put(12, 0.1);
 
     const ids = [_]u64{ 10, 11, 12 };
-    ippr.onFileInvalidated(&ids);
+    try ippr.onFileInvalidated(&ids);
 
     try std.testing.expectEqual(@as(usize, 3), ippr.dirtyCount());
 }
@@ -387,7 +402,7 @@ test "deltaUpdate after edge addition increases downstream scores" {
 
     // Add new edge: 1 -> 3
     try g.addEdge(.{ .src = 1, .dst = 3, .kind = .calls });
-    ippr.onEdgeAdded(1, 3, 1.0);
+    try ippr.onEdgeAdded(1, 3, 1.0);
     try ippr.deltaUpdate(&g);
 
     // Node 3 should now have a positive score
@@ -415,7 +430,7 @@ test "deltaUpdate after edge removal adjusts scores" {
 
     // Notify edge removal (we don't actually remove from graph for this test,
     // just check that the incremental update processes dirty nodes)
-    ippr.onEdgeRemoved(1, 3);
+    try ippr.onEdgeRemoved(1, 3);
     try ippr.deltaUpdate(&g);
 
     // After update, dirty set should be cleared
@@ -477,7 +492,7 @@ test "onFileInvalidated with no prior scores is safe" {
     defer ippr.deinit();
 
     const ids = [_]u64{ 100, 200, 300 };
-    ippr.onFileInvalidated(&ids);
+    try ippr.onFileInvalidated(&ids);
 
     try std.testing.expectEqual(@as(usize, 3), ippr.dirtyCount());
     // No residual since scores are 0
@@ -544,7 +559,7 @@ test "onEdgeAdded with weight=0 does not inject residual" {
 
     try ippr.scores.put(1, 0.5);
 
-    ippr.onEdgeAdded(1, 2, 0.0);
+    try ippr.onEdgeAdded(1, 2, 0.0);
 
     // injection = (1-alpha) * 0.5 * 0.0 = 0, so no residual injected
     // But dirty node is still marked
@@ -559,7 +574,7 @@ test "onEdgeRemoved for nodes with no scores" {
     defer ippr.deinit();
 
     // Neither node has scores
-    ippr.onEdgeRemoved(42, 43);
+    try ippr.onEdgeRemoved(42, 43);
 
     // Should mark both dirty without crashing
     try std.testing.expectEqual(@as(usize, 2), ippr.dirtyCount());
@@ -575,11 +590,11 @@ test "multiple rapid edge additions accumulate residual" {
     try ippr.scores.put(1, 1.0);
 
     // Add 5 edges rapidly from same source
-    ippr.onEdgeAdded(1, 10, 1.0);
-    ippr.onEdgeAdded(1, 11, 1.0);
-    ippr.onEdgeAdded(1, 12, 1.0);
-    ippr.onEdgeAdded(1, 13, 1.0);
-    ippr.onEdgeAdded(1, 14, 1.0);
+    try ippr.onEdgeAdded(1, 10, 1.0);
+    try ippr.onEdgeAdded(1, 11, 1.0);
+    try ippr.onEdgeAdded(1, 12, 1.0);
+    try ippr.onEdgeAdded(1, 13, 1.0);
+    try ippr.onEdgeAdded(1, 14, 1.0);
 
     // Each injection adds (1-alpha)*score*weight to residual
     // Total = 5 * (1-0.15) * 1.0 * 1.0 = 4.25
@@ -594,7 +609,7 @@ test "onFileInvalidated with empty symbol list" {
     try ippr.scores.put(1, 0.5);
 
     const empty_ids = [_]u64{};
-    ippr.onFileInvalidated(&empty_ids);
+    try ippr.onFileInvalidated(&empty_ids);
 
     // Should be a no-op
     try std.testing.expectEqual(@as(usize, 0), ippr.dirtyCount());

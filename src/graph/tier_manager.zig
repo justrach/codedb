@@ -190,8 +190,43 @@ pub const TierManager = struct {
 
     /// Evict idle entries based on time threshold.
     /// Demotes HOT→WARM and WARM→COLD for entries idle longer than `idle_ms`.
-    pub fn evictIdle(self: *TierManager, idle_ms: i64) u32 {
+    /// Evict idle entries based on time threshold.
+    /// Demotes HOT→WARM and WARM→COLD for entries idle longer than `idle_ms`.
+    pub fn evictIdle(self: *TierManager, idle_ms: i64) !u32 {
         return self.evictIdleAt(idle_ms, std.time.milliTimestamp());
+    }
+
+    /// Evict idle entries with explicit timestamp (for testing).
+    pub fn evictIdleAt(self: *TierManager, idle_ms: i64, now_ms: i64) !u32 {
+        var evicted: u32 = 0;
+        // Collect keys to demote (can't modify during iteration)
+        var to_demote_hot = std.ArrayList(u32).empty;
+        defer to_demote_hot.deinit(self.alloc);
+        var to_demote_warm = std.ArrayList(u32).empty;
+        defer to_demote_warm.deinit(self.alloc);
+
+        var it = self.entries.iterator();
+        while (it.next()) |kv| {
+            const e = kv.value_ptr;
+            if (e.last_access_ms > 0 and (now_ms - e.last_access_ms) > idle_ms) {
+                if (e.tier == .hot) {
+                    try to_demote_hot.append(self.alloc, kv.key_ptr.*);
+                } else if (e.tier == .warm) {
+                    try to_demote_warm.append(self.alloc, kv.key_ptr.*);
+                }
+            }
+        }
+
+        for (to_demote_hot.items) |rid| {
+            self.demoteToWarm(rid);
+            evicted += 1;
+        }
+        for (to_demote_warm.items) |rid| {
+            self.demoteToCold(rid);
+            evicted += 1;
+        }
+
+        return evicted;
     }
 
     /// Evict idle entries with explicit timestamp (for testing).
@@ -383,7 +418,7 @@ test "evict idle entries" {
     tm.warm_count += 1;
 
     // Evict entries idle for more than 2000ms at time 6000
-    const evicted = tm.evictIdleAt(2000, 6000);
+    const evicted = try tm.evictIdleAt(2000, 6000);
     try std.testing.expectEqual(@as(u32, 1), evicted); // only entry 1 (idle 5000ms)
     try std.testing.expectEqual(Tier.cold, tm.getTier(1).?);
     try std.testing.expectEqual(Tier.warm, tm.getTier(2).?);
@@ -543,7 +578,7 @@ test "evict when no entries are idle" {
 
     // Now = 10000, idle_ms = 2000, so entries idle > 2000ms would be evicted
     // But both entries are recent (idle 1000ms and 500ms)
-    const evicted = tm.evictIdleAt(2000, 10000);
+    const evicted = try tm.evictIdleAt(2000, 10000);
     try std.testing.expectEqual(@as(u32, 0), evicted);
     try std.testing.expectEqual(Tier.warm, tm.getTier(1).?);
     try std.testing.expectEqual(Tier.warm, tm.getTier(2).?);
@@ -664,7 +699,7 @@ test "evict idle demotes hot to warm and warm to cold" {
     e3.last_access_ms = 9000;
     tm.warm_count += 1;
 
-    const evicted = tm.evictIdleAt(5000, 10000);
+    const evicted = try tm.evictIdleAt(5000, 10000);
     try std.testing.expectEqual(@as(u32, 2), evicted); // repos 1 and 2
 
     try std.testing.expectEqual(Tier.warm, tm.getTier(1).?); // hot → warm
@@ -709,6 +744,6 @@ test "cold entries with zero last_access_ms are not evicted" {
     try std.testing.expectEqual(@as(i64, 0), tm.getEntry(1).?.last_access_ms);
 
     // Should not be evicted (it's already cold, and last_access_ms check: 0 > 0 is false)
-    const evicted = tm.evictIdleAt(1, 999999);
+    const evicted = try tm.evictIdleAt(1, 999999);
     try std.testing.expectEqual(@as(u32, 0), evicted);
 }

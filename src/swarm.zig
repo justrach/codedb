@@ -41,7 +41,7 @@ const WRITABLE_PREAMBLE =
     \\  - One focused change per file; do not rewrite files wholesale
     \\  - Cite file:line for every finding
     \\
-    \\MCP TOOLS (also available): mcp__muonry__read, mcp__muonry__search, mcp__muonry__edit
+    \\MCP TOOLS (available when muonry is in ~/.codex/config.toml): mcp__muonry__read, mcp__muonry__search, mcp__muonry__edit
     \\
     \\Task:
     \\
