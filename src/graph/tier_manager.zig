@@ -229,39 +229,6 @@ pub const TierManager = struct {
         return evicted;
     }
 
-    /// Evict idle entries with explicit timestamp (for testing).
-    pub fn evictIdleAt(self: *TierManager, idle_ms: i64, now_ms: i64) u32 {
-        var evicted: u32 = 0;
-        // Collect keys to demote (can't modify during iteration)
-        var to_demote_hot = std.ArrayList(u32).empty;
-        defer to_demote_hot.deinit(self.alloc);
-        var to_demote_warm = std.ArrayList(u32).empty;
-        defer to_demote_warm.deinit(self.alloc);
-
-        var it = self.entries.iterator();
-        while (it.next()) |kv| {
-            const e = kv.value_ptr;
-            if (e.last_access_ms > 0 and (now_ms - e.last_access_ms) > idle_ms) {
-                if (e.tier == .hot) {
-                    to_demote_hot.append(self.alloc, kv.key_ptr.*) catch continue;
-                } else if (e.tier == .warm) {
-                    to_demote_warm.append(self.alloc, kv.key_ptr.*) catch continue;
-                }
-            }
-        }
-
-        for (to_demote_hot.items) |rid| {
-            self.demoteToWarm(rid);
-            evicted += 1;
-        }
-        for (to_demote_warm.items) |rid| {
-            self.demoteToCold(rid);
-            evicted += 1;
-        }
-
-        return evicted;
-    }
-
     /// Get the current tier for a repo.
     pub fn getTier(self: *const TierManager, repo_id: u32) ?Tier {
         const entry = self.entries.get(repo_id) orelse return null;

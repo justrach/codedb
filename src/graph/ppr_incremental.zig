@@ -211,6 +211,12 @@ pub const IncrementalPpr = struct {
                 if (!p_entry.found_existing) p_entry.value_ptr.* = 0;
                 p_entry.value_ptr.* += self.alpha * r_u;
 
+                // Zero r[u] BEFORE distributing to neighbours.
+                // This is critical for correctness with self-loops: if u has
+                // an edge to itself, the distributed share must accumulate on
+                // top of 0, not be wiped out by a later zeroing.
+                self.residuals.putAssumeCapacity(u, 0);
+
                 // Distribute residual to out-neighbours
                 const edges = graph.outEdges(u);
                 if (edges.len > 0) {
@@ -226,9 +232,6 @@ pub const IncrementalPpr = struct {
                         }
                     }
                 }
-
-                // r[u] = 0
-                self.residuals.putAssumeCapacity(u, 0);
             }
         }
 
@@ -681,5 +684,30 @@ test "deltaUpdate with disconnected node and residual" {
 
     // Score should absorb alpha * residual since no neighbours to distribute to
     try std.testing.expect(ippr.getScore(1) > 0);
+    try std.testing.expectEqual(@as(usize, 0), ippr.dirtyCount());
+}
+
+test "deltaUpdate with self-loop preserves residual correctly" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // Node 1 points to itself (self-loop)
+    try g.addEdge(.{ .src = 1, .dst = 1, .kind = .references });
+
+    var ippr = IncrementalPpr.init(std.testing.allocator);
+    defer ippr.deinit();
+
+    // Seed with a significant residual on the self-loop node
+    try ippr.residuals.put(1, 1.0);
+    try ippr.dirty_nodes.put(1, {});
+
+    try ippr.deltaUpdate(&g);
+
+    // With a self-loop, score should converge to ~1.0 (all mass stays on node 1).
+    // Before the fix, r[u]=0 happened AFTER distribution, wiping the self-loop
+    // share and causing mass to drop to only alpha (~0.15).
+    const score = ippr.getScore(1);
+    try std.testing.expect(score > 0.5); // must be well above alpha
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), score, 0.1);
     try std.testing.expectEqual(@as(usize, 0), ippr.dirtyCount());
 }
