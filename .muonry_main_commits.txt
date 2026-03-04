@@ -1,0 +1,12 @@
+dbfa0cc (origin/main, origin/HEAD) Merge pull request #141 from justrach/codex/138-transport-reconnect-e2e
+3d83666 (HEAD -> codex/138-transport-reconnect-e2e, origin/codex/138-transport-reconnect-e2e) test: add MCP framing recovery e2e regression
+0bb43c1 Merge pull request #140 from justrach/feature/29-32-research-map-elites-adaptive-weight-tuning-per
+db470c1 (origin/feature/29-32-research-map-elites-adaptive-weight-tuning-per, feature/29-32-research-map-elites-adaptive-weight-tuning-per) fix: harden MCP framing and thread repo handling
+e381704 fix: SIGABRT on create_branch + add get_issue tool (#137)
+09e6131 fix: Invalid free panic in slugify + add get_issue tool
+f81b882 (origin/feature/132-feat-inject-tool-use-preamble-into-writable-swarm-, feature/132-feat-inject-tool-use-preamble-into-writable-swarm-) refactor: option 1 first, option 2 as fallback in codex app-server spawn
+683fafc fix: login shell + startup path resolution for portable tool access
+4f37a49 fix: forward PATH+HOME into codex app-server; add ziggrep symlink; sharpen preamble
+ff2c656 Add WRITABLE_PREAMBLE to swarm worker prompts
+1e8e25a (main, feature/82-add-contributors-agpl) chore: add contributors and AGPL license
+10f9b85 feat: dynamic repo detection + close_issues_batch (#114) (#131)
