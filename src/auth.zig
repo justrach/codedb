@@ -115,7 +115,7 @@ pub fn startTrial(alloc: std.mem.Allocator) !AuthResult {
 fn checkEnvToken(alloc: std.mem.Allocator) bool {
     const token = std.process.getEnvVarOwned(alloc, ENV_TOKEN) catch return false;
     defer alloc.free(token);
-    return token.len > 0;
+    return validateJwtToken(token);
 }
 
 fn checkTokenFile(alloc: std.mem.Allocator) bool {
@@ -128,11 +128,59 @@ fn checkTokenFile(alloc: std.mem.Allocator) bool {
     const file = std.fs.cwd().openFile(file_path, .{}) catch return false;
     defer file.close();
 
-    // File exists and is readable — token is valid
-    // Full JWT validation would go here in production
     var buf: [4096]u8 = undefined;
     const n = file.readAll(&buf) catch return false;
-    return n > 10; // Minimum viable token length
+    return validateTokenContent(buf[0..n]);
+}
+
+fn validateTokenContent(content: []const u8) bool {
+    const trimmed = std.mem.trim(u8, content, " \t\r\n");
+    if (trimmed.len == 0) return false;
+
+    const token = if (trimmed[0] == '{')
+        (extractTokenFromJson(trimmed) orelse return false)
+    else
+        trimmed;
+
+    return validateJwtToken(token);
+}
+
+fn extractTokenFromJson(content: []const u8) ?[]const u8 {
+    const key = "\"token\"";
+    const key_idx = std.mem.indexOf(u8, content, key) orelse return null;
+    const after_key = content[key_idx + key.len ..];
+    const colon_idx = std.mem.indexOfScalar(u8, after_key, ':') orelse return null;
+
+    var value = std.mem.trimLeft(u8, after_key[colon_idx + 1 ..], " \t\r\n");
+    if (value.len == 0 or value[0] != '"') return null;
+
+    value = value[1..];
+    const end_quote = std.mem.indexOfScalar(u8, value, '"') orelse return null;
+    return value[0..end_quote];
+}
+
+fn validateJwtToken(token: []const u8) bool {
+    const trimmed = std.mem.trim(u8, token, " \t\r\n");
+    if (trimmed.len == 0) return false;
+
+    var parts = std.mem.splitScalar(u8, trimmed, '.');
+    const header = parts.next() orelse return false;
+    const payload_b64 = parts.next() orelse return false;
+    const signature = parts.next() orelse return false;
+    if (parts.next() != null) return false;
+
+    if (header.len == 0 or payload_b64.len == 0 or signature.len == 0) return false;
+
+    const decoder = std.base64.url_safe_no_pad.Decoder;
+    const payload_len = decoder.calcSizeForSlice(payload_b64) catch return false;
+    if (payload_len == 0 or payload_len > 4096) return false;
+
+    var payload_buf: [4096]u8 = undefined;
+    decoder.decode(payload_buf[0..payload_len], payload_b64) catch return false;
+    const payload = payload_buf[0..payload_len];
+
+    const exp = parseJsonIntField(payload, "\"exp\"") orelse return false;
+    return exp > std.time.timestamp();
 }
 
 fn checkTrial(alloc: std.mem.Allocator) AuthResult {
@@ -191,11 +239,14 @@ fn noAuth() AuthResult {
 }
 
 fn parseStartedAt(content: []const u8) ?i64 {
-    // Simple parser: find "started_at": and parse the number
-    const marker = "\"started_at\":";
-    const idx = std.mem.indexOf(u8, content, marker) orelse return null;
-    const rest = content[idx + marker.len ..];
-    const trimmed = std.mem.trimLeft(u8, rest, " ");
+    return parseJsonIntField(content, "\"started_at\"");
+}
+
+fn parseJsonIntField(content: []const u8, field: []const u8) ?i64 {
+    const key_idx = std.mem.indexOf(u8, content, field) orelse return null;
+    const after_key = content[key_idx + field.len ..];
+    const colon_idx = std.mem.indexOfScalar(u8, after_key, ':') orelse return null;
+    const trimmed = std.mem.trimLeft(u8, after_key[colon_idx + 1 ..], " \t\r\n");
 
     var end: usize = 0;
     while (end < trimmed.len and (trimmed[end] >= '0' and trimmed[end] <= '9')) end += 1;
@@ -211,6 +262,19 @@ fn getAuthDir(alloc: std.mem.Allocator) ?[]u8 {
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+fn makeFixtureToken(exp: i64, alloc: std.mem.Allocator) ![]u8 {
+    const payload_json = try std.fmt.allocPrint(alloc, "{{\"exp\":{d}}}", .{exp});
+    defer alloc.free(payload_json);
+
+    const encoder = std.base64.url_safe_no_pad.Encoder;
+    const payload_len = encoder.calcSize(payload_json.len);
+    const payload_b64 = try alloc.alloc(u8, payload_len);
+    defer alloc.free(payload_b64);
+    _ = encoder.encode(payload_b64, payload_json);
+
+    return std.fmt.allocPrint(alloc, "fixture.{s}.sig", .{payload_b64});
+}
 
 test "AuthStatus enum values" {
     try std.testing.expectEqual(@as(u2, 0), @intFromEnum(AuthStatus.valid_token));
@@ -243,6 +307,28 @@ test "checkAuth returns no_auth when nothing configured" {
 test "constants are correct" {
     try std.testing.expectEqual(@as(i64, 7), TRIAL_DAYS);
     try std.testing.expectEqualStrings("ZIGTOOLS_TOKEN", ENV_TOKEN);
+}
+test "validateJwtToken accepts unexpired token" {
+    const alloc = std.testing.allocator;
+    const token = try makeFixtureToken(4102444800, alloc);
+    defer alloc.free(token);
+    try std.testing.expect(validateJwtToken(token));
+}
+
+test "validateJwtToken rejects expired token" {
+    const alloc = std.testing.allocator;
+    const token = try makeFixtureToken(946684800, alloc);
+    defer alloc.free(token);
+    try std.testing.expect(!validateJwtToken(token));
+}
+
+test "validateTokenContent extracts token from JSON" {
+    const alloc = std.testing.allocator;
+    const token = try makeFixtureToken(4102444800, alloc);
+    defer alloc.free(token);
+    const json = try std.fmt.allocPrint(alloc, "{{\"token\":\"{s}\",\"activated_at\":1700000000}}", .{token});
+    defer alloc.free(json);
+    try std.testing.expect(validateTokenContent(json));
 }
 
 // ── Edge case tests ─────────────────────────────────────────────────────────

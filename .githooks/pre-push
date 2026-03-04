@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Optional skip flag for local emergency pushes.
+if [[ "${SKIP_MCP_TESTS:-}" == "1" ]]; then
+  echo "SKIP_MCP_TESTS=1 set; skipping push tests"
+  exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! command -v zig >/dev/null 2>&1; then
+  echo "error: zig not found in PATH" >&2
+  exit 1
+fi
+
+echo "Running regression checks before push..."
+zig build test

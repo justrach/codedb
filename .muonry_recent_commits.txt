@@ -1,0 +1,12 @@
+3d83666 (HEAD -> codex/138-transport-reconnect-e2e, origin/codex/138-transport-reconnect-e2e) test: add MCP framing recovery e2e regression
+db470c1 (origin/feature/29-32-research-map-elites-adaptive-weight-tuning-per, feature/29-32-research-map-elites-adaptive-weight-tuning-per) fix: harden MCP framing and thread repo handling
+09e6131 fix: Invalid free panic in slugify + add get_issue tool
+f81b882 (origin/feature/132-feat-inject-tool-use-preamble-into-writable-swarm-, feature/132-feat-inject-tool-use-preamble-into-writable-swarm-) refactor: option 1 first, option 2 as fallback in codex app-server spawn
+683fafc fix: login shell + startup path resolution for portable tool access
+4f37a49 fix: forward PATH+HOME into codex app-server; add ziggrep symlink; sharpen preamble
+ff2c656 Add WRITABLE_PREAMBLE to swarm worker prompts
+1e8e25a (main, feature/82-add-contributors-agpl) chore: add contributors and AGPL license
+10f9b85 feat: dynamic repo detection + close_issues_batch (#114) (#131)
+f18e68d fix: resolve swarm review issues #115–#124 (7 bugs fixed) (#130)
+6a79c11 docs: update README for v0.0.2 — swarm, subagents, set_repo, 30 tools (#129)
+1abc345 feat: add run_swarm — parallel multi-agent swarm via Zig threads

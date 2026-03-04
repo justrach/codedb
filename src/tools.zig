@@ -4,7 +4,7 @@
 //   Planning    → decompose_feature, get_project_state, get_next_task, prioritize_issues
 //   Issues      → create_issue, create_issues_batch, update_issue, close_issue, link_issues, get_issue
 //   Branches    → create_branch, get_current_branch, commit_with_context, push_branch
-//   Pull Reqs   → create_pr, get_pr_status, list_open_prs
+//   Pull Reqs   → create_pr, get_pr_status, list_open_prs, merge_pr, get_pr_diff
 //   Analysis    → review_pr_impact, blast_radius, relevant_context, git_history_for, recently_changed
 //
 // Each handler writes its result to `out: *std.ArrayList(u8)`.
@@ -83,6 +83,8 @@ pub const Tool = enum {
     create_pr,
     get_pr_status,
     list_open_prs,
+    merge_pr,
+    get_pr_diff,
     // Analysis
     review_pr_impact,
     blast_radius,
@@ -128,11 +130,13 @@ pub const tools_list =
     \\{"name":"get_issue","description":"Fetch a single GitHub issue by number. Returns title, body, state, labels, and comments. Use this to read any issue — including closed ones — when you only have the number.","inputSchema":{"type":"object","properties":{"issue_number":{"type":"integer","description":"Issue number to fetch"}},"required":["issue_number"]}},
     \\{"name":"create_branch","description":"Create a feature or fix branch linked to an issue. Branch name: {type}/{issue_number}-{slugified-title}. Sets status:in-progress on the issue.","inputSchema":{"type":"object","properties":{"issue_number":{"type":"integer"},"branch_type":{"type":"string","enum":["feature","fix"],"description":"Branch prefix type"}},"required":["issue_number"]}},
     \\{"name":"get_current_branch","description":"Return the current git branch name and the issue number parsed from it (null if not a convention branch).","inputSchema":{"type":"object","properties":{},"required":[]}},
-    \\{"name":"commit_with_context","description":"Stage all changes and commit with a message referencing the current issue. Auto-detects issue number from branch name if not provided.","inputSchema":{"type":"object","properties":{"message":{"type":"string","description":"Commit message body"},"issue_number":{"type":"integer","description":"Issue to reference (auto-detected from branch if omitted)"}},"required":["message"]}},
+    \\{"name":"commit_with_context","description":"Stage and commit with a message referencing the current issue. Auto-detects issue number from branch name if not provided. If files is provided, only those files are staged; otherwise stages everything.","inputSchema":{"type":"object","properties":{"message":{"type":"string","description":"Commit message body"},"issue_number":{"type":"integer","description":"Issue to reference (auto-detected from branch if omitted)"},"files":{"type":"array","items":{"type":"string"},"description":"Specific files to stage (default: stage all with git add -A)"}},"required":["message"]}},
     \\{"name":"push_branch","description":"Push the current branch to origin.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"create_pr","description":"Open a pull request from the current branch to main. Auto-generates title and body from the linked issue if not provided. Sets status:in-review on the issue.","inputSchema":{"type":"object","properties":{"title":{"type":"string","description":"PR title (defaults to linked issue title)"},"body":{"type":"string","description":"PR body (defaults to issue summary + Closes #N)"}},"required":[]}},
     \\{"name":"get_pr_status","description":"Get CI status, review state, and merge readiness for a PR. Defaults to the PR for the current branch.","inputSchema":{"type":"object","properties":{"pr_number":{"type":"integer","description":"PR number (defaults to current branch's PR)"}},"required":[]}},
     \\{"name":"list_open_prs","description":"List all open PRs with their CI status, review state, and linked issue numbers.","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"merge_pr","description":"Merge a pull request. Defaults to current branch's PR if pr_number is omitted. Supports squash, merge, and rebase strategies.","inputSchema":{"type":"object","properties":{"pr_number":{"type":"integer","description":"PR number (defaults to current branch's PR)"},"strategy":{"type":"string","enum":["squash","merge","rebase"],"description":"Merge strategy (default: squash)"},"delete_branch":{"type":"boolean","description":"Delete the branch after merging (default: false)"}},"required":[]}},
+    \\{"name":"get_pr_diff","description":"Get the diff for a pull request. Defaults to current branch's PR if pr_number is omitted. Use this to review what a PR changes before merging.","inputSchema":{"type":"object","properties":{"pr_number":{"type":"integer","description":"PR number (defaults to current branch's PR)"}},"required":[]}},
     \\{"name":"review_pr_impact","description":"Analyze a PR's blast radius: extracts changed files and function symbols from the diff, then searches the codebase for all references to those symbols. Call this before approving or merging a PR to understand what other code might be affected by the changes. Also useful after creating a PR to self-review impact. Returns files changed, symbols modified, and which files reference each symbol.","inputSchema":{"type":"object","properties":{"pr_number":{"type":"integer","description":"PR number (defaults to current branch's PR)"}},"required":[]}},
     \\{"name":"blast_radius","description":"Find all files that reference symbols defined in a file or a specific symbol. Use this to understand the impact of changing a file or function before editing. Works offline with grep-based search.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Path to file to analyze (extracts symbols automatically)"},"symbol":{"type":"string","description":"Specific symbol name to search for"}},"required":[]}},
     \\{"name":"relevant_context","description":"Find files most related to a given file by analyzing symbol cross-references and imports. Use this to understand what other files you should read before modifying a file. Works offline with grep-based search.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Path to file to find context for"}},"required":["file"]}},
@@ -189,6 +193,8 @@ pub fn dispatch(
         .create_pr             => handleCreatePr(alloc, args, out),
         .get_pr_status         => handleGetPrStatus(alloc, args, out),
         .list_open_prs         => handleListOpenPrs(alloc, args, out),
+        .merge_pr              => handleMergePr(alloc, args, out),
+        .get_pr_diff           => handleGetPrDiff(alloc, args, out),
         // Analysis
         .review_pr_impact      => handleReviewPrImpact(alloc, args, out),
         .blast_radius          => handleBlastRadius(alloc, args, out),
@@ -855,11 +861,33 @@ fn handleCommitWithContext(
         alloc.dupe(u8, message) catch return;
     defer alloc.free(full_msg);
 
-    // Stage everything
-    const add_r = gh.run(alloc, &.{ "git", "add", "-A" }) catch |err| {
-        writeErr(alloc, out, gh.errorMessage(err)); return;
-    };
-    add_r.deinit(alloc);
+    // Stage: selective files or everything
+    if (args.get("files")) |fv| {
+        if (fv == .array and fv.array.items.len > 0) {
+            var add_argv: std.ArrayList([]const u8) = .empty;
+            defer add_argv.deinit(alloc);
+            add_argv.appendSlice(alloc, &.{ "git", "add", "--" }) catch return;
+            for (fv.array.items) |item| {
+                if (item == .string) {
+                    add_argv.appendSlice(alloc, &.{item.string}) catch return;
+                }
+            }
+            const add_r = gh.run(alloc, add_argv.items) catch |err| {
+                writeErr(alloc, out, gh.errorMessage(err)); return;
+            };
+            add_r.deinit(alloc);
+        } else {
+            const add_r = gh.run(alloc, &.{ "git", "add", "-A" }) catch |err| {
+                writeErr(alloc, out, gh.errorMessage(err)); return;
+            };
+            add_r.deinit(alloc);
+        }
+    } else {
+        const add_r = gh.run(alloc, &.{ "git", "add", "-A" }) catch |err| {
+            writeErr(alloc, out, gh.errorMessage(err)); return;
+        };
+        add_r.deinit(alloc);
+    }
 
     const commit_r = gh.run(alloc, &.{ "git", "commit", "-m", full_msg }) catch |err| {
         writeErr(alloc, out, gh.errorMessage(err)); return;
@@ -1043,6 +1071,78 @@ fn handleListOpenPrs(
     }) catch |err| { writeErr(alloc, out, gh.errorMessage(err)); return; };
     defer r.deinit(alloc);
     out.appendSlice(alloc, std.mem.trim(u8, r.stdout, " \t\n\r")) catch {};
+}
+
+fn handleMergePr(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(alloc);
+    argv.appendSlice(alloc, &.{ "gh", "pr", "merge" }) catch return;
+
+    // Optional pr_number — default to current branch's PR
+    if (args.get("pr_number")) |pv| {
+        if (pv == .integer) {
+            var nb: [16]u8 = undefined;
+            const ns = std.fmt.bufPrint(&nb, "{d}", .{pv.integer}) catch {
+                writeErr(alloc, out, "bad pr_number"); return;
+            };
+            argv.appendSlice(alloc, &.{ns}) catch return;
+        }
+    }
+
+    argv.appendSlice(alloc, &.{ "--repo", currentRepo() }) catch return;
+
+    // Strategy: squash (default), merge, or rebase
+    const strategy = mj.getStr(args, "strategy") orelse "squash";
+    if (std.mem.eql(u8, strategy, "rebase")) {
+        argv.appendSlice(alloc, &.{"--rebase"}) catch return;
+    } else if (std.mem.eql(u8, strategy, "merge")) {
+        argv.appendSlice(alloc, &.{"--merge"}) catch return;
+    } else {
+        argv.appendSlice(alloc, &.{"--squash"}) catch return;
+    }
+
+    // Optional delete_branch
+    if (args.get("delete_branch")) |dv| {
+        if (dv == .bool and dv.bool) {
+            argv.appendSlice(alloc, &.{"--delete-branch"}) catch return;
+        }
+    }
+
+    const r = gh.run(alloc, argv.items) catch |err| {
+        writeErr(alloc, out, gh.errorMessage(err)); return;
+    };
+    defer r.deinit(alloc);
+
+    out.appendSlice(alloc, "{\"merged\":true,\"strategy\":\"") catch return;
+    mj.writeEscaped(alloc, out, strategy);
+    out.appendSlice(alloc, "\"}") catch {};
+}
+
+fn handleGetPrDiff(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const r = blk: {
+        if (args.get("pr_number")) |pv| {
+            if (pv == .integer) {
+                var nb: [16]u8 = undefined;
+                const ns = std.fmt.bufPrint(&nb, "{d}", .{pv.integer}) catch {
+                    writeErr(alloc, out, "bad pr_number"); return;
+                };
+                break :blk gh.run(alloc, &.{ "gh", "pr", "diff", ns, "--repo", currentRepo() });
+            }
+        }
+        break :blk gh.run(alloc, &.{ "gh", "pr", "diff", "--repo", currentRepo() });
+    } catch |err| { writeErr(alloc, out, gh.errorMessage(err)); return; };
+    defer r.deinit(alloc);
+    out.appendSlice(alloc, "{\"diff\":\"") catch return;
+    mj.writeEscaped(alloc, out, std.mem.trim(u8, r.stdout, " \t\n\r"));
+    out.appendSlice(alloc, "\"}") catch {};
 }
 
 // ── Analysis ──────────────────────────────────────────────────────────────────
