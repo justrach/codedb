@@ -2,6 +2,18 @@
 
 All notable changes to CodeDB are documented here.
 
+
+## [0.0.24] — 2026-03-04
+
+### Added
+- `run_agent` tool — general-purpose agent invocation via the Agent SDK
+- 34 MCP tools total (up from 33)
+
+### Fixed
+- **TenantManager thread-safety** (#108) — Add `std.Thread.Mutex` to `TenantManager`; all public methods lock/unlock; private `repoDataDirLocked` helper avoids recursive lock acquisition. All `*const TenantManager` receivers updated to `*TenantManager`.
+- **Error propagation in graph engine** (#119) — `onEdgeAdded`, `onEdgeRemoved`, `onFileInvalidated` in `ppr_incremental.zig` → `!void`; `evictIdle`/`evictIdleAt` in `tier_manager.zig` → `!u32`. All `catch {}` / `catch return` / `catch continue` replaced with `try`. `onFileInvalidated` uses `ensureUnusedCapacity` + `putAssumeCapacity` for atomic batch updates.
+- **muonry hint in swarm preamble** (#135) — `WRITABLE_PREAMBLE` now correctly states muonry MCP tools are available only when muonry is configured in `~/.codex/config.toml`.
+
 ## [0.0.22] — 2026-03-03
 
 ### Added

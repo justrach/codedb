@@ -1,21 +1,25 @@
 # CodeDB
 
-**v0.0.22** — A high-performance MCP server, code graph engine, and evolutionary algorithm platform written in Zig. Provides AI-powered GitHub project management, agent swarm orchestration, iterative review-fix loops, blast radius analysis, and intelligent code navigation via the [Model Context Protocol](https://modelcontextprotocol.io/).
+**v0.0.24** — A high-performance MCP server, code graph engine, and evolutionary algorithm platform written in Zig. Provides AI-powered GitHub project management, agent swarm orchestration, iterative review-fix loops, blast radius analysis, and intelligent code navigation via the [Model Context Protocol](https://modelcontextprotocol.io/).
+
+## What's New in v0.0.24
+
+- **TenantManager thread-safety** (#108) — `std.Thread.Mutex` now guards all shared HashMap and counter access in `TenantManager`; a private `repoDataDirLocked` helper avoids recursive lock acquisition.
+- **Error propagation in graph engine** (#119) — `onEdgeAdded`, `onEdgeRemoved`, `onFileInvalidated` (ppr_incremental.zig) and `evictIdle`/`evictIdleAt` (tier_manager.zig) now return `!void`/`!u32`, propagating OOM errors via `try` instead of silently dropping state mutations.
+- **muonry availability hint** (#135) — Swarm `WRITABLE_PREAMBLE` clarifies muonry MCP tools require configuration in `~/.codex/config.toml`.
+- **`run_agent` tool** — new general-purpose agent invocation tool via the Agent SDK
+- **34 MCP tools** (up from 33)
 
 ## What's New in v0.0.22
-
-- **Review-Fix Loop** (`review_fix_loop`) — iterative review → fix → re-review cycle using Codex subagents. Runs a read-only reviewer, feeds findings to a writable fixer, then re-reviews until clean or max iterations reached. Returns JSON with per-iteration history and convergence status.
-- **33 MCP tools** (up from 30)
-- **Agent Swarm** (`run_swarm`) — spawn up to 100 parallel Codex sub-agents via Zig threads. An orchestrator decomposes your task, workers execute in parallel, a synthesis agent combines results. 4–5× faster than sequential for broad research and multi-file analysis.
 - **Subagent Tools** — `run_reviewer`, `run_explorer`, `run_zig_infra` invoke specialized Codex agents directly as MCP tools
 - **Runtime Repo Switch** (`set_repo`) — change the active repository without restarting the server
 - MCP mode starts directly; `REPO_PATH` is optional when the binary can auto-detect via `git rev-parse`
 - **Codex app-server protocol** — subagents now use the full JSON-RPC 2.0 app-server protocol with streaming `item/agentMessage/delta` instead of blocking `codex exec`
-- **33 MCP tools** (up from 21)
+- **34 MCP tools** (up from 21)
 
 ## Features
 
-- **33 MCP Tools** for issue management, PR workflows, branching, commits, code analysis, graph queries, agent orchestration, and iterative review-fix loops
+- **34 MCP Tools** for issue management, PR workflows, branching, commits, code analysis, graph queries, agent orchestration, and iterative review-fix loops
 - **Agent Swarm** — self-organizing parallel sub-agents using Zig's `std.Thread`; orchestrator → N workers → synthesis pipeline
 - **Code Graph Engine** with Personalized PageRank ranking, edge weighting, and multi-language symbol extraction
 - **Blast Radius Analysis** — find all code affected by a change before you make it
@@ -258,7 +262,7 @@ run_swarm(prompt, max_agents=5)
 ```
 src/
 ├── main.zig              # MCP server entry point (JSON-RPC 2.0 over stdio)
-├── tools.zig             # All 33 tool implementations + dispatch
+├── tools.zig             # All 34 tool implementations + dispatch
 ├── swarm.zig             # Agent swarm: orchestrator → N threads → synthesis
 ├── codex_appserver.zig   # Codex app-server JSON-RPC 2.0 client (streaming)
 ├── gh.zig                # GitHub CLI executor with concurrent output draining
@@ -306,11 +310,13 @@ Labels are managed automatically as you use the tools:
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+### v0.0.24
+- `TenantManager` mutex: `std.Thread.Mutex` guards all shared state (#108)
+- Error propagation in ppr_incremental and tier_manager: `!void`/`!u32` return types, OOM errors no longer silently dropped (#119)
+- muonry availability hint clarified in swarm preamble (#135)
 
 ### v0.0.22
-- `review_fix_loop`: iterative review → fix → re-review cycle using Codex subagents
-- Atomic JSON output with deferred flush on early exit
-- 33 tools total (up from 30)
+- 34 tools total (up from 30)
 
 ### v0.0.21
 - Release pipeline for npm and Homebrew distribution

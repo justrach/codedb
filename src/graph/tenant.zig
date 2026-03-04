@@ -582,3 +582,33 @@ test "re-register path after unregister succeeds" {
     try std.testing.expect(id2 != id1); // new ID assigned
     try std.testing.expectEqualStrings("app-v2", tm.getRepo(id2).?.name);
 }
+
+test "registerRepo rollback on OOM leaves no dangling repos entry" {
+    // Iterate through fail indices to hit every allocation point in registerRepo.
+    // When registration fails, repos and path_to_id must both be empty (no leak).
+    var found_failure = false;
+    for (0..30) |fail_idx| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = fail_idx,
+        });
+        var tm = TenantManager.init(failing.allocator());
+
+        if (tm.registerRepo("test-repo", "/test/path")) |_| {
+            // Succeeded at this fail_index — clean up normally
+            tm.deinit();
+        } else |_| {
+            // Failed — verify no dangling entry in repos map
+            const repo_count = tm.repos.count();
+            const path_count = tm.path_to_id.count();
+            // Only free hash map internals — no entries to iterate since
+            // errdefer already cleaned up any partially-inserted state.
+            tm.repos.deinit();
+            tm.path_to_id.deinit();
+            try std.testing.expectEqual(@as(usize, 0), repo_count);
+            try std.testing.expectEqual(@as(usize, 0), path_count);
+            found_failure = true;
+        }
+    }
+    // We must have hit at least one OOM failure
+    try std.testing.expect(found_failure);
+}
