@@ -85,9 +85,23 @@ pub fn applyEdit(
 
     const result = try std.mem.join(allocator, "\n", lines.items);
     defer allocator.free(result);
-    const out = try std.fs.cwd().createFile(req.path, .{});
-    defer out.close();
-    try out.writeAll(result);
+
+    // Atomic write: write to temp file then rename to prevent corruption on crash
+    const dir = std.fs.cwd();
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.codedb_tmp", .{req.path});
+    defer allocator.free(tmp_path);
+
+    {
+        const tmp_file = try dir.createFile(tmp_path, .{});
+        defer tmp_file.close();
+        try tmp_file.writeAll(result);
+    }
+
+    dir.rename(tmp_path, req.path) catch |err| {
+        // Clean up temp file on rename failure
+        dir.deleteFile(tmp_path) catch {};
+        return err;
+    };
 
     const hash: u64 = std.hash.Wyhash.hash(0, result);
     const seq = try store.recordEdit(req.path, req.agent_id, req.op, hash, result.len, req.content);

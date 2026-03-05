@@ -105,7 +105,7 @@ pub const Explorer = struct {
     word_index: WordIndex,
     trigram_index: TrigramIndex,
     allocator: std.mem.Allocator,
-    mu: std.Thread.Mutex = .{},
+    mu: std.Thread.RwLock = .{},
 
     pub fn init(allocator: std.mem.Allocator) Explorer {
         return .{
@@ -151,84 +151,89 @@ pub const Explorer = struct {
         return self.indexFileInner(path, content, false);
     }
 
-    fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool) !void {
-        self.mu.lock();
-        defer self.mu.unlock();
+fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool) !void {
+    // Parse outline outside the global explorer write lock.
+    // This keeps HTTP/MCP readers from being blocked on line-by-line parsing.
+    var outline = FileOutline.init(self.allocator, path);
+    errdefer outline.deinit();
+    outline.byte_size = content.len;
 
-        // Reuse existing key if file was already indexed, else dupe
-        const outline_gop = try self.outlines.getOrPut(path);
-        const is_new = !outline_gop.found_existing;
-        var prior_outline: ?FileOutline = if (outline_gop.found_existing)
-            outline_gop.value_ptr.*
-        else
-            null;
-        const stable_path = if (outline_gop.found_existing) blk: {
-            break :blk outline_gop.key_ptr.*;
-        } else blk: {
-            const duped = try self.allocator.dupe(u8, path);
-            outline_gop.key_ptr.* = duped;
-            break :blk duped;
-        };
-        // If we added a new entry but later fail, remove it so the map stays consistent
-        errdefer if (is_new) {
-            _ = self.outlines.remove(stable_path);
-            self.allocator.free(stable_path);
-        };
+    var line_num: u32 = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        line_num += 1;
+        const trimmed = std.mem.trim(u8, line, " \t");
 
-        var outline = FileOutline.init(self.allocator, stable_path);
-        errdefer outline.deinit();
-        outline.byte_size = content.len;
-
-        var line_num: u32 = 0;
-        var lines = std.mem.splitScalar(u8, content, '\n');
-        while (lines.next()) |line| {
-            line_num += 1;
-            const trimmed = std.mem.trim(u8, line, " \t");
-
-            if (outline.language == .zig) {
-                try self.parseZigLine(trimmed, line_num, &outline);
-            } else if (outline.language == .python) {
-                try self.parsePythonLine(trimmed, line_num, &outline);
-            } else if (outline.language == .typescript or outline.language == .javascript) {
-                try self.parseTsLine(trimmed, line_num, &outline);
-            }
-        }
-        outline.line_count = line_num;
-
-        const duped_content = try self.allocator.dupe(u8, content);
-        errdefer self.allocator.free(duped_content);
-        const content_gop = try self.contents.getOrPut(stable_path);
-        var prior_content: ?[]const u8 = null;
-        if (content_gop.found_existing) {
-            prior_content = content_gop.value_ptr.*;
-        } else {
-            content_gop.key_ptr.* = stable_path;
-        }
-        content_gop.value_ptr.* = duped_content;
-        errdefer {
-            if (content_gop.found_existing) {
-                content_gop.value_ptr.* = prior_content.?;
-            } else {
-                _ = self.contents.remove(stable_path);
-            }
-        }
-
-        // Build search indexes
-        if (full_index) {
-            try self.word_index.indexFile(stable_path, content);
-            try self.trigram_index.indexFile(stable_path, content);
-        }
-
-        try self.rebuildDepsFor(stable_path, &outline);
-
-        outline_gop.value_ptr.* = outline;
-        if (prior_content) |old_content| {
-            self.allocator.free(old_content);
-        }
-        if (prior_outline) |*old_outline| {
-            old_outline.deinit();
+        if (outline.language == .zig) {
+            try self.parseZigLine(trimmed, line_num, &outline);
+        } else if (outline.language == .python) {
+            try self.parsePythonLine(trimmed, line_num, &outline);
+        } else if (outline.language == .typescript or outline.language == .javascript) {
+            try self.parseTsLine(trimmed, line_num, &outline);
         }
     }
+    outline.line_count = line_num;
+
+    self.mu.lock();
+    defer self.mu.unlock();
+
+    // Reuse existing key if file was already indexed, else dupe.
+    const outline_gop = try self.outlines.getOrPut(path);
+    const is_new = !outline_gop.found_existing;
+    var prior_outline: ?FileOutline = if (outline_gop.found_existing)
+        outline_gop.value_ptr.*
+    else
+        null;
+    const stable_path = if (outline_gop.found_existing) blk: {
+        break :blk outline_gop.key_ptr.*;
+    } else blk: {
+        const duped = try self.allocator.dupe(u8, path);
+        outline_gop.key_ptr.* = duped;
+        break :blk duped;
+    };
+    // If we added a new entry but later fail, remove it so the map stays consistent.
+    errdefer if (is_new) {
+        _ = self.outlines.remove(stable_path);
+        self.allocator.free(stable_path);
+    };
+
+    // Ensure outline path uses the stable map key.
+    outline.path = stable_path;
+
+    const duped_content = try self.allocator.dupe(u8, content);
+    errdefer self.allocator.free(duped_content);
+    const content_gop = try self.contents.getOrPut(stable_path);
+    var prior_content: ?[]const u8 = null;
+    if (content_gop.found_existing) {
+        prior_content = content_gop.value_ptr.*;
+    } else {
+        content_gop.key_ptr.* = stable_path;
+    }
+    content_gop.value_ptr.* = duped_content;
+    errdefer {
+        if (content_gop.found_existing) {
+            content_gop.value_ptr.* = prior_content.?;
+        } else {
+            _ = self.contents.remove(stable_path);
+        }
+    }
+
+    // Build search indexes.
+    if (full_index) {
+        try self.word_index.indexFile(stable_path, content);
+        try self.trigram_index.indexFile(stable_path, content);
+    }
+
+    try self.rebuildDepsFor(stable_path, &outline);
+
+    outline_gop.value_ptr.* = outline;
+    if (prior_content) |old_content| {
+        self.allocator.free(old_content);
+    }
+    if (prior_outline) |*old_outline| {
+        old_outline.deinit();
+    }
+}
 
     pub fn removeFile(self: *Explorer, path: []const u8) void {
         self.mu.lock();
@@ -251,8 +256,8 @@ pub const Explorer = struct {
     }
 
     pub fn getOutline(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) !?FileOutline {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
 
         const outline = self.outlines.getPtr(path) orelse return null;
         return try cloneOutline(outline, allocator);
@@ -260,8 +265,8 @@ pub const Explorer = struct {
 
     /// Return a caller-owned copy of cached file content.
 pub fn getContent(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) !?[]u8 {
-    self.mu.lock();
-    defer self.mu.unlock();
+    self.mu.lockShared();
+    defer self.mu.unlockShared();
 
     const content = self.contents.get(path) orelse return null;
     return try allocator.dupe(u8, content);
@@ -305,8 +310,8 @@ fn cloneOutline(src: *const FileOutline, allocator: std.mem.Allocator) !FileOutl
 }
 
 pub fn getTree(self: *Explorer, allocator: std.mem.Allocator) ![]u8 {
-    self.mu.lock();
-    defer self.mu.unlock();
+    self.mu.lockShared();
+    defer self.mu.unlockShared();
 
     var buf: std.ArrayList(u8) = .{};
     errdefer buf.deinit(allocator);
@@ -363,8 +368,8 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator) ![]u8 {
 }
 
     pub fn findSymbol(self: *Explorer, name: []const u8) !?struct { path: []const u8, symbol: Symbol } {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
 
         var iter = self.outlines.iterator();
         while (iter.next()) |entry| {
@@ -378,8 +383,8 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator) ![]u8 {
     }
 
     pub fn findAllSymbols(self: *Explorer, name: []const u8, allocator: std.mem.Allocator) ![]const SymbolResult {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
 
         var result_list: std.ArrayList(SymbolResult) = .{};
         errdefer result_list.deinit(allocator);
@@ -395,8 +400,8 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator) ![]u8 {
     }
 
     pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const SearchResult {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
 
         var result_list: std.ArrayList(SearchResult) = .{};
         errdefer result_list.deinit(allocator);
@@ -426,14 +431,14 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator) ![]u8 {
 
     /// Search for a word using the inverted word index. O(1) lookup.
     pub fn searchWord(self: *Explorer, word: []const u8, allocator: std.mem.Allocator) ![]const idx.WordHit {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
         return self.word_index.searchDeduped(word, allocator);
     }
 
 pub fn getImportedBy(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
-    self.mu.lock();
-    defer self.mu.unlock();
+    self.mu.lockShared();
+    defer self.mu.unlockShared();
 
     // Extract basename for matching against raw import strings
     // e.g., "src/store.zig" -> "store.zig"
@@ -467,8 +472,8 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
     }
     defer path_list.deinit(allocator);
     {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
         var iter = self.outlines.iterator();
         while (iter.next()) |kv| {
             const path_copy = try allocator.dupe(u8, kv.key_ptr.*);
@@ -651,16 +656,24 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
         }
     }
 
-    fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
-        var deps: std.ArrayList([]const u8) = .{};
-        for (outline.imports.items) |imp| {
-            try deps.append(self.allocator, imp);
-        }
-        if (self.dep_graph.getPtr(path)) |old| {
-            old.deinit(self.allocator);
-        }
-        try self.dep_graph.put(path, deps);
+fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
+    var deps: std.ArrayList([]const u8) = .{};
+    errdefer deps.deinit(self.allocator);
+
+    for (outline.imports.items) |imp| {
+        try deps.append(self.allocator, imp);
     }
+
+    const gop = try self.dep_graph.getOrPut(path);
+    if (gop.found_existing) {
+        var old = gop.value_ptr.*;
+        gop.value_ptr.* = deps;
+        old.deinit(self.allocator);
+    } else {
+        gop.key_ptr.* = path;
+        gop.value_ptr.* = deps;
+    }
+}
 };
 
 fn searchInContent(path: []const u8, content: []const u8, query: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(SearchResult)) !void {

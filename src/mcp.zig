@@ -8,6 +8,7 @@ const std = @import("std");
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
+const Prerender = @import("prerender.zig").Prerender;
 const watcher = @import("watcher.zig");
 const edit_mod = @import("edit.zig");
 const idx = @import("index.zig");
@@ -26,6 +27,7 @@ const Tool = enum {
     codedb_edit,
     codedb_changes,
     codedb_status,
+    codedb_snapshot,
 };
 
 const tools_list =
@@ -40,7 +42,8 @@ const tools_list =
     \\{"name":"codedb_read","description":"Read the full contents of a file from the indexed codebase.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"}},"required":["path"]}},
     \\{"name":"codedb_edit","description":"Apply a line-based edit to a file. Supports replace (range), insert (after line), and delete (range) operations.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to edit"},"op":{"type":"string","enum":["replace","insert","delete"],"description":"Edit operation type"},"content":{"type":"string","description":"New content (for replace/insert)"},"range_start":{"type":"integer","description":"Start line number (for replace/delete, 1-indexed)"},"range_end":{"type":"integer","description":"End line number (for replace/delete, 1-indexed)"},"after":{"type":"integer","description":"Insert after this line number (for insert)"}},"required":["path","op"]}},
     \\{"name":"codedb_changes","description":"Get files that changed since a sequence number. Use with codedb_status to poll for changes.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
-    \\{"name":"codedb_status","description":"Get current codedb status: number of indexed files and current sequence number.","inputSchema":{"type":"object","properties":{},"required":[]}}
+    \\{"name":"codedb_status","description":"Get current codedb status: number of indexed files and current sequence number.","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"codedb_snapshot","description":"Get the full pre-rendered snapshot of the codebase as a single JSON blob. Contains tree, all outlines, symbol index, and dependency graph. Ideal for caching or deploying to edge workers.","inputSchema":{"type":"object","properties":{},"required":[]}}
     \\]}
 ;
 
@@ -51,18 +54,20 @@ pub fn run(
     store: *Store,
     explorer: *Explorer,
     agents: *AgentRegistry,
+    prerender: *Prerender,
 ) void {
     const stdout = std.fs.File.stdout();
     const stdin = std.fs.File.stdin();
 
     while (true) {
-        const line = readLine(alloc, stdin) orelse break;
-        defer alloc.free(line);
+        const msg = readFramedMessage(alloc, stdin) orelse break;
+        defer alloc.free(msg);
+        if (msg.len == 0) {
+            writeError(alloc, stdout, null, -32700, "Parse error");
+            continue;
+        }
 
-        const input = std.mem.trim(u8, line, " \t\r");
-        if (input.len == 0) continue;
-
-        const parsed = std.json.parseFromSlice(std.json.Value, alloc, input, .{}) catch {
+        const parsed = std.json.parseFromSlice(std.json.Value, alloc, msg, .{}) catch {
             writeError(alloc, stdout, null, -32700, "Parse error");
             continue;
         };
@@ -79,21 +84,24 @@ pub fn run(
             continue;
         };
         const id = root.get("id");
+        const is_notification = id == null;
 
         if (eql(method, "initialize")) {
-            writeResult(alloc, stdout, id,
-                \\{"protocolVersion":"2025-03-26","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"codedb2","version":"0.1.0"}}
-            );
+            if (!is_notification) {
+                writeResult(alloc, stdout, id,
+                    \\{"protocolVersion":"2025-03-26","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"codedb2","version":"0.1.0"}}
+                );
+            }
         } else if (eql(method, "notifications/initialized")) {
             // no response for notifications
         } else if (eql(method, "tools/list")) {
-            writeResult(alloc, stdout, id, tools_list);
+            if (!is_notification) writeResult(alloc, stdout, id, tools_list);
         } else if (eql(method, "tools/call")) {
-            handleCall(alloc, root, stdout, id, store, explorer, agents);
+            handleCall(alloc, root, stdout, id, store, explorer, agents, prerender);
         } else if (eql(method, "ping")) {
-            writeResult(alloc, stdout, id, "{}");
+            if (!is_notification) writeResult(alloc, stdout, id, "{}");
         } else {
-            if (id != null) writeError(alloc, stdout, id, -32601, "Method not found");
+            if (!is_notification) writeError(alloc, stdout, id, -32601, "Method not found");
         }
     }
 }
@@ -106,48 +114,56 @@ fn handleCall(
     store: *Store,
     explorer: *Explorer,
     agents: *AgentRegistry,
+    prerender: *Prerender,
 ) void {
+    const is_notification = id == null;
+
     const params_val = root.get("params") orelse {
-        writeError(alloc, stdout, id, -32602, "Missing params");
+        if (!is_notification) writeError(alloc, stdout, id, -32602, "Missing params");
         return;
     };
     if (params_val != .object) {
-        writeError(alloc, stdout, id, -32602, "params must be object");
+        if (!is_notification) writeError(alloc, stdout, id, -32602, "params must be object");
         return;
     }
     const params = &params_val.object;
 
     const name = getStr(params, "name") orelse {
-        writeError(alloc, stdout, id, -32602, "Missing tool name");
+        if (!is_notification) writeError(alloc, stdout, id, -32602, "Missing tool name");
         return;
     };
+    var empty_args = std.json.ObjectMap.init(alloc);
+    defer empty_args.deinit();
 
-    const empty_map = std.json.ObjectMap.init(alloc);
-    var args_holder = params.get("arguments") orelse std.json.Value{ .object = empty_map };
-    if (args_holder != .object) {
-        writeError(alloc, stdout, id, -32602, "arguments must be object");
+    var args_value = params.get("arguments") orelse std.json.Value{ .object = empty_args };
+    if (args_value != .object) {
+        if (!is_notification) writeError(alloc, stdout, id, -32602, "arguments must be object");
         return;
     }
-    const args = &args_holder.object;
+    const args = &args_value.object;
 
     const tool = std.meta.stringToEnum(Tool, name) orelse {
-        writeError(alloc, stdout, id, -32602, "Unknown tool");
+        if (!is_notification) writeError(alloc, stdout, id, -32602, "Unknown tool");
         return;
     };
 
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(alloc);
 
-    dispatch(alloc, tool, args, &out, store, explorer, agents);
+    dispatch(alloc, tool, args, &out, store, explorer, agents, prerender);
+    if (is_notification) return;
+
+    const is_error = std.mem.startsWith(u8, out.items, "error:");
 
     // Wrap in MCP content envelope
     var result: std.ArrayList(u8) = .{};
     defer result.deinit(alloc);
     result.appendSlice(alloc, "{\"content\":[{\"type\":\"text\",\"text\":\"") catch return;
     writeEscaped(alloc, &result, out.items);
-    result.appendSlice(alloc, "\"}],\"isError\":false}") catch return;
+    result.appendSlice(alloc, if (is_error) "\"}],\"isError\":true}" else "\"}],\"isError\":false}") catch return;
 
     writeResult(alloc, stdout, id, result.items);
+
 }
 
 fn dispatch(
@@ -158,6 +174,7 @@ fn dispatch(
     store: *Store,
     explorer: *Explorer,
     agents: *AgentRegistry,
+    prerender: *Prerender,
 ) void {
     switch (tool) {
         .codedb_tree => handleTree(alloc, out, explorer),
@@ -171,6 +188,7 @@ fn dispatch(
         .codedb_edit => handleEdit(alloc, args, out, store, agents),
         .codedb_changes => handleChanges(alloc, args, out, store),
         .codedb_status => handleStatus(alloc, out, store, explorer),
+        .codedb_snapshot => handleSnapshot(alloc, out, explorer, store, prerender),
     }
 }
 
@@ -324,6 +342,10 @@ fn handleRead(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
         out.appendSlice(alloc, "error: missing 'path' argument") catch {};
         return;
     };
+    if (!isPathSafe(path)) {
+        out.appendSlice(alloc, "error: path traversal not allowed") catch {};
+        return;
+    }
     // Try indexed content first (faster, consistent with indexed view)
     const cached = explorer.getContent(path, alloc) catch {
         out.appendSlice(alloc, "error: read failed") catch {};
@@ -354,6 +376,10 @@ fn handleEdit(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
         out.appendSlice(alloc, "error: missing 'path'") catch {};
         return;
     };
+    if (!isPathSafe(path)) {
+        out.appendSlice(alloc, "error: path traversal not allowed") catch {};
+        return;
+    }
     const op_str = getStr(args, "op") orelse "replace";
     const op: @import("version.zig").Op = if (eql(op_str, "insert"))
         .insert
@@ -426,23 +452,110 @@ fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store
     }) catch {};
 }
 
-// ── JSON-RPC helpers (same pattern as mcp-zig) ──────────────────────────────
-
-fn readLine(alloc: std.mem.Allocator, file: std.fs.File) ?[]u8 {
-    var line: std.ArrayList(u8) = .{};
-    var buf: [1]u8 = undefined;
-    while (true) {
-        const n = file.read(&buf) catch { line.deinit(alloc); return null; };
-        if (n == 0) {
-            if (line.items.len == 0) { line.deinit(alloc); return null; }
-            return line.toOwnedSlice(alloc) catch null;
-        }
-        if (buf[0] == '\n') return line.toOwnedSlice(alloc) catch null;
-        line.append(alloc, buf[0]) catch { line.deinit(alloc); return null; };
-        if (line.items.len > 1024 * 1024) { line.deinit(alloc); return null; }
-    }
+fn handleSnapshot(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer, store: *Store, prerender: *Prerender) void {
+    const snap = prerender.getSnapshot(explorer, store, alloc) catch {
+        out.appendSlice(alloc, "error: snapshot build failed") catch {};
+        return;
+    };
+    defer alloc.free(snap);
+    out.appendSlice(alloc, snap) catch {};
 }
 
+// ── JSON-RPC helpers (same pattern as mcp-zig) ──────────────────────────────
+
+fn isPathSafe(path: []const u8) bool {
+    if (path.len == 0) return false;
+    if (path[0] == '/') return false;
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |component| {
+        if (std.mem.eql(u8, component, "..")) return false;
+    }
+    return true;
+}
+
+fn readFramedMessage(alloc: std.mem.Allocator, file: std.fs.File) ?[]u8 {
+    var header: std.ArrayList(u8) = .{};
+    defer header.deinit(alloc);
+
+    var one: [1]u8 = undefined;
+    while (true) {
+        const n = file.read(&one) catch return null;
+        if (n == 0) {
+            if (header.items.len == 0) return null;
+            return alloc.dupe(u8, "") catch null;
+        }
+        header.append(alloc, one[0]) catch return null;
+        if (header.items.len > 16 * 1024) return alloc.dupe(u8, "") catch null;
+        if (header.items.len >= 4 and std.mem.eql(u8, header.items[header.items.len - 4 ..], "\r\n\r\n")) break;
+    }
+
+    var content_length: ?usize = null;
+    var lines = std.mem.splitSequence(u8, header.items, "\r\n");
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..colon], " \t");
+        const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
+        if (std.ascii.eqlIgnoreCase(name, "Content-Length")) {
+            content_length = std.fmt.parseInt(usize, value, 10) catch return alloc.dupe(u8, "") catch null;
+            break;
+        }
+    }
+
+    const len = content_length orelse return alloc.dupe(u8, "") catch null;
+    if (len > 16 * 1024 * 1024) return alloc.dupe(u8, "") catch null;
+
+    const body = alloc.alloc(u8, len) catch return null;
+    var off: usize = 0;
+    while (off < len) {
+        const n = file.read(body[off..]) catch {
+            alloc.free(body);
+            return null;
+        };
+        if (n == 0) {
+            alloc.free(body);
+            return alloc.dupe(u8, "") catch null;
+        }
+        off += n;
+    }
+    return body;
+}
+
+fn writeFramedMessage(alloc: std.mem.Allocator, stdout: std.fs.File, payload: []const u8) void {
+    var hdr_buf: [128]u8 = undefined;
+    const hdr = std.fmt.bufPrint(&hdr_buf, "Content-Length: {d}\r\n\r\n", .{payload.len}) catch return;
+    stdout.writeAll(hdr) catch return;
+    stdout.writeAll(payload) catch return;
+    _ = alloc;
+}
+
+fn writeResult(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Value, result: []const u8) void {
+    var buf: std.ArrayList(u8) = .{};
+    defer buf.deinit(alloc);
+    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
+    appendId(alloc, &buf, id);
+    buf.appendSlice(alloc, ",\"result\":") catch return;
+    for (result) |c| {
+        if (c != '\n' and c != '\r') buf.append(alloc, c) catch return;
+    }
+    buf.appendSlice(alloc, "}") catch return;
+    writeFramedMessage(alloc, stdout, buf.items);
+}
+
+fn writeError(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Value, code: i32, msg: []const u8) void {
+    var buf: std.ArrayList(u8) = .{};
+    defer buf.deinit(alloc);
+    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
+    appendId(alloc, &buf, id);
+    buf.appendSlice(alloc, ",\"error\":{\"code\":") catch return;
+    var tmp: [12]u8 = undefined;
+    const cs = std.fmt.bufPrint(&tmp, "{d}", .{code}) catch return;
+    buf.appendSlice(alloc, cs) catch return;
+    buf.appendSlice(alloc, ",\"message\":\"") catch return;
+    writeEscaped(alloc, &buf, msg);
+    buf.appendSlice(alloc, "\"}}") catch return;
+    writeFramedMessage(alloc, stdout, buf.items);
+}
 fn getStr(obj: *const std.json.ObjectMap, key: []const u8) ?[]const u8 {
     return switch (obj.get(key) orelse return null) {
         .string => |s| s,
@@ -461,33 +574,6 @@ fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-fn writeResult(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Value, result: []const u8) void {
-    var buf: std.ArrayList(u8) = .{};
-    defer buf.deinit(alloc);
-    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
-    appendId(alloc, &buf, id);
-    buf.appendSlice(alloc, ",\"result\":") catch return;
-    for (result) |c| {
-        if (c != '\n' and c != '\r') buf.append(alloc, c) catch return;
-    }
-    buf.appendSlice(alloc, "}\n") catch return;
-    _ = stdout.write(buf.items) catch 0;
-}
-
-fn writeError(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Value, code: i32, msg: []const u8) void {
-    var buf: std.ArrayList(u8) = .{};
-    defer buf.deinit(alloc);
-    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
-    appendId(alloc, &buf, id);
-    buf.appendSlice(alloc, ",\"error\":{\"code\":") catch return;
-    var tmp: [12]u8 = undefined;
-    const cs = std.fmt.bufPrint(&tmp, "{d}", .{code}) catch return;
-    buf.appendSlice(alloc, cs) catch return;
-    buf.appendSlice(alloc, ",\"message\":\"") catch return;
-    writeEscaped(alloc, &buf, msg);
-    buf.appendSlice(alloc, "\"}}\n") catch return;
-    _ = stdout.write(buf.items) catch 0;
-}
 
 fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Value) void {
     if (id) |v| switch (v) {

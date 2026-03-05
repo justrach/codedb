@@ -107,7 +107,7 @@ pub const Store = struct {
         return next_seq;
     }
 
-    pub fn getLatest(self: *Store, path: []const u8) ?*const Version {
+    pub fn getLatest(self: *Store, path: []const u8) ?Version {
         self.mu.lock();
         defer self.mu.unlock();
         const fv = self.files.get(path) orelse return null;
@@ -121,7 +121,7 @@ pub const Store = struct {
         return v.seq;
     }
 
-    pub fn getAtCursor(self: *Store, path: []const u8, cursor: u64) ?*const Version {
+    pub fn getAtCursor(self: *Store, path: []const u8, cursor: u64) ?Version {
         self.mu.lock();
         defer self.mu.unlock();
         const fv = self.files.get(path) orelse return null;

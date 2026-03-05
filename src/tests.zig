@@ -12,6 +12,7 @@ const WordTokenizer = @import("index.zig").WordTokenizer;
 const version = @import("version.zig");
 const watcher = @import("watcher.zig");
 const edit_mod = @import("edit.zig");
+const Prerender = @import("prerender.zig").Prerender;
 // ── Store tests ─────────────────────────────────────────────
 
 test "store: record and retrieve snapshots" {

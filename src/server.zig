@@ -2,6 +2,7 @@ const std = @import("std");
 const Store = @import("store.zig").Store;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Explorer = @import("explore.zig").Explorer;
+const Prerender = @import("prerender.zig").Prerender;
 const watcher = @import("watcher.zig");
 const edit_mod = @import("edit.zig");
 
@@ -12,7 +13,7 @@ pub fn serve(
     explorer: *Explorer,
     queue: *watcher.EventQueue,
     port: u16,
-    root: []const u8,
+    prerender: *Prerender,
 ) !void {
     _ = queue;
     const addr = std.net.Address.parseIp("127.0.0.1", port) catch unreachable;
@@ -22,10 +23,7 @@ pub fn serve(
 
     while (true) {
         const conn = try srv.accept();
-        _ = std.Thread.spawn(.{}, handleConnection, .{ allocator, store, agents, explorer, conn, root }) catch |err| {
-            std.log.err("server: spawn failed: {}", .{err});
-            continue;
-        };
+        handleConnection(allocator, store, agents, explorer, conn, prerender);
     }
 }
 
@@ -35,38 +33,76 @@ fn handleConnection(
     agents: *AgentRegistry,
     explorer: *Explorer,
     conn: std.net.Server.Connection,
-    root: []const u8,
+    prerender: *Prerender,
 ) void {
-    _ = root;
     defer conn.stream.close();
 
     var buf: [65536]u8 = undefined;
-    var total: usize = 0;
-    total = conn.stream.read(&buf) catch return;
-
-    // For POST requests, ensure we have the full body
+    var total: usize = conn.stream.read(&buf) catch return;
+    if (total == 0) return;
     if (mem_starts(buf[0..total], "POST")) {
-        if (std.mem.indexOf(u8, buf[0..total], "\r\n\r\n")) |header_end| {
-            const body_start = header_end + 4;
-            // Look for Content-Length in headers
-            const headers = buf[0..header_end];
-            var expected_total = total; // default: assume we have everything
-            if (std.mem.indexOf(u8, headers, "Content-Length: ")) |cl_pos| {
-                const cl_start = cl_pos + "Content-Length: ".len;
-                const cl_end = std.mem.indexOfPos(u8, headers, cl_start, "\r\n") orelse headers.len;
-                if (std.fmt.parseInt(usize, headers[cl_start..cl_end], 10) catch null) |content_length| {
-                    expected_total = body_start + content_length;
-                }
+        var header_end_opt = std.mem.indexOf(u8, buf[0..total], "\r\n\r\n");
+        while (header_end_opt == null and total < buf.len) {
+            const extra = conn.stream.read(buf[total..]) catch {
+                respondJson(conn, "400 Bad Request", "{\"error\":\"invalid request\"}");
+                return;
+            };
+            if (extra == 0) break;
+            total += extra;
+            header_end_opt = std.mem.indexOf(u8, buf[0..total], "\r\n\r\n");
+        }
+
+        const header_end = header_end_opt orelse {
+            if (total == buf.len) {
+                respondJson(conn, "413 Payload Too Large", "{\"error\":\"request too large\"}");
+            } else {
+                respondJson(conn, "400 Bad Request", "{\"error\":\"malformed headers\"}");
             }
-            while (total < expected_total and total < buf.len) {
-                const extra = conn.stream.read(buf[total..]) catch break;
-                if (extra == 0) break;
-                total += extra;
+            return;
+        };
+
+        const body_start = header_end + 4;
+        const headers = buf[0..header_end];
+        var content_length: ?usize = null;
+        var lines = std.mem.splitSequence(u8, headers, "\r\n");
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            const name = std.mem.trim(u8, line[0..colon], " \t");
+            const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
+            if (std.ascii.eqlIgnoreCase(name, "Content-Length")) {
+                content_length = std.fmt.parseInt(usize, value, 10) catch {
+                    respondJson(conn, "400 Bad Request", "{\"error\":\"invalid content-length\"}");
+                    return;
+                };
+                break;
             }
         }
+
+        const body_len = content_length orelse {
+            respondJson(conn, "400 Bad Request", "{\"error\":\"missing content-length\"}");
+            return;
+        };
+        if (body_len > buf.len - body_start) {
+            respondJson(conn, "413 Payload Too Large", "{\"error\":\"request too large\"}");
+            return;
+        }
+
+        const expected_total = body_start + body_len;
+        while (total < expected_total) {
+            const extra = conn.stream.read(buf[total..expected_total]) catch {
+                respondJson(conn, "400 Bad Request", "{\"error\":\"invalid request body\"}");
+                return;
+            };
+            if (extra == 0) {
+                respondJson(conn, "400 Bad Request", "{\"error\":\"truncated request body\"}");
+                return;
+            }
+            total += extra;
+        }
+        total = expected_total;
     }
     const request = buf[0..total];
-
     // ── Health ──
     if (mem_starts(request, "GET /health")) {
         respondJson(conn, "200 OK", "{\"status\":\"ok\"}");
@@ -84,7 +120,9 @@ fn handleConnection(
         var out: std.ArrayList(u8) = .{};
         defer out.deinit(allocator);
         const w = out.writer(allocator);
-        w.print("{{\"id\":{d},\"name\":\"{s}\"}}", .{ id, name }) catch return;
+        w.print("{{\"id\":{d},\"name\":\"", .{id}) catch return;
+        writeJsonEscaped(w, name) catch return;
+        w.writeAll("\"}") catch return;
         respondJson(conn, "200 OK", out.items);
         return;
     }
@@ -144,8 +182,18 @@ fn handleConnection(
             respondJson(conn, "400 Bad Request", "{\"error\":\"missing body\"}");
             return;
         }
-        // Parse minimal JSON fields
-        const path = extractJsonString(body, "path") orelse {
+        const parsed_body = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+            respondJson(conn, "400 Bad Request", "{\"error\":\"invalid json\"}");
+            return;
+        };
+        defer parsed_body.deinit();
+        if (parsed_body.value != .object) {
+            respondJson(conn, "400 Bad Request", "{\"error\":\"body must be object\"}");
+            return;
+        }
+
+        const body_obj = &parsed_body.value.object;
+        const path = jsonString(body_obj, "path") orelse {
             respondJson(conn, "400 Bad Request", "{\"error\":\"missing path\"}");
             return;
         };
@@ -153,22 +201,35 @@ fn handleConnection(
             respondJson(conn, "403 Forbidden", "{\"error\":\"path traversal not allowed\"}");
             return;
         }
-        const agent_id = extractJsonInt(body, "agent") orelse {
+
+        const agent_id = jsonU64(body_obj, "agent") orelse {
             respondJson(conn, "400 Bad Request", "{\"error\":\"missing agent\"}");
             return;
         };
-        const op_str = extractJsonString(body, "op") orelse "replace";
+
+        const op_str = jsonString(body_obj, "op") orelse "replace";
         const op: @import("version.zig").Op = if (std.mem.eql(u8, op_str, "insert"))
             .insert
         else if (std.mem.eql(u8, op_str, "delete"))
             .delete
         else
             .replace;
-        const content = extractJsonString(body, "content");
 
-        const range_start = extractJsonInt(body, "range_start");
-        const range_end = extractJsonInt(body, "range_end");
-        const after = extractJsonInt(body, "after");
+        var content: ?[]const u8 = null;
+        if (body_obj.get("content")) |value| {
+            switch (value) {
+                .string => |s| content = s,
+                .null => {},
+                else => {
+                    respondJson(conn, "400 Bad Request", "{\"error\":\"content must be string\"}");
+                    return;
+                },
+            }
+        }
+
+        const range_start = jsonU64(body_obj, "range_start");
+        const range_end = jsonU64(body_obj, "range_end");
+        const after = jsonU64(body_obj, "after");
 
         var req = edit_mod.EditRequest{
             .path = path,
@@ -184,7 +245,14 @@ fn handleConnection(
         const result = edit_mod.applyEdit(allocator, store, agents, req) catch |err| {
             var err_buf: [128]u8 = undefined;
             const err_body = std.fmt.bufPrint(&err_buf, "{{\"error\":\"{s}\"}}", .{@errorName(err)}) catch return;
-            respondJson(conn, "500 Internal Server Error", err_body);
+            const status = switch (err) {
+                error.InvalidRange, error.MissingContent => "400 Bad Request",
+                error.FileLocked => "409 Conflict",
+                error.FileNotFound => "404 Not Found",
+                error.AccessDenied => "403 Forbidden",
+                else => "500 Internal Server Error",
+            };
+            respondJson(conn, status, err_body);
             return;
         };
 
@@ -334,7 +402,9 @@ fn handleConnection(
         var out: std.ArrayList(u8) = .{};
         defer out.deinit(allocator);
         const w = out.writer(allocator);
-        w.print("{{\"name\":\"{s}\",\"results\":[", .{name}) catch return;
+        w.writeAll("{\"name\":\"") catch return;
+        writeJsonEscaped(w, name) catch return;
+        w.writeAll("\",\"results\":[") catch return;
         for (results, 0..) |r, i| {
             if (i > 0) w.writeAll(",") catch return;
             w.writeAll("{\"path\":\"") catch return;
@@ -468,7 +538,9 @@ fn handleConnection(
         var out: std.ArrayList(u8) = .{};
         defer out.deinit(allocator);
         const w = out.writer(allocator);
-        w.print("{{\"query\":\"{s}\",\"results\":[", .{query}) catch return;
+        w.writeAll("{\"query\":\"") catch return;
+        writeJsonEscaped(w, query) catch return;
+        w.writeAll("\",\"results\":[") catch return;
         for (results, 0..) |r, i| {
             if (i > 0) w.writeAll(",") catch return;
             w.writeAll("{\"path\":\"") catch return;
@@ -479,6 +551,17 @@ fn handleConnection(
         }
         w.writeAll("]}") catch return;
         respondJson(conn, "200 OK", out.items);
+        return;
+    }
+
+    // ── Snapshot (pre-rendered) ──
+    if (mem_starts(request, "GET /snapshot")) {
+        const snap = prerender.getSnapshot(explorer, store, allocator) catch {
+            respondJson(conn, "500 Internal Server Error", "{\"error\":\"snapshot build failed\"}");
+            return;
+        };
+        defer allocator.free(snap);
+        respondJson(conn, "200 OK", snap);
         return;
     }
 
@@ -597,6 +680,20 @@ fn extractBody(request: []const u8) []const u8 {
     }
     return "";
 }
+fn jsonString(obj: *const std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    return switch (obj.get(key) orelse return null) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
+fn jsonU64(obj: *const std.json.ObjectMap, key: []const u8) ?u64 {
+    return switch (obj.get(key) orelse return null) {
+        .integer => |n| if (n >= 0) @as(u64, @intCast(n)) else null,
+        else => null,
+    };
+}
+
 
 fn findUnescapedQuote(s: []const u8, start: usize) ?usize {
     var i = start;

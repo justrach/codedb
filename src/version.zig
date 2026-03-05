@@ -48,14 +48,14 @@ pub const FileVersions = struct {
         return seq;
     }
 
-    pub fn latest(self: *const FileVersions) ?*const Version {
+    pub fn latest(self: *const FileVersions) ?Version {
         if (self.versions.items.len == 0) return null;
-        return &self.versions.items[self.versions.items.len - 1];
+        return self.versions.items[self.versions.items.len - 1];
     }
 
-    pub fn atCursor(self: *const FileVersions, cursor: u64) ?*const Version {
-        var result: ?*const Version = null;
-        for (self.versions.items) |*v| {
+    pub fn atCursor(self: *const FileVersions, cursor: u64) ?Version {
+        var result: ?Version = null;
+        for (self.versions.items) |v| {
             if (v.seq <= cursor) result = v;
         }
         return result;

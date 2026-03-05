@@ -2,6 +2,7 @@ const std = @import("std");
 const Store = @import("store.zig").Store;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Explorer = @import("explore.zig").Explorer;
+const Prerender = @import("prerender.zig").Prerender;
 const watcher = @import("watcher.zig");
 const server = @import("server.zig");
 const mcp_server = @import("mcp.zig");
@@ -56,10 +57,8 @@ pub fn main() !void {
         std.log.warn("could not open data log at {s}: {}", .{ data_log_path, err });
     };
 
-    var explore_arena = std.heap.ArenaAllocator.init(allocator);
-    defer explore_arena.deinit();
-    var explorer = Explorer.init(explore_arena.allocator());
-
+    var explorer = Explorer.init(allocator);
+    defer explorer.deinit();
     try watcher.initialScan(&store, &explorer, root, allocator);
 
     if (std.mem.eql(u8, cmd, "tree")) {
@@ -143,28 +142,46 @@ pub fn main() !void {
         defer agents.deinit();
         _ = try agents.register("__filesystem__");
 
+        var prerender = Prerender.init(allocator);
+        defer prerender.deinit();
+
+        var shutdown = std.atomic.Value(bool).init(false);
+
         var queue = watcher.EventQueue{};
-        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root });
+        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &prerender, &shutdown });
         defer watch_thread.join();
 
-        const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{&agents});
+        const isr_thread = try std.Thread.spawn(.{}, Prerender.isrLoop, .{ &prerender, &explorer, &store, &shutdown });
+        defer isr_thread.join();
+
+        const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
         defer reap_thread.join();
 
         std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
-        try server.serve(allocator, &store, &agents, &explorer, &queue, port, abs_root);
+        defer shutdown.store(true, .release);
+        try server.serve(allocator, &store, &agents, &explorer, &queue, port, &prerender);
     } else if (std.mem.eql(u8, cmd, "mcp")) {
         var agents = AgentRegistry.init(allocator);
         defer agents.deinit();
         _ = try agents.register("__filesystem__");
 
+        var prerender = Prerender.init(allocator);
+        defer prerender.deinit();
+
         saveProjectInfo(allocator, data_dir, abs_root) catch {};
 
+        var shutdown = std.atomic.Value(bool).init(false);
+
         var queue = watcher.EventQueue{};
-        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root });
+        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &prerender, &shutdown });
         defer watch_thread.join();
 
+        const isr_thread = try std.Thread.spawn(.{}, Prerender.isrLoop, .{ &prerender, &explorer, &store, &shutdown });
+        defer isr_thread.join();
+
         std.log.info("codedb2 mcp: root={s} files={d} data={s}", .{ abs_root, store.currentSeq(), data_dir });
-        mcp_server.run(allocator, &store, &explorer, &agents);
+        defer shutdown.store(true, .release);
+        mcp_server.run(allocator, &store, &explorer, &agents, &prerender);
     } else {
         print("unknown command: {s}\n", .{cmd});
         std.process.exit(1);
@@ -228,8 +245,8 @@ fn printUsage() void {
     , .{});
 }
 
-fn reapLoop(agents: *AgentRegistry) void {
-    while (true) {
+fn reapLoop(agents: *AgentRegistry, shutdown: *std.atomic.Value(bool)) void {
+    while (!shutdown.load(.acquire)) {
         std.Thread.sleep(5 * std.time.ns_per_s);
         agents.reapStale(30_000);
     }

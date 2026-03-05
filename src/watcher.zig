@@ -1,6 +1,7 @@
 const std = @import("std");
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
+const Prerender = @import("prerender.zig").Prerender;
 
 pub const EventKind = enum(u8) {
     created,
@@ -36,8 +37,12 @@ pub const EventQueue = struct {
     events: [CAPACITY]?FsEvent = [_]?FsEvent{null} ** CAPACITY,
     head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    mu: std.Thread.Mutex = .{},
 
     pub fn push(self: *EventQueue, event: FsEvent) bool {
+        self.mu.lock();
+        defer self.mu.unlock();
+
         const cur_tail = self.tail.load(.monotonic);
         const next_tail = (cur_tail + 1) % CAPACITY;
         if (next_tail == self.head.load(.acquire)) return false;
@@ -47,6 +52,9 @@ pub const EventQueue = struct {
     }
 
     pub fn pop(self: *EventQueue) ?FsEvent {
+        self.mu.lock();
+        defer self.mu.unlock();
+
         const cur_head = self.head.load(.monotonic);
         if (cur_head == self.tail.load(.acquire)) return null;
         const event = self.events[cur_head];
@@ -56,8 +64,10 @@ pub const EventQueue = struct {
 };
 
 const FileState = struct {
-    mtime: i64,   // seconds — cheap stat check
+    mtime: i64,   // milliseconds since epoch — cheap stat check
+    size: u64,    // cheap change discriminator before hashing
     hash: u64,    // wyhash of content — confirms actual change
+    seen: bool,   // set during current poll cycle for deletion detection
 };
 
 const FileMap = std.StringHashMap(FileState);
@@ -120,18 +130,114 @@ fn shouldSkip(path: []const u8) bool {
     return false;
 }
 
+fn shouldSkipDir(name: []const u8) bool {
+    for (skip_dirs) |skip| {
+        if (std.mem.eql(u8, name, skip)) return true;
+    }
+    return false;
+}
+
+/// Recursive directory walker that prunes skip_dirs before descending.
+/// Unlike std.fs.Dir.walk(), this never enters .git, node_modules, etc.,
+/// avoiding the CPU cost of traversing potentially huge directory trees.
+const FilteredWalker = struct {
+    const StackItem = struct {
+        dir_handle: std.fs.Dir,
+        iter: std.fs.Dir.Iterator,
+    };
+
+    stack: std.ArrayList(StackItem),
+    name_buffer: std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    dir_prefix_len: usize = 0,
+
+    pub const Entry = struct {
+        path: []const u8, // relative path — valid until next call to next()
+    };
+
+    pub fn init(root: std.fs.Dir, allocator: std.mem.Allocator) !FilteredWalker {
+        var self = FilteredWalker{
+            .stack = .{},
+            .name_buffer = .{},
+            .allocator = allocator,
+        };
+        try self.stack.append(allocator, .{
+            .dir_handle = root,
+            .iter = root.iterate(),
+        });
+        return self;
+    }
+
+    pub fn deinit(self: *FilteredWalker) void {
+        for (self.stack.items, 0..) |*item, i| {
+            if (i > 0) item.dir_handle.close();
+        }
+        self.stack.deinit(self.allocator);
+        self.name_buffer.deinit(self.allocator);
+    }
+
+    pub fn next(self: *FilteredWalker) !?Entry {
+        // Trim any filename appended by the previous yield
+        self.name_buffer.shrinkRetainingCapacity(self.dir_prefix_len);
+
+        while (self.stack.items.len > 0) {
+            const top = &self.stack.items[self.stack.items.len - 1];
+            if (try top.iter.next()) |entry| {
+                if (entry.kind == .directory) {
+                    if (shouldSkipDir(entry.name)) continue;
+
+                    const sub = top.dir_handle.openDir(entry.name, .{ .iterate = true }) catch continue;
+
+                    // Extend the directory prefix in name_buffer
+                    if (self.name_buffer.items.len > 0)
+                        try self.name_buffer.append(self.allocator, '/');
+                    try self.name_buffer.appendSlice(self.allocator, entry.name);
+                    self.dir_prefix_len = self.name_buffer.items.len;
+
+                    try self.stack.append(self.allocator, .{
+                        .dir_handle = sub,
+                        .iter = sub.iterate(),
+                    });
+                    continue;
+                }
+
+                if (entry.kind != .file) continue;
+
+                // Build full relative path by appending filename
+                if (self.dir_prefix_len > 0)
+                    try self.name_buffer.append(self.allocator, '/');
+                try self.name_buffer.appendSlice(self.allocator, entry.name);
+
+                return .{ .path = self.name_buffer.items };
+            } else {
+                // Directory exhausted — pop and restore parent prefix
+                if (self.stack.items.len > 1) {
+                    var item = self.stack.pop().?;
+                    item.dir_handle.close();
+                } else {
+                    _ = self.stack.pop();
+                }
+                if (std.mem.lastIndexOfScalar(u8, self.name_buffer.items[0..self.dir_prefix_len], '/')) |pos| {
+                    self.dir_prefix_len = pos;
+                } else {
+                    self.dir_prefix_len = 0;
+                }
+                self.name_buffer.shrinkRetainingCapacity(self.dir_prefix_len);
+            }
+        }
+        return null;
+    }
+};
+
 /// Called from main thread to do the initial scan before listening.
 pub fn initialScan(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator) !void {
     var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
     defer dir.close();
 
-    var walker = try dir.walk(allocator);
+    var walker = try FilteredWalker.init(dir, allocator);
     defer walker.deinit();
 
     while (try walker.next()) |entry| {
-        if (entry.kind != .file) continue;
-        if (shouldSkip(entry.path)) continue;
-
         const stat = dir.statFile(entry.path) catch continue;
         _ = try store.recordSnapshot(entry.path, stat.size, 0);
         // Index outline + content (skip word/trigram for speed)
@@ -156,33 +262,35 @@ fn indexFileOutline(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allo
 }
 
 /// Background thread: polls for incremental FS changes.
-pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, root: []const u8) void {
+pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, root: []const u8, prerender: *Prerender, shutdown: *std.atomic.Value(bool)) void {
     const backing = std.heap.page_allocator;
 
     var known = FileMap.init(backing);
-    defer known.deinit();
-
-    // Build initial snapshot: stat every file, hash content for indexable ones
+    defer {
+        var iter = known.iterator();
+        while (iter.next()) |kv| {
+            backing.free(kv.key_ptr.*);
+        }
+        known.deinit();
+    }
+    // Build initial snapshot: stat every file, defer expensive hashing until mtime changes.
     {
         var snap_arena = std.heap.ArenaAllocator.init(backing);
         defer snap_arena.deinit();
         const tmp = snap_arena.allocator();
         var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return;
         defer dir.close();
-        var walker = dir.walk(tmp) catch return;
+        var walker = FilteredWalker.init(dir, tmp) catch return;
         defer walker.deinit();
         while (walker.next() catch null) |entry| {
-            if (entry.kind != .file) continue;
-            if (shouldSkip(entry.path)) continue;
             const stat = dir.statFile(entry.path) catch continue;
             const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
-            const hash = hashFile(dir, entry.path, tmp) catch 0;
             const duped = backing.dupe(u8, entry.path) catch continue;
-            known.put(duped, .{ .mtime = mtime, .hash = hash }) catch backing.free(duped);
+            known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = false }) catch backing.free(duped);
         }
     }
 
-    while (true) {
+    while (!shutdown.load(.acquire)) {
         // Poll every 2s — gentle on CPU, fast enough to catch saves
         std.Thread.sleep(2 * std.time.ns_per_s);
 
@@ -190,21 +298,26 @@ pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, r
         var cycle_arena = std.heap.ArenaAllocator.init(backing);
         defer cycle_arena.deinit();
 
-        incrementalDiff(store, explorer, queue, &known, root, backing, cycle_arena.allocator()) catch |err| {
+        incrementalDiff(store, explorer, queue, &known, root, backing, cycle_arena.allocator(), prerender) catch |err| {
             std.log.err("watcher: diff failed: {}", .{err});
         };
     }
 }
 
-fn hashFile(dir: std.fs.Dir, path: []const u8, allocator: std.mem.Allocator) !u64 {
+fn hashFile(dir: std.fs.Dir, path: []const u8, size: u64) !u64 {
     if (shouldSkipFile(path)) return 0;
     const file = dir.openFile(path, .{}) catch return 0;
     defer file.close();
-    const stat = file.stat() catch return 0;
-    if (stat.size > 512 * 1024) return 0;
-    const content = file.readToEndAlloc(allocator, 512 * 1024) catch return 0;
-    defer allocator.free(content);
-    return std.hash.Wyhash.hash(0, content);
+    if (size > 512 * 1024) return 0;
+
+    var hasher = std.hash.Wyhash.init(0);
+    var buf: [16 * 1024]u8 = undefined;
+    while (true) {
+        const n = file.read(&buf) catch return 0;
+        if (n == 0) break;
+        hasher.update(buf[0..n]);
+    }
+    return hasher.final();
 }
 
 fn pushEventOrWait(queue: *EventQueue, event: FsEvent) void {
@@ -213,52 +326,60 @@ fn pushEventOrWait(queue: *EventQueue, event: FsEvent) void {
 }
 
 
-fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, persistent: std.mem.Allocator, tmp: std.mem.Allocator) !void {
+fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, persistent: std.mem.Allocator, tmp: std.mem.Allocator, prerender: *Prerender) !void {
     var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
     defer dir.close();
 
-    var seen = std.StringHashMap(void).init(tmp);
+    // Mark all known files unseen for this cycle.
+    var known_iter = known.iterator();
+    while (known_iter.next()) |kv| {
+        kv.value_ptr.seen = false;
+    }
 
-    var walker = try dir.walk(tmp);
+    var walker = try FilteredWalker.init(dir, tmp);
     defer walker.deinit();
 
     while (try walker.next()) |entry| {
-        if (entry.kind != .file) continue;
-        if (shouldSkip(entry.path)) continue;
-
-        const seen_key = try tmp.dupe(u8, entry.path);
-        const gop = try seen.getOrPut(seen_key);
-        if (gop.found_existing) continue;
-
         const stat = dir.statFile(entry.path) catch continue;
         const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
 
-        if (known.get(entry.path)) |old| {
+        if (known.getEntry(entry.path)) |known_entry| {
+            const old = known_entry.value_ptr;
+            old.seen = true;
+
             // Mtime unchanged -> skip (cheap path, no IO)
             if (old.mtime == mtime) continue;
 
-            // Mtime changed -> hash to confirm content actually differs
-            const hash = hashFile(dir, entry.path, tmp) catch 0;
-            if (hash != 0 and hash == old.hash) {
-                // Content identical (e.g. touch, git checkout) -> update mtime only
-                try known.put(entry.path, .{ .mtime = mtime, .hash = old.hash });
+            // Size changed -> definitely changed, skip expensive hash.
+            var hash: u64 = 0;
+            if (old.size == stat.size) {
+                // Same size + changed mtime -> hash to confirm content actually differs.
+                hash = hashFile(dir, entry.path, stat.size) catch 0;
+            }
+            if (old.size == stat.size and hash != 0 and old.hash != 0 and hash == old.hash) {
+                // Content identical (e.g. touch, git checkout) -> update metadata only.
+                old.mtime = mtime;
+                old.size = stat.size;
                 continue;
             }
 
             const seq = try store.recordSnapshot(entry.path, stat.size, hash);
-            try known.put(entry.path, .{ .mtime = mtime, .hash = hash });
-            const stable_path = known.getKey(entry.path).?;
+            old.mtime = mtime;
+            old.size = stat.size;
+            old.hash = hash;
+            const stable_path = known_entry.key_ptr.*;
             pushEventOrWait(queue, FsEvent.init(stable_path, .modified, seq));
-            indexFileContent(explorer, dir, entry.path, tmp) catch {};
+            indexFileContent(explorer, dir, stable_path, tmp) catch {};
+            prerender.invalidate();
         } else {
-            // New file
-            const hash = hashFile(dir, entry.path, tmp) catch 0;
+            // New files always generate an event, so skip the extra full-file hash pass.
             const duped = try persistent.dupe(u8, entry.path);
             errdefer persistent.free(duped);
-            const seq = try store.recordSnapshot(duped, stat.size, hash);
-            try known.put(duped, .{ .mtime = mtime, .hash = hash });
+            const seq = try store.recordSnapshot(duped, stat.size, 0);
+            try known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = true });
             pushEventOrWait(queue, FsEvent.init(duped, .created, seq));
             indexFileContent(explorer, dir, duped, tmp) catch {};
+            prerender.invalidate();
         }
     }
 
@@ -268,7 +389,7 @@ fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known
 
     var iter = known.iterator();
     while (iter.next()) |kv| {
-        if (!seen.contains(kv.key_ptr.*)) {
+        if (!kv.value_ptr.seen) {
             try to_remove.append(tmp, kv.key_ptr.*);
         }
     }
@@ -279,6 +400,7 @@ fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known
             pushEventOrWait(queue, FsEvent.init(kv.key, .deleted, seq));
             persistent.free(kv.key);
         }
+        prerender.invalidate();
     }
 }
 
