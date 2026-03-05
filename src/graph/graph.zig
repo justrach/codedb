@@ -96,15 +96,23 @@ pub const CodeGraph = struct {
     pub fn addEdge(self: *CodeGraph, edge: Edge) !void {
         const backing = self.out_edges.allocator;
 
-        // out_edges: src → edge
-        const out = try self.out_edges.getOrPut(edge.src);
-        if (!out.found_existing) out.value_ptr.* = std.ArrayList(Edge).empty;
-        try out.value_ptr.append(backing, edge);
+        // Pre-ensure capacity for both hashmaps so getOrPutAssumeCapacity won't fail.
+        try self.out_edges.ensureUnusedCapacity(1);
+        try self.in_edges.ensureUnusedCapacity(1);
 
-        // in_edges: dst → edge
-        const in = try self.in_edges.getOrPut(edge.dst);
+        // Get-or-create slots (infallible after ensureUnusedCapacity).
+        const out = self.out_edges.getOrPutAssumeCapacity(edge.src);
+        if (!out.found_existing) out.value_ptr.* = std.ArrayList(Edge).empty;
+        const in = self.in_edges.getOrPutAssumeCapacity(edge.dst);
         if (!in.found_existing) in.value_ptr.* = std.ArrayList(Edge).empty;
-        try in.value_ptr.append(backing, edge);
+
+        // Pre-ensure capacity for both ArrayLists so appends are infallible.
+        try out.value_ptr.ensureUnusedCapacity(backing, 1);
+        try in.value_ptr.ensureUnusedCapacity(backing, 1);
+
+        // Both appends are now guaranteed to succeed — atomicity preserved.
+        out.value_ptr.appendAssumeCapacity(edge);
+        in.value_ptr.appendAssumeCapacity(edge);
     }
 
     // ── Queries ─────────────────────────────────────────────────────────

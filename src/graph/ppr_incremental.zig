@@ -162,6 +162,11 @@ pub const IncrementalPpr = struct {
     /// This is much cheaper than a full PPR recomputation because it only
     /// processes nodes with significant residual, starting from dirty nodes.
     pub fn deltaUpdate(self: *IncrementalPpr, graph: *const CodeGraph) !void {
+        // Guard against alpha == 0: when alpha is zero no residual is absorbed
+        // into scores (p[u] += alpha * r[u] = 0), so in cyclic graphs the
+        // push loop never terminates.  Clamp to a small minimum.
+        const safe_alpha = @max(self.alpha, 0.001);
+
         // For dirty nodes that have no residual yet, seed them with a
         // small residual based on their current score to ensure they
         // get processed.
@@ -171,16 +176,22 @@ pub const IncrementalPpr = struct {
             if (self.residuals.get(node) == null) {
                 const score = self.scores.get(node) orelse 0;
                 if (score > 0) {
-                    try self.residuals.put(node, score * self.alpha);
+                    try self.residuals.put(node, score * safe_alpha);
                 }
             }
         }
 
+        // Safety cap: enforce a hard iteration limit so pathological
+        // inputs cannot spin forever.
+        const max_iterations: u32 = 100;
+        var iterations: u32 = 0;
+
         // Run local push operations until convergence (same algorithm as
         // full PPR but starting from residuals rather than a single seed).
         var changed = true;
-        while (changed) {
+        while (changed and (iterations < max_iterations)) {
             changed = false;
+            iterations += 1;
 
             // Collect nodes that need pushing
             var to_push: std.ArrayList(u64) = .empty;
@@ -209,7 +220,7 @@ pub const IncrementalPpr = struct {
                 // p[u] += alpha * r[u]
                 const p_entry = try self.scores.getOrPut(u);
                 if (!p_entry.found_existing) p_entry.value_ptr.* = 0;
-                p_entry.value_ptr.* += self.alpha * r_u;
+                p_entry.value_ptr.* += safe_alpha * r_u;
 
                 // Zero r[u] BEFORE distributing to neighbours.
                 // This is critical for correctness with self-loops: if u has
@@ -225,7 +236,7 @@ pub const IncrementalPpr = struct {
 
                     if (w_total > 0) {
                         for (edges) |e| {
-                            const share = (1.0 - self.alpha) * r_u * e.weight / w_total;
+                            const share = (1.0 - safe_alpha) * r_u * e.weight / w_total;
                             const r_entry = try self.residuals.getOrPut(e.dst);
                             if (!r_entry.found_existing) r_entry.value_ptr.* = 0;
                             r_entry.value_ptr.* += share;
