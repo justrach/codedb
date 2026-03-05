@@ -35,6 +35,12 @@ pub fn pprPush(
     epsilon: f32,
     alloc: std.mem.Allocator,
 ) !std.AutoHashMap(u64, f32) {
+    // Guard against alpha == 0: when alpha is zero no residual is ever absorbed
+    // into p[] (since p[u] += alpha * r[u] = 0), so in cyclic graphs residual
+    // circulates indefinitely and the push loop never terminates.  Clamp to a
+    // small minimum so that each push absorbs at least a tiny fraction.
+    const safe_alpha = @max(alpha, 0.001);
+
     var p = std.AutoHashMap(u64, f32).init(alloc);
     errdefer p.deinit();
     var r = std.AutoHashMap(u64, f32).init(alloc);
@@ -43,10 +49,16 @@ pub fn pprPush(
     // Initialise residual: r[query] = 1.0
     try r.put(query_node, 1.0);
 
+    // Safety cap: even with the alpha clamp above, enforce a hard iteration
+    // limit so pathological inputs cannot spin forever.
+    const max_iterations: u32 = 100;
+    var iterations: u32 = 0;
+
     // Iterative push until no node exceeds threshold
     var changed = true;
-    while (changed) {
+    while (changed and (iterations < max_iterations)) {
         changed = false;
+        iterations += 1;
 
         // Collect nodes that need pushing in this iteration.
         // We can't mutate the map while iterating, so collect keys first.
@@ -76,7 +88,7 @@ pub fn pprPush(
             // p[u] += α × r[u]
             const p_entry = try p.getOrPut(u);
             if (!p_entry.found_existing) p_entry.value_ptr.* = 0;
-            p_entry.value_ptr.* += alpha * r_u;
+            p_entry.value_ptr.* += safe_alpha * r_u;
 
             // Zero r[u] BEFORE distributing to neighbours.
             // This is critical for correctness with self-loops: if u has
@@ -93,7 +105,7 @@ pub fn pprPush(
 
                 if (w_total > 0) {
                     for (edges) |e| {
-                        const share = (1.0 - alpha) * r_u * e.weight / w_total;
+                        const share = (1.0 - safe_alpha) * r_u * e.weight / w_total;
                         const r_entry = try r.getOrPut(e.dst);
                         if (!r_entry.found_existing) r_entry.value_ptr.* = 0;
                         r_entry.value_ptr.* += share;
@@ -333,14 +345,42 @@ test "PPR with alpha=0 — all score distributed to neighbours" {
     var scores = try pprPush(&g, 1, 0.0, DEFAULT_EPSILON, std.testing.allocator);
     defer scores.deinit();
 
-    // alpha=0 means p[u] += 0 * r[u] = 0 for the query node on first push
-    // but all residual flows to node 2: r[2] += (1-0) * 1.0 = 1.0
-    // Then node 2 has no out-edges, so p[2] += 0 * 1.0 = 0
-    // Actually: p[u] += alpha * r[u] = 0, so no node gets any p score!
+    // alpha=0 is clamped to 0.001 to prevent infinite loops in cyclic graphs.
+    // With safe_alpha=0.001, scores are very small but non-zero.
+    // The key property: most residual flows to neighbours, very little is retained.
     const s1 = scores.get(1) orelse 0.0;
     const s2 = scores.get(2) orelse 0.0;
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), s1, 1e-6);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), s2, 1e-6);
+    try std.testing.expect(s1 < 0.01); // nearly zero — clamped alpha absorbs tiny amount
+    try std.testing.expect(s2 < 0.01);
+}
+
+test "PPR with alpha=0 on cyclic graph terminates" {
+    var g = makeTestGraph(std.testing.allocator);
+    defer g.deinit();
+
+    // 1 → 2 → 3 → 1 (cycle) — previously caused infinite loop with alpha=0
+    try g.addEdge(.{ .src = 1, .dst = 2, .kind = .calls });
+    try g.addEdge(.{ .src = 2, .dst = 3, .kind = .calls });
+    try g.addEdge(.{ .src = 3, .dst = 1, .kind = .calls });
+
+    // This must terminate (was infinite loop before the fix).
+    // Passing alpha=0.0 explicitly — the function clamps it to 0.001.
+    var scores = try pprPush(&g, 1, 0.0, DEFAULT_EPSILON, std.testing.allocator);
+    defer scores.deinit();
+
+    // All nodes in the cycle should have some score (clamped alpha absorbs residual)
+    const s1 = scores.get(1) orelse 0;
+    const s2 = scores.get(2) orelse 0;
+    const s3 = scores.get(3) orelse 0;
+    try std.testing.expect(s1 > 0);
+    try std.testing.expect(s2 > 0);
+    try std.testing.expect(s3 > 0);
+
+    // Scores should be less than what we get with default alpha (since clamped
+    // alpha=0.001 absorbs very little per push).
+    try std.testing.expect(s1 < 1.0);
+    try std.testing.expect(s2 < 1.0);
+    try std.testing.expect(s3 < 1.0);
 }
 
 test "PPR with very small epsilon converges more precisely" {

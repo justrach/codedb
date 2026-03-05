@@ -132,14 +132,9 @@ pub const Harness = struct {
         errdefer alloc.free(buf);
         read_total = 0;
         while (read_total < len) {
-            const n = std.posix.read(fd, buf[read_total..]) catch {
-                alloc.free(buf);
+            const n = std.posix.read(fd, buf[read_total..]) catch
                 return error.DaemonReadFailed;
-            };
-            if (n == 0) {
-                alloc.free(buf);
-                return error.DaemonReadFailed;
-            }
+            if (n == 0) return error.DaemonReadFailed;
             read_total += n;
         }
         return buf;
