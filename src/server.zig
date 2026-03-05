@@ -653,6 +653,7 @@ fn extractQueryParam(request: []const u8, key: []const u8) ?[]const u8 {
 
 fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .{};
+    errdefer out.deinit(allocator);
     var i: usize = 0;
     while (i < input.len) {
         if (input[i] == '%' and i + 2 < input.len) {

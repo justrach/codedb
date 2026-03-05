@@ -96,7 +96,7 @@ pub fn main() !void {
             print("usage: codedb [root] find <symbol>\n", .{});
             std.process.exit(1);
         };
-        if (try explorer.findSymbol(name)) |r| {
+        if (try explorer.findSymbol(name, allocator)) |r| {
             print("{s}:{d} ({s})\n", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind) });
             if (r.symbol.detail) |d| print("  {s}\n", .{d});
         } else {
@@ -151,6 +151,7 @@ pub fn main() !void {
         defer prerender.deinit();
 
         var shutdown = std.atomic.Value(bool).init(false);
+        defer shutdown.store(true, .release);
 
         var queue = watcher.EventQueue{};
         const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &prerender, &shutdown });
@@ -163,7 +164,6 @@ pub fn main() !void {
         defer reap_thread.join();
 
         std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
-        defer shutdown.store(true, .release);
         try server.serve(allocator, &store, &agents, &explorer, &queue, port, &prerender);
     } else if (std.mem.eql(u8, cmd, "mcp")) {
         var agents = AgentRegistry.init(allocator);
@@ -182,14 +182,15 @@ pub fn main() !void {
         scan_thread.detach();
 
         const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &prerender, &shutdown });
-        defer watch_thread.join();
-
         const isr_thread = try std.Thread.spawn(.{}, Prerender.isrLoop, .{ &prerender, &explorer, &store, &shutdown });
-        defer isr_thread.join();
 
-        std.log.info("codedb2 mcp: root={s} data={s}", .{ abs_root, data_dir });
-        defer shutdown.store(true, .release);
+        std.log.info("codedb2 mcp: root={s} files={d} data={s}", .{ abs_root, store.currentSeq(), data_dir });
         mcp_server.run(allocator, &store, &explorer, &agents, &prerender);
+
+        // run() returned — stdin closed. Signal threads to stop, then join.
+        shutdown.store(true, .release);
+        watch_thread.join();
+        isr_thread.join();
     } else {
         print("unknown command: {s}\n", .{cmd});
         std.process.exit(1);

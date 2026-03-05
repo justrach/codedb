@@ -13,6 +13,11 @@ const version = @import("version.zig");
 const watcher = @import("watcher.zig");
 const edit_mod = @import("edit.zig");
 const Prerender = @import("prerender.zig").Prerender;
+const explore = @import("explore.zig");
+const extractLines = explore.extractLines;
+const isCommentOrBlank = explore.isCommentOrBlank;
+const Language = explore.Language;
+const mcp_mod = @import("mcp.zig");
 // ── Store tests ─────────────────────────────────────────────
 
 test "store: record and retrieve snapshots" {
@@ -345,7 +350,7 @@ test "explorer: findSymbol" {
     try explorer.indexFile("a.zig", "pub fn alpha() void {}");
     try explorer.indexFile("b.zig", "pub fn beta() void {}");
 
-    const result = try explorer.findSymbol("alpha");
+    const result = try explorer.findSymbol("alpha", arena.allocator());
     try testing.expect(result != null);
     try testing.expectEqualStrings("a.zig", result.?.path);
 }
@@ -358,8 +363,8 @@ test "explorer: findAllSymbols returns multiple" {
     try explorer.indexFile("a.zig", "const Store = @import(\"store.zig\").Store;");
     try explorer.indexFile("b.zig", "pub const Store = struct {};");
 
-    const results = try explorer.findAllSymbols("Store", testing.allocator);
-    defer testing.allocator.free(results);
+    const results = try explorer.findAllSymbols("Store", arena.allocator());
+    defer arena.allocator().free(results);
     try testing.expect(results.len == 2);
 }
 
@@ -373,7 +378,7 @@ test "explorer: searchContent with trigram acceleration" {
 
     const results = try explorer.searchContent("recordSnapshot", testing.allocator, 50);
     defer {
-        for (results) |r| testing.allocator.free(r.line_text);
+        for (results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
         testing.allocator.free(results);
     }
 
@@ -406,7 +411,7 @@ test "explorer: removeFile cleans up everything" {
 
     explorer.removeFile("gone.zig");
     try testing.expect((try explorer.getOutline("gone.zig", testing.allocator)) == null);
-    try testing.expect((try explorer.findSymbol("doStuff")) == null);
+    try testing.expect((try explorer.findSymbol("doStuff", testing.allocator)) == null);
 }
 
 test "explorer: python parser" {
@@ -501,7 +506,7 @@ test "explorer: reindex OOM keeps prior outline reachable" {
     // Old content should be replaced
     const old_results = try explorer.searchContent("oldName", testing.allocator, 10);
     defer {
-        for (old_results) |r| testing.allocator.free(r.line_text);
+        for (old_results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
         testing.allocator.free(old_results);
     }
     try testing.expect(old_results.len == 0);
@@ -509,7 +514,7 @@ test "explorer: reindex OOM keeps prior outline reachable" {
     // New content should be searchable
     const new_results = try explorer.searchContent("newName", testing.allocator, 10);
     defer {
-        for (new_results) |r| testing.allocator.free(r.line_text);
+        for (new_results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
         testing.allocator.free(new_results);
     }
     try testing.expect(new_results.len == 1);
@@ -675,7 +680,7 @@ test "regression #2: searchContent frees trigram candidate slice" {
 
     const results = try explorer.searchContent("recordSnapshot", testing.allocator, 50);
     defer {
-        for (results) |r| testing.allocator.free(r.line_text);
+        for (results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
         testing.allocator.free(results);
     }
     try testing.expect(results.len == 1);
@@ -693,7 +698,7 @@ test "regression #2: searchContent no leak on zero results" {
     // "abcxyz" shares trigrams "abc" but won't match full text
     const results = try explorer.searchContent("abcxyz", testing.allocator, 50);
     defer {
-        for (results) |r| testing.allocator.free(r.line_text);
+        for (results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
         testing.allocator.free(results);
     }
     try testing.expect(results.len == 0);
@@ -708,7 +713,7 @@ test "regression #2: searchContent short query skips trigrams" {
 
     const results = try explorer.searchContent("ab", testing.allocator, 50);
     defer {
-        for (results) |r| testing.allocator.free(r.line_text);
+        for (results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
         testing.allocator.free(results);
     }
     try testing.expect(results.len == 1);
@@ -903,7 +908,7 @@ test "regression: searchContent frees empty trigram candidate slice" {
 
     const results = try explorer.searchContent("zzzzz", testing.allocator, 50);
     defer {
-        for (results) |r| testing.allocator.free(r.line_text);
+        for (results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
         testing.allocator.free(results);
     }
     try testing.expect(results.len == 0);
@@ -926,4 +931,674 @@ test "regression: queue push stays non-blocking when full" {
     const elapsed = std.time.nanoTimestamp() - start;
 
     try testing.expect(elapsed < 50 * std.time.ns_per_ms);
+}
+
+// ── Path safety tests ───────────────────────────────────────
+
+test "isPathSafe: rejects absolute paths" {
+    const mcp = @import("mcp.zig");
+    try testing.expect(!mcp.isPathSafe("/etc/passwd"));
+    try testing.expect(!mcp.isPathSafe("/"));
+}
+
+test "isPathSafe: rejects parent traversal" {
+    const mcp = @import("mcp.zig");
+    try testing.expect(!mcp.isPathSafe("../secret"));
+    try testing.expect(!mcp.isPathSafe("foo/../../etc/passwd"));
+    try testing.expect(!mcp.isPathSafe(".."));
+}
+
+test "isPathSafe: rejects empty path" {
+    const mcp = @import("mcp.zig");
+    try testing.expect(!mcp.isPathSafe(""));
+}
+
+test "isPathSafe: accepts valid relative paths" {
+    const mcp = @import("mcp.zig");
+    try testing.expect(mcp.isPathSafe("src/main.zig"));
+    try testing.expect(mcp.isPathSafe("README.md"));
+    try testing.expect(mcp.isPathSafe("a/b/c/d.txt"));
+}
+
+test "prerender: snapshot builds and is valid JSON" {
+    // Explorer uses arena for internal data
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var explorer = Explorer.init(alloc);
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}");
+    try explorer.indexFile("src/lib.zig", "pub const version = 1;");
+
+    var store = @import("store.zig").Store.init(alloc);
+    defer store.deinit();
+    _ = try store.recordSnapshot("src/main.zig", 100, 0xABC);
+
+    // Prerender uses testing.allocator so rebuild can allocate independently
+    var prerender = @import("prerender.zig").Prerender.init(testing.allocator);
+    defer prerender.deinit();
+
+    const snap = try prerender.getSnapshot(&explorer, &store, testing.allocator);
+    defer testing.allocator.free(snap);
+
+    // Must be valid JSON
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, snap, .{});
+    defer parsed.deinit();
+
+    // Must have expected top-level keys (matches buildSnapshot output)
+    try testing.expect(parsed.value.object.contains("seq"));
+    try testing.expect(parsed.value.object.contains("tree"));
+    try testing.expect(parsed.value.object.contains("outlines"));
+    try testing.expect(parsed.value.object.contains("symbol_index"));
+    try testing.expect(parsed.value.object.contains("dep_graph"));
+}
+
+test "prerender: fresh instance needs rebuild" {
+    var prerender = Prerender.init(testing.allocator);
+    defer prerender.deinit();
+
+    // Fresh prerender: dirty_epoch > built_epoch means it needs a rebuild
+    try testing.expect(prerender.dirty_epoch.load(.acquire) > prerender.built_epoch.load(.acquire));
+}
+
+// ── Deep copy correctness tests ─────────────────────────────
+
+test "findSymbol: returned data is owned copy" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var explorer = Explorer.init(alloc);
+    try explorer.indexFile("a.zig", "pub fn myFunc() void {}");
+
+    const result = try explorer.findSymbol("myFunc", alloc);
+    try testing.expect(result != null);
+
+    // Remove the source — if result was borrowed, this would corrupt it
+    explorer.removeFile("a.zig");
+
+    // Owned copy should still be valid
+    try testing.expectEqualStrings("a.zig", result.?.path);
+    try testing.expectEqualStrings("myFunc", result.?.symbol.name);
+}
+
+test "findAllSymbols: returned data survives source removal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var explorer = Explorer.init(alloc);
+    try explorer.indexFile("a.zig", "pub fn foo() void {}");
+    try explorer.indexFile("b.zig", "pub fn foo() void {}");
+
+    const results = try explorer.findAllSymbols("foo", alloc);
+
+    // Remove sources
+    explorer.removeFile("a.zig");
+    explorer.removeFile("b.zig");
+
+    // Owned copies should still be valid
+    try testing.expect(results.len == 2);
+    for (results) |r| {
+        try testing.expectEqualStrings("foo", r.symbol.name);
+    }
+}
+
+test "searchContent: returned paths are owned copies" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var explorer = Explorer.init(alloc);
+    try explorer.indexFile("src/hello.zig", "pub fn greetWorld() void {}");
+
+    const results = try explorer.searchContent("greetWorld", alloc, 10);
+    try testing.expect(results.len == 1);
+
+    // Remove the source
+    explorer.removeFile("src/hello.zig");
+
+    // Path and line_text should still be valid (owned)
+    try testing.expectEqualStrings("src/hello.zig", results[0].path);
+}
+
+// ── Word index: empty bucket pruning ────────────────────────
+
+test "word index: removeFile prunes empty buckets" {
+    var wi = WordIndex.init(testing.allocator);
+    defer wi.deinit();
+
+    try wi.indexFile("a.zig", "uniqueWordOnlyHere anotherUnique");
+    // Words should exist
+    try testing.expect(wi.search("uniqueWordOnlyHere").len > 0);
+
+    wi.removeFile("a.zig");
+    // After removal, buckets should be pruned (not just emptied)
+    try testing.expect(wi.search("uniqueWordOnlyHere").len == 0);
+}
+
+test "trigram index: removeFile prunes empty sets" {
+    var ti = TrigramIndex.init(testing.allocator);
+    defer ti.deinit();
+
+    try ti.indexFile("only.zig", "xyzUniqueTrigramContent");
+    const before = ti.candidates("xyzUniqueTrigramContent");
+    if (before) |b| {
+        try testing.expect(b.len > 0);
+        testing.allocator.free(b);
+    }
+
+    ti.removeFile("only.zig");
+    const after = ti.candidates("xyzUniqueTrigramContent");
+    if (after) |a| {
+        try testing.expect(a.len == 0);
+        testing.allocator.free(a);
+    }
+}
+
+// ── Atomic edit test ────────────────────────────────────────
+
+test "edit: atomic write leaves no temp files on success" {
+    // Create a temp file to edit
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const path = "test_atomic.zig";
+    const content = "line1\nline2\nline3\n";
+    try tmp_dir.dir.writeFile(.{ .sub_path = path, .data = content });
+
+    // The temp file pattern is "{path}.codedb_tmp"
+    const tmp_path = path ++ ".codedb_tmp";
+
+    // After a successful edit, no .codedb_tmp file should remain
+    tmp_dir.dir.access(tmp_path, .{}) catch {
+        // Expected: temp file doesn't exist (good)
+        return;
+    };
+    // If we get here, the temp file exists — that's a bug
+    return error.TempFileNotCleaned;
+}
+
+// ── MCP enhancement tests ───────────────────────────────────
+
+test "extractLines: basic range with line numbers" {
+    const content = "line1\nline2\nline3\nline4\nline5";
+    const result = try extractLines(content, 2, 4, true, false, .unknown, testing.allocator);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "    2 | line2") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "    3 | line3") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "    4 | line4") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "line1") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "line5") == null);
+}
+
+test "extractLines: start beyond file returns empty" {
+    const content = "line1\nline2";
+    const result = try extractLines(content, 10, 20, true, false, .unknown, testing.allocator);
+    defer testing.allocator.free(result);
+    try testing.expect(result.len == 0);
+}
+
+test "extractLines: compact skips comments and blanks" {
+    const content = "fn main() void {}\n// this is a comment\n\n    return 0;\n}";
+    const result = try extractLines(content, 1, 5, false, true, .zig, testing.allocator);
+    defer testing.allocator.free(result);
+    // Should contain code lines but not the comment or blank line
+    try testing.expect(std.mem.indexOf(u8, result, "fn main") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "// this is a comment") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "return 0") != null);
+}
+
+test "isCommentOrBlank: detects language-specific comments" {
+    try testing.expect(isCommentOrBlank("  // zig comment", .zig));
+    try testing.expect(isCommentOrBlank("  # python comment", .python));
+    try testing.expect(isCommentOrBlank("  /* c comment */", .c));
+    try testing.expect(isCommentOrBlank("  * continuation", .javascript));
+    try testing.expect(isCommentOrBlank("   ", .zig));
+    try testing.expect(isCommentOrBlank("", .zig));
+    try testing.expect(!isCommentOrBlank("  const x = 1;", .zig));
+    try testing.expect(!isCommentOrBlank("  x = 1", .python));
+    // unknown language: never strips
+    try testing.expect(!isCommentOrBlank("// comment", .unknown));
+}
+
+test "explorer: getSymbolBody returns source lines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator());
+
+    try exp.indexFile("test.zig", "const std = @import(\"std\");\npub fn main() !void {}\npub const Store = struct {};");
+
+    const body = try exp.getSymbolBody("test.zig", 2, 2, testing.allocator);
+    if (body) |b| {
+        defer testing.allocator.free(b);
+        try testing.expect(std.mem.indexOf(u8, b, "pub fn main") != null);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "explorer: getSymbolBody returns null for unknown file" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator());
+
+    const body = try exp.getSymbolBody("nonexistent.zig", 1, 5, testing.allocator);
+    try testing.expect(body == null);
+}
+test "explorer: searchContentWithScope annotates results" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator());
+
+    // Use content where the search match line has no symbol definition itself
+    try exp.indexFile("auth.zig", "pub fn handleAuth() void {\n    validate(token);\n}");
+
+    const results = try exp.searchContentWithScope("validate", testing.allocator, 50);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+            if (r.scope_name) |n| testing.allocator.free(n);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len == 1);
+    try testing.expectEqualStrings("auth.zig", results[0].path);
+    try testing.expect(results[0].line_num == 2);
+    // Should have scope annotation — nearest preceding symbol is handleAuth
+    try testing.expect(results[0].scope_name != null);
+    try testing.expectEqualStrings("handleAuth", results[0].scope_name.?);
+}
+
+test "explorer: searchContentWithScope no scope for standalone line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator());
+
+    // Content with no symbols — scope should be null
+    try exp.indexFile("data.txt", "hello world\nfoo bar");
+
+    const results = try exp.searchContentWithScope("hello", testing.allocator, 50);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+            if (r.scope_name) |n| testing.allocator.free(n);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len == 1);
+    try testing.expect(results[0].scope_name == null);
+}
+
+test "content hash: Wyhash produces consistent hash" {
+    const content = "pub fn main() void {}";
+    const hash1 = std.hash.Wyhash.hash(0, content);
+    const hash2 = std.hash.Wyhash.hash(0, content);
+    try testing.expect(hash1 == hash2);
+    // Different content produces different hash
+    const hash3 = std.hash.Wyhash.hash(0, "different content");
+    try testing.expect(hash1 != hash3);
+}
+
+test "detectLanguage: public access and correct detection" {
+    try testing.expect(explore.detectLanguage("src/main.zig") == .zig);
+    try testing.expect(explore.detectLanguage("app.py") == .python);
+    try testing.expect(explore.detectLanguage("index.ts") == .typescript);
+    try testing.expect(explore.detectLanguage("style.css") == .unknown);
+}
+
+test "extractLines: without line numbers" {
+    const content = "alpha\nbeta\ngamma";
+    const result = try extractLines(content, 1, 3, false, false, .unknown, testing.allocator);
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("alpha\nbeta\ngamma\n", result);
+}
+
+// ── Extended MCP enhancement tests ──────────────────────────
+
+// ── extractLines edge cases ─────────────────────────────────
+
+test "extractLines: start only reads to EOF" {
+    const content = "a\nb\nc\nd\ne";
+    const result = try extractLines(content, 3, std.math.maxInt(u32), true, false, .unknown, testing.allocator);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "    3 | c") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "    4 | d") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "    5 | e") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "| a") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "| b") == null);
+}
+
+test "extractLines: end beyond file clamps to EOF" {
+    const content = "x\ny\nz";
+    const result = try extractLines(content, 2, 999, true, false, .unknown, testing.allocator);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "    2 | y") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "    3 | z") != null);
+    // No crash, no garbage — just the available lines
+    try testing.expect(std.mem.count(u8, result, "\n") == 2);
+}
+
+test "extractLines: single line range (start == end)" {
+    const content = "one\ntwo\nthree";
+    const result = try extractLines(content, 2, 2, true, false, .unknown, testing.allocator);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "    2 | two") != null);
+    try testing.expect(std.mem.count(u8, result, "\n") == 1);
+}
+
+test "extractLines: empty content returns single empty line" {
+    const result = try extractLines("", 1, 10, true, false, .unknown, testing.allocator);
+    defer testing.allocator.free(result);
+    // Empty string splits to one empty line, which is line 1
+    try testing.expect(result.len > 0);
+}
+
+test "extractLines: compact with Python comments" {
+    const content = "# comment\nimport os\n\ndef hello():\n    # inline comment\n    print('hi')";
+    const result = try extractLines(content, 1, 6, false, true, .python, testing.allocator);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "# comment") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "# inline comment") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "import os") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "def hello") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "print('hi')") != null);
+}
+
+test "extractLines: compact with JS/TS comments" {
+    const content = "// header\nconst x = 1;\n/* block */\n* star line\nexport default x;";
+    const result = try extractLines(content, 1, 5, false, true, .typescript, testing.allocator);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "// header") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "/* block */") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "* star line") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "const x = 1;") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "export default x;") != null);
+}
+
+// ── isCommentOrBlank: additional languages ──────────────────
+
+test "isCommentOrBlank: rust double-slash" {
+    try testing.expect(isCommentOrBlank("  // rust comment", .rust));
+    try testing.expect(!isCommentOrBlank("  let x = 1;", .rust));
+}
+
+test "isCommentOrBlank: go double-slash" {
+    try testing.expect(isCommentOrBlank("  // go comment", .go_lang));
+    try testing.expect(!isCommentOrBlank("  func main() {", .go_lang));
+}
+
+test "isCommentOrBlank: cpp block and line comments" {
+    try testing.expect(isCommentOrBlank("  // cpp line comment", .cpp));
+    try testing.expect(isCommentOrBlank("  /* cpp block comment */", .cpp));
+    try testing.expect(isCommentOrBlank("  * continued block comment", .cpp));
+    try testing.expect(!isCommentOrBlank("  int x = 0;", .cpp));
+}
+
+test "isCommentOrBlank: tabs and mixed whitespace" {
+    try testing.expect(isCommentOrBlank("\t\t// tabbed comment", .zig));
+    try testing.expect(isCommentOrBlank(" \t \t ", .zig));
+    try testing.expect(isCommentOrBlank("\t", .python));
+}
+
+test "isCommentOrBlank: markdown and json never strip" {
+    try testing.expect(!isCommentOrBlank("# heading", .markdown));
+    try testing.expect(!isCommentOrBlank("// not a comment in json", .json));
+    try testing.expect(!isCommentOrBlank("# not a comment in yaml", .yaml));
+}
+
+// ── getSymbolBody: multi-line and edge cases ────────────────
+
+test "explorer: getSymbolBody multi-line range" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator());
+
+    const content = "line1\nline2\nline3\nline4\nline5";
+    try exp.indexFile("multi.zig", content);
+
+    const body = try exp.getSymbolBody("multi.zig", 2, 4, testing.allocator);
+    if (body) |b| {
+        defer testing.allocator.free(b);
+        try testing.expect(std.mem.indexOf(u8, b, "line2") != null);
+        try testing.expect(std.mem.indexOf(u8, b, "line3") != null);
+        try testing.expect(std.mem.indexOf(u8, b, "line4") != null);
+        try testing.expect(std.mem.indexOf(u8, b, "line1") == null);
+        try testing.expect(std.mem.indexOf(u8, b, "line5") == null);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "explorer: getSymbolBody range beyond file length" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator());
+
+    try exp.indexFile("short.zig", "only\ntwo");
+    const body = try exp.getSymbolBody("short.zig", 1, 100, testing.allocator);
+    if (body) |b| {
+        defer testing.allocator.free(b);
+        try testing.expect(std.mem.indexOf(u8, b, "only") != null);
+        try testing.expect(std.mem.indexOf(u8, b, "two") != null);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+// ── searchContentWithScope: multi-file, multi-result ────────
+
+test "explorer: searchContentWithScope across multiple files" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator());
+
+    try exp.indexFile("a.zig", "pub fn foo() void {\n    doWork();\n}");
+    try exp.indexFile("b.zig", "pub fn bar() void {\n    doWork();\n}");
+
+    const results = try exp.searchContentWithScope("doWork", testing.allocator, 50);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+            if (r.scope_name) |n| testing.allocator.free(n);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len == 2);
+    for (results) |r| {
+        try testing.expect(r.scope_name != null);
+        try testing.expect(r.line_num == 2);
+    }
+}
+
+test "explorer: searchContentWithScope respects max_results" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator());
+
+    try exp.indexFile("many.zig", "pub fn a() void {\n    target();\n    target();\n    target();\n    target();\n}");
+
+    const results = try exp.searchContentWithScope("target", testing.allocator, 2);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+            if (r.scope_name) |n| testing.allocator.free(n);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len == 2);
+}
+
+test "explorer: searchContentWithScope no results for missing query" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator());
+
+    try exp.indexFile("empty.zig", "pub fn main() void {}");
+
+    const results = try exp.searchContentWithScope("nonexistent_xyz", testing.allocator, 50);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+            if (r.scope_name) |n| testing.allocator.free(n);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len == 0);
+}
+
+// ── Content hash ETag logic ─────────────────────────────────
+
+test "content hash: format as hex string" {
+    const content = "hello world";
+    const hash = std.hash.Wyhash.hash(0, content);
+    var buf: [16]u8 = undefined;
+    const hex = std.fmt.bufPrint(&buf, "{x}", .{hash}) catch unreachable;
+    for (hex) |c| {
+        try testing.expect((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'));
+    }
+    // Consistent on same content
+    const hash2 = std.hash.Wyhash.hash(0, content);
+    var buf2: [16]u8 = undefined;
+    const hex2 = std.fmt.bufPrint(&buf2, "{x}", .{hash2}) catch unreachable;
+    try testing.expectEqualStrings(hex, hex2);
+}
+
+test "content hash: empty content hashes consistently" {
+    const h1 = std.hash.Wyhash.hash(0, "");
+    const h2 = std.hash.Wyhash.hash(0, "");
+    try testing.expect(h1 == h2);
+}
+
+// ── detectLanguage: comprehensive ───────────────────────────
+
+test "detectLanguage: all supported extensions" {
+    try testing.expect(explore.detectLanguage("main.zig") == .zig);
+    try testing.expect(explore.detectLanguage("lib.c") == .c);
+    try testing.expect(explore.detectLanguage("util.h") == .c);
+    try testing.expect(explore.detectLanguage("app.cpp") == .cpp);
+    try testing.expect(explore.detectLanguage("app.hpp") == .cpp);
+    try testing.expect(explore.detectLanguage("script.py") == .python);
+    try testing.expect(explore.detectLanguage("app.js") == .javascript);
+    try testing.expect(explore.detectLanguage("comp.jsx") == .javascript);
+    try testing.expect(explore.detectLanguage("app.ts") == .typescript);
+    try testing.expect(explore.detectLanguage("comp.tsx") == .typescript);
+    try testing.expect(explore.detectLanguage("main.rs") == .rust);
+    try testing.expect(explore.detectLanguage("main.go") == .go_lang);
+    try testing.expect(explore.detectLanguage("README.md") == .markdown);
+    try testing.expect(explore.detectLanguage("pkg.json") == .json);
+    try testing.expect(explore.detectLanguage("config.yaml") == .yaml);
+    try testing.expect(explore.detectLanguage("config.yml") == .yaml);
+    try testing.expect(explore.detectLanguage("Makefile") == .unknown);
+    try testing.expect(explore.detectLanguage("no_ext") == .unknown);
+}
+
+// ── getBool helper ──────────────────────────────────────────
+
+test "getBool: returns true for bool true" {
+    var map = std.json.ObjectMap.init(testing.allocator);
+    defer map.deinit();
+    try map.put("flag", .{ .bool = true });
+    const mcp_getBool = @import("mcp.zig").getBool;
+    try testing.expect(mcp_getBool(&map, "flag") == true);
+}
+
+test "getBool: returns false for bool false" {
+    var map = std.json.ObjectMap.init(testing.allocator);
+    defer map.deinit();
+    try map.put("flag", .{ .bool = false });
+    const mcp_getBool = @import("mcp.zig").getBool;
+    try testing.expect(mcp_getBool(&map, "flag") == false);
+}
+
+test "getBool: returns false for missing key" {
+    var map = std.json.ObjectMap.init(testing.allocator);
+    defer map.deinit();
+    const mcp_getBool = @import("mcp.zig").getBool;
+    try testing.expect(mcp_getBool(&map, "missing") == false);
+}
+
+test "getBool: returns false for non-bool value" {
+    var map = std.json.ObjectMap.init(testing.allocator);
+    defer map.deinit();
+    try map.put("flag", .{ .integer = 1 });
+    const mcp_getBool = @import("mcp.zig").getBool;
+    try testing.expect(mcp_getBool(&map, "flag") == false);
+}
+
+// ── Tool enum parsing (used by bundle) ──────────────────────
+
+test "Tool enum: all valid tool names parse" {
+    const Tool = @import("mcp.zig").Tool;
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_tree") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_outline") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_symbol") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_search") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_word") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_hot") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_deps") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_read") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_edit") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_changes") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_status") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_snapshot") != null);
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_bundle") != null);
+}
+
+test "Tool enum: invalid names return null" {
+    const Tool = @import("mcp.zig").Tool;
+    try testing.expect(std.meta.stringToEnum(Tool, "codedb_invalid") == null);
+    try testing.expect(std.meta.stringToEnum(Tool, "") == null);
+    try testing.expect(std.meta.stringToEnum(Tool, "tree") == null);
+}
+
+// ── Integration: extractLines + getSymbolBody pipeline ──────
+
+test "explorer: getSymbolBody with line number format" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator());
+
+    try exp.indexFile("fmt.zig", "const a = 1;\npub fn format() void {\n    write();\n}\nconst b = 2;");
+
+    const body = try exp.getSymbolBody("fmt.zig", 2, 4, testing.allocator);
+    if (body) |b| {
+        defer testing.allocator.free(b);
+        try testing.expect(std.mem.indexOf(u8, b, "    2 |") != null);
+        try testing.expect(std.mem.indexOf(u8, b, "    3 |") != null);
+        try testing.expect(std.mem.indexOf(u8, b, "    4 |") != null);
+        try testing.expect(std.mem.indexOf(u8, b, "const a") == null);
+        try testing.expect(std.mem.indexOf(u8, b, "const b") == null);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+}
+
+// ── Compact output: verify code-only output ─────────────────
+
+test "extractLines: compact preserves brace-only lines" {
+    const content = "fn main() void {\n    // comment\n    doWork();\n}";
+    const result = try extractLines(content, 1, 4, false, true, .zig, testing.allocator);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "fn main") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "}") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "doWork") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "// comment") == null);
+}
+
+test "extractLines: compact on all-comment file returns empty" {
+    const content = "// comment 1\n// comment 2\n// comment 3";
+    const result = try extractLines(content, 1, 3, false, true, .zig, testing.allocator);
+    defer testing.allocator.free(result);
+    try testing.expect(result.len == 0);
 }

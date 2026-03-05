@@ -70,7 +70,7 @@ pub const Language = enum(u8) {
     unknown,
 };
 
-fn detectLanguage(path: []const u8) Language {
+pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".zig")) return .zig;
     if (std.mem.endsWith(u8, path, ".c") or std.mem.endsWith(u8, path, ".h")) return .c;
     if (std.mem.endsWith(u8, path, ".cpp") or std.mem.endsWith(u8, path, ".hpp")) return .cpp;
@@ -364,7 +364,7 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator) ![]u8 {
     return buf.toOwnedSlice(allocator);
 }
 
-    pub fn findSymbol(self: *Explorer, name: []const u8) !?struct { path: []const u8, symbol: Symbol } {
+    pub fn findSymbol(self: *Explorer, name: []const u8, allocator: std.mem.Allocator) !?struct { path: []const u8, symbol: Symbol } {
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
@@ -372,7 +372,16 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator) ![]u8 {
         while (iter.next()) |entry| {
             for (entry.value_ptr.symbols.items) |sym| {
                 if (std.mem.eql(u8, sym.name, name)) {
-                    return .{ .path = entry.key_ptr.*, .symbol = sym };
+                    return .{
+                        .path = try allocator.dupe(u8, entry.key_ptr.*),
+                        .symbol = .{
+                            .name = try allocator.dupe(u8, sym.name),
+                            .kind = sym.kind,
+                            .line_start = sym.line_start,
+                            .line_end = sym.line_end,
+                            .detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null,
+                        },
+                    };
                 }
             }
         }
@@ -389,7 +398,16 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator) ![]u8 {
         while (iter.next()) |entry| {
             for (entry.value_ptr.symbols.items) |sym| {
                 if (std.mem.eql(u8, sym.name, name)) {
-                    try result_list.append(allocator, .{ .path = entry.key_ptr.*, .symbol = sym });
+                    try result_list.append(allocator, .{
+                        .path = try allocator.dupe(u8, entry.key_ptr.*),
+                        .symbol = .{
+                            .name = try allocator.dupe(u8, sym.name),
+                            .kind = sym.kind,
+                            .line_start = sym.line_start,
+                            .line_end = sym.line_end,
+                            .detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null,
+                        },
+                    });
                 }
             }
         }
@@ -672,7 +690,159 @@ fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !voi
         gop.value_ptr.* = deps;
     }
 }
+
+    /// Return the source body for a symbol given its file path and line range.
+    /// Caller owns the returned slice.
+    pub fn getSymbolBody(self: *Explorer, path: []const u8, line_start: u32, line_end: u32, allocator: std.mem.Allocator) !?[]u8 {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        const content = self.contents.get(path) orelse return null;
+        const result = try extractLines(content, line_start, line_end, true, false, .unknown, allocator);
+        return result;
+    }
+
+    /// Find the smallest enclosing symbol for a given line in a file.
+    /// Must be called while holding at least a shared lock.
+    fn findEnclosingSymbolLocked(self: *Explorer, path: []const u8, line_num: u32) ?Symbol {
+        const outline = self.outlines.getPtr(path) orelse return null;
+        var best: ?Symbol = null;
+        var best_span: u32 = std.math.maxInt(u32);
+        for (outline.symbols.items) |sym| {
+            if (sym.line_start <= line_num and sym.line_end >= line_num) {
+                const span = sym.line_end - sym.line_start;
+                if (span < best_span) {
+                    best = sym;
+                    best_span = span;
+                }
+            }
+        }
+        if (best != null) return best;
+        // Fallback: nearest preceding symbol
+        var nearest: ?Symbol = null;
+        var nearest_dist: u32 = std.math.maxInt(u32);
+        for (outline.symbols.items) |sym| {
+            if (sym.line_start <= line_num) {
+                const dist = line_num - sym.line_start;
+                if (dist < nearest_dist) {
+                    nearest = sym;
+                    nearest_dist = dist;
+                }
+            }
+        }
+        return nearest;
+    }
+
+    pub const ScopedSearchResult = struct {
+        path: []const u8,
+        line_num: u32,
+        line_text: []const u8,
+        scope_name: ?[]const u8 = null,
+        scope_kind: ?SymbolKind = null,
+        scope_start: u32 = 0,
+        scope_end: u32 = 0,
+    };
+
+    /// Search content and annotate results with the enclosing symbol scope.
+    pub fn searchContentWithScope(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const ScopedSearchResult {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        var result_list: std.ArrayList(ScopedSearchResult) = .{};
+        errdefer {
+            for (result_list.items) |r| {
+                allocator.free(r.line_text);
+                allocator.free(r.path);
+                if (r.scope_name) |n| allocator.free(n);
+            }
+            result_list.deinit(allocator);
+        }
+
+        const candidate_paths = self.trigram_index.candidates(query);
+        defer if (candidate_paths) |cp| self.allocator.free(cp);
+        const use_trigram = candidate_paths != null and candidate_paths.?.len > 0;
+
+        if (use_trigram) {
+            for (candidate_paths.?) |path| {
+                const content = self.contents.get(path) orelse continue;
+                try self.searchInContentWithScope(path, content, query, allocator, max_results, &result_list);
+                if (result_list.items.len >= max_results) break;
+            }
+        } else {
+            var iter = self.contents.iterator();
+            while (iter.next()) |entry| {
+                try self.searchInContentWithScope(entry.key_ptr.*, entry.value_ptr.*, query, allocator, max_results, &result_list);
+                if (result_list.items.len >= max_results) break;
+            }
+        }
+
+        return result_list.toOwnedSlice(allocator);
+    }
+
+    fn searchInContentWithScope(self: *Explorer, path: []const u8, content: []const u8, query: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(ScopedSearchResult)) !void {
+        var line_num: u32 = 0;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            line_num += 1;
+            if (indexOfCaseInsensitive(line, query) != null) {
+                const line_text = try allocator.dupe(u8, line);
+                errdefer allocator.free(line_text);
+                const path_copy = try allocator.dupe(u8, path);
+                errdefer allocator.free(path_copy);
+
+                const scope = self.findEnclosingSymbolLocked(path, line_num);
+                const scope_name = if (scope) |s| try allocator.dupe(u8, s.name) else null;
+                errdefer if (scope_name) |n| allocator.free(n);
+
+                try result_list.append(allocator, .{
+                    .path = path_copy,
+                    .line_num = line_num,
+                    .line_text = line_text,
+                    .scope_name = scope_name,
+                    .scope_kind = if (scope) |s| s.kind else null,
+                    .scope_start = if (scope) |s| s.line_start else 0,
+                    .scope_end = if (scope) |s| s.line_end else 0,
+                });
+                if (result_list.items.len >= max_results) return;
+            }
+        }
+    }
 };
+
+/// Extract lines from content string as a range [start..end] (1-indexed, inclusive).
+/// When line_numbers is true, prepends "{d:>5} | " prefix. When compact is true,
+/// skips comment/blank lines based on language.
+pub fn extractLines(content: []const u8, start: u32, end: u32, line_numbers: bool, compact: bool, language: Language, allocator: std.mem.Allocator) ![]u8 {
+    var buf: std.ArrayList(u8) = .{};
+    errdefer buf.deinit(allocator);
+    const w = buf.writer(allocator);
+
+    var line_num: u32 = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        line_num += 1;
+        if (line_num < start) continue;
+        if (line_num > end) break;
+        if (compact and isCommentOrBlank(line, language)) continue;
+        if (line_numbers) {
+            try w.print("{d:>5} | {s}\n", .{ line_num, line });
+        } else {
+            try w.print("{s}\n", .{line});
+        }
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Returns true if a line is blank or a single-line comment for the given language.
+pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return true;
+    return switch (language) {
+        .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
+        .python => std.mem.startsWith(u8, trimmed, "#"),
+        .javascript, .typescript, .c, .cpp => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        else => false,
+    };
+}
 
 fn searchInContent(path: []const u8, content: []const u8, query: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(SearchResult)) !void {
     var line_num: u32 = 0;
@@ -682,8 +852,10 @@ fn searchInContent(path: []const u8, content: []const u8, query: []const u8, all
         if (indexOfCaseInsensitive(line, query) != null) {
             const line_text = try allocator.dupe(u8, line);
             errdefer allocator.free(line_text);
+            const path_copy = try allocator.dupe(u8, path);
+            errdefer allocator.free(path_copy);
             try result_list.append(allocator, .{
-                .path = path,
+                .path = path_copy,
                 .line_num = line_num,
                 .line_text = line_text,
             });
