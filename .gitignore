@@ -2,6 +2,12 @@
 **/.DS_Store
 .zig-cache/
 zig-out/
+.zig-cache-local/
+.zig-cache-local2/
+.zig-global-cache-local/
+.zig-global-cache/
+.remotion/
+Formula/
 .mcp-e2e-test
 
 # IDE / agent config folders (never track)
@@ -20,7 +26,7 @@ zig-out/
 .zigrep_archive
 
 # Ignore markdown files and python folder
-*.md
+!README-changelog.md
 !README.md
 !CHANGELOG.md
 python/
