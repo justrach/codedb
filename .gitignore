@@ -24,3 +24,5 @@ zig-out/
 !README.md
 !CHANGELOG.md
 python/
+.tmp_*
+--version
