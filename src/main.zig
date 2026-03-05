@@ -21,19 +21,21 @@ pub fn main() !void {
     var cmd: []const u8 = undefined;
     var cmd_args_start: usize = undefined;
 
-    if (args.len < 2) {
+    // Support --mcp flag as alias for `mcp` subcommand (matches muonry convention)
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--mcp")) {
+        root = ".";
+        cmd = "mcp";
+        cmd_args_start = 2;
+    } else if (args.len < 2) {
         printUsage();
         std.process.exit(1);
-    }
-
-    if (isCommand(args[1])) {
+    } else if (isCommand(args[1])) {
         root = ".";
         cmd = args[1];
         cmd_args_start = 2;
     } else if (args.len >= 3) {
         root = args[1];
         cmd = args[2];
-        cmd_args_start = 3;
     } else {
         printUsage();
         std.process.exit(1);

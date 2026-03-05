@@ -474,59 +474,30 @@ fn isPathSafe(path: []const u8) bool {
 }
 
 fn readFramedMessage(alloc: std.mem.Allocator, file: std.fs.File) ?[]u8 {
-    var header: std.ArrayList(u8) = .{};
-    defer header.deinit(alloc);
+    var buf: std.ArrayList(u8) = .{};
+    defer buf.deinit(alloc);
 
     var one: [1]u8 = undefined;
     while (true) {
         const n = file.read(&one) catch return null;
         if (n == 0) {
-            if (header.items.len == 0) return null;
-            return alloc.dupe(u8, "") catch null;
-        }
-        header.append(alloc, one[0]) catch return null;
-        if (header.items.len > 16 * 1024) return alloc.dupe(u8, "") catch null;
-        if (header.items.len >= 4 and std.mem.eql(u8, header.items[header.items.len - 4 ..], "\r\n\r\n")) break;
-    }
-
-    var content_length: ?usize = null;
-    var lines = std.mem.splitSequence(u8, header.items, "\r\n");
-    while (lines.next()) |line| {
-        if (line.len == 0) continue;
-        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-        const name = std.mem.trim(u8, line[0..colon], " \t");
-        const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
-        if (std.ascii.eqlIgnoreCase(name, "Content-Length")) {
-            content_length = std.fmt.parseInt(usize, value, 10) catch return alloc.dupe(u8, "") catch null;
+            if (buf.items.len == 0) return null;
+            // EOF mid-line: treat as complete message
             break;
         }
+        if (one[0] == '\n') break;
+        if (one[0] == '\r') continue; // skip CR
+        buf.append(alloc, one[0]) catch return null;
+        if (buf.items.len > 16 * 1024 * 1024) return alloc.dupe(u8, "") catch null;
     }
 
-    const len = content_length orelse return alloc.dupe(u8, "") catch null;
-    if (len > 16 * 1024 * 1024) return alloc.dupe(u8, "") catch null;
-
-    const body = alloc.alloc(u8, len) catch return null;
-    var off: usize = 0;
-    while (off < len) {
-        const n = file.read(body[off..]) catch {
-            alloc.free(body);
-            return null;
-        };
-        if (n == 0) {
-            alloc.free(body);
-            return alloc.dupe(u8, "") catch null;
-        }
-        off += n;
-    }
-    return body;
+    return alloc.dupe(u8, buf.items) catch null;
 }
 
 fn writeFramedMessage(alloc: std.mem.Allocator, stdout: std.fs.File, payload: []const u8) void {
-    var hdr_buf: [128]u8 = undefined;
-    const hdr = std.fmt.bufPrint(&hdr_buf, "Content-Length: {d}\r\n\r\n", .{payload.len}) catch return;
-    stdout.writeAll(hdr) catch return;
-    stdout.writeAll(payload) catch return;
     _ = alloc;
+    stdout.writeAll(payload) catch return;
+    stdout.writeAll("\n") catch return;
 }
 
 fn writeResult(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Value, result: []const u8) void {
