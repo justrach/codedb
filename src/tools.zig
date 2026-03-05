@@ -175,6 +175,8 @@ pub const Tool = enum {
     review_fix_loop,
     // Claude Agent SDK — single agent turn with tool/permission controls
     run_agent,
+    // Smart executor — picks strategy, roles, and models automatically
+    run_task,
 };
 
 // ── Step 2: Tool schemas ──────────────────────────────────────────────────────
@@ -219,7 +221,8 @@ pub const tools_list =
     \\{"name":"run_zig_infra","description":"Invoke the Codex zig_infra subagent to review build.zig module graph, named @import wiring, and test step coverage.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"Override the default build wiring check prompt"}},"required":[]}},
     \\{"name":"run_swarm","description":"Spawn a self-organizing swarm of parallel Codex sub-agents to tackle a task. An orchestrator agent decomposes the task into sub-tasks, up to max_agents run concurrently via Zig threads, and a synthesis agent combines their outputs. Set writable=true to allow agents to edit files (for bug fixes, refactors). Best for broad research, multi-file analysis, multi-angle reviews, or parallel bug fixing.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"The high-level task for the swarm to solve"},"max_agents":{"type":"integer","description":"Maximum parallel sub-agents (default 5, hard cap 100)"},"writable":{"type":"boolean","description":"Allow agents to edit files and run shell commands (default false = read-only analysis)"}},"required":["prompt"]}},
     \\{"name":"review_fix_loop","description":"Iterative review-fix-review loop. Runs a read-only reviewer to find issues, then a writable agent to fix them, then re-reviews. Repeats until the reviewer reports no remaining issues or max_iterations is reached. Returns a JSON object with iteration history and convergence status.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"Override the default review criteria"},"max_iterations":{"type":"integer","description":"Maximum review-fix cycles (default 3, max 5)"}},"required":[]}},
-    \\{"name":"run_agent","description":"Run a single Claude agent turn via the Claude Code CLI (`claude -p`). Supports tool allowlists, permission modes, and model selection. Falls back to codex app-server if `claude` is not on PATH. Set AGENT_SDK_BACKEND=codex to force the legacy backend.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"The task or question for the agent"},"model":{"type":"string","description":"Model alias or full ID (default: claude-sonnet-4-6). Use \"opus\" or \"claude-opus-4-6\" for hardest tasks, \"haiku\" for fast/cheap."},"allowed_tools":{"type":"string","description":"Comma-separated Claude Code tool allowlist, e.g. \"Bash,Read,Edit\". Omit to allow all tools."},"permission_mode":{"type":"string","enum":["default","acceptEdits","bypassPermissions"],"description":"Permission mode for file and shell operations"},"writable":{"type":"boolean","description":"Allow file writes (maps to bypassPermissions when permission_mode is unset)"},"cwd":{"type":"string","description":"Working directory override (default: current repo path)"}},"required":["prompt"]}}
+    \\{"name":"run_agent","description":"Run a single agent turn. Provider-agnostic: resolves the best backend (Claude/Codex) based on mode, role, and available providers. The primitive layer — use run_task for smart multi-step execution.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","description":"The task or question for the agent"},"model":{"type":"string","description":"Model alias or full ID (default: claude-sonnet-4-6). Use \"opus\" for hardest tasks, \"haiku\" for fast/cheap."},"role":{"type":"string","description":"Agent role: finder, reviewer, fixer, explorer, architect, orchestrator, synthesizer, monitor"},"mode":{"type":"string","enum":["smart","rush","deep","free"],"description":"Agent mode: smart (Sonnet), rush (Haiku), deep (Opus), free (Haiku)"},"allowed_tools":{"type":"string","description":"Comma-separated tool allowlist, e.g. \"Bash,Read,Edit\". Omit to allow all tools."},"permission_mode":{"type":"string","enum":["default","acceptEdits","bypassPermissions"],"description":"Permission mode for file and shell operations"},"writable":{"type":"boolean","description":"Allow file writes (maps to bypassPermissions when permission_mode is unset)"},"cwd":{"type":"string","description":"Working directory override (default: current repo path)"}},"required":["prompt"]}},
+    \\{"name":"run_task","description":"Smart executor: analyzes a task, picks the right strategy and agents, runs them with appropriate roles and models. Use this instead of run_agent for multi-step tasks. Supports chain presets (finder_fixer, reviewer_fixer, explore_report, architect_build) or auto-selection.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Task description — what needs to be done"},"preset":{"type":"string","enum":["finder_fixer","reviewer_fixer","explore_report","architect_build","custom"],"description":"Chain preset (default: auto-select based on task)"},"mode":{"type":"string","enum":["smart","rush","deep","free"],"description":"Agent mode for all agents in the chain"},"max_agents":{"type":"integer","description":"Max agents to spawn (default: preset-determined)"},"writable":{"type":"boolean","description":"Override write access (default: role-determined)"}},"required":["task"]}}
     \\]}
 ;
 
@@ -285,6 +288,8 @@ pub fn dispatch(
         .review_fix_loop       => handleReviewFixLoop(alloc, args, out),
         // Claude Agent SDK
         .run_agent             => handleRunAgent(alloc, args, out),
+        // Smart executor
+        .run_task              => handleRunTask(alloc, args, out),
     }
 }
 
@@ -2179,7 +2184,7 @@ fn handleRunAgent(
     args: *const std.json.ObjectMap,
     out: *std.ArrayList(u8),
 ) void {
-    const sdk = @import("agent_sdk.zig");
+    const rt = @import("runtime.zig");
 
     const prompt = mj.getStr(args, "prompt") orelse {
         writeErr(alloc, out, "run_agent requires a prompt argument");
@@ -2230,17 +2235,248 @@ fn handleRunAgent(
 
     const final_prompt = enriched orelse prompt;
 
-    const opts: sdk.AgentOptions = .{
-        .allowed_tools   = mj.getStr(args, "allowed_tools"),
-        .permission_mode = mj.getStr(args, "permission_mode"),
-        .cwd             = mj.getStr(args, "cwd"),
-        .model           = mj.getStr(args, "model"),
-        .writable        = blk: {
+    // Build AgentRequest from MCP params
+    const req: rt.AgentRequest = .{
+        .prompt        = final_prompt,
+        .role          = mj.getStr(args, "role"),
+        .mode          = mj.getStr(args, "mode"),
+        .model         = mj.getStr(args, "model"),
+        .allowed_tools = mj.getStr(args, "allowed_tools"),
+        .cwd           = mj.getStr(args, "cwd"),
+        .writable      = blk: {
             if (args.get("writable")) |v|
                 if (v == .bool) break :blk v.bool;
-            break :blk false;
+            break :blk null;
         },
     };
 
-    sdk.runAgent(alloc, final_prompt, opts, out);
+    // resolve() picks backend + model + tools; dispatch() spawns
+    const resolved = rt.resolve.resolveWithProbe(alloc, req);
+    defer alloc.free(resolved.system_prompt);
+
+    rt.dispatch.dispatch(alloc, resolved, final_prompt, out);
+}
+
+// ── run_task: smart executor with chain presets (#278) ────────────────────────
+
+const ChainPreset = enum {
+    finder_fixer,
+    reviewer_fixer,
+    explore_report,
+    architect_build,
+    custom,
+
+    fn fromString(s: []const u8) ?ChainPreset {
+        if (std.mem.eql(u8, s, "finder_fixer"))    return .finder_fixer;
+        if (std.mem.eql(u8, s, "reviewer_fixer"))   return .reviewer_fixer;
+        if (std.mem.eql(u8, s, "explore_report"))   return .explore_report;
+        if (std.mem.eql(u8, s, "architect_build"))  return .architect_build;
+        if (std.mem.eql(u8, s, "custom"))           return .custom;
+        return null;
+    }
+};
+
+/// Run a chain step: resolve + dispatch with the given role + prompt.
+fn runChainStep(
+    alloc: std.mem.Allocator,
+    role: []const u8,
+    mode: ?[]const u8,
+    writable_override: ?bool,
+    prompt: []const u8,
+    step_out: *std.ArrayList(u8),
+) void {
+    const rt = @import("runtime.zig");
+    const req: rt.AgentRequest = .{
+        .prompt  = prompt,
+        .role    = role,
+        .mode    = mode,
+        .writable = writable_override,
+    };
+    const resolved = rt.resolve.resolveWithProbe(alloc, req);
+    defer alloc.free(resolved.system_prompt);
+    rt.dispatch.dispatch(alloc, resolved, prompt, step_out);
+}
+
+fn handleRunTask(
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+) void {
+    const task = mj.getStr(args, "task") orelse {
+        writeErr(alloc, out, "run_task requires a task argument");
+        return;
+    };
+
+    const mode = mj.getStr(args, "mode");
+    const writable_override: ?bool = blk: {
+        if (args.get("writable")) |v|
+            if (v == .bool) break :blk v.bool;
+        break :blk null;
+    };
+
+    // Determine preset
+    const preset: ChainPreset = blk: {
+        if (mj.getStr(args, "preset")) |p| {
+            if (ChainPreset.fromString(p)) |cp| break :blk cp;
+        }
+        // Auto-select: default to finder_fixer (most common pattern)
+        break :blk .finder_fixer;
+    };
+
+    // Start JSON output
+    out.appendSlice(alloc, "{\"preset\":\"") catch return;
+    const preset_name: []const u8 = switch (preset) {
+        .finder_fixer    => "finder_fixer",
+        .reviewer_fixer  => "reviewer_fixer",
+        .explore_report  => "explore_report",
+        .architect_build => "architect_build",
+        .custom          => "custom",
+    };
+    out.appendSlice(alloc, preset_name) catch return;
+    out.appendSlice(alloc, "\",\"steps\":[") catch return;
+
+    switch (preset) {
+        .finder_fixer => {
+            // Step 1: finder (read-only) — locate relevant code
+            var finder_out: std.ArrayList(u8) = .empty;
+            defer finder_out.deinit(alloc);
+
+            const finder_prompt = std.fmt.allocPrint(alloc,
+                "Find all code relevant to the following task. " ++
+                "Report file paths and line numbers.\n\nTASK: {s}", .{task},
+            ) catch task;
+            defer if (finder_prompt.ptr != task.ptr) alloc.free(finder_prompt);
+
+            runChainStep(alloc, "finder", mode, false, finder_prompt, &finder_out);
+
+            out.appendSlice(alloc, "{\"role\":\"finder\",\"output\":\"") catch return;
+            mj.writeEscaped(alloc, out, finder_out.items);
+            out.appendSlice(alloc, "\"},") catch return;
+
+            // Step 2: fixer (writable) — apply changes based on findings
+            var fixer_out: std.ArrayList(u8) = .empty;
+            defer fixer_out.deinit(alloc);
+
+            const fixer_prompt = std.fmt.allocPrint(alloc,
+                "Fix the following task based on these findings. " ++
+                "Read files before editing, verify each edit.\n\n" ++
+                "TASK: {s}\n\nFINDINGS:\n{s}", .{ task, finder_out.items },
+            ) catch task;
+            defer if (fixer_prompt.ptr != task.ptr) alloc.free(fixer_prompt);
+
+            runChainStep(alloc, "fixer", mode, writable_override orelse true, fixer_prompt, &fixer_out);
+
+            out.appendSlice(alloc, "{\"role\":\"fixer\",\"output\":\"") catch return;
+            mj.writeEscaped(alloc, out, fixer_out.items);
+            out.appendSlice(alloc, "\"}") catch return;
+        },
+        .reviewer_fixer => {
+            // Step 1: reviewer (read-only) — find issues
+            var review_out: std.ArrayList(u8) = .empty;
+            defer review_out.deinit(alloc);
+
+            runChainStep(alloc, "reviewer", mode, false, task, &review_out);
+
+            out.appendSlice(alloc, "{\"role\":\"reviewer\",\"output\":\"") catch return;
+            mj.writeEscaped(alloc, out, review_out.items);
+            out.appendSlice(alloc, "\"},") catch return;
+
+            // Check convergence
+            if (std.mem.indexOf(u8, review_out.items, "NO_ISSUES_FOUND") != null) {
+                out.appendSlice(alloc, "{\"role\":\"fixer\",\"output\":\"No issues to fix\"}") catch return;
+            } else {
+                // Step 2: fixer (writable) — fix found issues
+                var fixer_out: std.ArrayList(u8) = .empty;
+                defer fixer_out.deinit(alloc);
+
+                const fixer_prompt = std.fmt.allocPrint(alloc,
+                    "Fix ALL issues listed below.\n\nREVIEW FINDINGS:\n{s}", .{review_out.items},
+                ) catch task;
+                defer if (fixer_prompt.ptr != task.ptr) alloc.free(fixer_prompt);
+
+                runChainStep(alloc, "fixer", mode, writable_override orelse true, fixer_prompt, &fixer_out);
+
+                out.appendSlice(alloc, "{\"role\":\"fixer\",\"output\":\"") catch return;
+                mj.writeEscaped(alloc, out, fixer_out.items);
+                out.appendSlice(alloc, "\"}") catch return;
+            }
+        },
+        .explore_report => {
+            // Step 1: explorer (read-only) — trace code paths
+            var explore_out: std.ArrayList(u8) = .empty;
+            defer explore_out.deinit(alloc);
+
+            runChainStep(alloc, "explorer", mode, false, task, &explore_out);
+
+            out.appendSlice(alloc, "{\"role\":\"explorer\",\"output\":\"") catch return;
+            mj.writeEscaped(alloc, out, explore_out.items);
+            out.appendSlice(alloc, "\"},") catch return;
+
+            // Step 2: synthesizer (read-only) — summarize findings
+            var synth_out: std.ArrayList(u8) = .empty;
+            defer synth_out.deinit(alloc);
+
+            const synth_prompt = std.fmt.allocPrint(alloc,
+                "Synthesize these exploration findings into a clear report.\n\n" ++
+                "TASK: {s}\n\nFINDINGS:\n{s}", .{ task, explore_out.items },
+            ) catch task;
+            defer if (synth_prompt.ptr != task.ptr) alloc.free(synth_prompt);
+
+            runChainStep(alloc, "synthesizer", mode, false, synth_prompt, &synth_out);
+
+            out.appendSlice(alloc, "{\"role\":\"synthesizer\",\"output\":\"") catch return;
+            mj.writeEscaped(alloc, out, synth_out.items);
+            out.appendSlice(alloc, "\"}") catch return;
+        },
+        .architect_build => {
+            // Step 1: architect (read-only) — design plan
+            var arch_out: std.ArrayList(u8) = .empty;
+            defer arch_out.deinit(alloc);
+
+            runChainStep(alloc, "architect", "deep", false, task, &arch_out);
+
+            out.appendSlice(alloc, "{\"role\":\"architect\",\"output\":\"") catch return;
+            mj.writeEscaped(alloc, out, arch_out.items);
+            out.appendSlice(alloc, "\"},") catch return;
+
+            // Step 2: fixer (writable) — implement the plan
+            var fixer_out: std.ArrayList(u8) = .empty;
+            defer fixer_out.deinit(alloc);
+
+            const fixer_prompt = std.fmt.allocPrint(alloc,
+                "Implement the following architectural plan.\n\n" ++
+                "PLAN:\n{s}", .{arch_out.items},
+            ) catch task;
+            defer if (fixer_prompt.ptr != task.ptr) alloc.free(fixer_prompt);
+
+            runChainStep(alloc, "fixer", mode, writable_override orelse true, fixer_prompt, &fixer_out);
+
+            out.appendSlice(alloc, "{\"role\":\"fixer\",\"output\":\"") catch return;
+            mj.writeEscaped(alloc, out, fixer_out.items);
+            out.appendSlice(alloc, "\"},") catch return;
+
+            // Step 3: reviewer (read-only) — verify implementation
+            var review_out: std.ArrayList(u8) = .empty;
+            defer review_out.deinit(alloc);
+
+            runChainStep(alloc, "reviewer", mode, false, task, &review_out);
+
+            out.appendSlice(alloc, "{\"role\":\"reviewer\",\"output\":\"") catch return;
+            mj.writeEscaped(alloc, out, review_out.items);
+            out.appendSlice(alloc, "\"}") catch return;
+        },
+        .custom => {
+            // Custom: just run as a single agent with the task
+            var step_out: std.ArrayList(u8) = .empty;
+            defer step_out.deinit(alloc);
+
+            runChainStep(alloc, "fixer", mode, writable_override orelse true, task, &step_out);
+
+            out.appendSlice(alloc, "{\"role\":\"fixer\",\"output\":\"") catch return;
+            mj.writeEscaped(alloc, out, step_out.items);
+            out.appendSlice(alloc, "\"}") catch return;
+        },
+    }
+
+    out.appendSlice(alloc, "]}") catch return;
 }

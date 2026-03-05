@@ -7,6 +7,7 @@ const build_options = @import("build_options");
 const mj = @import("mcp").json; // readLine, getStr/Int/Bool, eql, writeEscaped
 const tools = @import("tools.zig");
 const cache = @import("cache.zig");
+const runtime = @import("runtime.zig");
 
 const MaxThreadIdLen = 96;
 const MaxThreads = 32;
@@ -842,4 +843,9 @@ test "protocol: writeResult emits valid JSON-RPC 2.0 result structure" {
     try std.testing.expectEqualStrings("my-id",
         (obj.get("id") orelse return error.MissingId).string);
     try std.testing.expect(obj.get("result") != null);
+}
+
+// Force test discovery for all modules
+comptime {
+    _ = runtime;
 }

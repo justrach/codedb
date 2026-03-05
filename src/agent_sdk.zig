@@ -61,7 +61,7 @@ pub fn runAgent(
 /// unavailable so the caller can fall back to codex_appserver.
 /// Attempts to run the turn via `claude -p`. Returns false when claude is
 /// unavailable so the caller can fall back to codex_appserver.
-fn tryClaudeAgent(
+pub fn tryClaudeAgent(
     alloc: std.mem.Allocator,
     prompt: []const u8,
     opts: AgentOptions,
