@@ -73,6 +73,12 @@ pub fn main() void {
         // --mcp or unknown → fall through to MCP server mode
     }
 
+    // If stdin is a TTY (human ran it directly), show help instead of hanging
+    if (std.posix.isatty(std.posix.STDIN_FILENO)) {
+        printHelp();
+        return;
+    }
+
     runMcpServer();
 }
 
