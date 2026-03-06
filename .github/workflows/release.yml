@@ -75,11 +75,13 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          zip -j /tmp/devswarm-notarize.zip zig-out/bin/devswarm
-          xcrun notarytool submit /tmp/devswarm-notarize.zip \
+          xcrun notarytool store-credentials "notarytool-profile" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
-            --team-id "$TEAM_ID" \
+            --team-id "$TEAM_ID"
+          zip -j /tmp/devswarm-notarize.zip zig-out/bin/devswarm
+          xcrun notarytool submit /tmp/devswarm-notarize.zip \
+            --keychain-profile "notarytool-profile" \
             --wait
       - name: Package
         run: |
