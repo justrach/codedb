@@ -204,8 +204,16 @@ pub fn runSwarm(
     defer synth.deinit(alloc);
 
     synth.appendSlice(alloc,
-        "You are a synthesis agent. Combine these parallel sub-agent results " ++
-        "into one coherent, well-structured response:\n\n",
+        "You are a synthesis agent. Review the results from the parallel agents below " ++
+        "and reply with ONLY a valid JSON object — no markdown fences, no extra text:\n" ++
+        "{\n" ++
+        "  \"status\": \"success\" | \"partial\" | \"failed\",\n" ++
+        "  \"summary\": \"1-2 sentence summary of what was accomplished\",\n" ++
+        "  \"agents\": [{{\"role\":\"<role>\",\"outcome\":\"<one-line result>\"}},...],\n" ++
+        "  \"files_changed\": [\"<file paths if any were created/modified>\"],\n" ++
+        "  \"notes\": [\"<any important caveats or warnings>\"]\n" ++
+        "}\n\n" ++
+        "Agent results:\n\n",
     ) catch {};
 
     for (workers[0..count], 0..) |*w, i| {
@@ -232,6 +240,8 @@ pub fn runSwarm(
     notify.send(alloc, "🧬 Synthesizing agent results...");
 
     // ── Phase 5: Synthesis agent (read-only, uses synthesizer role) ───────
+    var synth_raw: std.ArrayList(u8) = .empty;
+    defer synth_raw.deinit(alloc);
     {
         const req: rt.AgentRequest = .{
             .prompt   = synth.items,
@@ -241,7 +251,17 @@ pub fn runSwarm(
         };
         const resolved = rt.resolve.resolveWithProbe(alloc, req);
         defer rt.prompts.freeAssembled(alloc, resolved.system_prompt);
-        rt.dispatch.dispatch(alloc, resolved, synth.items, out);
+        rt.dispatch.dispatch(alloc, resolved, synth.items, &synth_raw);
+    }
+
+    // ── Phase 6: Format structured output ────────────────────────────────────
+    const formatted = formatSynthesis(alloc, synth_raw.items, manifest) catch null;
+    if (formatted) |f| {
+        defer alloc.free(f);
+        out.appendSlice(alloc, f) catch {};
+    } else {
+        // fallback: raw synthesis text
+        out.appendSlice(alloc, synth_raw.items) catch {};
     }
 }
 
@@ -251,6 +271,104 @@ fn appendErr(alloc: std.mem.Allocator, out: *std.ArrayList(u8), msg: []const u8)
     out.appendSlice(alloc, "{\"error\":\"") catch return;
     mj.writeEscaped(alloc, out, msg);
     out.appendSlice(alloc, "\"}") catch {};
+}
+
+
+// ── Structured output formatter ───────────────────────────────────────────────
+
+/// Parse the synthesizer's JSON output and render it as clean text.
+/// Returns error if the output isn't parseable JSON — caller falls back to raw.
+fn formatSynthesis(
+    alloc:    std.mem.Allocator,
+    raw:      []const u8,
+    manifest: []const u8,
+) ![]u8 {
+    // The synthesizer may prefix text before the JSON — find the object.
+    const json_start = std.mem.indexOfScalar(u8, raw, '{') orelse return error.NotJson;
+    const json_end   = std.mem.lastIndexOfScalar(u8, raw, '}') orelse return error.NotJson;
+    const js = raw[json_start .. json_end + 1];
+
+    const parsed = std.json.parseFromSlice(
+        std.json.Value, alloc, js, .{ .ignore_unknown_fields = true },
+    ) catch return error.NotJson;
+    defer parsed.deinit();
+
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else    => return error.NotJson,
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(alloc);
+
+    // Status line
+    const status = strField(obj, "status") orelse "?";
+    const icon: []const u8 = if (std.mem.eql(u8, status, "success")) "✓"
+                             else if (std.mem.eql(u8, status, "partial")) "⚠"
+                             else "✗";
+    try buf.appendSlice(alloc, icon);
+    try buf.append(alloc, ' ');
+    try buf.appendSlice(alloc, status);
+    try buf.appendSlice(alloc, "\n\n");
+
+    // Summary
+    if (strField(obj, "summary")) |s| {
+        try buf.appendSlice(alloc, s);
+        try buf.append(alloc, '\n');
+    }
+
+    // Per-agent outcomes
+    if (obj.get("agents")) |agents_val| {
+        if (agents_val == .array and agents_val.array.items.len > 0) {
+            try buf.appendSlice(alloc, "\nAgents:\n");
+            for (agents_val.array.items) |a| {
+                if (a != .object) continue;
+                const role    = strField(a.object, "role")    orelse "agent";
+                const outcome = strField(a.object, "outcome") orelse "";
+                const line = try std.fmt.allocPrint(alloc, "  • {s}: {s}\n", .{ role, outcome });
+                defer alloc.free(line);
+                try buf.appendSlice(alloc, line);
+            }
+        }
+    }
+
+    // Files changed — prefer git diff stat, fall back to JSON field
+    if (manifest.len > 0) {
+        try buf.appendSlice(alloc, "\nFiles changed:\n```\n");
+        try buf.appendSlice(alloc, manifest);
+        try buf.appendSlice(alloc, "\n```\n");
+    } else if (obj.get("files_changed")) |fc| {
+        if (fc == .array and fc.array.items.len > 0) {
+            try buf.appendSlice(alloc, "\nFiles:\n");
+            for (fc.array.items) |f| {
+                if (f != .string) continue;
+                const line = try std.fmt.allocPrint(alloc, "  {s}\n", .{f.string});
+                defer alloc.free(line);
+                try buf.appendSlice(alloc, line);
+            }
+        }
+    }
+
+    // Notes / caveats
+    if (obj.get("notes")) |notes_val| {
+        if (notes_val == .array and notes_val.array.items.len > 0) {
+            try buf.appendSlice(alloc, "\nNotes:\n");
+            for (notes_val.array.items) |n| {
+                if (n != .string) continue;
+                const line = try std.fmt.allocPrint(alloc, "  ⚡ {s}\n", .{n.string});
+                defer alloc.free(line);
+                try buf.appendSlice(alloc, line);
+            }
+        }
+    }
+
+    return buf.toOwnedSlice(alloc);
+}
+
+/// Extract a string field from a JSON object map, or null.
+fn strField(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const v = obj.get(key) orelse return null;
+    return if (v == .string) v.string else null;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
