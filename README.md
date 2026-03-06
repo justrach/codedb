@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/justrach/codedb/releases/latest"><img src="https://img.shields.io/github/v/release/justrach/codedb?style=flat-square&label=version" alt="Latest Release" /></a>
-  <a href="https://github.com/justrach/codedb/blob/main/LICENSE"><img src="https://img.shields.io/github/license/justrach/codedb?style=flat-square" alt="MIT License" /></a>
-  <a href="https://github.com/justrach/codedb/stargazers"><img src="https://img.shields.io/github/stars/justrach/codedb?style=flat-square" alt="GitHub Stars" /></a>
+  <a href="https://github.com/justrach/devswarm/releases/latest"><img src="https://img.shields.io/github/v/release/justrach/devswarm?style=flat-square&label=version" alt="Latest Release" /></a>
+  <a href="https://github.com/justrach/devswarm/blob/main/LICENSE"><img src="https://img.shields.io/github/license/justrach/devswarm?style=flat-square" alt="License" /></a>
+  <a href="https://github.com/justrach/devswarm/stargazers"><img src="https://img.shields.io/github/stars/justrach/devswarm?style=flat-square" alt="GitHub Stars" /></a>
   <img src="https://img.shields.io/badge/built_with-Zig-f7a41d?style=flat-square" alt="Built with Zig" />
   <img src="https://img.shields.io/badge/MCP-compatible-6c63ff?style=flat-square" alt="MCP Compatible" />
 </p>
