@@ -2,15 +2,33 @@
   <img src="assets/logo.png" alt="DevSwarm" width="480" />
 </p>
 
-# DevSwarm
+<p align="center">
+  <a href="https://github.com/justrach/codedb/releases/latest"><img src="https://img.shields.io/github/v/release/justrach/codedb?style=flat-square&label=version" alt="Latest Release" /></a>
+  <a href="https://github.com/justrach/codedb/blob/main/LICENSE"><img src="https://img.shields.io/github/license/justrach/codedb?style=flat-square" alt="MIT License" /></a>
+  <a href="https://github.com/justrach/codedb/stargazers"><img src="https://img.shields.io/github/stars/justrach/codedb?style=flat-square" alt="GitHub Stars" /></a>
+  <img src="https://img.shields.io/badge/built_with-Zig-f7a41d?style=flat-square" alt="Built with Zig" />
+  <img src="https://img.shields.io/badge/MCP-compatible-6c63ff?style=flat-square" alt="MCP Compatible" />
+</p>
 
-> Your AI coding assistant just got a team.
+<h3 align="center">Your AI coding assistant, now with a team.</h3>
 
-You're already using Codex, Amp, or Claude Code. It writes code, fixes bugs, answers questions. But it's still **one agent doing one thing at a time.**
+<p align="center">
+  Drop one MCP server into Codex, Amp, or Claude Code and get <strong>37 tools</strong> for spawning parallel agents, running task pipelines, and doing multi-step code work — without leaving your existing workflow.
+</p>
 
-What if it could spin up 10 agents in parallel, each tackling a different part of your codebase, then synthesize everything into one clean answer?
+<p align="center">
+  <a href="#-quick-start">Quick Start</a> ·
+  <a href="#-what-you-can-do">Features</a> ·
+  <a href="#-full-tool-list">All 37 Tools</a> ·
+  <a href="#-how-it-works">How It Works</a> ·
+  <a href="#-contributing">Contributing</a>
+</p>
 
-That's DevSwarm. An MCP server you drop into any AI coding tool that gives it the ability to **orchestrate itself** — spawning sub-agents, running parallel workloads, and chaining multi-step task pipelines. All without leaving your existing workflow.
+---
+
+## The Problem
+
+You're already using Codex, Amp, or Claude Code. It writes code, fixes bugs, answers questions. But it's still **one agent doing one thing at a time**.
 
 ```
 You: "Find all the memory leaks in this codebase and fix them"
@@ -26,13 +44,17 @@ You: "Find all the memory leaks in this codebase and fix them"
   Synthesizer → one clean report back to you
 ```
 
-No new UI. No new workflow. Just 37 new tools available inside the AI assistant you already use.
+DevSwarm is an MCP server that gives your AI assistant the ability to **orchestrate itself** — spawning sub-agents, running parallel workloads, and chaining multi-step task pipelines. No new UI. No new workflow.
 
 ---
 
-## Quick Start
+## ⚡ Quick Start
 
-### Build
+### Option 1: Download a binary (recommended)
+
+Grab the latest release for your platform from [GitHub Releases](https://github.com/justrach/codedb/releases/latest).
+
+### Option 2: Build from source
 
 ```bash
 git clone https://github.com/justrach/codedb.git
@@ -41,34 +63,14 @@ zig build          # builds zig-out/bin/devswarm
 zig build test     # run all tests
 ```
 
-### Connect to Codex
+**Requirements:** [Zig 0.15.x](https://ziglang.org/download/), `codex` and/or `claude` CLI on PATH, Git
 
-Add to `~/.codex/config.toml`:
+---
 
-```toml
-[mcp_servers.devswarm]
-command = "/path/to/devswarm"
-args = ["--mcp"]
-env = { REPO_PATH = "/path/to/your/repo" }
-```
+### Connect to your AI assistant
 
-### Connect to Amp
-
-Add to your Amp MCP config:
-
-```json
-{
-  "mcpServers": {
-    "devswarm": {
-      "command": "/path/to/devswarm",
-      "args": ["--mcp"],
-      "env": { "REPO_PATH": "/path/to/your/repo" }
-    }
-  }
-}
-```
-
-### Connect to Claude Code
+<details>
+<summary><strong>Claude Code</strong></summary>
 
 Add to `~/.claude.json`:
 
@@ -85,10 +87,42 @@ Add to `~/.claude.json`:
 ```
 
 Then run `/mcp` to verify — you'll see 37 tools added to your assistant.
+</details>
+
+<details>
+<summary><strong>Codex</strong></summary>
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.devswarm]
+command = "/path/to/devswarm"
+args = ["--mcp"]
+env = { REPO_PATH = "/path/to/your/repo" }
+```
+</details>
+
+<details>
+<summary><strong>Amp</strong></summary>
+
+Add to your Amp MCP config:
+
+```json
+{
+  "mcpServers": {
+    "devswarm": {
+      "command": "/path/to/devswarm",
+      "args": ["--mcp"],
+      "env": { "REPO_PATH": "/path/to/your/repo" }
+    }
+  }
+}
+```
+</details>
 
 ---
 
-## What You Can Do With It
+## 🚀 What You Can Do
 
 ### Swarms — parallel agents on big tasks
 
@@ -140,16 +174,16 @@ Each agent gets the right model automatically:
 | `synthesizer` | Sonnet | Combines agent outputs |
 | `monitor` | Haiku | Lightweight checks |
 
-| Mode | Model | Use when |
-|------|-------|---------|
-| `smart` | Sonnet | Most tasks |
-| `rush` | Haiku | Quick answers |
-| `deep` | Opus | Hard problems, architecture |
-| `free` | Haiku | Minimize cost |
+| Mode | Use when |
+|------|---------|
+| `smart` | Most tasks |
+| `rush` | Quick answers |
+| `deep` | Hard problems, architecture |
+| `free` | Minimize cost |
 
 ---
 
-## Full Tool List (37 tools)
+## 🔧 Full Tool List (37 tools)
 
 **Agents**
 `run_agent` · `run_swarm` · `run_task` · `review_fix_loop` · `run_reviewer` · `run_explorer` · `run_zig_infra`
@@ -174,7 +208,7 @@ Each agent gets the right model automatically:
 
 ---
 
-## How It Works
+## ⚙️ How It Works
 
 DevSwarm is a provider-agnostic runtime. When you call `run_agent`, it:
 
@@ -186,15 +220,21 @@ System prompts are assembled dynamically from agency rules, role instructions, m
 
 ---
 
-## Requirements
+## 🤝 Contributing
 
-- [Zig 0.15.x](https://ziglang.org/download/)
-- `codex` and/or `claude` CLI on PATH
-- Git
+Contributions are welcome! Please open an issue before submitting a large PR so we can discuss the approach.
+
+```bash
+git clone https://github.com/justrach/codedb.git
+cd codedb
+zig build test     # make sure tests pass before and after your change
+```
+
+---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE)
 
 ---
 
