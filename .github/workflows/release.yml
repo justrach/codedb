@@ -65,7 +65,7 @@ jobs:
           p12-password: ${{ secrets.APPLE_CERT_PASSWORD }}
       - name: Sign binary
         run: |
-          IDENTITY=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | awk -F '"' '{print $2}' | head -1)
+          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | awk -F '"' '{print $2}' | head -1)
           echo "Signing with: $IDENTITY"
           codesign --sign "$IDENTITY" --options runtime --timestamp --force zig-out/bin/devswarm
           codesign --verify --verbose zig-out/bin/devswarm
