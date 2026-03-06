@@ -31,6 +31,9 @@ pub const AgentOptions = struct {
     /// Model alias or full ID, e.g. "sonnet", "opus", "claude-sonnet-4-6".
     /// Null uses the model from Claude Code's settings.
     model: ?[]const u8 = null,
+    /// Reasoning effort: "low" | "medium" | "high" | "xhigh" | null.
+    /// Passed as --reasoning-effort when set.
+    reasoning_effort: ?[]const u8 = null,
 };
 
 /// Run one agent turn. Writes the agent's final text reply to `out`.
@@ -77,8 +80,8 @@ pub fn tryClaudeAgent(
         opts.permission_mode orelse if (opts.writable) "bypassPermissions" else "default";
     const model = opts.model orelse "claude-sonnet-4-6";
 
-    // Build argv in a fixed-size stack buffer (18 slots is sufficient).
-    var argv_buf: [18][]const u8 = undefined;
+    // Build argv in a fixed-size stack buffer (22 slots is sufficient).
+    var argv_buf: [22][]const u8 = undefined;
     var argc: usize = 0;
     argv_buf[argc] = "claude";            argc += 1;
     argv_buf[argc] = "-p";               argc += 1;
@@ -90,6 +93,11 @@ pub fn tryClaudeAgent(
     argv_buf[argc] = perm_mode;           argc += 1;
     argv_buf[argc] = "--model";          argc += 1;
     argv_buf[argc] = model;              argc += 1;
+
+    if (opts.reasoning_effort) |effort| {
+        argv_buf[argc] = "--reasoning-effort"; argc += 1;
+        argv_buf[argc] = effort;               argc += 1;
+    }
 
     if (opts.allowed_tools) |at| {
         argv_buf[argc] = "--allowedTools"; argc += 1;

@@ -42,21 +42,20 @@ fn spawnClaude(
         (if (resolved.writable) "bypassPermissions" else "default");
 
     const opts: sdk.AgentOptions = .{
-        .model           = resolved.model,
-        .writable        = resolved.writable,
-        .allowed_tools   = resolved.allowed_tools,
-        .permission_mode = perm_mode,
-        .cwd             = resolved.cwd,
+        .model            = resolved.model,
+        .writable         = resolved.writable,
+        .allowed_tools    = resolved.allowed_tools,
+        .permission_mode  = perm_mode,
+        .reasoning_effort = resolved.reasoning_effort,
+        .cwd              = resolved.cwd,
     };
 
-    // Prepend system prompt to the user's prompt
     const full_prompt = if (resolved.system_prompt.len > 0)
         std.fmt.allocPrint(alloc, "{s}{s}", .{ resolved.system_prompt, prompt }) catch prompt
     else
         prompt;
     defer if (full_prompt.ptr != prompt.ptr) alloc.free(full_prompt);
 
-    // Call the raw Claude spawn function directly (not runAgent, to avoid circular deps)
     if (sdk.tryClaudeAgent(alloc, full_prompt, opts, out)) return;
 
     // If Claude spawn failed, fall back to codex within this dispatch

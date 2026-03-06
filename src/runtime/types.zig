@@ -69,6 +69,7 @@ pub const ResolvedAgent = struct {
     writable: bool,
     allowed_tools: ?[]const u8,
     permission_mode: ?[]const u8,
+    reasoning_effort: ?[]const u8,  // "low" | "medium" | "high" | "xhigh" | null
     max_turns: ?u32,
     cwd: ?[]const u8,
     mode: AgentMode,
@@ -84,6 +85,7 @@ pub const AgentRequest = struct {
     writable: ?bool = null,
     allowed_tools: ?[]const u8 = null,
     permission_mode: ?[]const u8 = null,
+    reasoning_effort: ?[]const u8 = null,  // explicit override; bolt-* aliases also set this
     cwd: ?[]const u8 = null,
     max_turns: ?u32 = null,
 };
