@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="DevSwarm" width="160" />
+  <img src="assets/logo.png" alt="DevSwarm" width="480" />
 </p>
 
 # DevSwarm
