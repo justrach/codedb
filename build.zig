@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Version: defaults to build.zig.zon value; override with -Dversion=X.Y.Z at release
-    const version = b.option([]const u8, "version", "Version string") orelse "0.0.25";
+    const version = b.option([]const u8, "version", "Version string") orelse "0.0.26";
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
 
