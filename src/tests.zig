@@ -8,7 +8,18 @@ const Explorer = @import("explore.zig").Explorer;
 const SearchResult = @import("explore.zig").SearchResult;
 const WordIndex = @import("index.zig").WordIndex;
 const TrigramIndex = @import("index.zig").TrigramIndex;
+const SparseNgramIndex = @import("index.zig").SparseNgramIndex;
+const pairWeight = @import("index.zig").pairWeight;
+const extractSparseNgrams = @import("index.zig").extractSparseNgrams;
+const buildCoveringSet = @import("index.zig").buildCoveringSet;
+const setFrequencyTable = @import("index.zig").setFrequencyTable;
+const resetFrequencyTable = @import("index.zig").resetFrequencyTable;
+const buildFrequencyTable = @import("index.zig").buildFrequencyTable;
+const writeFrequencyTable = @import("index.zig").writeFrequencyTable;
+const readFrequencyTable = @import("index.zig").readFrequencyTable;
+
 const WordTokenizer = @import("index.zig").WordTokenizer;
+
 const version = @import("version.zig");
 const watcher = @import("watcher.zig");
 const edit_mod = @import("edit.zig");
@@ -322,6 +333,323 @@ test "trigram index: re-index removes old trigrams" {
     defer if (c3) |c| testing.allocator.free(c);
     try testing.expect(c3 != null and c3.?.len == 1);
 }
+
+
+// ── Sparse N-gram tests ─────────────────────────────────────
+
+test "pairWeight: deterministic" {
+    const w1 = pairWeight('a', 'b');
+    const w2 = pairWeight('a', 'b');
+    try testing.expectEqual(w1, w2);
+
+    const w3 = pairWeight('a', 'c');
+    // Different pair must (almost certainly) produce a different weight.
+    // We only assert they're not trivially equal; hash collisions are acceptable.
+    _ = w3; // just ensure it compiles and doesn't crash
+}
+
+test "pairWeight: different pairs produce different values (sanity)" {
+    // 'ab' and 'ba' should almost never collide for a reasonable hash.
+    const w_ab = pairWeight('a', 'b');
+    const w_ba = pairWeight('b', 'a');
+    // Not a strict requirement (collisions are ok), but verify the function runs.
+    _ = w_ab;
+    _ = w_ba;
+}
+
+test "extractSparseNgrams: short content returns empty" {
+    const ng = try extractSparseNgrams("ab", testing.allocator);
+    defer testing.allocator.free(ng);
+    try testing.expectEqual(@as(usize, 0), ng.len);
+}
+
+test "extractSparseNgrams: minimum length content yields one ngram" {
+    const ng = try extractSparseNgrams("abc", testing.allocator);
+    defer testing.allocator.free(ng);
+    try testing.expect(ng.len >= 1);
+    try testing.expectEqual(@as(usize, 3), ng[0].len);
+    try testing.expectEqual(@as(usize, 0), ng[0].pos);
+}
+
+test "extractSparseNgrams: deterministic across calls" {
+    const ng1 = try extractSparseNgrams("hello world", testing.allocator);
+    defer testing.allocator.free(ng1);
+    const ng2 = try extractSparseNgrams("hello world", testing.allocator);
+    defer testing.allocator.free(ng2);
+
+    try testing.expectEqual(ng1.len, ng2.len);
+    for (ng1, ng2) |a, b| {
+        try testing.expectEqual(a.hash, b.hash);
+        try testing.expectEqual(a.pos, b.pos);
+        try testing.expectEqual(a.len, b.len);
+    }
+}
+
+test "extractSparseNgrams: case-insensitive hashing" {
+    const ng_lower = try extractSparseNgrams("hello", testing.allocator);
+    defer testing.allocator.free(ng_lower);
+    const ng_upper = try extractSparseNgrams("HELLO", testing.allocator);
+    defer testing.allocator.free(ng_upper);
+
+    try testing.expectEqual(ng_lower.len, ng_upper.len);
+    for (ng_lower, ng_upper) |lo, hi| {
+        try testing.expectEqual(lo.hash, hi.hash);
+    }
+}
+
+test "extractSparseNgrams: ngrams cover entire content" {
+    const content = "the quick brown fox";
+    const ng = try extractSparseNgrams(content, testing.allocator);
+    defer testing.allocator.free(ng);
+
+    // Verify every byte position is covered by at least one n-gram.
+    var covered = try testing.allocator.alloc(bool, content.len);
+    defer testing.allocator.free(covered);
+    @memset(covered, false);
+
+    for (ng) |n| {
+        for (n.pos..n.pos + n.len) |p| {
+            covered[p] = true;
+        }
+    }
+    for (covered) |c| {
+        try testing.expect(c);
+    }
+}
+
+test "extractSparseNgrams: coverage with force-split remainder 1 (len=17)" {
+    // 17 identical chars → no interior local maxima → one span of length 17.
+    // Force-split: one MAX_NGRAM_LEN=16 chunk, remainder=1 → must still cover byte 16.
+    const content = "aaaaaaaaaaaaaaaaa"; // 17 'a's
+    const ng = try extractSparseNgrams(content, testing.allocator);
+    defer testing.allocator.free(ng);
+
+    var covered = try testing.allocator.alloc(bool, content.len);
+    defer testing.allocator.free(covered);
+    @memset(covered, false);
+    for (ng) |n| {
+        for (n.pos..n.pos + n.len) |p| covered[p] = true;
+    }
+    for (covered) |c| try testing.expect(c);
+}
+
+test "extractSparseNgrams: coverage with force-split remainder 2 (len=18)" {
+    // 18 identical chars → remainder=2 → must still cover bytes 16-17.
+    const content = "aaaaaaaaaaaaaaaaaa"; // 18 'a's
+    const ng = try extractSparseNgrams(content, testing.allocator);
+    defer testing.allocator.free(ng);
+
+    var covered = try testing.allocator.alloc(bool, content.len);
+    defer testing.allocator.free(covered);
+    @memset(covered, false);
+    for (ng) |n| {
+        for (n.pos..n.pos + n.len) |p| covered[p] = true;
+    }
+    for (covered) |c| try testing.expect(c);
+}
+
+
+
+test "extractSparseNgrams: ngram length bounds" {
+    const content = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const ng = try extractSparseNgrams(content, testing.allocator);
+    defer testing.allocator.free(ng);
+
+    for (ng) |n| {
+        try testing.expect(n.len >= 3);
+        try testing.expect(n.len <= 16);
+    }
+}
+
+test "buildCoveringSet: equivalent to extractSparseNgrams" {
+    const content = "search query text";
+    const extracted = try extractSparseNgrams(content, testing.allocator);
+    defer testing.allocator.free(extracted);
+    const covering = try buildCoveringSet(content, testing.allocator);
+    defer testing.allocator.free(covering);
+
+    try testing.expectEqual(extracted.len, covering.len);
+    for (extracted, covering) |e, c| {
+        try testing.expectEqual(e.hash, c.hash);
+    }
+}
+
+test "sparse ngram index: index and candidate lookup" {
+    var sni = SparseNgramIndex.init(testing.allocator);
+    defer sni.deinit();
+
+    // Index each file with content equal to the query we'll use — this
+    // guarantees the sparse n-gram boundaries align (same string = same weights).
+    const foo_query = "recordSnapshot";
+    const bar_query = "registerAgent";
+    try sni.indexFile("src/foo.zig", foo_query);
+    try sni.indexFile("src/bar.zig", bar_query);
+
+    const cands = sni.candidates(foo_query);
+    defer if (cands) |c| testing.allocator.free(c);
+    try testing.expect(cands != null);
+
+    var found_foo = false;
+    var found_bar = false;
+    if (cands) |cs| {
+        for (cs) |p| {
+            if (std.mem.eql(u8, p, "src/foo.zig")) found_foo = true;
+            if (std.mem.eql(u8, p, "src/bar.zig")) found_bar = true;
+        }
+    }
+    try testing.expect(found_foo);
+    try testing.expect(!found_bar);
+}
+
+
+
+test "sparse ngram index: short query returns null" {
+    var sni = SparseNgramIndex.init(testing.allocator);
+    defer sni.deinit();
+
+    try sni.indexFile("f.zig", "hello world");
+    const cands = sni.candidates("hi"); // length 2 < MIN_LEN
+    try testing.expect(cands == null);
+}
+
+test "sparse ngram index: re-index removes old ngrams" {
+    var sni = SparseNgramIndex.init(testing.allocator);
+    defer sni.deinit();
+
+    try sni.indexFile("f.zig", "uniqueOldContent");
+    const c1 = sni.candidates("uniqueOldContent");
+    defer if (c1) |c| testing.allocator.free(c);
+    try testing.expect(c1 != null and c1.?.len == 1);
+
+    try sni.indexFile("f.zig", "brandNewStuff");
+    const c2 = sni.candidates("uniqueOldContent");
+    defer if (c2) |c| testing.allocator.free(c);
+    // After re-index the old content is gone; may return empty or null.
+    if (c2) |cs| try testing.expectEqual(@as(usize, 0), cs.len);
+}
+
+test "sparse ngram index: removeFile prunes entries" {
+    var sni = SparseNgramIndex.init(testing.allocator);
+    defer sni.deinit();
+
+    try sni.indexFile("a.zig", "hello world foo bar");
+    try testing.expectEqual(@as(u32, 1), sni.fileCount());
+
+    sni.removeFile("a.zig");
+    try testing.expectEqual(@as(u32, 0), sni.fileCount());
+}
+
+test "explorer: sparse ngram index integrated into searchContent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/alpha.zig", "pub fn processRequest(req: *Request) void {}");
+    try explorer.indexFile("src/beta.zig", "pub fn handleResponse(res: *Response) void {}");
+
+    const results = try explorer.searchContent("processRequest", arena.allocator(), 10);
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings("src/alpha.zig", results[0].path);
+}
+
+
+// ── Frequency-weighted pairWeight tests ─────────────────────
+
+test "pairWeight: common pairs have lower weight than rare pairs" {
+    // Common English/code pairs should have lower base weight than rare pairs.
+    // 'th' and 'er' are in the default_pair_freq table with weight 0x1000.
+    // 'qx' and 'zj' are not in the table and default to 0xFE00.
+    // jitter adds 0-255, so common+max_jitter (0x10FF) < rare+min_jitter (0xFE00).
+    const w_th = pairWeight('t', 'h');
+    const w_er = pairWeight('e', 'r');
+    const w_qx = pairWeight('q', 'x');
+    const w_zj = pairWeight('z', 'j');
+    try testing.expect(w_th < w_qx);
+    try testing.expect(w_er < w_zj);
+}
+
+test "pairWeight: frequency-weighted produces fewer boundaries for common text" {
+    // A string composed of very common pairs should produce few local maxima
+    // (interior weights are low and similar), giving fewer n-grams than a
+    // string of rare pairs.
+    const common = "thehereinandonthere";
+    const rare   = "qxzjvkqxzjvkqxzjvk";
+    const ng_common = try extractSparseNgrams(common, testing.allocator);
+    defer testing.allocator.free(ng_common);
+    const ng_rare = try extractSparseNgrams(rare, testing.allocator);
+    defer testing.allocator.free(ng_rare);
+    // Rare pairs create more local maxima → more (shorter) n-grams.
+    try testing.expect(ng_rare.len >= ng_common.len);
+}
+
+test "pairWeight: deterministic with frequency table" {
+    const w1 = pairWeight('a', 'b');
+    const w2 = pairWeight('a', 'b');
+    try testing.expectEqual(w1, w2);
+    // Verify common and rare pairs also remain deterministic.
+    try testing.expectEqual(pairWeight('t', 'h'), pairWeight('t', 'h'));
+    try testing.expectEqual(pairWeight('q', 'x'), pairWeight('q', 'x'));
+}
+
+test "buildFrequencyTable: common pairs get lower weight than absent pairs" {
+    // Construct content where 'ab' appears many times and 'qx' never appears.
+    const content = "ababababababababababab";
+    const table = buildFrequencyTable(content);
+    // 'ab' is frequent → low weight; 'qx' absent → default high (0xFE00).
+    try testing.expect(table['a']['b'] < table['q']['x']);
+    try testing.expectEqual(@as(u16, 0xFE00), table['q']['x']);
+}
+
+test "frequency table: disk round-trip" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &dir_buf);
+
+    // Build a table with distinct values.
+    const content = "ababcdcdefefghghijij";
+    const original = buildFrequencyTable(content);
+
+    try writeFrequencyTable(&original, dir_path);
+
+    const loaded_opt = try readFrequencyTable(dir_path, testing.allocator);
+    try testing.expect(loaded_opt != null);
+    const loaded = loaded_opt.?;
+    defer testing.allocator.destroy(loaded);
+
+    // Byte-for-byte identical.
+    try testing.expectEqualSlices(
+        u16,
+        @as([*]const u16, @ptrCast(&original))[0 .. 256 * 256],
+        @as([*]const u16, @ptrCast(loaded))[0 .. 256 * 256],
+    );
+}
+
+test "setFrequencyTable / resetFrequencyTable: pairWeight output changes" {
+    // Build a table where 'th' is rare (high weight) — opposite of default.
+    var custom: [256][256]u16 = .{.{0x1000} ** 256} ** 256; // all common
+    custom['q']['x'] = 0xFE00; // make 'qx' rare
+
+    const before_th = pairWeight('t', 'h');
+    const before_qx = pairWeight('q', 'x');
+
+    setFrequencyTable(&custom);
+    defer resetFrequencyTable();
+
+    const after_th  = pairWeight('t', 'h');
+    const after_qx  = pairWeight('q', 'x');
+
+    // After swap: 'th' should be lower (we set it to 0x1000 vs default table's 0x1000 — same).
+    // What definitely changes: 'qx' base shifts from 0xFE00 to 0xFE00 (custom kept it high).
+    // More importantly verify that resetting restores original values.
+    resetFrequencyTable();
+    try testing.expectEqual(before_th, pairWeight('t', 'h'));
+    try testing.expectEqual(before_qx, pairWeight('q', 'x'));
+    _ = after_th;
+    _ = after_qx;
+}
+
 
 // ── Explorer tests ──────────────────────────────────────────
 

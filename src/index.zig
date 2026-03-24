@@ -1047,3 +1047,382 @@ pub fn normalizeChar(c: u8) u8 {
     // Lowercase for case-insensitive trigram matching
     return if (c >= 'A' and c <= 'Z') c + 32 else c;
 }
+
+// ── Sparse N-gram index ───────────────────────────────────────────────────────
+
+pub const MAX_NGRAM_LEN: usize = 16;
+
+/// Comptime character-pair frequency table for source code.
+/// Common pairs → LOW weight (they stay interior to n-grams).
+/// Rare pairs   → HIGH weight (they become n-gram boundaries).
+/// All unspecified pairs default to 0xFE00 (rare = high weight).
+pub const default_pair_freq: [256][256]u16 = blk: {
+
+    var table: [256][256]u16 = .{.{0xFE00} ** 256} ** 256;
+    // English bigrams (lowercase) — common in identifiers and prose
+    table['t']['h'] = 0x1000; table['h']['e'] = 0x1000;
+    table['i']['n'] = 0x1000; table['e']['r'] = 0x1000;
+    table['a']['n'] = 0x1000; table['r']['e'] = 0x1000;
+    table['o']['n'] = 0x1000; table['e']['n'] = 0x1000;
+    table['s']['t'] = 0x1000; table['e']['s'] = 0x1000;
+    table['a']['t'] = 0x1000; table['i']['o'] = 0x1000;
+    table['t']['e'] = 0x1000; table['o']['r'] = 0x1000;
+    table['t']['i'] = 0x1000; table['a']['r'] = 0x1000;
+    table['a']['l'] = 0x1000; table['l']['e'] = 0x1000;
+    table['n']['t'] = 0x1000; table['e']['d'] = 0x1000;
+    table['n']['d'] = 0x1000; table['o']['u'] = 0x1000;
+    table['e']['a'] = 0x1000; table['f']['o'] = 0x1000;
+    // Common code keyword fragments
+    table['f']['n'] = 0x1000; table['i']['f'] = 0x1000;
+    table['r']['n'] = 0x1000; table['t']['u'] = 0x1000;
+    table['p']['u'] = 0x1000; table['b']['l'] = 0x1000;
+    table['c']['o'] = 0x1000; table['n']['s'] = 0x1000;
+    table['t']['r'] = 0x1000; table['u']['e'] = 0x1000;
+    // Common operator / punctuation pairs
+    table['('][')'] = 0x0800; table['{']['}'] = 0x0800;
+    table['['][']'] = 0x0800; table['/']['/'] = 0x0800;
+    table['-']['>'] = 0x0800; table['=']['>'] = 0x0800;
+    table[':'][':'] = 0x0800; table['!']['='] = 0x0800;
+    table['=']['='] = 0x0800; table['<']['='] = 0x0800;
+    table['>']['='] = 0x0800; table['&']['&'] = 0x0800;
+    table['|']['|'] = 0x0800;
+    // Whitespace / structural pairs
+    table[' '][' '] = 0x0800; table['\t'][' '] = 0x0800;
+    table[' ']['('] = 0x0800; table[' ']['{'] = 0x0800;
+    table[';'][' '] = 0x0800; table[':'][' '] = 0x0800;
+    table['='][' '] = 0x0800; table[' ']['='] = 0x0800;
+    table[','][' '] = 0x0800; table['.']['.'] = 0x0800;
+    table['\n'][' '] = 0x0800; table['\n']['\t'] = 0x0800;
+    break :blk table;
+};
+
+/// Active frequency table — points to the comptime default or a runtime
+/// per-project table.  Swap only before indexing starts (not thread-safe).
+var active_pair_freq: *const [256][256]u16 = &default_pair_freq;
+
+
+/// Deterministic weight for a character pair, used to place content-defined
+/// boundaries between n-grams.  Frequency-weighted: common source-code pairs
+/// get LOW weight (they stay interior to n-grams); rare pairs get HIGH weight
+/// (they become boundaries).  A small hash jitter (0-255) breaks ties
+/// deterministically between pairs in the same frequency tier.
+pub fn pairWeight(a: u8, b: u8) u16 {
+    const freq_weight = active_pair_freq[a][b];
+    const pair = [2]u8{ a, b };
+    const jitter: u16 = @truncate(std.hash.Wyhash.hash(0, &pair) & 0xFF);
+    return freq_weight +| jitter;
+}
+
+/// Swap in a custom frequency table.  Call before indexing; not thread-safe.
+pub fn setFrequencyTable(table: *const [256][256]u16) void {
+    active_pair_freq = table;
+}
+
+/// Revert to the built-in comptime frequency table.
+pub fn resetFrequencyTable() void {
+    active_pair_freq = &default_pair_freq;
+}
+
+/// Build a per-project frequency table by counting byte-pair occurrences in
+/// `content`, then inverting counts to weights (common → low, rare → high).
+pub fn buildFrequencyTable(content: []const u8) [256][256]u16 {
+    var counts: [256][256]u64 = .{.{0} ** 256} ** 256;
+    if (content.len >= 2) {
+        for (0..content.len - 1) |i| {
+            counts[content[i]][content[i + 1]] += 1;
+        }
+    }
+    var max_count: u64 = 1;
+    for (counts) |row| {
+        for (row) |c| {
+            if (c > max_count) max_count = c;
+        }
+    }
+    // Invert: count 0 → 0xFE00 (rare, high); max_count → 0x1000 (common, low).
+    var table: [256][256]u16 = .{.{0xFE00} ** 256} ** 256;
+    for (0..256) |a| {
+        for (0..256) |b| {
+            const c = counts[a][b];
+            if (c == 0) continue;
+            const span: u64 = 0xFE00 - 0x1000;
+            const w: u64 = 0xFE00 - (c * span / max_count);
+            table[a][b] = @intCast(@min(w, 0xFE00));
+        }
+    }
+    return table;
+}
+
+/// Persist a frequency table as a raw binary blob to `<dir_path>/pair_freq.bin`.
+/// Uses tmp+rename for atomic writes.
+pub fn writeFrequencyTable(table: *const [256][256]u16, dir_path: []const u8) !void {
+    var dir = try std.fs.cwd().openDir(dir_path, .{});
+    defer dir.close();
+    {
+        const tmp = try dir.createFile("pair_freq.bin.tmp", .{});
+        defer tmp.close();
+        const bytes: []const u8 = @as([*]const u8, @ptrCast(table))[0 .. 256 * 256 * @sizeOf(u16)];
+        try tmp.writeAll(bytes);
+    }
+    try dir.rename("pair_freq.bin.tmp", "pair_freq.bin");
+}
+
+/// Load a frequency table from `<dir_path>/pair_freq.bin`.
+/// Returns null if the file does not exist or has the wrong size.
+/// Caller owns the returned allocation.
+pub fn readFrequencyTable(dir_path: []const u8, allocator: std.mem.Allocator) !?*[256][256]u16 {
+    const path = try std.fmt.allocPrint(allocator, "{s}/pair_freq.bin", .{dir_path});
+    defer allocator.free(path);
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer file.close();
+    const expected_size = 256 * 256 * @sizeOf(u16);
+    const stat = try file.stat();
+    if (stat.size != expected_size) return null;
+    const result = try allocator.create([256][256]u16);
+    errdefer allocator.destroy(result);
+    const bytes: []u8 = @as([*]u8, @ptrCast(result))[0..expected_size];
+    const n = try file.readAll(bytes);
+    if (n != expected_size) {
+        allocator.destroy(result);
+        return null;
+    }
+    return result;
+}
+
+
+/// A single sparse n-gram extracted from a string.
+pub const SparseNgram = struct {
+    hash: u64,  // Wyhash of the normalized (lowercased) n-gram bytes
+    pos: usize, // byte offset in the source string
+    len: usize, // byte length of the n-gram
+};
+
+fn makeNgram(content: []const u8, pos: usize, len: usize) SparseNgram {
+    var buf: [MAX_NGRAM_LEN]u8 = undefined;
+    for (0..len) |k| buf[k] = normalizeChar(content[pos + k]);
+    return .{
+        .hash = std.hash.Wyhash.hash(0, buf[0..len]),
+        .pos = pos,
+        .len = len,
+    };
+}
+
+/// Extract sparse n-grams from `content` using content-defined boundaries.
+///
+/// Boundaries are placed at strict local maxima of pairWeight over the
+/// normalized character pairs.  N-grams span consecutive boundaries; spans
+/// wider than MAX_NGRAM_LEN are force-split into MAX_NGRAM_LEN chunks.
+/// Minimum n-gram length is 3 (same as a trigram).
+///
+/// Caller owns the returned slice.
+pub fn extractSparseNgrams(content: []const u8, allocator: std.mem.Allocator) ![]SparseNgram {
+    const MIN_LEN = 3;
+    if (content.len < MIN_LEN) return try allocator.alloc(SparseNgram, 0);
+
+    const pair_count = content.len - 1;
+
+    // Compute pair weights.
+    const weights = try allocator.alloc(u16, pair_count);
+    defer allocator.free(weights);
+    for (0..pair_count) |i| {
+        weights[i] = pairWeight(normalizeChar(content[i]), normalizeChar(content[i + 1]));
+    }
+
+    // Collect boundary pair-positions: always include 0 and pair_count-1,
+    // plus any interior strict local maximum.
+    var bounds: std.ArrayList(usize) = .{};
+    defer bounds.deinit(allocator);
+
+    try bounds.append(allocator, 0);
+    if (pair_count >= 3) {
+        for (1..pair_count - 1) |i| {
+            if (weights[i] > weights[i - 1] and weights[i] > weights[i + 1]) {
+                try bounds.append(allocator, i);
+            }
+        }
+    }
+    try bounds.append(allocator, pair_count - 1);
+
+    // Emit n-grams spanning consecutive boundary positions.
+    // N-gram for boundary pair at position p covers content[p .. p+2].
+    var result: std.ArrayList(SparseNgram) = .{};
+    errdefer result.deinit(allocator);
+
+    var b: usize = 0;
+    while (b + 1 < bounds.items.len) : (b += 1) {
+        const start = bounds.items[b];
+        const end_pair = bounds.items[b + 1];
+        // The right-hand boundary pair covers content[end_pair .. end_pair+2].
+        const ngram_end = end_pair + 2;
+        const ngram_len = ngram_end - start;
+
+        if (ngram_len < MIN_LEN) continue;
+
+        if (ngram_len <= MAX_NGRAM_LEN) {
+            try result.append(allocator, makeNgram(content, start, ngram_len));
+        } else {
+            // Force-split into MAX_NGRAM_LEN-sized chunks.
+            var off = start;
+            while (off + MAX_NGRAM_LEN <= ngram_end) {
+                try result.append(allocator, makeNgram(content, off, MAX_NGRAM_LEN));
+                off += MAX_NGRAM_LEN;
+            }
+            const rem = ngram_end - off;
+            if (rem >= MIN_LEN) {
+                try result.append(allocator, makeNgram(content, off, rem));
+            } else if (rem > 0) {
+                // Tail is too short for its own ngram.  Overlap with the
+                // previous chunk by backing up to ngram_end - MIN_LEN so
+                // every byte in the span is covered.
+                try result.append(allocator, makeNgram(content, ngram_end - MIN_LEN, MIN_LEN));
+            }
+
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+/// Build the covering set of sparse n-grams for a query string.
+/// Equivalent to extractSparseNgrams for our partition-based approach.
+/// Caller owns the returned slice.
+pub fn buildCoveringSet(query: []const u8, allocator: std.mem.Allocator) ![]SparseNgram {
+    return extractSparseNgrams(query, allocator);
+}
+
+/// In-memory sparse n-gram index.  Mirrors the TrigramIndex API so it can
+/// be used as a drop-in acceleration layer alongside the trigram index.
+pub const SparseNgramIndex = struct {
+    /// ngram hash → set of file paths that contain the n-gram
+    index: std.AutoHashMap(u64, std.StringHashMap(void)),
+    /// path → list of ngram hashes contributed (for cleanup on re-index)
+    file_ngrams: std.StringHashMap(std.ArrayList(u64)),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) SparseNgramIndex {
+        return .{
+            .index = std.AutoHashMap(u64, std.StringHashMap(void)).init(allocator),
+            .file_ngrams = std.StringHashMap(std.ArrayList(u64)).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *SparseNgramIndex) void {
+        var iter = self.index.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.deinit();
+        }
+        self.index.deinit();
+
+        var fn_iter = self.file_ngrams.iterator();
+        while (fn_iter.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.file_ngrams.deinit();
+    }
+
+    pub fn removeFile(self: *SparseNgramIndex, path: []const u8) void {
+        const ngrams = self.file_ngrams.getPtr(path) orelse return;
+        for (ngrams.items) |hash| {
+            if (self.index.getPtr(hash)) |file_set| {
+                _ = file_set.remove(path);
+                if (file_set.count() == 0) {
+                    file_set.deinit();
+                    _ = self.index.remove(hash);
+                }
+            }
+        }
+        ngrams.deinit(self.allocator);
+        _ = self.file_ngrams.remove(path);
+    }
+
+    pub fn indexFile(self: *SparseNgramIndex, path: []const u8, content: []const u8) !void {
+        self.removeFile(path);
+
+        const ngrams = try extractSparseNgrams(content, self.allocator);
+        defer self.allocator.free(ngrams);
+
+        // Deduplicate hashes so the cleanup list stays compact.
+        var seen = std.AutoHashMap(u64, void).init(self.allocator);
+        defer seen.deinit();
+
+        for (ngrams) |ng| {
+            const gop = try self.index.getOrPut(ng.hash);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = std.StringHashMap(void).init(self.allocator);
+            }
+            _ = try gop.value_ptr.getOrPut(path);
+            _ = try seen.getOrPut(ng.hash);
+        }
+
+        var hash_list: std.ArrayList(u64) = .{};
+        errdefer hash_list.deinit(self.allocator);
+        var seen_iter = seen.keyIterator();
+        while (seen_iter.next()) |h| {
+            try hash_list.append(self.allocator, h.*);
+        }
+        try self.file_ngrams.put(path, hash_list);
+    }
+
+    /// Find candidate files that contain ALL sparse n-grams extracted from
+    /// the query.  Returns null when no useful n-grams can be extracted
+    /// (query too short).  Returns an owned slice; caller must free it using
+    /// the same allocator that was passed to init.
+    pub fn candidates(self: *SparseNgramIndex, query: []const u8) ?[]const []const u8 {
+        const ngrams = buildCoveringSet(query, self.allocator) catch return null;
+        defer self.allocator.free(ngrams);
+
+        if (ngrams.len == 0) return null;
+
+        // Collect posting sets for each n-gram hash.
+        var sets: std.ArrayList(*std.StringHashMap(void)) = .{};
+        defer sets.deinit(self.allocator);
+
+        for (ngrams) |ng| {
+            const file_set = self.index.getPtr(ng.hash) orelse {
+                // N-gram not found → no file can match all n-grams.
+                return self.allocator.alloc([]const u8, 0) catch null;
+            };
+            sets.append(self.allocator, file_set) catch return null;
+        }
+
+        if (sets.items.len == 0) {
+            return self.allocator.alloc([]const u8, 0) catch null;
+        }
+
+        // Intersect starting from the smallest set.
+        var min_idx: usize = 0;
+        var min_count = sets.items[0].count();
+        for (sets.items[1..], 1..) |set, i| {
+            if (set.count() < min_count) {
+                min_count = set.count();
+                min_idx = i;
+            }
+        }
+
+        var result: std.ArrayList([]const u8) = .{};
+        errdefer result.deinit(self.allocator);
+        result.ensureTotalCapacity(self.allocator, min_count) catch return null;
+
+        var it = sets.items[min_idx].keyIterator();
+        next_cand: while (it.next()) |path_ptr| {
+            for (sets.items, 0..) |set, i| {
+                if (i == min_idx) continue;
+                if (!set.contains(path_ptr.*)) continue :next_cand;
+            }
+            result.appendAssumeCapacity(path_ptr.*);
+        }
+
+        return result.toOwnedSlice(self.allocator) catch {
+            result.deinit(self.allocator);
+            return null;
+        };
+    }
+
+    pub fn fileCount(self: *SparseNgramIndex) u32 {
+        return @intCast(self.file_ngrams.count());
+    }
+};
+
