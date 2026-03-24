@@ -9,6 +9,8 @@ const mcp_server = @import("mcp.zig");
 const sty = @import("style.zig");
 const git_mod = @import("git.zig");
 const TrigramIndex = @import("index.zig").TrigramIndex;
+const index_mod = @import("index.zig");
+
 
 /// Thin wrapper: format + write to a File via allocator.
 const Out = struct {
@@ -82,6 +84,16 @@ pub fn main() !void {
     var explorer = Explorer.init(allocator);
     defer explorer.deinit();
 
+    // Per-project frequency table for sparse n-gram boundary selection.
+    // Loaded from disk (if present) before the initial scan so pairWeight
+    // uses project-specific frequencies.  Freed and reset at process exit.
+    var freq_table_heap: ?*[256][256]u16 = null;
+    defer if (freq_table_heap) |ft| {
+        index_mod.resetFrequencyTable();
+        allocator.destroy(ft);
+    };
+
+
     if (!std.mem.eql(u8, cmd, "mcp")) {
         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
         const disk_hdr = TrigramIndex.readDiskHeader(data_dir, allocator) catch null;
@@ -90,6 +102,13 @@ pub fn main() !void {
             const b = (disk_hdr orelse break :blk false).git_head orelse break :blk false;
             break :blk std.mem.eql(u8, &a, &b);
         };
+        // Load per-project freq table before scan so pairWeight is project-aware.
+        if (index_mod.readFrequencyTable(data_dir, allocator) catch null) |ft| {
+            freq_table_heap = ft;
+            index_mod.setFrequencyTable(ft);
+        }
+
+
 
         const t_scan = std.time.nanoTimestamp();
         try watcher.initialScan(&store, &explorer, root, allocator, heads_match);
@@ -126,7 +145,30 @@ pub fn main() !void {
                 std.log.warn("could not persist trigram index: {}", .{err});
             };
         }
+
+        // If no freq table was loaded, build one from indexed content and
+        // persist for next run.  The table is stack-allocated so we can't
+        // call setFrequencyTable this run; next startup will load from disk.
+        if (freq_table_heap == null) {
+            var content_buf: std.ArrayList(u8) = .{};
+            defer content_buf.deinit(allocator);
+
+            var ct_it = explorer.contents.iterator();
+            while (ct_it.next()) |entry| {
+                content_buf.appendSlice(allocator, entry.value_ptr.*) catch {};
+            }
+
+            if (content_buf.items.len > 0) {
+                const ft = index_mod.buildFrequencyTable(content_buf.items);
+                index_mod.writeFrequencyTable(&ft, data_dir) catch |err| {
+                    std.log.warn("could not persist frequency table: {}", .{err});
+                };
+            }
+        }
+
     }
+
+
 
 
     if (std.mem.eql(u8, cmd, "tree")) {

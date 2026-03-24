@@ -3,6 +3,8 @@ const Store = @import("store.zig").Store;
 const idx = @import("index.zig");
 const WordIndex = idx.WordIndex;
 const TrigramIndex = idx.TrigramIndex;
+const SparseNgramIndex = idx.SparseNgramIndex;
+
 
 pub const SymbolKind = enum(u8) {
     function,
@@ -107,6 +109,7 @@ pub const Explorer = struct {
     contents: std.StringHashMap([]const u8),
     word_index: WordIndex,
     trigram_index: TrigramIndex,
+    sparse_ngram_index: SparseNgramIndex,
     allocator: std.mem.Allocator,
     mu: std.Thread.RwLock = .{},
 
@@ -117,9 +120,11 @@ pub const Explorer = struct {
             .contents = std.StringHashMap([]const u8).init(allocator),
             .word_index = WordIndex.init(allocator),
             .trigram_index = TrigramIndex.init(allocator),
+            .sparse_ngram_index = SparseNgramIndex.init(allocator),
             .allocator = allocator,
         };
     }
+
 
     pub fn deinit(self: *Explorer) void {
         var iter = self.outlines.iterator();
@@ -143,7 +148,9 @@ pub const Explorer = struct {
 
         self.word_index.deinit();
         self.trigram_index.deinit();
+        self.sparse_ngram_index.deinit();
     }
+
     pub fn indexFile(self: *Explorer, path: []const u8, content: []const u8) !void {
         return self.indexFileInner(path, content, true, false);
     }
@@ -236,8 +243,10 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
         try self.word_index.indexFile(stable_path, content);
         if (!skip_trigram) {
             try self.trigram_index.indexFile(stable_path, content);
+            try self.sparse_ngram_index.indexFile(stable_path, content);
         }
     }
+
 
     try self.rebuildDepsFor(stable_path, &outline);
 
@@ -274,6 +283,8 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
         }
         self.word_index.removeFile(path);
         self.trigram_index.removeFile(path);
+        self.sparse_ngram_index.removeFile(path);
+
         if (self.outlines.fetchRemove(path)) |kv| {
             var outline = kv.value;
             outline.deinit();
@@ -449,20 +460,33 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
 
         var result_list: std.ArrayList(SearchResult) = .{};
         errdefer result_list.deinit(allocator);
-        // Try trigram index to narrow candidates (queries >= 3 chars)
+
+        // Try sparse n-gram index first (longer n-grams → fewer posting lookups).
+        const sparse_paths = self.sparse_ngram_index.candidates(query);
+        defer if (sparse_paths) |sp| self.allocator.free(sp);
+
+        if (sparse_paths != null and sparse_paths.?.len > 0) {
+            for (sparse_paths.?) |path| {
+                const content = self.contents.get(path) orelse continue;
+                try searchInContent(path, content, query, allocator, max_results, &result_list);
+                if (result_list.items.len >= max_results) break;
+            }
+            return result_list.toOwnedSlice(allocator);
+        }
+
+        // Fall back to trigram index (queries >= 3 chars).
         const candidate_paths = self.trigram_index.candidates(query);
         defer if (candidate_paths) |cp| self.allocator.free(cp);
         const use_trigram = candidate_paths != null and candidate_paths.?.len > 0;
 
         if (use_trigram) {
-            // Only scan candidate files
             for (candidate_paths.?) |path| {
                 const content = self.contents.get(path) orelse continue;
                 try searchInContent(path, content, query, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
         } else {
-            // Brute force (short query or no trigram hits)
+            // Brute force (short query or no index hits).
             var iter = self.contents.iterator();
             while (iter.next()) |entry| {
                 try searchInContent(entry.key_ptr.*, entry.value_ptr.*, query, allocator, max_results, &result_list);
@@ -472,6 +496,7 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
 
         return result_list.toOwnedSlice(allocator);
     }
+
 
     /// Search file contents using a regex pattern with trigram acceleration.
     /// Decomposes the regex to extract literal trigrams for candidate filtering,
@@ -1037,6 +1062,19 @@ fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !voi
             result_list.deinit(allocator);
         }
 
+        // Try sparse n-gram index first.
+        const sparse_paths = self.sparse_ngram_index.candidates(query);
+        defer if (sparse_paths) |sp| self.allocator.free(sp);
+
+        if (sparse_paths != null and sparse_paths.?.len > 0) {
+            for (sparse_paths.?) |path| {
+                const content = self.contents.get(path) orelse continue;
+                try self.searchInContentWithScope(path, content, query, allocator, max_results, &result_list);
+                if (result_list.items.len >= max_results) break;
+            }
+            return result_list.toOwnedSlice(allocator);
+        }
+
         const candidate_paths = self.trigram_index.candidates(query);
         defer if (candidate_paths) |cp| self.allocator.free(cp);
         const use_trigram = candidate_paths != null and candidate_paths.?.len > 0;
@@ -1056,6 +1094,7 @@ fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !voi
         }
 
         return result_list.toOwnedSlice(allocator);
+
     }
 
     fn searchInContentWithScope(self: *Explorer, path: []const u8, content: []const u8, query: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(ScopedSearchResult)) !void {
