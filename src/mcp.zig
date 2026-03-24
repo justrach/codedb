@@ -30,6 +30,7 @@ pub const Tool = enum {
     codedb_status,
     codedb_snapshot,
     codedb_bundle,
+    codedb_remote,
 };
 
 const tools_list =
@@ -46,7 +47,8 @@ const tools_list =
     \\{"name":"codedb_changes","description":"Get files that changed since a sequence number. Use with codedb_status to poll for changes.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
     \\{"name":"codedb_status","description":"Get current codedb status: number of indexed files and current sequence number.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"codedb_snapshot","description":"Get the full pre-rendered snapshot of the codebase as a single JSON blob. Contains tree, all outlines, symbol index, and dependency graph. Ideal for caching or deploying to edge workers.","inputSchema":{"type":"object","properties":{},"required":[]}},
-    \\{"name":"codedb_bundle","description":"Execute multiple read-only intelligence queries in a single call. Combines outline, symbol, search, read, deps, and other indexed operations. Saves round-trips. Max 20 ops.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string","description":"Tool name (e.g. codedb_outline, codedb_symbol, codedb_read)"},"arguments":{"type":"object","description":"Tool arguments"}},"required":["tool"]},"description":"Array of tool calls to execute"}},"required":["ops"]}}
+    \\{"name":"codedb_bundle","description":"Execute multiple read-only intelligence queries in a single call. Combines outline, symbol, search, read, deps, and other indexed operations. Saves round-trips. Max 20 ops.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string","description":"Tool name (e.g. codedb_outline, codedb_symbol, codedb_read)"},"arguments":{"type":"object","description":"Tool arguments"}},"required":["tool"]},"description":"Array of tool calls to execute"}},"required":["ops"]}},
+    \\{"name":"codedb_remote","description":"Query any GitHub repo via codedb.codegraff.com cloud intelligence. Gets file tree, symbol outlines, or searches code in external repos without cloning. Use when you need to understand a dependency, check an external API, or explore a repo you don't have locally.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. justrach/merjs)"},"action":{"type":"string","enum":["tree","outline","search","meta"],"description":"What to query: tree (file list), outline (symbols), search (text search), meta (repo info)"},"query":{"type":"string","description":"Search query (required when action=search)"}},"required":["repo","action"]}}
     \\]}
 ;
 
@@ -234,6 +236,7 @@ fn dispatch(
         .codedb_status => handleStatus(alloc, out, store, explorer),
         .codedb_snapshot => handleSnapshot(alloc, out, explorer, store, prerender),
         .codedb_bundle => handleBundle(alloc, args, out, store, explorer, agents, prerender),
+        .codedb_remote => handleRemote(alloc, args, out),
     }
 }
 
@@ -678,7 +681,56 @@ fn handleBundle(
         w.writeAll("\n") catch {};
     }
 }
-// ── JSON-RPC helpers (same pattern as mcp-zig) ──────────────────────────────
+
+fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8)) void {
+    const repo = getStr(args, "repo") orelse {
+        out.appendSlice(alloc, "error: missing 'repo' (e.g. justrach/merjs)") catch {};
+        return;
+    };
+    const action = getStr(args, "action") orelse {
+        out.appendSlice(alloc, "error: missing 'action' (tree, outline, search, meta)") catch {};
+        return;
+    };
+
+    // Build URL: https://codedb.codegraff.com/{repo}/{action}?q={query}
+    var url_buf: [512]u8 = undefined;
+    const query = getStr(args, "query");
+    const url = if (std.mem.eql(u8, action, "search"))
+        std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/search?q={s}", .{ repo, query orelse "" }) catch {
+            out.appendSlice(alloc, "error: URL too long") catch {};
+            return;
+        }
+    else
+        std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/{s}", .{ repo, action }) catch {
+            out.appendSlice(alloc, "error: URL too long") catch {};
+            return;
+        };
+
+    // Shell out to curl (simple, works everywhere, avoids Zig HTTP client issues)
+    const result = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "curl", "-sf", "--max-time", "30", url },
+    }) catch {
+        out.appendSlice(alloc, "error: failed to fetch from codedb.codegraff.com") catch {};
+        return;
+    };
+    defer alloc.free(result.stdout);
+    defer alloc.free(result.stderr);
+
+    if (result.term.Exited != 0) {
+        out.appendSlice(alloc, "error: codedb.codegraff.com returned error for ") catch {};
+        out.appendSlice(alloc, repo) catch {};
+        out.appendSlice(alloc, "/") catch {};
+        out.appendSlice(alloc, action) catch {};
+        if (result.stderr.len > 0) {
+            out.appendSlice(alloc, " — ") catch {};
+            out.appendSlice(alloc, result.stderr[0..@min(result.stderr.len, 200)]) catch {};
+        }
+        return;
+    }
+
+    out.appendSlice(alloc, result.stdout) catch {};
+}
 
 pub fn isPathSafe(path: []const u8) bool {
     if (path.len == 0) return false;
