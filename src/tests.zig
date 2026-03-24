@@ -2315,3 +2315,158 @@ test "perf regression: bloom filter reduces scan work" {
     // This proves bloom filtering is doing work, not just passing through
     try testing.expect(cands.?.len < 25); // must eliminate at least half
 }
+
+// ── Disk persistence tests ──────────────────────────────────
+
+test "disk index: round-trip write and read preserves candidates" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+
+    try ti.indexFile("src/main.zig", "pub fn main() void { const store = Store.init(allocator); }");
+    try ti.indexFile("src/index.zig", "pub fn indexFile(self: *TrigramIndex, path: []const u8) !void {}");
+    try ti.indexFile("src/watcher.zig", "pub fn initialScan(store: *Store) !void {}");
+
+    // Verify candidates before write
+    const cands_before = ti.candidates("indexFile");
+    defer if (cands_before) |c| alloc.free(c);
+    try testing.expect(cands_before != null);
+    try testing.expect(cands_before.?.len >= 1);
+
+    // Write to temp dir
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    try ti.writeToDisk(dir_path);
+
+    // Read back
+    const loaded = TrigramIndex.readFromDisk(dir_path, alloc);
+    try testing.expect(loaded != null);
+    var loaded_ti = loaded.?;
+    defer loaded_ti.deinit();
+
+    // Same candidates should be returned
+    const cands_after = loaded_ti.candidates("indexFile");
+    defer if (cands_after) |c| alloc.free(c);
+    try testing.expect(cands_after != null);
+    try testing.expectEqual(cands_before.?.len, cands_after.?.len);
+
+    // Verify specific file is present
+    var found = false;
+    for (cands_after.?) |p| {
+        if (std.mem.eql(u8, p, "src/index.zig")) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "disk index: readFromDisk returns null for missing files" {
+    const loaded = TrigramIndex.readFromDisk("/tmp/codedb_nonexistent_dir_12345", testing.allocator);
+    try testing.expect(loaded == null);
+}
+
+test "disk index: readFromDisk returns null for corrupt magic" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    // Write garbage postings file
+    const postings_path = try std.fmt.allocPrint(testing.allocator, "{s}/trigram.postings", .{dir_path});
+    defer testing.allocator.free(postings_path);
+    {
+        const f = try std.fs.cwd().createFile(postings_path, .{});
+        defer f.close();
+        try f.writeAll("BAADMAGIC");
+    }
+    // Write garbage lookup file
+    const lookup_path = try std.fmt.allocPrint(testing.allocator, "{s}/trigram.lookup", .{dir_path});
+    defer testing.allocator.free(lookup_path);
+    {
+        const f = try std.fs.cwd().createFile(lookup_path, .{});
+        defer f.close();
+        try f.writeAll("BAADMAGIC");
+    }
+
+    const loaded = TrigramIndex.readFromDisk(dir_path, testing.allocator);
+    try testing.expect(loaded == null);
+}
+
+test "disk index: empty index round-trips correctly" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    try ti.writeToDisk(dir_path);
+
+    const loaded = TrigramIndex.readFromDisk(dir_path, alloc);
+    try testing.expect(loaded != null);
+    var loaded_ti = loaded.?;
+    defer loaded_ti.deinit();
+
+    try testing.expectEqual(@as(u32, 0), loaded_ti.fileCount());
+}
+
+test "disk index: bloom masks preserved after round-trip" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+
+    try ti.indexFile("bloom.zig", "pub fn handleRequest(ctx: *Context) void {}");
+
+    // Get original masks
+    const tri = packTrigram('h', 'a', 'n');
+    const orig_set = ti.index.getPtr(tri).?;
+    const orig_mask = orig_set.get("bloom.zig").?;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    try ti.writeToDisk(dir_path);
+
+    const loaded = TrigramIndex.readFromDisk(dir_path, alloc);
+    try testing.expect(loaded != null);
+    var loaded_ti = loaded.?;
+    defer loaded_ti.deinit();
+
+    // Check masks match
+    const loaded_set = loaded_ti.index.getPtr(tri).?;
+    const loaded_mask = loaded_set.get("bloom.zig").?;
+    try testing.expectEqual(orig_mask.next_mask, loaded_mask.next_mask);
+    try testing.expectEqual(orig_mask.loc_mask, loaded_mask.loc_mask);
+}
+
+test "disk index: fileCount matches after round-trip" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+
+    try ti.indexFile("a.zig", "fn alpha() void {}");
+    try ti.indexFile("b.zig", "fn beta() void {}");
+    try ti.indexFile("c.zig", "fn gamma() void {}");
+
+    try testing.expectEqual(@as(u32, 3), ti.fileCount());
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    try ti.writeToDisk(dir_path);
+
+    const loaded = TrigramIndex.readFromDisk(dir_path, alloc);
+    try testing.expect(loaded != null);
+    var loaded_ti = loaded.?;
+    defer loaded_ti.deinit();
+
+    try testing.expectEqual(@as(u32, 3), loaded_ti.fileCount());
+}
+

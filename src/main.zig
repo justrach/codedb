@@ -90,6 +90,11 @@ pub fn main() !void {
             s.dim, s.reset,
             sty.durationColor(s, scan_elapsed), sty.formatDuration(&dur_buf, scan_elapsed), s.reset,
         });
+
+        // Persist trigram index to disk for fast future startup
+        explorer.trigram_index.writeToDisk(data_dir) catch |err| {
+            std.log.warn("could not persist trigram index: {}", .{err});
+        };
     }
 
     if (std.mem.eql(u8, cmd, "tree")) {
@@ -313,7 +318,7 @@ pub fn main() !void {
         var scan_done = std.atomic.Value(bool).init(false);
 
         var queue = watcher.EventQueue{};
-        const scan_thread = try std.Thread.spawn(.{}, scanBg, .{ &store, &explorer, root, allocator, &scan_done });
+        const scan_thread = try std.Thread.spawn(.{}, scanBg, .{ &store, &explorer, root, allocator, &scan_done, data_dir });
         scan_thread.detach();
 
         const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &prerender, &shutdown, &scan_done });
@@ -416,13 +421,16 @@ fn reapLoop(agents: *AgentRegistry, shutdown: *std.atomic.Value(bool)) void {
     }
 }
 
-fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool)) void {
+fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), data_dir: []const u8) void {
     watcher.initialScan(store, explorer, root, allocator) catch |err| {
         std.log.warn("background scan failed: {}", .{err});
     };
+    // Persist trigram index to disk for fast future startup
+    explorer.trigram_index.writeToDisk(data_dir) catch |err| {
+        std.log.warn("could not persist trigram index: {}", .{err});
+    };
     scan_done.store(true, .release);
 }
-
 fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
     const mcp = @import("mcp.zig");
     while (!shutdown.load(.acquire)) {

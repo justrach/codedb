@@ -186,6 +186,8 @@ pub const TrigramIndex = struct {
     /// path → list of trigrams contributed (for cleanup)
     file_trigrams: std.StringHashMap(std.ArrayList(Trigram)),
     allocator: std.mem.Allocator,
+    /// When true, deinit frees the path keys in file_trigrams (set by readFromDisk).
+    owns_paths: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) TrigramIndex {
         return .{
@@ -204,6 +206,7 @@ pub const TrigramIndex = struct {
 
         var ft_iter = self.file_trigrams.iterator();
         while (ft_iter.next()) |entry| {
+            if (self.owns_paths) self.allocator.free(entry.key_ptr.*);
             entry.value_ptr.deinit(self.allocator);
         }
         self.file_trigrams.deinit();
@@ -463,6 +466,272 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
             return null;
         };
     }
+
+    // ── Disk persistence ────────────────────────────────────
+
+    const POSTINGS_MAGIC = [4]u8{ 'C', 'D', 'B', 'T' };
+    const LOOKUP_MAGIC = [4]u8{ 'C', 'D', 'B', 'L' };
+    const FORMAT_VERSION: u16 = 1;
+
+    /// Posting entry: file_id (u16) + next_mask (u8) + loc_mask (u8) = 4 bytes
+    const DiskPosting = extern struct {
+        file_id: u16,
+        next_mask: u8,
+        loc_mask: u8,
+    };
+
+    /// Lookup entry: trigram (u32 low 24 bits) + offset (u32) + count (u16) + pad (u16) = 12 bytes
+    const LookupEntry = extern struct {
+        trigram: u32,
+        offset: u32,
+        count: u16,
+        _pad: u16 = 0,
+    };
+
+    /// Write the current in-memory index to disk in a two-file format.
+    /// Files are written atomically (write to tmp, then rename).
+    pub fn writeToDisk(self: *TrigramIndex, dir_path: []const u8) !void {
+        // Step 1: Build file table (assign u16 IDs to all unique paths)
+        var file_table: std.ArrayList([]const u8) = .{};
+        defer file_table.deinit(self.allocator);
+        var path_to_id = std.StringHashMap(u16).init(self.allocator);
+        defer path_to_id.deinit();
+
+        var ft_iter = self.file_trigrams.keyIterator();
+        while (ft_iter.next()) |path_ptr| {
+            const id: u16 = @intCast(file_table.items.len);
+            try file_table.append(self.allocator, path_ptr.*);
+            try path_to_id.put(path_ptr.*, id);
+        }
+
+        const file_count: u16 = @intCast(file_table.items.len);
+
+        // Step 2: Collect all trigrams, sort them, serialize postings contiguously
+        var trigrams_sorted: std.ArrayList(Trigram) = .{};
+        defer trigrams_sorted.deinit(self.allocator);
+        {
+            var tri_iter = self.index.keyIterator();
+            while (tri_iter.next()) |tri_ptr| {
+                try trigrams_sorted.append(self.allocator, tri_ptr.*);
+            }
+        }
+        std.mem.sort(Trigram, trigrams_sorted.items, {}, struct {
+            fn lt(_: void, a: Trigram, b: Trigram) bool {
+                return a < b;
+            }
+        }.lt);
+
+        // Step 3: Build postings blob and lookup entries
+        var postings_buf: std.ArrayList(DiskPosting) = .{};
+        defer postings_buf.deinit(self.allocator);
+        var lookup_entries: std.ArrayList(LookupEntry) = .{};
+        defer lookup_entries.deinit(self.allocator);
+
+        for (trigrams_sorted.items) |tri| {
+            const file_set = self.index.getPtr(tri) orelse continue;
+            const offset: u32 = @intCast(postings_buf.items.len);
+            var count: u16 = 0;
+            var fs_iter = file_set.iterator();
+            while (fs_iter.next()) |entry| {
+                const fid = path_to_id.get(entry.key_ptr.*) orelse continue;
+                try postings_buf.append(self.allocator, .{
+                    .file_id = fid,
+                    .next_mask = entry.value_ptr.next_mask,
+                    .loc_mask = entry.value_ptr.loc_mask,
+                });
+                count += 1;
+            }
+            try lookup_entries.append(self.allocator, .{
+                .trigram = @as(u32, tri),
+                .offset = offset,
+                .count = count,
+            });
+        }
+
+        // Step 4: Write postings file atomically
+        const postings_tmp = try std.fmt.allocPrint(self.allocator, "{s}/trigram.postings.tmp", .{dir_path});
+        defer self.allocator.free(postings_tmp);
+        const postings_final = try std.fmt.allocPrint(self.allocator, "{s}/trigram.postings", .{dir_path});
+        defer self.allocator.free(postings_final);
+
+        {
+            const file = try std.fs.cwd().createFile(postings_tmp, .{});
+            defer file.close();
+
+            // Header: magic(4) + version(2) + file_count(2) = 8 bytes
+            try file.writeAll(&POSTINGS_MAGIC);
+            var ver_buf: [2]u8 = undefined;
+            std.mem.writeInt(u16, &ver_buf, FORMAT_VERSION, .little);
+            try file.writeAll(&ver_buf);
+            var fc_buf: [2]u8 = undefined;
+            std.mem.writeInt(u16, &fc_buf, file_count, .little);
+            try file.writeAll(&fc_buf);
+
+            // File table: for each file, path_len(u16) + path bytes
+            for (file_table.items) |path| {
+                var pl_buf: [2]u8 = undefined;
+                std.mem.writeInt(u16, &pl_buf, @intCast(path.len), .little);
+                try file.writeAll(&pl_buf);
+                try file.writeAll(path);
+            }
+
+            // Postings data
+            const postings_bytes = std.mem.sliceAsBytes(postings_buf.items);
+            try file.writeAll(postings_bytes);
+        }
+        try std.fs.cwd().rename(postings_tmp, postings_final);
+
+        // Step 5: Write lookup file atomically
+        const lookup_tmp = try std.fmt.allocPrint(self.allocator, "{s}/trigram.lookup.tmp", .{dir_path});
+        defer self.allocator.free(lookup_tmp);
+        const lookup_final = try std.fmt.allocPrint(self.allocator, "{s}/trigram.lookup", .{dir_path});
+        defer self.allocator.free(lookup_final);
+
+        {
+            const file = try std.fs.cwd().createFile(lookup_tmp, .{});
+            defer file.close();
+
+            // Header: magic(4) + version(2) + pad(2) + entry_count(4) = 12 bytes
+            try file.writeAll(&LOOKUP_MAGIC);
+            var ver_buf2: [2]u8 = undefined;
+            std.mem.writeInt(u16, &ver_buf2, FORMAT_VERSION, .little);
+            try file.writeAll(&ver_buf2);
+            var pad_buf: [2]u8 = .{ 0, 0 };
+            try file.writeAll(&pad_buf);
+            var ec_buf: [4]u8 = undefined;
+            std.mem.writeInt(u32, &ec_buf, @intCast(lookup_entries.items.len), .little);
+            try file.writeAll(&ec_buf);
+
+            // Entries (already aligned at 12 bytes each)
+            const entry_bytes = std.mem.sliceAsBytes(lookup_entries.items);
+            try file.writeAll(entry_bytes);
+        }
+        try std.fs.cwd().rename(lookup_tmp, lookup_final);
+    }
+
+    /// Load index from disk files into a fresh TrigramIndex.
+    /// Returns null if files don't exist or are corrupt/stale.
+    pub fn readFromDisk(dir_path: []const u8, allocator: std.mem.Allocator) ?TrigramIndex {
+        return readFromDiskInner(dir_path, allocator) catch null;
+    }
+
+    fn readFromDiskInner(dir_path: []const u8, allocator: std.mem.Allocator) !?TrigramIndex {
+        const postings_path = try std.fmt.allocPrint(allocator, "{s}/trigram.postings", .{dir_path});
+        defer allocator.free(postings_path);
+        const lookup_path = try std.fmt.allocPrint(allocator, "{s}/trigram.lookup", .{dir_path});
+        defer allocator.free(lookup_path);
+
+        // Read both files
+        const postings_data = std.fs.cwd().readFileAlloc(allocator, postings_path, 64 * 1024 * 1024) catch return null;
+        defer allocator.free(postings_data);
+        const lookup_data = std.fs.cwd().readFileAlloc(allocator, lookup_path, 64 * 1024 * 1024) catch return null;
+        defer allocator.free(lookup_data);
+
+        // Validate postings header
+        if (postings_data.len < 8) return null;
+        if (!std.mem.eql(u8, postings_data[0..4], &POSTINGS_MAGIC)) return null;
+        const post_version = std.mem.readInt(u16, postings_data[4..6], .little);
+        if (post_version != FORMAT_VERSION) return null;
+        const file_count = std.mem.readInt(u16, postings_data[6..8], .little);
+
+        // Parse file table
+        var file_paths = try allocator.alloc([]u8, file_count);
+        var parsed_files: u16 = 0;
+        defer {
+            for (0..parsed_files) |i| allocator.free(file_paths[i]);
+            allocator.free(file_paths);
+        }
+        var pos: usize = 8;
+        for (0..file_count) |i| {
+            if (pos + 2 > postings_data.len) return null;
+            const path_len = std.mem.readInt(u16, postings_data[pos..][0..2], .little);
+            pos += 2;
+            if (pos + path_len > postings_data.len) return null;
+            file_paths[i] = try allocator.dupe(u8, postings_data[pos .. pos + path_len]);
+            parsed_files += 1;
+            pos += path_len;
+        }
+
+        // Remaining bytes are DiskPosting entries
+        const postings_start = pos;
+        const postings_byte_len = postings_data.len - postings_start;
+        if (postings_byte_len % @sizeOf(DiskPosting) != 0) return null;
+        const total_postings = postings_byte_len / @sizeOf(DiskPosting);
+
+        // Validate lookup header
+        if (lookup_data.len < 12) return null;
+        if (!std.mem.eql(u8, lookup_data[0..4], &LOOKUP_MAGIC)) return null;
+        const lk_version = std.mem.readInt(u16, lookup_data[4..6], .little);
+        if (lk_version != FORMAT_VERSION) return null;
+        const entry_count = std.mem.readInt(u32, lookup_data[8..12], .little);
+        if (lookup_data.len < 12 + entry_count * @sizeOf(LookupEntry)) return null;
+
+        // Build in-memory index
+        var result = TrigramIndex.init(allocator);
+        result.owns_paths = true;
+        errdefer result.deinit();
+
+        // Allocate stable path strings owned by the index
+        var stable_paths = try allocator.alloc([]const u8, file_count);
+        defer allocator.free(stable_paths);
+        for (0..file_count) |i| {
+            const duped = try allocator.dupe(u8, file_paths[i]);
+            errdefer allocator.free(duped);
+            stable_paths[i] = duped;
+            try result.file_trigrams.put(duped, .{});
+        }
+
+        // Parse lookup entries and populate index + file_trigrams
+        for (0..entry_count) |e| {
+            const entry_off = 12 + e * @sizeOf(LookupEntry);
+            const raw = lookup_data[entry_off..][0..@sizeOf(LookupEntry)];
+            const entry: *align(1) const LookupEntry = @ptrCast(raw.ptr);
+
+            const tri: Trigram = @intCast(entry.trigram);
+            const p_off = entry.offset;
+            const p_count = entry.count;
+
+            if (@as(u64, p_off) + @as(u64, p_count) > @as(u64, total_postings)) return error.InvalidData;
+
+            var file_set = std.StringHashMap(PostingMask).init(allocator);
+            errdefer file_set.deinit();
+
+            for (0..p_count) |pi| {
+                const pb_off = postings_start + (p_off + pi) * @sizeOf(DiskPosting);
+                const pb = postings_data[pb_off..][0..@sizeOf(DiskPosting)];
+                const posting: *align(1) const DiskPosting = @ptrCast(pb.ptr);
+
+                if (posting.file_id >= file_count) return error.InvalidData;
+                const path = stable_paths[posting.file_id];
+
+                const gop = try file_set.getOrPut(path);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = PostingMask{};
+                }
+                gop.value_ptr.next_mask |= posting.next_mask;
+                gop.value_ptr.loc_mask |= posting.loc_mask;
+
+                // Track trigram in file_trigrams
+                if (result.file_trigrams.getPtr(path)) |tri_list| {
+                    var found = false;
+                    for (tri_list.items) |existing| {
+                        if (existing == tri) { found = true; break; }
+                    }
+                    if (!found) try tri_list.append(allocator, tri);
+                }
+            }
+
+            try result.index.put(tri, file_set);
+        }
+
+        return result;
+    }
+
+    /// Returns the number of indexed files (for staleness checks).
+    pub fn fileCount(self: *TrigramIndex) u32 {
+        return @intCast(self.file_trigrams.count());
+    }
+
 
 };
 
