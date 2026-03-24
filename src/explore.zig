@@ -461,24 +461,39 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
         var result_list: std.ArrayList(SearchResult) = .{};
         errdefer result_list.deinit(allocator);
 
-        // Try sparse n-gram index first (longer n-grams → fewer posting lookups).
-        const sparse_paths = self.sparse_ngram_index.candidates(query);
-        defer if (sparse_paths) |sp| self.allocator.free(sp);
+        // Sparse n-gram candidates (sliding-window, union semantics).
+        const sparse_paths = self.sparse_ngram_index.candidates(query, allocator);
+        defer if (sparse_paths) |sp| allocator.free(sp);
+
+        // Trigram candidates — always computed so we can intersect or fall back.
+        const candidate_paths = self.trigram_index.candidates(query, allocator);
+        defer if (candidate_paths) |cp| allocator.free(cp);
 
         if (sparse_paths != null and sparse_paths.?.len > 0) {
-            for (sparse_paths.?) |path| {
-                const content = self.contents.get(path) orelse continue;
-                try searchInContent(path, content, query, allocator, max_results, &result_list);
-                if (result_list.items.len >= max_results) break;
+            // Sparse has candidates: intersect with trigram to narrow results.
+            if (candidate_paths != null and candidate_paths.?.len > 0) {
+                var sparse_set = std.StringHashMap(void).init(allocator);
+                defer sparse_set.deinit();
+                for (sparse_paths.?) |p| try sparse_set.put(p, {});
+                for (candidate_paths.?) |path| {
+                    if (!sparse_set.contains(path)) continue;
+                    const content = self.contents.get(path) orelse continue;
+                    try searchInContent(path, content, query, allocator, max_results, &result_list);
+                    if (result_list.items.len >= max_results) break;
+                }
+            } else {
+                // No trigram candidates; search sparse candidates directly.
+                for (sparse_paths.?) |path| {
+                    const content = self.contents.get(path) orelse continue;
+                    try searchInContent(path, content, query, allocator, max_results, &result_list);
+                    if (result_list.items.len >= max_results) break;
+                }
             }
             return result_list.toOwnedSlice(allocator);
         }
 
-        // Fall back to trigram index (queries >= 3 chars).
-        const candidate_paths = self.trigram_index.candidates(query);
-        defer if (candidate_paths) |cp| self.allocator.free(cp);
+        // Sparse returned empty — fall through to trigram or brute force.
         const use_trigram = candidate_paths != null and candidate_paths.?.len > 0;
-
         if (use_trigram) {
             for (candidate_paths.?) |path| {
                 const content = self.contents.get(path) orelse continue;
@@ -520,8 +535,8 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
         };
         defer query.deinit();
 
-        const candidate_paths = self.trigram_index.candidatesRegex(&query);
-        defer if (candidate_paths) |cp| self.allocator.free(cp);
+        const candidate_paths = self.trigram_index.candidatesRegex(&query, allocator);
+        defer if (candidate_paths) |cp| allocator.free(cp);
         const use_trigram = candidate_paths != null and candidate_paths.?.len > 0;
 
         if (use_trigram) {
@@ -1062,23 +1077,39 @@ fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !voi
             result_list.deinit(allocator);
         }
 
-        // Try sparse n-gram index first.
-        const sparse_paths = self.sparse_ngram_index.candidates(query);
-        defer if (sparse_paths) |sp| self.allocator.free(sp);
+        // Sparse n-gram candidates (sliding-window, union semantics).
+        const sparse_paths = self.sparse_ngram_index.candidates(query, allocator);
+        defer if (sparse_paths) |sp| allocator.free(sp);
+
+        // Trigram candidates — always computed so we can intersect or fall back.
+        const candidate_paths = self.trigram_index.candidates(query, allocator);
+        defer if (candidate_paths) |cp| allocator.free(cp);
 
         if (sparse_paths != null and sparse_paths.?.len > 0) {
-            for (sparse_paths.?) |path| {
-                const content = self.contents.get(path) orelse continue;
-                try self.searchInContentWithScope(path, content, query, allocator, max_results, &result_list);
-                if (result_list.items.len >= max_results) break;
+            // Sparse has candidates: intersect with trigram to narrow results.
+            if (candidate_paths != null and candidate_paths.?.len > 0) {
+                var sparse_set = std.StringHashMap(void).init(allocator);
+                defer sparse_set.deinit();
+                for (sparse_paths.?) |p| try sparse_set.put(p, {});
+                for (candidate_paths.?) |path| {
+                    if (!sparse_set.contains(path)) continue;
+                    const content = self.contents.get(path) orelse continue;
+                    try self.searchInContentWithScope(path, content, query, allocator, max_results, &result_list);
+                    if (result_list.items.len >= max_results) break;
+                }
+            } else {
+                // No trigram candidates; search sparse candidates directly.
+                for (sparse_paths.?) |path| {
+                    const content = self.contents.get(path) orelse continue;
+                    try self.searchInContentWithScope(path, content, query, allocator, max_results, &result_list);
+                    if (result_list.items.len >= max_results) break;
+                }
             }
             return result_list.toOwnedSlice(allocator);
         }
 
-        const candidate_paths = self.trigram_index.candidates(query);
-        defer if (candidate_paths) |cp| self.allocator.free(cp);
+        // Sparse returned empty — fall through to trigram or brute force.
         const use_trigram = candidate_paths != null and candidate_paths.?.len > 0;
-
         if (use_trigram) {
             for (candidate_paths.?) |path| {
                 const content = self.contents.get(path) orelse continue;
@@ -1207,10 +1238,12 @@ fn searchInContentRegex(path: []const u8, content: []const u8, pattern: []const 
 /// * + ? ^ $ | () and escaped literals.
 /// Uses backtracking. Searches for a match anywhere in the string (unanchored).
 pub fn regexMatch(haystack: []const u8, pattern: []const u8) bool {
-    // Handle top-level alternation first: split on unescaped | outside brackets
+    // Iterate through top-level | separators to prevent stack overflow with
+    // many alternation branches.  No recursion; no fixed-size buffer needed.
+    var prev: usize = 0;
+    var i: usize = 0;
     var depth: usize = 0;
     var in_bracket = false;
-    var i: usize = 0;
     while (i < pattern.len) {
         const c = pattern[i];
         if (c == '\\' and i + 1 < pattern.len) { i += 2; continue; }
@@ -1220,14 +1253,15 @@ pub fn regexMatch(haystack: []const u8, pattern: []const u8) bool {
         if (c == '(') { depth += 1; i += 1; continue; }
         if (c == ')') { if (depth > 0) depth -= 1; i += 1; continue; }
         if (c == '|' and depth == 0) {
-            // Try left branch, then right branch
-            if (regexMatch(haystack, pattern[0..i])) return true;
-            return regexMatch(haystack, pattern[i + 1 ..]);
+            if (regexMatchSingle(haystack, pattern[prev..i])) return true;
+            prev = i + 1;
         }
         i += 1;
     }
+    return regexMatchSingle(haystack, pattern[prev..]);
+}
 
-    // No top-level alternation
+fn regexMatchSingle(haystack: []const u8, pattern: []const u8) bool {
     if (pattern.len > 0 and pattern[0] == '^') {
         return matchHere(haystack, pattern[1..], 0);
     }

@@ -289,7 +289,7 @@ test "trigram index: index and candidate lookup" {
     try ti.indexFile("src/store.zig", "pub fn recordSnapshot(self: *Store) void {}");
     try ti.indexFile("src/agent.zig", "pub fn register(self: *Agent) void {}");
 
-    const cands = ti.candidates("recordSnapshot");
+    const cands = ti.candidates("recordSnapshot", testing.allocator);
     defer if (cands) |c| testing.allocator.free(c);
     try testing.expect(cands != null);
     try testing.expect(cands.?.len == 1);
@@ -301,7 +301,7 @@ test "trigram index: short query returns null" {
     defer ti.deinit();
 
     try ti.indexFile("f.zig", "hello world");
-    const cands = ti.candidates("hi");
+    const cands = ti.candidates("hi", testing.allocator);
     try testing.expect(cands == null);
 }
 
@@ -310,7 +310,7 @@ test "trigram index: no match returns empty" {
     defer ti.deinit();
 
     try ti.indexFile("f.zig", "hello world");
-    const cands = ti.candidates("zzzzz");
+    const cands = ti.candidates("zzzzz", testing.allocator);
     try testing.expect(cands != null);
     try testing.expect(cands.?.len == 0);
 }
@@ -320,16 +320,16 @@ test "trigram index: re-index removes old trigrams" {
     defer ti.deinit();
 
     try ti.indexFile("f.zig", "uniqueOldContent");
-    const c1 = ti.candidates("uniqueOld");
+    const c1 = ti.candidates("uniqueOld", testing.allocator);
     defer if (c1) |c| testing.allocator.free(c);
     try testing.expect(c1 != null and c1.?.len == 1);
 
     try ti.indexFile("f.zig", "brandNewStuff");
-    const c2 = ti.candidates("uniqueOld");
+    const c2 = ti.candidates("uniqueOld", testing.allocator);
     defer if (c2) |c| testing.allocator.free(c);
     try testing.expect(c2 != null and c2.?.len == 0);
 
-    const c3 = ti.candidates("brandNew");
+    const c3 = ti.candidates("brandNew", testing.allocator);
     defer if (c3) |c| testing.allocator.free(c);
     try testing.expect(c3 != null and c3.?.len == 1);
 }
@@ -461,17 +461,18 @@ test "extractSparseNgrams: ngram length bounds" {
     }
 }
 
-test "buildCoveringSet: equivalent to extractSparseNgrams" {
-    const content = "search query text";
-    const extracted = try extractSparseNgrams(content, testing.allocator);
-    defer testing.allocator.free(extracted);
-    const covering = try buildCoveringSet(content, testing.allocator);
-    defer testing.allocator.free(covering);
+test "buildCoveringSet: sliding window covers all query substrings" {
+    // "foobar" (6 chars); lengths [3,6] yield 4+3+2+1 = 10 substrings.
+    const ngrams = try buildCoveringSet("foobar", testing.allocator);
+    defer testing.allocator.free(ngrams);
+    try testing.expectEqual(@as(usize, 10), ngrams.len);
+    for (ngrams) |ng| try testing.expect(ng.len >= 3 and ng.len <= 6);
+}
 
-    try testing.expectEqual(extracted.len, covering.len);
-    for (extracted, covering) |e, c| {
-        try testing.expectEqual(e.hash, c.hash);
-    }
+test "buildCoveringSet: short query returns empty" {
+    const ngrams = try buildCoveringSet("ab", testing.allocator);
+    defer testing.allocator.free(ngrams);
+    try testing.expectEqual(@as(usize, 0), ngrams.len);
 }
 
 test "sparse ngram index: index and candidate lookup" {
@@ -485,7 +486,7 @@ test "sparse ngram index: index and candidate lookup" {
     try sni.indexFile("src/foo.zig", foo_query);
     try sni.indexFile("src/bar.zig", bar_query);
 
-    const cands = sni.candidates(foo_query);
+    const cands = sni.candidates(foo_query, testing.allocator);
     defer if (cands) |c| testing.allocator.free(c);
     try testing.expect(cands != null);
 
@@ -508,7 +509,7 @@ test "sparse ngram index: short query returns null" {
     defer sni.deinit();
 
     try sni.indexFile("f.zig", "hello world");
-    const cands = sni.candidates("hi"); // length 2 < MIN_LEN
+    const cands = sni.candidates("hi", testing.allocator); // length 2 < MIN_LEN
     try testing.expect(cands == null);
 }
 
@@ -517,12 +518,12 @@ test "sparse ngram index: re-index removes old ngrams" {
     defer sni.deinit();
 
     try sni.indexFile("f.zig", "uniqueOldContent");
-    const c1 = sni.candidates("uniqueOldContent");
+    const c1 = sni.candidates("uniqueOldContent", testing.allocator);
     defer if (c1) |c| testing.allocator.free(c);
     try testing.expect(c1 != null and c1.?.len == 1);
 
     try sni.indexFile("f.zig", "brandNewStuff");
-    const c2 = sni.candidates("uniqueOldContent");
+    const c2 = sni.candidates("uniqueOldContent", testing.allocator);
     defer if (c2) |c| testing.allocator.free(c);
     // After re-index the old content is gone; may return empty or null.
     if (c2) |cs| try testing.expectEqual(@as(usize, 0), cs.len);
@@ -539,6 +540,28 @@ test "sparse ngram index: removeFile prunes entries" {
     try testing.expectEqual(@as(u32, 0), sni.fileCount());
 }
 
+test "sparse ngram candidates: sliding window finds file with short n-gram" {
+    var sni = SparseNgramIndex.init(testing.allocator);
+    defer sni.deinit();
+
+    // "a.zig" is indexed with content "rec" — produces the 3-char n-gram "rec".
+    // "b.zig" is indexed with unrelated content.
+    try sni.indexFile("a.zig", "rec");
+    try sni.indexFile("b.zig", "xxxxxxxxxx");
+
+    // Query "record" (6 chars) contains "rec" as a 3-char sliding-window
+    // substring.  buildCoveringSet generates "rec" → hash matches the indexed
+    // n-gram of "a.zig".
+    const cands = sni.candidates("record", testing.allocator);
+    defer if (cands) |c| testing.allocator.free(c);
+
+    var found_a = false;
+    if (cands) |cs| {
+        for (cs) |p| if (std.mem.eql(u8, p, "a.zig")) { found_a = true; };
+    }
+    try testing.expect(found_a);
+}
+
 test "explorer: sparse ngram index integrated into searchContent" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -550,6 +573,24 @@ test "explorer: sparse ngram index integrated into searchContent" {
     const results = try explorer.searchContent("processRequest", arena.allocator(), 10);
     try testing.expectEqual(@as(usize, 1), results.len);
     try testing.expectEqualStrings("src/alpha.zig", results[0].path);
+}
+
+test "explorer: searchContent finds query embedded in longer identifier" {
+    // Verify that searchContent correctly finds files whose content contains
+    // the query string.  The sparse index (sliding-window) and trigram index
+    // are both used; the intersection narrows results without false negatives.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // "alpha.zig" content contains "record"; "beta.zig" does not.
+    try explorer.indexFile("alpha.zig", "const record_count: usize = 0;");
+    try explorer.indexFile("beta.zig", "const unrelated_data: usize = 0;");
+
+    const results = try explorer.searchContent("record", arena.allocator(), 10);
+    var found = false;
+    for (results) |r| if (std.mem.eql(u8, r.path, "alpha.zig")) { found = true; };
+    try testing.expect(found);
 }
 
 
@@ -624,6 +665,35 @@ test "frequency table: disk round-trip" {
         @as([*]const u16, @ptrCast(&original))[0 .. 256 * 256],
         @as([*]const u16, @ptrCast(loaded))[0 .. 256 * 256],
     );
+}
+
+test "frequency table: little-endian byte order on disk" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &dir_buf);
+
+    var table: [256][256]u16 = .{.{0} ** 256} ** 256;
+    table[0][0] = 0x1234; // little-endian on disk: 0x34, 0x12
+    table[0][1] = 0xABCD; // little-endian on disk: 0xCD, 0xAB
+    try writeFrequencyTable(&table, dir_path);
+
+    const file_path = try std.fmt.allocPrint(testing.allocator, "{s}/pair_freq.bin", .{dir_path});
+    defer testing.allocator.free(file_path);
+    const f = try std.fs.cwd().openFile(file_path, .{});
+    defer f.close();
+    var raw: [4]u8 = undefined;
+    try testing.expectEqual(@as(usize, 4), try f.readAll(&raw));
+    try testing.expectEqual(@as(u8, 0x34), raw[0]);
+    try testing.expectEqual(@as(u8, 0x12), raw[1]);
+    try testing.expectEqual(@as(u8, 0xCD), raw[2]);
+    try testing.expectEqual(@as(u8, 0xAB), raw[3]);
+
+    const loaded = try readFrequencyTable(dir_path, testing.allocator);
+    try testing.expect(loaded != null);
+    defer testing.allocator.destroy(loaded.?);
+    try testing.expectEqual(@as(u16, 0x1234), loaded.?[0][0]);
+    try testing.expectEqual(@as(u16, 0xABCD), loaded.?[0][1]);
 }
 
 test "setFrequencyTable / resetFrequencyTable: pairWeight output changes" {
@@ -1410,14 +1480,14 @@ test "trigram index: removeFile prunes empty sets" {
     defer ti.deinit();
 
     try ti.indexFile("only.zig", "xyzUniqueTrigramContent");
-    const before = ti.candidates("xyzUniqueTrigramContent");
+    const before = ti.candidates("xyzUniqueTrigramContent", testing.allocator);
     if (before) |b| {
         try testing.expect(b.len > 0);
         testing.allocator.free(b);
     }
 
     ti.removeFile("only.zig");
-    const after = ti.candidates("xyzUniqueTrigramContent");
+    const after = ti.candidates("xyzUniqueTrigramContent", testing.allocator);
     if (after) |a| {
         try testing.expect(a.len == 0);
         testing.allocator.free(a);
@@ -2016,7 +2086,7 @@ test "candidatesRegex: finds files with AND trigrams" {
     // Should extract trigrams from "record" and "Snapshot"
     try testing.expect(q.and_trigrams.len > 0);
 
-    const cands = ti.candidatesRegex(&q);
+    const cands = ti.candidatesRegex(&q, testing.allocator);
     defer if (cands) |c| testing.allocator.free(c);
     try testing.expect(cands != null);
     try testing.expect(cands.?.len >= 1);
@@ -2041,7 +2111,7 @@ test "candidatesRegex: OR groups union posting lists" {
     // All branch trigrams merged into single OR group
     try testing.expectEqual(@as(usize, 1), q.or_groups.len);
 
-    const cands = ti.candidatesRegex(&q);
+    const cands = ti.candidatesRegex(&q, testing.allocator);
     defer if (cands) |c| testing.allocator.free(c);
     try testing.expect(cands != null);
     // Both alpha.zig and beta.zig should be candidates
@@ -2111,6 +2181,24 @@ test "regexMatch: alternation" {
     try testing.expect(regexMatch("foo", "foo|bar"));
     try testing.expect(regexMatch("bar", "foo|bar"));
     try testing.expect(!regexMatch("baz", "foo|bar"));
+}
+
+test "regexMatch: alternation with many branches does not stack overflow" {
+    // 300 branches: 4 chars each + 299 separators = 1499 bytes max
+    var buf: [1500]u8 = undefined;
+    var pos: usize = 0;
+    var bi: usize = 0;
+    while (bi < 300) : (bi += 1) {
+        if (bi > 0) { buf[pos] = '|'; pos += 1; }
+        buf[pos] = 'a'; pos += 1;
+        buf[pos] = @as(u8, @intCast('0' + bi / 100 % 10)); pos += 1;
+        buf[pos] = @as(u8, @intCast('0' + bi / 10 % 10)); pos += 1;
+        buf[pos] = @as(u8, @intCast('0' + bi % 10)); pos += 1;
+    }
+    const pattern = buf[0..pos];
+    try testing.expect(regexMatch("a000", pattern));
+    try testing.expect(regexMatch("a299", pattern));
+    try testing.expect(!regexMatch("a999", pattern));
 }
 
 test "regexMatch: dot-star" {
@@ -2235,7 +2323,7 @@ test "bloom: soundness — never rejects actual matches" {
     try ti.indexFile("noise4.zig", "pub fn register(name: []const u8) void {}");
     try ti.indexFile("noise5.zig", "const request_handler = getHandler();"); // has both words but not adjacent
 
-    const cands = ti.candidates("handleRequest");
+    const cands = ti.candidates("handleRequest", testing.allocator);
     defer if (cands) |c| testing.allocator.free(c);
     try testing.expect(cands != null);
 
@@ -2263,7 +2351,7 @@ test "bloom: reduces candidates vs pure trigram intersection" {
     try ti.indexFile("shuffled2.zig", "fn pubNitInit() void {}"); // has "pub","nit","ini" but wrong order
     try ti.indexFile("unrelated.zig", "const x = 42;"); // no overlap
 
-    const cands = ti.candidates("pub fn init");
+    const cands = ti.candidates("pub fn init", testing.allocator);
     defer if (cands) |c| testing.allocator.free(c);
     try testing.expect(cands != null);
 
@@ -2302,7 +2390,7 @@ test "bloom: loc_mask adjacency filtering works" {
     try ti.indexFile("adjacent.zig", "XXabcdefGH"); // abc and def ARE adjacent
     try ti.indexFile("apart.zig", "XXXabcYYYYYYYYYYYYYYdefZZZ"); // abc and def far apart
 
-    const cands = ti.candidates("abcdef");
+    const cands = ti.candidates("abcdef", testing.allocator);
     defer if (cands) |c| testing.allocator.free(c);
     try testing.expect(cands != null);
 
@@ -2356,7 +2444,7 @@ test "bloom: regression — candidate count for known queries" {
 
     // "initAllocator" — a.zig must be found; b.zig ("deinitAllocator") shares trigrams
     {
-        const cands = ti.candidates("initAllocator");
+        const cands = ti.candidates("initAllocator", testing.allocator);
         defer if (cands) |c| testing.allocator.free(c);
         try testing.expect(cands != null);
         var found_a = false;
@@ -2372,7 +2460,7 @@ test "bloom: regression — candidate count for known queries" {
     // "pub fn init" — should find a.zig, c.zig; maybe b.zig (shares "pub fn ")
     // but NOT d/e/f/g/h
     {
-        const cands = ti.candidates("pub fn init");
+        const cands = ti.candidates("pub fn init", testing.allocator);
         defer if (cands) |c| testing.allocator.free(c);
         try testing.expect(cands != null);
         // Must include actual matches
@@ -2392,7 +2480,7 @@ test "bloom: regression — candidate count for known queries" {
 
     // "processInput" — f.zig must be found, few false positives allowed
     {
-        const cands = ti.candidates("processInput");
+        const cands = ti.candidates("processInput", testing.allocator);
         defer if (cands) |c| testing.allocator.free(c);
         try testing.expect(cands != null);
         var found_f = false;
@@ -2469,7 +2557,7 @@ test "regex regression: candidatesRegex reduces vs brute force" {
     defer q.deinit();
     try testing.expect(q.and_trigrams.len >= 4); // at least some from both halves
 
-    const cands = ti.candidatesRegex(&q);
+    const cands = ti.candidatesRegex(&q, testing.allocator);
     defer if (cands) |c| testing.allocator.free(c);
     try testing.expect(cands != null);
 
@@ -2569,7 +2657,7 @@ test "perf regression: trigram candidate lookup under 1ms per query" {
     const iters: usize = 1000;
     for (0..iters) |_| {
         for (queries) |q| {
-            const cands = ti.candidates(q);
+            const cands = ti.candidates(q, testing.allocator);
             if (cands) |c| testing.allocator.free(c);
         }
     }
@@ -2626,7 +2714,7 @@ test "perf regression: bloom filter reduces scan work" {
     }
 
     // "pub fn init_25" — specific enough to test bloom effectiveness
-    const cands = ti.candidates("pub fn init_25");
+    const cands = ti.candidates("pub fn init_25", testing.allocator);
     defer if (cands) |c| testing.allocator.free(c);
     try testing.expect(cands != null);
 
@@ -2657,7 +2745,7 @@ test "disk index: round-trip write and read preserves candidates" {
     try ti.indexFile("src/watcher.zig", "pub fn initialScan(store: *Store) !void {}");
 
     // Verify candidates before write
-    const cands_before = ti.candidates("indexFile");
+    const cands_before = ti.candidates("indexFile", testing.allocator);
     defer if (cands_before) |c| alloc.free(c);
     try testing.expect(cands_before != null);
     try testing.expect(cands_before.?.len >= 1);
@@ -2677,7 +2765,7 @@ test "disk index: round-trip write and read preserves candidates" {
     defer loaded_ti.deinit();
 
     // Same candidates should be returned
-    const cands_after = loaded_ti.candidates("indexFile");
+    const cands_after = loaded_ti.candidates("indexFile", testing.allocator);
     defer if (cands_after) |c| alloc.free(c);
     try testing.expect(cands_after != null);
     try testing.expectEqual(cands_before.?.len, cands_after.?.len);
@@ -2873,7 +2961,7 @@ test "disk index: readDiskHeader returns file_count and git_head" {
 
     const hdr = try TrigramIndex.readDiskHeader(dir_path, alloc);
     try testing.expect(hdr != null);
-    try testing.expectEqual(@as(u16, 2), hdr.?.file_count);
+    try testing.expectEqual(@as(u32, 2), hdr.?.file_count);
     try testing.expect(hdr.?.git_head != null);
     try testing.expectEqualSlices(u8, &fake_head, &hdr.?.git_head.?);
 }
@@ -2920,4 +3008,65 @@ test "disk index: v1 format (no git_head) still loads and readGitHead returns nu
     var loaded_ti = loaded.?;
     defer loaded_ti.deinit();
     try testing.expectEqual(@as(u32, 0), loaded_ti.fileCount());
+}
+
+test "thread-safe: concurrent TrigramIndex.candidates() with per-thread allocators" {
+    var ti = TrigramIndex.init(testing.allocator);
+    defer ti.deinit();
+    try ti.indexFile("a.zig", "pub fn handleRequest(ctx: *Context) void {}");
+    try ti.indexFile("b.zig", "pub fn processData(buf: []u8) void {}");
+    try ti.indexFile("c.zig", "pub fn handleRequest(req: Request) !void {}");
+    const ThreadCtx = struct {
+        ti: *TrigramIndex,
+        errors: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+        fn run(ctx: *@This()) void {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const alloc = arena.allocator();
+            for (0..200) |_| {
+                const cands = ctx.ti.candidates("handleRequest", alloc) orelse continue;
+                defer alloc.free(cands);
+                var found = false;
+                for (cands) |p| {
+                    if (std.mem.eql(u8, p, "a.zig") or std.mem.eql(u8, p, "c.zig")) found = true;
+                }
+                if (!found) _ = ctx.errors.fetchAdd(1, .monotonic);
+            }
+        }
+    };
+    var ctx = ThreadCtx{ .ti = &ti };
+    var threads: [4]std.Thread = undefined;
+    for (&threads) |*t| t.* = try std.Thread.spawn(.{}, ThreadCtx.run, .{&ctx});
+    for (threads) |t| t.join();
+    try testing.expectEqual(@as(u32, 0), ctx.errors.load(.monotonic));
+}
+
+test "thread-safe: concurrent SparseNgramIndex.candidates() with per-thread allocators" {
+    var sni = SparseNgramIndex.init(testing.allocator);
+    defer sni.deinit();
+    try sni.indexFile("x.zig", "pub fn handleRequest(ctx: *Context) void {}");
+    try sni.indexFile("y.zig", "pub fn processData(buf: []u8) void {}");
+    const ThreadCtx = struct {
+        sni: *SparseNgramIndex,
+        errors: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+        fn run(ctx: *@This()) void {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            const alloc = arena.allocator();
+            for (0..200) |_| {
+                const cands = ctx.sni.candidates("handleRequest", alloc) orelse continue;
+                defer alloc.free(cands);
+                var found = false;
+                for (cands) |p| {
+                    if (std.mem.eql(u8, p, "x.zig")) found = true;
+                }
+                if (!found) _ = ctx.errors.fetchAdd(1, .monotonic);
+            }
+        }
+    };
+    var ctx = ThreadCtx{ .sni = &sni };
+    var threads: [4]std.Thread = undefined;
+    for (&threads) |*t| t.* = try std.Thread.spawn(.{}, ThreadCtx.run, .{&ctx});
+    for (threads) |t| t.join();
+    try testing.expectEqual(@as(u32, 0), ctx.errors.load(.monotonic));
 }

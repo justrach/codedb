@@ -273,13 +273,13 @@ pub const TrigramIndex = struct {
 
 
     /// Find candidate files that contain ALL trigrams from the query.
-pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
+pub fn candidates(self: *TrigramIndex, query: []const u8, allocator: std.mem.Allocator) ?[]const []const u8 {
     if (query.len < 3) return null; // can't use trigrams for short queries
 
     const tri_count = query.len - 2;
 
     // Deduplicate query trigrams first so repeated trigrams don't do repeated work.
-    var unique = std.AutoHashMap(Trigram, void).init(self.allocator);
+    var unique = std.AutoHashMap(Trigram, void).init(allocator);
     defer unique.deinit();
     unique.ensureTotalCapacity(@intCast(tri_count)) catch return null;
     for (0..tri_count) |i| {
@@ -292,19 +292,19 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
     }
 
     var sets: std.ArrayList(*std.StringHashMap(PostingMask)) = .{};
-    defer sets.deinit(self.allocator);
-    sets.ensureTotalCapacity(self.allocator, unique.count()) catch return null;
+    defer sets.deinit(allocator);
+    sets.ensureTotalCapacity(allocator, unique.count()) catch return null;
 
     var tri_iter = unique.keyIterator();
     while (tri_iter.next()) |tri_ptr| {
         const file_set = self.index.getPtr(tri_ptr.*) orelse {
-            return self.allocator.alloc([]const u8, 0) catch null;
+            return allocator.alloc([]const u8, 0) catch null;
         };
         sets.appendAssumeCapacity(file_set);
     }
 
     if (sets.items.len == 0) {
-        return self.allocator.alloc([]const u8, 0) catch null;
+        return allocator.alloc([]const u8, 0) catch null;
     }
 
     // Iterate the smallest set and check membership in all others.
@@ -319,8 +319,8 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
     }
 
     var result: std.ArrayList([]const u8) = .{};
-    errdefer result.deinit(self.allocator);
-    result.ensureTotalCapacity(self.allocator, min_count) catch return null;
+    errdefer result.deinit(allocator);
+    result.ensureTotalCapacity(allocator, min_count) catch return null;
 
     var it = sets.items[min_idx].keyIterator();
     next_cand: while (it.next()) |path_ptr| {
@@ -362,8 +362,8 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
         result.appendAssumeCapacity(path_ptr.*);
     }
 
-    return result.toOwnedSlice(self.allocator) catch {
-        result.deinit(self.allocator);
+    return result.toOwnedSlice(allocator) catch {
+        result.deinit(allocator);
         return null;
     };
 }
@@ -372,7 +372,7 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
     /// Find candidate files matching a RegexQuery.
     /// Intersects AND trigrams, then for each OR group unions posting lists
     /// and intersects with the running result.
-    pub fn candidatesRegex(self: *TrigramIndex, query: *const RegexQuery) ?[]const []const u8 {
+    pub fn candidatesRegex(self: *TrigramIndex, query: *const RegexQuery, allocator: std.mem.Allocator) ?[]const []const u8 {
         if (query.and_trigrams.len == 0 and query.or_groups.len == 0) return null;
 
         // Start with AND trigrams
@@ -384,13 +384,13 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
             for (query.and_trigrams) |tri| {
                 const file_set = self.index.getPtr(tri) orelse {
                     // Trigram not in index → no files can match
-                    var empty = self.allocator.alloc([]const u8, 0) catch return null;
+                    var empty = allocator.alloc([]const u8, 0) catch return null;
                     _ = &empty;
-                    return self.allocator.alloc([]const u8, 0) catch null;
+                    return allocator.alloc([]const u8, 0) catch null;
                 };
                 if (result_set == null) {
                     // Initialize with all files from first trigram
-                    result_set = std.StringHashMap(void).init(self.allocator);
+                    result_set = std.StringHashMap(void).init(allocator);
                     var it = file_set.keyIterator();
                     while (it.next()) |key| {
                         result_set.?.put(key.*, {}) catch return null;
@@ -398,11 +398,11 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
                 } else {
                     // Intersect: remove files not in this posting list
                     var to_remove: std.ArrayList([]const u8) = .{};
-                    defer to_remove.deinit(self.allocator);
+                    defer to_remove.deinit(allocator);
                     var it = result_set.?.keyIterator();
                     while (it.next()) |key| {
                         if (!file_set.contains(key.*)) {
-                            to_remove.append(self.allocator, key.*) catch return null;
+                            to_remove.append(allocator, key.*) catch return null;
                         }
                     }
                     for (to_remove.items) |key| {
@@ -418,7 +418,7 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
             if (group.len == 0) continue;
 
             // Union all posting lists in this OR group
-            var union_set = std.StringHashMap(void).init(self.allocator);
+            var union_set = std.StringHashMap(void).init(allocator);
             defer union_set.deinit();
             for (group) |tri| {
                 const file_set = self.index.getPtr(tri) orelse continue;
@@ -430,7 +430,7 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
 
             if (result_set == null) {
                 // First constraint — adopt the union
-                result_set = std.StringHashMap(void).init(self.allocator);
+                result_set = std.StringHashMap(void).init(allocator);
                 var it = union_set.keyIterator();
                 while (it.next()) |key| {
                     result_set.?.put(key.*, {}) catch return null;
@@ -438,11 +438,11 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
             } else {
                 // Intersect result_set with union_set
                 var to_remove: std.ArrayList([]const u8) = .{};
-                defer to_remove.deinit(self.allocator);
+                defer to_remove.deinit(allocator);
                 var it = result_set.?.keyIterator();
                 while (it.next()) |key| {
                     if (!union_set.contains(key.*)) {
-                        to_remove.append(self.allocator, key.*) catch return null;
+                        to_remove.append(allocator, key.*) catch return null;
                     }
                 }
                 for (to_remove.items) |key| {
@@ -455,14 +455,14 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
 
         // Convert to slice
         var result: std.ArrayList([]const u8) = .{};
-        errdefer result.deinit(self.allocator);
-        result.ensureTotalCapacity(self.allocator, result_set.?.count()) catch return null;
+        errdefer result.deinit(allocator);
+        result.ensureTotalCapacity(allocator, result_set.?.count()) catch return null;
         var it = result_set.?.keyIterator();
         while (it.next()) |key| {
             result.appendAssumeCapacity(key.*);
         }
-        return result.toOwnedSlice(self.allocator) catch {
-            result.deinit(self.allocator);
+        return result.toOwnedSlice(allocator) catch {
+            result.deinit(allocator);
             return null;
         };
     }
@@ -471,21 +471,28 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
 
     const POSTINGS_MAGIC = [4]u8{ 'C', 'D', 'B', 'T' };
     const LOOKUP_MAGIC = [4]u8{ 'C', 'D', 'B', 'L' };
-    const FORMAT_VERSION: u16 = 2;
+    const FORMAT_VERSION: u16 = 3;
 
-    /// Posting entry: file_id (u16) + next_mask (u8) + loc_mask (u8) = 4 bytes
+    /// Posting entry for v3+: file_id (u32) + next_mask (u8) + loc_mask (u8) + pad (2 bytes) = 8 bytes
     const DiskPosting = extern struct {
+        file_id: u32,
+        next_mask: u8,
+        loc_mask: u8,
+        _pad: [2]u8 = .{ 0, 0 },
+    };
+
+    /// Posting entry for v1/v2 files: file_id (u16) + next_mask (u8) + loc_mask (u8) = 4 bytes
+    const OldDiskPosting = extern struct {
         file_id: u16,
         next_mask: u8,
         loc_mask: u8,
     };
 
-    /// Lookup entry: trigram (u32 low 24 bits) + offset (u32) + count (u16) + pad (u16) = 12 bytes
+    /// Lookup entry: trigram (u32 low 24 bits) + offset (u32) + count (u32) = 12 bytes
     const LookupEntry = extern struct {
         trigram: u32,
         offset: u32,
-        count: u16,
-        _pad: u16 = 0,
+        count: u32,
     };
 
     /// Write the current in-memory index to disk in a two-file format.
@@ -494,17 +501,17 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
         // Step 1: Build file table (assign u16 IDs to all unique paths)
         var file_table: std.ArrayList([]const u8) = .{};
         defer file_table.deinit(self.allocator);
-        var path_to_id = std.StringHashMap(u16).init(self.allocator);
+        var path_to_id = std.StringHashMap(u32).init(self.allocator);
         defer path_to_id.deinit();
 
         var ft_iter = self.file_trigrams.keyIterator();
         while (ft_iter.next()) |path_ptr| {
-            const id: u16 = @intCast(file_table.items.len);
+            const id: u32 = @intCast(file_table.items.len);
             try file_table.append(self.allocator, path_ptr.*);
             try path_to_id.put(path_ptr.*, id);
         }
 
-        const file_count: u16 = @intCast(file_table.items.len);
+        const file_count: u32 = @intCast(file_table.items.len);
 
         // Step 2: Collect all trigrams, sort them, serialize postings contiguously
         var trigrams_sorted: std.ArrayList(Trigram) = .{};
@@ -530,7 +537,7 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
         for (trigrams_sorted.items) |tri| {
             const file_set = self.index.getPtr(tri) orelse continue;
             const offset: u32 = @intCast(postings_buf.items.len);
-            var count: u16 = 0;
+            var count: u32 = 0;
             var fs_iter = file_set.iterator();
             while (fs_iter.next()) |entry| {
                 const fid = path_to_id.get(entry.key_ptr.*) orelse continue;
@@ -558,13 +565,13 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
             const file = try std.fs.cwd().createFile(postings_tmp, .{});
             defer file.close();
 
-            // Header v2: magic(4) + version(2) + file_count(2) + head_len(1) + head(40) = 49 bytes
+            // Header v3: magic(4) + version(2) + file_count(4) + head_len(1) + head(40) = 51 bytes
             try file.writeAll(&POSTINGS_MAGIC);
             var ver_buf: [2]u8 = undefined;
             std.mem.writeInt(u16, &ver_buf, FORMAT_VERSION, .little);
             try file.writeAll(&ver_buf);
-            var fc_buf: [2]u8 = undefined;
-            std.mem.writeInt(u16, &fc_buf, file_count, .little);
+            var fc_buf: [4]u8 = undefined;
+            std.mem.writeInt(u32, &fc_buf, file_count, .little);
             try file.writeAll(&fc_buf);
             // Git HEAD: head_len (1 byte) + head (40 bytes)
             if (git_head) |head| {
@@ -635,22 +642,27 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
         const lookup_data = std.fs.cwd().readFileAlloc(allocator, lookup_path, 64 * 1024 * 1024) catch return null;
         defer allocator.free(lookup_data);
 
-        // Validate postings header (v1: 8 bytes, v2: 49 bytes)
+        // Validate postings header (v1: 8 bytes, v2: 49 bytes, v3: 51 bytes)
         if (postings_data.len < 8) return null;
         if (!std.mem.eql(u8, postings_data[0..4], &POSTINGS_MAGIC)) return null;
         const post_version = std.mem.readInt(u16, postings_data[4..6], .little);
         if (post_version < 1 or post_version > FORMAT_VERSION) return null;
-        const file_count = std.mem.readInt(u16, postings_data[6..8], .little);
+        const file_count: u32 = if (post_version >= 3)
+            std.mem.readInt(u32, postings_data[6..10], .little)
+        else
+            std.mem.readInt(u16, postings_data[6..8], .little);
 
-        // v2 header has 41 extra bytes: head_len(1) + head(40)
-        const file_table_start: usize = if (post_version >= 2) blk: {
+        const file_table_start: usize = if (post_version >= 3) blk: {
+            if (postings_data.len < 51) return null;
+            break :blk 51;
+        } else if (post_version >= 2) blk: {
             if (postings_data.len < 49) return null;
             break :blk 49;
         } else 8;
 
         // Parse file table
         var file_paths = try allocator.alloc([]u8, file_count);
-        var parsed_files: u16 = 0;
+        var parsed_files: u32 = 0;
         defer {
             for (0..parsed_files) |i| allocator.free(file_paths[i]);
             allocator.free(file_paths);
@@ -669,8 +681,9 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
         // Remaining bytes are DiskPosting entries
         const postings_start = pos;
         const postings_byte_len = postings_data.len - postings_start;
-        if (postings_byte_len % @sizeOf(DiskPosting) != 0) return null;
-        const total_postings = postings_byte_len / @sizeOf(DiskPosting);
+        const posting_size: usize = if (post_version >= 3) @sizeOf(DiskPosting) else @sizeOf(OldDiskPosting);
+        if (postings_byte_len % posting_size != 0) return null;
+        const total_postings = postings_byte_len / posting_size;
 
         // Validate lookup header
         if (lookup_data.len < 12) return null;
@@ -711,19 +724,24 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
             errdefer file_set.deinit();
 
             for (0..p_count) |pi| {
-                const pb_off = postings_start + (p_off + pi) * @sizeOf(DiskPosting);
-                const pb = postings_data[pb_off..][0..@sizeOf(DiskPosting)];
-                const posting: *align(1) const DiskPosting = @ptrCast(pb.ptr);
+                const pb_off = postings_start + (p_off + pi) * posting_size;
+                const raw_posting = postings_data[pb_off..][0..posting_size];
+                const file_id: u32 = if (post_version >= 3)
+                    std.mem.readInt(u32, raw_posting[0..4], .little)
+                else
+                    std.mem.readInt(u16, raw_posting[0..2], .little);
+                const next_mask = raw_posting[if (post_version >= 3) 4 else 2];
+                const loc_mask = raw_posting[if (post_version >= 3) 5 else 3];
 
-                if (posting.file_id >= file_count) return error.InvalidData;
-                const path = stable_paths[posting.file_id];
+                if (file_id >= file_count) return error.InvalidData;
+                const path = stable_paths[file_id];
 
                 const gop = try file_set.getOrPut(path);
                 if (!gop.found_existing) {
                     gop.value_ptr.* = PostingMask{};
                 }
-                gop.value_ptr.next_mask |= posting.next_mask;
-                gop.value_ptr.loc_mask |= posting.loc_mask;
+                gop.value_ptr.next_mask |= next_mask;
+                gop.value_ptr.loc_mask |= loc_mask;
 
                 // Track trigram in file_trigrams
                 if (result.file_trigrams.getPtr(path)) |tri_list| {
@@ -748,7 +766,7 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
 
     /// Header info that can be read without loading the full index.
     pub const DiskHeader = struct {
-        file_count: u16,
+        file_count: u32,
         git_head: ?[40]u8,
     };
 
@@ -761,16 +779,26 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
         const file = std.fs.cwd().openFile(postings_path, .{}) catch return null;
         defer file.close();
 
-        var buf: [49]u8 = undefined;
+        var buf: [51]u8 = undefined;
         const n = file.readAll(&buf) catch return null;
         if (n < 8) return null;
         if (!std.mem.eql(u8, buf[0..4], &POSTINGS_MAGIC)) return null;
         const version = std.mem.readInt(u16, buf[4..6], .little);
         if (version < 1 or version > FORMAT_VERSION) return null;
-        const file_count = std.mem.readInt(u16, buf[6..8], .little);
+        const file_count: u32 = if (version >= 3)
+            std.mem.readInt(u32, buf[6..10], .little)
+        else
+            std.mem.readInt(u16, buf[6..8], .little);
 
         var git_head: ?[40]u8 = null;
-        if (version >= 2 and n >= 49) {
+        if (version >= 3 and n >= 51) {
+            const head_len = buf[10];
+            if (head_len == 40) {
+                var head: [40]u8 = undefined;
+                @memcpy(&head, buf[11..51]);
+                git_head = head;
+            }
+        } else if (version >= 2 and n >= 49) {
             const head_len = buf[8];
             if (head_len == 40) {
                 var head: [40]u8 = undefined;
@@ -1160,8 +1188,13 @@ pub fn writeFrequencyTable(table: *const [256][256]u16, dir_path: []const u8) !v
     {
         const tmp = try dir.createFile("pair_freq.bin.tmp", .{});
         defer tmp.close();
-        const bytes: []const u8 = @as([*]const u8, @ptrCast(table))[0 .. 256 * 256 * @sizeOf(u16)];
-        try tmp.writeAll(bytes);
+        var row_buf: [256 * 2]u8 = undefined;
+        for (table) |row| {
+            for (row, 0..) |val, j| {
+                std.mem.writeInt(u16, row_buf[j * 2 ..][0..2], val, .little);
+            }
+            try tmp.writeAll(&row_buf);
+        }
     }
     try dir.rename("pair_freq.bin.tmp", "pair_freq.bin");
 }
@@ -1182,15 +1215,19 @@ pub fn readFrequencyTable(dir_path: []const u8, allocator: std.mem.Allocator) !?
     if (stat.size != expected_size) return null;
     const result = try allocator.create([256][256]u16);
     errdefer allocator.destroy(result);
-    const bytes: []u8 = @as([*]u8, @ptrCast(result))[0..expected_size];
-    const n = try file.readAll(bytes);
-    if (n != expected_size) {
-        allocator.destroy(result);
-        return null;
+    var row_buf: [256 * 2]u8 = undefined;
+    for (result) |*row| {
+        const n = try file.readAll(&row_buf);
+        if (n != row_buf.len) {
+            allocator.destroy(result);
+            return null;
+        }
+        for (row, 0..) |*val, j| {
+            val.* = std.mem.readInt(u16, row_buf[j * 2 ..][0..2], .little);
+        }
     }
     return result;
 }
-
 
 /// A single sparse n-gram extracted from a string.
 pub const SparseNgram = struct {
@@ -1285,11 +1322,30 @@ pub fn extractSparseNgrams(content: []const u8, allocator: std.mem.Allocator) ![
     return result.toOwnedSlice(allocator);
 }
 
-/// Build the covering set of sparse n-grams for a query string.
-/// Equivalent to extractSparseNgrams for our partition-based approach.
+/// Build the covering set of n-gram hashes for a query using a sliding window.
+/// Extracts every substring of the query with length in [3, MAX_NGRAM_LEN] so
+/// that file boundary-based n-grams overlapping the query are matched regardless
+/// of where content-defined boundaries fall in the indexed file.
 /// Caller owns the returned slice.
 pub fn buildCoveringSet(query: []const u8, allocator: std.mem.Allocator) ![]SparseNgram {
-    return extractSparseNgrams(query, allocator);
+    const MIN_LEN = 3;
+    if (query.len < MIN_LEN) return try allocator.alloc(SparseNgram, 0);
+
+    var result: std.ArrayList(SparseNgram) = .{};
+    errdefer result.deinit(allocator);
+
+    // Slide a window of every length [MIN_LEN, MAX_NGRAM_LEN] across the query.
+    // This avoids boundary-misalignment false negatives when a query substring
+    // appears in the indexed file as a content-defined boundary n-gram.
+    var len: usize = MIN_LEN;
+    while (len <= @min(MAX_NGRAM_LEN, query.len)) : (len += 1) {
+        var pos: usize = 0;
+        while (pos + len <= query.len) : (pos += 1) {
+            try result.append(allocator, makeNgram(query, pos, len));
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
 }
 
 /// In-memory sparse n-gram index.  Mirrors the TrigramIndex API so it can
@@ -1366,57 +1422,45 @@ pub const SparseNgramIndex = struct {
         try self.file_ngrams.put(path, hash_list);
     }
 
-    /// Find candidate files that contain ALL sparse n-grams extracted from
-    /// the query.  Returns null when no useful n-grams can be extracted
-    /// (query too short).  Returns an owned slice; caller must free it using
-    /// the same allocator that was passed to init.
-    pub fn candidates(self: *SparseNgramIndex, query: []const u8) ?[]const []const u8 {
-        const ngrams = buildCoveringSet(query, self.allocator) catch return null;
-        defer self.allocator.free(ngrams);
+    /// Find candidate files that may contain the query string.
+    /// Uses the sliding-window covering set from buildCoveringSet and returns
+    /// the UNION of all matching posting lists — a superset of true matches,
+    /// to be verified by content search.  Returns null when the query is too
+    /// short.  Caller must free the returned slice.
+    pub fn candidates(self: *SparseNgramIndex, query: []const u8, allocator: std.mem.Allocator) ?[]const []const u8 {
+        const ngrams = buildCoveringSet(query, allocator) catch return null;
+        defer allocator.free(ngrams);
 
         if (ngrams.len == 0) return null;
 
-        // Collect posting sets for each n-gram hash.
-        var sets: std.ArrayList(*std.StringHashMap(void)) = .{};
-        defer sets.deinit(self.allocator);
+        // Union posting sets for all sliding-window n-gram hashes.
+        // A file is a candidate if it shares any substring with the query.
+        var seen_files = std.StringHashMap(void).init(allocator);
+        defer seen_files.deinit();
 
         for (ngrams) |ng| {
-            const file_set = self.index.getPtr(ng.hash) orelse {
-                // N-gram not found → no file can match all n-grams.
-                return self.allocator.alloc([]const u8, 0) catch null;
-            };
-            sets.append(self.allocator, file_set) catch return null;
-        }
-
-        if (sets.items.len == 0) {
-            return self.allocator.alloc([]const u8, 0) catch null;
-        }
-
-        // Intersect starting from the smallest set.
-        var min_idx: usize = 0;
-        var min_count = sets.items[0].count();
-        for (sets.items[1..], 1..) |set, i| {
-            if (set.count() < min_count) {
-                min_count = set.count();
-                min_idx = i;
+            const file_set = self.index.getPtr(ng.hash) orelse continue;
+            var it = file_set.keyIterator();
+            while (it.next()) |path_ptr| {
+                seen_files.put(path_ptr.*, {}) catch return null;
             }
+        }
+
+        if (seen_files.count() == 0) {
+            return allocator.alloc([]const u8, 0) catch null;
         }
 
         var result: std.ArrayList([]const u8) = .{};
-        errdefer result.deinit(self.allocator);
-        result.ensureTotalCapacity(self.allocator, min_count) catch return null;
+        errdefer result.deinit(allocator);
+        result.ensureTotalCapacity(allocator, seen_files.count()) catch return null;
 
-        var it = sets.items[min_idx].keyIterator();
-        next_cand: while (it.next()) |path_ptr| {
-            for (sets.items, 0..) |set, i| {
-                if (i == min_idx) continue;
-                if (!set.contains(path_ptr.*)) continue :next_cand;
-            }
+        var file_it = seen_files.keyIterator();
+        while (file_it.next()) |path_ptr| {
             result.appendAssumeCapacity(path_ptr.*);
         }
 
-        return result.toOwnedSlice(self.allocator) catch {
-            result.deinit(self.allocator);
+        return result.toOwnedSlice(allocator) catch {
+            result.deinit(allocator);
             return null;
         };
     }
