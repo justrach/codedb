@@ -420,12 +420,23 @@ pub fn main() !void {
 
         saveProjectInfo(allocator, data_dir, abs_root) catch {};
 
+        // Try loading from snapshot first for instant startup
+        const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
+        const snapshot_loaded = blk: {
+            const snap_head = snapshot_mod.readSnapshotGitHead("codedb.snapshot") orelse break :blk false;
+            const cur_head = git_head orelse break :blk false;
+            if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
+            break :blk snapshot_mod.loadSnapshot("codedb.snapshot", &explorer, &store, allocator);
+        };
+
         var shutdown = std.atomic.Value(bool).init(false);
-        var scan_done = std.atomic.Value(bool).init(false);
+        var scan_done = std.atomic.Value(bool).init(snapshot_loaded);
 
         var queue = watcher.EventQueue{};
-        const scan_thread = try std.Thread.spawn(.{}, scanBg, .{ &store, &explorer, root, allocator, &scan_done, data_dir });
-        scan_thread.detach();
+        if (!snapshot_loaded) {
+            const scan_thread = try std.Thread.spawn(.{}, scanBg, .{ &store, &explorer, root, allocator, &scan_done, data_dir, abs_root });
+            scan_thread.detach();
+        }
 
         const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &prerender, &shutdown, &scan_done });
         const isr_thread = try std.Thread.spawn(.{}, Prerender.isrLoop, .{ &prerender, &explorer, &store, &shutdown });
@@ -527,7 +538,7 @@ fn reapLoop(agents: *AgentRegistry, shutdown: *std.atomic.Value(bool)) void {
     }
 }
 
-fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), data_dir: []const u8) void {
+fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8) void {
     const git_head = git_mod.getGitHead(root, allocator) catch null;
     const disk_hdr = TrigramIndex.readDiskHeader(data_dir, allocator) catch null;
     const heads_match = blk: {
@@ -548,6 +559,10 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
                 explorer.trigram_index.deinit();
                 explorer.trigram_index = loaded;
                 scan_done.store(true, .release);
+                // Auto-write snapshot after successful scan
+                snapshot_mod.writeSnapshot(explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
+                    std.log.warn("could not auto-write snapshot: {}", .{err});
+                };
                 return;
             }
         }
@@ -560,6 +575,11 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
         std.log.warn("could not persist trigram index: {}", .{err});
     };
     scan_done.store(true, .release);
+
+    // Auto-write snapshot after successful scan
+    snapshot_mod.writeSnapshot(explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
+        std.log.warn("could not auto-write snapshot: {}", .{err});
+    };
 }
 fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
     const mcp = @import("mcp.zig");
