@@ -233,7 +233,7 @@ const FilteredWalker = struct {
 };
 
 /// Called from main thread to do the initial scan before listening.
-pub fn initialScan(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator) !void {
+pub fn initialScan(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
     var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
     defer dir.close();
 
@@ -244,7 +244,7 @@ pub fn initialScan(store: *Store, explorer: *Explorer, root: []const u8, allocat
         const stat = dir.statFile(entry.path) catch continue;
         _ = try store.recordSnapshot(entry.path, stat.size, 0);
         // Index outline + content + word/trigram for full search support
-        indexFileContent(explorer, dir, entry.path, allocator) catch {};
+        indexFileContent(explorer, dir, entry.path, allocator, skip_trigram) catch {};
     }
 }
 
@@ -385,7 +385,7 @@ fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known
             old.hash = hash;
             const stable_path = known_entry.key_ptr.*;
             if (FsEvent.init(stable_path, .modified, seq)) |ev| pushEventOrWait(queue, ev);
-            indexFileContent(explorer, dir, stable_path, tmp) catch {};
+            indexFileContent(explorer, dir, stable_path, tmp, false) catch {};
             prerender.invalidate();
         } else {
             // New files always generate an event, so skip the extra full-file hash pass.
@@ -394,7 +394,7 @@ fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known
             const seq = try store.recordSnapshot(duped, stat.size, 0);
             try known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = true });
             if (FsEvent.init(duped, .created, seq)) |ev| pushEventOrWait(queue, ev);
-            indexFileContent(explorer, dir, duped, tmp) catch {};
+            indexFileContent(explorer, dir, duped, tmp, false) catch {};
             prerender.invalidate();
         }
     }
@@ -441,7 +441,7 @@ fn shouldSkipFile(path: []const u8) bool {
     return false;
 }
 
-fn indexFileContent(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allocator: std.mem.Allocator) !void {
+fn indexFileContent(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
     if (shouldSkipFile(path)) return;
     const file = try dir.openFile(path, .{});
     defer file.close();
@@ -455,5 +455,10 @@ fn indexFileContent(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allo
     for (content[0..check_len]) |c| {
         if (c == 0) return;
     }
-    try explorer.indexFile(path, content);
+    if (skip_trigram) {
+        try explorer.indexFileSkipTrigram(path, content);
+    } else {
+        try explorer.indexFile(path, content);
+    }
 }
+

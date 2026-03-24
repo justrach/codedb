@@ -7,6 +7,8 @@ const watcher = @import("watcher.zig");
 const server = @import("server.zig");
 const mcp_server = @import("mcp.zig");
 const sty = @import("style.zig");
+const git_mod = @import("git.zig");
+const TrigramIndex = @import("index.zig").TrigramIndex;
 
 /// Thin wrapper: format + write to a File via allocator.
 const Out = struct {
@@ -81,8 +83,16 @@ pub fn main() !void {
     defer explorer.deinit();
 
     if (!std.mem.eql(u8, cmd, "mcp")) {
+        const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
+        const disk_hdr = TrigramIndex.readDiskHeader(data_dir, allocator) catch null;
+        const heads_match = blk: {
+            const a = git_head orelse break :blk false;
+            const b = (disk_hdr orelse break :blk false).git_head orelse break :blk false;
+            break :blk std.mem.eql(u8, &a, &b);
+        };
+
         const t_scan = std.time.nanoTimestamp();
-        try watcher.initialScan(&store, &explorer, root, allocator);
+        try watcher.initialScan(&store, &explorer, root, allocator, heads_match);
         const scan_elapsed = std.time.nanoTimestamp() - t_scan;
         var dur_buf: [64]u8 = undefined;
         out.p("{s}\xe2\x9c\x93{s} {s}indexed{s}  {s}{s}{s}\n", .{
@@ -91,11 +101,33 @@ pub fn main() !void {
             sty.durationColor(s, scan_elapsed), sty.formatDuration(&dur_buf, scan_elapsed), s.reset,
         });
 
-        // Persist trigram index to disk for fast future startup
-        explorer.trigram_index.writeToDisk(data_dir) catch |err| {
-            std.log.warn("could not persist trigram index: {}", .{err});
-        };
+        if (heads_match) {
+            // Verify file count then load trigram from disk
+            const current_count = @as(u16, @intCast(@min(explorer.outlines.count(), std.math.maxInt(u16))));
+            if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
+                if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+                    explorer.trigram_index.deinit();
+                    explorer.trigram_index = loaded;
+                } else {
+                    explorer.rebuildTrigrams() catch {};
+                    explorer.trigram_index.writeToDisk(data_dir, git_head) catch |err| {
+                        std.log.warn("could not persist trigram index: {}", .{err});
+                    };
+                }
+            } else {
+                explorer.rebuildTrigrams() catch {};
+                explorer.trigram_index.writeToDisk(data_dir, git_head) catch |err| {
+                    std.log.warn("could not persist trigram index: {}", .{err});
+                };
+            }
+        } else {
+            // Persist trigram index to disk for fast future startup
+            explorer.trigram_index.writeToDisk(data_dir, git_head) catch |err| {
+                std.log.warn("could not persist trigram index: {}", .{err});
+            };
+        }
     }
+
 
     if (std.mem.eql(u8, cmd, "tree")) {
         const t0 = std.time.nanoTimestamp();
@@ -422,11 +454,35 @@ fn reapLoop(agents: *AgentRegistry, shutdown: *std.atomic.Value(bool)) void {
 }
 
 fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), data_dir: []const u8) void {
-    watcher.initialScan(store, explorer, root, allocator) catch |err| {
+    const git_head = git_mod.getGitHead(root, allocator) catch null;
+    const disk_hdr = TrigramIndex.readDiskHeader(data_dir, allocator) catch null;
+    const heads_match = blk: {
+        const a = git_head orelse break :blk false;
+        const b = (disk_hdr orelse break :blk false).git_head orelse break :blk false;
+        break :blk std.mem.eql(u8, &a, &b);
+    };
+
+    watcher.initialScan(store, explorer, root, allocator, heads_match) catch |err| {
         std.log.warn("background scan failed: {}", .{err});
     };
+
+    if (heads_match) {
+        // Verify file count, then load trigram index from disk (skip rebuild)
+        const current_count = @as(u16, @intCast(@min(explorer.outlines.count(), std.math.maxInt(u16))));
+        if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
+            if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+                explorer.trigram_index.deinit();
+                explorer.trigram_index = loaded;
+                scan_done.store(true, .release);
+                return;
+            }
+        }
+        // File count mismatch or disk read failed — rebuild trigrams from stored content
+        explorer.rebuildTrigrams() catch {};
+    }
+
     // Persist trigram index to disk for fast future startup
-    explorer.trigram_index.writeToDisk(data_dir) catch |err| {
+    explorer.trigram_index.writeToDisk(data_dir, git_head) catch |err| {
         std.log.warn("could not persist trigram index: {}", .{err});
     };
     scan_done.store(true, .release);

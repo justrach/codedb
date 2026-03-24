@@ -145,16 +145,21 @@ pub const Explorer = struct {
         self.trigram_index.deinit();
     }
     pub fn indexFile(self: *Explorer, path: []const u8, content: []const u8) !void {
-        return self.indexFileInner(path, content, true);
+        return self.indexFileInner(path, content, true, false);
     }
 
     /// Fast path: index outline + content storage only, skip word/trigram indexes.
-    /// Used during initial scan for speed. Search indexes are built lazily on first query.
     pub fn indexFileOutlineOnly(self: *Explorer, path: []const u8, content: []const u8) !void {
-        return self.indexFileInner(path, content, false);
+        return self.indexFileInner(path, content, false, false);
     }
 
-fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool) !void {
+    /// Index outline + word index but skip trigram construction (used when trigram is loaded from disk cache).
+    pub fn indexFileSkipTrigram(self: *Explorer, path: []const u8, content: []const u8) !void {
+        return self.indexFileInner(path, content, true, true);
+    }
+
+
+fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool, skip_trigram: bool) !void {
     // Parse outline outside the global explorer write lock.
     // This keeps HTTP/MCP readers from being blocked on line-by-line parsing.
     var outline = FileOutline.init(self.allocator, path);
@@ -229,7 +234,9 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
     // Build search indexes.
     if (full_index) {
         try self.word_index.indexFile(stable_path, content);
-        try self.trigram_index.indexFile(stable_path, content);
+        if (!skip_trigram) {
+            try self.trigram_index.indexFile(stable_path, content);
+        }
     }
 
     try self.rebuildDepsFor(stable_path, &outline);
@@ -242,6 +249,17 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
         old_outline.deinit();
     }
 }
+    /// Rebuild trigram index from the stored file contents.
+    /// Used after a cache hit to populate trigrams when they were skipped during the fast scan.
+    pub fn rebuildTrigrams(self: *Explorer) !void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        var iter = self.contents.iterator();
+        while (iter.next()) |entry| {
+            try self.trigram_index.indexFile(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+
 
     pub fn removeFile(self: *Explorer, path: []const u8) void {
         self.mu.lock();

@@ -1607,6 +1607,7 @@ test "extractLines: compact on all-comment file returns empty" {
 const decomposeRegex = @import("index.zig").decomposeRegex;
 const RegexQuery = @import("index.zig").RegexQuery;
 const packTrigram = @import("index.zig").packTrigram;
+const git_mod = @import("git.zig");
 const regexMatch = explore.regexMatch;
 
 test "decomposeRegex: pure literal extracts trigrams" {
@@ -2339,7 +2340,7 @@ test "disk index: round-trip write and read preserves candidates" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmp.dir.realpath(".", &path_buf);
 
-    try ti.writeToDisk(dir_path);
+    try ti.writeToDisk(dir_path, null);
 
     // Read back
     const loaded = TrigramIndex.readFromDisk(dir_path, alloc);
@@ -2403,7 +2404,7 @@ test "disk index: empty index round-trips correctly" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmp.dir.realpath(".", &path_buf);
 
-    try ti.writeToDisk(dir_path);
+    try ti.writeToDisk(dir_path, null);
 
     const loaded = TrigramIndex.readFromDisk(dir_path, alloc);
     try testing.expect(loaded != null);
@@ -2430,7 +2431,7 @@ test "disk index: bloom masks preserved after round-trip" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmp.dir.realpath(".", &path_buf);
 
-    try ti.writeToDisk(dir_path);
+    try ti.writeToDisk(dir_path, null);
 
     const loaded = TrigramIndex.readFromDisk(dir_path, alloc);
     try testing.expect(loaded != null);
@@ -2460,7 +2461,7 @@ test "disk index: fileCount matches after round-trip" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmp.dir.realpath(".", &path_buf);
 
-    try ti.writeToDisk(dir_path);
+    try ti.writeToDisk(dir_path, null);
 
     const loaded = TrigramIndex.readFromDisk(dir_path, alloc);
     try testing.expect(loaded != null);
@@ -2470,3 +2471,125 @@ test "disk index: fileCount matches after round-trip" {
     try testing.expectEqual(@as(u32, 3), loaded_ti.fileCount());
 }
 
+
+// ── Git HEAD + disk index tests ─────────────────────────────
+
+test "git: getGitHead returns 40-char hex SHA in a git repo" {
+    // codedb2 itself is a git repo, so this should succeed
+    const head = try git_mod.getGitHead(".", testing.allocator);
+    try testing.expect(head != null);
+    const sha = head.?;
+    try testing.expectEqual(@as(usize, 40), sha.len);
+    for (sha) |c| {
+        try testing.expect(std.ascii.isHex(c));
+    }
+}
+
+test "git: getGitHead returns null for non-git directory" {
+    // /tmp is not a git repo
+    const head = try git_mod.getGitHead("/tmp", testing.allocator);
+    try testing.expect(head == null);
+}
+
+test "disk index: writeToDisk stores git_head, readGitHead retrieves it" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+
+    try ti.indexFile("a.zig", "fn hello() void {}");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const fake_head = "aabbccddeeff00112233445566778899aabbccdd".*;
+    try ti.writeToDisk(dir_path, fake_head);
+
+    const retrieved = try TrigramIndex.readGitHead(dir_path, alloc);
+    try testing.expect(retrieved != null);
+    try testing.expectEqualSlices(u8, &fake_head, &retrieved.?);
+}
+
+test "disk index: writeToDisk with null git_head, readGitHead returns null" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    try ti.writeToDisk(dir_path, null);
+
+    const retrieved = try TrigramIndex.readGitHead(dir_path, alloc);
+    try testing.expect(retrieved == null);
+}
+
+test "disk index: readDiskHeader returns file_count and git_head" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+
+    try ti.indexFile("x.zig", "pub const X = 42;");
+    try ti.indexFile("y.zig", "pub const Y = 99;");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const fake_head = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".*;
+    try ti.writeToDisk(dir_path, fake_head);
+
+    const hdr = try TrigramIndex.readDiskHeader(dir_path, alloc);
+    try testing.expect(hdr != null);
+    try testing.expectEqual(@as(u16, 2), hdr.?.file_count);
+    try testing.expect(hdr.?.git_head != null);
+    try testing.expectEqualSlices(u8, &fake_head, &hdr.?.git_head.?);
+}
+
+test "disk index: v1 format (no git_head) still loads and readGitHead returns null" {
+    const alloc = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    // Manually write a v1 postings file (no git head bytes)
+    const postings_path = try std.fmt.allocPrint(alloc, "{s}/trigram.postings", .{dir_path});
+    defer alloc.free(postings_path);
+    {
+        const f = try std.fs.cwd().createFile(postings_path, .{});
+        defer f.close();
+        // magic(4) + version=1(2) + file_count=0(2) = 8 bytes total
+        try f.writeAll(&.{ 'C', 'D', 'B', 'T' });
+        try f.writeAll(&.{ 1, 0 }); // version = 1 LE
+        try f.writeAll(&.{ 0, 0 }); // file_count = 0
+    }
+    // Write a matching v1 lookup file
+    const lookup_path = try std.fmt.allocPrint(alloc, "{s}/trigram.lookup", .{dir_path});
+    defer alloc.free(lookup_path);
+    {
+        const f = try std.fs.cwd().createFile(lookup_path, .{});
+        defer f.close();
+        // magic(4) + version=1(2) + pad(2) + entry_count=0(4) = 12 bytes
+        try f.writeAll(&.{ 'C', 'D', 'B', 'L' });
+        try f.writeAll(&.{ 1, 0 }); // version = 1
+        try f.writeAll(&.{ 0, 0 }); // pad
+        try f.writeAll(&.{ 0, 0, 0, 0 }); // entry_count = 0
+    }
+
+    // readGitHead on a v1 file must return null (no git head stored)
+    const git_head = try TrigramIndex.readGitHead(dir_path, alloc);
+    try testing.expect(git_head == null);
+
+    // readFromDisk on a v1 file must still succeed (backward compat)
+    const loaded = TrigramIndex.readFromDisk(dir_path, alloc);
+    try testing.expect(loaded != null);
+    var loaded_ti = loaded.?;
+    defer loaded_ti.deinit();
+    try testing.expectEqual(@as(u32, 0), loaded_ti.fileCount());
+}

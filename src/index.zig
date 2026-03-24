@@ -471,7 +471,7 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
 
     const POSTINGS_MAGIC = [4]u8{ 'C', 'D', 'B', 'T' };
     const LOOKUP_MAGIC = [4]u8{ 'C', 'D', 'B', 'L' };
-    const FORMAT_VERSION: u16 = 1;
+    const FORMAT_VERSION: u16 = 2;
 
     /// Posting entry: file_id (u16) + next_mask (u8) + loc_mask (u8) = 4 bytes
     const DiskPosting = extern struct {
@@ -490,7 +490,7 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
 
     /// Write the current in-memory index to disk in a two-file format.
     /// Files are written atomically (write to tmp, then rename).
-    pub fn writeToDisk(self: *TrigramIndex, dir_path: []const u8) !void {
+    pub fn writeToDisk(self: *TrigramIndex, dir_path: []const u8, git_head: ?[40]u8) !void {
         // Step 1: Build file table (assign u16 IDs to all unique paths)
         var file_table: std.ArrayList([]const u8) = .{};
         defer file_table.deinit(self.allocator);
@@ -558,7 +558,7 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
             const file = try std.fs.cwd().createFile(postings_tmp, .{});
             defer file.close();
 
-            // Header: magic(4) + version(2) + file_count(2) = 8 bytes
+            // Header v2: magic(4) + version(2) + file_count(2) + head_len(1) + head(40) = 49 bytes
             try file.writeAll(&POSTINGS_MAGIC);
             var ver_buf: [2]u8 = undefined;
             std.mem.writeInt(u16, &ver_buf, FORMAT_VERSION, .little);
@@ -566,6 +566,14 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
             var fc_buf: [2]u8 = undefined;
             std.mem.writeInt(u16, &fc_buf, file_count, .little);
             try file.writeAll(&fc_buf);
+            // Git HEAD: head_len (1 byte) + head (40 bytes)
+            if (git_head) |head| {
+                try file.writeAll(&.{40});
+                try file.writeAll(&head);
+            } else {
+                try file.writeAll(&.{0});
+                try file.writeAll(&([_]u8{0} ** 40));
+            }
 
             // File table: for each file, path_len(u16) + path bytes
             for (file_table.items) |path| {
@@ -627,12 +635,18 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
         const lookup_data = std.fs.cwd().readFileAlloc(allocator, lookup_path, 64 * 1024 * 1024) catch return null;
         defer allocator.free(lookup_data);
 
-        // Validate postings header
+        // Validate postings header (v1: 8 bytes, v2: 49 bytes)
         if (postings_data.len < 8) return null;
         if (!std.mem.eql(u8, postings_data[0..4], &POSTINGS_MAGIC)) return null;
         const post_version = std.mem.readInt(u16, postings_data[4..6], .little);
-        if (post_version != FORMAT_VERSION) return null;
+        if (post_version < 1 or post_version > FORMAT_VERSION) return null;
         const file_count = std.mem.readInt(u16, postings_data[6..8], .little);
+
+        // v2 header has 41 extra bytes: head_len(1) + head(40)
+        const file_table_start: usize = if (post_version >= 2) blk: {
+            if (postings_data.len < 49) return null;
+            break :blk 49;
+        } else 8;
 
         // Parse file table
         var file_paths = try allocator.alloc([]u8, file_count);
@@ -641,7 +655,7 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
             for (0..parsed_files) |i| allocator.free(file_paths[i]);
             allocator.free(file_paths);
         }
-        var pos: usize = 8;
+        var pos: usize = file_table_start;
         for (0..file_count) |i| {
             if (pos + 2 > postings_data.len) return null;
             const path_len = std.mem.readInt(u16, postings_data[pos..][0..2], .little);
@@ -662,7 +676,7 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
         if (lookup_data.len < 12) return null;
         if (!std.mem.eql(u8, lookup_data[0..4], &LOOKUP_MAGIC)) return null;
         const lk_version = std.mem.readInt(u16, lookup_data[4..6], .little);
-        if (lk_version != FORMAT_VERSION) return null;
+        if (lk_version < 1 or lk_version > FORMAT_VERSION) return null;
         const entry_count = std.mem.readInt(u32, lookup_data[8..12], .little);
         if (lookup_data.len < 12 + entry_count * @sizeOf(LookupEntry)) return null;
 
@@ -732,8 +746,50 @@ pub fn candidates(self: *TrigramIndex, query: []const u8) ?[]const []const u8 {
         return @intCast(self.file_trigrams.count());
     }
 
+    /// Header info that can be read without loading the full index.
+    pub const DiskHeader = struct {
+        file_count: u16,
+        git_head: ?[40]u8,
+    };
+
+    /// Read just the postings file header — fast, no full file load.
+    /// Returns null if the file doesn't exist or has an unrecognised format.
+    pub fn readDiskHeader(dir_path: []const u8, allocator: std.mem.Allocator) !?DiskHeader {
+        const postings_path = try std.fmt.allocPrint(allocator, "{s}/trigram.postings", .{dir_path});
+        defer allocator.free(postings_path);
+
+        const file = std.fs.cwd().openFile(postings_path, .{}) catch return null;
+        defer file.close();
+
+        var buf: [49]u8 = undefined;
+        const n = file.readAll(&buf) catch return null;
+        if (n < 8) return null;
+        if (!std.mem.eql(u8, buf[0..4], &POSTINGS_MAGIC)) return null;
+        const version = std.mem.readInt(u16, buf[4..6], .little);
+        if (version < 1 or version > FORMAT_VERSION) return null;
+        const file_count = std.mem.readInt(u16, buf[6..8], .little);
+
+        var git_head: ?[40]u8 = null;
+        if (version >= 2 and n >= 49) {
+            const head_len = buf[8];
+            if (head_len == 40) {
+                var head: [40]u8 = undefined;
+                @memcpy(&head, buf[9..49]);
+                git_head = head;
+            }
+        }
+        return DiskHeader{ .file_count = file_count, .git_head = git_head };
+    }
+
+    /// Read the git HEAD stored in the disk index header.
+    /// Returns null if no git HEAD is stored or the file doesn't exist.
+    pub fn readGitHead(dir_path: []const u8, allocator: std.mem.Allocator) !?[40]u8 {
+        const header = try readDiskHeader(dir_path, allocator) orelse return null;
+        return header.git_head;
+    }
 
 };
+
 
 // ── Regex decomposition ─────────────────────────────────────
 
