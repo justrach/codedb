@@ -102,8 +102,14 @@ pub fn main() !void {
         const snapshot_path = "codedb.snapshot";
         const snapshot_loaded = blk: {
             const snap_head = snapshot_mod.readSnapshotGitHead(snapshot_path) orelse break :blk false;
-            const cur_head = git_head orelse break :blk false;
-            if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
+            const non_git_sentinel = [_]u8{0xFF} ** 40;
+            const is_non_git_snap = std.mem.eql(u8, &snap_head, &non_git_sentinel);
+            if (is_non_git_snap) {
+                if (git_head != null) break :blk false;
+            } else {
+                const cur_head = git_head orelse break :blk false;
+                if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
+            }
             break :blk snapshot_mod.loadSnapshot(snapshot_path, &explorer, &store, allocator);
         };
 
@@ -150,8 +156,10 @@ pub fn main() !void {
                 const current_count = @as(u16, @intCast(@min(explorer.outlines.count(), std.math.maxInt(u16))));
                 if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
                     if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+                        explorer.mu.lock();
                         explorer.trigram_index.deinit();
                         explorer.trigram_index = loaded;
+                        explorer.mu.unlock();
                     } else {
                         explorer.rebuildTrigrams() catch {};
                         explorer.trigram_index.writeToDisk(data_dir, git_head) catch |err| {
@@ -250,6 +258,11 @@ pub fn main() !void {
         };
         const t0 = std.time.nanoTimestamp();
         if (try explorer.findSymbol(name, allocator)) |r| {
+            defer {
+                allocator.free(r.path);
+                allocator.free(r.symbol.name);
+                if (r.symbol.detail) |d| allocator.free(d);
+            }
             const elapsed = std.time.nanoTimestamp() - t0;
             var dur_buf: [64]u8 = undefined;
             const kind = @tagName(r.symbol.kind);
@@ -290,7 +303,7 @@ pub fn main() !void {
         else
             try explorer.searchContent(query, allocator, 50);
         defer {
-            for (results) |r| allocator.free(r.line_text);
+            for (results) |r| { allocator.free(r.path); allocator.free(r.line_text); }
             allocator.free(results);
         }
         const elapsed = std.time.nanoTimestamp() - t0;
@@ -424,8 +437,14 @@ pub fn main() !void {
         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
         const snapshot_loaded = blk: {
             const snap_head = snapshot_mod.readSnapshotGitHead("codedb.snapshot") orelse break :blk false;
-            const cur_head = git_head orelse break :blk false;
-            if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
+            const non_git_sentinel = [_]u8{0xFF} ** 40;
+            const is_non_git_snap = std.mem.eql(u8, &snap_head, &non_git_sentinel);
+            if (is_non_git_snap) {
+                if (git_head != null) break :blk false;
+            } else {
+                const cur_head = git_head orelse break :blk false;
+                if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
+            }
             break :blk snapshot_mod.loadSnapshot("codedb.snapshot", &explorer, &store, allocator);
         };
 
@@ -556,8 +575,10 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
         const current_count = @as(u16, @intCast(@min(explorer.outlines.count(), std.math.maxInt(u16))));
         if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
             if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+                explorer.mu.lock();
                 explorer.trigram_index.deinit();
                 explorer.trigram_index = loaded;
+                explorer.mu.unlock();
                 scan_done.store(true, .release);
                 // Auto-write snapshot after successful scan
                 snapshot_mod.writeSnapshot(explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
