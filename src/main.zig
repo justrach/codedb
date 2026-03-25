@@ -114,11 +114,6 @@ pub fn main() !void {
         };
 
         if (snapshot_loaded) {
-            // If snapshot loaded a freq table, track it for cleanup
-            if (index_mod.active_pair_freq != &index_mod.default_pair_freq) {
-                // The pointer was heap-allocated by loadSnapshot
-                freq_table_heap = @constCast(index_mod.active_pair_freq);
-            }
             const t_scan = std.time.nanoTimestamp();
             var dur_buf: [64]u8 = undefined;
             const scan_elapsed = std.time.nanoTimestamp() - t_scan;
