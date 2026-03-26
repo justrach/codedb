@@ -198,7 +198,7 @@ pub fn writeSnapshot(
     if (git_head) |head| {
         try file.writeAll(&head);
     } else {
-        try file.writeAll(&([_]u8{0} ** 40));
+        try file.writeAll(&([_]u8{0xFF} ** 40));
     }
 
     var sc_buf: [4]u8 = undefined;
