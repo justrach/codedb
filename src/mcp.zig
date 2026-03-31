@@ -16,6 +16,7 @@ const watcher = @import("watcher.zig");
 const edit_mod = @import("edit.zig");
 const idx = @import("index.zig");
 const snapshot_mod = @import("snapshot.zig");
+const telemetry_mod = @import("telemetry.zig");
 // ── Project cache ────────────────────────────────────────────────────────────
 
 const ProjectCtx = struct {
@@ -234,6 +235,7 @@ pub fn run(
     explorer: *Explorer,
     agents: *AgentRegistry,
     default_path: []const u8,
+    telem: *telemetry_mod.Telemetry,
 ) void {
     const stdout = std.fs.File.stdout();
     const stdin = std.fs.File.stdin();
@@ -294,12 +296,13 @@ pub fn run(
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) writeResult(alloc, stdout, id, tools_list);
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(alloc, root, stdout, id, store, explorer, agents, &cache);
+            handleCall(alloc, root, stdout, id, store, explorer, agents, &cache, telem);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
         } else {
             if (!is_notification) writeError(alloc, stdout, id, -32601, "Method not found");
         }
+        telem.flush();
     }
 }
 
@@ -389,6 +392,7 @@ fn handleCall(
     explorer: *Explorer,
     agents: *AgentRegistry,
     cache: *ProjectCache,
+    telem: *telemetry_mod.Telemetry,
 ) void {
     const is_notification = id == null;
 
@@ -425,9 +429,10 @@ fn handleCall(
     dispatch(alloc, tool, args, &out, store, explorer, agents, cache);
     const elapsed = std.time.nanoTimestamp() - t0;
 
+    const is_error = std.mem.startsWith(u8, out.items, "error:");
+    telem.recordToolCall(name, elapsed, is_error, out.items.len);
     if (is_notification) return;
 
-    const is_error = std.mem.startsWith(u8, out.items, "error:");
 
     // Block 1: Human-readable colored summary (ANSI — preview pane always renders it)
     var summary: std.ArrayList(u8) = .{};

@@ -10,6 +10,7 @@ const git_mod = @import("git.zig");
 const TrigramIndex = @import("index.zig").TrigramIndex;
 const index_mod = @import("index.zig");
 const snapshot_mod = @import("snapshot.zig");
+const telemetry = @import("telemetry.zig");
 
 
 /// Thin wrapper: format + write to a File via allocator.
@@ -59,6 +60,10 @@ pub fn main() !void {
     } else {
         printUsage(out, s);
         std.process.exit(1);
+    }
+
+    if (std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, "${workspaceFolder}")) {
+        root = ".";
     }
 
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -444,7 +449,16 @@ pub fn main() !void {
         const idle_thread = try std.Thread.spawn(.{}, idleWatchdog, .{&shutdown});
 
         std.log.info("codedb2 mcp: root={s} files={d} data={s}", .{ abs_root, store.currentSeq(), data_dir });
-        mcp_server.run(allocator, &store, &explorer, &agents, abs_root);
+
+        var telem = telemetry.Telemetry.init(data_dir, allocator);
+        defer telem.deinit();
+
+        telem.record(.{ .session_start = .{
+            .file_count = @intCast(@min(explorer.outlines.count(), std.math.maxInt(u32))),
+            .total_lines = 0,
+        } });
+
+        mcp_server.run(allocator, &store, &explorer, &agents, abs_root, &telem);
 
         shutdown.store(true, .release);
         if (scan_thread) |st| st.join();
