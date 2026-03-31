@@ -200,9 +200,8 @@ codedb builds **all** indexes on startup (outlines, trigram, word, dependency gr
 |------|-------|-------|-----------|----------|
 | codedb2 | 20 | 12.6k | **17 ms** | 0.85 ms |
 | merjs | 100 | 17.3k | **16 ms** | 0.16 ms |
-| [openclaw/openclaw](https://github.com/openclaw/openclaw) | 11,677 | 1.67M | **20.3 s** | 1.74 ms |
-| [vitessio/vitess](https://github.com/vitessio/vitess) | 6,147 | 1.80M | **11.6 s** | 1.89 ms |
-
+| [openclaw/openclaw](https://github.com/openclaw/openclaw) | 11,281 | 2.29M | **75 s** | 6.66 ms |
+| [vitessio/vitess](https://github.com/vitessio/vitess) | 5,028 | 2.18M | **50 s** | 9.95 ms |
 Indexes are built once on startup. After that, the file watcher keeps them updated incrementally (single-file re-index: **<2ms**). Queries never re-scan the filesystem.
 
 
