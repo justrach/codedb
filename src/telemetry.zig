@@ -55,7 +55,7 @@ pub const Telemetry = struct {
         if (self.enabled) self.flush();
         if (self.file) |f| f.close();
         self.file = null;
-        self.syncToCloud();
+        if (self.enabled) self.syncToCloud();
     }
 
     /// Hot path — no allocation, no syscall, no blocking.

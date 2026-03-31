@@ -453,6 +453,13 @@ pub fn main() !void {
         var telem = telemetry.Telemetry.init(data_dir, allocator);
         defer telem.deinit();
 
+        for (args[cmd_args_start..]) |arg| {
+            if (std.mem.eql(u8, arg, "--no-telemetry")) {
+                telem.enabled = false;
+                break;
+            }
+        }
+
         telem.record(.{ .session_start = .{
             .file_count = @intCast(@min(explorer.outlines.count(), std.math.maxInt(u32))),
             .total_lines = 0,
@@ -526,10 +533,6 @@ fn printUsage(out: Out, s: sty.Style) void {
         \\    {s}serve{s}                     HTTP daemon on :7719
         \\    {s}mcp{s}                       JSON-RPC/MCP server over stdio
         \\
-        \\  If root is omitted, uses current working directory.
-        \\  Data stored in {s}~/.codedb/projects/<hash>/{s}
-        \\
-        \\
     , .{
         s.bold, s.reset,
         s.dim,  s.reset,
@@ -541,6 +544,18 @@ fn printUsage(out: Out, s: sty.Style) void {
         s.cyan, s.reset, s.dim, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,
+        s.cyan, s.reset,
+    });
+    out.p(
+        \\  {s}options:{s}
+        \\    {s}--no-telemetry{s}             disable usage telemetry (or set CODEDB_NO_TELEMETRY)
+        \\
+        \\  If root is omitted, uses current working directory.
+        \\  Data stored in {s}~/.codedb/projects/<hash>/{s}
+        \\
+        \\
+    , .{
+        s.dim,  s.reset,
         s.cyan, s.reset,
         s.dim,  s.reset,
     });
