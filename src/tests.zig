@@ -3431,9 +3431,9 @@ test "issue-41: snapshot not validated against repo identity allows cross-projec
     try testing.expect(!loaded);
 }
 
-test "issue-72: mcp index accepts temporary-directory roots that cause pathological cache growth" {
+test "issue-77: mcp index accepts temporary-directory roots that cause pathological cache growth" {
     var tmp_name_buf: [128]u8 = undefined;
-    const tmp_name = try std.fmt.bufPrint(&tmp_name_buf, "codedb-issue-72-{d}", .{std.time.microTimestamp()});
+    const tmp_name = try std.fmt.bufPrint(&tmp_name_buf, "codedb-issue-77-{d}", .{std.time.microTimestamp()});
     const tmp_root = try std.fs.path.join(testing.allocator, &.{ "/private/tmp", tmp_name });
     defer testing.allocator.free(tmp_root);
 
