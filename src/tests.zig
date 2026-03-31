@@ -3430,3 +3430,35 @@ test "issue-41: snapshot not validated against repo identity allows cross-projec
     const loaded = snapshot_mod.loadSnapshotValidated(snap_path, "/some/other/project", &exp2, &store, testing.allocator);
     try testing.expect(!loaded);
 }
+
+test "issue-72: mcp index accepts temporary-directory roots that cause pathological cache growth" {
+    var tmp_name_buf: [128]u8 = undefined;
+    const tmp_name = try std.fmt.bufPrint(&tmp_name_buf, "codedb-issue-72-{d}", .{std.time.microTimestamp()});
+    const tmp_root = try std.fs.path.join(testing.allocator, &.{ "/private/tmp", tmp_name });
+    defer testing.allocator.free(tmp_root);
+
+    std.fs.cwd().makePath(tmp_root) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+    defer std.fs.cwd().deleteTree(tmp_root) catch {};
+
+    const source_path = try std.fs.path.join(testing.allocator, &.{ tmp_root, "sample.zig" });
+    defer testing.allocator.free(source_path);
+    {
+        const file = try std.fs.cwd().createFile(source_path, .{});
+        defer file.close();
+        try file.writeAll("pub fn sample() void {}\n");
+    }
+
+    const result = try std.process.Child.run(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "zig", "build", "run", "--", tmp_root, "snapshot" },
+        .cwd = "/Users/rachpradhan/codedb2",
+        .max_output_bytes = 256 * 1024,
+    });
+    defer testing.allocator.free(result.stdout);
+    defer testing.allocator.free(result.stderr);
+
+    try testing.expect(result.term.Exited != 0);
+}
