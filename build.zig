@@ -27,9 +27,11 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     // ── macOS ad-hoc codesign (prevents SIGKILL on unsigned binaries) ──
-    const codesign = b.addSystemCommand(&.{ "codesign", "-f", "-s", "-" });
-    codesign.addArtifactArg(exe);
-    b.getInstallStep().dependOn(&codesign.step);
+    if (b.graph.host.result.os.tag == .macos and target.result.os.tag == .macos) {
+        const codesign = b.addSystemCommand(&.{ "codesign", "-f", "-s", "-" });
+        codesign.addArtifactArg(exe);
+        b.getInstallStep().dependOn(&codesign.step);
+    }
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
