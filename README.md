@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/justrach/codedb2/releases/latest"><img src="https://img.shields.io/github/v/release/justrach/codedb2?style=flat-square&label=version" alt="Release" /></a>
-  <a href="https://github.com/justrach/codedb2/blob/main/LICENSE"><img src="https://img.shields.io/github/license/justrach/codedb2?style=flat-square" alt="License" /></a>
+  <a href="https://github.com/justrach/codedb/releases/latest"><img src="https://img.shields.io/github/v/release/justrach/codedb?style=flat-square&label=version" alt="Release" /></a>
+  <a href="https://github.com/justrach/codedb/blob/main/LICENSE"><img src="https://img.shields.io/github/license/justrach/codedb?style=flat-square" alt="License" /></a>
   <img src="https://img.shields.io/badge/zig-0.15-f7a41d?style=flat-square" alt="Zig 0.15" />
   <img src="https://img.shields.io/badge/status-alpha-orange?style=flat-square" alt="Alpha" />
-  <a href="https://deepwiki.com/justrach/codedb2"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" /></a>
+  <a href="https://deepwiki.com/justrach/codedb"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" /></a>
 </p>
 
 <h1 align="center">codedb</h1>
@@ -73,7 +73,7 @@ Downloads the binary for your platform and auto-registers codedb as an MCP serve
 | Linux ARM64 | `codedb-linux-arm64` | — |
 | Linux x86_64 | `codedb-linux-x86_64` | — |
 
-Or install manually from [GitHub Releases](https://github.com/justrach/codedb2/releases/latest).
+Or install manually from [GitHub Releases](https://github.com/justrach/codedb/releases/latest).
 
 ---
 
@@ -318,8 +318,8 @@ rm -f codedb.snapshot      # remove snapshot from project
 **Requirements:** Zig 0.15+
 
 ```bash
-git clone https://github.com/justrach/codedb2.git
-cd codedb2
+git clone https://github.com/justrach/codedb.git
+cd codedb
 zig build                              # debug build
 zig build -Doptimize=ReleaseFast       # release build
 zig build test                         # run tests

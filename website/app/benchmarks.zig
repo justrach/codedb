@@ -147,7 +147,7 @@ const html =
     \\    <div class="nav-links" id="nav-links">
     \\      <a href="/benchmarks">Benchmarks</a>
     \\      <a href="/quickstart">Install</a>
-    \\      <a href="https://github.com/justrach/codedb2">GitHub</a>
+    \\      <a href="https://github.com/justrach/codedb">GitHub</a>
     \\      <a href="/quickstart" class="nav-cta">Get started</a>
     \\    </div>
     \\  </div>
@@ -338,17 +338,17 @@ const html =
     \\      Apple M4 Pro, 48GB RAM. MCP = pre-indexed warm queries (20 iterations avg).<br>
     \\      CLI and external tools include process startup (3 iterations avg).<br>
     \\      Ground truth verified against Python reference implementation.<br><br>
-    \\      <a href="https://github.com/justrach/codedb2">View source on GitHub &rarr;</a>
+    \\      <a href="https://github.com/justrach/codedb">View source on GitHub &rarr;</a>
     \\    </div>
     \\    <div class="method-ctas">
     \\      <a href="/quickstart" class="btn">Get started</a>
-    \\      <a href="https://github.com/justrach/codedb2" class="btn btn-ghost">GitHub</a>
+    \\      <a href="https://github.com/justrach/codedb" class="btn btn-ghost">GitHub</a>
     \\    </div>
     \\  </div>
     \\</div>
     \\
     \\<footer class="layout-footer">
-    \\  codedb &mdash; code intelligence for AI agents &middot; <a href="https://github.com/justrach/codedb2">GitHub</a>
+    \\  codedb &mdash; code intelligence for AI agents &middot; <a href="https://github.com/justrach/codedb">GitHub</a>
     \\</footer>
     \\
     \\<script>

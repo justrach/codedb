@@ -1,0 +1,4 @@
+interface:
+  display_name: "Install codedb"
+  short_description: "Install or build codedb and register it as a Codex MCP server."
+  default_prompt: "Use this skill to install the latest codedb release or build codedb from source, then register it in Codex MCP config."

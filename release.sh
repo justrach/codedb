@@ -5,7 +5,7 @@ set -euo pipefail
 VERSION="${RELEASE_VERSION:-${1:-0.1.0}}"
 CERT="Developer ID Application: Rachit Pradhan (WWP9DLJ27P)"
 REPO="$(cd "$(dirname "$0")" && pwd)"
-GITHUB_REPO="justrach/codedb2"
+GITHUB_REPO="justrach/codedb"
 DRY_RUN=false
 
 # Platforms to build

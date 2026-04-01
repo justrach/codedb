@@ -150,7 +150,7 @@ const html =
     \\    <div class="nav-links" id="nav-links">
     \\      <a href="/benchmarks">Benchmarks</a>
     \\      <a href="/quickstart">Install</a>
-    \\      <a href="https://github.com/justrach/codedb2">GitHub</a>
+    \\      <a href="https://github.com/justrach/codedb">GitHub</a>
     \\      <a href="/quickstart" class="nav-cta">Get started</a>
     \\    </div>
     \\  </div>
@@ -168,7 +168,7 @@ const html =
     \\  </div>
     \\  <div class="hero-actions">
     \\    <a href="/quickstart" class="btn">Get started</a>
-    \\    <a href="https://github.com/justrach/codedb2" class="btn btn-outline">GitHub</a>
+    \\    <a href="https://github.com/justrach/codedb" class="btn btn-outline">GitHub</a>
     \\  </div>
     \\</div>
     \\
@@ -354,14 +354,14 @@ const html =
     \\    </div>
     \\    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
     \\      <a href="/quickstart" class="btn">Quick start guide</a>
-    \\      <a href="https://github.com/justrach/codedb2" class="btn btn-outline">GitHub</a>
+    \\      <a href="https://github.com/justrach/codedb" class="btn btn-outline">GitHub</a>
     \\    </div>
     \\  </div>
     \\</div>
     \\
     \\<!-- Footer -->
     \\<div class="layout-footer">
-    \\  <p>codedb &mdash; code intelligence for AI agents &middot; <a href="https://github.com/justrach/codedb2">GitHub</a></p>
+    \\  <p>codedb &mdash; code intelligence for AI agents &middot; <a href="https://github.com/justrach/codedb">GitHub</a></p>
     \\</div>
     \\
     \\<script>

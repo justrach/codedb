@@ -134,7 +134,7 @@ pub fn wrap(allocator: std.mem.Allocator, path: []const u8, body: []const u8, me
         \\    <div class="nav-links" id="nav-links">
         \\      <a href="/benchmarks">Benchmarks</a>
         \\      <a href="/quickstart">Install</a>
-        \\      <a href="https://github.com/justrach/codedb2">GitHub</a>
+        \\      <a href="https://github.com/justrach/codedb">GitHub</a>
         \\      <a href="/quickstart" class="nav-cta">Get started</a>
         \\    </div>
         \\  </div>
@@ -148,7 +148,7 @@ pub fn wrap(allocator: std.mem.Allocator, path: []const u8, body: []const u8, me
     w.writeAll(
         \\
         \\  <footer class="layout-footer">
-        \\    <p>codedb &mdash; code intelligence for AI agents &middot; <a href="https://github.com/justrach/codedb2">GitHub</a></p>
+        \\    <p>codedb &mdash; code intelligence for AI agents &middot; <a href="https://github.com/justrach/codedb">GitHub</a></p>
         \\  </footer>
         \\</div>
         \\<script>

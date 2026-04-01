@@ -100,8 +100,8 @@ fn page() h.Node {
         h.h2(.{}, "Building from source"),
         h.p(.{}, "Requires Zig 0.15+:"),
         h.pre(.{},
-            \\git clone https://github.com/justrach/codedb2.git
-            \\cd codedb2
+            \\git clone https://github.com/justrach/codedb.git
+            \\cd codedb
             \\zig build                              # debug build
             \\zig build -Doptimize=ReleaseFast       # release build
             \\zig build test                         # run tests
@@ -109,7 +109,7 @@ fn page() h.Node {
 
         h.div(.{ .class = "hero-actions" }, .{
             h.a(.{ .href = "/benchmarks", .class = "btn" }, "See benchmarks"),
-            h.a(.{ .href = "https://github.com/justrach/codedb2", .class = "btn btn-outline" }, "GitHub"),
+            h.a(.{ .href = "https://github.com/justrach/codedb", .class = "btn btn-outline" }, "GitHub"),
         }),
     });
 }
