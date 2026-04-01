@@ -4000,3 +4000,48 @@ test "issue-php-16: PHP escaped quotes do not end string mode" {
     try testing.expectEqual(@as(usize, 2), method_count);
     try testing.expectEqual(@as(usize, 1), function_count);
 }
+
+test "issue-php-17: PHP code after block comment terminator is parsed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Services/Inline.php",
+        \\<?php
+        \\
+        \\/*
+        \\function fake() {
+        \\}
+        \\*/ function realFunc()
+        \\{
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/Services/Inline.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var function_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .function) function_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), function_count);
+}
+
+test "issue-php-18: PHP use-as alias case-insensitive" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Controllers/CaseTest.php",
+        \\<?php
+        \\
+        \\use App\Models\User AS UserModel;
+        \\use App\Services\{Cache AS CacheAlias, Logger};
+    );
+
+    var outline = (try explorer.getOutline("app/Controllers/CaseTest.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expectEqual(@as(usize, 3), outline.imports.items.len);
+    try testing.expectEqualStrings("app/Models/User.php", outline.imports.items[0]);
+    try testing.expectEqualStrings("app/Services/Cache.php", outline.imports.items[1]);
+    try testing.expectEqualStrings("app/Services/Logger.php", outline.imports.items[2]);
+}

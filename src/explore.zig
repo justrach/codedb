@@ -1007,13 +1007,17 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
         in_block_comment: bool = false,
     };
 
-    fn parsePhpLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline, state: *PhpParseState) !void {
+    fn parsePhpLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline, state: *PhpParseState) !void {
         const a = self.allocator;
 
+        var line = raw_line;
         if (line.len == 0) return;
         if (state.in_block_comment) {
-            if (std.mem.indexOf(u8, line, "*/") != null) state.in_block_comment = false;
-            return;
+            if (std.mem.indexOf(u8, line, "*/")) |end| {
+                state.in_block_comment = false;
+                line = std.mem.trim(u8, line[end + 2 ..], " \t");
+                if (line.len == 0) return;
+            } else return;
         }
         if (startsWith(line, "<?php")) return;
         if (startsWith(line, "//") or startsWith(line, "#")) return;
@@ -1120,7 +1124,7 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
             while (items.next()) |item| {
                 const raw_item = std.mem.trim(u8, item, " \t");
                 if (raw_item.len == 0) continue;
-                const trimmed_item = if (std.mem.indexOf(u8, raw_item, " as ")) |as_pos| raw_item[0..as_pos] else raw_item;
+                const trimmed_item = phpStripAlias(raw_item);
                 const full_ns = try a.alloc(u8, base.len + trimmed_item.len);
                 defer a.free(full_ns);
                 @memcpy(full_ns[0..base.len], base);
@@ -1138,11 +1142,19 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
                 .line_start = line_num,
                 .line_end = line_num,
             });
-            const ns = if (std.mem.indexOf(u8, use_body, " as ")) |as_pos| use_body[0..as_pos] else use_body;
+            const ns = phpStripAlias(use_body);
             const path_copy = try phpNamespaceToPath(a, ns);
             errdefer a.free(path_copy);
             try outline.imports.append(a, path_copy);
         }
+    }
+
+    fn phpStripAlias(s: []const u8) []const u8 {
+        if (s.len < 4) return s;
+        for (0..s.len - 3) |i| {
+            if (s[i] == ' ' and (s[i + 1] == 'a' or s[i + 1] == 'A') and (s[i + 2] == 's' or s[i + 2] == 'S') and s[i + 3] == ' ') return s[0..i];
+        }
+        return s;
     }
 
     fn phpMatchConstant(_: *Explorer, line: []const u8) ?[]const u8 {
