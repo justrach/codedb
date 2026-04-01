@@ -1004,14 +1004,23 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
         in_class: bool = false,
         brace_depth: i32 = 0,
         class_brace_depth: i32 = 0,
+        in_block_comment: bool = false,
     };
 
     fn parsePhpLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline, state: *PhpParseState) !void {
         const a = self.allocator;
 
         if (line.len == 0) return;
+        if (state.in_block_comment) {
+            if (std.mem.indexOf(u8, line, "*/") != null) state.in_block_comment = false;
+            return;
+        }
         if (startsWith(line, "<?php")) return;
-        if (startsWith(line, "//") or startsWith(line, "#") or startsWith(line, "/*") or startsWith(line, "*")) return;
+        if (startsWith(line, "//") or startsWith(line, "#")) return;
+        if (startsWith(line, "/*")) {
+            if (std.mem.indexOf(u8, line, "*/") == null) state.in_block_comment = true;
+            return;
+        }
 
         if (startsWith(line, "use ") and std.mem.indexOf(u8, line, "\\") != null) {
             try self.parsePhpUseImport(a, line, line_num, outline);
@@ -1102,8 +1111,9 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
 
             var items = std.mem.splitScalar(u8, items_str, ',');
             while (items.next()) |item| {
-                const trimmed_item = std.mem.trim(u8, item, " \t");
-                if (trimmed_item.len == 0) continue;
+                const raw_item = std.mem.trim(u8, item, " \t");
+                if (raw_item.len == 0) continue;
+                const trimmed_item = if (std.mem.indexOf(u8, raw_item, " as ")) |as_pos| raw_item[0..as_pos] else raw_item;
                 const full_ns = try a.alloc(u8, base.len + trimmed_item.len);
                 defer a.free(full_ns);
                 @memcpy(full_ns[0..base.len], base);
@@ -1121,7 +1131,8 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
                 .line_start = line_num,
                 .line_end = line_num,
             });
-            const path_copy = try phpNamespaceToPath(a, use_body);
+            const ns = if (std.mem.indexOf(u8, use_body, " as ")) |as_pos| use_body[0..as_pos] else use_body;
+            const path_copy = try phpNamespaceToPath(a, ns);
             errdefer a.free(path_copy);
             try outline.imports.append(a, path_copy);
         }

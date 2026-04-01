@@ -3910,3 +3910,56 @@ test "issue-php-13: PHP nested braces in methods do not break class tracking" {
     try testing.expectEqual(@as(usize, 2), method_count);
     try testing.expectEqual(@as(usize, 1), function_count);
 }
+
+test "issue-php-14: PHP multi-line block comments do not produce symbols" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Services/Commented.php",
+        \\<?php
+        \\
+        \\class Real
+        \\{
+        \\}
+        \\
+        \\/*
+        \\function fake() {
+        \\}
+        \\class Ghost {
+        \\}
+        \\*/
+        \\
+        \\function afterComment()
+        \\{
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/Services/Commented.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var class_count: usize = 0;
+    var function_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .class_def) class_count += 1;
+        if (sym.kind == .function) function_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), class_count);
+    try testing.expectEqual(@as(usize, 1), function_count);
+}
+
+test "issue-php-15: PHP use-as alias stripped from import path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Controllers/Test.php",
+        \\<?php
+        \\
+        \\use App\Models\User as UserModel;
+    );
+
+    var outline = (try explorer.getOutline("app/Controllers/Test.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expectEqual(@as(usize, 1), outline.imports.items.len);
+    try testing.expectEqualStrings("app/Models/User.php", outline.imports.items[0]);
+}
