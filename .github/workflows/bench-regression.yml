@@ -17,9 +17,9 @@ jobs:
 
       - name: Install Zig
         run: |
-          curl -L https://ziglang.org/download/0.15.0/zig-linux-x86_64-0.15.0.tar.xz -o zig.tar.xz
+          curl -L https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o zig.tar.xz
           tar -xf zig.tar.xz
-          echo "$PWD/zig-linux-x86_64-0.15.0" >> "$GITHUB_PATH"
+          echo "$PWD/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
 
       - name: Benchmark head
         run: zig build bench -- --json > bench-head.json
