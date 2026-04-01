@@ -29,12 +29,26 @@ jobs:
           git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
           git worktree add ../codedb-base FETCH_HEAD
           cd ../codedb-base
-          python3 "$GITHUB_WORKSPACE/scripts/run-bench-json.py" "$GITHUB_WORKSPACE/bench-base.json"
+          if python3 "$GITHUB_WORKSPACE/scripts/run-bench-json.py" "$GITHUB_WORKSPACE/bench-base.json"; then
+            echo "have_base_json=true" >> "$GITHUB_ENV"
+          else
+            echo "have_base_json=false" >> "$GITHUB_ENV"
+          fi
 
       - name: Compare
-        id: compare
+        if: env.have_base_json == 'true'
         run: |
           python3 scripts/compare-bench.py bench-base.json bench-head.json --threshold-pct 10 --markdown-out bench-report.md
+
+      - name: Bootstrap report
+        if: env.have_base_json != 'true'
+        run: |
+          cat > bench-report.md <<'EOF'
+          ## Benchmark Regression Report
+
+          Skipped strict comparison because the base branch does not yet emit machine-readable benchmark JSON.
+          This PR introduces the JSON benchmark format that future PRs will compare against.
+          EOF
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
