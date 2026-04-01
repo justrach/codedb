@@ -28,6 +28,7 @@ const explore = @import("explore.zig");
 const extractLines = explore.extractLines;
 const isCommentOrBlank = explore.isCommentOrBlank;
 const Language = explore.Language;
+const SymbolKind = explore.SymbolKind;
 const mcp_mod = @import("mcp.zig");
 const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
@@ -3556,4 +3557,355 @@ test "issue-77: mcp index accepts temporary-directory roots that cause pathologi
     defer testing.allocator.free(result.stderr);
 
     try testing.expect(result.term.Exited != 0);
+}
+
+// ── PHP parser tests ─────────────────────────────────────────────
+
+test "issue-php-1: PHP class definition herkend" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Models/Candidate.php",
+        \\<?php
+        \\
+        \\namespace App\Models;
+        \\
+        \\class Candidate
+        \\{
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/Models/Candidate.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var found = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "Candidate")) {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "issue-php-2: PHP methode binnen class herkend" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Models/User.php",
+        \\<?php
+        \\
+        \\class User
+        \\{
+        \\    public function boot()
+        \\    {
+        \\    }
+        \\
+        \\    protected function scopeActive($query)
+        \\    {
+        \\    }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/Models/User.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var method_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .method) method_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), method_count);
+}
+
+test "issue-php-3: PHP top-level functie herkend" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("helpers.php",
+        \\<?php
+        \\
+        \\function myHelper($arg)
+        \\{
+        \\}
+        \\
+        \\function boot()
+        \\{
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("helpers.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var fn_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .function) fn_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), fn_count);
+}
+
+test "issue-php-4: PHP interface herkend" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Contracts/Payable.php",
+        \\<?php
+        \\
+        \\interface Payable
+        \\{
+        \\    public function charge();
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/Contracts/Payable.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var found = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .interface_def and std.mem.eql(u8, sym.name, "Payable")) {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "issue-php-5: PHP trait herkend" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Traits/HasSlug.php",
+        \\<?php
+        \\
+        \\trait HasSlug
+        \\{
+        \\    public function generateSlug()
+        \\    {
+        \\    }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/Traits/HasSlug.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var found = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .trait_def and std.mem.eql(u8, sym.name, "HasSlug")) {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "issue-php-6: PHP use-import omgezet naar pad in dep_graph" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Http/Controllers/CandidateController.php",
+        \\<?php
+        \\
+        \\use App\Models\Candidate;
+        \\use Illuminate\Support\Facades\DB;
+    );
+
+    var outline = (try explorer.getOutline("app/Http/Controllers/CandidateController.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expectEqual(@as(usize, 2), outline.imports.items.len);
+    try testing.expectEqualStrings("app/Models/Candidate.php", outline.imports.items[0]);
+    try testing.expectEqualStrings("illuminate/Support/Facades/DB.php", outline.imports.items[1]);
+}
+
+test "issue-php-7: PHP commentaarregels worden overgeslagen" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Commented.php",
+        \\<?php
+        \\
+        \\// function fakeFunction()
+        \\# function anotherFake()
+        \\/* function blockComment() */
+        \\
+        \\class RealClass
+        \\{
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/Commented.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expectEqual(@as(usize, 1), outline.symbols.items.len);
+    try testing.expect(outline.symbols.items[0].kind == .class_def);
+}
+
+test "issue-php-8: PHP function after class is top-level, not method" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/mixed.php",
+        \\<?php
+        \\
+        \\class Foo
+        \\{
+        \\    public function bar()
+        \\    {
+        \\    }
+        \\}
+        \\
+        \\function helper()
+        \\{
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/mixed.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var method_count: usize = 0;
+    var function_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .method) method_count += 1;
+        if (sym.kind == .function) function_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), method_count);
+    try testing.expectEqual(@as(usize, 1), function_count);
+}
+
+test "issue-php-9: PHP 8.1 enum herkend" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Enums/Status.php",
+        \\<?php
+        \\
+        \\enum Status: string
+        \\{
+        \\    public function label(): string
+        \\    {
+        \\    }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/Enums/Status.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var found_enum = false;
+    var found_method = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .enum_def and std.mem.eql(u8, sym.name, "Status")) found_enum = true;
+        if (sym.kind == .method and std.mem.eql(u8, sym.name, "label")) found_method = true;
+    }
+    try testing.expect(found_enum);
+    try testing.expect(found_method);
+}
+
+test "issue-php-10: PHP grouped use-statement parsed into individual imports" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Http/Controllers/TestController.php",
+        \\<?php
+        \\
+        \\use App\Models\{User, Candidate, Role};
+    );
+
+    var outline = (try explorer.getOutline("app/Http/Controllers/TestController.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expectEqual(@as(usize, 1), outline.symbols.items.len);
+    try testing.expect(outline.symbols.items[0].kind == .import);
+    try testing.expectEqual(@as(usize, 3), outline.imports.items.len);
+    try testing.expectEqualStrings("app/Models/User.php", outline.imports.items[0]);
+    try testing.expectEqualStrings("app/Models/Candidate.php", outline.imports.items[1]);
+    try testing.expectEqualStrings("app/Models/Role.php", outline.imports.items[2]);
+}
+
+test "issue-php-11: PHP readonly class herkend" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/ValueObjects/Money.php",
+        \\<?php
+        \\
+        \\readonly class Money
+        \\{
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/ValueObjects/Money.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var found = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "Money")) {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "issue-php-12: PHP class and public constants herkend" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Config.php",
+        \\<?php
+        \\
+        \\class Config
+        \\{
+        \\    public const VERSION = '1.0';
+        \\    const MAX_RETRIES = 3;
+        \\    private const SECRET = 'abc';
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/Config.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var constant_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .constant) constant_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), constant_count);
+}
+
+test "issue-php-13: PHP nested braces in methods do not break class tracking" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Services/Complex.php",
+        \\<?php
+        \\
+        \\class Complex
+        \\{
+        \\    public function process()
+        \\    {
+        \\        if ($x) {
+        \\            foreach ($items as $item) {
+        \\            }
+        \\        }
+        \\    }
+        \\
+        \\    public function another()
+        \\    {
+        \\    }
+        \\}
+        \\
+        \\function outsideHelper()
+        \\{
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/Services/Complex.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var method_count: usize = 0;
+    var function_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .method) method_count += 1;
+        if (sym.kind == .function) function_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), method_count);
+    try testing.expectEqual(@as(usize, 1), function_count);
 }
