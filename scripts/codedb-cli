@@ -1,0 +1,144 @@
+#!/bin/bash
+# codedb-cli — thin CLI client for codedb HTTP daemon
+# Usage: codedb-cli [project-root] <command> [args...]
+set -euo pipefail
+
+PORT="${CODEDB_PORT:-7719}"
+BASE="http://localhost:$PORT"
+BINARY="${CODEDB_BINARY:-codedb}"
+
+_ping() { curl -sf "$BASE/health" >/dev/null 2>&1; }
+
+_ensure_server() {
+    if _ping; then return 0; fi
+    local root="${1:-.}"
+    echo "starting codedb $root serve ..." >&2
+    nohup "$BINARY" "$root" serve >/dev/null 2>&1 &
+    for i in $(seq 1 30); do
+        sleep 0.2
+        _ping && return 0
+    done
+    echo "error: codedb server failed to start" >&2
+    return 1
+}
+
+_get() { curl -sf "$BASE$1"; }
+
+_urlencode() {
+    local s="$1" c i len out=""
+    len=${#s}
+    for (( i=0; i<len; i++ )); do
+        c="${s:$i:1}"
+        case "$c" in
+            [a-zA-Z0-9.~_/-]) out+="$c" ;;
+            *) out+=$(printf '%%%02X' "'$c") ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# --- arg parsing ---
+root=""
+cmd=""
+
+if [[ $# -ge 1 && -d "$1" ]]; then
+    root="$(cd "$1" && pwd)"
+    shift
+fi
+
+if [[ $# -lt 1 ]]; then
+    cat >&2 <<'EOF'
+codedb-cli — fast CLI for codedb daemon
+
+usage: codedb-cli [root] <command> [args...]
+
+commands:
+  tree                          file tree with symbol counts
+  outline <path>                symbols in a file
+  find    <symbol>              find symbol definitions
+  search  <query> [max]         trigram full-text search
+  word    <identifier>          O(1) inverted index lookup
+  hot     [limit]               recently modified files
+  deps    <path>                reverse dependency graph
+  read    <path> [start] [end]  read file content (line range)
+  status                        index status / health
+  start   [root]                start the daemon
+  stop                          stop the daemon
+
+env: CODEDB_PORT (default 7719), CODEDB_BINARY (default codedb)
+EOF
+    exit 1
+fi
+
+cmd="$1"; shift
+
+case "$cmd" in
+    start)
+        _ensure_server "${1:-${root:-.}}"
+        echo "codedb running on :$PORT" >&2
+        ;;
+    stop)
+        if _ping; then
+            pkill -f "codedb.*serve" 2>/dev/null || true
+            echo "codedb stopped" >&2
+        else
+            echo "codedb not running" >&2
+        fi
+        ;;
+    tree)
+        _ensure_server "${root:-.}"
+        _get "/explore/tree" | jq -r '.tree'
+        ;;
+    outline)
+        [[ $# -lt 1 ]] && { echo "usage: codedb-cli outline <path>" >&2; exit 1; }
+        _ensure_server "${root:-.}"
+        _get "/explore/outline?path=$(_urlencode "$1")" | jq -r '.symbols[] | "L\(.line_start)\t\(.kind)\t\(.name)\t\(.detail // "")"'
+        ;;
+    find|symbol)
+        [[ $# -lt 1 ]] && { echo "usage: codedb-cli find <symbol>" >&2; exit 1; }
+        _ensure_server "${root:-.}"
+        _get "/explore/symbol?name=$(_urlencode "$1")" | jq -r '.results[] | "\(.path):\(.line)\t\(.kind)\t\(.detail // "")"'
+        ;;
+    search)
+        [[ $# -lt 1 ]] && { echo "usage: codedb-cli search <query> [max]" >&2; exit 1; }
+        _ensure_server "${root:-.}"
+        max="${2:-50}"
+        _get "/explore/search?q=$(_urlencode "$1")&max=$max" | jq -r '.results[] | "\(.path):\(.line)\t\(.text)"'
+        ;;
+    word)
+        [[ $# -lt 1 ]] && { echo "usage: codedb-cli word <identifier>" >&2; exit 1; }
+        _ensure_server "${root:-.}"
+        _get "/explore/word?q=$(_urlencode "$1")" | jq -r '.hits[] | "\(.path):\(.line)"'
+        ;;
+    hot)
+        _ensure_server "${root:-.}"
+        limit="${1:-10}"
+        _get "/explore/hot?limit=$limit" | jq -r '.files[]'
+        ;;
+    deps)
+        [[ $# -lt 1 ]] && { echo "usage: codedb-cli deps <path>" >&2; exit 1; }
+        _ensure_server "${root:-.}"
+        _get "/explore/deps?path=$(_urlencode "$1")" | jq -r '.dependents[]'
+        ;;
+    read)
+        [[ $# -lt 1 ]] && { echo "usage: codedb-cli read <path> [start] [end]" >&2; exit 1; }
+        _ensure_server "${root:-.}"
+        content=$(_get "/file/read?path=$(_urlencode "$1")" | jq -r '.content')
+        if [[ $# -ge 2 ]]; then
+            start="$2"
+            end="${3:-\$}"
+            echo "$content" | sed -n "${start},${end}p"
+        else
+            echo "$content"
+        fi
+        ;;
+    status)
+        _ensure_server "${root:-.}"
+        echo -n "health: " && curl -sf "$BASE/health" | jq -r '.status'
+        echo -n "seq: " && _get "/seq" | jq -r '.seq'
+        ;;
+    *)
+        echo "unknown command: $cmd" >&2
+        exit 1
+        ;;
+esac

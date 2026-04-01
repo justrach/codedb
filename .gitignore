@@ -17,3 +17,6 @@ Thumbs.db
 .idea/
 *.code-workspace
 install/.wrangler/
+
+# Generated snapshot (machine-specific)
+codedb.snapshot

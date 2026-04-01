@@ -1,0 +1,19 @@
+# codedb systemd user service
+# Install: cp scripts/codedb.service ~/.config/systemd/user/
+# Then:    systemctl --user daemon-reload && systemctl --user enable --now codedb
+#
+# Edit WorkingDirectory and ExecStart to point to your project and binary.
+
+[Unit]
+Description=codedb code intelligence daemon
+After=default.target
+
+[Service]
+WorkingDirectory=%h/my-project
+ExecStart=%h/.local/bin/codedb . serve
+Restart=on-failure
+RestartSec=3
+Environment=CODEDB_NO_TELEMETRY=1
+
+[Install]
+WantedBy=default.target
