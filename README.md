@@ -49,7 +49,7 @@
 | Structural outlines (functions, structs, imports)      | Multi-project support                    |
 | Reverse dependency graph                               | Remote indexing over SSH                  |
 | Atomic line-range edits with version tracking          |                                          |
-| Auto-registration in Claude, Codex, Gemini, Cursor     |                                          |
+| Auto-registration in Claude, Codex, Gemini, Cursor, Swival |                                      |
 | Polling file watcher with filtered directory walker    |                                          |
 | Portable snapshot for instant MCP startup              |                                          |
 | Multi-agent support with file locking + heartbeats     |                                          |
@@ -64,7 +64,7 @@
 curl -fsSL https://codedb.codegraff.com/install.sh | sh
 ```
 
-Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, and **Cursor**.
+Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, and **Swival**.
 
 | Platform | Binary | Signed |
 |----------|--------|--------|

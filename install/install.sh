@@ -150,6 +150,30 @@ PYEOF
   printf "  ${G}✓${N} cursor       ${D}→ $config${N}\n"
 }
 
+register_swival() {
+  local codedb_bin="$1"
+  local config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/swival"
+  local config="$config_dir/config.toml"
+
+  if [ ! -d "$config_dir" ]; then
+    return
+  fi
+
+  if [ -f "$config" ] && grep -q '\[mcp_servers\.codedb\]' "$config" 2>/dev/null; then
+    printf "  ${G}✓${N} swival       ${D}→ $config (already registered)${N}\n"
+    return
+  fi
+
+  {
+    [ -f "$config" ] && [ -s "$config" ] && echo ""
+    echo '[mcp_servers.codedb]'
+    echo "command = \"$codedb_bin\""
+    echo 'args = ["mcp"]'
+  } >> "$config"
+
+  printf "  ${G}✓${N} swival       ${D}→ $config${N}\n"
+}
+
 main() {
   local platform version ext=""
   platform="$(detect_platform)"
@@ -203,6 +227,7 @@ main() {
   register_codex "$dest"
   register_gemini "$dest"
   register_cursor "$dest"
+  register_swival "$dest"
 
   # Check PATH
   case ":$PATH:" in
