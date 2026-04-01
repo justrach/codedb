@@ -15,9 +15,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: 0.15.0
+      - name: Install Zig
+        run: |
+          curl -L https://ziglang.org/download/0.15.0/zig-linux-x86_64-0.15.0.tar.xz -o zig.tar.xz
+          tar -xf zig.tar.xz
+          echo "$PWD/zig-linux-x86_64-0.15.0" >> "$GITHUB_PATH"
 
       - name: Benchmark head
         run: zig build bench -- --json > bench-head.json
