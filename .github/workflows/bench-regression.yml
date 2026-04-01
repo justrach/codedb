@@ -1,0 +1,74 @@
+name: bench-regression
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Zig
+        run: |
+          curl -L https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o zig.tar.xz
+          tar -xf zig.tar.xz
+          echo "$PWD/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
+
+      - name: Benchmark head
+        run: python3 scripts/run-bench-json.py bench-head.json
+
+      - name: Benchmark base
+        run: |
+          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
+          git worktree add ../codedb-base FETCH_HEAD
+          cd ../codedb-base
+          if python3 "$GITHUB_WORKSPACE/scripts/run-bench-json.py" "$GITHUB_WORKSPACE/bench-base.json"; then
+            echo "have_base_json=true" >> "$GITHUB_ENV"
+          else
+            echo "have_base_json=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Compare
+        if: env.have_base_json == 'true'
+        run: |
+          python3 scripts/compare-bench.py bench-base.json bench-head.json --threshold-pct 10 --markdown-out bench-report.md
+
+      - name: Bootstrap report
+        if: env.have_base_json != 'true'
+        run: |
+          cat > bench-report.md <<'EOF'
+          ## Benchmark Regression Report
+
+          Skipped strict comparison because the base branch does not yet emit machine-readable benchmark JSON.
+          This PR introduces the JSON benchmark format that future PRs will compare against.
+          EOF
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: |
+            bench-base.json
+            bench-head.json
+            bench-report.md
+
+      - name: Comment PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('bench-report.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

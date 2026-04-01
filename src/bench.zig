@@ -1,239 +1,285 @@
 const std = @import("std");
+const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
-const index = @import("index.zig");
-const WordIndex = index.WordIndex;
-const TrigramIndex = index.TrigramIndex;
-const Trigram = index.Trigram;
-const PostingMask = index.PostingMask;
-const packTrigram = index.packTrigram;
-const normalizeChar = index.normalizeChar;
-const FileEntry = struct { name: []const u8, content: []const u8 };
+const AgentRegistry = @import("agent.zig").AgentRegistry;
+const watcher = @import("watcher.zig");
+const mcp = @import("mcp.zig");
+const telemetry = @import("telemetry.zig");
 
-fn generateCode(allocator: std.mem.Allocator, num_files: usize, lines_per_file: usize) ![]const FileEntry {
-    var files: std.ArrayList(FileEntry) = .{};
-    var prng = std.Random.DefaultPrng.init(42);
-    const rand = prng.random();
+const ToolBench = struct {
+    tool: []const u8,
+    avg_latency_ns: u64,
+    response_bytes: usize,
+    ops_per_sec: f64,
+    telemetry_avg_ns: u64,
+    telemetry_delta_pct: f64,
+};
 
-    const words = [_][]const u8{
-        "fn",          "pub",      "const",       "var",          "struct",        "enum",          "union",        "return",
-        "if",          "else",     "while",       "for",          "switch",        "break",         "continue",     "try",
-        "catch",       "error",    "void",        "bool",         "u8",            "u32",           "u64",          "allocator",
-        "self",        "result",   "value",       "index",        "count",         "size",          "init",         "deinit",
-        "append",      "remove",   "get",         "put",          "insert",        "handleRequest", "processData",  "validateInput",
-        "parseConfig", "readFile", "writeOutput", "createBuffer", "destroyBuffer", "AgentRegistry", "FileVersions", "TrigramIndex",
-        "WordIndex",   "Explorer", "Store",       "Version",      "Symbol",        "Outline",       "Language",
-    };
+const Case = struct {
+    tool: mcp.Tool,
+    name: []const u8,
+    args_json: []const u8,
+    iterations: usize,
+};
 
-    for (0..num_files) |i| {
-        var buf: std.ArrayList(u8) = .{};
-        const w = buf.writer(allocator);
-        for (0..lines_per_file) |_| {
-            const num_words = 5 + rand.intRangeAtMost(usize, 0, 10);
-            for (0..num_words) |wi| {
-                if (wi > 0) w.writeByte(' ') catch {};
-                const word = words[rand.intRangeAtMost(usize, 0, words.len - 1)];
-                w.writeAll(word) catch {};
-            }
-            w.writeByte('\n') catch {};
-        }
-        var name_buf: [64]u8 = undefined;
-        const name = std.fmt.bufPrint(&name_buf, "src/gen_{d}.zig", .{i}) catch unreachable;
-        try files.append(allocator, .{
-            .name = try allocator.dupe(u8, name),
-            .content = try buf.toOwnedSlice(allocator),
-        });
-    }
-    return files.toOwnedSlice(allocator);
-}
+const cases = [_]Case{
+    .{ .tool = .codedb_tree, .name = "codedb_tree", .args_json = "{}", .iterations = 100 },
+    .{ .tool = .codedb_outline, .name = "codedb_outline", .args_json = "{\"path\":\"src/main.zig\"}", .iterations = 100 },
+    .{ .tool = .codedb_symbol, .name = "codedb_symbol", .args_json = "{\"name\":\"main\"}", .iterations = 100 },
+    .{ .tool = .codedb_search, .name = "codedb_search", .args_json = "{\"query\":\"telemetry\",\"max_results\":10}", .iterations = 100 },
+    .{ .tool = .codedb_word, .name = "codedb_word", .args_json = "{\"word\":\"Telemetry\"}", .iterations = 100 },
+    .{ .tool = .codedb_hot, .name = "codedb_hot", .args_json = "{\"limit\":10}", .iterations = 100 },
+    .{ .tool = .codedb_deps, .name = "codedb_deps", .args_json = "{\"path\":\"src/main.zig\"}", .iterations = 100 },
+    .{ .tool = .codedb_read, .name = "codedb_read", .args_json = "{\"path\":\"src/main.zig\",\"line_start\":1,\"line_end\":20}", .iterations = 100 },
+    .{ .tool = .codedb_edit, .name = "codedb_edit", .args_json = "{\"path\":\"src/bench_target.zig\",\"op\":\"replace\",\"range_start\":1,\"range_end\":1,\"content\":\"pub const bench_value = 2;\\n\"}", .iterations = 10 },
+    .{ .tool = .codedb_changes, .name = "codedb_changes", .args_json = "{\"since\":0}", .iterations = 100 },
+    .{ .tool = .codedb_status, .name = "codedb_status", .args_json = "{}", .iterations = 100 },
+    .{ .tool = .codedb_snapshot, .name = "codedb_snapshot", .args_json = "{}", .iterations = 20 },
+    .{ .tool = .codedb_bundle, .name = "codedb_bundle", .args_json = "{\"ops\":[{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}},{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"telemetry\",\"max_results\":5}},{\"tool\":\"codedb_word\",\"arguments\":{\"word\":\"Telemetry\"}}]}", .iterations = 50 },
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const num_files = 500;
-    const lines_per = 200;
-    const total_lines = num_files * lines_per;
+    const emit_json = blk: {
+        const args = try std.process.argsAlloc(allocator);
+        defer std.process.argsFree(allocator, args);
+        for (args[1..]) |arg| {
+            if (std.mem.eql(u8, arg, "--json")) break :blk true;
+        }
+        break :blk false;
+    };
 
-    std.debug.print("Generating {d} files × {d} lines = {d} total lines...\n", .{ num_files, lines_per, total_lines });
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const files = try generateCode(allocator, num_files, lines_per);
+    var tmp_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_root = try tmp.dir.realpath(".", &tmp_path_buf);
+
+    var repo_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const repo_root = try std.fs.cwd().realpath(".", &repo_path_buf);
+
+    try copyCorpus(allocator, repo_root, tmp_root);
+    try writeBenchTarget(tmp_root);
+
+    var store = Store.init(allocator);
+    defer store.deinit();
+
+    var explorer = Explorer.init(allocator);
+    defer explorer.deinit();
+
+    var agents = AgentRegistry.init(allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    try watcher.initialScan(&store, &explorer, tmp_root, allocator, false);
+
+    var bench_ctx = mcp.BenchContext.init(allocator, tmp_root);
+    defer bench_ctx.deinit();
+
+    var telem_off = telemetry.Telemetry{ .enabled = false };
+    var telem_on = telemetry.Telemetry{ .enabled = true };
+
+    var args_store: [cases.len]std.json.Parsed(std.json.Value) = undefined;
     defer {
-        for (files) |f| {
-            allocator.free(f.name);
-            allocator.free(f.content);
-        }
-        allocator.free(files);
+        for (&args_store) |*parsed| parsed.deinit();
     }
 
-    var total_bytes: usize = 0;
-    for (files) |f| total_bytes += f.content.len;
-    std.debug.print("Total content: {d} KB\n\n", .{total_bytes / 1024});
-
-    // ── Index directly into WordIndex + TrigramIndex ──
-    var wi = WordIndex.init(allocator);
-    defer wi.deinit();
-    var ti = TrigramIndex.init(allocator);
-    defer ti.deinit();
-
-    // Also store content for brute force comparison
-    var contents = std.StringHashMap([]const u8).init(allocator);
-    defer contents.deinit();
-
-    var timer = try std.time.Timer.start();
-    for (files) |f| {
-        try wi.indexFile(f.name, f.content);
-        try ti.indexFile(f.name, f.content);
-        try contents.put(f.name, f.content);
+    for (cases, 0..) |case, idx| {
+        args_store[idx] = try std.json.parseFromSlice(std.json.Value, allocator, case.args_json, .{});
     }
-    const index_ns = timer.read();
-    std.debug.print("Index {d} files:           {d:.1} ms\n", .{ num_files, @as(f64, @floatFromInt(index_ns)) / 1_000_000.0 });
 
-    // ── Bench: raw word index lookup (zero-alloc) ──
-    const word_queries = [_][]const u8{ "handleRequest", "AgentRegistry", "allocator", "Explorer", "TrigramIndex" };
-
-    timer.reset();
-    const word_iters: usize = 100_000;
-    var total_hits: usize = 0;
-    for (0..word_iters) |_| {
-        for (word_queries) |q| {
-            const hits = wi.search(q);
-            total_hits += hits.len;
-        }
+    var results: [cases.len]ToolBench = undefined;
+    for (cases, 0..) |case, idx| {
+        const args = &args_store[idx].value.object;
+        const base = try runCase(allocator, &bench_ctx, &store, &explorer, &agents, case, args, &telem_off);
+        const with_telem = try runCase(allocator, &bench_ctx, &store, &explorer, &agents, case, args, &telem_on);
+        results[idx] = .{
+            .tool = case.name,
+            .avg_latency_ns = base.avg_latency_ns,
+            .response_bytes = base.response_bytes,
+            .ops_per_sec = opsPerSec(base.avg_latency_ns),
+            .telemetry_avg_ns = with_telem.avg_latency_ns,
+            .telemetry_delta_pct = deltaPct(base.avg_latency_ns, with_telem.avg_latency_ns),
+        };
     }
-    const word_ns = timer.read();
-    const word_total = word_iters * word_queries.len;
-    std.debug.print("Word lookup ×{d}:    {d:.1} ms total, {d:.0} ns/query ({d} hits)\n", .{
-        word_total,
-        @as(f64, @floatFromInt(word_ns)) / 1_000_000.0,
-        @as(f64, @floatFromInt(word_ns)) / @as(f64, @floatFromInt(word_total)),
-        total_hits / word_iters,
-    });
 
-    // ── Bench: trigram candidate lookup (with bloom filtering) ──
-    const tri_queries = [_][]const u8{ "handleRequest", "processData", "AgentRegistry", "pub fn init", "TrigramIndex" };
-
-    timer.reset();
-    const tri_iters: usize = 10_000;
-    for (0..tri_iters) |_| {
-        for (tri_queries) |q| {
-            const cands = ti.candidates(q, allocator);
-            if (cands) |c| allocator.free(c);
-        }
+    const corpus = summarizeCorpus(&explorer);
+    try writeHumanSummary(allocator, std.fs.File.stderr(), corpus.files, corpus.bytes, &results);
+    if (emit_json) {
+        try writeJsonSummary(allocator, std.fs.File.stdout(), repo_root, tmp_root, corpus.files, corpus.bytes, &results);
     }
-    const tri_ns = timer.read();
-    const tri_total = tri_iters * tri_queries.len;
-    std.debug.print("Trigram candidates ×{d}: {d:.1} ms total, {d:.0} ns/query\n", .{
-        tri_total,
-        @as(f64, @floatFromInt(tri_ns)) / 1_000_000.0,
-        @as(f64, @floatFromInt(tri_ns)) / @as(f64, @floatFromInt(tri_total)),
-    });
+}
 
-    // ── Bloom filter effectiveness: candidate set sizes ──
-    std.debug.print("\n── Bloom Filter Effectiveness ──\n", .{});
-    for (tri_queries) |q| {
-        // Get candidate count with bloom filtering (current behavior)
-        const bloom_cands = ti.candidates(q, allocator);
-        const bloom_count = if (bloom_cands) |c| blk: {
-            defer allocator.free(c);
-            break :blk c.len;
-        } else num_files;
+fn runCase(
+    allocator: std.mem.Allocator,
+    bench_ctx: *mcp.BenchContext,
+    store: *Store,
+    explorer: *Explorer,
+    agents: *AgentRegistry,
+    case: Case,
+    args: *const std.json.ObjectMap,
+    telem: *telemetry.Telemetry,
+) !struct { avg_latency_ns: u64, response_bytes: usize } {
+    var total_ns: u64 = 0;
+    var response_bytes: usize = 0;
 
-        // Count candidates from pure trigram intersection (no bloom)
-        // by counting files present in ALL trigram posting lists
-        var pure_count: usize = 0;
-        if (q.len >= 3) {
-            const tri_count = q.len - 2;
-            var unique = std.AutoHashMap(Trigram, void).init(allocator);
-            defer unique.deinit();
-            for (0..tri_count) |j| {
-                const tri = packTrigram(
-                    normalizeChar(q[j]),
-                    normalizeChar(q[j + 1]),
-                    normalizeChar(q[j + 2]),
-                );
-                unique.put(tri, {}) catch {};
-            }
-
-            // Collect posting list pointers
-            var sets: std.ArrayList(*const std.StringHashMap(PostingMask)) = .{};
-            defer sets.deinit(allocator);
-            var all_found = true;
-            var tri_iter = unique.keyIterator();
-            while (tri_iter.next()) |tri_ptr| {
-                if (ti.index.getPtr(tri_ptr.*)) |file_set| {
-                    sets.append(allocator, file_set) catch {};
-                } else {
-                    all_found = false;
-                    break;
-                }
-            }
-
-            if (all_found and sets.items.len > 0) {
-                // Find smallest set, intersect
-                var min_idx: usize = 0;
-                var min_count: usize = sets.items[0].count();
-                for (sets.items[1..], 1..) |set, idx| {
-                    if (set.count() < min_count) {
-                        min_count = set.count();
-                        min_idx = idx;
-                    }
-                }
-                var it = sets.items[min_idx].keyIterator();
-                while (it.next()) |path_ptr| {
-                    var ok = true;
-                    for (sets.items, 0..) |set, idx| {
-                        if (idx == min_idx) continue;
-                        if (!set.contains(path_ptr.*)) {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if (ok) pure_count += 1;
-                }
-            }
+    for (0..case.iterations) |_| {
+        if (case.tool == .codedb_edit) {
+            try resetBenchTarget(explorer, store);
         }
 
-        // Count actual matches via brute force
-        var actual_count: usize = 0;
-        var c_iter = contents.iterator();
-        while (c_iter.next()) |entry| {
-            if (std.mem.indexOf(u8, entry.value_ptr.*, q) != null) {
-                actual_count += 1;
-            }
+        var timer = try std.time.Timer.start();
+        response_bytes = bench_ctx.runToolCall(allocator, case.name, case.tool, args, store, explorer, agents, telem);
+        const elapsed = timer.read();
+        total_ns +|= elapsed;
+    }
+
+    return .{
+        .avg_latency_ns = @intCast(@divTrunc(total_ns, case.iterations)),
+        .response_bytes = response_bytes,
+    };
+}
+
+fn copyCorpus(allocator: std.mem.Allocator, repo_root: []const u8, tmp_root: []const u8) !void {
+    const files = [_][]const u8{
+        "README.md",
+        "build.zig",
+        "build.zig.zon",
+        "src/agent.zig",
+        "src/bench.zig",
+        "src/edit.zig",
+        "src/explore.zig",
+        "src/git.zig",
+        "src/index.zig",
+        "src/lib.zig",
+        "src/main.zig",
+        "src/mcp.zig",
+        "src/root_policy.zig",
+        "src/server.zig",
+        "src/snapshot.zig",
+        "src/snapshot_json.zig",
+        "src/store.zig",
+        "src/style.zig",
+        "src/telemetry.zig",
+        "src/version.zig",
+        "src/watcher.zig",
+    };
+
+    for (files) |rel| {
+        const src = try std.fs.path.join(allocator, &.{ repo_root, rel });
+        defer allocator.free(src);
+        const dst = try std.fs.path.join(allocator, &.{ tmp_root, rel });
+        defer allocator.free(dst);
+
+        if (std.fs.path.dirname(dst)) |parent| {
+            try std.fs.cwd().makePath(parent);
         }
 
-        const reduction = if (pure_count > 0) @as(f64, @floatFromInt(pure_count - bloom_count)) / @as(f64, @floatFromInt(pure_count)) * 100.0 else 0.0;
-        std.debug.print("  \"{s}\":\n    trigram-only={d}  bloom={d}  actual={d}  reduction={d:.0}%\n", .{
-            q, pure_count, bloom_count, actual_count, reduction,
+        try std.fs.cwd().copyFile(src, std.fs.cwd(), dst, .{});
+    }
+}
+
+fn writeBenchTarget(tmp_root: []const u8) !void {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/src/bench_target.zig", .{tmp_root});
+    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll("pub const bench_value = 1;\n");
+}
+
+fn resetBenchTarget(explorer: *Explorer, store: *Store) !void {
+    try explorer.indexFile("src/bench_target.zig", "pub const bench_value = 1;\n");
+    _ = try store.recordSnapshot("src/bench_target.zig", "pub const bench_value = 1;\n".len, std.hash.Wyhash.hash(0, "pub const bench_value = 1;\n"));
+}
+
+fn summarizeCorpus(explorer: *Explorer) struct { files: usize, bytes: u64 } {
+    explorer.mu.lockShared();
+    defer explorer.mu.unlockShared();
+
+    var files: usize = 0;
+    var bytes: u64 = 0;
+    var iter = explorer.outlines.iterator();
+    while (iter.next()) |entry| {
+        files += 1;
+        bytes +|= entry.value_ptr.byte_size;
+    }
+    return .{ .files = files, .bytes = bytes };
+}
+
+fn writeHumanSummary(allocator: std.mem.Allocator, file: std.fs.File, file_count: usize, total_bytes: u64, results: []const ToolBench) !void {
+    var out: std.ArrayList(u8) = .{};
+    defer out.deinit(allocator);
+    const writer = out.writer(allocator);
+    try writer.print("── E2E MCP Tool Benchmarks ({d} files, {d}KB) ──\n", .{ file_count, total_bytes / 1024 });
+    try writer.writeAll("Tool              Latency    Size     Ops/sec   TelemetryΔ\n");
+    for (results) |result| {
+        var latency_buf: [32]u8 = undefined;
+        var delta_buf: [32]u8 = undefined;
+        try writer.print("{s:<17} {s:<10} {d:<8} {d:>8.0}   {s}\n", .{
+            result.tool,
+            formatNs(&latency_buf, result.avg_latency_ns),
+            result.response_bytes,
+            result.ops_per_sec,
+            formatPct(&delta_buf, result.telemetry_delta_pct),
         });
     }
+    try file.writeAll(out.items);
+}
 
-    // ── Bench: brute force substring search ──
-    timer.reset();
-    const brute_iters: usize = 1_000;
-    for (0..brute_iters) |_| {
-        for (tri_queries) |q| {
-            var iter = contents.iterator();
-            while (iter.next()) |entry| {
-                _ = std.mem.indexOf(u8, entry.value_ptr.*, q);
-            }
-        }
-    }
-    const brute_ns = timer.read();
-    const brute_total = brute_iters * tri_queries.len;
-    std.debug.print("\nBrute force ×{d}:      {d:.1} ms total, {d:.0} ns/query\n", .{
-        brute_total,
-        @as(f64, @floatFromInt(brute_ns)) / 1_000_000.0,
-        @as(f64, @floatFromInt(brute_ns)) / @as(f64, @floatFromInt(brute_total)),
+fn writeJsonSummary(allocator: std.mem.Allocator, file: std.fs.File, repo_root: []const u8, corpus_root: []const u8, file_count: usize, total_bytes: u64, results: []const ToolBench) !void {
+    var out: std.ArrayList(u8) = .{};
+    defer out.deinit(allocator);
+    const writer = out.writer(allocator);
+    try writer.print("{{\"repo_root\":\"{s}\",\"corpus_root\":\"{s}\",\"file_count\":{d},\"total_bytes\":{d},\"tools\":[", .{
+        repo_root,
+        corpus_root,
+        file_count,
+        total_bytes,
     });
+    for (results, 0..) |result, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        try writer.print("{{\"tool\":\"{s}\",\"avg_latency_ns\":{d},\"response_bytes\":{d},\"ops_per_sec\":{d:.3},\"telemetry_avg_ns\":{d},\"telemetry_delta_pct\":{d:.3}}}", .{
+            result.tool,
+            result.avg_latency_ns,
+            result.response_bytes,
+            result.ops_per_sec,
+            result.telemetry_avg_ns,
+            result.telemetry_delta_pct,
+        });
+    }
+    try writer.writeAll("]}\n");
+    try file.writeAll(out.items);
+}
 
-    std.debug.print("\n── Summary ({d} files, {d}K lines, {d} KB) ──\n", .{ num_files, total_lines / 1000, total_bytes / 1024 });
-    std.debug.print("Word index:    {d:.0} ns/query  (zero-alloc hash lookup)\n", .{@as(f64, @floatFromInt(word_ns)) / @as(f64, @floatFromInt(word_total))});
-    std.debug.print("Trigram:       {d:.0} ns/query  (candidate set + bloom filter)\n", .{@as(f64, @floatFromInt(tri_ns)) / @as(f64, @floatFromInt(tri_total))});
-    std.debug.print("Brute force:   {d:.0} ns/query  (linear scan all content)\n", .{@as(f64, @floatFromInt(brute_ns)) / @as(f64, @floatFromInt(brute_total))});
-    const speedup_word = @as(f64, @floatFromInt(brute_ns)) / @as(f64, @floatFromInt(brute_total)) / (@as(f64, @floatFromInt(word_ns)) / @as(f64, @floatFromInt(word_total)));
-    const speedup_tri = @as(f64, @floatFromInt(brute_ns)) / @as(f64, @floatFromInt(brute_total)) / (@as(f64, @floatFromInt(tri_ns)) / @as(f64, @floatFromInt(tri_total)));
-    std.debug.print("Word vs brute: {d:.0}× faster\n", .{speedup_word});
-    std.debug.print("Tri vs brute:  {d:.1}× faster\n", .{speedup_tri});
+fn opsPerSec(avg_latency_ns: u64) f64 {
+    if (avg_latency_ns == 0) return 0;
+    return @as(f64, 1_000_000_000.0) / @as(f64, @floatFromInt(avg_latency_ns));
+}
+
+fn deltaPct(base_ns: u64, with_telem_ns: u64) f64 {
+    if (base_ns == 0) return 0;
+    const delta = @as(f64, @floatFromInt(with_telem_ns)) - @as(f64, @floatFromInt(base_ns));
+    return (delta / @as(f64, @floatFromInt(base_ns))) * 100.0;
+}
+
+fn formatNs(buf: []u8, ns: u64) []const u8 {
+    if (ns >= std.time.ns_per_ms) {
+        const whole = ns / std.time.ns_per_ms;
+        const frac = (ns % std.time.ns_per_ms) / 100_000;
+        return std.fmt.bufPrint(buf, "{d}.{d}ms", .{ whole, frac }) catch "0ms";
+    }
+    if (ns >= std.time.ns_per_us) {
+        const whole = ns / std.time.ns_per_us;
+        const frac = (ns % std.time.ns_per_us) / 100;
+        return std.fmt.bufPrint(buf, "{d}.{d}us", .{ whole, frac }) catch "0us";
+    }
+    return std.fmt.bufPrint(buf, "{d}ns", .{ns}) catch "0ns";
+}
+
+fn formatPct(buf: []u8, pct: f64) []const u8 {
+    const abs_pct = @abs(pct);
+    return std.fmt.bufPrint(buf, "{d:.2}%", .{abs_pct}) catch "0.00%";
 }
