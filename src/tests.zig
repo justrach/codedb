@@ -3963,3 +3963,40 @@ test "issue-php-15: PHP use-as alias stripped from import path" {
     try testing.expectEqual(@as(usize, 1), outline.imports.items.len);
     try testing.expectEqualStrings("app/Models/User.php", outline.imports.items[0]);
 }
+
+test "issue-php-16: PHP escaped quotes do not end string mode" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app/Services/Escaped.php",
+        \\<?php
+        \\
+        \\class Formatter
+        \\{
+        \\    public function render()
+        \\    {
+        \\        echo "she said \"}\"";
+        \\    }
+        \\
+        \\    public function other()
+        \\    {
+        \\    }
+        \\}
+        \\
+        \\function freeHelper()
+        \\{
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("app/Services/Escaped.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var method_count: usize = 0;
+    var function_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .method) method_count += 1;
+        if (sym.kind == .function) function_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), method_count);
+    try testing.expectEqual(@as(usize, 1), function_count);
+}

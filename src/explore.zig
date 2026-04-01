@@ -1072,9 +1072,16 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
         }
 
         var in_string: u8 = 0;
+        var escaped: bool = false;
         for (line) |ch| {
             if (in_string != 0) {
-                if (ch == in_string) in_string = 0;
+                if (escaped) {
+                    escaped = false;
+                } else if (ch == '\\') {
+                    escaped = true;
+                } else if (ch == in_string) {
+                    in_string = 0;
+                }
                 continue;
             }
             if (ch == '\'' or ch == '"') {
