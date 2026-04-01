@@ -22,14 +22,14 @@ jobs:
           echo "$PWD/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
 
       - name: Benchmark head
-        run: zig build bench -- --json > bench-head.json
+        run: python3 scripts/run-bench-json.py bench-head.json
 
       - name: Benchmark base
         run: |
           git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
           git worktree add ../codedb-base FETCH_HEAD
           cd ../codedb-base
-          zig build bench -- --json > "$GITHUB_WORKSPACE/bench-base.json"
+          python3 scripts/run-bench-json.py "$GITHUB_WORKSPACE/bench-base.json"
 
       - name: Compare
         id: compare
