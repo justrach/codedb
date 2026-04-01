@@ -29,7 +29,7 @@ jobs:
           git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
           git worktree add ../codedb-base FETCH_HEAD
           cd ../codedb-base
-          python3 scripts/run-bench-json.py "$GITHUB_WORKSPACE/bench-base.json"
+          python3 "$GITHUB_WORKSPACE/scripts/run-bench-json.py" "$GITHUB_WORKSPACE/bench-base.json"
 
       - name: Compare
         id: compare
