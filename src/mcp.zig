@@ -156,6 +156,90 @@ const ProjectCache = struct {
     }
 };
 
+pub const BenchContext = struct {
+    cache: ProjectCache,
+
+    pub fn init(alloc: std.mem.Allocator, default_path: []const u8) BenchContext {
+        return .{
+            .cache = ProjectCache.init(alloc, default_path),
+        };
+    }
+
+    pub fn deinit(self: *BenchContext) void {
+        self.cache.deinit();
+    }
+
+    pub fn runDispatch(
+        self: *BenchContext,
+        alloc: std.mem.Allocator,
+        tool: Tool,
+        args: *const std.json.ObjectMap,
+        out: *std.ArrayList(u8),
+        store: *Store,
+        explorer: *Explorer,
+        agents: *AgentRegistry,
+    ) void {
+        dispatch(alloc, tool, args, out, store, explorer, agents, &self.cache);
+    }
+
+    pub fn runToolCall(
+        self: *BenchContext,
+        alloc: std.mem.Allocator,
+        name: []const u8,
+        tool: Tool,
+        args: *const std.json.ObjectMap,
+        store: *Store,
+        explorer: *Explorer,
+        agents: *AgentRegistry,
+        telem: *telemetry_mod.Telemetry,
+    ) usize {
+        var out: std.ArrayList(u8) = .{};
+        defer out.deinit(alloc);
+
+        const t0 = std.time.nanoTimestamp();
+        dispatch(alloc, tool, args, &out, store, explorer, agents, &self.cache);
+        const elapsed = std.time.nanoTimestamp() - t0;
+
+        const is_error = std.mem.startsWith(u8, out.items, "error:");
+        telem.recordToolCall(name, elapsed, is_error, out.items.len);
+
+        var summary: std.ArrayList(u8) = .{};
+        defer summary.deinit(alloc);
+        summary.appendSlice(alloc, if (is_error) MCP_RED ++ MCP_CROSS ++ " " ++ MCP_RESET else MCP_GREEN ++ MCP_CHECK ++ " " ++ MCP_RESET) catch {};
+        summary.appendSlice(alloc, mcpToolIcon(name)) catch {};
+        mcpGenerateSummary(alloc, name, args, out.items, is_error, &summary);
+        var dur_buf: [96]u8 = undefined;
+        summary.appendSlice(alloc, mcpFormatDuration(&dur_buf, elapsed)) catch {};
+
+        var guidance: std.ArrayList(u8) = .{};
+        defer guidance.deinit(alloc);
+        mcpGenerateGuidance(alloc, name, args, is_error, &guidance);
+
+        var result: std.ArrayList(u8) = .{};
+        defer result.deinit(alloc);
+        result.appendSlice(alloc, "{\"content\":[") catch return 0;
+
+        if (summary.items.len > 0) {
+            result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return result.items.len;
+            writeEscaped(alloc, &result, summary.items);
+            result.appendSlice(alloc, "\"},") catch return result.items.len;
+        }
+
+        result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return result.items.len;
+        writeEscaped(alloc, &result, out.items);
+        result.appendSlice(alloc, "\"}") catch return result.items.len;
+
+        if (guidance.items.len > 0) {
+            result.appendSlice(alloc, ",{\"type\":\"text\",\"text\":\"") catch return result.items.len;
+            writeEscaped(alloc, &result, guidance.items);
+            result.appendSlice(alloc, "\"}") catch return result.items.len;
+        }
+
+        result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return result.items.len;
+        return result.items.len;
+    }
+};
+
 // ── Tool definitions ────────────────────────────────────────────────────────
 
 pub const Tool = enum {
@@ -305,7 +389,6 @@ pub fn run(
         } else {
             if (!is_notification) writeError(alloc, stdout, id, -32601, "Method not found");
         }
-        telem.flush();
     }
 }
 
@@ -441,7 +524,6 @@ fn handleCall(
     const is_error = std.mem.startsWith(u8, out.items, "error:");
     telem.recordToolCall(name, elapsed, is_error, out.items.len);
     if (is_notification) return;
-
 
     // Block 1: Human-readable colored summary (ANSI — preview pane always renders it)
     var summary: std.ArrayList(u8) = .{};
@@ -887,7 +969,6 @@ fn handleSnapshot(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *
     out.appendSlice(alloc, snap) catch {};
 }
 
-
 fn handleBundle(
     alloc: std.mem.Allocator,
     args: *const std.json.ObjectMap,
@@ -1176,7 +1257,6 @@ pub fn isPathSafe(path: []const u8) bool {
     return true;
 }
 
-
 fn writeResult(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Value, result: []const u8) void {
     var buf: std.ArrayList(u8) = .{};
     defer buf.deinit(alloc);
@@ -1234,23 +1314,23 @@ fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Val
 // ── MCP UX: 3-block response helpers ────────────────────────────────────────
 // Colors are always on — MCP preview pane always renders ANSI. No TTY check.
 
-const MCP_RESET        = "\x1b[0m";
-const MCP_BOLD         = "\x1b[1m";
-const MCP_DIM          = "\x1b[2m";
-const MCP_GREEN        = "\x1b[32m";
-const MCP_RED          = "\x1b[31m";
-const MCP_CYAN         = "\x1b[36m";
-const MCP_YELLOW       = "\x1b[33m";
-const MCP_MAGENTA      = "\x1b[35m";
-const MCP_BLUE         = "\x1b[34m";
+const MCP_RESET = "\x1b[0m";
+const MCP_BOLD = "\x1b[1m";
+const MCP_DIM = "\x1b[2m";
+const MCP_GREEN = "\x1b[32m";
+const MCP_RED = "\x1b[31m";
+const MCP_CYAN = "\x1b[36m";
+const MCP_YELLOW = "\x1b[33m";
+const MCP_MAGENTA = "\x1b[35m";
+const MCP_BLUE = "\x1b[34m";
 const MCP_BRIGHT_GREEN = "\x1b[92m";
 
-const MCP_CHECK = "\xe2\x9c\x93";    // ✓
-const MCP_CROSS = "\xe2\x9c\x97";    // ✗
-const MCP_DASH  = " \xe2\x80\x94 "; //  —
-const MCP_ARROW = "\xe2\x86\x92 ";  // →
-const MCP_DOT   = "\xe2\x80\xa2 ";  // •
-const MCP_ZAP   = "\xe2\x9a\xa1";   // ⚡
+const MCP_CHECK = "\xe2\x9c\x93"; // ✓
+const MCP_CROSS = "\xe2\x9c\x97"; // ✗
+const MCP_DASH = " \xe2\x80\x94 "; //  —
+const MCP_ARROW = "\xe2\x86\x92 "; // →
+const MCP_DOT = "\xe2\x80\xa2 "; // •
+const MCP_ZAP = "\xe2\x9a\xa1"; // ⚡
 
 fn mcpFormatDuration(buf: []u8, ns: i128) []const u8 {
     if (ns <= 0) return "";
@@ -1279,17 +1359,17 @@ fn mcpFormatDuration(buf: []u8, ns: i128) []const u8 {
 }
 
 fn mcpToolIcon(tool_name: []const u8) []const u8 {
-    if (eql(tool_name, "codedb_outline")) return MCP_BLUE    ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_symbol"))  return MCP_BLUE    ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_read"))    return MCP_BLUE    ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_search"))  return MCP_MAGENTA ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_word"))    return MCP_CYAN    ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_edit"))    return MCP_YELLOW  ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_tree"))    return MCP_GREEN   ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_hot"))     return MCP_YELLOW  ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_deps"))    return MCP_CYAN    ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_changes")) return MCP_YELLOW  ++ MCP_DOT ++ MCP_RESET;
-    if (eql(tool_name, "codedb_bundle"))  return MCP_MAGENTA ++ MCP_DOT ++ MCP_RESET;
+    if (eql(tool_name, "codedb_outline")) return MCP_BLUE ++ MCP_DOT ++ MCP_RESET;
+    if (eql(tool_name, "codedb_symbol")) return MCP_BLUE ++ MCP_DOT ++ MCP_RESET;
+    if (eql(tool_name, "codedb_read")) return MCP_BLUE ++ MCP_DOT ++ MCP_RESET;
+    if (eql(tool_name, "codedb_search")) return MCP_MAGENTA ++ MCP_DOT ++ MCP_RESET;
+    if (eql(tool_name, "codedb_word")) return MCP_CYAN ++ MCP_DOT ++ MCP_RESET;
+    if (eql(tool_name, "codedb_edit")) return MCP_YELLOW ++ MCP_DOT ++ MCP_RESET;
+    if (eql(tool_name, "codedb_tree")) return MCP_GREEN ++ MCP_DOT ++ MCP_RESET;
+    if (eql(tool_name, "codedb_hot")) return MCP_YELLOW ++ MCP_DOT ++ MCP_RESET;
+    if (eql(tool_name, "codedb_deps")) return MCP_CYAN ++ MCP_DOT ++ MCP_RESET;
+    if (eql(tool_name, "codedb_changes")) return MCP_YELLOW ++ MCP_DOT ++ MCP_RESET;
+    if (eql(tool_name, "codedb_bundle")) return MCP_MAGENTA ++ MCP_DOT ++ MCP_RESET;
     return MCP_DIM ++ MCP_DOT ++ MCP_RESET;
 }
 

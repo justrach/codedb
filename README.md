@@ -292,14 +292,19 @@ All threads share a `shutdown: atomic.Value(bool)` for graceful termination.
 
 ## 🔒 Data & Privacy
 
-codedb is **fully local** — no telemetry, no analytics, no network calls. Nothing leaves your machine.
+codedb keeps runtime data local by default. Telemetry, when enabled, is written to `~/.codedb/telemetry.ndjson` on the same machine and is not uploaded automatically.
 
 | Location | Contents | Purpose |
 |----------|----------|---------|
 | `~/.codedb/projects/<hash>/` | Trigram index, frequency table, data log | Persistent index cache |
+| `~/.codedb/telemetry.ndjson` | Aggregate tool calls and startup stats | Local telemetry log |
 | `./codedb.snapshot` | File tree, outlines, content, frequency table | Portable snapshot for instant MCP startup |
 
-**Not stored:** No source code is sent anywhere. No network requests. No usage analytics. Sensitive files auto-excluded (`.env*`, `credentials.json`, `secrets.*`, `.pem`, `.key`, SSH keys, AWS configs).
+**Not stored:** No source code is sent anywhere. No file contents, file paths, or search queries are collected in telemetry. Sensitive files auto-excluded (`.env*`, `credentials.json`, `secrets.*`, `.pem`, `.key`, SSH keys, AWS configs).
+
+To disable the local telemetry log entirely, set `CODEDB_NO_TELEMETRY=1`.
+
+To sync the local NDJSON file into Postgres for analysis or dashboards, use [`scripts/sync-telemetry.py`](./scripts/sync-telemetry.py) with the schema in [`docs/telemetry/postgres-schema.sql`](./docs/telemetry/postgres-schema.sql). The data flow is documented in [`docs/telemetry.md`](./docs/telemetry.md).
 
 ```bash
 rm -rf ~/.codedb/          # clear all cached indexes

@@ -1,0 +1,58 @@
+name: bench-regression
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      - name: Benchmark head
+        run: zig build bench -- --json > bench-head.json
+
+      - name: Benchmark base
+        run: |
+          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
+          git worktree add ../codedb-base FETCH_HEAD
+          cd ../codedb-base
+          zig build bench -- --json > ../bench-base.json
+
+      - name: Compare
+        id: compare
+        run: |
+          python3 scripts/compare-bench.py bench-base.json bench-head.json --threshold-pct 10 --markdown-out bench-report.md
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: |
+            bench-base.json
+            bench-head.json
+            bench-report.md
+
+      - name: Comment PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('bench-report.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

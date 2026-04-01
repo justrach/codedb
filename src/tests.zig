@@ -30,6 +30,7 @@ const isCommentOrBlank = explore.isCommentOrBlank;
 const Language = explore.Language;
 const mcp_mod = @import("mcp.zig");
 const snapshot_mod = @import("snapshot.zig");
+const telemetry_mod = @import("telemetry.zig");
 // ── Store tests ─────────────────────────────────────────────
 
 test "store: record and retrieve snapshots" {
@@ -335,7 +336,6 @@ test "trigram index: re-index removes old trigrams" {
     try testing.expect(c3 != null and c3.?.len == 1);
 }
 
-
 // ── Sparse N-gram tests ─────────────────────────────────────
 
 test "pairWeight: deterministic" {
@@ -449,8 +449,6 @@ test "extractSparseNgrams: coverage with force-split remainder 2 (len=18)" {
     for (covered) |c| try testing.expect(c);
 }
 
-
-
 test "extractSparseNgrams: ngram length bounds" {
     const content = "abcdefghijklmnopqrstuvwxyz0123456789";
     const ng = try extractSparseNgrams(content, testing.allocator);
@@ -502,8 +500,6 @@ test "sparse ngram index: index and candidate lookup" {
     try testing.expect(found_foo);
     try testing.expect(!found_bar);
 }
-
-
 
 test "sparse ngram index: short query returns null" {
     var sni = SparseNgramIndex.init(testing.allocator);
@@ -558,7 +554,9 @@ test "sparse ngram candidates: sliding window finds file with short n-gram" {
 
     var found_a = false;
     if (cands) |cs| {
-        for (cs) |p| if (std.mem.eql(u8, p, "a.zig")) { found_a = true; };
+        for (cs) |p| if (std.mem.eql(u8, p, "a.zig")) {
+            found_a = true;
+        };
     }
     try testing.expect(found_a);
 }
@@ -590,10 +588,11 @@ test "explorer: searchContent finds query embedded in longer identifier" {
 
     const results = try explorer.searchContent("record", arena.allocator(), 10);
     var found = false;
-    for (results) |r| if (std.mem.eql(u8, r.path, "alpha.zig")) { found = true; };
+    for (results) |r| if (std.mem.eql(u8, r.path, "alpha.zig")) {
+        found = true;
+    };
     try testing.expect(found);
 }
-
 
 // ── Frequency-weighted pairWeight tests ─────────────────────
 
@@ -615,7 +614,7 @@ test "pairWeight: frequency-weighted produces fewer boundaries for common text" 
     // (interior weights are low and similar), giving fewer n-grams than a
     // string of rare pairs.
     const common = "thehereinandonthere";
-    const rare   = "qxzjvkqxzjvkqxzjvk";
+    const rare = "qxzjvkqxzjvkqxzjvk";
     const ng_common = try extractSparseNgrams(common, testing.allocator);
     defer testing.allocator.free(ng_common);
     const ng_rare = try extractSparseNgrams(rare, testing.allocator);
@@ -708,8 +707,8 @@ test "setFrequencyTable / resetFrequencyTable: pairWeight output changes" {
     setFrequencyTable(&custom);
     defer resetFrequencyTable();
 
-    const after_th  = pairWeight('t', 'h');
-    const after_qx  = pairWeight('q', 'x');
+    const after_th = pairWeight('t', 'h');
+    const after_qx = pairWeight('q', 'x');
 
     // After swap: 'th' should be lower (we set it to 0x1000 vs default table's 0x1000 — same).
     // What definitely changes: 'qx' base shifts from 0xFE00 to 0xFE00 (custom kept it high).
@@ -720,7 +719,6 @@ test "setFrequencyTable / resetFrequencyTable: pairWeight output changes" {
     _ = after_th;
     _ = after_qx;
 }
-
 
 // ── Explorer tests ──────────────────────────────────────────
 
@@ -777,7 +775,10 @@ test "explorer: searchContent with trigram acceleration" {
 
     const results = try explorer.searchContent("recordSnapshot", testing.allocator, 50);
     defer {
-        for (results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
         testing.allocator.free(results);
     }
 
@@ -853,10 +854,20 @@ test "file versions: append and latest" {
     defer fv.deinit();
 
     try fv.versions.append(testing.allocator, .{
-        .seq = 1, .agent = 0, .timestamp = 0, .op = .snapshot, .hash = 0x11, .size = 100,
+        .seq = 1,
+        .agent = 0,
+        .timestamp = 0,
+        .op = .snapshot,
+        .hash = 0x11,
+        .size = 100,
     });
     try fv.versions.append(testing.allocator, .{
-        .seq = 2, .agent = 0, .timestamp = 0, .op = .replace, .hash = 0x22, .size = 150,
+        .seq = 2,
+        .agent = 0,
+        .timestamp = 0,
+        .op = .replace,
+        .hash = 0x22,
+        .size = 150,
     });
 
     const latest = fv.latest().?;
@@ -869,13 +880,28 @@ test "file versions: countSince" {
     defer fv.deinit();
 
     try fv.versions.append(testing.allocator, .{
-        .seq = 1, .agent = 0, .timestamp = 0, .op = .snapshot, .hash = 0, .size = 0,
+        .seq = 1,
+        .agent = 0,
+        .timestamp = 0,
+        .op = .snapshot,
+        .hash = 0,
+        .size = 0,
     });
     try fv.versions.append(testing.allocator, .{
-        .seq = 5, .agent = 0, .timestamp = 0, .op = .replace, .hash = 0, .size = 0,
+        .seq = 5,
+        .agent = 0,
+        .timestamp = 0,
+        .op = .replace,
+        .hash = 0,
+        .size = 0,
     });
     try fv.versions.append(testing.allocator, .{
-        .seq = 10, .agent = 0, .timestamp = 0, .op = .delete, .hash = 0, .size = 0,
+        .seq = 10,
+        .agent = 0,
+        .timestamp = 0,
+        .op = .delete,
+        .hash = 0,
+        .size = 0,
     });
 
     try testing.expect(fv.countSince(0) == 3);
@@ -905,7 +931,10 @@ test "explorer: reindex OOM keeps prior outline reachable" {
     // Old content should be replaced
     const old_results = try explorer.searchContent("oldName", testing.allocator, 10);
     defer {
-        for (old_results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
+        for (old_results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
         testing.allocator.free(old_results);
     }
     try testing.expect(old_results.len == 0);
@@ -913,7 +942,10 @@ test "explorer: reindex OOM keeps prior outline reachable" {
     // New content should be searchable
     const new_results = try explorer.searchContent("newName", testing.allocator, 10);
     defer {
-        for (new_results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
+        for (new_results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
         testing.allocator.free(new_results);
     }
     try testing.expect(new_results.len == 1);
@@ -1141,7 +1173,10 @@ test "regression #2: searchContent frees trigram candidate slice" {
 
     const results = try explorer.searchContent("recordSnapshot", testing.allocator, 50);
     defer {
-        for (results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
         testing.allocator.free(results);
     }
     try testing.expect(results.len == 1);
@@ -1159,7 +1194,10 @@ test "regression #2: searchContent no leak on zero results" {
     // "abcxyz" shares trigrams "abc" but won't match full text
     const results = try explorer.searchContent("abcxyz", testing.allocator, 50);
     defer {
-        for (results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
         testing.allocator.free(results);
     }
     try testing.expect(results.len == 0);
@@ -1174,7 +1212,10 @@ test "regression #2: searchContent short query skips trigrams" {
 
     const results = try explorer.searchContent("ab", testing.allocator, 50);
     defer {
-        for (results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
         testing.allocator.free(results);
     }
     try testing.expect(results.len == 1);
@@ -1369,7 +1410,10 @@ test "regression: searchContent frees empty trigram candidate slice" {
 
     const results = try explorer.searchContent("zzzzz", testing.allocator, 50);
     defer {
-        for (results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
         testing.allocator.free(results);
     }
     try testing.expect(results.len == 0);
@@ -2240,11 +2284,18 @@ test "regexMatch: alternation with many branches does not stack overflow" {
     var pos: usize = 0;
     var bi: usize = 0;
     while (bi < 300) : (bi += 1) {
-        if (bi > 0) { buf[pos] = '|'; pos += 1; }
-        buf[pos] = 'a'; pos += 1;
-        buf[pos] = @as(u8, @intCast('0' + bi / 100 % 10)); pos += 1;
-        buf[pos] = @as(u8, @intCast('0' + bi / 10 % 10)); pos += 1;
-        buf[pos] = @as(u8, @intCast('0' + bi % 10)); pos += 1;
+        if (bi > 0) {
+            buf[pos] = '|';
+            pos += 1;
+        }
+        buf[pos] = 'a';
+        pos += 1;
+        buf[pos] = @as(u8, @intCast('0' + bi / 100 % 10));
+        pos += 1;
+        buf[pos] = @as(u8, @intCast('0' + bi / 10 % 10));
+        pos += 1;
+        buf[pos] = @as(u8, @intCast('0' + bi % 10));
+        pos += 1;
     }
     const pattern = buf[0..pos];
     try testing.expect(regexMatch("a000", pattern));
@@ -2297,7 +2348,6 @@ test "explorer: searchContentRegex no match" {
 
     try testing.expectEqual(@as(usize, 0), results.len);
 }
-
 
 // ── Bloom filter correctness tests ──────────────────────────
 // These tests prove that the PostingMask (nextMask + locMask) bloom
@@ -2729,8 +2779,7 @@ test "perf regression: word index lookup under 100ns per query" {
 
     for (0..100) |i| {
         const name = try std.fmt.allocPrint(alloc, "src_{d}.zig", .{i});
-        const content = try std.fmt.allocPrint(alloc,
-            "pub fn handleRequest_{d}(ctx: *Context) void {{}}\nconst allocator = getDefaultAllocator();\n", .{i});
+        const content = try std.fmt.allocPrint(alloc, "pub fn handleRequest_{d}(ctx: *Context) void {{}}\nconst allocator = getDefaultAllocator();\n", .{i});
         try wi.indexFile(name, content);
     }
 
@@ -2759,8 +2808,7 @@ test "perf regression: bloom filter reduces scan work" {
 
     for (0..50) |i| {
         const name = try std.fmt.allocPrint(alloc, "f{d:0>2}.zig", .{i});
-        const content = try std.fmt.allocPrint(alloc,
-            "pub fn init_{d}(allocator: Allocator) void {{}}\nfn deinit_{d}() void {{}}\n", .{ i, i });
+        const content = try std.fmt.allocPrint(alloc, "pub fn init_{d}(allocator: Allocator) void {{}}\nfn deinit_{d}() void {{}}\n", .{ i, i });
         try ti.indexFile(name, content);
     }
 
@@ -2937,7 +2985,6 @@ test "disk index: fileCount matches after round-trip" {
 
     try testing.expectEqual(@as(u32, 3), loaded_ti.fileCount());
 }
-
 
 // ── Git HEAD + disk index tests ─────────────────────────────
 
@@ -3197,7 +3244,10 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
     // Current (bug): results.len == 0 — stale snapshot content is never evicted.
     const results = try exp2.searchContent("newFunc", testing.allocator, 10);
     defer {
-        for (results) |r| { testing.allocator.free(r.path); testing.allocator.free(r.line_text); }
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
         testing.allocator.free(results);
     }
     try testing.expect(results.len == 1);
@@ -3230,7 +3280,6 @@ test "issue-46: empty-repo snapshot rejected on load" {
     // Valid empty-repo snapshot should be accepted; currently returns false (bug: file_count == 0)
     try testing.expect(loaded);
 }
-
 
 // ── Snapshot non-git tests ───────────────────────────────────
 
@@ -3429,6 +3478,52 @@ test "issue-41: snapshot not validated against repo identity allows cross-projec
 
     const loaded = snapshot_mod.loadSnapshotValidated(snap_path, "/some/other/project", &exp2, &store, testing.allocator);
     try testing.expect(!loaded);
+}
+
+test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    var telem = telemetry_mod.Telemetry.init(dir_path, testing.allocator, false);
+    defer telem.deinit();
+
+    telem.recordSessionStart();
+    telem.recordToolCall("codedb_status", 1234, false, 56);
+
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+    try explorer.indexFile("src/lib.py", "def run():\n    return 1\n");
+
+    telem.recordCodebaseStats(&explorer, 42);
+    telem.flush();
+
+    const ndjson_path = try std.fmt.allocPrint(testing.allocator, "{s}/telemetry.ndjson", .{dir_path});
+    defer testing.allocator.free(ndjson_path);
+
+    const contents = try std.fs.cwd().readFileAlloc(testing.allocator, ndjson_path, 64 * 1024);
+    defer testing.allocator.free(contents);
+
+    try testing.expect(std.mem.indexOf(u8, contents, "\"event_type\":\"session_start\"") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"event_type\":\"tool_call\"") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"tool\":\"codedb_status\"") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"event_type\":\"codebase_stats\"") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"startup_time_ms\":42") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"languages\":[\"zig\",\"python\"]") != null);
+}
+
+test "issue-60: telemetry disabled path is a no-op" {
+    var telem = telemetry_mod.Telemetry.init("/tmp", testing.allocator, true);
+    defer telem.deinit();
+
+    telem.recordSessionStart();
+    telem.recordToolCall("codedb_search", 99, true, 10);
+    try testing.expect(!telem.enabled);
+    try testing.expect(telem.file == null);
+    try testing.expect(telem.head.load(.monotonic) == 0);
 }
 
 test "issue-77: mcp index accepts temporary-directory roots that cause pathological cache growth" {

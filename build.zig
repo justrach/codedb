@@ -21,7 +21,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-
     // ── mcp-zig dependency ──
     const mcp_dep = b.dependency("mcp_zig", .{});
     exe.root_module.addImport("mcp", mcp_dep.module("mcp"));
@@ -82,6 +81,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const bench_run = b.addRunArtifact(bench);
+    bench.root_module.addImport("mcp", mcp_dep.module("mcp"));
+    if (b.args) |args| bench_run.addArgs(args);
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&bench_run.step);
     // Make module available so dependents don't need to wire it up manually

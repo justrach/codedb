@@ -13,7 +13,6 @@ const snapshot_mod = @import("snapshot.zig");
 const telemetry = @import("telemetry.zig");
 const root_policy = @import("root_policy.zig");
 
-
 /// Thin wrapper: format + write to a File via allocator.
 const Out = struct {
     file: std.fs.File,
@@ -105,7 +104,6 @@ pub fn main() !void {
         allocator.destroy(ft);
     };
 
-
     if (!std.mem.eql(u8, cmd, "mcp")) {
         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
 
@@ -129,10 +127,11 @@ pub fn main() !void {
             var dur_buf: [64]u8 = undefined;
             const scan_elapsed = std.time.nanoTimestamp() - t_scan;
             out.p("{s}\xe2\x9c\x93{s} {s}loaded snapshot{s}  {s}{d} files{s}  {s}{s}{s}\n", .{
-                s.green, s.reset,
-                s.bold, s.reset,
-                s.dim, explorer.outlines.count(), s.reset,
-                sty.durationColor(s, scan_elapsed), sty.formatDuration(&dur_buf, scan_elapsed), s.reset,
+                s.green,                                    s.reset,
+                s.bold,                                     s.reset,
+                s.dim,                                      explorer.outlines.count(),
+                s.reset,                                    sty.durationColor(s, scan_elapsed),
+                sty.formatDuration(&dur_buf, scan_elapsed), s.reset,
             });
         } else {
             const disk_hdr = TrigramIndex.readDiskHeader(data_dir, allocator) catch null;
@@ -152,9 +151,10 @@ pub fn main() !void {
             const scan_elapsed = std.time.nanoTimestamp() - t_scan;
             var dur_buf: [64]u8 = undefined;
             out.p("{s}\xe2\x9c\x93{s} {s}indexed{s}  {s}{s}{s}\n", .{
-                s.green, s.reset,
-                s.dim, s.reset,
-                sty.durationColor(s, scan_elapsed), sty.formatDuration(&dur_buf, scan_elapsed), s.reset,
+                s.green,                            s.reset,
+                s.dim,                              s.reset,
+                sty.durationColor(s, scan_elapsed), sty.formatDuration(&dur_buf, scan_elapsed),
+                s.reset,
             });
 
             if (heads_match) {
@@ -198,9 +198,6 @@ pub fn main() !void {
         } // end else (no snapshot)
     }
 
-
-
-
     if (std.mem.eql(u8, cmd, "tree")) {
         const t0 = std.time.nanoTimestamp();
         const tree = try explorer.getTree(allocator, use_color);
@@ -211,7 +208,6 @@ pub fn main() !void {
         out.p("{s}{s}{s}\n", .{
             sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed), s.reset,
         });
-
     } else if (std.mem.eql(u8, cmd, "outline")) {
         const path = if (args.len > cmd_args_start) args[cmd_args_start] else {
             out.p("{s}\xe2\x9c\x97{s} usage: codedb [root] outline {s}<path>{s}\n", .{
@@ -236,25 +232,26 @@ pub fn main() !void {
         var dur_buf: [64]u8 = undefined;
         const lang = @tagName(outline.language);
         out.p("{s}\xe2\x9c\x93{s} {s}{s}{s}  {s}{s}{s}  {s}{d} lines{s}  {s}{s}{s}\n", .{
-            s.green, s.reset,
-            s.bold, path, s.reset,
-            s.langColor(lang), lang, s.reset,
-            s.dim, outline.line_count, s.reset,
-            sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed), s.reset,
+            s.green,                               s.reset,
+            s.bold,                                path,
+            s.reset,                               s.langColor(lang),
+            lang,                                  s.reset,
+            s.dim,                                 outline.line_count,
+            s.reset,                               sty.durationColor(s, elapsed),
+            sty.formatDuration(&dur_buf, elapsed), s.reset,
         });
         for (outline.symbols.items) |sym| {
             const kind = @tagName(sym.kind);
             out.p("  {s}L{d:<5}{s}  {s}{s:<14}{s}  {s}{s}{s}", .{
-                s.dim, sym.line_start, s.reset,
-                s.kindColor(kind), kind, s.reset,
-                s.bold, sym.name, s.reset,
+                s.dim,             sym.line_start, s.reset,
+                s.kindColor(kind), kind,           s.reset,
+                s.bold,            sym.name,       s.reset,
             });
             if (sym.detail) |d| {
                 out.p("  {s}{s}{s}", .{ s.dim, d, s.reset });
             }
             out.p("\n", .{});
         }
-
     } else if (std.mem.eql(u8, cmd, "find")) {
         const name = if (args.len > cmd_args_start) args[cmd_args_start] else {
             out.p("{s}\xe2\x9c\x97{s} usage: codedb [root] find {s}<symbol>{s}\n", .{
@@ -273,12 +270,15 @@ pub fn main() !void {
             var dur_buf: [64]u8 = undefined;
             const kind = @tagName(r.symbol.kind);
             out.p("{s}\xe2\x9c\x93{s} {s}{s}{s} {s}{s}{s}  {s}{s}{s}:{s}{d}{s}  {s}{s}{s}\n", .{
-                s.green, s.reset,
-                s.kindColor(kind), kind, s.reset,
-                s.bold, name, s.reset,
-                s.dim, r.path, s.reset,
-                s.cyan, r.symbol.line_start, s.reset,
-                sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed), s.reset,
+                s.green,                       s.reset,
+                s.kindColor(kind),             kind,
+                s.reset,                       s.bold,
+                name,                          s.reset,
+                s.dim,                         r.path,
+                s.reset,                       s.cyan,
+                r.symbol.line_start,           s.reset,
+                sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed),
+                s.reset,
             });
             if (r.symbol.detail) |d| {
                 out.p("  {s}{s}{s}\n", .{ s.dim, d, s.reset });
@@ -288,7 +288,6 @@ pub fn main() !void {
                 s.red, s.reset, s.bold, name, s.reset,
             });
         }
-
     } else if (std.mem.eql(u8, cmd, "search")) {
         var use_regex = false;
         var query_arg_start = cmd_args_start;
@@ -308,7 +307,10 @@ pub fn main() !void {
         else
             try explorer.searchContent(query, allocator, 50);
         defer {
-            for (results) |r| { allocator.free(r.path); allocator.free(r.line_text); }
+            for (results) |r| {
+                allocator.free(r.path);
+                allocator.free(r.line_text);
+            }
             allocator.free(results);
         }
         const elapsed = std.time.nanoTimestamp() - t0;
@@ -320,20 +322,21 @@ pub fn main() !void {
         } else {
             const mode_label: []const u8 = if (use_regex) " (regex)" else "";
             out.p("{s}\xe2\x9c\x93{s} {s}{d}{s} results for {s}\"{s}\"{s}{s}  {s}{s}{s}\n", .{
-                s.green, s.reset,
-                s.bold, results.len, s.reset,
-                s.bold, query, s.reset, mode_label,
-                sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed), s.reset,
+                s.green,                               s.reset,
+                s.bold,                                results.len,
+                s.reset,                               s.bold,
+                query,                                 s.reset,
+                mode_label,                            sty.durationColor(s, elapsed),
+                sty.formatDuration(&dur_buf, elapsed), s.reset,
             });
             for (results) |r| {
                 out.p("  {s}{s}{s}:{s}{d}{s}  {s}\n", .{
-                    s.cyan, r.path, s.reset,
-                    s.dim, r.line_num, s.reset,
+                    s.cyan,      r.path,     s.reset,
+                    s.dim,       r.line_num, s.reset,
                     r.line_text,
                 });
             }
         }
-
     } else if (std.mem.eql(u8, cmd, "word")) {
         const word = if (args.len > cmd_args_start) args[cmd_args_start] else {
             out.p("{s}\xe2\x9c\x97{s} usage: codedb [root] word {s}<identifier>{s}\n", .{
@@ -352,19 +355,20 @@ pub fn main() !void {
             });
         } else {
             out.p("{s}\xe2\x9c\x93{s} {s}{d}{s} hits for {s}'{s}'{s}  {s}{s}{s}\n", .{
-                s.green, s.reset,
-                s.bold, hits.len, s.reset,
-                s.bold, word, s.reset,
-                sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed), s.reset,
+                s.green,                       s.reset,
+                s.bold,                        hits.len,
+                s.reset,                       s.bold,
+                word,                          s.reset,
+                sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed),
+                s.reset,
             });
             for (hits) |h| {
                 out.p("  {s}{s}{s}:{s}{d}{s}\n", .{
-                    s.cyan, h.path, s.reset,
-                    s.dim, h.line_num, s.reset,
+                    s.cyan, h.path,     s.reset,
+                    s.dim,  h.line_num, s.reset,
                 });
             }
         }
-
     } else if (std.mem.eql(u8, cmd, "hot")) {
         const t0 = std.time.nanoTimestamp();
         const hot = try explorer.getHotFiles(&store, allocator, 10);
@@ -375,13 +379,14 @@ pub fn main() !void {
         const elapsed = std.time.nanoTimestamp() - t0;
         var dur_buf: [64]u8 = undefined;
         out.p("{s}\xe2\x9c\x93{s} {s}recently modified{s}  {s}{s}{s}\n", .{
-            s.green, s.reset,
-            s.bold, s.reset,
-            sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed), s.reset,
+            s.green,                       s.reset,
+            s.bold,                        s.reset,
+            sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed),
+            s.reset,
         });
         for (hot, 1..) |path, i| {
             out.p("  {s}{d}{s}  {s}{s}{s}\n", .{
-                s.dim, i, s.reset,
+                s.dim,  i,    s.reset,
                 s.cyan, path, s.reset,
             });
         }
@@ -395,13 +400,14 @@ pub fn main() !void {
         const elapsed = std.time.nanoTimestamp() - t0;
         var dur_buf: [64]u8 = undefined;
         out.p("{s}\xe2\x9c\x93{s} {s}snapshot{s}  {s}{s}{s}  {s}{d} files{s}  {s}{s}{s}\n", .{
-            s.green, s.reset,
-            s.bold, s.reset,
-            s.cyan, output, s.reset,
-            s.dim, explorer.outlines.count(), s.reset,
-            sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed), s.reset,
+            s.green,                       s.reset,
+            s.bold,                        s.reset,
+            s.cyan,                        output,
+            s.reset,                       s.dim,
+            explorer.outlines.count(),     s.reset,
+            sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed),
+            s.reset,
         });
-
     } else if (std.mem.eql(u8, cmd, "serve")) {
         const port: u16 = 7719;
         var agents = AgentRegistry.init(allocator);
@@ -421,7 +427,6 @@ pub fn main() !void {
 
         std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
         try server.serve(allocator, &store, &agents, &explorer, &queue, port);
-
     } else if (std.mem.eql(u8, cmd, "mcp")) {
         var agents = AgentRegistry.init(allocator);
         defer agents.deinit();
@@ -443,34 +448,35 @@ pub fn main() !void {
             break :blk snapshot_mod.loadSnapshot("codedb.snapshot", &explorer, &store, allocator);
         };
 
+        var telemetry_disabled = false;
+        for (args[cmd_args_start..]) |arg| {
+            if (std.mem.eql(u8, arg, "--no-telemetry")) {
+                telemetry_disabled = true;
+                break;
+            }
+        }
+
+        var telem = telemetry.Telemetry.init(data_dir, allocator, telemetry_disabled);
+        defer telem.deinit();
+        telem.recordSessionStart();
+
         var shutdown = std.atomic.Value(bool).init(false);
         var scan_done = std.atomic.Value(bool).init(snapshot_loaded);
 
         var queue = watcher.EventQueue{};
         var scan_thread: ?std.Thread = null;
+        const startup_t0 = std.time.milliTimestamp();
         if (!snapshot_loaded) {
-            scan_thread = try std.Thread.spawn(.{}, scanBg, .{ &store, &explorer, root, allocator, &scan_done, data_dir, abs_root });
+            scan_thread = try std.Thread.spawn(.{}, scanBg, .{ &store, &explorer, root, allocator, &scan_done, data_dir, abs_root, &telem, startup_t0 });
+        } else {
+            const startup_time_ms: u64 = @intCast(@max(std.time.milliTimestamp() - startup_t0, 0));
+            telem.recordCodebaseStats(&explorer, startup_time_ms);
         }
 
         const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &shutdown, &scan_done });
         const idle_thread = try std.Thread.spawn(.{}, idleWatchdog, .{&shutdown});
 
         std.log.info("codedb2 mcp: root={s} files={d} data={s}", .{ abs_root, store.currentSeq(), data_dir });
-
-        var telem = telemetry.Telemetry.init(data_dir, allocator);
-        defer telem.deinit();
-
-        for (args[cmd_args_start..]) |arg| {
-            if (std.mem.eql(u8, arg, "--no-telemetry")) {
-                telem.enabled = false;
-                break;
-            }
-        }
-
-        telem.record(.{ .session_start = .{
-            .file_count = @intCast(@min(explorer.outlines.count(), std.math.maxInt(u32))),
-            .total_lines = 0,
-        } });
 
         mcp_server.run(allocator, &store, &explorer, &agents, abs_root, &telem);
 
@@ -479,7 +485,6 @@ pub fn main() !void {
         watch_thread.join();
         idle_thread.join();
         if (scan_thread) |t| t.join();
-
     } else {
         out.p("{s}\xe2\x9c\x97{s} unknown command: {s}{s}{s}\n", .{
             s.red, s.reset, s.bold, cmd, s.reset,
@@ -545,10 +550,14 @@ fn printUsage(out: Out, s: sty.Style) void {
         s.dim,  s.reset,
         s.dim,  s.reset,
         s.cyan, s.reset,
-        s.cyan, s.reset, s.dim, s.reset,
-        s.cyan, s.reset, s.dim, s.reset,
-        s.cyan, s.reset, s.dim, s.reset,
-        s.cyan, s.reset, s.dim, s.reset,
+        s.cyan, s.reset,
+        s.dim,  s.reset,
+        s.cyan, s.reset,
+        s.dim,  s.reset,
+        s.cyan, s.reset,
+        s.dim,  s.reset,
+        s.cyan, s.reset,
+        s.dim,  s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,
@@ -575,7 +584,7 @@ fn reapLoop(agents: *AgentRegistry, shutdown: *std.atomic.Value(bool)) void {
     }
 }
 
-fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8) void {
+fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8, telem: *telemetry.Telemetry, startup_t0: i64) void {
     const git_head = git_mod.getGitHead(root, allocator) catch null;
     const disk_hdr = TrigramIndex.readDiskHeader(data_dir, allocator) catch null;
     const heads_match = blk: {
@@ -598,6 +607,7 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
                 explorer.trigram_index = loaded;
                 explorer.mu.unlock();
                 scan_done.store(true, .release);
+                telem.recordCodebaseStats(explorer, @intCast(@max(std.time.milliTimestamp() - startup_t0, 0)));
                 // Auto-write snapshot after successful scan
                 snapshot_mod.writeSnapshotDual(explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
                     std.log.warn("could not auto-write snapshot: {}", .{err});
@@ -614,6 +624,7 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
         std.log.warn("could not persist trigram index: {}", .{err});
     };
     scan_done.store(true, .release);
+    telem.recordCodebaseStats(explorer, @intCast(@max(std.time.milliTimestamp() - startup_t0, 0)));
 
     // Auto-write snapshot after successful scan
     snapshot_mod.writeSnapshotDual(explorer, abs_root, "codedb.snapshot", allocator) catch |err| {

@@ -1,10 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const explore = @import("explore.zig");
+const index = @import("index.zig");
 
 const RING_SIZE = 256;
 const CLOUD_URL = "https://codedb.codegraff.com/telemetry/ingest";
+const VERSION = "0.2.0";
+const PLATFORM = std.fmt.comptimePrint("{s}-{s}", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
 
 pub const Event = struct {
-    ts: i64,
     kind: Kind,
 
     pub const Kind = union(enum) {
@@ -15,9 +19,13 @@ pub const Event = struct {
             err: bool,
             response_bytes: u32,
         },
-        session_start: struct {
+        session_start: void,
+        codebase_stats: struct {
             file_count: u32,
             total_lines: u64,
+            language_mask: u16,
+            index_size_bytes: u64,
+            startup_time_ms: u64,
         },
     };
 };
@@ -32,10 +40,10 @@ pub const Telemetry = struct {
     path_buf: [std.fs.max_path_bytes]u8 = undefined,
     path_len: usize = 0,
 
-    pub fn init(data_dir: []const u8, allocator: std.mem.Allocator) Telemetry {
+    pub fn init(data_dir: []const u8, allocator: std.mem.Allocator, disabled: bool) Telemetry {
         var self = Telemetry{};
 
-        if (std.process.hasEnvVarConstant("CODEDB_NO_TELEMETRY")) {
+        if (disabled or std.process.hasEnvVarConstant("CODEDB_NO_TELEMETRY")) {
             self.enabled = false;
             return self;
         }
@@ -58,24 +66,23 @@ pub const Telemetry = struct {
         if (self.enabled) self.syncToCloud();
     }
 
-    /// Hot path — no allocation, no syscall, no blocking.
-    /// Just copies into the next ring slot.
     pub fn record(self: *Telemetry, kind: Event.Kind) void {
         if (!self.enabled) return;
-        const slot = self.head.fetchAdd(1, .monotonic) % RING_SIZE;
+        const next = self.head.fetchAdd(1, .monotonic);
+        const slot = next % RING_SIZE;
         self.ring[slot] = .{
-            .ts = std.time.timestamp(),
             .kind = kind,
         };
-        // Advance tail if we wrapped (drop oldest)
-        const head = self.head.load(.monotonic);
         const tail = self.tail.load(.monotonic);
-        if (head -% tail > RING_SIZE) {
-            self.tail.store(head -% RING_SIZE, .monotonic);
+        if ((next + 1) -% tail > RING_SIZE) {
+            self.tail.store((next + 1) -% RING_SIZE, .monotonic);
         }
     }
 
-    /// Convenience for the handleCall hot path.
+    pub fn recordSessionStart(self: *Telemetry) void {
+        self.record(.{ .session_start = {} });
+    }
+
     pub fn recordToolCall(self: *Telemetry, tool_name: []const u8, latency_ns: i128, is_error: bool, response_bytes: usize) void {
         var tc: Event.Kind = .{ .tool_call = .{
             .latency_ns = latency_ns,
@@ -88,7 +95,33 @@ pub const Telemetry = struct {
         self.record(tc);
     }
 
-    /// Cold path — called on idle or shutdown. Drains ring to disk.
+    pub fn recordCodebaseStats(self: *Telemetry, explorer: *explore.Explorer, startup_time_ms: u64) void {
+        if (!self.enabled) return;
+
+        explorer.mu.lockShared();
+        defer explorer.mu.unlockShared();
+
+        var file_count: u32 = 0;
+        var total_lines: u64 = 0;
+        var language_mask: u16 = 0;
+
+        var outline_iter = explorer.outlines.iterator();
+        while (outline_iter.next()) |entry| {
+            file_count +|= 1;
+            total_lines +|= entry.value_ptr.line_count;
+            const bit_index: u4 = @intCast(@intFromEnum(entry.value_ptr.language));
+            language_mask |= @as(u16, 1) << bit_index;
+        }
+
+        self.record(.{ .codebase_stats = .{
+            .file_count = file_count,
+            .total_lines = total_lines,
+            .language_mask = language_mask,
+            .index_size_bytes = approxIndexSizeBytes(explorer),
+            .startup_time_ms = startup_time_ms,
+        } });
+    }
+
     pub fn flush(self: *Telemetry) void {
         const f = self.file orelse return;
         const tail = self.tail.load(.monotonic);
@@ -104,8 +137,6 @@ pub const Telemetry = struct {
         self.tail.store(head, .monotonic);
     }
 
-    /// Fire-and-forget: spawn detached shell to POST ndjson to cloud.
-    /// Runs on shutdown — never blocks the MCP loop.
     fn syncToCloud(self: *Telemetry) void {
         if (!self.enabled or self.path_len == 0) return;
         const path = self.path_buf[0..self.path_len];
@@ -113,7 +144,6 @@ pub const Telemetry = struct {
         const stat = std.fs.cwd().statFile(path) catch return;
         if (stat.size == 0) return;
 
-        // Build shell command: POST file, truncate on success
         var cmd_buf: [2048]u8 = undefined;
         const cmd = std.fmt.bufPrint(&cmd_buf, "curl -sf -X POST {s} -H 'Content-Type: application/json' --data-binary @{s} >/dev/null 2>&1 && : > {s}", .{ CLOUD_URL, path, path }) catch return;
 
@@ -127,21 +157,29 @@ pub const Telemetry = struct {
     fn formatEvent(self: *Telemetry, ev: *const Event) !usize {
         var fbs = std.io.fixedBufferStream(&self.buf);
         const w = fbs.writer();
-        try w.print("{{\"ts\":{d}", .{ev.ts});
+        try w.print("{{\"timestamp_ms\":{d}", .{std.time.milliTimestamp()});
         switch (ev.kind) {
             .tool_call => |tc| {
                 const name = tc.tool[0..tc.tool_len];
-                try w.print(",\"ev\":\"tool\",\"tool\":\"{s}\",\"ns\":{d},\"err\":{s},\"bytes\":{d}", .{
+                try w.print(",\"event_type\":\"tool_call\",\"tool\":\"{s}\",\"latency_ns\":{d},\"error\":{s},\"response_bytes\":{d}", .{
                     name,
                     @as(i64, @intCast(@min(tc.latency_ns, std.math.maxInt(i64)))),
                     if (tc.err) "true" else "false",
                     tc.response_bytes,
                 });
             },
-            .session_start => |ss| {
-                try w.print(",\"ev\":\"start\",\"files\":{d},\"lines\":{d}", .{
-                    ss.file_count,
-                    ss.total_lines,
+            .session_start => {
+                try w.print(",\"event_type\":\"session_start\",\"version\":\"{s}\",\"platform\":\"{s}\"", .{ VERSION, PLATFORM });
+            },
+            .codebase_stats => |stats| {
+                try w.print(",\"event_type\":\"codebase_stats\",\"file_count\":{d},\"total_lines\":{d},\"languages\":[", .{
+                    stats.file_count,
+                    stats.total_lines,
+                });
+                try writeLanguages(w, stats.language_mask);
+                try w.print("],\"index_size_bytes\":{d},\"startup_time_ms\":{d}", .{
+                    stats.index_size_bytes,
+                    stats.startup_time_ms,
                 });
             },
         }
@@ -149,3 +187,67 @@ pub const Telemetry = struct {
         return fbs.pos;
     }
 };
+
+fn writeLanguages(writer: anytype, language_mask: u16) !void {
+    const names = [_][]const u8{
+        "zig",
+        "c",
+        "cpp",
+        "python",
+        "javascript",
+        "typescript",
+        "rust",
+        "go_lang",
+        "markdown",
+        "json",
+        "yaml",
+        "unknown",
+    };
+    var first = true;
+    for (names, 0..) |name, idx| {
+        const bit_index: u4 = @intCast(idx);
+        if ((language_mask & (@as(u16, 1) << bit_index)) == 0) continue;
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try writer.print("\"{s}\"", .{name});
+    }
+}
+
+fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
+    var total: u64 = 0;
+
+    var word_iter = explorer.word_index.index.iterator();
+    while (word_iter.next()) |entry| {
+        total +|= entry.key_ptr.*.len;
+        total +|= entry.value_ptr.items.len * @sizeOf(@TypeOf(entry.value_ptr.items[0]));
+    }
+
+    var file_words_iter = explorer.word_index.file_words.iterator();
+    while (file_words_iter.next()) |entry| {
+        total +|= entry.value_ptr.count() * @sizeOf(usize);
+    }
+
+    var trigram_iter = explorer.trigram_index.index.iterator();
+    while (trigram_iter.next()) |entry| {
+        total +|= @sizeOf(@TypeOf(entry.key_ptr.*));
+        total +|= entry.value_ptr.count() * (@sizeOf(usize) + @sizeOf(index.PostingMask));
+    }
+
+    var file_trigrams_iter = explorer.trigram_index.file_trigrams.iterator();
+    while (file_trigrams_iter.next()) |entry| {
+        total +|= entry.value_ptr.items.len * @sizeOf(@TypeOf(entry.value_ptr.items[0]));
+    }
+
+    var sparse_iter = explorer.sparse_ngram_index.index.iterator();
+    while (sparse_iter.next()) |entry| {
+        total +|= @sizeOf(@TypeOf(entry.key_ptr.*));
+        total +|= entry.value_ptr.count() * @sizeOf(usize);
+    }
+
+    var file_sparse_iter = explorer.sparse_ngram_index.file_ngrams.iterator();
+    while (file_sparse_iter.next()) |entry| {
+        total +|= entry.value_ptr.items.len * @sizeOf(@TypeOf(entry.value_ptr.items[0]));
+    }
+
+    return total;
+}
