@@ -1,6 +1,6 @@
-// codedb2 MCP server — JSON-RPC 2.0 over stdio
+// codedb MCP server — JSON-RPC 2.0 over stdio
 //
-// Exposes codedb2's exploration + edit engine as MCP tools.
+// Exposes codedb's exploration + edit engine as MCP tools.
 // Uses mcp-zig for protocol utilities; adds roots support for workspace awareness.
 
 const std = @import("std");
@@ -321,7 +321,7 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
         s.client_roots_list_changed = mcpj.getBool(&r.object, "listChanged");
     }
     writeResult(s.alloc, s.stdout, id,
-        \\{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"codedb2","version":"0.2.0"}}
+        \\{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"codedb","version":"0.2.0"}}
     );
 }
 
@@ -358,6 +358,12 @@ fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
         const obj = item.object;
         const uri_raw = mcpj.getStr(&obj, "uri") orelse continue;
         const name_raw = mcpj.getStr(&obj, "name") orelse "";
+        // Strip file:// prefix for policy check
+        const path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+        if (!root_policy.isIndexableRoot(path)) {
+            std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
+            continue;
+        }
         const uri = s.alloc.dupe(u8, uri_raw) catch continue;
         const name = s.alloc.dupe(u8, name_raw) catch {
             s.alloc.free(uri);
@@ -866,7 +872,7 @@ fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store
     const file_count = store.files.count();
     store.mu.unlock();
     const w = out.writer(alloc);
-    w.print("codedb2 status:\n  seq: {d}\n  files: {d}\n", .{
+    w.print("codedb status:\n  seq: {d}\n  files: {d}\n", .{
         store.currentSeq(),
         file_count,
     }) catch {};
