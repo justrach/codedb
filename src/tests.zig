@@ -3549,7 +3549,6 @@ test "issue-77: mcp index accepts temporary-directory roots that cause pathologi
     const result = try std.process.Child.run(.{
         .allocator = testing.allocator,
         .argv = &.{ "zig", "build", "run", "--", tmp_root, "snapshot" },
-        .cwd = "/Users/rachpradhan/codedb",
         .max_output_bytes = 256 * 1024,
     });
     defer testing.allocator.free(result.stdout);

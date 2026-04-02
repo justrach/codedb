@@ -301,7 +301,6 @@ const html =
     \\    <div class="tool-item"><span class="tool-name">codedb_index</span> <span class="tool-desc">Index a new local folder</span></div>
     \\  </div>
     \\</div>
-    \\</div>
     \\
     \\<!-- Why codedb -->
     \\<div class="section">

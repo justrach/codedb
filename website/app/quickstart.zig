@@ -79,7 +79,7 @@ fn page() h.Node {
         ),
 
         h.h2(.{}, "MCP tools reference"),
-        h.p(.{}, "12 tools available over the Model Context Protocol:"),
+        h.p(.{}, "16 tools available over the Model Context Protocol:"),
         h.table(.{ .class = "status-table" }, .{
             h.tbody(.{}, .{
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_tree") }), h.td(.{}, "Full file tree with language, line counts, symbol counts") }),
@@ -94,6 +94,10 @@ fn page() h.Node {
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_changes") }), h.td(.{}, "Changed files since a sequence number") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_status") }), h.td(.{}, "Index status (file count, current sequence)") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_snapshot") }), h.td(.{}, "Full pre-rendered JSON snapshot of the codebase") }),
+                h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_bundle") }), h.td(.{}, "Batch multiple queries in one call") }),
+                h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_remote") }), h.td(.{}, "Query any GitHub repo via cloud") }),
+                h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_projects") }), h.td(.{}, "List all indexed local projects") }),
+                h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_index") }), h.td(.{}, "Index a new local folder") }),
             }),
         }),
 
