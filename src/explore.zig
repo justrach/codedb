@@ -182,6 +182,10 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
     var line_num: u32 = 0;
     var prev_line_trimmed: []const u8 = "";
     var php_state: PhpParseState = .{};
+    // HCL parser state tracked across lines
+    var hcl_in_block_comment: bool = false;
+    var hcl_in_module: bool = false;
+    var hcl_brace_depth: i32 = 0;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
         line_num += 1;
@@ -1220,12 +1224,28 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
     // Also records `source = "..."` inside module blocks as imports
     // for the dependency graph.
 
-    fn parseHclLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
+    fn parseHclLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline, in_block_comment: *bool, in_module: *bool, brace_depth: *i32) !void {
         const a = self.allocator;
 
-        // Skip lines starting with comment markers
+        // Handle multiline /* ... */ comments
+        if (in_block_comment.*) {
+            if (std.mem.indexOf(u8, line, "*/") != null) {
+                in_block_comment.* = false;
+            }
+            return;
+        }
+
+        // Skip empty lines and single-line comments
         if (line.len == 0 or line[0] == '#') return;
         if (startsWith(line, "//")) return;
+
+        // Check for block comment start
+        if (startsWith(line, "/*")) {
+            if (std.mem.indexOf(u8, line, "*/") == null) {
+                in_block_comment.* = true;
+            }
+            return;
+        }
 
         // resource "aws_instance" "web" {
         if (startsWith(line, "resource ")) {
@@ -1288,6 +1308,11 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
                     .line_end = line_num,
                     .detail = detail,
                 });
+                // Track that we entered a module block for source extraction
+                if (std.mem.indexOf(u8, line, "{") != null) {
+                    in_module.* = true;
+                    brace_depth.* = 1;
+                }
             }
             return;
         }
@@ -1394,8 +1419,18 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
             return;
         }
 
-        // source = "..." inside module blocks → import for dep graph
-        if (std.mem.indexOf(u8, line, "source")) |_| {
+        // Track brace depth for module context
+        if (in_module.*) {
+            for (line) |ch| {
+                if (ch == '{') brace_depth.* += 1;
+                if (ch == '}') brace_depth.* -= 1;
+            }
+            if (brace_depth.* <= 0) {
+                in_module.* = false;
+                brace_depth.* = 0;
+            }
+
+            // source = "..." only inside module blocks → import for dep graph
             const stripped = std.mem.trim(u8, line, " \t");
             if (startsWith(stripped, "source")) {
                 const after_key = std.mem.trim(u8, stripped["source".len..], " \t");
