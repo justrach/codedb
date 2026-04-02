@@ -800,7 +800,7 @@ pub const Explorer = struct {
             // matching in getImportedBy works for Python files.
             if (startsWith(line, "from ")) {
                 if (extractPythonModulePath(line)) |mod_path| {
-                    try appendPythonImportPath(a, outline, mod_path);
+                    try appendPythonImportPaths(a, outline, mod_path);
                 }
             } else if (startsWith(line, "import ")) {
                 var rest = std.mem.trimLeft(u8, line[7..], " \t");
@@ -811,7 +811,7 @@ pub const Explorer = struct {
                     var end: usize = 0;
                     while (end < rest.len and rest[end] != ' ' and rest[end] != ',' and rest[end] != '\t') : (end += 1) {}
                     if (end > 0) {
-                        try appendPythonImportPath(a, outline, rest[0..end]);
+                        try appendPythonImportPaths(a, outline, rest[0..end]);
                     }
 
                     const tail = rest[end..];
@@ -1944,7 +1944,7 @@ fn extractPythonModulePath(line: []const u8) ?[]const u8 {
     return null;
 }
 
-fn appendPythonImportPath(a: std.mem.Allocator, outline: *FileOutline, mod_path: []const u8) !void {
+fn appendPythonImportPaths(a: std.mem.Allocator, outline: *FileOutline, mod_path: []const u8) !void {
     var buf: [512]u8 = undefined;
     var pos: usize = 0;
     for (mod_path) |c| {
@@ -1958,7 +1958,13 @@ fn appendPythonImportPath(a: std.mem.Allocator, outline: *FileOutline, mod_path:
         buf[pos + 2] = 'y';
         pos += 3;
     }
-    const import_copy = try a.dupe(u8, buf[0..pos]);
-    errdefer a.free(import_copy);
-    try outline.imports.append(a, import_copy);
+    const module_copy = try a.dupe(u8, buf[0..pos]);
+    errdefer a.free(module_copy);
+    try outline.imports.append(a, module_copy);
+
+    if (pos < 3 or pos + "/__init__.py".len - 3 > buf.len) return;
+    @memcpy(buf[pos - 3 .. pos - 3 + "/__init__.py".len], "/__init__.py");
+    const package_copy = try a.dupe(u8, buf[0 .. pos - 3 + "/__init__.py".len]);
+    errdefer a.free(package_copy);
+    try outline.imports.append(a, package_copy);
 }

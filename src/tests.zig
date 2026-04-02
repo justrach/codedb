@@ -4137,3 +4137,21 @@ test "issue-107: codedb_deps ignores inline comments in Python import lists" {
     }
     try testing.expectEqual(@as(usize, 0), bar_deps.len);
 }
+
+test "issue-107: codedb_deps matches Python package entrypoints" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("mypackage/__init__.py", "VALUE = 1\n");
+    try explorer.indexFile("consumer.py", "import mypackage\n");
+
+    const deps = try explorer.getImportedBy("mypackage/__init__.py", testing.allocator);
+    defer {
+        for (deps) |d| testing.allocator.free(d);
+        testing.allocator.free(deps);
+    }
+
+    try testing.expectEqual(@as(usize, 1), deps.len);
+    try testing.expectEqualStrings("consumer.py", deps[0]);
+}
