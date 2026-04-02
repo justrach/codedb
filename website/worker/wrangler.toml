@@ -1,0 +1,7 @@
+# codedb frontend — Cloudflare Workers (static assets)
+name = "codedb-site"
+main = "worker.js"
+compatibility_date = "2024-12-01"
+
+[assets]
+directory = "../dist"

@@ -2,7 +2,7 @@ const mer = @import("mer");
 
 pub const meta: mer.Meta = .{
     .title = "codedb — Code intelligence for AI agents. Zig core. Sub-millisecond queries.",
-    .description = "Code intelligence server for AI agents. 12 MCP tools, trigram search, dependency graph, sub-millisecond queries. Pure Zig. Zero dependencies.",
+    .description = "Code intelligence server for AI agents. 16 MCP tools, trigram search, dependency graph, sub-millisecond queries. Pure Zig. Zero dependencies.",
 };
 
 pub const prerender = true;
@@ -21,45 +21,48 @@ const html =
     \\  <title>codedb — Code intelligence for AI agents</title>
     \\  <link rel="preconnect" href="https://fonts.googleapis.com">
     \\  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    \\  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    \\  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+    \\  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
     \\  <style>
     \\    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     \\
     \\    :root {
-    \\      --bg: #f9f8f6;
-    \\      --bg2: #f2f0ec;
-    \\      --bg3: #e9e5de;
-    \\      --text: #0e0d0b;
-    \\      --muted: #8a8478;
-    \\      --border: #ddd9d2;
-    \\      --accent: #3b82f6;
-    \\      --accent-dim: rgba(59,130,246,0.12);
-    \\      --green: #2d7a3f;
-    \\      --dark: #0e0d0b;
-    \\      --dark2: #1a1916;
-    \\      --dark3: #252320;
-    \\      --mono: 'JetBrains Mono', monospace;
-    \\      --sans: 'Inter', sans-serif;
-    \\      --display: 'Space Grotesk', sans-serif;
+    \\      --bg: #fafafa;
+    \\      --bg2: #ffffff;
+    \\      --bg3: #f0fdf4;
+    \\      --text: #111111;
+    \\      --muted: #6b7280;
+    \\      --faint: #9ca3af;
+    \\      --border: #e5e7eb;
+    \\      --accent: #059669;
+    \\      --accent-light: #10b981;
+    \\      --accent-dim: rgba(5,150,105,0.08);
+    \\      --accent-glow: rgba(5,150,105,0.04);
+    \\      --accent-text: #047857;
+    \\      --dark: #0a0a0a;
+    \\      --dark2: #111111;
+    \\      --dark3: #1a1a1a;
+    \\      --sans: 'Geist', system-ui, sans-serif;
+    \\      --mono: 'Geist Mono', ui-monospace, monospace;
     \\    }
     \\
-    \\    html { scroll-behavior: smooth; }
+    \\    html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
     \\    body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; line-height: 1.6; overflow-x: hidden; }
     \\    a { color: inherit; text-decoration: none; }
-    \\    code { font-family: var(--mono); font-size: 0.85em; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px; color: var(--accent); }
-    \\    pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.7; color: var(--text); margin: 16px 0; }
+    \\    code { font-family: var(--mono); font-size: 0.85em; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; color: var(--accent-text); }
+    \\    pre { background: var(--dark); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.7; color: #e5e5e5; margin: 16px 0; }
     \\    pre code { background: none; border: none; padding: 0; font-size: inherit; color: inherit; }
     \\
     \\    /* Nav */
-    \\    nav { position: sticky; top: 0; z-index: 100; background: rgba(249,248,246,0.88); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
-    \\    .nav-inner { max-width: 900px; margin: 0 auto; padding: 0 32px; display: flex; align-items: center; justify-content: space-between; height: 60px; }
-    \\    .wordmark { font-family: var(--display); font-size: 16px; font-weight: 800; letter-spacing: -0.02em; }
+    \\    nav { position: sticky; top: 0; z-index: 100; background: rgba(255,255,255,0.92); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border); }
+    \\    .nav-inner { max-width: 1060px; margin: 0 auto; padding: 0 32px; display: flex; align-items: center; justify-content: space-between; height: 60px; }
+    \\    .wordmark { font-family: var(--sans); font-size: 17px; font-weight: 800; letter-spacing: -0.02em; }
     \\    .wordmark em { font-style: normal; color: var(--accent); }
     \\    .nav-links { display: flex; gap: 32px; align-items: center; }
     \\    .nav-links a { font-size: 13px; font-weight: 500; color: var(--muted); letter-spacing: 0.01em; transition: color 0.15s; }
     \\    .nav-links a:hover { color: var(--text); }
-    \\    .nav-cta { font-family: var(--display); font-size: 13px !important; font-weight: 700 !important; color: #fff !important; background: var(--accent); padding: 8px 18px; border-radius: 4px; }
-    \\    .nav-cta:hover { opacity: 0.88; }
+    \\    .nav-cta { font-family: var(--sans); font-size: 13px !important; font-weight: 700 !important; color: #fff !important; background: var(--accent); padding: 8px 18px; border-radius: 6px; transition: background 0.15s; }
+    \\    .nav-cta:hover { background: #15803d; }
     \\    .nav-burger { display: none; flex-direction: column; gap: 5px; background: none; border: none; cursor: pointer; padding: 4px; }
     \\    .nav-burger span { display: block; width: 22px; height: 2px; background: var(--text); border-radius: 2px; transition: transform 0.2s, opacity 0.2s; }
     \\    .nav-burger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
@@ -67,75 +70,118 @@ const html =
     \\    .nav-burger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
     \\    @media (max-width: 640px) {
     \\      .nav-burger { display: flex; }
-    \\      .nav-links { display: none; flex-direction: column; gap: 0; position: absolute; top: 60px; left: 0; right: 0; background: rgba(249,248,246,0.97); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 8px 0; }
+    \\      .nav-links { display: none; flex-direction: column; gap: 0; position: absolute; top: 60px; left: 0; right: 0; background: rgba(255,255,255,0.97); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 8px 0; }
     \\      .nav-links.open { display: flex; }
     \\      .nav-links a { padding: 14px 24px; font-size: 15px; }
-    \\      .nav-cta { margin: 8px 24px 12px; padding: 12px 20px; border-radius: 4px; text-align: center; }
+    \\      .nav-cta { margin: 8px 24px 12px; padding: 12px 20px; border-radius: 6px; text-align: center; }
     \\    }
     \\
+    \\    /* Speed banner */
+    \\    .speed-banner { background: var(--dark); padding: 14px 32px; text-align: center; }
+    \\    .speed-banner-inner { max-width: 1060px; margin: 0 auto; display: flex; align-items: center; justify-content: center; gap: 24px; flex-wrap: wrap; }
+    \\    .speed-pill { display: inline-flex; align-items: center; gap: 8px; background: rgba(22,163,74,0.15); border: 1px solid rgba(22,163,74,0.3); border-radius: 99px; padding: 6px 16px; font-family: var(--mono); font-size: 13px; color: var(--accent-light); font-weight: 600; }
+    \\    .speed-pill .num { font-size: 18px; font-weight: 800; color: #fff; font-family: var(--sans); }
+    \\    .speed-context { font-family: var(--mono); font-size: 12px; color: rgba(255,255,255,0.4); letter-spacing: 0.02em; }
+    \\
     \\    /* Hero */
-    \\    .hero { max-width: 900px; margin: 0 auto; padding: 80px 32px 0; }
-    \\    .hero-label { font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
-    \\    .hero-label::before { content: ''; display: inline-block; width: 20px; height: 1px; background: var(--accent); }
-    \\    .hero-headline { font-family: var(--display); font-size: clamp(36px, 6vw, 64px); font-weight: 800; letter-spacing: -0.04em; line-height: 1.0; color: var(--text); margin-bottom: 16px; }
+    \\    .hero { max-width: 1060px; margin: 0 auto; padding: 72px 32px 0; text-align: center; }
+    \\    .hero-label { font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); margin-bottom: 20px; display: inline-flex; align-items: center; gap: 10px; }
+    \\    .hero-label::before, .hero-label::after { content: ''; display: inline-block; width: 20px; height: 1px; background: var(--accent); }
+    \\    .hero-headline { font-family: var(--sans); font-size: clamp(40px, 7vw, 72px); font-weight: 800; letter-spacing: -0.04em; line-height: 1.0; color: var(--text); margin-bottom: 20px; }
     \\    .hero-headline .hl { color: var(--accent); }
-    \\    .hero-sub { font-size: 18px; color: var(--muted); max-width: 560px; line-height: 1.6; margin-bottom: 32px; }
-    \\    .hero-install { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; font-family: var(--mono); font-size: 14px; color: var(--text); margin-bottom: 16px; display: flex; align-items: center; gap: 12px; max-width: 560px; overflow-x: auto; }
-    \\    .hero-install .prompt { color: var(--accent); user-select: none; }
-    \\    .hero-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 64px; }
-    \\    .btn { display: inline-flex; align-items: center; font-family: var(--display); font-size: 14px; font-weight: 700; padding: 12px 24px; border-radius: 4px; background: var(--accent); color: #fff; transition: opacity 0.15s, transform 0.15s; }
-    \\    .btn:hover { opacity: 0.88; transform: translateY(-1px); }
+    \\    .hero-sub { font-size: 18px; color: var(--muted); max-width: 580px; line-height: 1.7; margin: 0 auto 36px; }
+    \\    .hero-install { background: var(--dark); border-radius: 12px; padding: 16px 20px; font-family: var(--mono); font-size: 13px; color: #e5e5e5; margin: 0 auto 20px; display: flex; align-items: center; gap: 12px; max-width: 600px; white-space: nowrap; position: relative; }
+    \\    .hero-install .prompt { color: var(--accent-light); user-select: none; flex-shrink: 0; }
+    \\    .hero-install .cmd { flex: 1; overflow-x: auto; }
+    \\    .hero-install .copy-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15); color: rgba(255,255,255,0.5); font-family: var(--sans); font-size: 11px; font-weight: 500; padding: 4px 10px; border-radius: 6px; cursor: pointer; flex-shrink: 0; transition: all 0.15s; }
+    \\    .hero-install .copy-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+    \\    .hero-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 72px; justify-content: center; }
+    \\    .btn { display: inline-flex; align-items: center; font-family: var(--sans); font-size: 14px; font-weight: 700; padding: 13px 28px; border-radius: 8px; background: var(--accent); color: #fff; transition: all 0.2s; }
+    \\    .btn:hover { background: #15803d; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(22,163,74,0.25); }
     \\    .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--muted); font-weight: 500; }
-    \\    .btn-outline:hover { color: var(--text); border-color: var(--text); transform: none; }
+    \\    .btn-outline:hover { color: var(--text); border-color: var(--accent); background: var(--accent-glow); transform: none; box-shadow: none; }
+    \\
+    \\    /* Speed comparison hero chart */
+    \\    .hero-chart { max-width: 700px; margin: 0 auto 64px; background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 32px; }
+    \\    .hero-chart h3 { font-family: var(--sans); font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 20px; text-align: center; }
+    \\    .hero-chart canvas { width: 100% !important; height: 220px !important; }
     \\
     \\    /* Stats */
-    \\    .stat-row { display: grid; grid-template-columns: repeat(4,1fr); border-top: 1px solid var(--border); max-width: 900px; margin: 0 auto; padding: 0 32px; }
-    \\    @media (max-width: 700px) { .stat-row { grid-template-columns: repeat(2,1fr); } }
-    \\    .stat-cell { padding: 32px 24px 40px 0; border-right: 1px solid var(--border); }
-    \\    .stat-cell:last-child { border-right: none; }
-    \\    .stat-val { font-family: var(--display); font-size: clamp(28px, 4vw, 44px); font-weight: 800; letter-spacing: -0.04em; color: var(--text); line-height: 1; margin-bottom: 4px; }
+    \\    .stats-section { max-width: 1060px; margin: 0 auto; padding: 0 32px 80px; }
+    \\    .stat-hero { background: var(--dark); border-radius: 16px; padding: 48px 40px; margin-bottom: 20px; display: flex; align-items: center; gap: 48px; }
+    \\    @media (max-width: 700px) { .stat-hero { flex-direction: column; gap: 32px; padding: 36px 28px; } }
+    \\    .stat-hero-left { flex-shrink: 0; }
+    \\    .stat-hero-label { font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent-light); margin-bottom: 8px; }
+    \\    .stat-hero-val { font-family: var(--sans); font-size: clamp(56px, 8vw, 80px); font-weight: 800; letter-spacing: -0.04em; color: #fff; line-height: 1; }
+    \\    .stat-hero-val .unit { font-size: 0.4em; font-weight: 600; color: rgba(255,255,255,0.4); vertical-align: super; margin-left: 4px; }
+    \\    .stat-hero-sub { font-family: var(--mono); font-size: 12px; color: rgba(255,255,255,0.35); margin-top: 8px; }
+    \\    .stat-hero-right { flex: 1; min-width: 0; }
+    \\    .stat-bar-group { margin-bottom: 16px; }
+    \\    .stat-bar-group:last-child { margin-bottom: 0; }
+    \\    .stat-bar-label { font-family: var(--mono); font-size: 11px; color: rgba(255,255,255,0.5); margin-bottom: 6px; display: flex; justify-content: space-between; }
+    \\    .stat-bar-label .val { color: rgba(255,255,255,0.7); font-weight: 600; }
+    \\    .stat-bar { height: 28px; border-radius: 6px; background: rgba(255,255,255,0.06); overflow: hidden; position: relative; }
+    \\    .stat-bar-fill { height: 100%; border-radius: 6px; transition: width 1s ease-out; }
+    \\    .stat-bar-fill.green { background: linear-gradient(90deg, var(--accent), var(--accent-light)); }
+    \\    .stat-bar-fill.gray { background: rgba(255,255,255,0.15); }
+    \\    .stat-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; }
+    \\    @media (max-width: 700px) { .stat-row { grid-template-columns: 1fr; } }
+    \\    .stat-cell { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 28px 24px; text-align: center; transition: border-color 0.2s, box-shadow 0.2s; }
+    \\    .stat-cell:hover { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 4px 16px rgba(22,163,74,0.08); }
+    \\    .stat-val { font-family: var(--sans); font-size: clamp(28px, 4vw, 40px); font-weight: 800; letter-spacing: -0.04em; color: var(--accent); line-height: 1; margin-bottom: 4px; }
     \\    .stat-val .unit { font-size: 0.45em; font-weight: 600; color: var(--muted); letter-spacing: 0; vertical-align: super; margin-left: 2px; }
     \\    .stat-label { font-family: var(--mono); font-size: 11px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 4px; }
     \\    .stat-delta { font-family: var(--mono); font-size: 11px; color: var(--accent); letter-spacing: 0.02em; }
     \\
     \\    /* Sections */
-    \\    .section { max-width: 900px; margin: 0 auto; padding: 80px 32px 0; }
-    \\    .section-label { font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
-    \\    .section-title { font-family: var(--display); font-size: clamp(22px, 4vw, 36px); font-weight: 700; letter-spacing: -0.02em; margin-bottom: 24px; }
-    \\    .section-desc { color: var(--muted); font-size: 15px; max-width: 600px; line-height: 1.7; margin-bottom: 32px; }
+    \\    .section { max-width: 1060px; margin: 0 auto; padding: 80px 32px 0; }
+    \\    .section-label { font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
+    \\    .section-title { font-family: var(--sans); font-size: clamp(24px, 4vw, 38px); font-weight: 700; letter-spacing: -0.02em; margin-bottom: 16px; }
+    \\    .section-desc { color: var(--muted); font-size: 15px; max-width: 620px; line-height: 1.7; margin-bottom: 36px; }
     \\
     \\    /* Feature grid */
-    \\    .feature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 32px; }
+    \\    .feature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 32px; }
     \\    @media (max-width: 600px) { .feature-grid { grid-template-columns: 1fr; } }
-    \\    .feature-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 20px 22px; }
-    \\    .feature-card h3 { font-family: var(--display); font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+    \\    .feature-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 24px; transition: border-color 0.2s, box-shadow 0.2s; }
+    \\    .feature-card:hover { border-color: var(--accent); box-shadow: 0 2px 12px rgba(22,163,74,0.06); }
+    \\    .feature-card h3 { font-family: var(--sans); font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
     \\    .feature-card p { font-size: 13px; color: var(--muted); line-height: 1.6; }
     \\
     \\    /* Tables */
     \\    .bench-table { width: 100%; border-collapse: collapse; margin: 24px 0; font-size: 13px; }
-    \\    .bench-table th { text-align: left; padding: 10px 12px; color: var(--muted); font-family: var(--mono); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid var(--border); }
+    \\    .bench-table th { text-align: left; padding: 10px 12px; color: var(--muted); font-family: var(--mono); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 2px solid var(--border); }
     \\    .bench-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12px; }
     \\    .bench-table tr.highlight td { color: var(--accent); font-weight: 600; }
     \\    .bench-table .fast { color: var(--accent); font-weight: 600; }
-    \\    .bench-table .na { color: var(--border); }
+    \\    .bench-table .na { color: #d1d5db; }
     \\
     \\    /* Tool list */
-    \\    .tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 24px 0; }
+    \\    .tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 24px 0; }
     \\    @media (max-width: 600px) { .tool-grid { grid-template-columns: 1fr; } }
-    \\    .tool-item { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; }
-    \\    .tool-name { font-family: var(--mono); font-size: 12px; font-weight: 500; color: var(--accent); white-space: nowrap; }
+    \\    .tool-item { display: flex; align-items: baseline; gap: 10px; padding: 12px 16px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; transition: border-color 0.2s; }
+    \\    .tool-item:hover { border-color: var(--accent); }
+    \\    .tool-name { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--accent); white-space: nowrap; }
     \\    .tool-desc { font-size: 12px; color: var(--muted); }
     \\
+    \\    /* Chart cards */
+    \\    .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 48px 0 0; }
+    \\    @media (max-width: 700px) { .chart-row { grid-template-columns: 1fr; } }
+    \\    .chart-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+    \\    .chart-card h3 { font-family: var(--sans); font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 16px; }
+    \\    .chart-card canvas { width: 100% !important; height: 260px !important; }
+    \\
     \\    /* CTA */
-    \\    .cta-section { margin: 80px auto 0; max-width: 900px; padding: 48px 32px; }
-    \\    .cta-inner { padding: 48px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; text-align: center; }
-    \\    .cta-title { font-family: var(--display); font-size: 26px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 12px; }
-    \\    .cta-sub { color: var(--muted); font-size: 14px; margin-bottom: 28px; }
+    \\    .cta-section { margin: 80px auto 0; max-width: 1060px; padding: 48px 32px; }
+    \\    .cta-inner { padding: 56px 48px; background: linear-gradient(135deg, var(--dark) 0%, var(--dark2) 100%); border-radius: 16px; text-align: center; }
+    \\    .cta-title { font-family: var(--sans); font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 12px; color: #fff; }
+    \\    .cta-sub { color: rgba(255,255,255,0.5); font-size: 14px; margin-bottom: 28px; }
+    \\    .cta-install { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 18px 24px; font-family: var(--mono); font-size: 14px; color: #fff; margin: 0 auto 24px; display: flex; align-items: center; gap: 12px; max-width: 520px; justify-content: center; }
+    \\    .cta-install .prompt { color: var(--accent-light); user-select: none; }
     \\
     \\    /* Footer */
-    \\    .layout-footer { max-width: 900px; margin: 0 auto; padding: 20px 32px 60px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); text-align: center; font-family: var(--mono); letter-spacing: 0.02em; }
+    \\    .layout-footer { max-width: 1060px; margin: 0 auto; padding: 24px 32px 64px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); text-align: center; font-family: var(--mono); letter-spacing: 0.02em; }
     \\    .layout-footer a { color: var(--muted); }
-    \\    .layout-footer a:hover { color: var(--text); }
+    \\    .layout-footer a:hover { color: var(--accent); }
     \\  </style>
     \\</head>
     \\<body>
@@ -143,14 +189,18 @@ const html =
     \\<!-- Nav -->
     \\<nav>
     \\  <div class="nav-inner">
-    \\    <a href="/" class="wordmark">code<em>db</em></a>
+    \\    <div style="display:flex;align-items:baseline;gap:6px;">
+    \\      <a href="/" class="wordmark">code<em>db</em></a>
+    \\      <span style="font-size:10px;color:var(--faint);font-weight:400;">by <a href="https://codegraff.com" style="color:var(--accent);">codegraff</a></span>
+    \\    </div>
     \\    <button class="nav-burger" id="burger" aria-label="Menu">
     \\      <span></span><span></span><span></span>
     \\    </button>
     \\    <div class="nav-links" id="nav-links">
     \\      <a href="/benchmarks">Benchmarks</a>
     \\      <a href="/quickstart">Install</a>
-    \\      <a href="https://github.com/justrach/codedb2">GitHub</a>
+    \\      <a href="/privacy">Privacy</a>
+    \\      <a href="https://github.com/justrach/codedb">GitHub</a>
     \\      <a href="/quickstart" class="nav-cta">Get started</a>
     \\    </div>
     \\  </div>
@@ -160,47 +210,78 @@ const html =
     \\<div class="hero">
     \\  <div class="hero-label">Code intelligence server</div>
     \\  <div class="hero-headline">
-    \\    Code intelligence<br>for <span class="hl">AI agents</span>.
+    \\    <span class="hl">469x</span> faster.<br>92x fewer bytes.<br>For AI agents.
     \\  </div>
-    \\  <div class="hero-sub">Sub-millisecond queries. Zero dependencies. Pure Zig. 12 MCP tools that give your agent structural understanding of any codebase.</div>
-    \\  <div class="hero-install">
-    \\    <span class="prompt">$</span> curl -fsSL https://codedb.codegraff.com/install.sh | sh
+    \\  <div class="hero-sub">Pre-indexed MCP server. 0.2ms word lookups. 3.9ms symbol search. Reverse deps in 1.3ms. 92x less data sent to your LLM. Pure Zig, zero dependencies.</div>
+    \\  <div class="hero-install" id="install-box">
+    \\    <span class="prompt">$</span>
+    \\    <span class="cmd" id="install-cmd">curl -fsSL https://codedb.codegraff.com/install.sh | sh</span>
+    \\    <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('install-cmd').textContent).then(function(){var b=event.target;b.textContent='Copied!';setTimeout(function(){b.textContent='Copy'},1500)})">Copy</button>
     \\  </div>
     \\  <div class="hero-actions">
     \\    <a href="/quickstart" class="btn">Get started</a>
-    \\    <a href="https://github.com/justrach/codedb2" class="btn btn-outline">GitHub</a>
+    \\    <a href="https://github.com/justrach/codedb" class="btn btn-outline">GitHub</a>
+    \\  </div>
+    \\</div>
+    \\
+    \\<!-- Speed chart -->
+    \\<div style="max-width:1060px;margin:0 auto;padding:0 32px;">
+    \\  <div class="hero-chart">
+    \\    <h3>Query Latency: codedb MCP vs everything else</h3>
+    \\    <div id="heroChart" style="width:100%;height:280px;"></div>
     \\  </div>
     \\</div>
     \\
     \\<!-- Stats -->
-    \\<div class="stat-row">
-    \\  <div class="stat-cell">
-    \\    <div class="stat-label">Query latency</div>
-    \\    <div class="stat-val">0.05<span class="unit">ms</span></div>
-    \\    <div class="stat-delta">vs 55ms CLI tools</div>
+    \\<div class="stats-section">
+    \\  <div class="stat-hero">
+    \\    <div class="stat-hero-left">
+    \\      <div class="stat-hero-label">Word lookup</div>
+    \\      <div class="stat-hero-val">0.2<span class="unit">ms</span></div>
+    \\      <div class="stat-hero-sub">O(1) inverted index on 7,364 files</div>
+    \\    </div>
+    \\    <div class="stat-hero-right">
+    \\      <div class="stat-bar-group">
+    \\        <div class="stat-bar-label"><span>codedb word</span> <span class="val">0.2 ms</span></div>
+    \\        <div class="stat-bar"><div class="stat-bar-fill green" style="width:1%;"></div></div>
+    \\      </div>
+    \\      <div class="stat-bar-group">
+    \\        <div class="stat-bar-label"><span>grep (raw)</span> <span class="val">65 ms</span></div>
+    \\        <div class="stat-bar"><div class="stat-bar-fill gray" style="width:22%;"></div></div>
+    \\      </div>
+    \\      <div class="stat-bar-group">
+    \\        <div class="stat-bar-label"><span>find symbol (raw)</span> <span class="val">763 ms</span></div>
+    \\        <div class="stat-bar"><div class="stat-bar-fill gray" style="width:100%;"></div></div>
+    \\      </div>
+    \\    </div>
     \\  </div>
-    \\  <div class="stat-cell">
-    \\    <div class="stat-label">Token reduction</div>
-    \\    <div class="stat-val">1,500<span class="unit">x</span></div>
-    \\    <div class="stat-delta">fewer tokens than grep</div>
-    \\  </div>
-    \\  <div class="stat-cell">
-    \\    <div class="stat-label">MCP Tools</div>
-    \\    <div class="stat-val">12</div>
-    \\    <div class="stat-delta">tree, outline, search, deps...</div>
-    \\  </div>
-    \\  <div class="stat-cell">
-    \\    <div class="stat-label">2M lines indexed</div>
-    \\    <div class="stat-val">50<span class="unit">s</span></div>
-    \\    <div class="stat-delta">then &lt;2ms incremental</div>
+    \\  <div class="stat-row" style="grid-template-columns:repeat(4,1fr);">
+    \\    <div class="stat-cell">
+    \\      <div class="stat-label">Cold start</div>
+    \\      <div class="stat-val">2.9<span class="unit">s</span></div>
+    \\      <div class="stat-delta">7,364 files / 128MB</div>
+    \\    </div>
+    \\    <div class="stat-cell">
+    \\      <div class="stat-label">Deps lookup</div>
+    \\      <div class="stat-val">92<span class="unit">x</span></div>
+    \\      <div class="stat-delta">fewer bytes than raw</div>
+    \\    </div>
+    \\    <div class="stat-cell">
+    \\      <div class="stat-label">Symbol find</div>
+    \\      <div class="stat-val">200<span class="unit">x</span></div>
+    \\      <div class="stat-delta">faster than grep</div>
+    \\    </div>
+    \\    <div class="stat-cell">
+    \\      <div class="stat-label">Edit workflow</div>
+    \\      <div class="stat-val">4<span class="unit">x</span></div>
+    \\      <div class="stat-delta">fewer bytes end-to-end</div>
+    \\    </div>
     \\  </div>
     \\</div>
     \\
-    \\<!-- What it does -->
     \\<div class="section">
-    \\  <div class="section-label">12 MCP tools</div>
+    \\  <div class="section-label">16 MCP tools</div>
     \\  <div class="section-title">Everything an agent needs</div>
-    \\  <div class="section-desc">codedb indexes your codebase on startup &mdash; outlines, trigram search, word index, dependency graph &mdash; and serves it all over the Model Context Protocol. Your AI agent gets structural understanding, not raw text.</div>
     \\  <div class="tool-grid">
     \\    <div class="tool-item"><span class="tool-name">codedb_tree</span> <span class="tool-desc">File tree with symbol counts</span></div>
     \\    <div class="tool-item"><span class="tool-name">codedb_outline</span> <span class="tool-desc">Functions, structs, imports</span></div>
@@ -214,133 +295,48 @@ const html =
     \\    <div class="tool-item"><span class="tool-name">codedb_changes</span> <span class="tool-desc">Changed files since sequence</span></div>
     \\    <div class="tool-item"><span class="tool-name">codedb_status</span> <span class="tool-desc">Index status and health</span></div>
     \\    <div class="tool-item"><span class="tool-name">codedb_snapshot</span> <span class="tool-desc">Full codebase JSON snapshot</span></div>
+    \\    <div class="tool-item"><span class="tool-name">codedb_bundle</span> <span class="tool-desc">Batch multiple queries in one call</span></div>
+    \\    <div class="tool-item"><span class="tool-name">codedb_remote</span> <span class="tool-desc">Query any GitHub repo via cloud</span></div>
+    \\    <div class="tool-item"><span class="tool-name">codedb_projects</span> <span class="tool-desc">List all indexed local projects</span></div>
+    \\    <div class="tool-item"><span class="tool-name">codedb_index</span> <span class="tool-desc">Index a new local folder</span></div>
     \\  </div>
     \\</div>
+    \\</div>
     \\
-    \\<!-- Features -->
+    \\<!-- Why codedb -->
     \\<div class="section">
     \\  <div class="section-label">Why codedb</div>
-    \\  <div class="section-title">Index once, query thousands of times</div>
+    \\  <div class="section-title">Index once, query forever</div>
     \\  <div class="feature-grid">
-    \\    <div class="feature-card">
-    \\      <h3>Trigram search index</h3>
-    \\      <p>Pre-built trigram index for instant full-text search. No filesystem scanning on every query.</p>
-    \\    </div>
-    \\    <div class="feature-card">
-    \\      <h3>Structural parsing</h3>
-    \\      <p>Extracts functions, structs, imports with line numbers. Zig, Python, TypeScript/JavaScript.</p>
-    \\    </div>
-    \\    <div class="feature-card">
-    \\      <h3>Dependency graph</h3>
-    \\      <p>Reverse dependency tracking &mdash; which files import this file. Navigate the codebase structurally.</p>
-    \\    </div>
-    \\    <div class="feature-card">
-    \\      <h3>Inverted word index</h3>
-    \\      <p>O(1) hash lookup for exact identifier matches. Instant symbol discovery across all files.</p>
-    \\    </div>
-    \\    <div class="feature-card">
-    \\      <h3>File watcher</h3>
-    \\      <p>Polls every 2s with smart directory filtering. Single-file re-index under 2ms. Always up to date.</p>
-    \\    </div>
-    \\    <div class="feature-card">
-    \\      <h3>Multi-agent support</h3>
-    \\      <p>File locking, heartbeats, stale agent reaping. Multiple AI agents on the same codebase, safely.</p>
-    \\    </div>
-    \\    <div class="feature-card">
-    \\      <h3>Zero dependencies</h3>
-    \\      <p>Pure Zig. Single binary. No SQLite, no tree-sitter, no runtime. Cross-compiles to macOS + Linux.</p>
-    \\    </div>
-    \\    <div class="feature-card">
-    \\      <h3>Portable snapshots</h3>
-    \\      <p>Full codebase snapshot for instant MCP startup. No re-indexing needed when restarting the server.</p>
-    \\    </div>
+    \\    <div class="feature-card"><h3>Trigram search</h3><p>Pre-built index. No filesystem scan per query.</p></div>
+    \\    <div class="feature-card"><h3>Structural parsing</h3><p>Functions, structs, imports with line numbers.</p></div>
+    \\    <div class="feature-card"><h3>Dependency graph</h3><p>Reverse import tracking across all files.</p></div>
+    \\    <div class="feature-card"><h3>Word index</h3><p>O(1) hash lookup for exact identifiers.</p></div>
+    \\    <div class="feature-card"><h3>File watcher</h3><p>Re-indexes changed files in under 2ms.</p></div>
+    \\    <div class="feature-card"><h3>Multi-agent</h3><p>File locking and heartbeats. Safe concurrent access.</p></div>
+    \\    <div class="feature-card"><h3>Zero dependencies</h3><p>Pure Zig. Single binary. macOS + Linux.</p></div>
+    \\    <div class="feature-card"><h3>Snapshots</h3><p>Instant MCP startup. No re-indexing on restart.</p></div>
     \\  </div>
     \\</div>
     \\
-    \\<!-- Benchmark preview -->
+    \\<!-- Benchmarks -->
     \\<div class="section">
     \\  <div class="section-label">Benchmarks</div>
     \\  <div class="section-title">Sub-millisecond, every query</div>
-    \\  <div class="section-desc">Measured on Apple M4 Pro, 48GB RAM. MCP = pre-indexed warm queries (20 iterations avg).</div>
     \\
-    \\  <table class="bench-table">
-    \\    <thead>
-    \\      <tr><th>Query</th><th>codedb MCP</th><th>codedb CLI</th><th>ast-grep</th><th>ripgrep</th><th>grep</th></tr>
-    \\    </thead>
-    \\    <tbody>
-    \\      <tr class="highlight"><td>File tree</td><td class="fast">0.04 ms</td><td>52.9 ms</td><td class="na">&mdash;</td><td class="na">&mdash;</td><td class="na">&mdash;</td></tr>
-    \\      <tr class="highlight"><td>Symbol search</td><td class="fast">0.10 ms</td><td>54.1 ms</td><td>3.2 ms</td><td>6.3 ms</td><td>6.5 ms</td></tr>
-    \\      <tr class="highlight"><td>Full-text search</td><td class="fast">0.05 ms</td><td>60.7 ms</td><td>3.2 ms</td><td>5.3 ms</td><td>6.6 ms</td></tr>
-    \\      <tr class="highlight"><td>Word index</td><td class="fast">0.04 ms</td><td>59.7 ms</td><td class="na">n/a</td><td>7.2 ms</td><td>6.5 ms</td></tr>
-    \\      <tr class="highlight"><td>Structural outline</td><td class="fast">0.05 ms</td><td>53.5 ms</td><td>3.1 ms</td><td class="na">&mdash;</td><td>2.4 ms</td></tr>
-    \\      <tr class="highlight"><td>Dependency graph</td><td class="fast">0.05 ms</td><td>2.2 ms</td><td class="na">n/a</td><td class="na">n/a</td><td class="na">n/a</td></tr>
-    \\    </tbody>
-    \\  </table>
-    \\  <p style="font-size:12px;color:var(--muted);font-family:var(--mono);margin-bottom:8px;">codedb2 repo &mdash; 20 files, 12.6k lines</p>
-    \\  <a href="/benchmarks" style="font-size:13px;color:var(--accent);font-weight:500;">See full benchmarks &rarr;</a>
-    \\</div>
+    \\  <div class="chart-row">
+    \\    <div class="chart-card">
+    \\      <h3>Speed: codedb vs grep/find</h3>
+    \\      <div id="speedChart" style="width:100%;height:280px;"></div>
+    \\    </div>
+    \\    <div class="chart-card">
+    \\      <h3>Bytes sent to LLM: codedb vs raw</h3>
+    \\      <div id="bytesChart" style="width:100%;height:280px;"></div>
+    \\    </div>
+    \\  </div>
     \\
-    \\<!-- Indexing speed -->
-    \\<div class="section">
-    \\  <div class="section-label">Indexing</div>
-    \\  <div class="section-title">Cold start to ready</div>
-    \\  <div class="section-desc">codedb builds all indexes on startup: outlines, trigram, word, dependency graph.</div>
-    \\
-    \\  <table class="bench-table">
-    \\    <thead>
-    \\      <tr><th>Repo</th><th>Files</th><th>Lines</th><th>Cold start</th><th>Per file</th></tr>
-    \\    </thead>
-    \\    <tbody>
-    \\      <tr><td>codedb2</td><td>20</td><td>12.6k</td><td class="fast">17 ms</td><td>0.85 ms</td></tr>
-    \\      <tr><td>merjs</td><td>100</td><td>17.3k</td><td class="fast">16 ms</td><td>0.16 ms</td></tr>
-    \\      <tr><td>openclaw</td><td>11,281</td><td>2.29M</td><td class="fast">75 s</td><td>6.66 ms</td></tr>
-    \\      <tr><td>vitess</td><td>5,028</td><td>2.18M</td><td class="fast">50 s</td><td>9.95 ms</td></tr>
-    \\    </tbody>
-    \\  </table>
-    \\  <p style="font-size:12px;color:var(--muted);font-family:var(--mono);">After startup, file watcher keeps indexes updated. Single-file re-index: &lt;2ms.</p>
-    \\</div>
-    \\
-    \\<!-- Token efficiency -->
-    \\<div class="section">
-    \\  <div class="section-label">Token efficiency</div>
-    \\  <div class="section-title">1,628x fewer tokens</div>
-    \\  <div class="section-desc">codedb returns structured, relevant results &mdash; not raw line dumps. For AI agents, this means dramatically fewer tokens per query.</div>
-    \\
-    \\  <table class="bench-table">
-    \\    <thead>
-    \\      <tr><th>Repo</th><th>codedb MCP</th><th>ripgrep / grep</th><th>Reduction</th></tr>
-    \\    </thead>
-    \\    <tbody>
-    \\      <tr class="highlight"><td>codedb2 (search <code>allocator</code>)</td><td class="fast">~20 tokens</td><td>~32,564 tokens</td><td class="fast">1,628x fewer</td></tr>
-    \\      <tr class="highlight"><td>merjs (search <code>allocator</code>)</td><td class="fast">~20 tokens</td><td>~4,007 tokens</td><td class="fast">200x fewer</td></tr>
-    \\    </tbody>
-    \\  </table>
-    \\</div>
-    \\
-    \\<!-- Feature matrix -->
-    \\<div class="section">
-    \\  <div class="section-label">Comparison</div>
-    \\  <div class="section-title">Feature matrix</div>
-    \\
-    \\  <div style="overflow-x:auto;">
-    \\  <table class="bench-table">
-    \\    <thead>
-    \\      <tr><th>Feature</th><th>codedb MCP</th><th>ast-grep</th><th>ripgrep</th><th>grep</th><th>ctags</th></tr>
-    \\    </thead>
-    \\    <tbody>
-    \\      <tr><td>Structural parsing</td><td class="fast">Yes</td><td>Yes</td><td>No</td><td>No</td><td>Yes</td></tr>
-    \\      <tr><td>Trigram search index</td><td class="fast">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
-    \\      <tr><td>Inverted word index</td><td class="fast">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
-    \\      <tr><td>Dependency graph</td><td class="fast">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
-    \\      <tr><td>Version tracking</td><td class="fast">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
-    \\      <tr><td>Multi-agent locking</td><td class="fast">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
-    \\      <tr><td>Pre-indexed (warm)</td><td class="fast">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
-    \\      <tr><td>MCP protocol</td><td class="fast">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
-    \\      <tr><td>Full-text search</td><td class="fast">Yes</td><td>Yes</td><td>Yes</td><td>Yes</td><td>No</td></tr>
-    \\      <tr><td>Atomic file edits</td><td class="fast">Yes</td><td>Yes</td><td>No</td><td>No</td><td>No</td></tr>
-    \\      <tr><td>File watcher</td><td class="fast">Yes</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
-    \\    </tbody>
-    \\  </table>
+    \\  <div style="margin-top:24px;text-align:center;">
+    \\    <a href="/benchmarks" style="font-size:13px;color:var(--accent);font-weight:600;">See full benchmarks &rarr;</a>
     \\  </div>
     \\</div>
     \\
@@ -349,19 +345,19 @@ const html =
     \\  <div class="cta-inner">
     \\    <div class="cta-title">Give your agent a brain</div>
     \\    <div class="cta-sub">One command. Auto-registers in Claude Code, Codex, Gemini CLI, and Cursor.</div>
-    \\    <div class="hero-install" style="margin:0 auto 20px;justify-content:center;">
+    \\    <div class="cta-install">
     \\      <span class="prompt">$</span> curl -fsSL https://codedb.codegraff.com/install.sh | sh
     \\    </div>
     \\    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
     \\      <a href="/quickstart" class="btn">Quick start guide</a>
-    \\      <a href="https://github.com/justrach/codedb2" class="btn btn-outline">GitHub</a>
+    \\      <a href="https://github.com/justrach/codedb" class="btn" style="background:transparent;border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.7);">GitHub</a>
     \\    </div>
     \\  </div>
     \\</div>
     \\
     \\<!-- Footer -->
     \\<div class="layout-footer">
-    \\  <p>codedb &mdash; code intelligence for AI agents &middot; <a href="https://github.com/justrach/codedb2">GitHub</a></p>
+    \\  <p>codedb &middot; code intelligence for AI agents &middot; <a href="https://github.com/justrach/codedb">GitHub</a></p>
     \\</div>
     \\
     \\<script>
@@ -377,6 +373,42 @@ const html =
     \\      burger.classList.remove('open');
     \\      links.classList.remove('open');
     \\    });
+    \\  });
+    \\
+    \\  var g = '#059669', gl = '#10b981', gy = '#d1d5db';
+    \\  var opt = {textStyle:{fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif'},animation:true,grid:{left:60,right:20,top:10,bottom:40}};
+    \\
+    \\  // Hero: codedb vs raw tools latency (horizontal bars, sorted)
+    \\  echarts.init(document.getElementById('heroChart')).setOption({
+    \\    textStyle:{fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif'},animation:true,
+    \\    grid:{left:100,right:60,top:10,bottom:20},
+    \\    tooltip:{trigger:'axis',formatter:function(p){var a=p[0],b=p[1];return a.name+'<br/>'+a.marker+' codedb: '+a.value+'ms<br/>'+b.marker+' raw: '+b.value+'ms<br/><b>'+Math.round(b.value/a.value)+'x faster</b>';}},
+    \\    xAxis:{type:'value',name:'ms',nameTextStyle:{fontSize:11,color:'#9ca3af'},axisLabel:{fontSize:11,color:'#9ca3af'},splitLine:{lineStyle:{color:'#e5e7eb'}}},
+    \\    yAxis:{type:'category',data:['Search','Tree','Symbol','Deps','Outline','Word'],axisLabel:{fontSize:12,color:'#111'},inverse:true},
+    \\    series:[
+    \\      {name:'codedb',type:'bar',data:[49,29,3.9,1.3,0.7,0.2],itemStyle:{color:g,borderRadius:3},barWidth:'35%',barGap:'20%',label:{show:true,position:'right',fontSize:10,color:'#6b7280',formatter:'{c}ms'}},
+    \\      {name:'Raw tools',type:'bar',data:[283,87,763,750,27,65],itemStyle:{color:gy,borderRadius:3},barWidth:'35%',label:{show:true,position:'right',fontSize:10,color:'#9ca3af',formatter:'{c}ms'}}
+    \\    ]
+    \\  });
+    \\
+    \\  // Speed: horizontal bars
+    \\  echarts.init(document.getElementById('speedChart')).setOption({
+    \\    textStyle:{fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif'},animation:true,
+    \\    grid:{left:140,right:40,top:10,bottom:20},
+    \\    tooltip:{trigger:'axis'},
+    \\    xAxis:{type:'value',name:'speedup (x)',nameTextStyle:{fontSize:11,color:'#9ca3af'},axisLabel:{fontSize:11,color:'#9ca3af'},splitLine:{lineStyle:{color:'#e5e7eb'}}},
+    \\    yAxis:{type:'category',data:['Tree (3x)','Search (6x)','Read (38x)','Symbol (200x)','Word (325x)','Deps (469x)'],axisLabel:{fontSize:12,color:'#111'}},
+    \\    series:[{type:'bar',data:[3,6,38,200,325,469],itemStyle:{color:function(p){return p.dataIndex>=3?g:gl},borderRadius:3},label:{show:true,position:'right',fontSize:11,color:'#6b7280',formatter:'{c}x'}}]
+    \\  });
+    \\
+    \\  // Bytes: horizontal bars
+    \\  echarts.init(document.getElementById('bytesChart')).setOption({
+    \\    textStyle:{fontFamily:'-apple-system,BlinkMacSystemFont,sans-serif'},animation:true,
+    \\    grid:{left:160,right:40,top:10,bottom:20},
+    \\    tooltip:{trigger:'axis'},
+    \\    xAxis:{type:'value',name:'fewer bytes (x)',nameTextStyle:{fontSize:11,color:'#9ca3af'},axisLabel:{fontSize:11,color:'#9ca3af'},splitLine:{lineStyle:{color:'#e5e7eb'}}},
+    \\    yAxis:{type:'category',data:['Symbol (1.8x)','Read (2.5x)','Edit (4x)','Word (42x)','Deps (92x)'],axisLabel:{fontSize:12,color:'#111'}},
+    \\    series:[{type:'bar',data:[1.8,2.5,4,42,92],itemStyle:{color:function(p){return p.dataIndex>=3?g:gl},borderRadius:3},label:{show:true,position:'right',fontSize:11,color:'#6b7280',formatter:'{c}x'}}]
     \\  });
     \\})();
     \\</script>

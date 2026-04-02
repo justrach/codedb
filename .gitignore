@@ -4,19 +4,31 @@ zig-out/
 
 # Local/dev files
 .codedb/
+release.sh
 
 # OS files
 .DS_Store
 Thumbs.db
 
-# Editor files
+# Editor/IDE files
 *.swp
 *.swo
 *~
 .vscode/
 .idea/
 *.code-workspace
+.cursor/
+.cursorrules
+.windsurf/
 install/.wrangler/
+website/worker/.wrangler/
 
-# Generated snapshot (machine-specific)
-codedb.snapshot
+# Build/generated artifacts
+zig-out-install/
+zig-out-release/
+
+# Test artifacts
+test_fence*
+
+# Socials (drafts, not for repo)
+socials/

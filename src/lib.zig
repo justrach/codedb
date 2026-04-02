@@ -1,4 +1,4 @@
-// codedb2 — Zig module for semantic code intelligence
+// codedb — Zig module for semantic code intelligence
 //
 // Provides: symbol indexing, dependency graphs, version tracking,
 // trigram/word search indexes, and file watching.

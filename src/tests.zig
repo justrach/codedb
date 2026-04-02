@@ -2989,7 +2989,7 @@ test "disk index: fileCount matches after round-trip" {
 // ── Git HEAD + disk index tests ─────────────────────────────
 
 test "git: getGitHead returns 40-char hex SHA in a git repo" {
-    // codedb2 itself is a git repo, so this should succeed
+    // codedb itself is a git repo, so this should succeed
     const head = try git_mod.getGitHead(".", testing.allocator);
     try testing.expect(head != null);
     const sha = head.?;
@@ -3549,7 +3549,7 @@ test "issue-77: mcp index accepts temporary-directory roots that cause pathologi
     const result = try std.process.Child.run(.{
         .allocator = testing.allocator,
         .argv = &.{ "zig", "build", "run", "--", tmp_root, "snapshot" },
-        .cwd = "/Users/rachpradhan/codedb2",
+        .cwd = "/Users/rachpradhan/codedb",
         .max_output_bytes = 256 * 1024,
     });
     defer testing.allocator.free(result.stdout);

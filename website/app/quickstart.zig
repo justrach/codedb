@@ -27,7 +27,7 @@ fn page() h.Node {
         h.p(.{}, "Supports macOS (ARM64, x86_64) and Linux (ARM64, x86_64). macOS binaries are codesigned and notarized."),
 
         h.h2(.{}, "2. MCP server (recommended)"),
-        h.p(.{}, "After installing, codedb is automatically registered. Open any project and the 12 MCP tools are available to your AI agent."),
+        h.p(.{}, "After installing, codedb is automatically registered. Open any project and the 16 MCP tools are available to your AI agent."),
         h.pre(.{},
             \\# Manual MCP start (auto-configured by install script)
             \\codedb mcp /path/to/your/project
@@ -100,8 +100,8 @@ fn page() h.Node {
         h.h2(.{}, "Building from source"),
         h.p(.{}, "Requires Zig 0.15+:"),
         h.pre(.{},
-            \\git clone https://github.com/justrach/codedb2.git
-            \\cd codedb2
+            \\git clone https://github.com/justrach/codedb.git
+            \\cd codedb
             \\zig build                              # debug build
             \\zig build -Doptimize=ReleaseFast       # release build
             \\zig build test                         # run tests
@@ -109,7 +109,7 @@ fn page() h.Node {
 
         h.div(.{ .class = "hero-actions" }, .{
             h.a(.{ .href = "/benchmarks", .class = "btn" }, "See benchmarks"),
-            h.a(.{ .href = "https://github.com/justrach/codedb2", .class = "btn btn-outline" }, "GitHub"),
+            h.a(.{ .href = "https://github.com/justrach/codedb", .class = "btn btn-outline" }, "GitHub"),
         }),
     });
 }

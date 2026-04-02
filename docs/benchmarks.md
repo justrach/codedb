@@ -121,7 +121,7 @@ HTTP Server     JSON API on :7719
 ### Directories (37 patterns)
 
 ```
-.git  .codedb  node_modules  .zig-cache  zig-out  .next  .nuxt  .svelte-kit
+.git  .claude  .codedb  node_modules  .zig-cache  zig-out  .next  .nuxt  .svelte-kit
 dist  build  .build  .output  out  __pycache__  .venv  venv  .env  .tox
 .mypy_cache  .pytest_cache  .ruff_cache  target  .gradle  .idea  .vs
 vendor  Pods  .dart_tool  .pub-cache  coverage  .nyc_output  .turbo
