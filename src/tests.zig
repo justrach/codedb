@@ -122,6 +122,37 @@ test "store: getAtCursor" {
     try testing.expect(at3.size == 30);
 }
 
+test "store: recordEdit persists diff data to data log" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &dir_buf);
+
+    const log_path = try std.fmt.allocPrint(testing.allocator, "{s}/data.log", .{dir_path});
+    defer testing.allocator.free(log_path);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    try store.openDataLog(log_path);
+
+    const diff = "replace body";
+    _ = try store.recordEdit("foo.zig", 1, .replace, 0x1234, diff.len, diff);
+
+    const latest = store.getLatest("foo.zig").?;
+    try testing.expectEqual(@as(?u64, 0), latest.data_offset);
+    try testing.expectEqual(@as(u32, diff.len), latest.data_len);
+
+    const log_file = try std.fs.cwd().openFile(log_path, .{});
+    defer log_file.close();
+
+    var buf: [32]u8 = undefined;
+    const read_len = try log_file.readAll(buf[0..diff.len]);
+    try testing.expectEqual(diff.len, read_len);
+    try testing.expectEqualStrings(diff, buf[0..diff.len]);
+}
+
 // ── Agent tests ─────────────────────────────────────────────
 
 test "agent: register and heartbeat" {
