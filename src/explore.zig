@@ -77,6 +77,7 @@ pub const Language = enum(u8) {
     markdown,
     json,
     yaml,
+    hcl,
     unknown,
 };
 
@@ -93,6 +94,7 @@ pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".md")) return .markdown;
     if (std.mem.endsWith(u8, path, ".json")) return .json;
     if (std.mem.endsWith(u8, path, ".yaml") or std.mem.endsWith(u8, path, ".yml")) return .yaml;
+    if (std.mem.endsWith(u8, path, ".tf") or std.mem.endsWith(u8, path, ".tfvars") or std.mem.endsWith(u8, path, ".hcl")) return .hcl;
     return .unknown;
 }
 
@@ -195,6 +197,8 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
             try self.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
         } else if (outline.language == .php) {
             try self.parsePhpLine(trimmed, line_num, &outline, &php_state);
+        } else if (outline.language == .hcl) {
+            try self.parseHclLine(trimmed, line_num, &outline, &hcl_in_block_comment, &hcl_in_module, &hcl_brace_depth);
         }
 
         prev_line_trimmed = trimmed;
@@ -1200,6 +1204,213 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
         return null;
     }
 
+    // ── HCL / Terraform parser ────────────────────────────────
+    //
+    // Recognises top-level block types used in Terraform:
+    //   resource "type" "name" {      → struct_def   "type.name"
+    //   data "type" "name" {          → struct_def   "data.type.name"
+    //   module "name" {               → import       "name"
+    //   variable "name" {             → variable     "name"
+    //   output "name" {               → constant     "name"
+    //   locals {                      → variable     "locals"
+    //   provider "name" {             → import       "name"
+    //   terraform {                   → struct_def   "terraform"
+    //   moved {                       → struct_def   "moved"
+    //
+    // Also records `source = "..."` inside module blocks as imports
+    // for the dependency graph.
+
+    fn parseHclLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+
+        // Skip lines starting with comment markers
+        if (line.len == 0 or line[0] == '#') return;
+        if (startsWith(line, "//")) return;
+
+        // resource "aws_instance" "web" {
+        if (startsWith(line, "resource ")) {
+            if (extractTwoQuotedStrings(line["resource ".len..])) |pair| {
+                // Build "type.name" symbol
+                const name_len = pair.first.len + 1 + pair.second.len;
+                const name = try a.alloc(u8, name_len);
+                errdefer a.free(name);
+                @memcpy(name[0..pair.first.len], pair.first);
+                name[pair.first.len] = '.';
+                @memcpy(name[pair.first.len + 1 ..], pair.second);
+                const detail = try a.dupe(u8, line);
+                errdefer a.free(detail);
+                try outline.symbols.append(a, .{
+                    .name = name,
+                    .kind = .struct_def,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail,
+                });
+            }
+            return;
+        }
+
+        // data "aws_ami" "ubuntu" {
+        if (startsWith(line, "data ")) {
+            if (extractTwoQuotedStrings(line["data ".len..])) |pair| {
+                const prefix = "data.";
+                const name_len = prefix.len + pair.first.len + 1 + pair.second.len;
+                const name = try a.alloc(u8, name_len);
+                errdefer a.free(name);
+                @memcpy(name[0..prefix.len], prefix);
+                @memcpy(name[prefix.len .. prefix.len + pair.first.len], pair.first);
+                name[prefix.len + pair.first.len] = '.';
+                @memcpy(name[prefix.len + pair.first.len + 1 ..], pair.second);
+                const detail = try a.dupe(u8, line);
+                errdefer a.free(detail);
+                try outline.symbols.append(a, .{
+                    .name = name,
+                    .kind = .struct_def,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail,
+                });
+            }
+            return;
+        }
+
+        // module "vpc" {
+        if (startsWith(line, "module ")) {
+            if (extractQuotedString(line["module ".len..])) |name_str| {
+                const name = try a.dupe(u8, name_str);
+                errdefer a.free(name);
+                const detail = try a.dupe(u8, line);
+                errdefer a.free(detail);
+                try outline.symbols.append(a, .{
+                    .name = name,
+                    .kind = .import,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail,
+                });
+            }
+            return;
+        }
+
+        // variable "region" {
+        if (startsWith(line, "variable ")) {
+            if (extractQuotedString(line["variable ".len..])) |name_str| {
+                const name = try a.dupe(u8, name_str);
+                errdefer a.free(name);
+                const detail = try a.dupe(u8, line);
+                errdefer a.free(detail);
+                try outline.symbols.append(a, .{
+                    .name = name,
+                    .kind = .variable,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail,
+                });
+            }
+            return;
+        }
+
+        // output "endpoint" {
+        if (startsWith(line, "output ")) {
+            if (extractQuotedString(line["output ".len..])) |name_str| {
+                const name = try a.dupe(u8, name_str);
+                errdefer a.free(name);
+                const detail = try a.dupe(u8, line);
+                errdefer a.free(detail);
+                try outline.symbols.append(a, .{
+                    .name = name,
+                    .kind = .constant,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail,
+                });
+            }
+            return;
+        }
+
+        // provider "aws" {
+        if (startsWith(line, "provider ")) {
+            if (extractQuotedString(line["provider ".len..])) |name_str| {
+                const name = try a.dupe(u8, name_str);
+                errdefer a.free(name);
+                const detail = try a.dupe(u8, line);
+                errdefer a.free(detail);
+                try outline.symbols.append(a, .{
+                    .name = name,
+                    .kind = .import,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail,
+                });
+            }
+            return;
+        }
+
+        // locals {
+        if (startsWith(line, "locals ") or startsWith(line, "locals{") or std.mem.eql(u8, line, "locals")) {
+            const name = try a.dupe(u8, "locals");
+            errdefer a.free(name);
+            const detail = try a.dupe(u8, line);
+            errdefer a.free(detail);
+            try outline.symbols.append(a, .{
+                .name = name,
+                .kind = .variable,
+                .line_start = line_num,
+                .line_end = line_num,
+                .detail = detail,
+            });
+            return;
+        }
+
+        // terraform {
+        if (startsWith(line, "terraform ") or startsWith(line, "terraform{") or std.mem.eql(u8, line, "terraform")) {
+            const name = try a.dupe(u8, "terraform");
+            errdefer a.free(name);
+            const detail = try a.dupe(u8, line);
+            errdefer a.free(detail);
+            try outline.symbols.append(a, .{
+                .name = name,
+                .kind = .struct_def,
+                .line_start = line_num,
+                .line_end = line_num,
+                .detail = detail,
+            });
+            return;
+        }
+
+        // moved {
+        if (startsWith(line, "moved ") or startsWith(line, "moved{") or std.mem.eql(u8, line, "moved")) {
+            const name = try a.dupe(u8, "moved");
+            errdefer a.free(name);
+            const detail = try a.dupe(u8, line);
+            errdefer a.free(detail);
+            try outline.symbols.append(a, .{
+                .name = name,
+                .kind = .struct_def,
+                .line_start = line_num,
+                .line_end = line_num,
+                .detail = detail,
+            });
+            return;
+        }
+
+        // source = "..." inside module blocks → import for dep graph
+        if (std.mem.indexOf(u8, line, "source")) |_| {
+            const stripped = std.mem.trim(u8, line, " \t");
+            if (startsWith(stripped, "source")) {
+                const after_key = std.mem.trim(u8, stripped["source".len..], " \t");
+                if (after_key.len > 0 and after_key[0] == '=') {
+                    const val = std.mem.trim(u8, after_key[1..], " \t");
+                    if (extractQuotedString(val)) |src| {
+                        const import_copy = try a.dupe(u8, src);
+                        errdefer a.free(import_copy);
+                        try outline.imports.append(a, import_copy);
+                    }
+                }
+            }
+        }
+    }
+
 fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
     var deps: std.ArrayList([]const u8) = .{};
     errdefer deps.deinit(self.allocator);
@@ -1420,6 +1631,7 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
     return switch (language) {
         .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
         .python => std.mem.startsWith(u8, trimmed, "#"),
+        .hcl => std.mem.startsWith(u8, trimmed, "#") or std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
         .javascript, .typescript, .c, .cpp => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
         else => false,
     };
@@ -1787,6 +1999,34 @@ fn extractStringLiteral(s: []const u8) ?[]const u8 {
         if (std.mem.indexOfScalar(u8, s, q)) |start_pos| {
             if (std.mem.indexOfScalarPos(u8, s, start_pos + 1, q)) |end_pos| {
                 return s[start_pos + 1 .. end_pos];
+            }
+        }
+    }
+    return null;
+}
+
+/// Extract the first double-quoted string from s.
+/// e.g. `"aws_instance" "web"` → `aws_instance`
+fn extractQuotedString(s: []const u8) ?[]const u8 {
+    if (std.mem.indexOfScalar(u8, s, '"')) |start| {
+        if (std.mem.indexOfScalarPos(u8, s, start + 1, '"')) |end| {
+            if (end > start + 1) return s[start + 1 .. end];
+        }
+    }
+    return null;
+}
+
+/// Extract two consecutive double-quoted strings.
+/// e.g. `"aws_instance" "web" {` → { .first = "aws_instance", .second = "web" }
+fn extractTwoQuotedStrings(s: []const u8) ?struct { first: []const u8, second: []const u8 } {
+    if (std.mem.indexOfScalar(u8, s, '"')) |s1| {
+        if (std.mem.indexOfScalarPos(u8, s, s1 + 1, '"')) |e1| {
+            if (std.mem.indexOfScalarPos(u8, s, e1 + 1, '"')) |s2| {
+                if (std.mem.indexOfScalarPos(u8, s, s2 + 1, '"')) |e2| {
+                    if (e1 > s1 + 1 and e2 > s2 + 1) {
+                        return .{ .first = s[s1 + 1 .. e1], .second = s[s2 + 1 .. e2] };
+                    }
+                }
             }
         }
     }
