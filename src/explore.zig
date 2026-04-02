@@ -1312,6 +1312,10 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
                 if (std.mem.indexOf(u8, line, "{") != null) {
                     in_module.* = true;
                     brace_depth.* = 1;
+                } else {
+                    // Brace may be on the next line (common Terraform formatting)
+                    in_module.* = true;
+                    brace_depth.* = 0;
                 }
             }
             return;
@@ -1419,11 +1423,28 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
             return;
         }
 
-        // Track brace depth for module context
+        // Track brace depth for module context (string-aware)
         if (in_module.*) {
+            var in_string: bool = false;
+            var escaped: bool = false;
             for (line) |ch| {
-                if (ch == '{') brace_depth.* += 1;
-                if (ch == '}') brace_depth.* -= 1;
+                if (in_string) {
+                    if (escaped) {
+                        escaped = false;
+                    } else if (ch == '\\') {
+                        escaped = true;
+                    } else if (ch == '"') {
+                        in_string = false;
+                    }
+                    continue;
+                }
+                if (ch == '"') {
+                    in_string = true;
+                } else if (ch == '{') {
+                    brace_depth.* += 1;
+                } else if (ch == '}') {
+                    brace_depth.* -= 1;
+                }
             }
             if (brace_depth.* <= 0) {
                 in_module.* = false;

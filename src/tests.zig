@@ -1153,6 +1153,55 @@ test "explorer: hcl isCommentOrBlank" {
     try testing.expect(!isCommentOrBlank("resource \"aws_instance\" \"web\" {", .hcl));
 }
 
+test "explorer: hcl parser — module brace on next line captures source" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("modules.tf",
+        \\module "vpc"
+        \\{
+        \\  source = "terraform-aws-modules/vpc/aws"
+        \\  cidr   = "10.0.0.0/16"
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("modules.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expect(outline.symbols.items.len == 1);
+    try testing.expectEqualStrings("vpc", outline.symbols.items[0].name);
+    // source should still be captured even with brace on next line
+    try testing.expect(outline.imports.items.len == 1);
+    try testing.expectEqualStrings("terraform-aws-modules/vpc/aws", outline.imports.items[0]);
+}
+
+test "explorer: hcl parser — braces in strings do not corrupt module tracking" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("tricky.tf",
+        \\module "tricky" {
+        \\  source      = "my-modules/tricky"
+        \\  description = "has } brace in string"
+        \\  nested      = "also { here"
+        \\}
+        \\
+        \\resource "null_resource" "after" {
+        \\  provisioner "file" {
+        \\    source      = "/local/script.sh"
+        \\    destination = "/tmp/script.sh"
+        \\  }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("tricky.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    // Only module source should be in imports, not provisioner source
+    try testing.expect(outline.imports.items.len == 1);
+    try testing.expectEqualStrings("my-modules/tricky", outline.imports.items[0]);
+}
+
 // ── Version tests ───────────────────────────────────────────
 
 test "file versions: append and latest" {
