@@ -44,7 +44,7 @@ pub const Store = struct {
         if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| {
             std.fs.cwd().makePath(path[0..sep]) catch {};
         }
-        self.data_log = try std.fs.cwd().createFile(path, .{ .truncate = false });
+        self.data_log = try std.fs.cwd().createFile(path, .{ .read = true, .truncate = false });
         const stat = try self.data_log.?.stat();
         self.data_log_pos = stat.size;
     }
@@ -79,9 +79,11 @@ pub const Store = struct {
         if (diff) |d| {
             if (self.data_log) |log| {
                 // Advisory lock for cross-process safety
-                const fd = log.handle;
-                _ = std.posix.flock(fd, std.posix.LOCK.EX) catch {};
-                defer _ = std.posix.flock(fd, std.posix.LOCK.UN) catch {};
+                const locked = blk: {
+                    log.lock(.exclusive) catch break :blk false;
+                    break :blk true;
+                };
+                defer if (locked) log.unlock();
 
                 // Re-stat to get current end position (another process may have appended)
                 const stat = log.stat() catch return error.Unexpected;

@@ -464,15 +464,17 @@ fn mainImpl() !void {
         defer shutdown.store(true, .release);
         var scan_already_done = std.atomic.Value(bool).init(true);
 
-        var queue = watcher.EventQueue{};
-        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &shutdown, &scan_already_done });
+        const queue = try allocator.create(watcher.EventQueue);
+        defer allocator.destroy(queue);
+        queue.* = watcher.EventQueue{};
+        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, queue, root, &shutdown, &scan_already_done });
         defer watch_thread.join();
 
         const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
         defer reap_thread.join();
 
         std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
-        try server.serve(allocator, &store, &agents, &explorer, &queue, port);
+        try server.serve(allocator, &store, &agents, &explorer, queue, port);
     } else if (std.mem.eql(u8, cmd, "mcp")) {
         var agents = AgentRegistry.init(allocator);
         defer agents.deinit();
@@ -509,7 +511,9 @@ fn mainImpl() !void {
         var shutdown = std.atomic.Value(bool).init(false);
         var scan_done = std.atomic.Value(bool).init(snapshot_loaded);
 
-        var queue = watcher.EventQueue{};
+        const queue = try allocator.create(watcher.EventQueue);
+        defer allocator.destroy(queue);
+        queue.* = watcher.EventQueue{};
         var scan_thread: ?std.Thread = null;
         const startup_t0 = std.time.milliTimestamp();
         if (!snapshot_loaded) {
@@ -519,7 +523,7 @@ fn mainImpl() !void {
             telem.recordCodebaseStats(&explorer, startup_time_ms);
         }
 
-        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &shutdown, &scan_done });
+        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, queue, root, &shutdown, &scan_done });
         const idle_thread = try std.Thread.spawn(.{}, idleWatchdog, .{&shutdown});
 
         std.log.info("codedb mcp: root={s} files={d} data={s}", .{ abs_root, store.currentSeq(), data_dir });
