@@ -1089,6 +1089,60 @@ test "explorer: hcl parser — findSymbol works for terraform resources" {
     try testing.expect(sym.symbol.kind == .struct_def);
 }
 
+test "explorer: hcl parser — multiline block comments are skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("commented.tf",
+        \\resource "aws_instance" "real" {
+        \\  ami = "ami-123"
+        \\}
+        \\
+        \\/*
+        \\resource "aws_instance" "fake" {
+        \\  ami = "ami-456"
+        \\}
+        \\*/
+        \\
+        \\variable "region" {
+        \\  default = "us-east-1"
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("commented.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    // Only "real" resource and "region" variable — "fake" inside /* */ is skipped
+    try testing.expect(outline.symbols.items.len == 2);
+    try testing.expectEqualStrings("aws_instance.real", outline.symbols.items[0].name);
+    try testing.expectEqualStrings("region", outline.symbols.items[1].name);
+}
+
+test "explorer: hcl parser — source only extracted inside module blocks" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("mixed.tf",
+        \\module "vpc" {
+        \\  source = "terraform-aws-modules/vpc/aws"
+        \\}
+        \\
+        \\resource "null_resource" "provision" {
+        \\  provisioner "file" {
+        \\    source      = "/local/path/script.sh"
+        \\    destination = "/tmp/script.sh"
+        \\  }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("mixed.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    // Only the module source should be recorded as import, not the provisioner source
+    try testing.expect(outline.imports.items.len == 1);
+    try testing.expectEqualStrings("terraform-aws-modules/vpc/aws", outline.imports.items[0]);
+}
+
 test "explorer: hcl isCommentOrBlank" {
     try testing.expect(isCommentOrBlank("# this is a comment", .hcl));
     try testing.expect(isCommentOrBlank("// also a comment", .hcl));
