@@ -4086,3 +4086,54 @@ test "issue-107: codedb_deps returns results for Python files" {
     try testing.expect(deps.len == 1);
     try testing.expectEqualStrings("consumer.py", deps[0]);
 }
+
+test "issue-107: codedb_deps tracks all modules in comma-separated Python imports" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("foo.py", "def foo():\n    pass\n");
+    try explorer.indexFile("pkg/bar.py", "def bar():\n    pass\n");
+    try explorer.indexFile("consumer.py", "import foo, pkg.bar as bar_alias\n");
+
+    const foo_deps = try explorer.getImportedBy("foo.py", testing.allocator);
+    defer {
+        for (foo_deps) |d| testing.allocator.free(d);
+        testing.allocator.free(foo_deps);
+    }
+    try testing.expectEqual(@as(usize, 1), foo_deps.len);
+    try testing.expectEqualStrings("consumer.py", foo_deps[0]);
+
+    const bar_deps = try explorer.getImportedBy("pkg/bar.py", testing.allocator);
+    defer {
+        for (bar_deps) |d| testing.allocator.free(d);
+        testing.allocator.free(bar_deps);
+    }
+    try testing.expectEqual(@as(usize, 1), bar_deps.len);
+    try testing.expectEqualStrings("consumer.py", bar_deps[0]);
+}
+
+test "issue-107: codedb_deps ignores inline comments in Python import lists" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("foo.py", "def foo():\n    pass\n");
+    try explorer.indexFile("bar.py", "def bar():\n    pass\n");
+    try explorer.indexFile("consumer.py", "import foo  #, bar\n");
+
+    const foo_deps = try explorer.getImportedBy("foo.py", testing.allocator);
+    defer {
+        for (foo_deps) |d| testing.allocator.free(d);
+        testing.allocator.free(foo_deps);
+    }
+    try testing.expectEqual(@as(usize, 1), foo_deps.len);
+    try testing.expectEqualStrings("consumer.py", foo_deps[0]);
+
+    const bar_deps = try explorer.getImportedBy("bar.py", testing.allocator);
+    defer {
+        for (bar_deps) |d| testing.allocator.free(d);
+        testing.allocator.free(bar_deps);
+    }
+    try testing.expectEqual(@as(usize, 0), bar_deps.len);
+}

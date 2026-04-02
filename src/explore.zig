@@ -5,7 +5,6 @@ const WordIndex = idx.WordIndex;
 const TrigramIndex = idx.TrigramIndex;
 const SparseNgramIndex = idx.SparseNgramIndex;
 
-
 pub const SymbolKind = enum(u8) {
     function,
     struct_def,
@@ -129,7 +128,6 @@ pub const Explorer = struct {
         };
     }
 
-
     pub fn deinit(self: *Explorer) void {
         var iter = self.outlines.iterator();
         while (iter.next()) |entry| {
@@ -169,106 +167,104 @@ pub const Explorer = struct {
         return self.indexFileInner(path, content, true, true);
     }
 
+    fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool, skip_trigram: bool) !void {
+        // Parse outline outside the global explorer write lock.
+        // This keeps HTTP/MCP readers from being blocked on line-by-line parsing.
+        var outline = FileOutline.init(self.allocator, path);
+        errdefer outline.deinit();
+        outline.byte_size = content.len;
 
-fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool, skip_trigram: bool) !void {
-    // Parse outline outside the global explorer write lock.
-    // This keeps HTTP/MCP readers from being blocked on line-by-line parsing.
-    var outline = FileOutline.init(self.allocator, path);
-    errdefer outline.deinit();
-    outline.byte_size = content.len;
+        var line_num: u32 = 0;
+        var prev_line_trimmed: []const u8 = "";
+        var php_state: PhpParseState = .{};
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            line_num += 1;
+            const trimmed = std.mem.trim(u8, line, " \t");
 
-    var line_num: u32 = 0;
-    var prev_line_trimmed: []const u8 = "";
-    var php_state: PhpParseState = .{};
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        line_num += 1;
-        const trimmed = std.mem.trim(u8, line, " \t");
+            if (outline.language == .zig) {
+                try self.parseZigLine(trimmed, line_num, &outline);
+            } else if (outline.language == .python) {
+                try self.parsePythonLine(trimmed, line_num, &outline);
+            } else if (outline.language == .typescript or outline.language == .javascript) {
+                try self.parseTsLine(trimmed, line_num, &outline);
+            } else if (outline.language == .rust) {
+                try self.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
+            } else if (outline.language == .php) {
+                try self.parsePhpLine(trimmed, line_num, &outline, &php_state);
+            }
 
-        if (outline.language == .zig) {
-            try self.parseZigLine(trimmed, line_num, &outline);
-        } else if (outline.language == .python) {
-            try self.parsePythonLine(trimmed, line_num, &outline);
-        } else if (outline.language == .typescript or outline.language == .javascript) {
-            try self.parseTsLine(trimmed, line_num, &outline);
-        } else if (outline.language == .rust) {
-            try self.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
-        } else if (outline.language == .php) {
-            try self.parsePhpLine(trimmed, line_num, &outline, &php_state);
+            prev_line_trimmed = trimmed;
         }
+        outline.line_count = line_num;
 
-        prev_line_trimmed = trimmed;
-    }
-    outline.line_count = line_num;
+        self.mu.lock();
+        defer self.mu.unlock();
 
-    self.mu.lock();
-    defer self.mu.unlock();
+        // Reuse existing key if file was already indexed, else dupe.
+        const outline_gop = try self.outlines.getOrPut(path);
+        const is_new = !outline_gop.found_existing;
+        var prior_outline: ?FileOutline = if (outline_gop.found_existing)
+            outline_gop.value_ptr.*
+        else
+            null;
+        const stable_path = if (outline_gop.found_existing) blk: {
+            break :blk outline_gop.key_ptr.*;
+        } else blk: {
+            const duped = try self.allocator.dupe(u8, path);
+            outline_gop.key_ptr.* = duped;
+            break :blk duped;
+        };
+        // If we added a new entry but later fail, remove it so the map stays consistent.
+        errdefer if (is_new) {
+            _ = self.outlines.remove(stable_path);
+            self.allocator.free(stable_path);
+        };
 
-    // Reuse existing key if file was already indexed, else dupe.
-    const outline_gop = try self.outlines.getOrPut(path);
-    const is_new = !outline_gop.found_existing;
-    var prior_outline: ?FileOutline = if (outline_gop.found_existing)
-        outline_gop.value_ptr.*
-    else
-        null;
-    const stable_path = if (outline_gop.found_existing) blk: {
-        break :blk outline_gop.key_ptr.*;
-    } else blk: {
-        const duped = try self.allocator.dupe(u8, path);
-        outline_gop.key_ptr.* = duped;
-        break :blk duped;
-    };
-    // If we added a new entry but later fail, remove it so the map stays consistent.
-    errdefer if (is_new) {
-        _ = self.outlines.remove(stable_path);
-        self.allocator.free(stable_path);
-    };
+        // Ensure outline path uses the stable map key.
+        outline.path = stable_path;
 
-    // Ensure outline path uses the stable map key.
-    outline.path = stable_path;
-
-    const duped_content = try self.allocator.dupe(u8, content);
-    errdefer self.allocator.free(duped_content);
-    const content_gop = try self.contents.getOrPut(stable_path);
-    var prior_content: ?[]const u8 = null;
-    if (content_gop.found_existing) {
-        prior_content = content_gop.value_ptr.*;
-    } else {
-        content_gop.key_ptr.* = stable_path;
-    }
-    content_gop.value_ptr.* = duped_content;
-    errdefer {
+        const duped_content = try self.allocator.dupe(u8, content);
+        errdefer self.allocator.free(duped_content);
+        const content_gop = try self.contents.getOrPut(stable_path);
+        var prior_content: ?[]const u8 = null;
         if (content_gop.found_existing) {
-            content_gop.value_ptr.* = prior_content.?;
+            prior_content = content_gop.value_ptr.*;
         } else {
-            _ = self.contents.remove(stable_path);
+            content_gop.key_ptr.* = stable_path;
+        }
+        content_gop.value_ptr.* = duped_content;
+        errdefer {
+            if (content_gop.found_existing) {
+                content_gop.value_ptr.* = prior_content.?;
+            } else {
+                _ = self.contents.remove(stable_path);
+            }
+        }
+
+        // Build search indexes.
+        if (full_index) {
+            try self.word_index.indexFile(stable_path, content);
+            if (!skip_trigram) {
+                try self.trigram_index.indexFile(stable_path, content);
+                try self.sparse_ngram_index.indexFile(stable_path, content);
+            } else {
+                // Clean stale trigram/sparse entries if file was previously indexed
+                self.trigram_index.removeFile(stable_path);
+                self.sparse_ngram_index.removeFile(stable_path);
+            }
+        }
+
+        try self.rebuildDepsFor(stable_path, &outline);
+
+        outline_gop.value_ptr.* = outline;
+        if (prior_content) |old_content| {
+            self.allocator.free(old_content);
+        }
+        if (prior_outline) |*old_outline| {
+            old_outline.deinit();
         }
     }
-
-    // Build search indexes.
-    if (full_index) {
-        try self.word_index.indexFile(stable_path, content);
-        if (!skip_trigram) {
-            try self.trigram_index.indexFile(stable_path, content);
-            try self.sparse_ngram_index.indexFile(stable_path, content);
-        } else {
-            // Clean stale trigram/sparse entries if file was previously indexed
-            self.trigram_index.removeFile(stable_path);
-            self.sparse_ngram_index.removeFile(stable_path);
-        }
-    }
-
-
-    try self.rebuildDepsFor(stable_path, &outline);
-
-    outline_gop.value_ptr.* = outline;
-    if (prior_content) |old_content| {
-        self.allocator.free(old_content);
-    }
-    if (prior_outline) |*old_outline| {
-        old_outline.deinit();
-    }
-}
     /// Rebuild trigram index from the stored file contents.
     /// Used after a cache hit to populate trigrams when they were skipped during the fast scan.
     pub fn rebuildTrigrams(self: *Explorer) !void {
@@ -292,7 +288,6 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
             };
         }
     }
-
 
     pub fn removeFile(self: *Explorer, path: []const u8) void {
         self.mu.lock();
@@ -325,108 +320,113 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
     }
 
     /// Return a caller-owned copy of cached file content.
-pub fn getContent(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) !?[]u8 {
-    self.mu.lockShared();
-    defer self.mu.unlockShared();
+    pub fn getContent(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) !?[]u8 {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
 
-    const content = self.contents.get(path) orelse return null;
-    return try allocator.dupe(u8, content);
-}
-
-fn cloneOutline(src: *const FileOutline, allocator: std.mem.Allocator) !FileOutline {
-    const copied_path = try allocator.dupe(u8, src.path);
-    // No errdefer here: dst.deinit() below handles freeing copied_path via owns_path.
-
-    var dst = FileOutline.init(allocator, copied_path);
-    dst.owns_path = true;
-    errdefer dst.deinit();
-    dst.line_count = src.line_count;
-    dst.byte_size = src.byte_size;
-    for (src.symbols.items) |sym| {
-        const copied_name = try allocator.dupe(u8, sym.name);
-        errdefer allocator.free(copied_name);
-
-        const copied_detail = if (sym.detail) |d| blk: {
-            const detail = try allocator.dupe(u8, d);
-            break :blk detail;
-        } else null;
-        errdefer if (copied_detail) |d| allocator.free(d);
-
-        try dst.symbols.append(allocator, .{
-            .name = copied_name,
-            .kind = sym.kind,
-            .line_start = sym.line_start,
-            .line_end = sym.line_end,
-            .detail = copied_detail,
-        });
-    }
-    for (src.imports.items) |imp| {
-        const copied_import = try allocator.dupe(u8, imp);
-        errdefer allocator.free(copied_import);
-        try dst.imports.append(allocator, copied_import);
+        const content = self.contents.get(path) orelse return null;
+        return try allocator.dupe(u8, content);
     }
 
-    return dst;
-}
+    fn cloneOutline(src: *const FileOutline, allocator: std.mem.Allocator) !FileOutline {
+        const copied_path = try allocator.dupe(u8, src.path);
+        // No errdefer here: dst.deinit() below handles freeing copied_path via owns_path.
 
-pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) ![]u8 {
-    const s = @import("style.zig").style(use_color);
+        var dst = FileOutline.init(allocator, copied_path);
+        dst.owns_path = true;
+        errdefer dst.deinit();
+        dst.line_count = src.line_count;
+        dst.byte_size = src.byte_size;
+        for (src.symbols.items) |sym| {
+            const copied_name = try allocator.dupe(u8, sym.name);
+            errdefer allocator.free(copied_name);
 
-    self.mu.lockShared();
-    defer self.mu.unlockShared();
+            const copied_detail = if (sym.detail) |d| blk: {
+                const detail = try allocator.dupe(u8, d);
+                break :blk detail;
+            } else null;
+            errdefer if (copied_detail) |d| allocator.free(d);
 
-    var buf: std.ArrayList(u8) = .{};
-    errdefer buf.deinit(allocator);
-    const writer = buf.writer(allocator);
-
-    var paths: std.ArrayList([]const u8) = .{};
-    defer paths.deinit(allocator);
-
-    var iter = self.outlines.iterator();
-    while (iter.next()) |entry| {
-        try paths.append(allocator, entry.key_ptr.*);
-    }
-
-    std.mem.sort([]const u8, paths.items, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.order(u8, a, b) == .lt;
+            try dst.symbols.append(allocator, .{
+                .name = copied_name,
+                .kind = sym.kind,
+                .line_start = sym.line_start,
+                .line_end = sym.line_end,
+                .detail = copied_detail,
+            });
         }
-    }.lessThan);
+        for (src.imports.items) |imp| {
+            const copied_import = try allocator.dupe(u8, imp);
+            errdefer allocator.free(copied_import);
+            try dst.imports.append(allocator, copied_import);
+        }
 
-    var seen_dirs = std.StringHashMap(void).init(allocator);
-    defer seen_dirs.deinit();
+        return dst;
+    }
 
-    for (paths.items) |path| {
-        const outline = self.outlines.get(path) orelse continue;
+    pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) ![]u8 {
+        const s = @import("style.zig").style(use_color);
 
-        // Emit directory nodes we haven't seen yet
-        var prefix_end: usize = 0;
-        while (std.mem.indexOfScalarPos(u8, path, prefix_end, '/')) |sep| {
-            const dir = path[0 .. sep + 1];
-            if (!seen_dirs.contains(dir)) {
-                try seen_dirs.put(dir, {});
-                const depth = std.mem.count(u8, dir[0..sep], "/");
-                for (0..depth) |_| try writer.writeAll("  ");
-                const dir_name = path[if (depth > 0) std.mem.lastIndexOfScalar(u8, dir[0..sep], '/').? + 1 else 0 .. sep];
-                try writer.print("{s}{s}/{s}\n", .{ s.bold, dir_name, s.reset });
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        var buf: std.ArrayList(u8) = .{};
+        errdefer buf.deinit(allocator);
+        const writer = buf.writer(allocator);
+
+        var paths: std.ArrayList([]const u8) = .{};
+        defer paths.deinit(allocator);
+
+        var iter = self.outlines.iterator();
+        while (iter.next()) |entry| {
+            try paths.append(allocator, entry.key_ptr.*);
+        }
+
+        std.mem.sort([]const u8, paths.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
             }
-            prefix_end = sep + 1;
+        }.lessThan);
+
+        var seen_dirs = std.StringHashMap(void).init(allocator);
+        defer seen_dirs.deinit();
+
+        for (paths.items) |path| {
+            const outline = self.outlines.get(path) orelse continue;
+
+            // Emit directory nodes we haven't seen yet
+            var prefix_end: usize = 0;
+            while (std.mem.indexOfScalarPos(u8, path, prefix_end, '/')) |sep| {
+                const dir = path[0 .. sep + 1];
+                if (!seen_dirs.contains(dir)) {
+                    try seen_dirs.put(dir, {});
+                    const depth = std.mem.count(u8, dir[0..sep], "/");
+                    for (0..depth) |_| try writer.writeAll("  ");
+                    const dir_name = path[if (depth > 0) std.mem.lastIndexOfScalar(u8, dir[0..sep], '/').? + 1 else 0..sep];
+                    try writer.print("{s}{s}/{s}\n", .{ s.bold, dir_name, s.reset });
+                }
+                prefix_end = sep + 1;
+            }
+
+            // Emit file leaf
+            const depth = std.mem.count(u8, path, "/");
+            for (0..depth) |_| try writer.writeAll("  ");
+            const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
+            const lang = @tagName(outline.language);
+            try writer.print("{s}  {s}{s}{s}  {s}{d}L  {d} sym{s}\n", .{
+                basename,
+                s.langColor(lang),
+                lang,
+                s.reset,
+                s.dim,
+                outline.line_count,
+                outline.symbols.items.len,
+                s.reset,
+            });
         }
 
-        // Emit file leaf
-        const depth = std.mem.count(u8, path, "/");
-        for (0..depth) |_| try writer.writeAll("  ");
-        const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
-        const lang = @tagName(outline.language);
-        try writer.print("{s}  {s}{s}{s}  {s}{d}L  {d} sym{s}\n", .{
-            basename,
-            s.langColor(lang), lang, s.reset,
-            s.dim, outline.line_count, outline.symbols.items.len, s.reset,
-        });
+        return buf.toOwnedSlice(allocator);
     }
-
-    return buf.toOwnedSlice(allocator);
-}
 
     pub fn findSymbol(self: *Explorer, name: []const u8, allocator: std.mem.Allocator) !?struct { path: []const u8, symbol: Symbol } {
         self.mu.lockShared();
@@ -555,7 +555,6 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
         return result_list.toOwnedSlice(allocator);
     }
 
-
     /// Search file contents using a regex pattern with trigram acceleration.
     /// Decomposes the regex to extract literal trigrams for candidate filtering,
     /// then does actual regex matching on candidates.
@@ -611,7 +610,6 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
         return result_list.toOwnedSlice(allocator);
     }
 
-
     /// Search for a word using the inverted word index. O(1) lookup.
     pub fn searchWord(self: *Explorer, word: []const u8, allocator: std.mem.Allocator) ![]const idx.WordHit {
         self.mu.lockShared();
@@ -619,80 +617,80 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
         return self.word_index.searchDeduped(word, allocator);
     }
 
-pub fn getImportedBy(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
-    self.mu.lockShared();
-    defer self.mu.unlockShared();
-
-    // Extract basename for matching against raw import strings
-    // e.g., "src/store.zig" -> "store.zig"
-    const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
-
-    var result: std.ArrayList([]const u8) = .{};
-    errdefer {
-        for (result.items) |p| allocator.free(p);
-        result.deinit(allocator);
-    }
-
-    var iter = self.dep_graph.iterator();
-    while (iter.next()) |entry| {
-        for (entry.value_ptr.items) |dep| {
-            if (std.mem.eql(u8, dep, path) or std.mem.eql(u8, dep, basename)) {
-                const dep_path = try allocator.dupe(u8, entry.key_ptr.*);
-                try result.append(allocator, dep_path);
-                break;
-            }
-        }
-    }
-    return result.toOwnedSlice(allocator);
-}
-
-pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator, limit: usize) ![]const []const u8 {
-    // Collect stable path copies under explorer lock.
-    var path_list: std.ArrayList([]u8) = .{};
-    errdefer {
-        for (path_list.items) |path| allocator.free(path);
-        path_list.deinit(allocator);
-    }
-    defer path_list.deinit(allocator);
-    {
+    pub fn getImportedBy(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
         self.mu.lockShared();
         defer self.mu.unlockShared();
-        var iter = self.outlines.iterator();
-        while (iter.next()) |kv| {
-            const path_copy = try allocator.dupe(u8, kv.key_ptr.*);
-            try path_list.append(allocator, path_copy);
+
+        // Extract basename for matching against raw import strings
+        // e.g., "src/store.zig" -> "store.zig"
+        const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
+
+        var result: std.ArrayList([]const u8) = .{};
+        errdefer {
+            for (result.items) |p| allocator.free(p);
+            result.deinit(allocator);
         }
+
+        var iter = self.dep_graph.iterator();
+        while (iter.next()) |entry| {
+            for (entry.value_ptr.items) |dep| {
+                if (std.mem.eql(u8, dep, path) or std.mem.eql(u8, dep, basename)) {
+                    const dep_path = try allocator.dupe(u8, entry.key_ptr.*);
+                    try result.append(allocator, dep_path);
+                    break;
+                }
+            }
+        }
+        return result.toOwnedSlice(allocator);
     }
 
-    // Query store seqs without holding explorer lock.
-    const Entry = struct { path: []u8, seq: u64 };
-    var entries: std.ArrayList(Entry) = .{};
-    defer entries.deinit(allocator);
-    {
-        store.mu.lock();
-        defer store.mu.unlock();
-        for (path_list.items) |path| {
-            const seq = store.getLatestSeqUnlocked(path);
-            try entries.append(allocator, .{ .path = path, .seq = seq });
+    pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator, limit: usize) ![]const []const u8 {
+        // Collect stable path copies under explorer lock.
+        var path_list: std.ArrayList([]u8) = .{};
+        errdefer {
+            for (path_list.items) |path| allocator.free(path);
+            path_list.deinit(allocator);
         }
-    }
-
-    std.mem.sort(Entry, entries.items, {}, struct {
-        fn cmp(_: void, a: Entry, b: Entry) bool {
-            return a.seq > b.seq;
+        defer path_list.deinit(allocator);
+        {
+            self.mu.lockShared();
+            defer self.mu.unlockShared();
+            var iter = self.outlines.iterator();
+            while (iter.next()) |kv| {
+                const path_copy = try allocator.dupe(u8, kv.key_ptr.*);
+                try path_list.append(allocator, path_copy);
+            }
         }
-    }.cmp);
 
-    const count = @min(limit, entries.items.len);
-    const paths = try allocator.alloc([]const u8, count);
-    for (entries.items[0..count], 0..) |e, i| {
-        paths[i] = e.path;
+        // Query store seqs without holding explorer lock.
+        const Entry = struct { path: []u8, seq: u64 };
+        var entries: std.ArrayList(Entry) = .{};
+        defer entries.deinit(allocator);
+        {
+            store.mu.lock();
+            defer store.mu.unlock();
+            for (path_list.items) |path| {
+                const seq = store.getLatestSeqUnlocked(path);
+                try entries.append(allocator, .{ .path = path, .seq = seq });
+            }
+        }
+
+        std.mem.sort(Entry, entries.items, {}, struct {
+            fn cmp(_: void, a: Entry, b: Entry) bool {
+                return a.seq > b.seq;
+            }
+        }.cmp);
+
+        const count = @min(limit, entries.items.len);
+        const paths = try allocator.alloc([]const u8, count);
+        for (entries.items[0..count], 0..) |e, i| {
+            paths[i] = e.path;
+        }
+        for (entries.items[count..]) |e| {
+            allocator.free(e.path);
+        }
+        return paths;
     }
-    for (entries.items[count..]) |e| {
-        allocator.free(e.path);
-    }
-    return paths;
-}
     // ── Language parsers ──────────────────────────────────────
 
     fn parseZigLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
@@ -798,26 +796,31 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
                 .line_start = line_num,
                 .line_end = line_num,
             });
-            // Extract module path and convert dots to slashes for dep matching.
-            // "from mypackage.utils.helpers import X" → "mypackage/utils/helpers.py"
-            // "import os.path" → "os/path.py"
-            if (extractPythonModulePath(line)) |mod_path| {
-                var buf: [512]u8 = undefined;
-                var pos: usize = 0;
-                for (mod_path) |c| {
-                    if (pos >= buf.len - 3) break;
-                    buf[pos] = if (c == '.') '/' else c;
-                    pos += 1;
+            // Convert imported module paths into file-like dep keys so basename
+            // matching in getImportedBy works for Python files.
+            if (startsWith(line, "from ")) {
+                if (extractPythonModulePath(line)) |mod_path| {
+                    try appendPythonImportPath(a, outline, mod_path);
                 }
-                if (pos + 3 <= buf.len) {
-                    buf[pos] = '.';
-                    buf[pos + 1] = 'p';
-                    buf[pos + 2] = 'y';
-                    pos += 3;
+            } else if (startsWith(line, "import ")) {
+                var rest = std.mem.trimLeft(u8, line[7..], " \t");
+                if (std.mem.indexOfScalar(u8, rest, '#')) |comment_pos| {
+                    rest = rest[0..comment_pos];
                 }
-                const import_copy = try a.dupe(u8, buf[0..pos]);
-                errdefer a.free(import_copy);
-                try outline.imports.append(a, import_copy);
+                while (rest.len > 0) {
+                    var end: usize = 0;
+                    while (end < rest.len and rest[end] != ' ' and rest[end] != ',' and rest[end] != '\t') : (end += 1) {}
+                    if (end > 0) {
+                        try appendPythonImportPath(a, outline, rest[0..end]);
+                    }
+
+                    const tail = rest[end..];
+                    if (std.mem.indexOfScalar(u8, tail, ',')) |comma_pos| {
+                        rest = std.mem.trimLeft(u8, tail[comma_pos + 1 ..], " \t");
+                    } else {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -1264,24 +1267,24 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
         return null;
     }
 
-fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
-    var deps: std.ArrayList([]const u8) = .{};
-    errdefer deps.deinit(self.allocator);
+    fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
+        var deps: std.ArrayList([]const u8) = .{};
+        errdefer deps.deinit(self.allocator);
 
-    for (outline.imports.items) |imp| {
-        try deps.append(self.allocator, imp);
-    }
+        for (outline.imports.items) |imp| {
+            try deps.append(self.allocator, imp);
+        }
 
-    const gop = try self.dep_graph.getOrPut(path);
-    if (gop.found_existing) {
-        var old = gop.value_ptr.*;
-        gop.value_ptr.* = deps;
-        old.deinit(self.allocator);
-    } else {
-        gop.key_ptr.* = path;
-        gop.value_ptr.* = deps;
+        const gop = try self.dep_graph.getOrPut(path);
+        if (gop.found_existing) {
+            var old = gop.value_ptr.*;
+            gop.value_ptr.* = deps;
+            old.deinit(self.allocator);
+        } else {
+            gop.key_ptr.* = path;
+            gop.value_ptr.* = deps;
+        }
     }
-}
 
     /// Return the source body for a symbol given its file path and line range.
     /// Caller owns the returned slice.
@@ -1558,12 +1561,34 @@ pub fn regexMatch(haystack: []const u8, pattern: []const u8) bool {
     var in_bracket = false;
     while (i < pattern.len) {
         const c = pattern[i];
-        if (c == '\\' and i + 1 < pattern.len) { i += 2; continue; }
-        if (c == '[') { in_bracket = true; i += 1; continue; }
-        if (c == ']') { in_bracket = false; i += 1; continue; }
-        if (in_bracket) { i += 1; continue; }
-        if (c == '(') { depth += 1; i += 1; continue; }
-        if (c == ')') { if (depth > 0) depth -= 1; i += 1; continue; }
+        if (c == '\\' and i + 1 < pattern.len) {
+            i += 2;
+            continue;
+        }
+        if (c == '[') {
+            in_bracket = true;
+            i += 1;
+            continue;
+        }
+        if (c == ']') {
+            in_bracket = false;
+            i += 1;
+            continue;
+        }
+        if (in_bracket) {
+            i += 1;
+            continue;
+        }
+        if (c == '(') {
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if (c == ')') {
+            if (depth > 0) depth -= 1;
+            i += 1;
+            continue;
+        }
         if (c == '|' and depth == 0) {
             if (regexMatchSingle(haystack, pattern[prev..i])) return true;
             prev = i + 1;
@@ -1626,7 +1651,9 @@ fn matchHere(haystack: []const u8, pattern: []const u8, pos: usize) bool {
                     continue;
                 }
                 if (group_content[i] == '(') d += 1;
-                if (group_content[i] == ')') { if (d > 0) d -= 1; }
+                if (group_content[i] == ')') {
+                    if (d > 0) d -= 1;
+                }
                 if (group_content[i] == '|' and d == 0) {
                     // Try this branch
                     if (matchGroupBranch(haystack, group_content[branch_start..i], after_group, h)) return true;
@@ -1720,8 +1747,8 @@ fn matchBranchThenRest(haystack: []const u8, branch: []const u8, rest: []const u
     var buf: [4096]u8 = undefined;
     if (branch.len + rest.len > buf.len) return false;
     @memcpy(buf[0..branch.len], branch);
-    @memcpy(buf[branch.len..branch.len + rest.len], rest);
-    return matchHere(haystack, buf[0..branch.len + rest.len], pos);
+    @memcpy(buf[branch.len .. branch.len + rest.len], rest);
+    return matchHere(haystack, buf[0 .. branch.len + rest.len], pos);
 }
 
 /// Match a quantified element (greedy).
@@ -1829,7 +1856,6 @@ fn matchElement(c: u8, pattern: []const u8, start: usize, end: usize) bool {
     return c == pattern[start];
 }
 
-
 fn indexOfCaseInsensitive(haystack: []const u8, needle: []const u8) ?usize {
     if (needle.len == 0) return 0;
     if (needle.len > haystack.len) return null;
@@ -1916,4 +1942,23 @@ fn extractPythonModulePath(line: []const u8) ?[]const u8 {
         return null;
     }
     return null;
+}
+
+fn appendPythonImportPath(a: std.mem.Allocator, outline: *FileOutline, mod_path: []const u8) !void {
+    var buf: [512]u8 = undefined;
+    var pos: usize = 0;
+    for (mod_path) |c| {
+        if (pos >= buf.len - 3) break;
+        buf[pos] = if (c == '.') '/' else c;
+        pos += 1;
+    }
+    if (pos + 3 <= buf.len) {
+        buf[pos] = '.';
+        buf[pos + 1] = 'p';
+        buf[pos + 2] = 'y';
+        pos += 3;
+    }
+    const import_copy = try a.dupe(u8, buf[0..pos]);
+    errdefer a.free(import_copy);
+    try outline.imports.append(a, import_copy);
 }
