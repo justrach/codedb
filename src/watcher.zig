@@ -113,6 +113,8 @@ const skip_dirs = [_][]const u8{
     ".tmp",
     ".temp",
     ".DS_Store",
+    ".terraform",      // terraform provider/module cache
+    ".terragrunt-cache",
 };
 
 fn shouldSkip(path: []const u8) bool {

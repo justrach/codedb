@@ -847,6 +847,257 @@ test "explorer: typescript parser" {
     try testing.expect(outline.symbols.items.len >= 3);
 }
 
+// ── HCL / Terraform parser tests ────────────────────────────
+
+test "explorer: hcl parser — resource block" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("main.tf",
+        \\resource "aws_instance" "web" {
+        \\  ami           = "ami-12345"
+        \\  instance_type = "t3.micro"
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("main.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expect(outline.language == .hcl);
+    try testing.expect(outline.symbols.items.len == 1);
+    try testing.expectEqualStrings("aws_instance.web", outline.symbols.items[0].name);
+    try testing.expect(outline.symbols.items[0].kind == .struct_def);
+}
+
+test "explorer: hcl parser — data block" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("data.tf",
+        \\data "aws_ami" "ubuntu" {
+        \\  most_recent = true
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("data.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expect(outline.symbols.items.len == 1);
+    try testing.expectEqualStrings("data.aws_ami.ubuntu", outline.symbols.items[0].name);
+    try testing.expect(outline.symbols.items[0].kind == .struct_def);
+}
+
+test "explorer: hcl parser — variable and output" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("variables.tf",
+        \\variable "region" {
+        \\  type    = string
+        \\  default = "us-east-1"
+        \\}
+        \\
+        \\output "endpoint" {
+        \\  value = aws_instance.web.public_ip
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("variables.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expect(outline.symbols.items.len == 2);
+    try testing.expectEqualStrings("region", outline.symbols.items[0].name);
+    try testing.expect(outline.symbols.items[0].kind == .variable);
+    try testing.expectEqualStrings("endpoint", outline.symbols.items[1].name);
+    try testing.expect(outline.symbols.items[1].kind == .constant);
+}
+
+test "explorer: hcl parser — module with source import" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("modules.tf",
+        \\module "vpc" {
+        \\  source = "terraform-aws-modules/vpc/aws"
+        \\  cidr   = "10.0.0.0/16"
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("modules.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expect(outline.symbols.items.len == 1);
+    try testing.expectEqualStrings("vpc", outline.symbols.items[0].name);
+    try testing.expect(outline.symbols.items[0].kind == .import);
+    // source should be recorded as an import for dep graph
+    try testing.expect(outline.imports.items.len == 1);
+    try testing.expectEqualStrings("terraform-aws-modules/vpc/aws", outline.imports.items[0]);
+}
+
+test "explorer: hcl parser — provider block" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("providers.tf",
+        \\provider "aws" {
+        \\  region = "us-east-1"
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("providers.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expect(outline.symbols.items.len == 1);
+    try testing.expectEqualStrings("aws", outline.symbols.items[0].name);
+    try testing.expect(outline.symbols.items[0].kind == .import);
+}
+
+test "explorer: hcl parser — locals and terraform blocks" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("config.tf",
+        \\terraform {
+        \\  required_version = ">= 1.0"
+        \\}
+        \\
+        \\locals {
+        \\  env = "production"
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("config.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expect(outline.symbols.items.len == 2);
+    try testing.expectEqualStrings("terraform", outline.symbols.items[0].name);
+    try testing.expect(outline.symbols.items[0].kind == .struct_def);
+    try testing.expectEqualStrings("locals", outline.symbols.items[1].name);
+    try testing.expect(outline.symbols.items[1].kind == .variable);
+}
+
+test "explorer: hcl parser — full terraform file" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("main.tf",
+        \\# Main infrastructure
+        \\terraform {
+        \\  required_version = ">= 1.0"
+        \\}
+        \\
+        \\provider "aws" {
+        \\  region = var.region
+        \\}
+        \\
+        \\variable "region" {
+        \\  type    = string
+        \\  default = "us-east-1"
+        \\}
+        \\
+        \\locals {
+        \\  tags = { env = "prod" }
+        \\}
+        \\
+        \\resource "aws_vpc" "main" {
+        \\  cidr_block = "10.0.0.0/16"
+        \\}
+        \\
+        \\data "aws_ami" "latest" {
+        \\  most_recent = true
+        \\}
+        \\
+        \\module "eks" {
+        \\  source  = "terraform-aws-modules/eks/aws"
+        \\  version = "19.0"
+        \\}
+        \\
+        \\output "vpc_id" {
+        \\  value = aws_vpc.main.id
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("main.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    // terraform, provider, variable, locals, resource, data, module, output = 8
+    try testing.expect(outline.symbols.items.len == 8);
+    try testing.expectEqualStrings("terraform", outline.symbols.items[0].name);
+    try testing.expectEqualStrings("aws", outline.symbols.items[1].name);
+    try testing.expectEqualStrings("region", outline.symbols.items[2].name);
+    try testing.expectEqualStrings("locals", outline.symbols.items[3].name);
+    try testing.expectEqualStrings("aws_vpc.main", outline.symbols.items[4].name);
+    try testing.expectEqualStrings("data.aws_ami.latest", outline.symbols.items[5].name);
+    try testing.expectEqualStrings("eks", outline.symbols.items[6].name);
+    try testing.expectEqualStrings("vpc_id", outline.symbols.items[7].name);
+    // Module source recorded as import
+    try testing.expect(outline.imports.items.len == 1);
+}
+
+test "explorer: hcl parser — comments are skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("commented.tf",
+        \\# resource "aws_instance" "old" {
+        \\// resource "aws_instance" "also_old" {
+        \\resource "aws_instance" "active" {
+        \\  ami = "ami-123"
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("commented.tf", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expect(outline.symbols.items.len == 1);
+    try testing.expectEqualStrings("aws_instance.active", outline.symbols.items[0].name);
+}
+
+test "explorer: hcl parser — tfvars detected as hcl" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("prod.tfvars",
+        \\region = "us-east-1"
+        \\instance_type = "t3.large"
+    );
+
+    var outline = (try explorer.getOutline("prod.tfvars", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expect(outline.language == .hcl);
+}
+
+test "explorer: hcl parser — findSymbol works for terraform resources" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("main.tf",
+        \\resource "aws_s3_bucket" "logs" {
+        \\  bucket = "my-logs"
+        \\}
+    );
+
+    const result = try explorer.findSymbol("aws_s3_bucket.logs", testing.allocator);
+    try testing.expect(result != null);
+    const sym = result.?;
+    defer testing.allocator.free(sym.path);
+    defer testing.allocator.free(sym.symbol.name);
+    if (sym.symbol.detail) |d| testing.allocator.free(d);
+    try testing.expectEqualStrings("aws_s3_bucket.logs", sym.symbol.name);
+    try testing.expect(sym.symbol.kind == .struct_def);
+}
+
+test "explorer: hcl isCommentOrBlank" {
+    try testing.expect(isCommentOrBlank("# this is a comment", .hcl));
+    try testing.expect(isCommentOrBlank("// also a comment", .hcl));
+    try testing.expect(isCommentOrBlank("/* block comment */", .hcl));
+    try testing.expect(isCommentOrBlank("  ", .hcl));
+    try testing.expect(isCommentOrBlank("", .hcl));
+    try testing.expect(!isCommentOrBlank("resource \"aws_instance\" \"web\" {", .hcl));
+}
+
 // ── Version tests ───────────────────────────────────────────
 
 test "file versions: append and latest" {
