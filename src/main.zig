@@ -95,7 +95,7 @@ fn mainImpl() !void {
     if (std.mem.eql(u8, cmd, "update")) {
         out.p("updating codedb...\n", .{});
         var child = std.process.Child.init(
-            &.{ "/bin/sh", "-c", "curl -fsSL https://codedb.codegraff.com/install.sh | sh" },
+            &.{ "/bin/bash", "-c", "curl -fsSL https://codedb.codegraff.com/install.sh | bash" },
             allocator,
         );
         child.stdin_behavior = .Inherit;
@@ -156,15 +156,13 @@ fn mainImpl() !void {
         // Try loading from codedb.snapshot if it exists and git HEAD matches.
         const snapshot_path = "codedb.snapshot";
         const snapshot_loaded = blk: {
-            const snap_head = snapshot_mod.readSnapshotGitHead(snapshot_path) orelse break :blk false;
-            const non_git_sentinel = [_]u8{0xFF} ** 40;
-            const is_non_git_snap = std.mem.eql(u8, &snap_head, &non_git_sentinel);
-            if (is_non_git_snap) {
+            const snap_head = snapshot_mod.readSnapshotGitHead(snapshot_path) orelse {
+                // No git HEAD in snapshot (non-git project or missing) — load if current project also has no git
                 if (git_head != null) break :blk false;
-            } else {
-                const cur_head = git_head orelse break :blk false;
-                if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
-            }
+                break :blk snapshot_mod.loadSnapshot(snapshot_path, &explorer, &store, allocator);
+            };
+            const cur_head = git_head orelse break :blk false;
+            if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
             break :blk snapshot_mod.loadSnapshot(snapshot_path, &explorer, &store, allocator);
         };
 
@@ -484,18 +482,14 @@ fn mainImpl() !void {
 
         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
         const snapshot_loaded = blk: {
-            const snap_head = snapshot_mod.readSnapshotGitHead("codedb.snapshot") orelse break :blk false;
-            const non_git_sentinel = [_]u8{0xFF} ** 40;
-            const is_non_git_snap = std.mem.eql(u8, &snap_head, &non_git_sentinel);
-            if (is_non_git_snap) {
+            const snap_head = snapshot_mod.readSnapshotGitHead("codedb.snapshot") orelse {
                 if (git_head != null) break :blk false;
-            } else {
-                const cur_head = git_head orelse break :blk false;
-                if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
-            }
+                break :blk snapshot_mod.loadSnapshot("codedb.snapshot", &explorer, &store, allocator);
+            };
+            const cur_head = git_head orelse break :blk false;
+            if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
             break :blk snapshot_mod.loadSnapshot("codedb.snapshot", &explorer, &store, allocator);
         };
-
         var telemetry_disabled = false;
         for (args[cmd_args_start..]) |arg| {
             if (std.mem.eql(u8, arg, "--no-telemetry")) {

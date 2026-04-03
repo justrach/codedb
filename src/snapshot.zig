@@ -207,7 +207,7 @@ pub fn writeSnapshot(
     if (git_head) |head| {
         try file.writeAll(&head);
     } else {
-        try file.writeAll(&([_]u8{0xFF} ** 40));
+        try file.writeAll(&([_]u8{0x00} ** 40));
     }
 
     var sc_buf: [4]u8 = undefined;
@@ -311,6 +311,11 @@ pub fn readSnapshotGitHead(path: []const u8) ?[40]u8 {
     var head_buf: [40]u8 = undefined;
     const hn = file.readAll(&head_buf) catch return null;
     if (hn != 40) return null;
+
+    // Return null for all-zero sentinel (no git HEAD available)
+    if (std.mem.allEqual(u8, &head_buf, 0x00)) return null;
+    // Also handle legacy 0xFF sentinel from older versions
+    if (std.mem.allEqual(u8, &head_buf, 0xFF)) return null;
 
     return head_buf;
 }
