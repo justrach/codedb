@@ -515,11 +515,11 @@ fn mainImpl() !void {
         } else |_| {}
 
         // Write our PID (best-effort — process ID via /proc or getpid)
+        const my_tid = std.Thread.getCurrentId();
         if (std.fs.cwd().createFile(pid_path, .{ .truncate = true })) |f| {
             defer f.close();
-            // Use std.Thread.getCurrentId as a proxy (it's the TID on Linux, PID on macOS)
             var pidbuf: [32]u8 = undefined;
-            const pid_str = std.fmt.bufPrint(&pidbuf, "{d}\n", .{std.Thread.getCurrentId()}) catch "";
+            const pid_str = std.fmt.bufPrint(&pidbuf, "{d}\n", .{my_tid}) catch "";
             f.writeAll(pid_str) catch {};
         } else |_| {}
 
@@ -550,8 +550,16 @@ fn mainImpl() !void {
         watch_thread.join();
         idle_thread.join();
 
-        // Clean up PID lock
-        std.fs.cwd().deleteFile(pid_path) catch {};
+        // Only clean up PID lock if we still own it
+        if (std.fs.cwd().readFileAlloc(allocator, pid_path, 32)) |contents| {
+            defer allocator.free(contents);
+            const stored = std.mem.trim(u8, contents, " \n\r\t\x00");
+            var mybuf: [32]u8 = undefined;
+            const mystr = std.fmt.bufPrint(&mybuf, "{d}", .{my_tid}) catch "";
+            if (std.mem.eql(u8, stored, mystr)) {
+                std.fs.cwd().deleteFile(pid_path) catch {};
+            }
+        } else |_| {}
     } else {
         out.p("{s}\xe2\x9c\x97{s} unknown command: {s}{s}{s}\n", .{
             s.red, s.reset, s.bold, cmd, s.reset,
