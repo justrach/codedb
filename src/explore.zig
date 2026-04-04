@@ -199,14 +199,22 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
                 if (triple_count > 0) in_py_docstring = false;
                 continue;
             }
-            if (triple_count == 1) { in_py_docstring = true; continue; }
+            // Only skip if the line is JUST a docstring opener (no code before it)
+            if (triple_count == 1 and (std.mem.eql(u8, trimmed, "\"\"\"") or std.mem.eql(u8, trimmed, "'''"))) {
+                in_py_docstring = true;
+                continue;
+            }
         }
 
         // Track JS/TS block comments (#113)
         if (outline.language == .typescript or outline.language == .javascript) {
             if (in_block_comment) {
-                if (std.mem.indexOf(u8, trimmed, "*/") != null) in_block_comment = false;
-                continue;
+                if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
+                    in_block_comment = false;
+                    // If there's code after */, don't skip — fall through to parse it
+                    const after = std.mem.trimLeft(u8, trimmed[close_pos + 2 ..], " \t");
+                    if (after.len == 0) continue;
+                } else continue;
             }
             if (std.mem.startsWith(u8, trimmed, "/*")) {
                 if (std.mem.indexOf(u8, trimmed, "*/") == null) in_block_comment = true;
