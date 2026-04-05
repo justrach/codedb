@@ -129,27 +129,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          API_KEY_PATH="$RUNNER_TEMP/codedb-notary-key.p8"
-          export API_KEY_PATH
-          python3 - <<'PY'
-          import base64
-          import os
-          import pathlib
-          pathlib.Path(os.environ["API_KEY_PATH"]).write_bytes(
-              base64.b64decode(os.environ["APPLE_API_KEY_BASE64"])
-          )
-          PY
-          chmod 600 "$API_KEY_PATH"
-          codesign --verify --verbose=2 "${{ matrix.asset_name }}"
-          ditto -c -k --keepParent "${{ matrix.asset_name }}" "${{ matrix.asset_name }}.zip"
-          xcrun notarytool submit "${{ matrix.asset_name }}.zip" \
-            --key "$API_KEY_PATH" \
-            --key-id "$APPLE_API_KEY_ID" \
-            --issuer "$APPLE_API_ISSUER_ID" \
-            --wait
-          xcrun stapler staple "${{ matrix.asset_name }}" || true
-          spctl --assess --type execute --verbose=4 "${{ matrix.asset_name }}"
-          rm -f "${{ matrix.asset_name }}.zip" "$API_KEY_PATH"
+          bash scripts/notarize-macos.sh "${{ matrix.asset_name }}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
