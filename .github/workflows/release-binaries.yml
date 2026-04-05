@@ -60,6 +60,18 @@ jobs:
           tar -xf zig.tar.xz
           echo "$PWD/${{ matrix.zig_dir }}" >> "$GITHUB_PATH"
 
+      - name: Fetch notarization helper from main
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p scripts
+          gh api repos/${{ github.repository }}/contents/scripts/notarize-macos.sh \
+            -H "Accept: application/vnd.github.raw" > scripts/notarize-macos.sh
+          chmod +x scripts/notarize-macos.sh
+
       - name: Require macOS signing and notarization secrets
         if: runner.os == 'macOS'
         env:
