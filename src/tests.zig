@@ -2020,6 +2020,8 @@ test "detectLanguage: all supported extensions" {
     try testing.expect(explore.detectLanguage("comp.tsx") == .typescript);
     try testing.expect(explore.detectLanguage("main.rs") == .rust);
     try testing.expect(explore.detectLanguage("main.go") == .go_lang);
+    try testing.expect(explore.detectLanguage("analysis.r") == .r_lang);
+    try testing.expect(explore.detectLanguage("script.R") == .r_lang);
     try testing.expect(explore.detectLanguage("README.md") == .markdown);
     try testing.expect(explore.detectLanguage("pkg.json") == .json);
     try testing.expect(explore.detectLanguage("config.yaml") == .yaml);
@@ -4528,6 +4530,63 @@ test "issue-151: Go block comments skipped" {
         if (sym.kind == .function) func_count += 1;
     }
     try testing.expect(func_count == 1); // only realFunc
+}
+
+test "R: function, class, and library parsing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("analysis.r",
+        \\library(ggplot2)
+        \\require(dplyr)
+        \\
+        \\mean_value <- function(x) {
+        \\  sum(x) / length(x)
+        \\}
+        \\
+        \\compute = function(a, b) {
+        \\  a + b
+        \\}
+        \\
+        \\S4Class <- setClass("S4Class")
+        \\
+        \\RefClass <- setRefClass("RefClass")
+    );
+
+    var outline = (try explorer.getOutline("analysis.r", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var func_count: usize = 0;
+    var struct_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .function) func_count += 1;
+        if (sym.kind == .struct_def) struct_count += 1;
+    }
+    try testing.expect(func_count == 2); // mean_value + compute
+    try testing.expect(struct_count == 2); // S4Class + RefClass
+    try testing.expect(outline.imports.items.len == 2); // ggplot2 + dplyr
+}
+
+test "R: comments skipped correctly" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("commented.r",
+        \\# This is a comment
+        \\real_func <- function(x) {
+        \\  # inline comment
+        \\  x + 1
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("commented.r", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var func_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .function) func_count += 1;
+    }
+    try testing.expect(func_count == 1); // only real_func
 }
 
 
