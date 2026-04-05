@@ -22,6 +22,7 @@
 //     META    (6): JSON {file_count, total_bytes, indexed_at, format_version}
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const Explorer = @import("explore.zig").Explorer;
 const git_mod = @import("git.zig");
 
@@ -281,7 +282,7 @@ pub fn readSectionBytes(path: []const u8, section_id: SectionId, allocator: std.
     defer file.close();
 
     // Validate section fits within file
-    const stat = try file.stat();
+    const stat = try compat.fileStat(file);
     if (entry.offset + entry.length > stat.size) return null;
 
     try file.seekTo(entry.offset);
@@ -394,7 +395,7 @@ pub fn loadSnapshotValidated(
     defer content_file.close();
 
     // Validate content section fits within actual file size (issue-40: truncation detection)
-    const file_stat = content_file.stat() catch return false;
+    const file_stat = compat.fileStat(content_file) catch return false;
     const file_size = file_stat.size;
     if (content_entry.offset + content_entry.length > file_size) return false;
 
@@ -439,7 +440,7 @@ pub fn loadSnapshotValidated(
         if (snap_mtime > 0) blk: {
             const df = std.fs.cwd().openFile(path_buf, .{}) catch break :blk;
             defer df.close();
-            const ds = df.stat() catch break :blk;
+            const ds = compat.fileStat(df) catch break :blk;
             if (ds.mtime <= snap_mtime) break :blk;
             disk_content = df.readToEndAlloc(allocator, 16 * 1024 * 1024) catch break :blk;
         }
@@ -616,7 +617,7 @@ pub fn writeSnapshotDual(
 
     const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch return;
     defer allocator.free(dir_path);
-    std.fs.cwd().makePath(dir_path) catch {};
+    compat.makePath(std.fs.cwd(), dir_path) catch {};
 
     const proj_txt = std.fmt.allocPrint(allocator, "{s}/project.txt", .{dir_path}) catch return;
     defer allocator.free(proj_txt);

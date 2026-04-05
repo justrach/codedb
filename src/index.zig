@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 
 // ── Inverted word index ─────────────────────────────────────
 // Maps word → list of (path, line) hits. O(1) word lookup.
@@ -1380,7 +1381,7 @@ pub fn readFrequencyTable(dir_path: []const u8, allocator: std.mem.Allocator) !?
     };
     defer file.close();
     const expected_size = 256 * 256 * @sizeOf(u16);
-    const stat = try file.stat();
+    const stat = try compat.fileStat(file);
     if (stat.size != expected_size) return null;
     const result = try allocator.create([256][256]u16);
     errdefer allocator.destroy(result);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const Store = @import("store.zig").Store;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Explorer = @import("explore.zig").Explorer;
@@ -559,7 +560,7 @@ fn getDataDir(allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {
     };
     defer allocator.free(home);
     const dir = try std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash });
-    std.fs.cwd().makePath(dir) catch |err| {
+    compat.makePath(std.fs.cwd(), dir) catch |err| {
         std.log.warn("could not create data dir {s}: {}", .{ dir, err });
     };
     return dir;

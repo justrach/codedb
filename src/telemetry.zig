@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("compat.zig");
 const explore = @import("explore.zig");
 const index = @import("index.zig");
 
@@ -158,7 +159,7 @@ pub const Telemetry = struct {
         if (!self.enabled or self.path_len == 0) return;
         const path = self.path_buf[0..self.path_len];
 
-        const stat = std.fs.cwd().statFile(path) catch return;
+        const stat = compat.dirStatFile(std.fs.cwd(), path) catch return;
         if (stat.size == 0) return;
 
         // Use argv-based exec (no shell interpolation) to avoid injection

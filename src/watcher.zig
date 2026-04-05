@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
 
@@ -244,7 +245,7 @@ pub fn initialScan(store: *Store, explorer: *Explorer, root: []const u8, allocat
     var file_count: usize = 0;
 
     while (try walker.next()) |entry| {
-        const stat = dir.statFile(entry.path) catch continue;
+        const stat = compat.dirStatFile(dir, entry.path) catch continue;
         _ = try store.recordSnapshot(entry.path, stat.size, 0);
         file_count += 1;
         // Auto-skip trigram indexing beyond file count cap to prevent OOM
@@ -258,7 +259,7 @@ fn indexFileOutline(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allo
     if (shouldSkipFile(path)) return;
     const file = try dir.openFile(path, .{});
     defer file.close();
-    const stat = try file.stat();
+    const stat = try compat.fileStat(file);
     if (stat.size > 512 * 1024) return;
     const content = try file.readToEndAlloc(allocator, 512 * 1024);
     defer allocator.free(content);
@@ -301,7 +302,7 @@ pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, r
         var walker = FilteredWalker.init(dir, tmp) catch return;
         defer walker.deinit();
         while (walker.next() catch null) |entry| {
-            const stat = dir.statFile(entry.path) catch continue;
+            const stat = compat.dirStatFile(dir, entry.path) catch continue;
             const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
             const duped = backing.dupe(u8, entry.path) catch continue;
             known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = false }) catch backing.free(duped);
@@ -364,7 +365,7 @@ fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known
     defer walker.deinit();
 
     while (try walker.next()) |entry| {
-        const stat = dir.statFile(entry.path) catch continue;
+        const stat = compat.dirStatFile(dir, entry.path) catch continue;
         const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
 
         if (known.getEntry(entry.path)) |known_entry| {
@@ -495,7 +496,7 @@ fn indexFileContent(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allo
     if (shouldSkipFile(path)) return;
     const file = try dir.openFile(path, .{});
     defer file.close();
-    const stat = try file.stat();
+    const stat = try compat.fileStat(file);
     // Skip files over 512KB (likely minified bundles or generated)
     if (stat.size > 512 * 1024) return;
     const content = try file.readToEndAlloc(allocator, 512 * 1024);
@@ -552,7 +553,7 @@ fn drainNotifyFile(store: *Store, explorer: *Explorer, queue: *EventQueue, known
         indexFileContent(explorer, dir, rel, alloc, false) catch continue;
 
         // Update known-file state so incrementalDiff doesn't double-process
-        const stat = dir.statFile(rel) catch continue;
+        const stat = compat.dirStatFile(dir, rel) catch continue;
         const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
         const hash = hashFile(dir, rel, stat.size) catch continue;
         if (known.getPtr(rel)) |existing| {
