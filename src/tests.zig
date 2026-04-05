@@ -4221,3 +4221,188 @@ test "issue-114: TypeScript import-as alias does not affect dep path" {
     try testing.expect(outline.imports.items.len == 1);
     try testing.expectEqualStrings("./mod", outline.imports.items[0]);
 }
+
+// ── Trigram index regression suite (#142) ─────────────────────────────
+// Tests correctness invariants that must hold across index implementation changes.
+
+test "regression-142: trigram index finds all matching files" {
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+
+    try exp.indexFile("src/main.zig", "pub fn handleRequest(ctx: *Context) !void {}");
+    try exp.indexFile("src/server.zig", "fn handleRequest(req: Request) void {}");
+    try exp.indexFile("src/util.zig", "pub fn formatDate() []u8 {}");
+
+    const results = try exp.searchContent("handleRequest", testing.allocator, 50);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    // Must find both files containing "handleRequest"
+    try testing.expect(results.len == 2);
+}
+
+test "regression-142: trigram index returns no false positives" {
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+
+    try exp.indexFile("a.zig", "pub fn alpha() void {}");
+    try exp.indexFile("b.zig", "pub fn beta() void {}");
+
+    const results = try exp.searchContent("gamma", testing.allocator, 50);
+    defer testing.allocator.free(results);
+    // Must return zero results for non-existent content
+    try testing.expect(results.len == 0);
+}
+
+test "regression-142: trigram intersection narrows correctly" {
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+
+    try exp.indexFile("match.zig", "const unique_identifier_xyz = 42;");
+    try exp.indexFile("partial.zig", "const unique_other = 99;");
+    try exp.indexFile("none.zig", "pub fn foo() void {}");
+
+    const results = try exp.searchContent("unique_identifier_xyz", testing.allocator, 50);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    // Only the exact match file, not the partial
+    try testing.expect(results.len == 1);
+    try testing.expectEqualStrings("match.zig", results[0].path);
+}
+
+test "regression-142: trigram handles file removal" {
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+
+    try exp.indexFile("temp.zig", "pub fn removable() void {}");
+    try exp.indexFile("keep.zig", "pub fn permanent() void {}");
+
+    // Remove a file
+    exp.removeFile("temp.zig");
+
+    const results = try exp.searchContent("removable", testing.allocator, 50);
+    defer testing.allocator.free(results);
+    try testing.expect(results.len == 0);
+
+    const results2 = try exp.searchContent("permanent", testing.allocator, 50);
+    defer {
+        for (results2) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results2);
+    }
+    try testing.expect(results2.len == 1);
+}
+
+test "regression-142: trigram handles re-indexing same file" {
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+
+    try exp.indexFile("mutable.zig", "pub fn oldContent() void {}");
+    try exp.indexFile("mutable.zig", "pub fn newContent() void {}");
+
+    const old = try exp.searchContent("oldContent", testing.allocator, 50);
+    defer testing.allocator.free(old);
+    try testing.expect(old.len == 0);
+
+    const new = try exp.searchContent("newContent", testing.allocator, 50);
+    defer {
+        for (new) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(new);
+    }
+    try testing.expect(new.len == 1);
+}
+
+test "regression-142: trigram disk roundtrip preserves results" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    // Build index
+    var idx1 = TrigramIndex.init(testing.allocator);
+    try idx1.indexFile("a.zig", "pub fn searchable() void {}");
+    try idx1.indexFile("b.zig", "const value = 42;");
+
+    // Write to disk
+    try idx1.writeToDisk(dir_path, null);
+    idx1.deinit();
+
+    // Read back
+    var idx2 = TrigramIndex.readFromDisk(dir_path, testing.allocator) orelse return error.TestUnexpectedResult;
+    defer idx2.deinit();
+
+    // Must find same results
+    const cands = idx2.candidates("searchable", testing.allocator) orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(cands);
+    try testing.expect(cands.len == 1);
+}
+
+test "regression-142: many files don't corrupt index" {
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+
+    // Index 500 files
+    var i: usize = 0;
+    while (i < 500) : (i += 1) {
+        var name_buf: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "file_{d}.zig", .{i});
+        var content_buf: [64]u8 = undefined;
+        const content = try std.fmt.bufPrint(&content_buf, "pub fn func_{d}() void {{}}", .{i});
+        try exp.indexFile(name, content);
+    }
+
+    // Search for a specific one
+    const results = try exp.searchContent("func_250", testing.allocator, 50);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len == 1);
+    try testing.expectEqualStrings("file_250.zig", results[0].path);
+}
+
+test "regression-142: short queries fall back gracefully" {
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+
+    try exp.indexFile("a.zig", "pub fn ab() void {}");
+
+    // 2-char query: too short for trigrams, should still work via fallback
+    const results = try exp.searchContent("ab", testing.allocator, 50);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len == 1);
+}
+
+test "regression-142: word index still works alongside trigram" {
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+
+    try exp.indexFile("words.zig", "pub fn mySpecialFunction() void {}");
+
+    const hits = try exp.searchWord("mySpecialFunction", testing.allocator);
+    defer testing.allocator.free(hits);
+    try testing.expect(hits.len == 1);
+}
