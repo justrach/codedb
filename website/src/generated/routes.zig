@@ -6,7 +6,7 @@ const app_privacy = @import("app/privacy");
 const app_quickstart = @import("app/quickstart");
 const app_install = @import("app/install");
 const app_improvements = @import("app/improvements");
-
+const app_update = @import("app/update");
 pub const routes: []const Route = &.{
     .{ .path = "/benchmarks", .render = app_benchmarks.render, .render_stream = if (@hasDecl(app_benchmarks, "renderStream")) app_benchmarks.renderStream else null, .meta = if (@hasDecl(app_benchmarks, "meta")) app_benchmarks.meta else .{}, .prerender = if (@hasDecl(app_benchmarks, "prerender")) app_benchmarks.prerender else false },
     .{ .path = "/", .render = app_index.render, .render_stream = if (@hasDecl(app_index, "renderStream")) app_index.renderStream else null, .meta = if (@hasDecl(app_index, "meta")) app_index.meta else .{}, .prerender = if (@hasDecl(app_index, "prerender")) app_index.prerender else false },
@@ -14,6 +14,7 @@ pub const routes: []const Route = &.{
     .{ .path = "/quickstart", .render = app_quickstart.render, .render_stream = if (@hasDecl(app_quickstart, "renderStream")) app_quickstart.renderStream else null, .meta = if (@hasDecl(app_quickstart, "meta")) app_quickstart.meta else .{}, .prerender = if (@hasDecl(app_quickstart, "prerender")) app_quickstart.prerender else false },
     .{ .path = "/install.sh", .render = app_install.render, .render_stream = null, .meta = .{}, .prerender = if (@hasDecl(app_install, "prerender")) app_install.prerender else false },
     .{ .path = "/improvements", .render = app_improvements.render, .render_stream = if (@hasDecl(app_improvements, "renderStream")) app_improvements.renderStream else null, .meta = if (@hasDecl(app_improvements, "meta")) app_improvements.meta else .{}, .prerender = if (@hasDecl(app_improvements, "prerender")) app_improvements.prerender else false },
+    .{ .path = "/update", .render = app_update.render, .render_stream = if (@hasDecl(app_update, "renderStream")) app_update.renderStream else null, .meta = if (@hasDecl(app_update, "meta")) app_update.meta else .{}, .prerender = if (@hasDecl(app_update, "prerender")) app_update.prerender else false },
 };
 
 const app_layout = @import("app/layout");
