@@ -264,7 +264,7 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
         } else if (outline.language == .go_lang) {
             // Handle Go import block: import ( "fmt" \n "net/http" )
             if (in_go_import_block) {
-                if (std.mem.eql(u8, trimmed, ")")) {
+                if (startsWith(trimmed, ")")) {
                     in_go_import_block = false;
                 } else if (extractStringLiteral(trimmed)) |imp_path| {
                     const import_copy = try self.allocator.dupe(u8, imp_path);
