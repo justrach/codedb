@@ -46,12 +46,6 @@ jobs:
             zig_dir: zig-x86_64-linux-0.15.2
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
-      APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
-      APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-      APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-      APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
-      CODEDB_CODESIGN_IDENTITY: "Developer ID Application: Rachit Pradhan (WWP9DLJ27P)"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,6 +62,12 @@ jobs:
 
       - name: Require macOS signing and notarization secrets
         if: runner.os == 'macOS'
+        env:
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -84,6 +84,9 @@ jobs:
 
       - name: Import Apple signing certificate
         if: runner.os == 'macOS'
+        env:
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
@@ -106,19 +109,30 @@ jobs:
           security default-keychain -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
 
-      - name: Build ${{ matrix.asset_name }}
+      - name: Build ${{ matrix.asset_name }} (macOS)
+        if: runner.os == 'macOS'
+        env:
+          CODEDB_CODESIGN_IDENTITY: "${{ secrets.APPLE_CODESIGN_IDENTITY != '' && secrets.APPLE_CODESIGN_IDENTITY || 'Developer ID Application: Rachit Pradhan (WWP9DLJ27P)' }}"
         shell: bash
         run: |
           set -euo pipefail
-          codesign_arg=()
-          if [[ "${{ runner.os }}" == "macOS" ]] && grep -q 'codesign-identity' build.zig; then
-            codesign_arg=(-Dcodesign-identity="${CODEDB_CODESIGN_IDENTITY:-"-"}")
-          fi
-          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} "${codesign_arg[@]}"
+          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} -Dcodesign-identity="${CODEDB_CODESIGN_IDENTITY}"
+          cp zig-out/bin/codedb "${{ matrix.asset_name }}"
+
+      - name: Build ${{ matrix.asset_name }} (Linux)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
           cp zig-out/bin/codedb "${{ matrix.asset_name }}"
 
       - name: Notarize ${{ matrix.asset_name }}
         if: runner.os == 'macOS'
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
         shell: bash
         run: |
           set -euo pipefail
