@@ -4406,3 +4406,126 @@ test "regression-142: word index still works alongside trigram" {
     defer testing.allocator.free(hits);
     try testing.expect(hits.len == 1);
 }
+
+test "issue-151: Go func and type definitions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("main.go",
+        \\package main
+        \\
+        \\import "fmt"
+        \\
+        \\type Config struct {
+        \\    Port int
+        \\}
+        \\
+        \\type Handler interface {
+        \\    Handle()
+        \\}
+        \\
+        \\func main() {
+        \\    fmt.Println("hello")
+        \\}
+        \\
+        \\func (c *Config) Validate() bool {
+        \\    return c.Port > 0
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("main.go", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var func_count: usize = 0;
+    var struct_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .function) func_count += 1;
+        if (sym.kind == .struct_def) struct_count += 1;
+    }
+    try testing.expect(func_count == 2); // main + Validate
+    try testing.expect(struct_count == 2); // Config + Handler
+    try testing.expect(outline.imports.items.len == 1); // "fmt"
+}
+
+test "issue-151: Ruby class, module, and def" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("app.rb",
+        \\require "json"
+        \\require_relative "./helpers"
+        \\
+        \\module Authentication
+        \\  class User
+        \\    def initialize(name)
+        \\      @name = name
+        \\    end
+        \\
+        \\    def greet
+        \\      puts "hello"
+        \\    end
+        \\  end
+        \\end
+    );
+
+    var outline = (try explorer.getOutline("app.rb", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var func_count: usize = 0;
+    var struct_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .function) func_count += 1;
+        if (sym.kind == .struct_def) struct_count += 1;
+    }
+    try testing.expect(func_count == 2); // initialize + greet
+    try testing.expect(struct_count == 2); // Authentication + User
+    try testing.expect(outline.imports.items.len == 2); // json + ./helpers
+}
+
+test "issue-151: Ruby =begin/=end comments skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("commented.rb",
+        \\def real_method
+        \\  true
+        \\end
+        \\=begin
+        \\def fake_method
+        \\  false
+        \\end
+        \\=end
+    );
+
+    var outline = (try explorer.getOutline("commented.rb", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var func_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .function) func_count += 1;
+    }
+    try testing.expect(func_count == 1); // only real_method
+}
+
+test "issue-151: Go block comments skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("commented.go",
+        \\package main
+        \\
+        \\func realFunc() {}
+        \\/*
+        \\func fakeFunc() {}
+        \\*/
+    );
+
+    var outline = (try explorer.getOutline("commented.go", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var func_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .function) func_count += 1;
+    }
+    try testing.expect(func_count == 1); // only realFunc
+}

@@ -113,6 +113,8 @@ const skip_dirs = [_][]const u8{
     ".tmp",
     ".temp",
     ".DS_Store",
+    "bundle",
+    ".bundle",
 };
 
 fn shouldSkip(path: []const u8) bool {
