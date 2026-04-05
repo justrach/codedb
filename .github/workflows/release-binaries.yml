@@ -116,8 +116,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} -Dcodesign-identity="${CODEDB_CODESIGN_IDENTITY}"
+          codesign_args=()
+          if grep -q 'codesign-identity' build.zig; then
+            codesign_args=(-Dcodesign-identity="${CODEDB_CODESIGN_IDENTITY}")
+          fi
+          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} "${codesign_args[@]}"
           cp zig-out/bin/codedb "${{ matrix.asset_name }}"
+
+      - name: Re-sign ${{ matrix.asset_name }} for notarization
+        if: runner.os == 'macOS'
+        env:
+          CODEDB_CODESIGN_IDENTITY: "${{ secrets.APPLE_CODESIGN_IDENTITY != '' && secrets.APPLE_CODESIGN_IDENTITY || 'Developer ID Application: Rachit Pradhan (WWP9DLJ27P)' }}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign -f -s "${CODEDB_CODESIGN_IDENTITY}" --options runtime --timestamp "${{ matrix.asset_name }}"
 
       - name: Build ${{ matrix.asset_name }} (Linux)
         if: runner.os != 'macOS'
