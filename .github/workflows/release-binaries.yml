@@ -39,11 +39,19 @@ jobs:
             asset_name: codedb-linux-x86_64
             zig_archive: zig-x86_64-linux-0.15.2.tar.xz
             zig_dir: zig-x86_64-linux-0.15.2
+          - runner: ubuntu-24.04
+            zig_target: aarch64-linux
+            asset_name: codedb-linux-arm64
+            zig_archive: zig-x86_64-linux-0.15.2.tar.xz
+            zig_dir: zig-x86_64-linux-0.15.2
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
-      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      CODEDB_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+      APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+      APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+      APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+      CODEDB_CODESIGN_IDENTITY: "Developer ID Application: Rachit Pradhan (WWP9DLJ27P)"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,8 +66,24 @@ jobs:
           tar -xf zig.tar.xz
           echo "$PWD/${{ matrix.zig_dir }}" >> "$GITHUB_PATH"
 
+      - name: Require macOS signing and notarization secrets
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "${APPLE_CERT_BASE64}" ]] || missing+=("APPLE_CERT_BASE64")
+          [[ -n "${APPLE_CERT_PASSWORD}" ]] || missing+=("APPLE_CERT_PASSWORD")
+          [[ -n "${APPLE_API_KEY_ID}" ]] || missing+=("APPLE_API_KEY_ID")
+          [[ -n "${APPLE_API_ISSUER_ID}" ]] || missing+=("APPLE_API_ISSUER_ID")
+          [[ -n "${APPLE_API_KEY_BASE64}" ]] || missing+=("APPLE_API_KEY_BASE64")
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required macOS release secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
       - name: Import Apple signing certificate
-        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE_P12 != ''
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
@@ -71,13 +95,13 @@ jobs:
           import os
           import pathlib
           pathlib.Path(os.environ["CERT_PATH"]).write_bytes(
-              base64.b64decode(os.environ["APPLE_CERTIFICATE_P12"])
+              base64.b64decode(os.environ["APPLE_CERT_BASE64"])
           )
           PY
           security create-keychain -p "" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH"
           security default-keychain -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
@@ -92,6 +116,33 @@ jobs:
           fi
           zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} "${codesign_arg[@]}"
           cp zig-out/bin/codedb "${{ matrix.asset_name }}"
+
+      - name: Notarize ${{ matrix.asset_name }}
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_KEY_PATH="$RUNNER_TEMP/codedb-notary-key.p8"
+          export API_KEY_PATH
+          python3 - <<'PY'
+          import base64
+          import os
+          import pathlib
+          pathlib.Path(os.environ["API_KEY_PATH"]).write_bytes(
+              base64.b64decode(os.environ["APPLE_API_KEY_BASE64"])
+          )
+          PY
+          chmod 600 "$API_KEY_PATH"
+          codesign --verify --verbose=2 "${{ matrix.asset_name }}"
+          ditto -c -k --keepParent "${{ matrix.asset_name }}" "${{ matrix.asset_name }}.zip"
+          xcrun notarytool submit "${{ matrix.asset_name }}.zip" \
+            --key "$API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "${{ matrix.asset_name }}" || true
+          spctl --assess --type execute --verbose=4 "${{ matrix.asset_name }}"
+          rm -f "${{ matrix.asset_name }}.zip" "$API_KEY_PATH"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
