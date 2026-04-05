@@ -39,11 +39,13 @@ jobs:
             asset_name: codedb-linux-x86_64
             zig_archive: zig-x86_64-linux-0.15.2.tar.xz
             zig_dir: zig-x86_64-linux-0.15.2
+          - runner: ubuntu-24.04
+            zig_target: aarch64-linux
+            asset_name: codedb-linux-arm64
+            zig_archive: zig-x86_64-linux-0.15.2.tar.xz
+            zig_dir: zig-x86_64-linux-0.15.2
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
-      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      CODEDB_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,40 +60,88 @@ jobs:
           tar -xf zig.tar.xz
           echo "$PWD/${{ matrix.zig_dir }}" >> "$GITHUB_PATH"
 
-      - name: Import Apple signing certificate
-        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE_P12 != ''
+      - name: Fetch notarization helper from main
+        if: runner.os == 'macOS'
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          CERT_PATH="$RUNNER_TEMP/codedb-signing.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/codedb-signing.keychain-db"
-          export CERT_PATH
-          python3 - <<'PY'
-          import base64
-          import os
-          import pathlib
-          pathlib.Path(os.environ["CERT_PATH"]).write_bytes(
-              base64.b64decode(os.environ["APPLE_CERTIFICATE_P12"])
-          )
-          PY
-          security create-keychain -p "" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH"
-          security default-keychain -s "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
+          mkdir -p scripts
+          gh api repos/${{ github.repository }}/contents/scripts/notarize-macos.sh \
+            -H "Accept: application/vnd.github.raw" > scripts/notarize-macos.sh
+          chmod +x scripts/notarize-macos.sh
 
-      - name: Build ${{ matrix.asset_name }}
+      - name: Require macOS signing and notarization secrets
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
         shell: bash
         run: |
           set -euo pipefail
-          codesign_arg=()
-          if [[ "${{ runner.os }}" == "macOS" ]] && grep -q 'codesign-identity' build.zig; then
-            codesign_arg=(-Dcodesign-identity="${CODEDB_CODESIGN_IDENTITY:-"-"}")
+          missing=()
+          [[ -n "${APPLE_CERTIFICATE_P12}" ]] || missing+=("APPLE_CERTIFICATE_P12")
+          [[ -n "${APPLE_CERTIFICATE_PASSWORD}" ]] || missing+=("APPLE_CERTIFICATE_PASSWORD")
+          [[ -n "${APPLE_API_KEY_ID}" ]] || missing+=("APPLE_API_KEY_ID")
+          [[ -n "${APPLE_API_ISSUER_ID}" ]] || missing+=("APPLE_API_ISSUER_ID")
+          [[ -n "${APPLE_API_KEY_BASE64}" ]] || missing+=("APPLE_API_KEY_BASE64")
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required macOS release secrets: %s\n' "${missing[*]}" >&2
+            exit 1
           fi
-          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} "${codesign_arg[@]}"
+
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS'
+        uses: apple-actions/import-codesign-certs@v5
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Build ${{ matrix.asset_name }} (macOS)
+        if: runner.os == 'macOS'
+        env:
+          CODEDB_CODESIGN_IDENTITY: "${{ secrets.APPLE_CODESIGN_IDENTITY != '' && secrets.APPLE_CODESIGN_IDENTITY || 'Developer ID Application: Rachit Pradhan (WWP9DLJ27P)' }}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign_args=()
+          if grep -q 'codesign-identity' build.zig; then
+            codesign_args=(-Dcodesign-identity="${CODEDB_CODESIGN_IDENTITY}")
+          fi
+          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} "${codesign_args[@]}"
           cp zig-out/bin/codedb "${{ matrix.asset_name }}"
+
+      - name: Re-sign ${{ matrix.asset_name }} for notarization
+        if: runner.os == 'macOS'
+        env:
+          CODEDB_CODESIGN_IDENTITY: "${{ secrets.APPLE_CODESIGN_IDENTITY != '' && secrets.APPLE_CODESIGN_IDENTITY || 'Developer ID Application: Rachit Pradhan (WWP9DLJ27P)' }}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign -f -s "${CODEDB_CODESIGN_IDENTITY}" --options runtime --timestamp "${{ matrix.asset_name }}"
+
+      - name: Build ${{ matrix.asset_name }} (Linux)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+          cp zig-out/bin/codedb "${{ matrix.asset_name }}"
+
+      - name: Notarize ${{ matrix.asset_name }}
+        if: runner.os == 'macOS'
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/notarize-macos.sh "${{ matrix.asset_name }}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
