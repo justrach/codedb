@@ -588,13 +588,9 @@ fn handleConnection(
 // ── Response helpers ────────────────────────────────────────
 
 fn isPathSafe(path: []const u8) bool {
-    if (path.len == 0) return false;
-    if (path[0] == '/') return false;
-    var it = std.mem.splitScalar(u8, path, '/');
-    while (it.next()) |component| {
-        if (std.mem.eql(u8, component, "..")) return false;
-    }
-    return true;
+    // Delegate to the canonical implementation in mcp.zig
+    const mcp = @import("mcp.zig");
+    return mcp.isPathSafe(path);
 }
 
 fn respondJson(conn: std.net.Server.Connection, status: []const u8, body: []const u8) void {

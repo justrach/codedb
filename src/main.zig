@@ -4,6 +4,7 @@ const Store = @import("store.zig").Store;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Explorer = @import("explore.zig").Explorer;
 const watcher = @import("watcher.zig");
+const is_windows = @import("builtin").os.tag == .windows;
 const server = @import("server.zig");
 const mcp_server = @import("mcp.zig");
 const sty = @import("style.zig");
@@ -28,22 +29,14 @@ const Out = struct {
     }
 };
 
-/// The real entry point.  Zig may merge all command-branch stack frames into
-/// one, producing a ~33 MB frame that overflows the default 16 MB OS stack.
-/// We trampoline through a thread with an explicit 64 MB stack.
+/// Trampoline: LLVM merges all branch stack frames (tree, serve, mcp)
+/// into main()'s frame, creating a ~128MB frame on Windows that exceeds
+/// guard page stride → STATUS_STACK_OVERFLOW. noinline prevents this.
 pub fn main() !void {
-    const thread = try std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, mainInner, .{});
-    thread.join();
+    return mainImpl();
 }
 
-fn mainInner() void {
-    mainImpl() catch |err| {
-        std.debug.print("fatal: {s}\n", .{@errorName(err)});
-        std.process.exit(1);
-    };
-}
-
-fn mainImpl() !void {
+noinline fn mainImpl() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -231,7 +224,7 @@ fn mainImpl() !void {
         root = ".";
     }
 
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var root_buf: [compat.path_buf_size]u8 = undefined;
     const abs_root = resolveRoot(root, &root_buf) catch {
         out.p("{s}\xe2\x9c\x97{s} cannot resolve root: {s}{s}{s}\n", .{
             s.red, s.reset, s.bold, root, s.reset,
@@ -578,26 +571,32 @@ fn mainImpl() !void {
             s.reset,
         });
     } else if (std.mem.eql(u8, cmd, "serve")) {
-        const port: u16 = 7719;
-        var agents = AgentRegistry.init(allocator);
-        defer agents.deinit();
-        _ = try agents.register("__filesystem__");
+        if (comptime is_windows) {
+            out.p("{s}\xe2\x9c\x97{s} HTTP serve not supported on Windows. Use {s}mcp{s} mode.\n", .{
+                s.red, s.reset, s.cyan, s.reset,
+            });
+            std.process.exit(1);
+        } else {
+            const port: u16 = 7719;
+            var agents = AgentRegistry.init(allocator);
+            defer agents.deinit();
+            _ = try agents.register("__filesystem__");
 
-        var shutdown = std.atomic.Value(bool).init(false);
-        defer shutdown.store(true, .release);
-        var scan_already_done = std.atomic.Value(bool).init(true);
+            var shutdown = std.atomic.Value(bool).init(false);
+            defer shutdown.store(true, .release);
+            var scan_already_done = std.atomic.Value(bool).init(true);
 
-        const queue = try allocator.create(watcher.EventQueue);
-        defer allocator.destroy(queue);
-        queue.* = watcher.EventQueue{};
-        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, queue, root, &shutdown, &scan_already_done });
-        defer watch_thread.join();
+            var queue = try watcher.EventQueue.init();
+            defer queue.deinit();
+            const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &shutdown, &scan_already_done });
+            defer watch_thread.join();
 
-        const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
-        defer reap_thread.join();
+            const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
+            defer reap_thread.join();
 
-        std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
-        try server.serve(allocator, &store, &agents, &explorer, queue, port);
+            std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
+            try server.serve(allocator, &store, &agents, &explorer, &queue, port);
+        }
     } else if (std.mem.eql(u8, cmd, "mcp")) {
         var agents = AgentRegistry.init(allocator);
         defer agents.deinit();
@@ -630,9 +629,8 @@ fn mainImpl() !void {
         var shutdown = std.atomic.Value(bool).init(false);
         var scan_done = std.atomic.Value(bool).init(snapshot_loaded);
 
-        const queue = try allocator.create(watcher.EventQueue);
-        defer allocator.destroy(queue);
-        queue.* = watcher.EventQueue{};
+        var queue = try watcher.EventQueue.init();
+        defer queue.deinit();
         var scan_thread: ?std.Thread = null;
         const startup_t0 = std.time.milliTimestamp();
         if (!snapshot_loaded) {
@@ -642,7 +640,7 @@ fn mainImpl() !void {
             telem.recordCodebaseStats(&explorer, startup_time_ms);
         }
 
-        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, queue, root, &shutdown, &scan_done });
+        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &shutdown, &scan_done });
         const idle_thread = try std.Thread.spawn(.{}, idleWatchdog, .{&shutdown});
 
         std.log.info("codedb mcp: root={s} files={d} data={s}", .{ abs_root, store.currentSeq(), data_dir });
@@ -668,7 +666,7 @@ fn isCommand(arg: []const u8) bool {
     return false;
 }
 
-fn resolveRoot(root: []const u8, buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
+fn resolveRoot(root: []const u8, buf: *[compat.path_buf_size]u8) ![]const u8 {
     if (std.mem.eql(u8, root, ".")) {
         return std.fs.cwd().realpath(".", buf) catch return error.ResolveFailed;
     }
@@ -677,7 +675,8 @@ fn resolveRoot(root: []const u8, buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
 
 fn getDataDir(allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {
     const hash = std.hash.Wyhash.hash(0, abs_root);
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{abs_root});
     };
     defer allocator.free(home);
@@ -873,22 +872,25 @@ fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
             std.Thread.sleep(std.time.ns_per_s);
         }
 
-        // Quick liveness check: poll stdin for POLLHUP (client disconnected)
+        // Quick liveness check: poll stdin for HUP (client disconnected).
+        // Windows stdin is not a socket, so poll() is POSIX-only.
         const stdin = std.fs.File.stdin();
-        var poll_fds = [_]std.posix.pollfd{.{
-            .fd = stdin.handle,
-            .events = std.posix.POLL.IN | std.posix.POLL.HUP,
-            .revents = 0,
-        }};
-        const poll_result = std.posix.poll(&poll_fds, 0) catch 0;
-        if (poll_result > 0 and (poll_fds[0].revents & std.posix.POLL.HUP) != 0) {
-            std.log.info("stdin closed (client disconnected), exiting", .{});
-            stdin.close();
-            shutdown.store(true, .release);
-            return;
+        if (comptime @import("builtin").os.tag != .windows) {
+            var poll_fds = [_]std.posix.pollfd{.{
+                .fd = stdin.handle,
+                .events = std.posix.POLL.IN | std.posix.POLL.HUP,
+                .revents = 0,
+            }};
+            const poll_result = std.posix.poll(&poll_fds, 0) catch 0;
+            if (poll_result > 0 and (poll_fds[0].revents & std.posix.POLL.HUP) != 0) {
+                std.log.info("stdin closed (client disconnected), exiting", .{});
+                stdin.close();
+                shutdown.store(true, .release);
+                return;
+            }
         }
 
-        // Fallback: idle timeout
+        // Idle timeout (primary exit mechanism on Windows)
         const last = mcp.last_activity.load(.acquire);
         if (last == 0) continue;
         const now = std.time.milliTimestamp();

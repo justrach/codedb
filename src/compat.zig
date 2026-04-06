@@ -13,6 +13,11 @@ const posix = std.posix;
 const linux = std.os.linux;
 const fs = std.fs;
 
+/// On Windows, std.fs.max_path_bytes is 32767 (\\?\-prefixed paths).
+/// That's too large for stack buffers (e.g. EventQueue's 4096-element array
+/// becomes ~128MB). Use a practical limit instead.
+pub const path_buf_size: usize = if (builtin.os.tag == .windows) 1024 else std.fs.max_path_bytes;
+
 /// Cached result of the runtime statx probe.
 var statx_supported: enum(u8) { unknown = 0, yes = 1, no = 2 } = .unknown;
 

@@ -1049,7 +1049,8 @@ test "explorer: removeFile frees owned map key" {
     try testing.expect(explorer.dep_graph.count() == 0);
 }
 test "watcher: queue overflow is explicit" {
-    var queue = watcher.EventQueue{};
+    var queue = try watcher.EventQueue.init();
+    defer queue.deinit();
 
     var pushed: usize = 0;
     while (true) : (pushed += 1) {
@@ -1068,7 +1069,8 @@ test "watcher: queue overflow is explicit" {
 }
 
 test "watcher: queue event copies path bytes" {
-    var queue = watcher.EventQueue{};
+    var queue = try watcher.EventQueue.init();
+    defer queue.deinit();
     const original = try testing.allocator.dupe(u8, "tmp/deleted.zig");
     try testing.expect(queue.push(watcher.FsEvent.init(original, .deleted, 99) orelse unreachable));
     testing.allocator.free(original);
@@ -1452,7 +1454,8 @@ test "regression: searchContent frees empty trigram candidate slice" {
 }
 
 test "regression: queue push stays non-blocking when full" {
-    var queue = watcher.EventQueue{};
+    var queue = try watcher.EventQueue.init();
+    defer queue.deinit();
 
     var pushed: usize = 0;
     while (true) : (pushed += 1) {
@@ -1495,6 +1498,19 @@ test "isPathSafe: accepts valid relative paths" {
     try testing.expect(mcp.isPathSafe("src/main.zig"));
     try testing.expect(mcp.isPathSafe("README.md"));
     try testing.expect(mcp.isPathSafe("a/b/c/d.txt"));
+}
+
+test "isPathSafe: rejects Windows-style paths" {
+    const mcp = @import("mcp.zig");
+    // Backslash prefix
+    try testing.expect(!mcp.isPathSafe("\\Windows\\System32"));
+    // Drive letters
+    try testing.expect(!mcp.isPathSafe("C:\\Windows\\System32"));
+    try testing.expect(!mcp.isPathSafe("D:\\secret.txt"));
+    // Backslash traversal
+    try testing.expect(!mcp.isPathSafe("foo\\..\\..\\etc\\passwd"));
+    // Mixed separators with traversal
+    try testing.expect(!mcp.isPathSafe("foo/..\\..\\secret"));
 }
 
 test "snapshot_json: snapshot builds and is valid JSON" {
@@ -3561,7 +3577,13 @@ test "issue-60: telemetry disabled path is a no-op" {
 test "issue-77: mcp index accepts temporary-directory roots that cause pathological cache growth" {
     var tmp_name_buf: [128]u8 = undefined;
     const tmp_name = try std.fmt.bufPrint(&tmp_name_buf, "codedb-issue-77-{d}", .{std.time.microTimestamp()});
-    const tmp_root = try std.fs.path.join(testing.allocator, &.{ "/private/tmp", tmp_name });
+    const tmp_base = if (comptime @import("builtin").os.tag == .windows)
+        std.process.getEnvVarOwned(testing.allocator, "TEMP") catch
+            return error.SkipZigTest
+    else
+        try testing.allocator.dupe(u8, "/private/tmp");
+    defer testing.allocator.free(tmp_base);
+    const tmp_root = try std.fs.path.join(testing.allocator, &.{ tmp_base, tmp_name });
     defer testing.allocator.free(tmp_root);
 
     std.fs.cwd().makePath(tmp_root) catch |err| switch (err) {
@@ -4577,23 +4599,20 @@ test "issue-148: idle timeout is 10 minutes" {
 }
 
 test "issue-148: POLLHUP detects closed pipe" {
-    // Verify the polling infrastructure works for pipe-based transports
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
     const pipe = try std.posix.pipe();
-    defer std.posix.close(pipe[0]);
-
-    // Close write end — simulates client disconnect
     std.posix.close(pipe[1]);
 
-    // Poll should detect POLLHUP on the read end
-    var fds = [_]std.posix.pollfd{.{
+    var poll_fds = [_]std.posix.pollfd{.{
         .fd = pipe[0],
-        .events = std.posix.POLL.IN,
+        .events = std.posix.POLL.IN | std.posix.POLL.HUP,
         .revents = 0,
     }};
 
-    const n = try std.posix.poll(&fds, 100); // 100ms timeout
-    try testing.expect(n > 0);
-    try testing.expect((fds[0].revents & std.posix.POLL.HUP) != 0);
+    const result = try std.posix.poll(&poll_fds, 0);
+    try testing.expect(result > 0);
+    try testing.expect((poll_fds[0].revents & std.posix.POLL.HUP) != 0);
+    std.posix.close(pipe[0]);
 }
 
 test "issue-148: idle watchdog exits on shutdown signal" {
@@ -4670,6 +4689,7 @@ const MmapTrigramIndex = @import("index.zig").MmapTrigramIndex;
 const AnyTrigramIndex = @import("index.zig").AnyTrigramIndex;
 
 test "issue-164: mmap trigram index returns same candidates as heap index" {
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -4710,6 +4730,7 @@ test "issue-164: mmap trigram index returns same candidates as heap index" {
 }
 
 test "issue-164: mmap binary search on sorted lookup table" {
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -4750,6 +4771,7 @@ test "issue-164: mmap handles missing files gracefully" {
 }
 
 test "issue-164: AnyTrigramIndex dispatches to mmap variant" {
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();

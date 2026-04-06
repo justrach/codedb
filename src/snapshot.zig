@@ -610,7 +610,8 @@ pub fn writeSnapshotDual(
     try writeSnapshot(explorer, root_path, output_path, allocator);
 
     const hash = std.hash.Wyhash.hash(0, root_path);
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return;
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return;
     defer allocator.free(home);
     const secondary = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch return;
     defer allocator.free(secondary);
