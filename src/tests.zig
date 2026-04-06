@@ -4891,3 +4891,222 @@ test "issue-163: transpositions handled by Smith-Waterman" {
     try testing.expect(fuzzyScore("agnet", "src/agent.zig") != null);
     try testing.expect(fuzzyScore("indxe", "src/index.zig") != null);
 }
+
+// ── codedb_query pipeline tests ─────────────────────────────────
+
+test "issue-168: query pipeline find → limit produces file set" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/auth.py", "def check_auth(): pass");
+    try explorer.indexFile("src/auth_handler.py", "def handle(): pass");
+    try explorer.indexFile("src/utils.py", "def util(): pass");
+    try explorer.indexFile("src/config.py", "DEBUG = True");
+
+    // Pipeline: find "auth" → should return auth files
+    const results = try explorer.fuzzyFindFiles("auth", testing.allocator, 10);
+    defer testing.allocator.free(results);
+
+    try testing.expect(results.len >= 2);
+    // Both auth files should be in results
+    var found_auth = false;
+    var found_handler = false;
+    for (results) |r| {
+        if (std.mem.indexOf(u8, r.path, "auth.py") != null) found_auth = true;
+        if (std.mem.indexOf(u8, r.path, "auth_handler") != null) found_handler = true;
+    }
+    try testing.expect(found_auth);
+    try testing.expect(found_handler);
+}
+
+test "issue-168: query pipeline search returns matching lines" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/main.zig", "pub fn main() void {\n    const x = 42;\n}\n");
+    try explorer.indexFile("src/lib.zig", "pub fn init() void {}\n");
+
+    const results = try explorer.searchContent("main", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len >= 1);
+    try testing.expect(std.mem.indexOf(u8, results[0].path, "main.zig") != null);
+}
+
+test "issue-168: query pipeline filter by extension" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/auth.py", "def check(): pass");
+    try explorer.indexFile("src/auth.ts", "function check() {}");
+    try explorer.indexFile("src/auth.zig", "fn check() void {}");
+
+    // fuzzyFindFiles with extension constraint
+    const results = try explorer.fuzzyFindFiles("auth *.py", testing.allocator, 10);
+    defer testing.allocator.free(results);
+
+    try testing.expect(results.len >= 1);
+    for (results) |r| {
+        try testing.expect(std.mem.endsWith(u8, r.path, ".py"));
+    }
+}
+
+test "issue-168: query pipeline outline returns symbols" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\npub fn helper() void {}\n");
+
+    var outline = (try explorer.getOutline("src/main.zig", testing.allocator)).?;
+    defer outline.deinit();
+    try testing.expect(outline.symbols.items.len >= 2);
+}
+
+test "issue-168: query pipeline chained find → filter narrows results" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/auth.py", "def check(): pass");
+    try explorer.indexFile("src/auth.ts", "function check() {}");
+    try explorer.indexFile("src/utils.py", "def util(): pass");
+    try explorer.indexFile("docs/auth.md", "# Auth docs");
+
+    // find "auth" returns all auth files, then *.py filter narrows to python
+    const all = try explorer.fuzzyFindFiles("auth", testing.allocator, 10);
+    defer testing.allocator.free(all);
+    try testing.expect(all.len >= 3); // auth.py, auth.ts, auth.md
+
+    const py_only = try explorer.fuzzyFindFiles("auth *.py", testing.allocator, 10);
+    defer testing.allocator.free(py_only);
+    try testing.expect(py_only.len >= 1);
+    try testing.expect(py_only.len < all.len); // filtered set is smaller
+}
+
+test "issue-168: query pipeline handles empty results gracefully" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}");
+
+    // Search for something that doesn't exist
+    const results = try explorer.fuzzyFindFiles("zzzznonexistent", testing.allocator, 10);
+    defer testing.allocator.free(results);
+    try testing.expectEqual(@as(usize, 0), results.len);
+}
+
+// ── codedb_query recall tests ───────────────────────────────────
+// These test that pipeline composition preserves precision and recall:
+// the right files survive each step, and irrelevant files are eliminated.
+
+
+test "issue-168: recall — find + filter preserves only matching extension" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/auth.py", "def check(): pass");
+    try explorer.indexFile("src/auth.ts", "function check() {}");
+    try explorer.indexFile("src/auth.zig", "fn check() void {}");
+    try explorer.indexFile("src/auth.rs", "fn check() {}");
+    try explorer.indexFile("src/auth_test.py", "def test_check(): pass");
+
+    // find "auth" should get all 5, then *.py should narrow to exactly 2
+    const all = try explorer.fuzzyFindFiles("auth", testing.allocator, 20);
+    defer testing.allocator.free(all);
+    try testing.expect(all.len == 5);
+
+    const py = try explorer.fuzzyFindFiles("auth *.py", testing.allocator, 20);
+    defer testing.allocator.free(py);
+    try testing.expect(py.len == 2);
+    for (py) |r| try testing.expect(std.mem.endsWith(u8, r.path, ".py"));
+}
+
+test "issue-168: recall — search finds content across multiple files" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/a.zig", "pub fn handleRequest() void {}");
+    try explorer.indexFile("src/b.zig", "pub fn handleResponse() void {}");
+    try explorer.indexFile("src/c.zig", "pub fn processData() void {}");
+
+    const results = try explorer.searchContent("handle", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    // Should find "handle" in a.zig and b.zig but not c.zig
+    try testing.expect(results.len >= 2);
+    var found_a = false;
+    var found_b = false;
+    var found_c = false;
+    for (results) |r| {
+        if (std.mem.indexOf(u8, r.path, "a.zig") != null) found_a = true;
+        if (std.mem.indexOf(u8, r.path, "b.zig") != null) found_b = true;
+        if (std.mem.indexOf(u8, r.path, "c.zig") != null) found_c = true;
+    }
+    try testing.expect(found_a);
+    try testing.expect(found_b);
+    try testing.expect(!found_c);
+}
+
+test "issue-168: recall — fuzzy find ranks exact matches highest" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/auth.zig", "fn auth() void {}");
+    try explorer.indexFile("src/authorization.zig", "fn authorize() void {}");
+    try explorer.indexFile("src/authenticate.zig", "fn authenticate() void {}");
+
+    const results = try explorer.fuzzyFindFiles("auth.zig", testing.allocator, 10);
+    defer testing.allocator.free(results);
+
+    try testing.expect(results.len >= 1);
+    // Exact match "auth.zig" should be ranked first
+    try testing.expect(std.mem.eql(u8, results[0].path, "src/auth.zig"));
+    // Score should decrease for less exact matches
+    if (results.len >= 2) {
+        try testing.expect(results[0].score > results[1].score);
+    }
+}
+
+test "issue-168: recall — multi-part query intersection" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/auth_controller.py", "class AuthController: pass");
+    try explorer.indexFile("src/auth_model.py", "class AuthModel: pass");
+    try explorer.indexFile("src/user_controller.py", "class UserController: pass");
+    try explorer.indexFile("src/user_model.py", "class UserModel: pass");
+
+    // "auth controller" should match auth_controller but not user_controller or auth_model
+    const results = try explorer.fuzzyFindFiles("auth controller", testing.allocator, 10);
+    defer testing.allocator.free(results);
+
+    try testing.expect(results.len >= 1);
+    try testing.expect(std.mem.indexOf(u8, results[0].path, "auth_controller") != null);
+}
+
+test "issue-168: recall — transposition tolerance in pipeline" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/middleware.zig", "fn process() void {}");
+    try explorer.indexFile("src/controller.zig", "fn handle() void {}");
+    try explorer.indexFile("src/service.zig", "fn serve() void {}");
+
+    // "midleware" (missing 'd') should still find middleware via Smith-Waterman
+    const results = try explorer.fuzzyFindFiles("midleware", testing.allocator, 5);
+    defer testing.allocator.free(results);
+
+    try testing.expect(results.len >= 1);
+    try testing.expect(std.mem.indexOf(u8, results[0].path, "middleware") != null);
+}
