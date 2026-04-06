@@ -10,14 +10,14 @@ pub const EventKind = enum(u8) {
 };
 
 pub const FsEvent = struct {
-    path_buf: [std.fs.max_path_bytes]u8 = undefined,
+    path_buf: [compat.path_buf_size]u8 = undefined,
     path_len: usize,
     kind: EventKind,
     seq: u64,
 
     pub fn init(src_path: []const u8, kind: EventKind, seq: u64) ?FsEvent {
         // Gracefully skip paths exceeding the max instead of panicking.
-        if (src_path.len > std.fs.max_path_bytes) return null;
+        if (src_path.len > compat.path_buf_size) return null;
         var event = FsEvent{
             .path_len = src_path.len,
             .kind = kind,
@@ -35,10 +35,22 @@ pub const FsEvent = struct {
 pub const EventQueue = struct {
     const CAPACITY = 4096;
 
-    events: [CAPACITY]?FsEvent = [_]?FsEvent{null} ** CAPACITY,
+    // Heap-allocated: each ?FsEvent is ~1KB on Windows (compat.path_buf_size),
+    // so an inline [4096]?FsEvent would be ~4MB — risky on constrained stacks.
+    events: *[CAPACITY]?FsEvent,
     head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     mu: std.Thread.Mutex = .{},
+
+    pub fn init() !EventQueue {
+        const events = try std.heap.page_allocator.create([CAPACITY]?FsEvent);
+        events.* = [_]?FsEvent{null} ** CAPACITY;
+        return .{ .events = events };
+    }
+
+    pub fn deinit(self: *EventQueue) void {
+        std.heap.page_allocator.destroy(self.events);
+    }
 
     pub fn push(self: *EventQueue, event: FsEvent) bool {
         self.mu.lock();

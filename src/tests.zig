@@ -1049,7 +1049,8 @@ test "explorer: removeFile frees owned map key" {
     try testing.expect(explorer.dep_graph.count() == 0);
 }
 test "watcher: queue overflow is explicit" {
-    var queue = watcher.EventQueue{};
+    var queue = try watcher.EventQueue.init();
+    defer queue.deinit();
 
     var pushed: usize = 0;
     while (true) : (pushed += 1) {
@@ -1068,7 +1069,8 @@ test "watcher: queue overflow is explicit" {
 }
 
 test "watcher: queue event copies path bytes" {
-    var queue = watcher.EventQueue{};
+    var queue = try watcher.EventQueue.init();
+    defer queue.deinit();
     const original = try testing.allocator.dupe(u8, "tmp/deleted.zig");
     try testing.expect(queue.push(watcher.FsEvent.init(original, .deleted, 99) orelse unreachable));
     testing.allocator.free(original);
@@ -1452,7 +1454,8 @@ test "regression: searchContent frees empty trigram candidate slice" {
 }
 
 test "regression: queue push stays non-blocking when full" {
-    var queue = watcher.EventQueue{};
+    var queue = try watcher.EventQueue.init();
+    defer queue.deinit();
 
     var pushed: usize = 0;
     while (true) : (pushed += 1) {

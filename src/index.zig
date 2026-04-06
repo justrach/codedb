@@ -1760,33 +1760,49 @@ pub fn resetFrequencyTable() void {
 /// Build a per-project frequency table by counting byte-pair occurrences in
 /// `content`, then inverting counts to weights (common → low, rare → high).
 pub fn buildFrequencyTable(content: []const u8) [256][256]u16 {
-    var counts: [256][256]u64 = .{.{0} ** 256} ** 256;
+    // Heap-allocate counts (~512KB) and output (~128KB) to avoid stack overflow
+    // on Windows where the default stack is 1MB.
+    const counts = std.heap.page_allocator.create([256][256]u64) catch return default_pair_freq;
+    defer std.heap.page_allocator.destroy(counts);
+    const out = std.heap.page_allocator.create([256][256]u16) catch return default_pair_freq;
+    defer std.heap.page_allocator.destroy(out);
+    counts.* = .{.{0} ** 256} ** 256;
     if (content.len >= 2) {
         for (0..content.len - 1) |i| {
             counts[content[i]][content[i + 1]] += 1;
         }
     }
-    return finishFrequencyTable(&counts);
+    finishFrequencyTable(counts, out);
+    return out.*;
 }
 
 /// Build a frequency table by streaming over multiple content slices.
 /// Zero extra memory — counts pairs within each slice, skipping cross-slice
 /// boundaries (negligible loss for large corpora).
 pub fn buildFrequencyTableFromSlices(slices: []const []const u8) [256][256]u16 {
-    var counts: [256][256]u64 = .{.{0} ** 256} ** 256;
+    const counts = std.heap.page_allocator.create([256][256]u64) catch return default_pair_freq;
+    defer std.heap.page_allocator.destroy(counts);
+    const out = std.heap.page_allocator.create([256][256]u16) catch return default_pair_freq;
+    defer std.heap.page_allocator.destroy(out);
+    counts.* = .{.{0} ** 256} ** 256;
     for (slices) |content| {
         if (content.len < 2) continue;
         for (0..content.len - 1) |i| {
             counts[content[i]][content[i + 1]] += 1;
         }
     }
-    return finishFrequencyTable(&counts);
+    finishFrequencyTable(counts, out);
+    return out.*;
 }
 
 /// Build a frequency table by streaming over a StringHashMap of content.
 /// Iterates file-by-file — no concatenation, zero extra memory.
 pub fn buildFrequencyTableFromMap(contents: *const std.StringHashMap([]const u8)) [256][256]u16 {
-    var counts: [256][256]u64 = .{.{0} ** 256} ** 256;
+    const counts = std.heap.page_allocator.create([256][256]u64) catch return default_pair_freq;
+    defer std.heap.page_allocator.destroy(counts);
+    const out = std.heap.page_allocator.create([256][256]u16) catch return default_pair_freq;
+    defer std.heap.page_allocator.destroy(out);
+    counts.* = .{.{0} ** 256} ** 256;
     var iter = contents.valueIterator();
     while (iter.next()) |content_ptr| {
         const content = content_ptr.*;
@@ -1795,10 +1811,11 @@ pub fn buildFrequencyTableFromMap(contents: *const std.StringHashMap([]const u8)
             counts[content[i]][content[i + 1]] += 1;
         }
     }
-    return finishFrequencyTable(&counts);
+    finishFrequencyTable(counts, out);
+    return out.*;
 }
 
-fn finishFrequencyTable(counts: *const [256][256]u64) [256][256]u16 {
+fn finishFrequencyTable(counts: *const [256][256]u64, table: *[256][256]u16) void {
     var max_count: u64 = 1;
     for (counts) |row| {
         for (row) |c| {
@@ -1806,7 +1823,7 @@ fn finishFrequencyTable(counts: *const [256][256]u64) [256][256]u16 {
         }
     }
     // Invert: count 0 → 0xFE00 (rare, high); max_count → 0x1000 (common, low).
-    var table: [256][256]u16 = .{.{0xFE00} ** 256} ** 256;
+    table.* = .{.{0xFE00} ** 256} ** 256;
     for (0..256) |a| {
         for (0..256) |b| {
             const c = counts[a][b];
@@ -1816,7 +1833,6 @@ fn finishFrequencyTable(counts: *const [256][256]u64) [256][256]u16 {
             table[a][b] = @intCast(@min(w, 0xFE00));
         }
     }
-    return table;
 }
 
 /// Persist a frequency table as a raw binary blob to `<dir_path>/pair_freq.bin`.
