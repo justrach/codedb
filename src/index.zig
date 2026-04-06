@@ -1777,8 +1777,9 @@ pub fn buildFrequencyTable(content: []const u8) [256][256]u16 {
 }
 
 /// Build a frequency table by streaming over multiple content slices.
-/// Zero extra memory — counts pairs within each slice, skipping cross-slice
-/// boundaries (negligible loss for large corpora).
+/// Heap-allocates working buffers to avoid stack overflow on Windows.
+/// Counts pairs within each slice, skipping cross-slice boundaries
+/// (negligible loss for large corpora).
 pub fn buildFrequencyTableFromSlices(slices: []const []const u8) [256][256]u16 {
     const counts = std.heap.page_allocator.create([256][256]u64) catch return default_pair_freq;
     defer std.heap.page_allocator.destroy(counts);
