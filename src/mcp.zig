@@ -4,6 +4,7 @@
 // Uses mcp-zig for protocol utilities; adds roots support for workspace awareness.
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const mcp_lib = @import("mcp");
 const mcpj = mcp_lib.json;
 const Root = mcp_lib.mcp.Root;
@@ -96,7 +97,7 @@ const ProjectCache = struct {
         new_entry.store = Store.init(self.alloc);
         new_entry.last_used = now;
 
-        var snap_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var snap_buf: [compat.path_buf_size]u8 = undefined;
         const snap_path = std.fmt.bufPrint(&snap_buf, "{s}/codedb.snapshot", .{p}) catch {
             new_entry.store.deinit();
             new_entry.explorer.deinit();
@@ -108,9 +109,10 @@ const ProjectCache = struct {
         if (!snapshot_mod.loadSnapshot(snap_path, &new_entry.explorer, &new_entry.store, self.alloc)) {
             // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
             const hash = std.hash.Wyhash.hash(0, p);
-            var central_buf: [std.fs.max_path_bytes]u8 = undefined;
+            var central_buf: [compat.path_buf_size]u8 = undefined;
             const loaded_central = blk: {
-                const home = std.process.getEnvVarOwned(self.alloc, "HOME") catch break :blk false;
+                const home = std.process.getEnvVarOwned(self.alloc, "HOME") catch
+                    std.process.getEnvVarOwned(self.alloc, "USERPROFILE") catch break :blk false;
                 defer self.alloc.free(home);
                 const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
                 break :blk snapshot_mod.loadSnapshot(central, &new_entry.explorer, &new_entry.store, self.alloc);
@@ -318,7 +320,7 @@ const Session = struct {
     }
 };
 
-pub fn run(
+pub noinline fn run(
     alloc: std.mem.Allocator,
     store: *Store,
     explorer: *Explorer,
@@ -385,7 +387,7 @@ pub fn run(
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) writeResult(alloc, stdout, id, tools_list);
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(alloc, root, stdout, id, store, explorer, agents, &cache, telem);
+            @call(.never_inline, handleCall, .{ alloc, root, stdout, id, store, explorer, agents, &cache, telem });
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
         } else {
@@ -569,7 +571,7 @@ fn handleCall(
     writeResult(alloc, stdout, id, result.items);
 }
 
-fn dispatch(
+noinline fn dispatch(
     alloc: std.mem.Allocator,
     tool: Tool,
     args: *const std.json.ObjectMap,
@@ -594,16 +596,16 @@ fn dispatch(
         .codedb_word => handleWord(alloc, args, out, ctx.explorer),
         .codedb_hot => handleHot(alloc, args, out, ctx.store, ctx.explorer),
         .codedb_deps => handleDeps(alloc, args, out, ctx.explorer),
-        .codedb_read => handleRead(alloc, args, out, ctx.explorer),
-        .codedb_edit => handleEdit(alloc, args, out, default_store, default_explorer, agents),
+        .codedb_read => @call(.never_inline, handleRead, .{ alloc, args, out, ctx.explorer }),
+        .codedb_edit => @call(.never_inline, handleEdit, .{ alloc, args, out, default_store, default_explorer, agents }),
         .codedb_changes => handleChanges(alloc, args, out, default_store),
         .codedb_status => handleStatus(alloc, out, ctx.store, ctx.explorer),
-        .codedb_snapshot => handleSnapshot(alloc, out, ctx.explorer, ctx.store),
-        .codedb_bundle => handleBundle(alloc, args, out, ctx.store, ctx.explorer, agents, cache),
-        .codedb_remote => handleRemote(alloc, args, out),
-        .codedb_projects => handleProjects(alloc, out),
-        .codedb_index => handleIndex(alloc, args, out),
-        .codedb_find => handleFind(alloc, args, out, ctx.explorer),
+        .codedb_snapshot => @call(.never_inline, handleSnapshot, .{ alloc, out, ctx.explorer, ctx.store }),
+        .codedb_bundle => @call(.never_inline, handleBundle, .{ alloc, args, out, ctx.store, ctx.explorer, agents, cache }),
+        .codedb_remote => @call(.never_inline, handleRemote, .{ alloc, args, out }),
+        .codedb_projects => @call(.never_inline, handleProjects, .{ alloc, out }),
+        .codedb_index => @call(.never_inline, handleIndex, .{ alloc, args, out }),
+        .codedb_find => @call(.never_inline, handleFind, .{ alloc, args, out, ctx.explorer }),
     }
 }
 
@@ -1165,8 +1167,9 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
 // ── Local project tools ─────────────────────────────────────────────────────
 
 fn handleProjects(alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
-    const home = std.process.getEnvVarOwned(alloc, "HOME") catch {
-        out.appendSlice(alloc, "error: cannot read HOME") catch {};
+    const home = std.process.getEnvVarOwned(alloc, "HOME") catch
+        std.process.getEnvVarOwned(alloc, "USERPROFILE") catch {
+        out.appendSlice(alloc, "error: cannot read HOME/USERPROFILE") catch {};
         return;
     };
     defer alloc.free(home);
@@ -1189,7 +1192,7 @@ fn handleProjects(alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
         if (entry.kind != .directory) continue;
 
         // Read project.txt to get the project path
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var path_buf: [compat.path_buf_size]u8 = undefined;
         const sub_path = std.fmt.bufPrint(&path_buf, "{s}/project.txt", .{entry.name}) catch continue;
         const project_file = dir.openFile(sub_path, .{}) catch continue;
         defer project_file.close();
@@ -1200,7 +1203,7 @@ fn handleProjects(alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
 
         // Check if snapshot exists in the project directory
         var snap_exists = false;
-        var snap_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var snap_path_buf: [compat.path_buf_size]u8 = undefined;
         const snap_path = std.fmt.bufPrint(&snap_path_buf, "{s}/codedb.snapshot", .{project_path}) catch project_path;
         if (std.fs.cwd().access(snap_path, .{})) |_| {
             snap_exists = true;
@@ -1226,7 +1229,7 @@ fn handleIndex(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
     };
 
     // Resolve to absolute path
-    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var abs_buf: [compat.path_buf_size]u8 = undefined;
     const abs_path = std.fs.cwd().realpath(path, &abs_buf) catch {
         out.appendSlice(alloc, "error: cannot resolve path: ") catch {};
         out.appendSlice(alloc, path) catch {};
@@ -1257,6 +1260,7 @@ fn handleIndex(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
     const result = std.process.Child.run(.{
         .allocator = alloc,
         .argv = &.{ exe_path, abs_path, "snapshot" },
+        .cwd = abs_path,
         .max_output_bytes = 64 * 1024,
     }) catch {
         out.appendSlice(alloc, "error: failed to run indexer") catch {};
