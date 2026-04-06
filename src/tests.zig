@@ -4670,6 +4670,7 @@ const MmapTrigramIndex = @import("index.zig").MmapTrigramIndex;
 const AnyTrigramIndex = @import("index.zig").AnyTrigramIndex;
 
 test "issue-164: mmap trigram index returns same candidates as heap index" {
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -4710,6 +4711,7 @@ test "issue-164: mmap trigram index returns same candidates as heap index" {
 }
 
 test "issue-164: mmap binary search on sorted lookup table" {
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -4750,6 +4752,7 @@ test "issue-164: mmap handles missing files gracefully" {
 }
 
 test "issue-164: AnyTrigramIndex dispatches to mmap variant" {
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();

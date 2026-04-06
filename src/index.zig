@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const compat = @import("compat.zig");
 
 // ── Inverted word index ─────────────────────────────────────
@@ -964,6 +965,7 @@ pub const MmapTrigramIndex = struct {
     allocator: std.mem.Allocator,
 
     pub fn initFromDisk(dir_path: []const u8, allocator: std.mem.Allocator) ?MmapTrigramIndex {
+        if (comptime builtin.os.tag == .windows) return null;
         return initFromDiskInner(dir_path, allocator) catch null;
     }
 
@@ -1082,8 +1084,10 @@ pub const MmapTrigramIndex = struct {
         for (self.file_table) |p| self.allocator.free(p);
         self.allocator.free(self.file_table);
         self.file_set.deinit();
-        std.posix.munmap(self.postings_data);
-        std.posix.munmap(self.lookup_data);
+        if (comptime builtin.os.tag != .windows) {
+            std.posix.munmap(self.postings_data);
+            std.posix.munmap(self.lookup_data);
+        }
     }
 
     pub fn fileCount(self: *const MmapTrigramIndex) u32 {
