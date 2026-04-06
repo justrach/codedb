@@ -130,6 +130,10 @@ const skip_dirs = [_][]const u8{
     ".bundle",
 };
 
+fn isSep(c: u8) bool {
+    return c == '/' or (comptime @import("builtin").os.tag == .windows and c == '\\');
+}
+
 fn shouldSkip(path: []const u8) bool {
     // Check each path component against skip list
     var rest = path;
@@ -137,13 +141,14 @@ fn shouldSkip(path: []const u8) bool {
         for (skip_dirs) |skip| {
             if (rest.len >= skip.len and
                 std.mem.eql(u8, rest[0..skip.len], skip) and
-                (rest.len == skip.len or rest[skip.len] == '/'))
+                (rest.len == skip.len or isSep(rest[skip.len])))
                 return true;
         }
-        // Advance to next component
-        if (std.mem.indexOfScalar(u8, rest, '/')) |sep| {
-            rest = rest[sep + 1 ..];
+        // Advance to next component (handle both / and \ separators)
+        const sep = for (rest, 0..) |c, i| {
+            if (isSep(c)) break i;
         } else break;
+        rest = rest[sep + 1 ..];
     }
     return false;
 }
@@ -665,7 +670,13 @@ fn indexFileContent(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allo
 
 fn drainNotifyFile(store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, alloc: std.mem.Allocator) void {
     // Atomically read + truncate
-    const notify_path = "/tmp/codedb-notify";
+    const notify_path = if (comptime @import("builtin").os.tag == .windows) blk: {
+        const tmp = std.process.getEnvVarOwned(alloc, "TEMP") catch
+            std.process.getEnvVarOwned(alloc, "TMP") catch return;
+        defer alloc.free(tmp);
+        break :blk std.fmt.allocPrint(alloc, "{s}\\codedb-notify", .{tmp}) catch return;
+    } else "/tmp/codedb-notify";
+    defer if (comptime @import("builtin").os.tag == .windows) alloc.free(notify_path);
     const file = std.fs.cwd().openFile(notify_path, .{ .mode = .read_write }) catch return;
     defer file.close();
 
@@ -673,9 +684,9 @@ fn drainNotifyFile(store: *Store, explorer: *Explorer, queue: *EventQueue, known
     defer alloc.free(data);
     if (data.len == 0) return;
 
-    // Truncate after reading
+    // Truncate after reading (setEndPos is cross-platform)
     file.seekTo(0) catch return;
-    std.posix.ftruncate(file.handle, 0) catch return;
+    file.setEndPos(0) catch return;
 
     // Re-index each notified path
     var dir = std.fs.cwd().openDir(root, .{}) catch return;
@@ -686,9 +697,9 @@ fn drainNotifyFile(store: *Store, explorer: *Explorer, queue: *EventQueue, known
         const path = std.mem.trim(u8, line, " \t\r");
         if (path.len == 0) continue;
 
-        // Make path relative to root if it's absolute
+        // Make path relative to root if it's absolute (handle both / and \ separators)
         const rel = if (std.mem.startsWith(u8, path, root))
-            std.mem.trimLeft(u8, path[root.len..], "/")
+            std.mem.trimLeft(u8, path[root.len..], "/\\")
         else
             path;
 
