@@ -4778,3 +4778,116 @@ test "issue-164: AnyTrigramIndex dispatches to mmap variant" {
     try testing.expect(explorer.trigram_index.containsFile("foo.zig"));
     try testing.expect(!explorer.trigram_index.containsFile("bar.zig"));
 }
+
+const fuzzyScore = @import("explore.zig").fuzzyScore;
+
+test "issue-163: fuzzy exact match scores highest" {
+    const exact = fuzzyScore("main.zig", "src/main.zig");
+    const partial = fuzzyScore("main.zig", "src/main_helper.zig");
+    try testing.expect(exact != null);
+    try testing.expect(partial != null);
+    try testing.expect(exact.? > partial.?);
+}
+
+test "issue-163: fuzzy subsequence match works" {
+    const score = fuzzyScore("authmid", "src/auth_middleware.py");
+    try testing.expect(score != null);
+    try testing.expect(score.? > 0);
+}
+
+test "issue-163: fuzzy typo-tolerant (missing char)" {
+    // "auth_midlware" missing the 'd' in middleware — should still match via subsequence
+    const score = fuzzyScore("auth_midlware", "src/auth_middleware.py");
+    try testing.expect(score != null);
+}
+
+test "issue-163: fuzzy word boundary bonus" {
+    // "auth" at word boundary should score higher than "auth" buried in a word
+    const boundary = fuzzyScore("auth", "src/auth_handler.py");
+    const buried = fuzzyScore("auth", "src/xauthyhandle.py");
+    try testing.expect(boundary != null);
+    try testing.expect(buried != null);
+    try testing.expect(boundary.? > buried.?);
+}
+
+test "issue-163: fuzzy filename ranks above directory" {
+    // "test" in filename portion should score higher than "test" only in directory
+    const in_name = fuzzyScore("test", "src/test_auth.py");
+    const in_dir = fuzzyScore("test", "testdir/deep/nested/xyzfile.py");
+    try testing.expect(in_name != null);
+    try testing.expect(in_dir != null);
+    try testing.expect(in_name.? > in_dir.?);
+}
+
+test "issue-163: fuzzy no match returns null" {
+    const score = fuzzyScore("zzzzxyz", "src/main.zig");
+    try testing.expect(score == null);
+}
+
+test "issue-163: fuzzyFindFiles via Explorer" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/auth_middleware.py", "def check_auth(): pass");
+    try explorer.indexFile("src/middleware/auth.py", "class Auth: pass");
+    try explorer.indexFile("tests/test_auth.py", "def test_auth(): pass");
+    try explorer.indexFile("src/utils.py", "def format_str(): pass");
+
+    const results = try explorer.fuzzyFindFiles("authmid", testing.allocator, 10);
+    defer testing.allocator.free(results);
+
+    try testing.expect(results.len >= 1);
+    // auth_middleware.py should be top result
+    try testing.expect(std.mem.indexOf(u8, results[0].path, "auth_middleware") != null);
+}
+
+test "issue-163: multi-part query matches both parts" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/auth_middleware.py", "def check(): pass");
+    try explorer.indexFile("src/auth_handler.py", "def handle(): pass");
+    try explorer.indexFile("src/utils.py", "def util(): pass");
+
+    // "auth middle" should match auth_middleware but not utils
+    const results = try explorer.fuzzyFindFiles("auth middle", testing.allocator, 10);
+    defer testing.allocator.free(results);
+
+    try testing.expect(results.len >= 1);
+    try testing.expect(std.mem.indexOf(u8, results[0].path, "middleware") != null);
+}
+
+test "issue-163: extension constraint filters results" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/auth.py", "def check(): pass");
+    try explorer.indexFile("src/auth.ts", "function check() {}");
+    try explorer.indexFile("src/auth.zig", "fn check() void {}");
+
+    // "auth *.py" should only return the .py file
+    const results = try explorer.fuzzyFindFiles("auth *.py", testing.allocator, 10);
+    defer testing.allocator.free(results);
+
+    try testing.expect(results.len >= 1);
+    for (results) |r| {
+        try testing.expect(std.mem.endsWith(u8, r.path, ".py"));
+    }
+}
+
+test "issue-163: special entry point files get bonus" {
+    const score_main = fuzzyScore("main", "src/main.zig");
+    const score_regular = fuzzyScore("main", "src/maintain.zig");
+    try testing.expect(score_main != null);
+    try testing.expect(score_regular != null);
+    // main.zig is a special entry point — should score higher than maintain.zig
+    try testing.expect(score_main.? > score_regular.?);
+}
+
+test "issue-163: transpositions handled by Smith-Waterman" {
+    // These all failed with the old subsequence matcher
+    try testing.expect(fuzzyScore("mpc", "src/mcp.zig") != null);
+    try testing.expect(fuzzyScore("mian", "src/main.zig") != null);
+    try testing.expect(fuzzyScore("agnet", "src/agent.zig") != null);
+    try testing.expect(fuzzyScore("indxe", "src/index.zig") != null);
+}

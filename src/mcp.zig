@@ -259,6 +259,7 @@ pub const Tool = enum {
     codedb_remote,
     codedb_projects,
     codedb_index,
+    codedb_find,
 };
 
 const tools_list =
@@ -278,7 +279,8 @@ const tools_list =
     \\{"name":"codedb_bundle","description":"Batch multiple queries in one call. Max 20 ops. WARNING: Avoid bundling multiple codedb_read calls on large files — use codedb_outline + codedb_symbol instead. Bundle outline+symbol+search, not full file reads. Total response is not size-capped, so large bundles can exceed token limits.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string","description":"Tool name (e.g. codedb_outline, codedb_symbol, codedb_read)"},"arguments":{"type":"object","description":"Tool arguments"}},"required":["tool"]},"description":"Array of tool calls to execute"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
     \\{"name":"codedb_remote","description":"Query any GitHub repo via codedb.codegraff.com cloud intelligence. Gets file tree, symbol outlines, or searches code in external repos without cloning. Use when you need to understand a dependency, check an external API, or explore a repo you don't have locally.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. justrach/merjs)"},"action":{"type":"string","enum":["tree","outline","search","meta"],"description":"What to query: tree (file list), outline (symbols), search (text search), meta (repo info)"},"query":{"type":"string","description":"Search query (required when action=search)"}},"required":["repo","action"]}},
     \\{"name":"codedb_projects","description":"List all locally indexed projects on this machine. Shows project paths, data directory hashes, and whether a snapshot exists. Use to discover what codebases are available.","inputSchema":{"type":"object","properties":{},"required":[]}},
-    \\{"name":"codedb_index","description":"Index a local folder on this machine. Scans all source files, builds outlines/trigrams/word indexes, and creates a codedb.snapshot in the target directory. After indexing, the folder is queryable via the project param on any tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the folder to index (e.g. /Users/you/myproject)"}},"required":["path"]}}
+    \\{"name":"codedb_index","description":"Index a local folder on this machine. Scans all source files, builds outlines/trigrams/word indexes, and creates a codedb.snapshot in the target directory. After indexing, the folder is queryable via the project param on any tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the folder to index (e.g. /Users/you/myproject)"}},"required":["path"]}},
+    \\{"name":"codedb_find","description":"Fuzzy file search — finds files by approximate name. Typo-tolerant subsequence matching with word-boundary and filename bonuses. Use when you know roughly what file you're looking for but not the exact path. Much faster than codedb_tree + manual scan.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy search query (e.g. 'authmidlware', 'test_auth', 'main.zig')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}}
     \\]}
 ;
 
@@ -601,6 +603,7 @@ fn dispatch(
         .codedb_remote => handleRemote(alloc, args, out),
         .codedb_projects => handleProjects(alloc, out),
         .codedb_index => handleIndex(alloc, args, out),
+        .codedb_find => handleFind(alloc, args, out, ctx.explorer),
     }
 }
 
@@ -1284,6 +1287,43 @@ fn handleIndex(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 out.append(alloc, c) catch {};
             }
         }
+    }
+}
+
+fn handleFind(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    const query = getStr(args, "query") orelse {
+        out.appendSlice(alloc, "error: missing 'query'") catch {};
+        return;
+    };
+    if (query.len == 0) {
+        out.appendSlice(alloc, "error: empty query") catch {};
+        return;
+    }
+
+    const max_results: usize = if (args.get("max_results")) |v| switch (v) {
+        .integer => |i| @intCast(@max(1, @min(i, 50))),
+        else => 10,
+    } else 10;
+
+    const matches = explorer.fuzzyFindFiles(query, alloc, max_results) catch {
+        out.appendSlice(alloc, "error: search failed") catch {};
+        return;
+    };
+    defer alloc.free(matches);
+
+    if (matches.len == 0) {
+        out.appendSlice(alloc, "no matches") catch {};
+        return;
+    }
+
+    for (matches, 1..) |m, rank| {
+        var buf: [16]u8 = undefined;
+        const rank_str = std.fmt.bufPrint(&buf, "{d}. ", .{rank}) catch continue;
+        out.appendSlice(alloc, rank_str) catch {};
+        out.appendSlice(alloc, m.path) catch {};
+        var score_buf: [32]u8 = undefined;
+        const score_str = std.fmt.bufPrint(&score_buf, " (score: {d:.2})\n", .{m.score}) catch continue;
+        out.appendSlice(alloc, score_str) catch {};
     }
 }
 

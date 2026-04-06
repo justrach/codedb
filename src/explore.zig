@@ -735,6 +735,82 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
         return self.word_index.searchDeduped(word, allocator);
     }
 
+    pub const FuzzyMatch = struct {
+        path: []const u8,
+        score: f32,
+    };
+
+    pub fn fuzzyFindFiles(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const FuzzyMatch {
+        if (query.len == 0) return &.{};
+
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        // Parse query: split on spaces, extract extension constraints (*.py, *.ts)
+        var parts: std.ArrayList([]const u8) = .{};
+        defer parts.deinit(allocator);
+        var ext_filter: ?[]const u8 = null;
+
+        var tok_iter = std.mem.splitScalar(u8, query, ' ');
+        while (tok_iter.next()) |token| {
+            if (token.len == 0) continue;
+            // Extension constraint: *.py, *.ts, *.zig
+            if (token.len >= 2 and token[0] == '*' and token[1] == '.') {
+                ext_filter = token[1..]; // ".py", ".ts", etc.
+            } else {
+                try parts.append(allocator, token);
+            }
+        }
+
+        if (parts.items.len == 0) return &.{};
+
+        var matches: std.ArrayList(FuzzyMatch) = .{};
+        errdefer matches.deinit(allocator);
+
+        var iter = self.outlines.keyIterator();
+        while (iter.next()) |key_ptr| {
+            const path = key_ptr.*;
+
+            // Extension filter
+            if (ext_filter) |ext| {
+                if (!std.mem.endsWith(u8, path, ext)) continue;
+            }
+
+            // Multi-part scoring: all parts must match, scores sum
+            var total_score: f32 = 0;
+            var all_matched = true;
+            for (parts.items) |part| {
+                if (fuzzyScore(part, path)) |s| {
+                    total_score += s;
+                } else {
+                    all_matched = false;
+                    break;
+                }
+            }
+
+            if (all_matched and total_score > 0) {
+                try matches.append(allocator, .{ .path = path, .score = total_score });
+            }
+        }
+
+        // Sort by score descending
+        std.mem.sort(FuzzyMatch, matches.items, {}, struct {
+            fn lt(_: void, a: FuzzyMatch, b: FuzzyMatch) bool {
+                return a.score > b.score;
+            }
+        }.lt);
+
+        // Truncate to max_results
+        if (matches.items.len > max_results) {
+            matches.items.len = max_results;
+        }
+
+        return matches.toOwnedSlice(allocator) catch {
+            matches.deinit(allocator);
+            return &.{};
+        };
+    }
+
 pub fn getImportedBy(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
     self.mu.lockShared();
     defer self.mu.unlockShared();
@@ -2194,4 +2270,153 @@ fn extractPythonModulePath(line: []const u8) ?[]const u8 {
         return null;
     }
     return null;
+}
+
+// ── Fuzzy file matching ─────────────────────────────────────────
+
+fn toLowerByte(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c + 32 else c;
+}
+
+fn isWordBoundary(path: []const u8, pi: usize) bool {
+    if (pi == 0) return true;
+    const prev = path[pi - 1];
+    return prev == '/' or prev == '_' or prev == '-' or prev == '.' or prev == '\\';
+}
+
+fn isSpecialEntryPoint(filename: []const u8) bool {
+    const specials = [_][]const u8{
+        "main.zig", "lib.zig", "root.zig",
+        "main.rs", "lib.rs", "mod.rs",
+        "main.go", "main.c", "main.cpp",
+        "index.ts", "index.tsx", "index.js", "index.jsx",
+        "index.mjs", "index.cjs", "index.vue",
+        "index.php", "main.rb", "index.rb",
+        "__init__.py", "__main__.py",
+        "Makefile", "build.zig", "Cargo.toml", "package.json",
+    };
+    for (specials) |s| {
+        if (std.mem.eql(u8, filename, s)) return true;
+    }
+    return false;
+}
+
+fn getFilename(path: []const u8) []const u8 {
+    var i: usize = path.len;
+    while (i > 0) : (i -= 1) {
+        if (path[i - 1] == '/') return path[i..];
+    }
+    return path;
+}
+
+pub fn fuzzyScore(query: []const u8, path: []const u8) ?f32 {
+    if (query.len == 0 or path.len == 0) return null;
+    if (query.len > 128 or path.len > 512) return null;
+
+    const MATCH_SCORE: f32 = 16.0;
+    const MISMATCH_PENALTY: f32 = -8.0;
+    const GAP_OPEN: f32 = -3.0;
+    const GAP_EXTEND: f32 = -1.0;
+    const DELIMITER_BONUS: f32 = 8.0;
+    const FILENAME_BONUS: f32 = 6.0;
+    const CONSECUTIVE_BONUS: f32 = 4.0;
+    const CASE_BONUS: f32 = 2.0;
+    const PREFIX_BONUS: f32 = 6.0;
+
+    // Find filename start
+    var fname_start: usize = 0;
+    for (0..path.len) |i| {
+        if (path[path.len - 1 - i] == '/') {
+            fname_start = path.len - i;
+            break;
+        }
+    }
+
+    // Smith-Waterman-style DP with affine gaps
+    // H[i][j] = best alignment score ending with query[0..i] aligned to path[0..j]
+    // We use two rows to save memory: prev and curr
+    const MAX_PATH = 512;
+    var prev_h: [MAX_PATH + 1]f32 = undefined;
+    var curr_h: [MAX_PATH + 1]f32 = undefined;
+    var prev_gap: [MAX_PATH + 1]f32 = undefined; // gap in query (deletion from path)
+    var curr_gap: [MAX_PATH + 1]f32 = undefined;
+
+    // Init
+    for (0..path.len + 1) |j| {
+        prev_h[j] = 0;
+        prev_gap[j] = GAP_OPEN;
+    }
+
+    var best_score: f32 = 0;
+    var matched_chars: usize = 0;
+
+    for (0..query.len) |i| {
+        curr_h[0] = 0;
+        curr_gap[0] = GAP_OPEN;
+        var query_gap: f32 = GAP_OPEN; // gap in path (deletion from query)
+
+        for (0..path.len) |j| {
+            const qc = toLowerByte(query[i]);
+            const pc = toLowerByte(path[j]);
+
+            // Match/mismatch score
+            var match_score: f32 = if (qc == pc) MATCH_SCORE else MISMATCH_PENALTY;
+
+            // Bonuses for matches
+            if (qc == pc) {
+                // Exact case bonus
+                if (query[i] == path[j]) match_score += CASE_BONUS;
+                // Word boundary bonus
+                if (isWordBoundary(path, j)) match_score += DELIMITER_BONUS;
+                // Filename bonus
+                if (j >= fname_start) match_score += FILENAME_BONUS;
+                // Prefix bonus (match at start of path or filename)
+                if (j == 0 or j == fname_start) match_score += PREFIX_BONUS;
+                // Consecutive match bonus
+                if (i > 0 and j > 0 and prev_h[j] > prev_h[j + 1] * 0.5) {
+                    match_score += CONSECUTIVE_BONUS;
+                }
+            }
+
+            const diag = prev_h[j] + match_score;
+
+            // Affine gap penalties
+            curr_gap[j + 1] = @max(prev_h[j + 1] + GAP_OPEN, prev_gap[j + 1] + GAP_EXTEND);
+            query_gap = @max(curr_h[j] + GAP_OPEN, query_gap + GAP_EXTEND);
+
+            // Smith-Waterman: take max of all options, floor at 0
+            curr_h[j + 1] = @max(0, @max(diag, @max(curr_gap[j + 1], query_gap)));
+
+            if (i == query.len - 1 and curr_h[j + 1] > best_score) {
+                best_score = curr_h[j + 1];
+            }
+        }
+
+        // Count matched chars (check if any cell in this row is positive)
+        for (1..path.len + 1) |j| {
+            if (curr_h[j] > 0) {
+                matched_chars = i + 1;
+                break;
+            }
+        }
+
+        // Swap rows
+        @memcpy(prev_h[0 .. path.len + 1], curr_h[0 .. path.len + 1]);
+        @memcpy(prev_gap[0 .. path.len + 1], curr_gap[0 .. path.len + 1]);
+    }
+
+    // Require at least 60% of query chars to contribute to score
+    if (best_score <= 0 or matched_chars < (query.len + 1) / 2) return null;
+
+    // Minimum score threshold based on query length
+    const min_threshold = @as(f32, @floatFromInt(query.len)) * MATCH_SCORE * 0.3;
+    if (best_score < min_threshold) return null;
+
+    // Special entry point bonus (like fff: main.go, index.ts, lib.rs rank higher)
+    const fname = getFilename(path);
+    if (isSpecialEntryPoint(fname)) best_score += best_score * 0.05;
+
+    // Normalize by path length (shorter paths rank higher)
+    const len_factor = @sqrt(@as(f32, @floatFromInt(path.len)));
+    return best_score / len_factor;
 }

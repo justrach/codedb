@@ -526,7 +526,7 @@ fn mainImpl() !void {
         var scan_thread: ?std.Thread = null;
         const startup_t0 = std.time.milliTimestamp();
         if (!snapshot_loaded) {
-            scan_thread = try std.Thread.spawn(.{}, scanBg, .{ &store, &explorer, root, allocator, &scan_done, data_dir, abs_root, &telem, startup_t0 });
+            scan_thread = try std.Thread.spawn(.{}, scanBg, .{ &store, &explorer, root, allocator, &scan_done, &shutdown, data_dir, abs_root, &telem, startup_t0 });
         } else {
             const startup_time_ms: u64 = @intCast(@max(std.time.milliTimestamp() - startup_t0, 0));
             telem.recordCodebaseStats(&explorer, startup_time_ms);
@@ -543,7 +543,6 @@ fn mainImpl() !void {
         if (scan_thread) |st| st.join();
         watch_thread.join();
         idle_thread.join();
-        if (scan_thread) |t| t.join();
     } else {
         out.p("{s}\xe2\x9c\x97{s} unknown command: {s}{s}{s}\n", .{
             s.red, s.reset, s.bold, cmd, s.reset,
@@ -638,12 +637,16 @@ fn printUsage(out: Out, s: sty.Style) void {
 
 fn reapLoop(agents: *AgentRegistry, shutdown: *std.atomic.Value(bool)) void {
     while (!shutdown.load(.acquire)) {
-        std.Thread.sleep(5 * std.time.ns_per_s);
+        // Sleep in 1s increments for responsive shutdown (was 5s)
+        for (0..5) |_| {
+            if (shutdown.load(.acquire)) return;
+            std.Thread.sleep(std.time.ns_per_s);
+        }
         agents.reapStale(30_000);
     }
 }
 
-fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8, telem: *telemetry.Telemetry, startup_t0: i64) void {
+fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), shutdown: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8, telem: *telemetry.Telemetry, startup_t0: i64) void {
     const git_head = git_mod.getGitHead(root, allocator) catch null;
     const disk_hdr = TrigramIndex.readDiskHeader(data_dir, allocator) catch null;
     const heads_match = blk: {
@@ -656,8 +659,13 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
         std.log.warn("background scan failed: {}", .{err});
     };
 
+    // Phase gate: bail if shutting down after initial scan
+    if (shutdown.load(.acquire)) {
+        scan_done.store(true, .release);
+        return;
+    }
+
     if (heads_match) {
-        // Verify file count, then load trigram index from disk via mmap (skip rebuild)
         const current_count = @as(u16, @intCast(@min(explorer.outlines.count(), std.math.maxInt(u16))));
         if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
             if (MmapTrigramIndex.initFromDisk(data_dir, allocator)) |loaded| {
@@ -666,8 +674,8 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
                 explorer.trigram_index = .{ .mmap = loaded };
                 explorer.mu.unlock();
                 scan_done.store(true, .release);
+                if (shutdown.load(.acquire)) return;
                 telem.recordCodebaseStats(explorer, @intCast(@max(std.time.milliTimestamp() - startup_t0, 0)));
-                // Auto-write snapshot after successful scan
                 snapshot_mod.writeSnapshotDual(explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
                     std.log.warn("could not auto-write snapshot: {}", .{err});
                 };
@@ -678,13 +686,13 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
                 }
                 return;
             }
-            // mmap failed, try heap fallback
             if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
                 explorer.mu.lock();
                 explorer.trigram_index.deinit();
                 explorer.trigram_index = .{ .heap = loaded };
                 explorer.mu.unlock();
                 scan_done.store(true, .release);
+                if (shutdown.load(.acquire)) return;
                 telem.recordCodebaseStats(explorer, @intCast(@max(std.time.milliTimestamp() - startup_t0, 0)));
                 snapshot_mod.writeSnapshotDual(explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
                     std.log.warn("could not auto-write snapshot: {}", .{err});
@@ -697,13 +705,24 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
                 return;
             }
         }
-        // File count mismatch or disk read failed — rebuild trigrams from stored content
         explorer.rebuildTrigrams() catch {};
+    }
+
+    // Phase gate: bail before disk write if shutting down
+    if (shutdown.load(.acquire)) {
+        scan_done.store(true, .release);
+        return;
     }
 
     explorer.trigram_index.writeToDisk(data_dir, git_head) catch |err| {
         std.log.warn("could not persist trigram index: {}", .{err});
     };
+
+    // Phase gate: bail before mmap swap if shutting down
+    if (shutdown.load(.acquire)) {
+        scan_done.store(true, .release);
+        return;
+    }
 
     // Compact: swap heap index for mmap — zero RSS, data lives in OS page cache.
     if (MmapTrigramIndex.initFromDisk(data_dir, allocator)) |loaded| {
@@ -712,7 +731,6 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
         explorer.trigram_index = .{ .mmap = loaded };
         explorer.mu.unlock();
     } else if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
-        // mmap failed, fall back to dense heap reload
         explorer.mu.lock();
         explorer.trigram_index.deinit();
         explorer.trigram_index = .{ .heap = loaded };
@@ -720,13 +738,14 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
     }
 
     scan_done.store(true, .release);
+
+    if (shutdown.load(.acquire)) return;
+
     telem.recordCodebaseStats(explorer, @intCast(@max(std.time.milliTimestamp() - startup_t0, 0)));
 
     snapshot_mod.writeSnapshotDual(explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
         std.log.warn("could not auto-write snapshot: {}", .{err});
     };
-    // Only release contents for large repos where memory savings matter.
-    // Small repos keep content in RAM for faster search.
     const file_count = explorer.outlines.count();
     if (file_count > 1000 or std.process.hasEnvVarConstant("CODEDB_LOW_MEMORY")) {
         explorer.releaseContents();
@@ -736,17 +755,19 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
 fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
     const mcp = @import("mcp.zig");
     while (!shutdown.load(.acquire)) {
-        std.Thread.sleep(10 * std.time.ns_per_s); // check every 10s instead of 30s
+        // Sleep in 1s increments for responsive shutdown
+        for (0..10) |_| {
+            if (shutdown.load(.acquire)) return;
+            std.Thread.sleep(std.time.ns_per_s);
+        }
 
-        // Quick liveness check: try a zero-byte read on stdin
-        // If the pipe is broken (client gone), this returns immediately
+        // Quick liveness check: poll stdin for POLLHUP (client disconnected)
         const stdin = std.fs.File.stdin();
         var poll_fds = [_]std.posix.pollfd{.{
             .fd = stdin.handle,
             .events = std.posix.POLL.IN | std.posix.POLL.HUP,
             .revents = 0,
         }};
-        // Non-blocking poll with 0 timeout
         const poll_result = std.posix.poll(&poll_fds, 0) catch 0;
         if (poll_result > 0 and (poll_fds[0].revents & std.posix.POLL.HUP) != 0) {
             std.log.info("stdin closed (client disconnected), exiting", .{});
