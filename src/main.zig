@@ -706,13 +706,32 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
 fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
     const mcp = @import("mcp.zig");
     while (!shutdown.load(.acquire)) {
-        std.Thread.sleep(30 * std.time.ns_per_s);
+        std.Thread.sleep(10 * std.time.ns_per_s); // check every 10s instead of 30s
+
+        // Quick liveness check: try a zero-byte read on stdin
+        // If the pipe is broken (client gone), this returns immediately
+        const stdin = std.fs.File.stdin();
+        var poll_fds = [_]std.posix.pollfd{.{
+            .fd = stdin.handle,
+            .events = std.posix.POLL.IN | std.posix.POLL.HUP,
+            .revents = 0,
+        }};
+        // Non-blocking poll with 0 timeout
+        const poll_result = std.posix.poll(&poll_fds, 0) catch 0;
+        if (poll_result > 0 and (poll_fds[0].revents & std.posix.POLL.HUP) != 0) {
+            std.log.info("stdin closed (client disconnected), exiting", .{});
+            stdin.close();
+            shutdown.store(true, .release);
+            return;
+        }
+
+        // Fallback: idle timeout
         const last = mcp.last_activity.load(.acquire);
         if (last == 0) continue;
         const now = std.time.milliTimestamp();
         if (now - last > mcp.idle_timeout_ms) {
             std.log.info("idle for {d}s, exiting", .{@divTrunc(now - last, 1000)});
-            std.fs.File.stdin().close();
+            stdin.close();
             shutdown.store(true, .release);
             return;
         }
