@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const AgentId = @import("agent.zig").AgentId;
 const version = @import("version.zig");
 const Version = version.Version;
@@ -42,10 +43,10 @@ pub const Store = struct {
     pub fn openDataLog(self: *Store, path: []const u8) !void {
         // Extract parent dir and ensure it exists
         if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| {
-            std.fs.cwd().makePath(path[0..sep]) catch {};
+            compat.makePath(std.fs.cwd(), path[0..sep]) catch {};
         }
         self.data_log = try std.fs.cwd().createFile(path, .{ .read = true, .truncate = false });
-        const stat = try self.data_log.?.stat();
+        const stat = try compat.fileStat(self.data_log.?);
         self.data_log_pos = stat.size;
     }
 
@@ -86,7 +87,7 @@ pub const Store = struct {
                 defer if (locked) log.unlock();
 
                 // Re-stat to get current end position (another process may have appended)
-                const stat = log.stat() catch return error.Unexpected;
+                const stat = compat.fileStat(log) catch return error.Unexpected;
                 self.data_log_pos = stat.size;
 
                 data_offset = self.data_log_pos;

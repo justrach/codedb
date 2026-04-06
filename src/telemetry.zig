@@ -1,11 +1,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const compat = @import("compat.zig");
 const explore = @import("explore.zig");
 const index = @import("index.zig");
 
 const RING_SIZE = 256;
 const CLOUD_URL = "https://codedb.codegraff.com/telemetry/ingest";
-const VERSION = "0.2.4";
+const VERSION = "0.2.54";
 const PLATFORM = std.fmt.comptimePrint("{s}-{s}", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
 
 pub const Event = struct {
@@ -158,7 +159,7 @@ pub const Telemetry = struct {
         if (!self.enabled or self.path_len == 0) return;
         const path = self.path_buf[0..self.path_len];
 
-        const stat = std.fs.cwd().statFile(path) catch return;
+        const stat = compat.dirStatFile(std.fs.cwd(), path) catch return;
         if (stat.size == 0) return;
 
         // Use argv-based exec (no shell interpolation) to avoid injection
@@ -253,15 +254,20 @@ fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
         total +|= entry.value_ptr.count() * @sizeOf(usize);
     }
 
-    var trigram_iter = explorer.trigram_index.index.iterator();
-    while (trigram_iter.next()) |entry| {
-        total +|= @sizeOf(@TypeOf(entry.key_ptr.*));
-        total +|= entry.value_ptr.count() * (@sizeOf(usize) + @sizeOf(index.PostingMask));
-    }
+    switch (explorer.trigram_index) {
+        .heap => |*h| {
+            var trigram_iter = h.index.iterator();
+            while (trigram_iter.next()) |entry| {
+                total +|= @sizeOf(@TypeOf(entry.key_ptr.*));
+                total +|= entry.value_ptr.count() * (@sizeOf(usize) + @sizeOf(index.PostingMask));
+            }
 
-    var file_trigrams_iter = explorer.trigram_index.file_trigrams.iterator();
-    while (file_trigrams_iter.next()) |entry| {
-        total +|= entry.value_ptr.items.len * @sizeOf(@TypeOf(entry.value_ptr.items[0]));
+            var file_trigrams_iter = h.file_trigrams.iterator();
+            while (file_trigrams_iter.next()) |entry| {
+                total +|= entry.value_ptr.items.len * @sizeOf(@TypeOf(entry.value_ptr.items[0]));
+            }
+        },
+        .mmap => {},
     }
 
     var sparse_iter = explorer.sparse_ngram_index.index.iterator();

@@ -1,8 +1,14 @@
+const builtin = @import("builtin");
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const codesign_identity = b.option(
+        []const u8,
+        "codesign-identity",
+        "macOS codesign identity. Defaults to ad-hoc signing ('-').",
+    ) orelse "-";
 
     // ── Exposed module: importable as @import("codedb") ──
     const codedb_mod = b.addModule("codedb", .{
@@ -26,9 +32,9 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("mcp", mcp_dep.module("mcp"));
     b.installArtifact(exe);
 
-    // ── macOS ad-hoc codesign (prevents SIGKILL on unsigned binaries) ──
-    if (target.result.os.tag == .macos) {
-        const codesign = b.addSystemCommand(&.{ "codesign", "-f", "-s", "Developer ID Application: Rachit Pradhan (WWP9DLJ27P)" });
+    // ── macOS codesign (ad-hoc by default; configurable for release builds) ──
+    if (target.result.os.tag == .macos and builtin.os.tag == .macos) {
+        const codesign = b.addSystemCommand(&.{ "codesign", "-f", "-s", codesign_identity });
         codesign.addArtifactArg(exe);
         b.getInstallStep().dependOn(&codesign.step);
     }

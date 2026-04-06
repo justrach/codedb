@@ -36,24 +36,27 @@
 > **Alpha software — API is stabilizing but may change**
 >
 > codedb works and is used daily in production AI workflows, but:
-> - **Language support** — Zig, Python, TypeScript/JavaScript (more planned)
+> - **Language support** — Zig, Python, TypeScript/JavaScript, Rust, PHP, C# (more planned)
 > - **No auth** — HTTP server binds to localhost only
 > - **Snapshot format** may change between versions
 > - **MCP protocol** is JSON-RPC 2.0 over stdio (stable)
 
 | What works today                                       | What's in progress                       |
 |--------------------------------------------------------|------------------------------------------|
-| 12 MCP tools for full codebase intelligence            | Additional language parsers              |
-| Trigram-accelerated full-text search                   | WASM target for Cloudflare Workers       |
-| O(1) inverted word index for identifier lookup         | Incremental snapshot updates             |
-| Structural outlines (functions, structs, imports)      | Multi-project support                    |
-| Reverse dependency graph                               | Remote indexing over SSH                  |
+| 16 MCP tools for full codebase intelligence            | Additional language parsers (HCL/Go)     |
+| Trigram v2: integer doc IDs, batch-accumulate, merge intersect | Incremental segment-based indexing |
+| 538x faster than ripgrep on pre-indexed queries        | WASM target for Cloudflare Workers       |
+| O(1) inverted word index for identifier lookup         | Multi-project support                    |
+| Structural outlines (functions, structs, imports)      | mmap-backed trigram index                |
+| Reverse dependency graph                               |                                          |
 | Atomic line-range edits with version tracking          |                                          |
 | Auto-registration in Claude, Codex, Gemini, Cursor     |                                          |
 | Polling file watcher with filtered directory walker    |                                          |
 | Portable snapshot for instant MCP startup              |                                          |
-| Multi-agent support with file locking + heartbeats     |                                          |
+| Singleton MCP with PID lock + 2min idle timeout        |                                          |
+| Sensitive file blocking (.env, credentials, keys)      |                                          |
 | Codesigned + notarized macOS binaries                  |                                          |
+| SHA256 checksum verification in installer              |                                          |
 | Cross-platform: macOS (ARM/x86), Linux (ARM/x86)      |                                          |
 
 ---
@@ -227,7 +230,15 @@ Measured on Apple M4 Pro, 48GB RAM. MCP = pre-indexed warm queries (20 iteration
 | Full-text search (`allocator`) | **0.03 ms** | 54.1 ms | 2.9 ms | 5.1 ms | 3.7 ms | **1,554x** vs CLI |
 | Word index (`self`) | **0.04 ms** | 54.7 ms | n/a | 6.3 ms | 4.2 ms | **1,518x** vs CLI |
 | Structural outline | **0.04 ms** | 54.9 ms | 3.4 ms | — | 2.5 ms | **1,243x** vs CLI |
-| Dependency graph | **0.05 ms** | 1.9 ms | n/a | n/a | n/a | **41x** vs CLI |
+
+**rtk-ai/rtk repo** (329 files) — codedb vs rtk vs ripgrep vs grep:
+
+| Tool | Search "agent" | Speedup |
+|------|---------------|---------|
+| codedb (pre-indexed) | **0.065 ms** | baseline |
+| rtk | 37 ms | 569x slower |
+| ripgrep | 45 ms | 692x slower |
+| grep | 80 ms | 1,231x slower |
 
 ### Token Efficiency
 
@@ -240,17 +251,18 @@ codedb returns structured, relevant results — not raw line dumps. For AI agent
 
 ### Indexing Speed
 
-codedb builds **all** indexes on startup (outlines, trigram, word, dependency graph) — not just a parse tree:
+### Indexing Speed
 
-| Repo | Files | Lines | Cold start | Per file |
-|------|-------|-------|-----------|----------|
-| codedb | 20 | 12.6k | **17 ms** | 0.85 ms |
-| merjs | 100 | 17.3k | **16 ms** | 0.16 ms |
-| [openclaw/openclaw](https://github.com/openclaw/openclaw) | 11,281 | 2.29M | **2.9 s** | 6.66 ms |
-| [vitessio/vitess](https://github.com/vitessio/vitess) | 5,028 | 2.18M | **~2 s** | 0.40 ms |
-Indexes are built once on startup. After that, the file watcher keeps them updated incrementally (single-file re-index: **<2ms**). Queries never re-scan the filesystem.
+codedb v0.2.52+ uses trigram v2 (integer doc IDs, batch-accumulate, sorted merge intersection):
 
+| Repo | Files | Lines | Cold start | Per file | vs v0.2.3 |
+|------|-------|-------|-----------|----------|-----------|
+| codedb | 20 | 12.6k | **17 ms** | 0.85 ms | — |
+| merjs | 100 | 17.3k | **16 ms** | 0.16 ms | — |
+| 5,200 mixed files | 5,200 | — | **310 ms** | 0.06 ms | **-36%** |
+| [openclaw/openclaw](https://github.com/openclaw/openclaw) | 11,281 | 2.29M | **2.9 s** | 6.66 ms | — |
 
+Indexes are built once on startup. After that, the file watcher keeps them updated incrementally (single-file re-index: **<2ms**). Queries never re-scan the filesystem. For repos >1000 files, file contents are released after indexing to save ~300-500MB.
 ### Why codedb is fast
 
 - **MCP server** indexes once on startup → all queries hit in-memory data structures (O(1) hash lookups)

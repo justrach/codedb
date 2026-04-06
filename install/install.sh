@@ -161,7 +161,7 @@ main() {
 
   version="${CODEDB_VERSION:-}"
   if [ -z "$version" ]; then
-    version="$(curl -fsSL "$BASE_URL/latest.json" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)"
+    version="$(curl -fsSL -A 'codedb-installer' "$BASE_URL/latest.json" | grep -oE '"version"\s*:\s*"[^"]*"' | cut -d'"' -f4)"
   fi
   if [ -z "$version" ]; then
     printf "  ${R}error: could not fetch latest version${N}\n" >&2
@@ -176,11 +176,31 @@ main() {
   echo ""
 
   local url="$BASE_URL/v${version}/codedb-${platform}${ext}"
+  local checksum_url="$BASE_URL/v${version}/checksums.sha256"
   local dest="$INSTALL_DIR/codedb${ext}"
 
   printf "  ${D}│${N} %-12s " "codedb"
   local tmp="/tmp/codedb.tmp.$$"
-  if curl -fsSL "$url" -o "$tmp" 2>/dev/null; then
+  if curl -fsSL -A 'codedb-installer' "$url" -o "$tmp" 2>/dev/null; then
+    # Verify checksum if available (#120)
+    local expected_hash
+    expected_hash="$(curl -fsSL -A 'codedb-installer' "$checksum_url" 2>/dev/null | grep "codedb-${platform}${ext}" | awk '{print $1}')"
+    if [ -n "$expected_hash" ]; then
+      local actual_hash
+      if command -v sha256sum >/dev/null 2>&1; then
+        actual_hash="$(sha256sum "$tmp" | awk '{print $1}')"
+      elif command -v shasum >/dev/null 2>&1; then
+        actual_hash="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+      fi
+      if [ -n "$actual_hash" ] && [ "$actual_hash" != "$expected_hash" ]; then
+        rm -f "$tmp"
+        printf "${R}failed${N}\n"
+        printf "\n  ${R}error: checksum mismatch — binary may be corrupted${N}\n" >&2
+        printf "  ${D}expected: $expected_hash${N}\n" >&2
+        printf "  ${D}actual:   $actual_hash${N}\n" >&2
+        exit 1
+      fi
+    fi
     xattr -c "$tmp" 2>/dev/null || true
     mv -f "$tmp" "$dest"
     chmod +x "$dest"
