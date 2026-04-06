@@ -100,11 +100,31 @@ fn mainImpl() !void {
         return;
     }
 
-    // Handle update command (re-runs the install script)
+    // Handle update command — direct binary download from GitHub releases.
+    // The CDN install script has issues with set -euo pipefail on macOS,
+    // so we download the binary directly and replace in-place.
     if (std.mem.eql(u8, cmd, "update")) {
         out.p("updating codedb...\n", .{});
         var child = std.process.Child.init(
-            &.{ "/bin/bash", "-c", "curl -fsSL https://codedb.codegraff.com/install.sh | bash" },
+            &.{ "/bin/bash", "-c",
+                \\set -e
+                \\PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+                \\case "$PLATFORM" in
+                \\  darwin-arm64) BIN="codedb-darwin-arm64" ;;
+                \\  darwin-x86_64) BIN="codedb-darwin-x86_64" ;;
+                \\  linux-x86_64) BIN="codedb-linux-x86_64" ;;
+                \\  linux-aarch64) BIN="codedb-linux-aarch64" ;;
+                \\  *) echo "unsupported platform: $PLATFORM" >&2; exit 1 ;;
+                \\esac
+                \\VERSION=$(curl -fsSL https://codedb.codegraff.com/latest.json | grep -oE '"version"\s*:\s*"[^"]*"' | cut -d'"' -f4)
+                \\echo "  latest: v${VERSION}"
+                \\TMP=$(mktemp)
+                \\curl -fsSL "https://github.com/justrach/codedb/releases/download/v${VERSION}/${BIN}" -o "$TMP"
+                \\SELF=$(which codedb 2>/dev/null || echo "$HOME/bin/codedb")
+                \\chmod +x "$TMP"
+                \\mv -f "$TMP" "$SELF"
+                \\echo "  updated: $($SELF --version)"
+            },
             allocator,
         );
         child.stdin_behavior = .Inherit;
