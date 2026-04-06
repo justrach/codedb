@@ -80,21 +80,28 @@ pub const Store = struct {
         if (diff) |d| {
             if (self.data_log) |log| {
                 // Advisory lock for cross-process safety
-                if (comptime @import("builtin").os.tag == .windows) {
+                const locked = if (comptime @import("builtin").os.tag == .windows) blk: {
                     const ntdll = std.os.windows.ntdll;
                     const max_off: i64 = std.math.maxInt(i64);
                     const zero_off: i64 = 0;
                     var iosb: std.os.windows.IO_STATUS_BLOCK = undefined;
-                    _ = ntdll.NtLockFile(log.handle, null, null, null, &iosb, &zero_off, &max_off, null, 0, 1);
-                    defer {
+                    const status = ntdll.NtLockFile(log.handle, null, null, null, &iosb, &zero_off, &max_off, null, 0, 1);
+                    break :blk (status == .SUCCESS);
+                } else blk: {
+                    log.lock(.exclusive) catch break :blk false;
+                    break :blk true;
+                };
+                defer if (locked) {
+                    if (comptime @import("builtin").os.tag == .windows) {
+                        const ntdll = std.os.windows.ntdll;
+                        const max_off: i64 = std.math.maxInt(i64);
+                        const zero_off: i64 = 0;
                         var iosb2: std.os.windows.IO_STATUS_BLOCK = undefined;
                         _ = ntdll.NtUnlockFile(log.handle, &iosb2, &zero_off, &max_off, null);
+                    } else {
+                        log.unlock();
                     }
-                } else {
-                    const fd = log.handle;
-                    _ = std.posix.flock(fd, std.posix.LOCK.EX) catch {};
-                    defer _ = std.posix.flock(fd, std.posix.LOCK.UN) catch {};
-                }
+                };
 
                 // Re-stat to get current end position (another process may have appended)
                 const stat = compat.fileStat(log) catch return error.Unexpected;

@@ -698,10 +698,23 @@ fn drainNotifyFile(store: *Store, explorer: *Explorer, queue: *EventQueue, known
         if (path.len == 0) continue;
 
         // Make path relative to root if it's absolute (handle both / and \ separators)
-        const rel = if (std.mem.startsWith(u8, path, root))
+        const raw_rel = if (std.mem.startsWith(u8, path, root))
             std.mem.trimLeft(u8, path[root.len..], "/\\")
         else
             path;
+
+        // Normalize backslashes to forward slashes so the path matches the
+        // walker's convention and avoids duplicate entries in the explorer.
+        var norm_buf: [compat.path_buf_size]u8 = undefined;
+        const rel = if (comptime @import("builtin").os.tag == .windows) blk: {
+            if (raw_rel.len > norm_buf.len) continue;
+            @memcpy(norm_buf[0..raw_rel.len], raw_rel);
+            const s = norm_buf[0..raw_rel.len];
+            for (s) |*c| {
+                if (c.* == '\\') c.* = '/';
+            }
+            break :blk s;
+        } else raw_rel;
 
         indexFileContent(explorer, dir, rel, alloc, false) catch continue;
 
