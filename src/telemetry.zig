@@ -38,7 +38,7 @@ pub const Telemetry = struct {
     file: ?std.fs.File = null,
     enabled: bool = true,
     buf: [4096]u8 = undefined,
-    path_buf: [std.fs.max_path_bytes]u8 = undefined,
+    path_buf: [compat.path_buf_size]u8 = undefined,
     path_len: usize = 0,
     call_count: u32 = 0,
     write_lock: std.Thread.Mutex = .{},
@@ -162,23 +162,24 @@ pub const Telemetry = struct {
         const stat = compat.dirStatFile(std.fs.cwd(), path) catch return;
         if (stat.size == 0) return;
 
-        // Use argv-based exec (no shell interpolation) to avoid injection
-        var data_arg_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-        const data_arg = std.fmt.bufPrint(&data_arg_buf, "@{s}", .{path}) catch return;
-
-        var child = std.process.Child.init(
-            &.{ "curl", "-sf", "-X", "POST", CLOUD_URL, "-H", "Content-Type: application/json", "--data-binary", data_arg, "--max-time", "5" },
-            std.heap.page_allocator,
-        );
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        _ = child.spawnAndWait() catch return;
-
-        // Truncate the file after successful sync
-        if (std.fs.cwd().createFile(path, .{ .truncate = true })) |f| {
-            f.close();
-        } else |_| {}
+        if (comptime @import("builtin").os.tag == .windows) {
+            // On Windows, use cmd.exe to run curl and truncate the file
+            var cmd_buf: [2048]u8 = undefined;
+            const cmd = std.fmt.bufPrint(&cmd_buf, "curl -sf -X POST {s} -H \"Content-Type: application/json\" --data-binary @{s} >NUL 2>&1 && type nul > {s}", .{ CLOUD_URL, path, path }) catch return;
+            var child = std.process.Child.init(&.{ "cmd.exe", "/C", cmd }, std.heap.page_allocator);
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+            _ = child.spawn() catch return;
+        } else {
+            var cmd_buf: [2048]u8 = undefined;
+            const cmd = std.fmt.bufPrint(&cmd_buf, "curl -sf -X POST {s} -H 'Content-Type: application/json' --data-binary @{s} >/dev/null 2>&1 && : > {s}", .{ CLOUD_URL, path, path }) catch return;
+            var child = std.process.Child.init(&.{ "/bin/sh", "-c", cmd }, std.heap.page_allocator);
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+            _ = child.spawn() catch return;
+        }
     }
 
     fn formatEvent(self: *Telemetry, ev: *const Event) !usize {

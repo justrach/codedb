@@ -4,6 +4,7 @@ const Store = @import("store.zig").Store;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Explorer = @import("explore.zig").Explorer;
 const watcher = @import("watcher.zig");
+const is_windows = @import("builtin").os.tag == .windows;
 const server = @import("server.zig");
 const mcp_server = @import("mcp.zig");
 const sty = @import("style.zig");
@@ -570,25 +571,32 @@ noinline fn mainImpl() !void {
             s.reset,
         });
     } else if (std.mem.eql(u8, cmd, "serve")) {
-        const port: u16 = 7719;
-        var agents = AgentRegistry.init(allocator);
-        defer agents.deinit();
-        _ = try agents.register("__filesystem__");
+        if (comptime is_windows) {
+            out.p("{s}\xe2\x9c\x97{s} HTTP serve not supported on Windows. Use {s}mcp{s} mode.\n", .{
+                s.red, s.reset, s.cyan, s.reset,
+            });
+            std.process.exit(1);
+        } else {
+            const port: u16 = 7719;
+            var agents = AgentRegistry.init(allocator);
+            defer agents.deinit();
+            _ = try agents.register("__filesystem__");
 
-        var shutdown = std.atomic.Value(bool).init(false);
-        defer shutdown.store(true, .release);
-        var scan_already_done = std.atomic.Value(bool).init(true);
+            var shutdown = std.atomic.Value(bool).init(false);
+            defer shutdown.store(true, .release);
+            var scan_already_done = std.atomic.Value(bool).init(true);
 
-        var queue = try watcher.EventQueue.init();
-        defer queue.deinit();
-        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &shutdown, &scan_already_done });
-        defer watch_thread.join();
+            var queue = try watcher.EventQueue.init();
+            defer queue.deinit();
+            const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, &queue, root, &shutdown, &scan_already_done });
+            defer watch_thread.join();
 
-        const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
-        defer reap_thread.join();
+            const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
+            defer reap_thread.join();
 
-        std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
-        try server.serve(allocator, &store, &agents, &explorer, &queue, port);
+            std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
+            try server.serve(allocator, &store, &agents, &explorer, &queue, port);
+        }
     } else if (std.mem.eql(u8, cmd, "mcp")) {
         var agents = AgentRegistry.init(allocator);
         defer agents.deinit();
@@ -667,7 +675,8 @@ fn resolveRoot(root: []const u8, buf: *[compat.path_buf_size]u8) ![]const u8 {
 
 fn getDataDir(allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {
     const hash = std.hash.Wyhash.hash(0, abs_root);
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch
+        std.process.getEnvVarOwned(allocator, "USERPROFILE") catch {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{abs_root});
     };
     defer allocator.free(home);
