@@ -117,6 +117,96 @@ fn mainImpl() !void {
         return;
     }
 
+    // Handle nuke command early — before root resolution so it works from anywhere
+    if (std.mem.eql(u8, cmd, "nuke")) {
+        const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
+            out.p("{s}\xe2\x9c\x97{s} cannot determine HOME directory\n", .{ s.red, s.reset });
+            std.process.exit(1);
+        };
+        defer allocator.free(home);
+
+        // Kill other running codedb processes (exclude ourselves)
+        const my_pid = std.c.getpid();
+        var pid_buf: [32]u8 = undefined;
+        const my_pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{my_pid}) catch "0";
+
+        const pgrep_result = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = &.{ "pgrep", "-f", "codedb.*(serve|mcp)" },
+            .max_output_bytes = 4096,
+        }) catch null;
+        if (pgrep_result) |pr| {
+            defer allocator.free(pr.stdout);
+            defer allocator.free(pr.stderr);
+            var line_iter = std.mem.splitScalar(u8, pr.stdout, '\n');
+            while (line_iter.next()) |pid_line| {
+                const trimmed = std.mem.trim(u8, pid_line, " \t\r\n");
+                if (trimmed.len == 0) continue;
+                if (std.mem.eql(u8, trimmed, my_pid_str)) continue;
+                const kill_r = std.process.Child.run(.{
+                    .allocator = allocator,
+                    .argv = &.{ "kill", trimmed },
+                    .max_output_bytes = 256,
+                }) catch null;
+                if (kill_r) |kr| {
+                    allocator.free(kr.stdout);
+                    allocator.free(kr.stderr);
+                }
+            }
+        }
+
+        // Remove ~/.codedb/
+        const codedb_dir = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch {
+            std.process.exit(1);
+        };
+        defer allocator.free(codedb_dir);
+
+        // Read all project roots from ~/.codedb/projects/*/project.txt
+        // before deleting the data dir, so we can clean their snapshots
+        var snapshot_count: usize = 0;
+        const projects_dir = std.fmt.allocPrint(allocator, "{s}/.codedb/projects", .{home}) catch null;
+        if (projects_dir) |pd| {
+            defer allocator.free(pd);
+            var dir = std.fs.cwd().openDir(pd, .{ .iterate = true }) catch null;
+            if (dir) |*d| {
+                defer d.close();
+                var iter = d.iterate();
+                while (iter.next() catch null) |entry| {
+                    if (entry.kind != .directory) continue;
+                    // Read project.txt to get the project root path
+                    const proj_file = std.fmt.allocPrint(allocator, "{s}/{s}/project.txt", .{ pd, entry.name }) catch continue;
+                    defer allocator.free(proj_file);
+                    const proj_root = std.fs.cwd().readFileAlloc(allocator, proj_file, 4096) catch continue;
+                    defer allocator.free(proj_root);
+                    const trimmed_root = std.mem.trim(u8, proj_root, " \t\r\n");
+                    if (trimmed_root.len == 0) continue;
+                    // Delete codedb.snapshot in that project root
+                    const snap = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{trimmed_root}) catch continue;
+                    defer allocator.free(snap);
+                    std.fs.cwd().deleteFile(snap) catch continue;
+                    snapshot_count += 1;
+                }
+            }
+        }
+
+        // Also try cwd snapshot (in case project wasn't registered)
+        std.fs.cwd().deleteFile("codedb.snapshot") catch {};
+
+        // Now remove ~/.codedb/
+        std.fs.cwd().deleteTree(codedb_dir) catch |err| {
+            if (err != error.FileNotFound) {
+                out.p("{s}\xe2\x9c\x97{s} failed to remove {s}: {}\n", .{ s.red, s.reset, codedb_dir, err });
+            }
+        };
+
+        out.p("{s}\xe2\x9c\x93{s} nuked all codedb data\n", .{ s.green, s.reset });
+        out.p("  removed {s}{s}{s}\n", .{ s.dim, codedb_dir, s.reset });
+        out.p("  removed {d} project snapshot(s)\n", .{snapshot_count});
+        out.p("  killed running codedb processes\n", .{});
+        out.p("\n  to reinstall: {s}curl -fsSL https://codedb.sh | bash{s}\n", .{ s.cyan, s.reset });
+        return;
+    }
+
     if (std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, "${workspaceFolder}")) {
         root = ".";
     }
@@ -551,7 +641,7 @@ fn mainImpl() !void {
     }
 }
 fn isCommand(arg: []const u8) bool {
-    const commands = [_][]const u8{ "tree", "outline", "find", "search", "word", "hot", "snapshot", "serve", "mcp", "update" };
+    const commands = [_][]const u8{ "tree", "outline", "find", "search", "word", "hot", "snapshot", "serve", "mcp", "update", "nuke" };
     for (commands) |c| {
         if (std.mem.eql(u8, arg, c)) return true;
     }
@@ -602,6 +692,7 @@ fn printUsage(out: Out, s: sty.Style) void {
         \\    {s}hot{s}                       recently modified files
         \\    {s}serve{s}                     HTTP daemon on :7719
         \\    {s}mcp{s}                       JSON-RPC/MCP server over stdio
+        \\    {s}nuke{s}                      remove all codedb data, snapshots, and kill processes
         \\
     , .{
         s.bold, s.reset,
@@ -616,6 +707,7 @@ fn printUsage(out: Out, s: sty.Style) void {
         s.dim,  s.reset,
         s.cyan, s.reset,
         s.dim,  s.reset,
+        s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,

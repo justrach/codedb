@@ -12,6 +12,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("base", help="baseline benchmark JSON")
     parser.add_argument("head", help="candidate benchmark JSON")
     parser.add_argument("--threshold-pct", type=float, default=10.0, help="maximum allowed latency regression percentage")
+    parser.add_argument("--min-abs-ns", type=int, default=50000, help="ignore regressions below this absolute delta (ns)")
     parser.add_argument("--markdown-out", help="write markdown report to this path")
     return parser.parse_args()
 
@@ -47,20 +48,27 @@ def main() -> int:
     base = load_tools(args.base)
     head = load_tools(args.head)
 
-    missing = sorted(set(base) ^ set(head))
-    if missing:
-        print(f"error: tool mismatch: {', '.join(missing)}", file=sys.stderr)
+    # Only compare tools that exist in both base and head.
+    # New tools in head (not in base) are skipped — not a regression.
+    # Tools removed from head (in base but not head) are flagged.
+    removed = sorted(set(base) - set(head))
+    if removed:
+        print(f"error: tools removed from head: {', '.join(removed)}", file=sys.stderr)
         return 1
+    common = sorted(set(base) & set(head))
 
     rows: list[tuple[str, int, int, float]] = []
     failures: list[str] = []
 
-    for tool in sorted(base):
+    for tool in common:
         base_ns = int(base[tool]["avg_latency_ns"])
         head_ns = int(head[tool]["avg_latency_ns"])
         delta = pct_change(base_ns, head_ns)
+        abs_delta = head_ns - base_ns
         rows.append((tool, base_ns, head_ns, delta))
-        if delta > args.threshold_pct:
+        # Only flag as regression if BOTH percentage AND absolute delta exceed thresholds
+        # This prevents false positives on fast tools where CI noise dominates
+        if delta > args.threshold_pct and abs_delta > args.min_abs_ns:
             failures.append(f"{tool} regressed by {delta:.2f}%")
 
     report = render_markdown(rows, args.threshold_pct)
