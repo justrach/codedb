@@ -863,22 +863,25 @@ fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
             std.Thread.sleep(std.time.ns_per_s);
         }
 
-        // Quick liveness check: poll stdin for POLLHUP (client disconnected)
+        // Quick liveness check: poll stdin for HUP (client disconnected).
+        // Windows stdin is not a socket, so poll() is POSIX-only.
         const stdin = std.fs.File.stdin();
-        var poll_fds = [_]std.posix.pollfd{.{
-            .fd = stdin.handle,
-            .events = std.posix.POLL.IN | std.posix.POLL.HUP,
-            .revents = 0,
-        }};
-        const poll_result = std.posix.poll(&poll_fds, 0) catch 0;
-        if (poll_result > 0 and (poll_fds[0].revents & std.posix.POLL.HUP) != 0) {
-            std.log.info("stdin closed (client disconnected), exiting", .{});
-            stdin.close();
-            shutdown.store(true, .release);
-            return;
+        if (comptime @import("builtin").os.tag != .windows) {
+            var poll_fds = [_]std.posix.pollfd{.{
+                .fd = stdin.handle,
+                .events = std.posix.POLL.IN | std.posix.POLL.HUP,
+                .revents = 0,
+            }};
+            const poll_result = std.posix.poll(&poll_fds, 0) catch 0;
+            if (poll_result > 0 and (poll_fds[0].revents & std.posix.POLL.HUP) != 0) {
+                std.log.info("stdin closed (client disconnected), exiting", .{});
+                stdin.close();
+                shutdown.store(true, .release);
+                return;
+            }
         }
 
-        // Fallback: idle timeout
+        // Idle timeout (primary exit mechanism on Windows)
         const last = mcp.last_activity.load(.acquire);
         if (last == 0) continue;
         const now = std.time.milliTimestamp();

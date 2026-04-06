@@ -4580,23 +4580,20 @@ test "issue-148: idle timeout is 10 minutes" {
 }
 
 test "issue-148: POLLHUP detects closed pipe" {
-    // Verify the polling infrastructure works for pipe-based transports
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
     const pipe = try std.posix.pipe();
-    defer std.posix.close(pipe[0]);
-
-    // Close write end — simulates client disconnect
     std.posix.close(pipe[1]);
 
-    // Poll should detect POLLHUP on the read end
-    var fds = [_]std.posix.pollfd{.{
+    var poll_fds = [_]std.posix.pollfd{.{
         .fd = pipe[0],
-        .events = std.posix.POLL.IN,
+        .events = std.posix.POLL.IN | std.posix.POLL.HUP,
         .revents = 0,
     }};
 
-    const n = try std.posix.poll(&fds, 100); // 100ms timeout
-    try testing.expect(n > 0);
-    try testing.expect((fds[0].revents & std.posix.POLL.HUP) != 0);
+    const result = try std.posix.poll(&poll_fds, 0);
+    try testing.expect(result > 0);
+    try testing.expect((poll_fds[0].revents & std.posix.POLL.HUP) != 0);
+    std.posix.close(pipe[0]);
 }
 
 test "issue-148: idle watchdog exits on shutdown signal" {
