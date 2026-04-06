@@ -289,7 +289,7 @@ pub var last_activity: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 
 /// How long (ms) the server may sit idle before auto-exiting.
 /// Claude Code restarts MCP servers on demand, so this is safe.
-pub const idle_timeout_ms: i64 = 2 * 60 * 1000; // 2 minutes — MCP clients restart servers on demand
+pub const idle_timeout_ms: i64 = 10 * 60 * 1000; // 10 minutes — allows long debugging sessions; stdin EOF exits immediately
 
 // ── Session state for MCP protocol ──────────────────────────────────────────
 

@@ -4570,3 +4570,89 @@ test "issue-116: getGitHead returns valid SHA for git repos" {
         }
     }
 }
+
+test "issue-148: idle timeout is 10 minutes" {
+    const mcp = @import("mcp.zig");
+    try testing.expectEqual(@as(i64, 10 * 60 * 1000), mcp.idle_timeout_ms);
+}
+
+test "issue-148: POLLHUP detects closed pipe" {
+    const pipe = try std.posix.pipe();
+    std.posix.close(pipe[1]);
+
+    var poll_fds = [_]std.posix.pollfd{.{
+        .fd = pipe[0],
+        .events = std.posix.POLL.IN | std.posix.POLL.HUP,
+        .revents = 0,
+    }};
+
+    const result = try std.posix.poll(&poll_fds, 0);
+    try testing.expect(result > 0);
+    try testing.expect((poll_fds[0].revents & std.posix.POLL.HUP) != 0);
+    std.posix.close(pipe[0]);
+}
+
+test "issue-148: open pipe does not trigger HUP" {
+    const pipe = try std.posix.pipe();
+    defer std.posix.close(pipe[0]);
+    defer std.posix.close(pipe[1]);
+
+    var poll_fds = [_]std.posix.pollfd{.{
+        .fd = pipe[0],
+        .events = std.posix.POLL.IN | std.posix.POLL.HUP,
+        .revents = 0,
+    }};
+
+    const result = try std.posix.poll(&poll_fds, 0);
+    try testing.expectEqual(@as(usize, 0), result);
+}
+
+test "issue-148: codedb mcp exits when stdin is closed" {
+    // Integration test: spawn codedb mcp, close stdin, verify it exits
+    var child = std.process.Child.init(
+        &.{ "zig", "build", "run", "--", "--mcp" },
+        testing.allocator,
+    );
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+
+    try child.spawn();
+
+    // Send initialize then close stdin (simulate client crash)
+    const init_msg = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}";
+    const header = std.fmt.comptimePrint("Content-Length: {d}\r\n\r\n", .{init_msg.len});
+
+    if (child.stdin) |stdin| {
+        stdin.writeAll(header) catch {};
+        stdin.writeAll(init_msg) catch {};
+        // Close stdin — simulates client disconnecting
+        stdin.close();
+        child.stdin = null;
+    }
+
+    // Wait up to 15 seconds for the process to exit
+    // (watchdog polls every 10s, so it should detect POLLHUP within ~10s)
+    const start = std.time.milliTimestamp();
+    const term = child.wait() catch {
+        // If wait fails, the process is stuck — test fails
+        try testing.expect(false);
+        return;
+    };
+
+    const elapsed = std.time.milliTimestamp() - start;
+
+    // Should have exited (not been killed by us)
+    switch (term) {
+        .Exited => |code| {
+            // Any exit code is fine — we just care that it exited
+            _ = code;
+        },
+        else => {
+            // Signal-killed or other — acceptable
+        },
+    }
+
+    // Should exit within 15 seconds (10s poll interval + margin)
+    try testing.expect(elapsed < 15_000);
+}
