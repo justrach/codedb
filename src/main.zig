@@ -203,7 +203,7 @@ fn mainImpl() !void {
         out.p("  removed {s}{s}{s}\n", .{ s.dim, codedb_dir, s.reset });
         out.p("  removed {d} project snapshot(s)\n", .{snapshot_count});
         out.p("  killed running codedb processes\n", .{});
-        out.p("\n  to reinstall: {s}curl -fsSL https://codedb.sh | bash{s}\n", .{ s.cyan, s.reset });
+        out.p("\n  to reinstall: {s}curl -fsSL https://codedb.codegraff.com/install.sh | bash{s}\n", .{ s.cyan, s.reset });
         return;
     }
 
