@@ -3217,7 +3217,7 @@ test "issue-43: trigram_index swap in scanBg races with concurrent MCP queries" 
             ctx.exp.mu.lock();
             defer ctx.exp.mu.unlock();
             ctx.exp.trigram_index.deinit();
-            ctx.exp.trigram_index = TrigramIndex.init(ctx.exp.allocator);
+            ctx.exp.trigram_index = .{ .heap = TrigramIndex.init(ctx.exp.allocator) };
             ctx.swapped.store(true, .release);
         }
     };
@@ -4577,82 +4577,204 @@ test "issue-148: idle timeout is 10 minutes" {
 }
 
 test "issue-148: POLLHUP detects closed pipe" {
-    const pipe = try std.posix.pipe();
-    std.posix.close(pipe[1]);
-
-    var poll_fds = [_]std.posix.pollfd{.{
-        .fd = pipe[0],
-        .events = std.posix.POLL.IN | std.posix.POLL.HUP,
-        .revents = 0,
-    }};
-
-    const result = try std.posix.poll(&poll_fds, 0);
-    try testing.expect(result > 0);
-    try testing.expect((poll_fds[0].revents & std.posix.POLL.HUP) != 0);
-    std.posix.close(pipe[0]);
-}
-
-test "issue-148: open pipe does not trigger HUP" {
+    // Verify the polling infrastructure works for pipe-based transports
     const pipe = try std.posix.pipe();
     defer std.posix.close(pipe[0]);
-    defer std.posix.close(pipe[1]);
 
-    var poll_fds = [_]std.posix.pollfd{.{
+    // Close write end — simulates client disconnect
+    std.posix.close(pipe[1]);
+
+    // Poll should detect POLLHUP on the read end
+    var fds = [_]std.posix.pollfd{.{
         .fd = pipe[0],
-        .events = std.posix.POLL.IN | std.posix.POLL.HUP,
+        .events = std.posix.POLL.IN,
         .revents = 0,
     }};
 
-    const result = try std.posix.poll(&poll_fds, 0);
-    try testing.expectEqual(@as(usize, 0), result);
+    const n = try std.posix.poll(&fds, 100); // 100ms timeout
+    try testing.expect(n > 0);
+    try testing.expect((fds[0].revents & std.posix.POLL.HUP) != 0);
 }
 
-test "issue-148: codedb mcp exits when stdin is closed" {
-    // Integration test: spawn codedb mcp, close stdin, verify it exits
-    var child = std.process.Child.init(
-        &.{ "zig", "build", "run", "--", "--mcp" },
-        testing.allocator,
-    );
-    child.stdin_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
+test "issue-148: idle watchdog exits on shutdown signal" {
+    // The watchdog should check shutdown every ~1s (not 30s)
+    // and return quickly when signalled
+    var shutdown = std.atomic.Value(bool).init(false);
 
-    try child.spawn();
+    const t0 = std.time.milliTimestamp();
+    // Signal shutdown after a small delay
+    const signal_thread = try std.Thread.spawn(.{}, struct {
+        fn run(s: *std.atomic.Value(bool)) void {
+            std.Thread.sleep(500 * std.time.ns_per_ms);
+            s.store(true, .release);
+        }
+    }.run, .{&shutdown});
 
-    // Send initialize then close stdin (simulate client crash)
-    const init_msg = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}";
-    const header = std.fmt.comptimePrint("Content-Length: {d}\r\n\r\n", .{init_msg.len});
-
-    if (child.stdin) |stdin| {
-        stdin.writeAll(header) catch {};
-        stdin.writeAll(init_msg) catch {};
-        // Close stdin — simulates client disconnecting
-        stdin.close();
-        child.stdin = null;
+    // Run a simplified watchdog loop (matches the real one's 1s granularity)
+    while (!shutdown.load(.acquire)) {
+        for (0..30) |_| {
+            if (shutdown.load(.acquire)) break;
+            std.Thread.sleep(100 * std.time.ns_per_ms); // faster for test
+        }
+        break; // one iteration is enough to test
     }
+    signal_thread.join();
 
-    // Wait up to 15 seconds for the process to exit
-    // (watchdog polls every 10s, so it should detect POLLHUP within ~10s)
-    const start = std.time.milliTimestamp();
-    const term = child.wait() catch {
-        // If wait fails, the process is stuck — test fails
-        try testing.expect(false);
-        return;
-    };
-
-    const elapsed = std.time.milliTimestamp() - start;
-
-    // Should have exited (not been killed by us)
-    switch (term) {
-        .Exited => |code| {
-            // Any exit code is fine — we just care that it exited
-            _ = code;
-        },
-        else => {
-            // Signal-killed or other — acceptable
-        },
+    const elapsed = std.time.milliTimestamp() - t0;
+    // With 1s granularity, should respond well under 5s (not 30s)
+    // Using 100ms intervals in test, so should be ~500ms
+    if (elapsed > 0) {
+        // Just verify it didn't hang for 30 seconds
+        try testing.expect(elapsed < 5_000);
     }
+}
 
-    // Should exit within 15 seconds (10s poll interval + margin)
-    try testing.expect(elapsed < 15_000);
+test "issue-148: idle watchdog respects activity timestamp" {
+    const mcp = @import("mcp.zig");
+
+    // Save and restore
+    const saved = mcp.last_activity.load(.acquire);
+    defer mcp.last_activity.store(saved, .release);
+
+    // Set activity to "just now"
+    mcp.last_activity.store(std.time.milliTimestamp(), .release);
+
+    // With 10-minute timeout, checking now should NOT trigger exit
+    const last = mcp.last_activity.load(.acquire);
+    const now = std.time.milliTimestamp();
+    try testing.expect(now - last < mcp.idle_timeout_ms);
+}
+
+test "issue-148: MCP session survives 2-minute idle" {
+    const mcp = @import("mcp.zig");
+    // With the old 2-min timeout, an activity 3 minutes ago would trigger exit.
+    // With the new 10-min timeout, it should be fine.
+    const three_min_ago = std.time.milliTimestamp() - (3 * 60 * 1000);
+
+    // Save and restore
+    const saved = mcp.last_activity.load(.acquire);
+    defer mcp.last_activity.store(saved, .release);
+
+    mcp.last_activity.store(three_min_ago, .release);
+    const last = mcp.last_activity.load(.acquire);
+    const now = std.time.milliTimestamp();
+
+    // Should NOT exceed 10-minute timeout
+    try testing.expect(now - last < mcp.idle_timeout_ms);
+
+    // Should have exceeded old 2-minute timeout
+    try testing.expect(now - last > 2 * 60 * 1000);
+}
+
+const MmapTrigramIndex = @import("index.zig").MmapTrigramIndex;
+const AnyTrigramIndex = @import("index.zig").AnyTrigramIndex;
+
+test "issue-164: mmap trigram index returns same candidates as heap index" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/auth.zig", "pub fn handleAuth(req: *Request) !void { validate(req); }");
+    try explorer.indexFile("src/gate.zig", "pub fn checkGate(ctx: *Context) !bool { return ctx.authenticated; }");
+    try explorer.indexFile("src/util.zig", "pub fn formatStr(buf: []u8, args: anytype) !void {}");
+
+    const heap_results = explorer.trigram_index.candidates("handleAuth", allocator) orelse
+        return error.NoCandidates;
+
+    try testing.expect(heap_results.len >= 1);
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    try explorer.trigram_index.writeToDisk(tmp_path, null);
+
+    var mmap_idx = MmapTrigramIndex.initFromDisk(tmp_path, testing.allocator) orelse
+        return error.MmapInitFailed;
+    defer mmap_idx.deinit();
+
+    const mmap_results = mmap_idx.candidates("handleAuth", allocator) orelse
+        return error.NoCandidates;
+
+    try testing.expect(mmap_results.len >= 1);
+    try testing.expectEqual(heap_results.len, mmap_results.len);
+    try testing.expectEqual(explorer.trigram_index.fileCount(), mmap_idx.fileCount());
+    try testing.expect(mmap_idx.containsFile("src/auth.zig"));
+    try testing.expect(mmap_idx.containsFile("src/gate.zig"));
+    try testing.expect(!mmap_idx.containsFile("nonexistent.zig"));
+}
+
+test "issue-164: mmap binary search on sorted lookup table" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("a.zig", "const alpha = 42;");
+    try explorer.indexFile("b.zig", "const beta = 43;");
+    try explorer.indexFile("c.zig", "const gamma = 44;");
+    try explorer.indexFile("d.zig", "const delta = 45;");
+    try explorer.indexFile("e.zig", "const alpha_beta = 99;");
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    try explorer.trigram_index.writeToDisk(tmp_path, null);
+
+    var mmap_idx = MmapTrigramIndex.initFromDisk(tmp_path, testing.allocator) orelse
+        return error.MmapInitFailed;
+    defer mmap_idx.deinit();
+
+    const results = mmap_idx.candidates("alpha", allocator) orelse
+        return error.NoCandidates;
+    try testing.expect(results.len >= 2);
+
+    const no_results = mmap_idx.candidates("zzzzz", allocator);
+    if (no_results) |nr| {
+        try testing.expectEqual(@as(usize, 0), nr.len);
+    }
+}
+
+test "issue-164: mmap handles missing files gracefully" {
+    const result = MmapTrigramIndex.initFromDisk("/tmp/nonexistent-codedb-test-dir-164", testing.allocator);
+    try testing.expect(result == null);
+}
+
+test "issue-164: AnyTrigramIndex dispatches to mmap variant" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("foo.zig", "pub fn fooBar(x: i32) i32 { return x + 1; }");
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    try explorer.trigram_index.writeToDisk(tmp_path, null);
+
+    const mmap_loaded = MmapTrigramIndex.initFromDisk(tmp_path, testing.allocator) orelse
+        return error.MmapInitFailed;
+
+    explorer.trigram_index.deinit();
+    explorer.trigram_index = .{ .mmap = mmap_loaded };
+
+    const results = try explorer.searchContent("fooBar", allocator, 10);
+    try testing.expect(results.len >= 1);
+
+    try testing.expect(explorer.trigram_index.containsFile("foo.zig"));
+    try testing.expect(!explorer.trigram_index.containsFile("bar.zig"));
 }

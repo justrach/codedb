@@ -254,15 +254,20 @@ fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
         total +|= entry.value_ptr.count() * @sizeOf(usize);
     }
 
-    var trigram_iter = explorer.trigram_index.index.iterator();
-    while (trigram_iter.next()) |entry| {
-        total +|= @sizeOf(@TypeOf(entry.key_ptr.*));
-        total +|= entry.value_ptr.count() * (@sizeOf(usize) + @sizeOf(index.PostingMask));
-    }
+    switch (explorer.trigram_index) {
+        .heap => |*h| {
+            var trigram_iter = h.index.iterator();
+            while (trigram_iter.next()) |entry| {
+                total +|= @sizeOf(@TypeOf(entry.key_ptr.*));
+                total +|= entry.value_ptr.count() * (@sizeOf(usize) + @sizeOf(index.PostingMask));
+            }
 
-    var file_trigrams_iter = explorer.trigram_index.file_trigrams.iterator();
-    while (file_trigrams_iter.next()) |entry| {
-        total +|= entry.value_ptr.items.len * @sizeOf(@TypeOf(entry.value_ptr.items[0]));
+            var file_trigrams_iter = h.file_trigrams.iterator();
+            while (file_trigrams_iter.next()) |entry| {
+                total +|= entry.value_ptr.items.len * @sizeOf(@TypeOf(entry.value_ptr.items[0]));
+            }
+        },
+        .mmap => {},
     }
 
     var sparse_iter = explorer.sparse_ngram_index.index.iterator();

@@ -3,6 +3,8 @@ const Store = @import("store.zig").Store;
 const idx = @import("index.zig");
 const WordIndex = idx.WordIndex;
 const TrigramIndex = idx.TrigramIndex;
+const MmapTrigramIndex = idx.MmapTrigramIndex;
+const AnyTrigramIndex = idx.AnyTrigramIndex;
 const SparseNgramIndex = idx.SparseNgramIndex;
 
 
@@ -114,7 +116,7 @@ pub const Explorer = struct {
     dep_graph: std.StringHashMap(std.ArrayList([]const u8)),
     contents: std.StringHashMap([]const u8),
     word_index: WordIndex,
-    trigram_index: TrigramIndex,
+    trigram_index: AnyTrigramIndex,
     sparse_ngram_index: SparseNgramIndex,
     allocator: std.mem.Allocator,
     mu: std.Thread.RwLock = .{},
@@ -129,7 +131,7 @@ pub const Explorer = struct {
             .dep_graph = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
             .contents = std.StringHashMap([]const u8).init(allocator),
             .word_index = WordIndex.init(allocator),
-            .trigram_index = TrigramIndex.init(allocator),
+            .trigram_index = .{ .heap = TrigramIndex.init(allocator) },
             .sparse_ngram_index = SparseNgramIndex.init(allocator),
             .allocator = allocator,
         };
@@ -655,7 +657,7 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
                 if (searched.contains(key_ptr.*)) continue;
-                if (self.trigram_index.file_trigrams.contains(key_ptr.*)) continue;
+                if (self.trigram_index.containsFile(key_ptr.*)) continue;
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
                 try searchInContent(key_ptr.*, ref.data, query, allocator, max_results, &result_list);
@@ -714,7 +716,7 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
         if (result_list.items.len < max_results) {
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
-                if (self.trigram_index.file_trigrams.contains(key_ptr.*)) continue;
+                if (self.trigram_index.containsFile(key_ptr.*)) continue;
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
                 try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
@@ -1663,7 +1665,7 @@ fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !voi
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
                 if (searched.contains(key_ptr.*)) continue;
-                if (self.trigram_index.file_trigrams.contains(key_ptr.*)) continue;
+                if (self.trigram_index.containsFile(key_ptr.*)) continue;
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
                 try self.searchInContentWithScope(key_ptr.*, ref.data, query, allocator, max_results, &result_list);

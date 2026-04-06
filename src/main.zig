@@ -9,6 +9,8 @@ const mcp_server = @import("mcp.zig");
 const sty = @import("style.zig");
 const git_mod = @import("git.zig");
 const TrigramIndex = @import("index.zig").TrigramIndex;
+const MmapTrigramIndex = @import("index.zig").MmapTrigramIndex;
+const AnyTrigramIndex = @import("index.zig").AnyTrigramIndex;
 const index_mod = @import("index.zig");
 const snapshot_mod = @import("snapshot.zig");
 const telemetry = @import("telemetry.zig");
@@ -210,13 +212,18 @@ fn mainImpl() !void {
             });
 
             if (heads_match) {
-                // Verify file count then load trigram from disk
+                // Verify file count then load trigram from disk via mmap
                 const current_count = @as(u16, @intCast(@min(explorer.outlines.count(), std.math.maxInt(u16))));
                 if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
-                    if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+                    if (MmapTrigramIndex.initFromDisk(data_dir, allocator)) |loaded| {
                         explorer.mu.lock();
                         explorer.trigram_index.deinit();
-                        explorer.trigram_index = loaded;
+                        explorer.trigram_index = .{ .mmap = loaded };
+                        explorer.mu.unlock();
+                    } else if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+                        explorer.mu.lock();
+                        explorer.trigram_index.deinit();
+                        explorer.trigram_index = .{ .heap = loaded };
                         explorer.mu.unlock();
                     } else {
                         explorer.rebuildTrigrams() catch {};
@@ -650,17 +657,35 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
     };
 
     if (heads_match) {
-        // Verify file count, then load trigram index from disk (skip rebuild)
+        // Verify file count, then load trigram index from disk via mmap (skip rebuild)
         const current_count = @as(u16, @intCast(@min(explorer.outlines.count(), std.math.maxInt(u16))));
         if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
-            if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+            if (MmapTrigramIndex.initFromDisk(data_dir, allocator)) |loaded| {
                 explorer.mu.lock();
                 explorer.trigram_index.deinit();
-                explorer.trigram_index = loaded;
+                explorer.trigram_index = .{ .mmap = loaded };
                 explorer.mu.unlock();
                 scan_done.store(true, .release);
                 telem.recordCodebaseStats(explorer, @intCast(@max(std.time.milliTimestamp() - startup_t0, 0)));
                 // Auto-write snapshot after successful scan
+                snapshot_mod.writeSnapshotDual(explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
+                    std.log.warn("could not auto-write snapshot: {}", .{err});
+                };
+                const fc = explorer.outlines.count();
+                if (fc > 1000 or std.process.hasEnvVarConstant("CODEDB_LOW_MEMORY")) {
+                    explorer.releaseContents();
+                    explorer.releaseSecondaryIndexes();
+                }
+                return;
+            }
+            // mmap failed, try heap fallback
+            if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+                explorer.mu.lock();
+                explorer.trigram_index.deinit();
+                explorer.trigram_index = .{ .heap = loaded };
+                explorer.mu.unlock();
+                scan_done.store(true, .release);
+                telem.recordCodebaseStats(explorer, @intCast(@max(std.time.milliTimestamp() - startup_t0, 0)));
                 snapshot_mod.writeSnapshotDual(explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
                     std.log.warn("could not auto-write snapshot: {}", .{err});
                 };
@@ -680,12 +705,17 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
         std.log.warn("could not persist trigram index: {}", .{err});
     };
 
-    // Compact: free the scan-time trigram (fragmented) and reload from disk (dense).
-    // This reclaims allocator fragmentation from incremental index building.
-    if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+    // Compact: swap heap index for mmap — zero RSS, data lives in OS page cache.
+    if (MmapTrigramIndex.initFromDisk(data_dir, allocator)) |loaded| {
         explorer.mu.lock();
         explorer.trigram_index.deinit();
-        explorer.trigram_index = loaded;
+        explorer.trigram_index = .{ .mmap = loaded };
+        explorer.mu.unlock();
+    } else if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+        // mmap failed, fall back to dense heap reload
+        explorer.mu.lock();
+        explorer.trigram_index.deinit();
+        explorer.trigram_index = .{ .heap = loaded };
         explorer.mu.unlock();
     }
 
