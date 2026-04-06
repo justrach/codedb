@@ -1,5 +1,5 @@
 const GITHUB_REPO = "justrach/codedb";
-const FALLBACK_VERSION = "0.2.53";
+const FALLBACK_VERSION = "0.2.54";
 const INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/install/install.sh`;
 
 export default {

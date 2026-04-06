@@ -90,7 +90,7 @@ fn mainImpl() !void {
 
     // Handle --version early (no root needed)
     if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-v") or std.mem.eql(u8, cmd, "version")) {
-        out.p("codedb 0.2.53\n", .{});
+        out.p("codedb 0.2.54\n", .{});
         return;
     }
 
