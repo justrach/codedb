@@ -3578,7 +3578,8 @@ test "issue-77: mcp index accepts temporary-directory roots that cause pathologi
     var tmp_name_buf: [128]u8 = undefined;
     const tmp_name = try std.fmt.bufPrint(&tmp_name_buf, "codedb-issue-77-{d}", .{std.time.microTimestamp()});
     const tmp_base = if (comptime @import("builtin").os.tag == .windows)
-        std.process.getEnvVarOwned(testing.allocator, "TEMP") catch return
+        std.process.getEnvVarOwned(testing.allocator, "TEMP") catch
+            return error.SkipZigTest
     else
         try testing.allocator.dupe(u8, "/private/tmp");
     defer testing.allocator.free(tmp_base);

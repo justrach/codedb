@@ -1334,6 +1334,8 @@ fn handleFind(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
 pub fn isPathSafe(path: []const u8) bool {
     if (path.len == 0) return false;
     if (path[0] == '/' or path[0] == '\\') return false;
+    // Block null bytes (path truncation attack)
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return false;
     // Reject Windows drive letters (e.g. "C:\...")
     if (path.len >= 2 and path[1] == ':') return false;
     // Check for ".." traversal with both separator types
