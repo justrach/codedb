@@ -126,7 +126,7 @@ fn mainImpl() !void {
         defer allocator.free(home);
 
         // Kill other running codedb processes (exclude ourselves)
-        const my_pid = std.c.getpid();
+        const my_pid = std.Thread.getCurrentId();
         var pid_buf: [32]u8 = undefined;
         const my_pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{my_pid}) catch "0";
 
