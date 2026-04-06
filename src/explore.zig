@@ -171,7 +171,7 @@ pub const Explorer = struct {
         while (content_iter.next()) |entry| {
             self.allocator.free(entry.value_ptr.*);
         }
-        self.contents.clearRetainingCapacity();
+        self.contents.clearAndFree();
     }
 
     pub fn releaseSecondaryIndexes(self: *Explorer) void {
