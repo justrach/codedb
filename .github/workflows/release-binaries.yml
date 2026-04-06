@@ -60,15 +60,18 @@ jobs:
           tar -xf zig.tar.xz
           echo "$PWD/${{ matrix.zig_dir }}" >> "$GITHUB_PATH"
 
-      - name: Fetch notarization helper from main
+      - name: Fetch notarization helper from workflow revision
         if: runner.os == 'macOS'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          HELPER_REF: ${{ github.workflow_sha || github.sha }}
         run: |
           set -euo pipefail
           mkdir -p scripts
+          # Use the helper reviewed with this workflow revision, not the rebuilt tag.
           gh api repos/${{ github.repository }}/contents/scripts/notarize-macos.sh \
+            -f ref="$HELPER_REF" \
             -H "Accept: application/vnd.github.raw" > scripts/notarize-macos.sh
           chmod +x scripts/notarize-macos.sh
 
