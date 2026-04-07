@@ -135,33 +135,33 @@ pub const WordIndex = struct {
 
     /// Look up hits, returning results allocated by the caller.
     /// Deduplicates by (path, line_num).
-    pub fn searchDeduped(self: *WordIndex, word: []const u8, allocator: std.mem.Allocator) ![]const WordHit {
-        const hits = self.search(word);
-        if (hits.len == 0) return try allocator.alloc(WordHit, 0);
-        if (hits.len == 1) {
-            var out = try allocator.alloc(WordHit, 1);
-            out[0] = hits[0];
-            return out;
-        }
-
-        const DedupKey = struct { path_ptr: usize, line_num: u32 };
-        var seen = std.AutoHashMap(DedupKey, void).init(allocator);
-        defer seen.deinit();
-        try seen.ensureTotalCapacity(@intCast(hits.len));
-
-        var result: std.ArrayList(WordHit) = .{};
-        errdefer result.deinit(allocator);
-        try result.ensureTotalCapacity(allocator, hits.len);
-
-        for (hits) |hit| {
-            const key = DedupKey{ .path_ptr = @intFromPtr(hit.path.ptr), .line_num = hit.line_num };
-            const gop = try seen.getOrPut(key);
-            if (!gop.found_existing) {
-                result.appendAssumeCapacity(hit);
-            }
-        }
-        return result.toOwnedSlice(allocator);
+pub fn searchDeduped(self: *WordIndex, word: []const u8, allocator: std.mem.Allocator) ![]const WordHit {
+    const hits = self.search(word);
+    if (hits.len == 0) return try allocator.alloc(WordHit, 0);
+    if (hits.len == 1) {
+        var out = try allocator.alloc(WordHit, 1);
+        out[0] = hits[0];
+        return out;
     }
+
+    const DedupKey = struct { path_ptr: usize, line_num: u32 };
+    var seen = std.AutoHashMap(DedupKey, void).init(allocator);
+    defer seen.deinit();
+    try seen.ensureTotalCapacity(@intCast(hits.len));
+
+    var result: std.ArrayList(WordHit) = .{};
+    errdefer result.deinit(allocator);
+    try result.ensureTotalCapacity(allocator, hits.len);
+
+    for (hits) |hit| {
+        const key = DedupKey{ .path_ptr = @intFromPtr(hit.path.ptr), .line_num = hit.line_num };
+        const gop = try seen.getOrPut(key);
+        if (!gop.found_existing) {
+            result.appendAssumeCapacity(hit);
+        }
+    }
+    return result.toOwnedSlice(allocator);
+}
 };
 
 // ── Trigram index ───────────────────────────────────────────
@@ -396,115 +396,115 @@ pub const TrigramIndex = struct {
 
 
     /// Find candidate files that contain ALL trigrams from the query.
-    pub fn candidates(self: *TrigramIndex, query: []const u8, allocator: std.mem.Allocator) ?[]const []const u8 {
-        if (query.len < 3) return null;
+pub fn candidates(self: *TrigramIndex, query: []const u8, allocator: std.mem.Allocator) ?[]const []const u8 {
+    if (query.len < 3) return null;
 
-        const tri_count = query.len - 2;
+    const tri_count = query.len - 2;
 
-        var unique = std.AutoHashMap(Trigram, void).init(allocator);
-        defer unique.deinit();
-        unique.ensureTotalCapacity(@intCast(tri_count)) catch return null;
-        for (0..tri_count) |i| {
-            const tri = packTrigram(
-                normalizeChar(query[i]),
-                normalizeChar(query[i + 1]),
-                normalizeChar(query[i + 2]),
-            );
-            _ = unique.getOrPut(tri) catch return null;
-        }
-
-        var sets: std.ArrayList(*PostingList) = .{};
-        defer sets.deinit(allocator);
-        sets.ensureTotalCapacity(allocator, unique.count()) catch return null;
-
-        var tri_iter = unique.keyIterator();
-        while (tri_iter.next()) |tri_ptr| {
-            const posting_list = self.index.getPtr(tri_ptr.*) orelse {
-                return allocator.alloc([]const u8, 0) catch null;
-            };
-            sets.appendAssumeCapacity(posting_list);
-        }
-
-        if (sets.items.len == 0) {
-            return allocator.alloc([]const u8, 0) catch null;
-        }
-
-        // Sort posting lists by size (smallest first) for efficient intersection
-        std.mem.sort(*PostingList, sets.items, {}, struct {
-            fn lt(_: void, a: *PostingList, b: *PostingList) bool {
-                return a.items.items.len < b.items.items.len;
-            }
-        }.lt);
-
-        // Sorted merge intersection: start with smallest list's doc_ids
-        var result_ids: std.ArrayList(u32) = .{};
-        defer result_ids.deinit(allocator);
-
-        // Seed with doc_ids from smallest posting list
-        result_ids.ensureTotalCapacity(allocator, sets.items[0].items.items.len) catch return null;
-        for (sets.items[0].items.items) |p| {
-            result_ids.appendAssumeCapacity(p.doc_id);
-        }
-
-        // Intersect with each subsequent list (both sorted → merge O(n+m))
-        for (sets.items[1..]) |set| {
-            var write: usize = 0;
-            var si: usize = 0;
-            const set_items = set.items.items;
-            for (result_ids.items) |id| {
-                // Advance set pointer to >= id
-                while (si < set_items.len and set_items[si].doc_id < id) : (si += 1) {}
-                if (si < set_items.len and set_items[si].doc_id == id) {
-                    result_ids.items[write] = id;
-                    write += 1;
-                    si += 1;
-                }
-            }
-            result_ids.items.len = write;
-            if (write == 0) break; // early exit if intersection is empty
-        }
-
-        var result: std.ArrayList([]const u8) = .{};
-        errdefer result.deinit(allocator);
-        result.ensureTotalCapacity(allocator, result_ids.items.len) catch return null;
-
-        next_cand: for (result_ids.items) |doc_id| {
-            // Bloom-filter check for consecutive trigram pairs
-            if (tri_count >= 2) {
-                for (0..tri_count - 1) |j| {
-                    const tri_a = packTrigram(
-                        normalizeChar(query[j]),
-                        normalizeChar(query[j + 1]),
-                        normalizeChar(query[j + 2]),
-                    );
-                    const tri_b = packTrigram(
-                        normalizeChar(query[j + 1]),
-                        normalizeChar(query[j + 2]),
-                        normalizeChar(query[j + 3]),
-                    );
-                    const list_a = self.index.getPtr(tri_a) orelse continue;
-                    const list_b = self.index.getPtr(tri_b) orelse continue;
-                    const mask_a = list_a.getByDocId(doc_id) orelse continue;
-                    const mask_b = list_b.getByDocId(doc_id) orelse continue;
-
-                    const next_bit: u8 = @as(u8, 1) << @intCast(normalizeChar(query[j + 3]) % 8);
-                    if ((mask_a.next_mask & next_bit) == 0) continue :next_cand;
-
-                    const rotated = (mask_a.loc_mask << 1) | (mask_a.loc_mask >> 7);
-                    if ((rotated & mask_b.loc_mask) == 0) continue :next_cand;
-                }
-            }
-
-            if (doc_id < self.id_to_path.items.len) {
-                result.appendAssumeCapacity(self.id_to_path.items[doc_id]);
-            }
-        }
-
-        return result.toOwnedSlice(allocator) catch {
-            result.deinit(allocator);
-            return null;
-        };
+    var unique = std.AutoHashMap(Trigram, void).init(allocator);
+    defer unique.deinit();
+    unique.ensureTotalCapacity(@intCast(tri_count)) catch return null;
+    for (0..tri_count) |i| {
+        const tri = packTrigram(
+            normalizeChar(query[i]),
+            normalizeChar(query[i + 1]),
+            normalizeChar(query[i + 2]),
+        );
+        _ = unique.getOrPut(tri) catch return null;
     }
+
+    var sets: std.ArrayList(*PostingList) = .{};
+    defer sets.deinit(allocator);
+    sets.ensureTotalCapacity(allocator, unique.count()) catch return null;
+
+    var tri_iter = unique.keyIterator();
+    while (tri_iter.next()) |tri_ptr| {
+        const posting_list = self.index.getPtr(tri_ptr.*) orelse {
+            return allocator.alloc([]const u8, 0) catch null;
+        };
+        sets.appendAssumeCapacity(posting_list);
+    }
+
+    if (sets.items.len == 0) {
+        return allocator.alloc([]const u8, 0) catch null;
+    }
+
+    // Sort posting lists by size (smallest first) for efficient intersection
+    std.mem.sort(*PostingList, sets.items, {}, struct {
+        fn lt(_: void, a: *PostingList, b: *PostingList) bool {
+            return a.items.items.len < b.items.items.len;
+        }
+    }.lt);
+
+    // Sorted merge intersection: start with smallest list's doc_ids
+    var result_ids: std.ArrayList(u32) = .{};
+    defer result_ids.deinit(allocator);
+
+    // Seed with doc_ids from smallest posting list
+    result_ids.ensureTotalCapacity(allocator, sets.items[0].items.items.len) catch return null;
+    for (sets.items[0].items.items) |p| {
+        result_ids.appendAssumeCapacity(p.doc_id);
+    }
+
+    // Intersect with each subsequent list (both sorted → merge O(n+m))
+    for (sets.items[1..]) |set| {
+        var write: usize = 0;
+        var si: usize = 0;
+        const set_items = set.items.items;
+        for (result_ids.items) |id| {
+            // Advance set pointer to >= id
+            while (si < set_items.len and set_items[si].doc_id < id) : (si += 1) {}
+            if (si < set_items.len and set_items[si].doc_id == id) {
+                result_ids.items[write] = id;
+                write += 1;
+                si += 1;
+            }
+        }
+        result_ids.items.len = write;
+        if (write == 0) break; // early exit if intersection is empty
+    }
+
+    var result: std.ArrayList([]const u8) = .{};
+    errdefer result.deinit(allocator);
+    result.ensureTotalCapacity(allocator, result_ids.items.len) catch return null;
+
+    next_cand: for (result_ids.items) |doc_id| {
+        // Bloom-filter check for consecutive trigram pairs
+        if (tri_count >= 2) {
+            for (0..tri_count - 1) |j| {
+                const tri_a = packTrigram(
+                    normalizeChar(query[j]),
+                    normalizeChar(query[j + 1]),
+                    normalizeChar(query[j + 2]),
+                );
+                const tri_b = packTrigram(
+                    normalizeChar(query[j + 1]),
+                    normalizeChar(query[j + 2]),
+                    normalizeChar(query[j + 3]),
+                );
+                const list_a = self.index.getPtr(tri_a) orelse continue;
+                const list_b = self.index.getPtr(tri_b) orelse continue;
+                const mask_a = list_a.getByDocId(doc_id) orelse continue;
+                const mask_b = list_b.getByDocId(doc_id) orelse continue;
+
+                const next_bit: u8 = @as(u8, 1) << @intCast(normalizeChar(query[j + 3]) % 8);
+                if ((mask_a.next_mask & next_bit) == 0) continue :next_cand;
+
+                const rotated = (mask_a.loc_mask << 1) | (mask_a.loc_mask >> 7);
+                if ((rotated & mask_b.loc_mask) == 0) continue :next_cand;
+            }
+        }
+
+        if (doc_id < self.id_to_path.items.len) {
+            result.appendAssumeCapacity(self.id_to_path.items[doc_id]);
+        }
+    }
+
+    return result.toOwnedSlice(allocator) catch {
+        result.deinit(allocator);
+        return null;
+    };
+}
 
 
     pub fn candidatesRegex(self: *TrigramIndex, query: *const RegexQuery, allocator: std.mem.Allocator) ?[]const []const u8 {
@@ -2193,4 +2193,3 @@ pub const SparseNgramIndex = struct {
         return @intCast(self.file_ngrams.count());
     }
 };
-
