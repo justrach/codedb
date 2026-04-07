@@ -27,8 +27,11 @@ pub fn isIndexableRoot(path: []const u8) bool {
     if (isExactOrChild(path, "/var/tmp")) return false;
 
     // Block home directory itself (not subdirectories) — prevents 17GB RAM spike (#174)
-    if (std.posix.getenv("HOME")) |home| {
-        if (home.len > 0 and std.mem.eql(u8, path, home)) return false;
+    // std.posix.getenv is unavailable on Windows; use USERPROFILE there.
+    if (comptime builtin.os.tag != .windows) {
+        if (std.posix.getenv("HOME")) |home| {
+            if (home.len > 0 and std.mem.eql(u8, path, home)) return false;
+        }
     }
     // Also block common home patterns directly
     if (std.mem.eql(u8, path, "/root")) return false;
