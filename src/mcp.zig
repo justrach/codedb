@@ -303,6 +303,7 @@ const Session = struct {
     next_id: i64 = 100,
     client_supports_roots: bool = false,
     client_roots_list_changed: bool = false,
+    client_name: ?[]const u8 = null,
     pending_roots_id: ?i64 = null,
     roots: std.ArrayList(Root) = .empty,
 
@@ -407,8 +408,18 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
         s.client_supports_roots = true;
         s.client_roots_list_changed = mcpj.getBool(&r.object, "listChanged");
     }
+    // Extract client identity for agent registration (#37)
+    client_name: {
+        const p = root.get("params") orelse break :client_name;
+        if (p != .object) break :client_name;
+        const ci = p.object.get("clientInfo") orelse break :client_name;
+        if (ci != .object) break :client_name;
+        if (mcpj.getStr(&ci.object, "name")) |name| {
+            s.client_name = name;
+        }
+    }
     writeResult(s.alloc, s.stdout, id,
-        \\{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"codedb","version":"0.2.3"}}
+        \\{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"codedb","version":"0.2.54"}}
     );
 }
 
@@ -963,14 +974,41 @@ fn handleChanges(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
 }
 
 fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer) void {
-    _ = explorer;
     store.mu.lock();
     const file_count = store.files.count();
     store.mu.unlock();
+
+    const index_bytes = telemetry_mod.approxIndexSizeBytes(explorer);
+
+    explorer.mu.lockShared();
+    const outline_count = explorer.outlines.count();
+    const content_count = explorer.contents.count();
+    const trigram_type: []const u8 = switch (explorer.trigram_index) {
+        .heap => "heap",
+        .mmap => "mmap",
+        .mmap_overlay => "mmap+overlay",
+    };
+    const trigram_files = explorer.trigram_index.fileCount();
+    explorer.mu.unlockShared();
+
     const w = out.writer(alloc);
-    w.print("codedb status:\n  seq: {d}\n  files: {d}\n", .{
+    w.print(
+        \\codedb status:
+        \\  seq: {d}
+        \\  files: {d}
+        \\  outlines: {d}
+        \\  contents_cached: {d}
+        \\  trigram_index: {s} ({d} files)
+        \\  index_memory: {d}KB
+        \\
+    , .{
         store.currentSeq(),
         file_count,
+        outline_count,
+        content_count,
+        trigram_type,
+        trigram_files,
+        index_bytes / 1024,
     }) catch {};
 }
 

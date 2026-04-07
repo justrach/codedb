@@ -240,7 +240,7 @@ fn writeLanguages(writer: anytype, language_mask: u16) !void {
     }
 }
 
-fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
+pub fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
     var total: u64 = 0;
 
     var word_iter = explorer.word_index.index.iterator();
