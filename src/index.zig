@@ -1377,22 +1377,30 @@ pub const AnyTrigramIndex = union(enum) {
             .heap => |*h| h.candidates(query, allocator),
             .mmap => |*m| m.candidates(query, allocator),
             .mmap_overlay => |*mo| blk: {
-                // Query both, merge results (overlay may have newer files)
                 const base = mo.base.candidates(query, allocator);
                 const over = mo.overlay.candidates(query, allocator);
                 if (base == null and over == null) break :blk null;
                 if (base == null) break :blk over;
                 if (over == null) break :blk base;
-                // Merge and dedup
+                // Merge and dedup — return null on alloc failure (triggers full scan fallback)
                 var merged = std.StringHashMap(void).init(allocator);
                 defer merged.deinit();
-                for (base.?) |p| merged.put(p, {}) catch {};
-                for (over.?) |p| merged.put(p, {}) catch {};
+                for (base.?) |p| merged.put(p, {}) catch {
+                    allocator.free(base.?);
+                    allocator.free(over.?);
+                    break :blk null;
+                };
+                for (over.?) |p| merged.put(p, {}) catch {
+                    allocator.free(base.?);
+                    allocator.free(over.?);
+                    break :blk null;
+                };
                 allocator.free(base.?);
                 allocator.free(over.?);
                 var result: std.ArrayList([]const u8) = .{};
+                result.ensureTotalCapacity(allocator, merged.count()) catch break :blk null;
                 var it = merged.keyIterator();
-                while (it.next()) |k| result.append(allocator, k.*) catch {};
+                while (it.next()) |k| result.appendAssumeCapacity(k.*);
                 break :blk result.toOwnedSlice(allocator) catch null;
             },
         };
@@ -1410,13 +1418,22 @@ pub const AnyTrigramIndex = union(enum) {
                 if (over == null) break :blk base;
                 var merged = std.StringHashMap(void).init(allocator);
                 defer merged.deinit();
-                for (base.?) |p| merged.put(p, {}) catch {};
-                for (over.?) |p| merged.put(p, {}) catch {};
+                for (base.?) |p| merged.put(p, {}) catch {
+                    allocator.free(base.?);
+                    allocator.free(over.?);
+                    break :blk null;
+                };
+                for (over.?) |p| merged.put(p, {}) catch {
+                    allocator.free(base.?);
+                    allocator.free(over.?);
+                    break :blk null;
+                };
                 allocator.free(base.?);
                 allocator.free(over.?);
                 var result: std.ArrayList([]const u8) = .{};
+                result.ensureTotalCapacity(allocator, merged.count()) catch break :blk null;
                 var it = merged.keyIterator();
-                while (it.next()) |k| result.append(allocator, k.*) catch {};
+                while (it.next()) |k| result.appendAssumeCapacity(k.*);
                 break :blk result.toOwnedSlice(allocator) catch null;
             },
         };
