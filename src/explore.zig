@@ -1555,7 +1555,6 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
                 .kind = .function,
                 .line_start = line_num,
                 .line_end = line_num,
-                .detail = name_copy,
             });
             return;
         }

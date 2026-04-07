@@ -4590,6 +4590,23 @@ test "R: comments skipped correctly" {
 }
 
 
+test "R: anonymous function does not double-free on outline deinit" {
+    // GPA detects double-free; using testing.allocator (not arena) ensures
+    // the bug is caught if name and detail alias the same allocation.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("anon.r",
+        \\function(x) {
+        \\  x + 1
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("anon.r", testing.allocator)) orelse return error.TestUnexpectedResult;
+    // deinit frees sym.name and sym.detail independently — must not alias
+    outline.deinit();
+}
+
 test "issue-150: --help prints usage" {
     const result = try std.process.Child.run(.{
         .allocator = testing.allocator,
