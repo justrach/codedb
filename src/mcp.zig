@@ -539,11 +539,15 @@ fn handleCall(
     const is_error = std.mem.startsWith(u8, out.items, "error:");
     telem.recordToolCall(name, elapsed, is_error, out.items.len);
 
-    // Query tracking: log search/find queries for future ranking
+    // Query + file access tracking WAL
     if (!is_error) {
         if (std.mem.eql(u8, name, "codedb_search") or std.mem.eql(u8, name, "codedb_find") or std.mem.eql(u8, name, "codedb_word")) {
             if (getStr(args, "query") orelse getStr(args, "word")) |q| {
-                logQuery(alloc, name, q, out.items.len);
+                logQuery(name, q, out.items.len, elapsed);
+            }
+        } else if (std.mem.eql(u8, name, "codedb_read") or std.mem.eql(u8, name, "codedb_outline")) {
+            if (getStr(args, "path")) |p| {
+                logFileAccess(name, p, elapsed);
             }
         }
     }
@@ -1597,29 +1601,48 @@ pub fn setQueryLogPath(path: []const u8) void {
     query_log_path = path;
 }
 
-fn logQuery(_: std.mem.Allocator, tool: []const u8, query: []const u8, result_bytes: usize) void {
+fn escapeJsonStr(input: []const u8, out: *[256]u8) usize {
+    var elen: usize = 0;
+    for (input) |c| {
+        if (elen >= out.len - 1) break;
+        if (c == '"') { out[elen] = '\''; elen += 1; }
+        else if (c == '\\') { if (elen + 1 < out.len) { out[elen] = '\\'; out[elen + 1] = '\\'; elen += 2; } }
+        else if (c == '\n' or c == '\r' or c == '\t') { out[elen] = ' '; elen += 1; }
+        else { out[elen] = c; elen += 1; }
+    }
+    return elen;
+}
+
+fn appendToWal(line: []const u8) void {
     const path = query_log_path orelse return;
     const file = std.fs.cwd().openFile(path, .{ .mode = .write_only }) catch blk: {
         break :blk std.fs.cwd().createFile(path, .{}) catch return;
     };
     defer file.close();
     file.seekFromEnd(0) catch return;
-    const ts = std.time.milliTimestamp();
-    // Escape query for JSON safety — replace " with ' and strip newlines
-    var escaped: [256]u8 = undefined;
-    var elen: usize = 0;
-    for (query) |c| {
-        if (elen >= escaped.len - 1) break;
-        if (c == '"') { escaped[elen] = '\''; elen += 1; }
-        else if (c == '\\') { if (elen + 1 < escaped.len) { escaped[elen] = '\\'; escaped[elen + 1] = '\\'; elen += 2; } }
-        else if (c == '\n' or c == '\r' or c == '\t') { escaped[elen] = ' '; elen += 1; }
-        else { escaped[elen] = c; elen += 1; }
-    }
-    var buf: [512]u8 = undefined;
-    const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"tool\":\"{s}\",\"query\":\"{s}\",\"result_bytes\":{d}}}\n", .{
-        ts, tool, escaped[0..elen], result_bytes,
-    }) catch return;
     file.writeAll(line) catch {};
+}
+
+fn logQuery(tool: []const u8, query: []const u8, result_bytes: usize, latency_ns: i128) void {
+    var escaped: [256]u8 = undefined;
+    const elen = escapeJsonStr(query, &escaped);
+    const latency_us: i64 = @intCast(@divTrunc(latency_ns, 1000));
+    var buf: [512]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"ev\":\"query\",\"tool\":\"{s}\",\"query\":\"{s}\",\"result_bytes\":{d},\"latency_us\":{d}}}\n", .{
+        std.time.milliTimestamp(), tool, escaped[0..elen], result_bytes, latency_us,
+    }) catch return;
+    appendToWal(line);
+}
+
+fn logFileAccess(tool: []const u8, file_path: []const u8, latency_ns: i128) void {
+    var escaped: [256]u8 = undefined;
+    const elen = escapeJsonStr(file_path, &escaped);
+    const latency_us: i64 = @intCast(@divTrunc(latency_ns, 1000));
+    var buf: [512]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"ev\":\"access\",\"tool\":\"{s}\",\"path\":\"{s}\",\"latency_us\":{d}}}\n", .{
+        std.time.milliTimestamp(), tool, escaped[0..elen], latency_us,
+    }) catch return;
+    appendToWal(line);
 }
 fn globMatch(pattern: []const u8, path: []const u8) bool {
     var pi: usize = 0;

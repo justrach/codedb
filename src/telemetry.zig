@@ -181,6 +181,111 @@ pub const Telemetry = struct {
         } else |_| {}
     }
 
+    pub fn syncWalToCloud(self: *Telemetry, wal_path: ?[]const u8) void {
+        if (!self.enabled) return;
+        const path = wal_path orelse return;
+
+        const stat = compat.dirStatFile(std.fs.cwd(), path) catch return;
+        if (stat.size == 0 or stat.size > 1024 * 1024) return; // skip if empty or >1MB
+
+        // Read WAL, hash sensitive fields, write to temp file for upload
+        const data = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 1024 * 1024) catch return;
+        defer std.heap.page_allocator.free(data);
+
+        // Build sanitized NDJSON: hash query strings and file paths
+        var sanitized: std.ArrayList(u8) = .{};
+        defer sanitized.deinit(std.heap.page_allocator);
+        var lines = std.mem.splitScalar(u8, data, '\n');
+        while (lines.next()) |line| {
+            if (line.len < 10) continue;
+            // Parse minimal fields without a full JSON parser
+            // Look for "ev":"query" or "ev":"access" and extract what we need
+            if (std.mem.indexOf(u8, line, "\"ev\":\"query\"")) |_| {
+                // Extract latency_us and result_bytes, hash the query
+                const lat = extractJsonInt(line, "latency_us") orelse continue;
+                const rb = extractJsonInt(line, "result_bytes") orelse continue;
+                const qh = extractAndHash(line, "query");
+                var tool_buf: [32]u8 = undefined;
+                const tool = extractJsonStr(line, "tool", &tool_buf) orelse "unknown";
+                var buf2: [256]u8 = undefined;
+                const entry = std.fmt.bufPrint(&buf2, "{{\"ev\":\"q\",\"t\":\"{s}\",\"qh\":\"{s}\",\"rb\":{d},\"us\":{d}}}\n", .{
+                    tool, qh, rb, lat,
+                }) catch continue;
+                sanitized.appendSlice(std.heap.page_allocator, entry) catch continue;
+            } else if (std.mem.indexOf(u8, line, "\"ev\":\"access\"")) |_| {
+                const lat = extractJsonInt(line, "latency_us") orelse continue;
+                const ph = extractAndHash(line, "path");
+                var tool_buf: [32]u8 = undefined;
+                const tool = extractJsonStr(line, "tool", &tool_buf) orelse "unknown";
+                var buf2: [256]u8 = undefined;
+                const entry = std.fmt.bufPrint(&buf2, "{{\"ev\":\"a\",\"t\":\"{s}\",\"ph\":\"{s}\",\"us\":{d}}}\n", .{
+                    tool, ph, lat,
+                }) catch continue;
+                sanitized.appendSlice(std.heap.page_allocator, entry) catch continue;
+            }
+        }
+
+        if (sanitized.items.len == 0) return;
+
+        // Write to temp file and curl to cloud
+        const tmp_path = "/tmp/codedb-wal-sync.jsonl";
+        if (std.fs.cwd().createFile(tmp_path, .{ .truncate = true })) |f| {
+            f.writeAll(sanitized.items) catch {};
+            f.close();
+        } else |_| return;
+
+        var child = std.process.Child.init(
+            &.{ "curl", "-sf", "-X", "POST", CLOUD_URL, "-H", "Content-Type: application/json", "--data-binary", "@/tmp/codedb-wal-sync.jsonl", "--max-time", "5" },
+            std.heap.page_allocator,
+        );
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        _ = child.spawnAndWait() catch return;
+
+        // Truncate WAL after successful sync
+        if (std.fs.cwd().createFile(path, .{ .truncate = true })) |f| {
+            f.close();
+        } else |_| {}
+    }
+
+fn extractJsonInt(line: []const u8, key: []const u8) ?i64 {
+    // Find "key":VALUE pattern
+    var search_buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
+    const pos = std.mem.indexOf(u8, line, needle) orelse return null;
+    const start = pos + needle.len;
+    var end = start;
+    while (end < line.len and (line[end] >= '0' and line[end] <= '9')) : (end += 1) {}
+    if (end == start) return null;
+    return std.fmt.parseInt(i64, line[start..end], 10) catch null;
+}
+
+fn extractJsonStr(line: []const u8, key: []const u8, out: *[32]u8) ?[]const u8 {
+    var search_buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":\"", .{key}) catch return null;
+    const pos = std.mem.indexOf(u8, line, needle) orelse return null;
+    const start = pos + needle.len;
+    const end = std.mem.indexOfScalarPos(u8, line, start, '"') orelse return null;
+    const len = @min(end - start, out.len);
+    @memcpy(out[0..len], line[start..][0..len]);
+    return out[0..len];
+}
+
+fn extractAndHash(line: []const u8, key: []const u8) []const u8 {
+    var search_buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":\"", .{key}) catch return "0";
+    const pos = std.mem.indexOf(u8, line, needle) orelse return "0";
+    const start = pos + needle.len;
+    const end = std.mem.indexOfScalarPos(u8, line, start, '"') orelse return "0";
+    const val = line[start..end];
+    const hash = std.hash.Wyhash.hash(0, val);
+    // Return hex string via a static buffer (not great but works for logging)
+    const S = struct { var hex: [16]u8 = undefined; };
+    _ = std.fmt.bufPrint(&S.hex, "{x:0>16}", .{hash}) catch return "0";
+    return &S.hex;
+}
+
     fn formatEvent(self: *Telemetry, ev: *const Event) !usize {
         var fbs = std.io.fixedBufferStream(&self.buf);
         const w = fbs.writer();

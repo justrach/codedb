@@ -653,6 +653,9 @@ fn mainImpl() !void {
 
         mcp_server.run(allocator, &store, &explorer, &agents, abs_root, &telem);
 
+        // Sync WAL profiling data to cloud before shutdown
+        telem.syncWalToCloud(if (query_log) |ql| ql else null);
+
         shutdown.store(true, .release);
         if (scan_thread) |st| st.join();
         watch_thread.join();
