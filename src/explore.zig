@@ -258,8 +258,15 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
                 } else continue;
             }
             if (std.mem.startsWith(u8, trimmed, "/*")) {
-                if (std.mem.indexOf(u8, trimmed, "*/") == null) in_block_comment = true;
-                continue;
+                if (std.mem.indexOf(u8, trimmed[2..], "*/")) |close_pos| {
+                    // Single-line /* ... */ — check for code after it
+                    const after = std.mem.trimLeft(u8, trimmed[2 + close_pos + 2 ..], " \t");
+                    if (after.len == 0) continue;
+                    trimmed = after;
+                } else {
+                    in_block_comment = true;
+                    continue;
+                }
             }
         }
 
