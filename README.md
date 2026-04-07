@@ -35,31 +35,28 @@
 
 > **Alpha software — API is stabilizing but may change**
 >
-> codedb works and is used daily in production AI workflows, but:
-> - **Language support** — Zig, Python, TypeScript/JavaScript, Rust, PHP, C# (more planned)
-> - **No auth** — HTTP server binds to localhost only
-> - **Snapshot format** may change between versions
-> - **MCP protocol** is JSON-RPC 2.0 over stdio (stable)
-
 | What works today                                       | What's in progress                       |
 |--------------------------------------------------------|------------------------------------------|
-| 16 MCP tools for full codebase intelligence            | Additional language parsers (HCL/Go)     |
-| Trigram v2: integer doc IDs, batch-accumulate, merge intersect | Incremental segment-based indexing |
-| 538x faster than ripgrep on pre-indexed queries        | WASM target for Cloudflare Workers       |
-| O(1) inverted word index for identifier lookup         | Multi-project support                    |
-| Structural outlines (functions, structs, imports)      | mmap-backed trigram index                |
+| 18 MCP tools for full codebase intelligence            | Additional language parsers (HCL)        |
+| Fuzzy file search with Smith-Waterman scoring          | Config file (`max_versions`, `max_cached`) |
+| Composable search pipelines (`codedb_query`)           | Windows support                          |
+| mmap-backed trigram index (~0 RSS)                     | WASM target for Cloudflare Workers       |
+| mmap overlay for incremental updates                   |                                          |
+| Combo-boost ranking from query history                 |                                          |
+| 538x faster than ripgrep on pre-indexed queries        |                                          |
+| O(1) inverted word index for identifier lookup         |                                          |
+| Structural outlines (functions, structs, imports)      |                                          |
 | Reverse dependency graph                               |                                          |
-| Atomic line-range edits with version tracking          |                                          |
+| Atomic line-range edits with instant re-indexing       |                                          |
 | Auto-registration in Claude, Codex, Gemini, Cursor     |                                          |
-| Polling file watcher with filtered directory walker    |                                          |
+| Process lifecycle: shutdown gates, sub-second exit     |                                          |
 | Portable snapshot for instant MCP startup              |                                          |
-| Singleton MCP with PID lock + 2min idle timeout        |                                          |
+| Home directory blocking (prevents RAM spike)           |                                          |
 | Sensitive file blocking (.env, credentials, keys)      |                                          |
 | Codesigned + notarized macOS binaries                  |                                          |
-| SHA256 checksum verification in installer              |                                          |
+| Query WAL with cloud telemetry sync                    |                                          |
 | Cross-platform: macOS (ARM/x86), Linux (ARM/x86)      |                                          |
-
----
+| `codedb nuke` for clean uninstall                      |                                          |
 
 ## ⚡ Install
 
@@ -113,21 +110,23 @@ codedb hot                            # recently modified files
 
 ## 🔧 MCP Tools
 
-16 tools over the Model Context Protocol (JSON-RPC 2.0 over stdio):
+18 tools over the Model Context Protocol (JSON-RPC 2.0 over stdio):
 
 | Tool | Description |
 |------|-------------|
 | `codedb_tree` | Full file tree with language, line counts, symbol counts |
 | `codedb_outline` | Symbols in a file: functions, structs, imports, with line numbers |
 | `codedb_symbol` | Find where a symbol is defined across the codebase |
-| `codedb_search` | Trigram-accelerated full-text search (supports regex, scoped results) |
+| `codedb_search` | Trigram-accelerated full-text search (supports regex, scoped results, per-file truncation) |
+| `codedb_find` | **New** — Fuzzy file search with typo tolerance (Smith-Waterman). Multi-part queries, extension filters |
+| `codedb_query` | **New** — Composable search pipeline: chain find → filter → outline in one call |
 | `codedb_word` | O(1) inverted index word lookup |
 | `codedb_hot` | Most recently modified files |
 | `codedb_deps` | Reverse dependency graph (which files import this file) |
 | `codedb_read` | Read file content (supports line ranges, hash-based caching) |
-| `codedb_edit` | Apply line-range edits (replace, insert, delete — atomic writes) |
+| `codedb_edit` | Apply line-range edits (replace, insert, delete — atomic writes, instant re-index) |
 | `codedb_changes` | Changed files since a sequence number |
-| `codedb_status` | Index status (file count, current sequence) |
+| `codedb_status` | Index status with memory diagnostics (trigram type, index memory, cache stats) |
 | `codedb_snapshot` | Full pre-rendered JSON snapshot of the codebase |
 | `codedb_bundle` | Batch multiple read-only queries in one call (max 20 ops) |
 | `codedb_remote` | Query any GitHub repo via cloud intelligence — no local clone needed |
