@@ -5151,3 +5151,63 @@ test "per-file truncation: max 5 matches per file in output" {
     // At the explorer level all 10 should be found
     try testing.expect(results.len >= 10);
 }
+
+test "issue-179: block comment does not produce phantom symbols" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("test.zig", "/* commented out\npub fn fake_func() void {}\n*/\npub fn real_func() void {}\n");
+
+    const outline = (try explorer.getOutline("test.zig", testing.allocator)).?;
+    defer {
+        var o = outline;
+        o.deinit();
+    }
+    var found_real = false;
+    var found_fake = false;
+    for (outline.symbols.items) |sym| {
+        if (std.mem.indexOf(u8, sym.name, "real_func") != null) found_real = true;
+        if (std.mem.indexOf(u8, sym.name, "fake_func") != null) found_fake = true;
+    }
+    try testing.expect(found_real);
+    try testing.expect(!found_fake);
+}
+
+test "issue-179: code after single-line /* */ comment is parsed" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("test.zig", "/* skip this */ pub fn visible() void {}\n");
+
+    const outline = (try explorer.getOutline("test.zig", testing.allocator)).?;
+    defer {
+        var o = outline;
+        o.deinit();
+    }
+    var found = false;
+    for (outline.symbols.items) |sym| {
+        if (std.mem.indexOf(u8, sym.name, "visible") != null) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "issue-179: Python docstring with text does not leak symbols" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("test.py", "def real():\n    \"\"\"This is a docstring.\n    def fake():\n        pass\n    \"\"\"\n    pass\n");
+
+    const outline = (try explorer.getOutline("test.py", testing.allocator)).?;
+    defer {
+        var o = outline;
+        o.deinit();
+    }
+    var found_real = false;
+    var found_fake = false;
+    for (outline.symbols.items) |sym| {
+        if (std.mem.indexOf(u8, sym.name, "real") != null) found_real = true;
+        if (std.mem.indexOf(u8, sym.name, "fake") != null) found_fake = true;
+    }
+    try testing.expect(found_real);
+    try testing.expect(!found_fake);
+}
