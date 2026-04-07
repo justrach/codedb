@@ -605,6 +605,10 @@ fn mainImpl() !void {
 
         saveProjectInfo(allocator, data_dir, abs_root) catch {};
 
+        // Set up query tracking WAL
+        const query_log = std.fmt.allocPrint(allocator, "{s}/queries.log", .{data_dir}) catch null;
+        if (query_log) |ql| mcp_server.setQueryLogPath(ql);
+
         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
         const snapshot_loaded = blk: {
             const snap_head = snapshot_mod.readSnapshotGitHead("codedb.snapshot") orelse {

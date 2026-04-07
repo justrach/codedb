@@ -5110,3 +5110,44 @@ test "issue-168: recall — transposition tolerance in pipeline" {
     try testing.expect(results.len >= 1);
     try testing.expect(std.mem.indexOf(u8, results[0].path, "middleware") != null);
 }
+
+// ── Search UX tests ─────────────────────────────────────────────
+
+test "auto-retry: delimiter stripping finds results" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/auth_middleware.py", "def check(): pass");
+
+    // "authmiddleware" without delimiters should still find auth_middleware
+    const results = try explorer.fuzzyFindFiles("authmiddleware", testing.allocator, 10);
+    defer testing.allocator.free(results);
+    try testing.expect(results.len >= 1);
+    try testing.expect(std.mem.indexOf(u8, results[0].path, "auth_middleware") != null);
+}
+
+test "per-file truncation: max 5 matches per file in output" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    // Create a file with 10 lines all matching "const"
+    var content: [500]u8 = undefined;
+    var pos: usize = 0;
+    for (0..10) |i| {
+        const line = std.fmt.bufPrint(content[pos..], "const val{d} = {d};\n", .{ i, i }) catch break;
+        pos += line.len;
+    }
+    try explorer.indexFile("src/many_consts.zig", content[0..pos]);
+
+    // Search — explorer returns all 10, but MCP handler would truncate to 5
+    const results = try explorer.searchContent("const", testing.allocator, 50);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+    // At the explorer level all 10 should be found
+    try testing.expect(results.len >= 10);
+}

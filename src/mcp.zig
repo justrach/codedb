@@ -538,6 +538,15 @@ fn handleCall(
 
     const is_error = std.mem.startsWith(u8, out.items, "error:");
     telem.recordToolCall(name, elapsed, is_error, out.items.len);
+
+    // Query tracking: log search/find queries for future ranking
+    if (!is_error) {
+        if (std.mem.eql(u8, name, "codedb_search") or std.mem.eql(u8, name, "codedb_find") or std.mem.eql(u8, name, "codedb_word")) {
+            if (getStr(args, "query") orelse getStr(args, "word")) |q| {
+                logQuery(alloc, name, q, out.items.len);
+            }
+        }
+    }
     if (is_notification) return;
 
     // Block 1: Human-readable colored summary (ANSI — preview pane always renders it)
@@ -753,9 +762,26 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
 
         const w = out.writer(alloc);
         w.print("{d} results for '{s}':\n", .{ results.len, query }) catch {};
+        var file_counts = std.StringHashMap(u8).init(alloc);
+        defer file_counts.deinit();
+        const max_per_file: u8 = 5;
+        var shown: usize = 0;
         for (results) |r| {
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            const gop = file_counts.getOrPut(r.path) catch continue;
+            if (!gop.found_existing) gop.value_ptr.* = 0;
+            gop.value_ptr.* += 1;
+            if (gop.value_ptr.* > max_per_file) {
+                if (gop.value_ptr.* == max_per_file + 1) {
+                    w.print("  {s}: ... (more matches truncated)\n", .{r.path}) catch {};
+                }
+                continue;
+            }
             w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+            shown += 1;
+        }
+        if (shown < results.len) {
+            w.print("({d} shown, {d} truncated)\n", .{ shown, results.len - shown }) catch {};
         }
     }
 }
@@ -1346,11 +1372,32 @@ fn handleFind(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
         else => 10,
     } else 10;
 
-    const matches = explorer.fuzzyFindFiles(query, alloc, max_results) catch {
+    var matches = explorer.fuzzyFindFiles(query, alloc, max_results) catch {
         out.appendSlice(alloc, "error: search failed") catch {};
         return;
     };
     defer alloc.free(matches);
+
+    // Auto-retry: if no results, try broadening the query
+    var broadened_buf: [256]u8 = undefined;
+    if (matches.len == 0 and query.len > 3) {
+        // Try stripping delimiters: auth_middleware → authmiddleware
+        var blen: usize = 0;
+        for (query) |c| {
+            if (c != '_' and c != '-' and c != '.' and blen < broadened_buf.len) {
+                broadened_buf[blen] = c;
+                blen += 1;
+            }
+        }
+        if (blen > 0 and blen != query.len) {
+            const broadened = broadened_buf[0..blen];
+            const retry = explorer.fuzzyFindFiles(broadened, alloc, max_results) catch null;
+            if (retry) |r| {
+                alloc.free(matches);
+                matches = r;
+            }
+        }
+    }
 
     if (matches.len == 0) {
         out.appendSlice(alloc, "no matches") catch {};
@@ -1542,6 +1589,38 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
 }
 
 
+
+// Query tracking — append-only WAL in ~/.codedb/projects/<hash>/queries.log
+var query_log_path: ?[]const u8 = null;
+
+pub fn setQueryLogPath(path: []const u8) void {
+    query_log_path = path;
+}
+
+fn logQuery(_: std.mem.Allocator, tool: []const u8, query: []const u8, result_bytes: usize) void {
+    const path = query_log_path orelse return;
+    const file = std.fs.cwd().openFile(path, .{ .mode = .write_only }) catch blk: {
+        break :blk std.fs.cwd().createFile(path, .{}) catch return;
+    };
+    defer file.close();
+    file.seekFromEnd(0) catch return;
+    const ts = std.time.milliTimestamp();
+    // Escape query for JSON safety — replace " with ' and strip newlines
+    var escaped: [256]u8 = undefined;
+    var elen: usize = 0;
+    for (query) |c| {
+        if (elen >= escaped.len - 1) break;
+        if (c == '"') { escaped[elen] = '\''; elen += 1; }
+        else if (c == '\\') { if (elen + 1 < escaped.len) { escaped[elen] = '\\'; escaped[elen + 1] = '\\'; elen += 2; } }
+        else if (c == '\n' or c == '\r' or c == '\t') { escaped[elen] = ' '; elen += 1; }
+        else { escaped[elen] = c; elen += 1; }
+    }
+    var buf: [512]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"tool\":\"{s}\",\"query\":\"{s}\",\"result_bytes\":{d}}}\n", .{
+        ts, tool, escaped[0..elen], result_bytes,
+    }) catch return;
+    file.writeAll(line) catch {};
+}
 fn globMatch(pattern: []const u8, path: []const u8) bool {
     var pi: usize = 0;
     var gi: usize = 0;

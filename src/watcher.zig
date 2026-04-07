@@ -116,6 +116,14 @@ const skip_dirs = [_][]const u8{
     ".DS_Store",
     "bundle",
     ".bundle",
+    ".swc",
+    ".terraform",
+    ".serverless",
+    "elm-stuff",
+    ".stack-work",
+    ".cabal-sandbox",
+    ".cargo",
+    "bower_components",
 };
 
 fn shouldSkip(path: []const u8) bool {
