@@ -240,7 +240,7 @@ fn writeLanguages(writer: anytype, language_mask: u16) !void {
     }
 }
 
-fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
+pub fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
     var total: u64 = 0;
 
     var word_iter = explorer.word_index.index.iterator();
@@ -268,6 +268,13 @@ fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
             }
         },
         .mmap => {},
+        .mmap_overlay => |*mo| {
+            var trigram_iter = mo.overlay.index.iterator();
+            while (trigram_iter.next()) |entry| {
+                total +|= @sizeOf(@TypeOf(entry.key_ptr.*));
+                total +|= entry.value_ptr.count() * (@sizeOf(usize) + @sizeOf(index.PostingMask));
+            }
+        },
     }
 
     var sparse_iter = explorer.sparse_ngram_index.index.iterator();
