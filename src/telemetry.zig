@@ -82,15 +82,13 @@ pub const Telemetry = struct {
         if ((next + 1) -% tail > RING_SIZE) {
             self.tail.store((next + 1) -% RING_SIZE, .monotonic);
         }
+        self.call_count += 1;
+        const should_flush = self.call_count % 3 == 0;
+        const should_sync = self.call_count % 10 == 0;
         self.write_lock.unlock();
 
-        self.call_count += 1;
-        if (self.call_count % 3 == 0) {
-            self.flush();
-        }
-        if (self.call_count % 10 == 0) {
-            self.syncToCloud();
-        }
+        if (should_flush) self.flush();
+        if (should_sync) self.syncToCloud();
     }
 
     pub fn recordSessionStart(self: *Telemetry) void {
@@ -159,10 +157,13 @@ pub const Telemetry = struct {
         if (!self.enabled or self.path_len == 0) return;
         const path = self.path_buf[0..self.path_len];
 
+        // Hold lock during file I/O to prevent flush() from writing while we upload+truncate
+        self.write_lock.lock();
+        defer self.write_lock.unlock();
+
         const stat = compat.dirStatFile(std.fs.cwd(), path) catch return;
         if (stat.size == 0) return;
 
-        // Use argv-based exec (no shell interpolation) to avoid injection
         var data_arg_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
         const data_arg = std.fmt.bufPrint(&data_arg_buf, "@{s}", .{path}) catch return;
 
@@ -175,7 +176,6 @@ pub const Telemetry = struct {
         child.stderr_behavior = .Ignore;
         _ = child.spawnAndWait() catch return;
 
-        // Truncate the file after successful sync
         if (std.fs.cwd().createFile(path, .{ .truncate = true })) |f| {
             f.close();
         } else |_| {}

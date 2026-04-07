@@ -1350,12 +1350,27 @@ fn handleIndex(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
     out.appendSlice(alloc, abs_path) catch {};
     if (result.stdout.len > 0) {
         out.appendSlice(alloc, "\n") catch {};
-        // Strip ANSI color codes from stdout for clean MCP output
-        for (result.stdout) |c| {
-            if (c == 0x1b) {
-                // Skip ESC sequences — handled below
+        // Strip ANSI escape sequences
+        var i: usize = 0;
+        while (i < result.stdout.len) {
+            if (result.stdout[i] == 0x1b) {
+                i += 1;
+                if (i < result.stdout.len and result.stdout[i] == '[') {
+                    // CSI sequence: skip until final byte (0x40-0x7E per ECMA-48)
+                    i += 1;
+                    while (i < result.stdout.len) {
+                        const ch = result.stdout[i];
+                        i += 1;
+                        if (ch >= 0x40 and ch <= 0x7E) break;
+                    }
+                } else if (i < result.stdout.len) {
+                    // Fe sequence (ESC + one byte) — skip
+                    i += 1;
+                }
+                // Lone ESC at end — already skipped by i += 1 above
             } else {
-                out.append(alloc, c) catch {};
+                out.append(alloc, result.stdout[i]) catch {};
+                i += 1;
             }
         }
     }

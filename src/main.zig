@@ -323,7 +323,7 @@ fn mainImpl() !void {
 
             if (heads_match) {
                 // Verify file count then load trigram from disk via mmap
-                const current_count = @as(u16, @intCast(@min(explorer.outlines.count(), std.math.maxInt(u16))));
+                const current_count = @as(u32, @intCast(explorer.outlines.count()));
                 if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
                     if (MmapTrigramIndex.initFromDisk(data_dir, allocator)) |loaded| {
                         explorer.mu.lock();
@@ -785,7 +785,7 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
     }
 
     if (heads_match) {
-        const current_count = @as(u16, @intCast(@min(explorer.outlines.count(), std.math.maxInt(u16))));
+        const current_count = @as(u32, @intCast(explorer.outlines.count()));
         if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
             if (MmapTrigramIndex.initFromDisk(data_dir, allocator)) |loaded| {
                 explorer.mu.lock();

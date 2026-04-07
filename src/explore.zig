@@ -212,7 +212,7 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
         line_num += 1;
-        const trimmed = std.mem.trim(u8, line, " \t");
+        var trimmed = std.mem.trim(u8, line, " \t");
 
         // Track Python triple-quote docstrings (#111)
         if (outline.language == .python) {
@@ -221,8 +221,14 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
                 if (triple_count > 0) in_py_docstring = false;
                 continue;
             }
-            // Only skip if the line is JUST a docstring opener (no code before it)
-            if (triple_count == 1 and (std.mem.eql(u8, trimmed, "\"\"\"") or std.mem.eql(u8, trimmed, "'''"))) {
+            // Detect docstring/triple-quoted string open
+            if (triple_count >= 2) {
+                // Single-line: """text""" or x = """text""" — skip, no state change
+                continue;
+            }
+            if (triple_count == 1) {
+                // Unmatched triple-quote anywhere on line opens multi-line mode
+                // Catches: """text, '''text, x = """, etc.
                 in_py_docstring = true;
                 continue;
             }
@@ -237,14 +243,18 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
             if (startsWith(line, "=begin")) { in_py_docstring = true; continue; }
         }
 
-        // Track JS/TS block comments (#113)
-        if (outline.language == .typescript or outline.language == .javascript or outline.language == .go_lang) {
+        // Track block comments for all languages that use /* */
+        if (outline.language == .typescript or outline.language == .javascript or
+            outline.language == .go_lang or outline.language == .c or
+            outline.language == .cpp or outline.language == .rust or
+            outline.language == .zig)
+        {
             if (in_block_comment) {
                 if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
                     in_block_comment = false;
-                    // If there's code after */, don't skip — fall through to parse it
                     const after = std.mem.trimLeft(u8, trimmed[close_pos + 2 ..], " \t");
                     if (after.len == 0) continue;
+                    trimmed = after; // parse code after */ on the same line
                 } else continue;
             }
             if (std.mem.startsWith(u8, trimmed, "/*")) {
