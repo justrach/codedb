@@ -175,8 +175,8 @@ main() {
   printf "  ${D}install${N}   $INSTALL_DIR\n"
   echo ""
 
-  local url="$BASE_URL/v${version}/codedb-${platform}${ext}"
-  local checksum_url="$BASE_URL/v${version}/checksums.sha256"
+  local url="https://github.com/justrach/codedb/releases/download/v${version}/codedb-${platform}${ext}"
+  local checksum_url="https://github.com/justrach/codedb/releases/download/v${version}/checksums.sha256"
   local dest="$INSTALL_DIR/codedb${ext}"
 
   printf "  ${D}│${N} %-12s " "codedb"
