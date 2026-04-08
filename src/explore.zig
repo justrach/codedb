@@ -77,6 +77,7 @@ pub const Language = enum(u8) {
     go_lang,
     php,
     ruby,
+    r_lang,
     markdown,
     json,
     yaml,
@@ -94,6 +95,7 @@ pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".go")) return .go_lang;
     if (std.mem.endsWith(u8, path, ".php")) return .php;
     if (std.mem.endsWith(u8, path, ".rb") or std.mem.endsWith(u8, path, ".rake")) return .ruby;
+    if (std.mem.endsWith(u8, path, ".r") or std.mem.endsWith(u8, path, ".R")) return .r_lang;
     if (std.mem.endsWith(u8, path, ".md")) return .markdown;
     if (std.mem.endsWith(u8, path, ".json")) return .json;
     if (std.mem.endsWith(u8, path, ".yaml") or std.mem.endsWith(u8, path, ".yml")) return .yaml;
@@ -305,6 +307,8 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
             }
         } else if (outline.language == .ruby) {
             try self.parseRubyLine(trimmed, line_num, &outline);
+        } else if (outline.language == .r_lang) {
+            try self.parseRLine(trimmed, line_num, &outline);
         }
 
         prev_line_trimmed = trimmed;
@@ -1615,6 +1619,112 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
         }
     }
 
+    fn parseRLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+
+        // library(pkg) / require(pkg)
+        if (startsWith(line, "library(") or startsWith(line, "require(")) {
+            const open = std.mem.indexOfScalar(u8, line, '(').?;
+            if (extractIdent(line[open + 1 ..])) |name| {
+                const import_copy = try a.dupe(u8, name);
+                errdefer a.free(import_copy);
+                try outline.imports.append(a, import_copy);
+            }
+            const symbol_copy = try a.dupe(u8, line);
+            errdefer a.free(symbol_copy);
+            try outline.symbols.append(a, .{
+                .name = symbol_copy,
+                .kind = .import,
+                .line_start = line_num,
+                .line_end = line_num,
+            });
+            return;
+        }
+
+        // Anonymous function: function(...) { ... }
+        if (startsWith(line, "function(")) {
+            const name_copy = try a.dupe(u8, line);
+            errdefer a.free(name_copy);
+            try outline.symbols.append(a, .{
+                .name = name_copy,
+                .kind = .function,
+                .line_start = line_num,
+                .line_end = line_num,
+            });
+            return;
+        }
+
+        // Assignment patterns: name <- ... / name = ...
+        const arrow_pos = std.mem.indexOf(u8, line, " <- ");
+        const eq_pos = std.mem.indexOf(u8, line, " = ");
+        const assign_pos = if (arrow_pos) |p| p else eq_pos;
+        if (assign_pos) |pos| {
+            if (extractIdent(line[0..pos])) |name| {
+                const rhs_start: usize = if (arrow_pos != null) pos + 4 else pos + 3;
+                const rhs_trimmed = std.mem.trimLeft(u8, line[rhs_start..], " \t");
+
+                if (startsWith(rhs_trimmed, "function(")) {
+                    const name_copy = try a.dupe(u8, name);
+                    errdefer a.free(name_copy);
+                    const detail_copy = try a.dupe(u8, line);
+                    errdefer a.free(detail_copy);
+                    try outline.symbols.append(a, .{
+                        .name = name_copy,
+                        .kind = .function,
+                        .line_start = line_num,
+                        .line_end = line_num,
+                        .detail = detail_copy,
+                    });
+                } else if (startsWith(rhs_trimmed, "R6Class(")) {
+                    if (std.mem.indexOf(u8, rhs_trimmed, "classname = ")) |cp| {
+                        const rest = rhs_trimmed[cp + 12 ..];
+                        if (extractStringLiteral(rest)) |class_name| {
+                            const name_copy = try a.dupe(u8, class_name);
+                            errdefer a.free(name_copy);
+                            const detail_copy = try a.dupe(u8, line);
+                            errdefer a.free(detail_copy);
+                            try outline.symbols.append(a, .{
+                                .name = name_copy,
+                                .kind = .struct_def,
+                                .line_start = line_num,
+                                .line_end = line_num,
+                                .detail = detail_copy,
+                            });
+                        }
+                    }
+                } else if (startsWith(rhs_trimmed, "setClass(")) {
+                    if (extractStringLiteral(rhs_trimmed[9..])) |class_name| {
+                        const name_copy = try a.dupe(u8, class_name);
+                        errdefer a.free(name_copy);
+                        const detail_copy = try a.dupe(u8, line);
+                        errdefer a.free(detail_copy);
+                        try outline.symbols.append(a, .{
+                            .name = name_copy,
+                            .kind = .struct_def,
+                            .line_start = line_num,
+                            .line_end = line_num,
+                            .detail = detail_copy,
+                        });
+                    }
+                } else if (startsWith(rhs_trimmed, "setRefClass(")) {
+                    if (extractStringLiteral(rhs_trimmed[12..])) |class_name| {
+                        const name_copy = try a.dupe(u8, class_name);
+                        errdefer a.free(name_copy);
+                        const detail_copy = try a.dupe(u8, line);
+                        errdefer a.free(detail_copy);
+                        try outline.symbols.append(a, .{
+                            .name = name_copy,
+                            .kind = .struct_def,
+                            .line_start = line_num,
+                            .line_end = line_num,
+                            .detail = detail_copy,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
 fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
     var deps: std.ArrayList([]const u8) = .{};
     errdefer deps.deinit(self.allocator);
@@ -1852,7 +1962,7 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
     if (trimmed.len == 0) return true;
     return switch (language) {
         .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
-        .python, .ruby => std.mem.startsWith(u8, trimmed, "#"),
+        .python, .ruby, .r_lang => std.mem.startsWith(u8, trimmed, "#"),
         .javascript, .typescript, .c, .cpp => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
         else => false,
     };
