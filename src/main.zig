@@ -9,6 +9,7 @@ const mcp_server = @import("mcp.zig");
 const sty = @import("style.zig");
 const git_mod = @import("git.zig");
 const TrigramIndex = @import("index.zig").TrigramIndex;
+const WordIndex = @import("index.zig").WordIndex;
 const index_mod = @import("index.zig");
 const snapshot_mod = @import("snapshot.zig");
 const telemetry = @import("telemetry.zig");
@@ -163,6 +164,7 @@ fn mainImpl() !void {
 
         // Try loading from codedb.snapshot if it exists and git HEAD matches.
         const snapshot_path = "codedb.snapshot";
+        const snapshot_t0 = std.time.nanoTimestamp();
         const snapshot_loaded = blk: {
             const snap_head = snapshot_mod.readSnapshotGitHead(snapshot_path) orelse {
                 // No git HEAD in snapshot (non-git project or missing) — load if current project also has no git
@@ -173,17 +175,21 @@ fn mainImpl() !void {
             if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
             break :blk snapshot_mod.loadSnapshot(snapshot_path, &explorer, &store, allocator);
         };
+        const snapshot_elapsed = std.time.nanoTimestamp() - snapshot_t0;
 
         if (snapshot_loaded) {
-            const t_scan = std.time.nanoTimestamp();
+            if (std.mem.eql(u8, cmd, "search")) {
+                loadTrigramFromDiskIfPresent(&explorer, data_dir, allocator);
+            } else if (std.mem.eql(u8, cmd, "word")) {
+                loadWordIndexFromDiskIfPresent(&explorer, data_dir, git_head, allocator);
+            }
             var dur_buf: [64]u8 = undefined;
-            const scan_elapsed = std.time.nanoTimestamp() - t_scan;
             out.p("{s}\xe2\x9c\x93{s} {s}loaded snapshot{s}  {s}{d} files{s}  {s}{s}{s}\n", .{
-                s.green,                                    s.reset,
-                s.bold,                                     s.reset,
-                s.dim,                                      explorer.outlines.count(),
-                s.reset,                                    sty.durationColor(s, scan_elapsed),
-                sty.formatDuration(&dur_buf, scan_elapsed), s.reset,
+                s.green,                                        s.reset,
+                s.bold,                                         s.reset,
+                s.dim,                                          explorer.outlines.count(),
+                s.reset,                                        sty.durationColor(s, snapshot_elapsed),
+                sty.formatDuration(&dur_buf, snapshot_elapsed), s.reset,
             });
         } else {
             const disk_hdr = TrigramIndex.readDiskHeader(data_dir, allocator) catch null;
@@ -449,6 +455,15 @@ fn mainImpl() !void {
             out.p("{s}\xe2\x9c\x97{s} snapshot failed: {}\n", .{ s.red, s.reset, err });
             std.process.exit(1);
         };
+        const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
+        loadWordIndexFromDiskIfPresent(&explorer, data_dir, git_head, allocator);
+        if (!explorer.wordIndexIsComplete()) {
+            explorer.rebuildWordIndex() catch |err| {
+                out.p("{s}\xe2\x9c\x97{s} word index rebuild failed: {}\n", .{ s.red, s.reset, err });
+                std.process.exit(1);
+            };
+        }
+        persistWordIndexToDisk(&explorer, data_dir, git_head);
         const elapsed = std.time.nanoTimestamp() - t0;
         var dur_buf: [64]u8 = undefined;
         out.p("{s}\xe2\x9c\x93{s} {s}snapshot{s}  {s}{s}{s}  {s}{d} files{s}  {s}{s}{s}\n", .{
@@ -489,6 +504,7 @@ fn mainImpl() !void {
         saveProjectInfo(allocator, data_dir, abs_root) catch {};
 
         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
+        const startup_t0 = std.time.milliTimestamp();
         const snapshot_loaded = blk: {
             const snap_head = snapshot_mod.readSnapshotGitHead("codedb.snapshot") orelse {
                 if (git_head != null) break :blk false;
@@ -517,11 +533,11 @@ fn mainImpl() !void {
         defer allocator.destroy(queue);
         queue.* = watcher.EventQueue{};
         var scan_thread: ?std.Thread = null;
-        const startup_t0 = std.time.milliTimestamp();
         if (!snapshot_loaded) {
             scan_thread = try std.Thread.spawn(.{}, scanBg, .{ &store, &explorer, root, allocator, &scan_done, data_dir, abs_root, &telem, startup_t0 });
         } else {
             const startup_time_ms: u64 = @intCast(@max(std.time.milliTimestamp() - startup_t0, 0));
+            loadTrigramFromDiskIfPresent(&explorer, data_dir, allocator);
             telem.recordCodebaseStats(&explorer, startup_time_ms);
         }
 
@@ -570,6 +586,68 @@ fn getDataDir(allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {
         std.log.warn("could not create data dir {s}: {}", .{ dir, err });
     };
     return dir;
+}
+
+fn loadTrigramFromDiskIfPresent(explorer: *Explorer, data_dir: []const u8, allocator: std.mem.Allocator) void {
+    explorer.mu.lockShared();
+    const already_loaded = explorer.trigram_index.fileCount() > 0;
+    explorer.mu.unlockShared();
+    if (already_loaded) return;
+
+    if (TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+        explorer.mu.lock();
+        defer explorer.mu.unlock();
+        explorer.trigram_index.deinit();
+        explorer.trigram_index = loaded;
+    }
+}
+
+fn loadWordIndexFromDiskIfPresent(
+    explorer: *Explorer,
+    data_dir: []const u8,
+    current_git_head: ?[40]u8,
+    allocator: std.mem.Allocator,
+) void {
+    if (!explorer.wordIndexCanLoadFromDisk()) return;
+
+    const header = WordIndex.readDiskHeader(data_dir, allocator) catch null orelse {
+        explorer.disableWordIndexDiskLoad();
+        return;
+    };
+
+    explorer.mu.lockShared();
+    const current_count = @as(u32, @intCast(explorer.outlines.count()));
+    explorer.mu.unlockShared();
+    if (header.file_count != current_count) {
+        explorer.disableWordIndexDiskLoad();
+        return;
+    }
+
+    const heads_match = blk: {
+        if (current_git_head == null and header.git_head == null) break :blk true;
+        if (current_git_head == null or header.git_head == null) break :blk false;
+        break :blk std.mem.eql(u8, &current_git_head.?, &header.git_head.?);
+    };
+    if (!heads_match) {
+        explorer.disableWordIndexDiskLoad();
+        return;
+    }
+
+    if (WordIndex.readFromDisk(data_dir, allocator)) |loaded| {
+        explorer.replaceWordIndex(loaded);
+    } else {
+        explorer.disableWordIndexDiskLoad();
+    }
+}
+
+fn persistWordIndexToDisk(explorer: *Explorer, data_dir: []const u8, git_head: ?[40]u8) void {
+    if (!explorer.wordIndexIsComplete()) return;
+
+    explorer.mu.lockShared();
+    defer explorer.mu.unlockShared();
+    explorer.word_index.writeToDisk(data_dir, git_head) catch |err| {
+        std.log.warn("could not persist word index: {}", .{err});
+    };
 }
 
 fn saveProjectInfo(allocator: std.mem.Allocator, data_dir: []const u8, abs_root: []const u8) !void {
@@ -648,6 +726,8 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
     watcher.initialScan(store, explorer, root, allocator, heads_match) catch |err| {
         std.log.warn("background scan failed: {}", .{err});
     };
+
+    persistWordIndexToDisk(explorer, data_dir, git_head);
 
     if (heads_match) {
         // Verify file count, then load trigram index from disk (skip rebuild)

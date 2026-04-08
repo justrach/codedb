@@ -17,6 +17,7 @@ const edit_mod = @import("edit.zig");
 const idx = @import("index.zig");
 const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
+const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
 // ── Project cache ────────────────────────────────────────────────────────────
 
@@ -24,6 +25,73 @@ const ProjectCtx = struct {
     explorer: *Explorer,
     store: *Store,
 };
+
+fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
+    const hash = std.hash.Wyhash.hash(0, project_path);
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
+        return std.fmt.allocPrint(allocator, "{s}/.codedb", .{project_path}) catch null;
+    };
+    defer allocator.free(home);
+
+    return std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch null;
+}
+
+fn loadProjectTrigramFromDiskIfPresent(explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
+    explorer.mu.lockShared();
+    const already_loaded = explorer.trigram_index.fileCount() > 0;
+    explorer.mu.unlockShared();
+    if (already_loaded) return;
+
+    const data_dir = getProjectDataDir(allocator, project_path) orelse return;
+    defer allocator.free(data_dir);
+
+    if (idx.TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+        explorer.mu.lock();
+        defer explorer.mu.unlock();
+        explorer.trigram_index.deinit();
+        explorer.trigram_index = loaded;
+    }
+}
+
+fn loadProjectWordIndexFromDiskIfPresent(explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
+    if (!explorer.wordIndexCanLoadFromDisk()) return;
+
+    const data_dir = getProjectDataDir(allocator, project_path) orelse {
+        explorer.disableWordIndexDiskLoad();
+        return;
+    };
+    defer allocator.free(data_dir);
+
+    const header = idx.WordIndex.readDiskHeader(data_dir, allocator) catch null orelse {
+        explorer.disableWordIndexDiskLoad();
+        return;
+    };
+
+    explorer.mu.lockShared();
+    const current_count = @as(u32, @intCast(explorer.outlines.count()));
+    explorer.mu.unlockShared();
+    if (header.file_count != current_count) {
+        explorer.disableWordIndexDiskLoad();
+        return;
+    }
+
+    const current_git_head = git_mod.getGitHead(project_path, allocator) catch null;
+    const heads_match = blk: {
+        if (current_git_head == null and header.git_head == null) break :blk true;
+        if (current_git_head == null or header.git_head == null) break :blk false;
+        break :blk std.mem.eql(u8, &current_git_head.?, &header.git_head.?);
+    };
+    if (!heads_match) {
+        explorer.disableWordIndexDiskLoad();
+        return;
+    }
+
+    if (idx.WordIndex.readFromDisk(data_dir, allocator)) |loaded| {
+        explorer.replaceWordIndex(loaded);
+    } else {
+        explorer.disableWordIndexDiskLoad();
+    }
+}
 
 const ProjectCache = struct {
     const MAX_CACHED = 5;
@@ -123,6 +191,8 @@ const ProjectCache = struct {
                 return error.SnapshotLoadFailed;
             }
         }
+
+        loadProjectTrigramFromDiskIfPresent(&new_entry.explorer, p, self.alloc);
 
         // Find free slot or evict LRU
         var target_slot: usize = 0;
@@ -583,6 +653,11 @@ fn dispatch(
         out.appendSlice(alloc, @errorName(err)) catch {};
         return;
     };
+
+    if (tool == .codedb_word) {
+        const effective_project = project_path orelse cache.default_path;
+        loadProjectWordIndexFromDiskIfPresent(ctx.explorer, effective_project, alloc);
+    }
 
     switch (tool) {
         .codedb_tree => handleTree(alloc, out, ctx.explorer),
@@ -1072,7 +1147,10 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
     const valid_actions = [_][]const u8{ "tree", "outline", "search", "meta" };
     var action_valid = false;
     for (valid_actions) |va| {
-        if (std.mem.eql(u8, action, va)) { action_valid = true; break; }
+        if (std.mem.eql(u8, action, va)) {
+            action_valid = true;
+            break;
+        }
     }
     if (!action_valid) {
         out.appendSlice(alloc, "error: invalid action, must be one of: tree, outline, search, meta") catch {};
