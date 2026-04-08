@@ -23,6 +23,7 @@ pub const Style = struct {
         if (std.mem.eql(u8, lang, "rust")) return self.orange;
         if (std.mem.eql(u8, lang, "python")) return self.blue;
         if (std.mem.eql(u8, lang, "c") or std.mem.eql(u8, lang, "cpp")) return self.blue;
+        if (std.mem.eql(u8, lang, "csharp")) return self.magenta;
         if (std.mem.eql(u8, lang, "markdown")) return self.dim;
         if (std.mem.eql(u8, lang, "json") or std.mem.eql(u8, lang, "yaml")) return self.dim;
         return self.dim; // unknown

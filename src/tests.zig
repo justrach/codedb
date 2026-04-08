@@ -879,6 +879,73 @@ test "explorer: typescript parser" {
     try testing.expect(outline.symbols.items.len >= 3);
 }
 
+test "explorer: csharp parser" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("Program.cs",
+        \\using System;
+        \\using System.Collections.Generic;
+        \\namespace MyApp
+        \\{
+        \\    public class Program
+        \\    {
+        \\        public static void Main(string[] args)
+        \\        {
+        \\        }
+        \\        private int Calculate(int x)
+        \\        {
+        \\            return x * 2;
+        \\        }
+        \\    }
+        \\    public interface IService
+        \\    {
+        \\        void Execute();
+        \\    }
+        \\    public enum Status
+        \\    {
+        \\        Active,
+        \\        Inactive,
+        \\    }
+        \\    public struct Point
+        \\    {
+        \\        public int X;
+        \\        public int Y;
+        \\    }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("Program.cs", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expect(outline.language == .csharp);
+    // using System, using System.Collections.Generic, namespace MyApp, class Program,
+    // Main, Calculate, interface IService, Execute, enum Status, struct Point
+    try testing.expect(outline.symbols.items.len >= 10);
+
+    // Verify specific symbol kinds
+    var has_class = false;
+    var has_method = false;
+    var has_interface = false;
+    var has_enum = false;
+    var has_struct = false;
+    var has_using = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .struct_def and std.mem.eql(u8, sym.name, "Program")) has_class = true;
+        if (sym.kind == .method and std.mem.eql(u8, sym.name, "Main")) has_method = true;
+        if (sym.kind == .trait_def and std.mem.eql(u8, sym.name, "IService")) has_interface = true;
+        if (sym.kind == .enum_def and std.mem.eql(u8, sym.name, "Status")) has_enum = true;
+        if (sym.kind == .struct_def and std.mem.eql(u8, sym.name, "Point")) has_struct = true;
+        if (sym.kind == .import) has_using = true;
+    }
+    try testing.expect(has_class);
+    try testing.expect(has_method);
+    try testing.expect(has_interface);
+    try testing.expect(has_enum);
+    try testing.expect(has_struct);
+    try testing.expect(has_using);
+}
+
 // ── Version tests ───────────────────────────────────────────
 
 test "file versions: append and latest" {
@@ -2020,6 +2087,7 @@ test "detectLanguage: all supported extensions" {
     try testing.expect(explore.detectLanguage("comp.tsx") == .typescript);
     try testing.expect(explore.detectLanguage("main.rs") == .rust);
     try testing.expect(explore.detectLanguage("main.go") == .go_lang);
+    try testing.expect(explore.detectLanguage("Program.cs") == .csharp);
     try testing.expect(explore.detectLanguage("README.md") == .markdown);
     try testing.expect(explore.detectLanguage("pkg.json") == .json);
     try testing.expect(explore.detectLanguage("config.yaml") == .yaml);

@@ -77,6 +77,7 @@ pub const Language = enum(u8) {
     go_lang,
     php,
     ruby,
+    csharp,
     markdown,
     json,
     yaml,
@@ -94,6 +95,7 @@ pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".go")) return .go_lang;
     if (std.mem.endsWith(u8, path, ".php")) return .php;
     if (std.mem.endsWith(u8, path, ".rb") or std.mem.endsWith(u8, path, ".rake")) return .ruby;
+    if (std.mem.endsWith(u8, path, ".cs")) return .csharp;
     if (std.mem.endsWith(u8, path, ".md")) return .markdown;
     if (std.mem.endsWith(u8, path, ".json")) return .json;
     if (std.mem.endsWith(u8, path, ".yaml") or std.mem.endsWith(u8, path, ".yml")) return .yaml;
@@ -280,6 +282,8 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
             try self.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
         } else if (outline.language == .php) {
             try self.parsePhpLine(trimmed, line_num, &outline, &php_state);
+        } else if (outline.language == .csharp) {
+            try self.parseCSharpLine(trimmed, line_num, &outline);
         } else if (outline.language == .go_lang) {
             // Handle Go import block: import ( "fmt" \n "net/http" )
             if (in_go_import_block) {
@@ -367,7 +371,6 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
             self.sparse_ngram_index.removeFile(stable_path);
         }
     }
-
 
     try self.rebuildDepsFor(stable_path, &outline);
 
@@ -1475,14 +1478,11 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
 
     fn parseGoLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
         const a = self.allocator;
-        // func name( or func (receiver) name(
+
         if (startsWith(line, "func ")) {
-            // Skip "func (" for function literals
             const rest = line[5..];
-            // Method with receiver: func (r *Type) Name(
             var name_start = rest;
             if (rest.len > 0 and rest[0] == '(') {
-                // Skip past receiver: find ") "
                 if (std.mem.indexOf(u8, rest, ") ")) |close| {
                     name_start = rest[close + 2..];
                 }
@@ -1503,14 +1503,13 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
         } else if (startsWith(line, "type ")) {
             const rest = line[5..];
             if (extractIdent(rest)) |name| {
-                const kind: SymbolKind = .struct_def;
                 const name_copy = try a.dupe(u8, name);
                 errdefer a.free(name_copy);
                 const detail_copy = try a.dupe(u8, line);
                 errdefer a.free(detail_copy);
                 try outline.symbols.append(a, .{
                     .name = name_copy,
-                    .kind = kind,
+                    .kind = .struct_def,
                     .line_start = line_num,
                     .line_end = line_num,
                     .detail = detail_copy,
@@ -1551,8 +1550,8 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
 
     fn parseRubyLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
         const a = self.allocator;
+
         if (startsWith(line, "def ")) {
-            // Handle "def self.method_name" — skip past "self."
             var name_start = line[4..];
             if (startsWith(name_start, "self.")) {
                 name_start = name_start[5..];
@@ -1615,6 +1614,227 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
         }
     }
 
+    fn parseCSharpLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+
+        if (startsWith(line, "using ")) {
+            const symbol_copy = try a.dupe(u8, line);
+            errdefer a.free(symbol_copy);
+            try outline.symbols.append(a, .{
+                .name = symbol_copy,
+                .kind = .import,
+                .line_start = line_num,
+                .line_end = line_num,
+            });
+            const import_copy = try a.dupe(u8, line);
+            errdefer a.free(import_copy);
+            try outline.imports.append(a, import_copy);
+            return;
+        }
+
+        if (startsWith(line, "namespace ")) {
+            if (extractIdent(line[10..])) |name| {
+                const name_copy = try a.dupe(u8, name);
+                errdefer a.free(name_copy);
+                const detail_copy = try a.dupe(u8, line);
+                errdefer a.free(detail_copy);
+                try outline.symbols.append(a, .{
+                    .name = name_copy,
+                    .kind = .import,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail_copy,
+                });
+            }
+            return;
+        }
+
+        const stripped = stripCSharpModifiers(line);
+
+        if (startsWith(stripped, "class ")) {
+            if (extractIdent(stripped[6..])) |name| {
+                const name_copy = try a.dupe(u8, name);
+                errdefer a.free(name_copy);
+                const detail_copy = try a.dupe(u8, line);
+                errdefer a.free(detail_copy);
+                try outline.symbols.append(a, .{
+                    .name = name_copy,
+                    .kind = .struct_def,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail_copy,
+                });
+            }
+            return;
+        }
+
+        if (startsWith(stripped, "interface ")) {
+            if (extractIdent(stripped[10..])) |name| {
+                const name_copy = try a.dupe(u8, name);
+                errdefer a.free(name_copy);
+                const detail_copy = try a.dupe(u8, line);
+                errdefer a.free(detail_copy);
+                try outline.symbols.append(a, .{
+                    .name = name_copy,
+                    .kind = .trait_def,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail_copy,
+                });
+            }
+            return;
+        }
+
+        if (startsWith(stripped, "struct ")) {
+            if (extractIdent(stripped[7..])) |name| {
+                const name_copy = try a.dupe(u8, name);
+                errdefer a.free(name_copy);
+                const detail_copy = try a.dupe(u8, line);
+                errdefer a.free(detail_copy);
+                try outline.symbols.append(a, .{
+                    .name = name_copy,
+                    .kind = .struct_def,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail_copy,
+                });
+            }
+            return;
+        }
+
+        if (startsWith(stripped, "enum ")) {
+            if (extractIdent(stripped[5..])) |name| {
+                const name_copy = try a.dupe(u8, name);
+                errdefer a.free(name_copy);
+                const detail_copy = try a.dupe(u8, line);
+                errdefer a.free(detail_copy);
+                try outline.symbols.append(a, .{
+                    .name = name_copy,
+                    .kind = .enum_def,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail_copy,
+                });
+            }
+            return;
+        }
+
+        if (startsWith(stripped, "delegate ")) {
+            if (std.mem.indexOf(u8, stripped, "(")) |paren| {
+                const before_paren = std.mem.trimRight(u8, stripped[9..paren], " \t");
+                if (lastIdent(before_paren)) |name| {
+                    const name_copy = try a.dupe(u8, name);
+                    errdefer a.free(name_copy);
+                    const detail_copy = try a.dupe(u8, line);
+                    errdefer a.free(detail_copy);
+                    try outline.symbols.append(a, .{
+                        .name = name_copy,
+                        .kind = .type_alias,
+                        .line_start = line_num,
+                        .line_end = line_num,
+                        .detail = detail_copy,
+                    });
+                }
+            }
+            return;
+        }
+
+        if (startsWith(stripped, "const ")) {
+            const after = stripped[6..];
+            if (std.mem.indexOf(u8, after, "=")) |eq| {
+                const before_eq = std.mem.trimRight(u8, after[0..eq], " \t");
+                if (lastIdent(before_eq)) |name| {
+                    const name_copy = try a.dupe(u8, name);
+                    errdefer a.free(name_copy);
+                    const detail_copy = try a.dupe(u8, line);
+                    errdefer a.free(detail_copy);
+                    try outline.symbols.append(a, .{
+                        .name = name_copy,
+                        .kind = .constant,
+                        .line_start = line_num,
+                        .line_end = line_num,
+                        .detail = detail_copy,
+                    });
+                }
+            }
+            return;
+        }
+
+        if (std.mem.indexOf(u8, stripped, "(")) |paren| {
+            if (paren > 0) {
+                const control = [_][]const u8{ "if ", "if(", "else ", "for ", "for(", "foreach ", "foreach(", "while ", "while(", "switch ", "switch(", "catch ", "catch(", "return ", "return(", "new ", "throw ", "lock ", "lock(" };
+                for (control) |kw| {
+                    if (startsWith(stripped, kw)) return;
+                }
+                const before_paren = std.mem.trimRight(u8, stripped[0..paren], " \t");
+                if (lastIdent(before_paren)) |name| {
+                    if (std.mem.eql(u8, name, "base") or std.mem.eql(u8, name, "this") or std.mem.eql(u8, name, "value")) return;
+                    const name_copy = try a.dupe(u8, name);
+                    errdefer a.free(name_copy);
+                    const detail_copy = try a.dupe(u8, line);
+                    errdefer a.free(detail_copy);
+                    try outline.symbols.append(a, .{
+                        .name = name_copy,
+                        .kind = .method,
+                        .line_start = line_num,
+                        .line_end = line_num,
+                        .detail = detail_copy,
+                    });
+                }
+            }
+        }
+    }
+
+    fn stripCSharpModifiers(line: []const u8) []const u8 {
+        const modifiers = [_][]const u8{
+            "public ", "private ",  "protected ", "internal ",
+            "static ", "abstract ", "virtual ",   "override ",
+            "sealed ", "async ",    "partial ",   "readonly ",
+            "new ",    "extern ",   "unsafe ",    "volatile ",
+        };
+        var result = line;
+        var changed = true;
+        while (changed) {
+            changed = false;
+            for (modifiers) |mod| {
+                if (std.mem.startsWith(u8, result, mod)) {
+                    result = result[mod.len..];
+                    changed = true;
+                }
+            }
+        }
+        return result;
+    }
+
+    fn lastIdent(s: []const u8) ?[]const u8 {
+        if (s.len == 0) return null;
+        var end = s.len;
+        if (s[end - 1] == '>') {
+            var depth: u32 = 0;
+            var i = end;
+            while (i > 0) : (i -= 1) {
+                if (s[i - 1] == '>') depth += 1;
+                if (s[i - 1] == '<') {
+                    depth -= 1;
+                    if (depth == 0) {
+                        end = i - 1;
+                        break;
+                    }
+                }
+            }
+        }
+        while (end > 0 and s[end - 1] == ']') {
+            if (end >= 2 and s[end - 2] == '[') {
+                end -= 2;
+            } else break;
+        }
+        var ident_end = end;
+        while (ident_end > 0 and (std.ascii.isAlphanumeric(s[ident_end - 1]) or s[ident_end - 1] == '_')) {
+            ident_end -= 1;
+        }
+        if (ident_end == end) return null;
+        return s[ident_end..end];
+    }
 fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
     var deps: std.ArrayList([]const u8) = .{};
     errdefer deps.deinit(self.allocator);
@@ -1851,8 +2071,8 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (trimmed.len == 0) return true;
     return switch (language) {
-        .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
-        .python, .ruby => std.mem.startsWith(u8, trimmed, "#"),
+    .zig, .rust, .go_lang, .csharp => std.mem.startsWith(u8, trimmed, "//"),
+    .python, .ruby => std.mem.startsWith(u8, trimmed, "#"),
         .javascript, .typescript, .c, .cpp => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
         else => false,
     };
