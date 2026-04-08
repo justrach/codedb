@@ -120,6 +120,8 @@ pub const Explorer = struct {
     allocator: std.mem.Allocator,
     word_index_complete: bool = true,
     word_index_can_load_from_disk: bool = false,
+    word_index_generation: u64 = 0,
+    word_index_persisted_generation: u64 = 0,
     mu: std.Thread.RwLock = .{},
     root_dir: ?std.fs.Dir = null,
 
@@ -360,6 +362,9 @@ pub const Explorer = struct {
                 self.word_index_can_load_from_disk = false;
             }
             try self.word_index.indexFile(stable_path, content);
+            if (self.word_index_complete) {
+                self.word_index_generation +%= 1;
+            }
             if (!skip_trigram) {
                 try self.trigram_index.indexFile(stable_path, content);
                 try self.sparse_ngram_index.indexFile(stable_path, content);
@@ -417,6 +422,7 @@ pub const Explorer = struct {
         while (iter.next()) |entry| {
             try self.word_index.indexFile(entry.key_ptr.*, entry.value_ptr.*);
         }
+        self.word_index_generation +%= 1;
         self.word_index_complete = true;
         self.word_index_can_load_from_disk = false;
     }
@@ -450,13 +456,37 @@ pub const Explorer = struct {
         return self.word_index_complete;
     }
 
+    pub fn wordIndexNeedsPersist(self: *Explorer) bool {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        return self.word_index_complete and self.word_index_generation != self.word_index_persisted_generation;
+    }
+
+    pub fn wordIndexGenerationToPersist(self: *Explorer) ?u64 {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        if (!self.word_index_complete) return null;
+        if (self.word_index_generation == self.word_index_persisted_generation) return null;
+        return self.word_index_generation;
+    }
+
+    pub fn markWordIndexPersisted(self: *Explorer, generation: u64) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (self.word_index_complete and self.word_index_generation == generation) {
+            self.word_index_persisted_generation = generation;
+        }
+    }
+
     pub fn replaceWordIndex(self: *Explorer, word_index: WordIndex) void {
         self.mu.lock();
         defer self.mu.unlock();
         self.word_index.deinit();
         self.word_index = word_index;
+        self.word_index_generation +%= 1;
         self.word_index_complete = true;
         self.word_index_can_load_from_disk = false;
+        self.word_index_persisted_generation = self.word_index_generation;
     }
 
     pub fn removeFile(self: *Explorer, path: []const u8) void {
@@ -464,6 +494,8 @@ pub const Explorer = struct {
         defer self.mu.unlock();
         if (!self.word_index_complete) {
             self.word_index_can_load_from_disk = false;
+        } else {
+            self.word_index_generation +%= 1;
         }
         if (self.dep_graph.getPtr(path)) |deps| {
             deps.deinit(self.allocator);
