@@ -217,6 +217,7 @@ pub const Explorer = struct {
         var owned_outline = outline;
         errdefer owned_outline.deinit();
         var persistent_outline = try cloneOutline(&owned_outline, self.allocator);
+        defer owned_outline.deinit();
         errdefer persistent_outline.deinit();
         if (persistent_outline.owns_path) {
             self.allocator.free(persistent_outline.path);
@@ -398,9 +399,11 @@ fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []const 
 pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, content: []const u8) !ParsedFile {
     var parser = Explorer.init(allocator);
     defer parser.deinit();
+    var parsed_outline = try parseOutlineWithParser(&parser, path, content);
+    defer parsed_outline.deinit();
     return .{
         .content = content,
-        .outline = try parseOutlineWithParser(&parser, path, content),
+        .outline = try cloneOutline(&parsed_outline, allocator),
     };
 }
 

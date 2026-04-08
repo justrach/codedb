@@ -424,9 +424,7 @@ pub fn initialScanWithWorkerCount(store: *Store, explorer: *Explorer, root: []co
                 defer arena.deinit();
                 const parsed = try parseInitialScanEntry(root, entry, arena.allocator());
                 if (parsed) |file| {
-                    var outline = file.outline;
-                    defer outline.deinit();
-                    try explorer.commitParsedFileOwnedOutline(file.path, file.content, outline, true, file.skip_trigram);
+                    try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
                 }
             }
         }
@@ -456,9 +454,7 @@ pub fn initialScanWithWorkerCount(store: *Store, explorer: *Explorer, root: []co
 
     for (workers) |*worker| {
         for (worker.items.items) |file| {
-            var outline = file.outline;
-            defer outline.deinit();
-            try explorer.commitParsedFileOwnedOutline(file.path, file.content, outline, true, file.skip_trigram);
+            try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
         }
     }
 }
