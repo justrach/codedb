@@ -124,6 +124,12 @@ const ProjectCache = struct {
             }
         }
 
+        const fc = new_entry.explorer.outlines.count();
+        if (fc > 1000 or std.process.hasEnvVarConstant("CODEDB_LOW_MEMORY")) {
+            new_entry.explorer.releaseContents();
+            new_entry.explorer.releaseSecondaryIndexes();
+        }
+
         // Find free slot or evict LRU
         var target_slot: usize = 0;
         var found_free = false;
