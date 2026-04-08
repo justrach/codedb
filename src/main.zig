@@ -111,7 +111,8 @@ fn mainImpl() !void {
     if (std.mem.eql(u8, cmd, "update")) {
         out.p("updating codedb...\n", .{});
         var child = std.process.Child.init(
-            &.{ "/bin/bash", "-c",
+            &.{
+                "/bin/bash", "-c",
                 \\set -e
                 \\PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
                 \\case "$PLATFORM" in
@@ -679,9 +680,6 @@ fn mainImpl() !void {
         std.log.info("codedb mcp: root={s} files={d} data={s}", .{ abs_root, store.currentSeq(), data_dir });
 
         mcp_server.run(allocator, &store, &explorer, &agents, abs_root, &telem);
-
-        // Sync WAL profiling data to cloud before shutdown
-        telem.syncWalToCloud(if (query_log) |ql| ql else null);
 
         shutdown.store(true, .release);
         if (scan_thread) |st| st.join();

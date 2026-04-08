@@ -65,6 +65,22 @@ pub const FileOutline = struct {
     }
 };
 
+pub const ParsedFile = struct {
+    content: []const u8,
+    outline: FileOutline,
+
+    pub fn deinit(self: *ParsedFile) void {
+        self.outline.deinit();
+    }
+};
+
+const PhpParseState = struct {
+    in_class: bool = false,
+    brace_depth: i32 = 0,
+    class_brace_depth: i32 = 0,
+    in_block_comment: bool = false,
+};
+
 pub const Language = enum(u8) {
     zig,
     c,
@@ -197,128 +213,19 @@ pub const Explorer = struct {
         return self.indexFileInner(path, content, true, true);
     }
 
-    fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool, skip_trigram: bool) !void {
-        // Parse outline outside the global explorer write lock.
-        // This keeps HTTP/MCP readers from being blocked on line-by-line parsing.
-        var outline = FileOutline.init(self.allocator, path);
-        errdefer outline.deinit();
-        outline.byte_size = content.len;
-
-        var line_num: u32 = 0;
-        var prev_line_trimmed: []const u8 = "";
-        var php_state: PhpParseState = .{};
-        var in_py_docstring = false;
-        var in_block_comment = false;
-        var in_go_import_block = false;
-        var lines = std.mem.splitScalar(u8, content, '\n');
-        while (lines.next()) |line| {
-            line_num += 1;
-            var trimmed = std.mem.trim(u8, line, " \t");
-
-            // Track Python triple-quote docstrings (#111)
-            if (outline.language == .python) {
-                const triple_count = std.mem.count(u8, trimmed, "\"\"\"") + std.mem.count(u8, trimmed, "'''");
-                if (in_py_docstring) {
-                    if (triple_count > 0) in_py_docstring = false;
-                    continue;
-                }
-                // Detect docstring/triple-quoted string open
-                if (triple_count >= 2) {
-                    // Single-line: """text""" or x = """text""" — skip, no state change
-                    continue;
-                }
-                if (triple_count == 1) {
-                    // Unmatched triple-quote anywhere on line opens multi-line mode
-                    // Catches: """text, '''text, x = """, etc.
-                    in_py_docstring = true;
-                    continue;
-                }
-            }
-
-            // Track Ruby =begin/=end block comments (must be at column 0 per Ruby spec)
-            if (outline.language == .ruby) {
-                if (in_py_docstring) {
-                    if (startsWith(line, "=end")) in_py_docstring = false;
-                    continue;
-                }
-                if (startsWith(line, "=begin")) {
-                    in_py_docstring = true;
-                    continue;
-                }
-            }
-
-            // Track block comments for all languages that use /* */
-            if (outline.language == .typescript or outline.language == .javascript or
-                outline.language == .go_lang or outline.language == .c or
-                outline.language == .cpp or outline.language == .rust or
-                outline.language == .zig)
-            {
-                if (in_block_comment) {
-                    if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
-                        in_block_comment = false;
-                        const after = std.mem.trimLeft(u8, trimmed[close_pos + 2 ..], " \t");
-                        if (after.len == 0) continue;
-                        trimmed = after; // parse code after */ on the same line
-                    } else continue;
-                }
-                if (std.mem.startsWith(u8, trimmed, "/*")) {
-                    if (std.mem.indexOf(u8, trimmed[2..], "*/")) |close_pos| {
-                        // Single-line /* ... */ — check for code after it
-                        const after = std.mem.trimLeft(u8, trimmed[2 + close_pos + 2 ..], " \t");
-                        if (after.len == 0) continue;
-                        trimmed = after;
-                    } else {
-                        in_block_comment = true;
-                        continue;
-                    }
-                }
-            }
-
-            if (outline.language == .zig) {
-                try self.parseZigLine(trimmed, line_num, &outline);
-            } else if (outline.language == .python) {
-                try self.parsePythonLine(trimmed, line_num, &outline);
-            } else if (outline.language == .typescript or outline.language == .javascript) {
-                try self.parseTsLine(trimmed, line_num, &outline);
-            } else if (outline.language == .rust) {
-                try self.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
-            } else if (outline.language == .php) {
-                try self.parsePhpLine(trimmed, line_num, &outline, &php_state);
-            } else if (outline.language == .go_lang) {
-                // Handle Go import block: import ( "fmt" \n "net/http" )
-                if (in_go_import_block) {
-                    if (startsWith(trimmed, ")")) {
-                        in_go_import_block = false;
-                    } else if (extractStringLiteral(trimmed)) |imp_path| {
-                        const import_copy = try self.allocator.dupe(u8, imp_path);
-                        errdefer self.allocator.free(import_copy);
-                        try outline.imports.append(self.allocator, import_copy);
-                        const symbol_copy = try self.allocator.dupe(u8, trimmed);
-                        errdefer self.allocator.free(symbol_copy);
-                        try outline.symbols.append(self.allocator, .{
-                            .name = symbol_copy,
-                            .kind = .import,
-                            .line_start = line_num,
-                            .line_end = line_num,
-                        });
-                    }
-                } else if (std.mem.eql(u8, trimmed, "import (")) {
-                    in_go_import_block = true;
-                } else {
-                    try self.parseGoLine(trimmed, line_num, &outline);
-                }
-            } else if (outline.language == .ruby) {
-                try self.parseRubyLine(trimmed, line_num, &outline);
-            }
-
-            prev_line_trimmed = trimmed;
+    pub fn commitParsedFileOwnedOutline(self: *Explorer, path: []const u8, content: []const u8, outline: FileOutline, full_index: bool, skip_trigram: bool) !void {
+        var owned_outline = outline;
+        errdefer owned_outline.deinit();
+        var persistent_outline = try cloneOutline(&owned_outline, self.allocator);
+        errdefer persistent_outline.deinit();
+        if (persistent_outline.owns_path) {
+            self.allocator.free(persistent_outline.path);
+            persistent_outline.owns_path = false;
         }
-        outline.line_count = line_num;
 
         self.mu.lock();
         defer self.mu.unlock();
 
-        // Reuse existing key if file was already indexed, else dupe.
         const outline_gop = try self.outlines.getOrPut(path);
         const is_new = !outline_gop.found_existing;
         var prior_outline: ?FileOutline = if (outline_gop.found_existing)
@@ -332,14 +239,12 @@ pub const Explorer = struct {
             outline_gop.key_ptr.* = duped;
             break :blk duped;
         };
-        // If we added a new entry but later fail, remove it so the map stays consistent.
         errdefer if (is_new) {
             _ = self.outlines.remove(stable_path);
             self.allocator.free(stable_path);
         };
 
-        // Ensure outline path uses the stable map key.
-        outline.path = stable_path;
+        persistent_outline.path = stable_path;
 
         const duped_content = try self.allocator.dupe(u8, content);
         errdefer self.allocator.free(duped_content);
@@ -359,7 +264,6 @@ pub const Explorer = struct {
             }
         }
 
-        // Build search indexes.
         if (full_index) {
             if (!self.word_index_complete) {
                 self.word_index_can_load_from_disk = false;
@@ -372,21 +276,137 @@ pub const Explorer = struct {
                 try self.trigram_index.indexFile(stable_path, content);
                 try self.sparse_ngram_index.indexFile(stable_path, content);
             } else {
-                // Clean stale trigram/sparse entries if file was previously indexed
                 self.trigram_index.removeFile(stable_path);
                 self.sparse_ngram_index.removeFile(stable_path);
             }
         }
 
-        try self.rebuildDepsFor(stable_path, &outline);
+        try self.rebuildDepsFor(stable_path, &persistent_outline);
 
-        outline_gop.value_ptr.* = outline;
-        if (prior_content) |old_content| {
-            self.allocator.free(old_content);
+        outline_gop.value_ptr.* = persistent_outline;
+        if (prior_content) |old_content| self.allocator.free(old_content);
+        if (prior_outline) |*old_outline| old_outline.deinit();
+    }
+
+fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []const u8) !FileOutline {
+    var outline = FileOutline.init(parser.allocator, path);
+    errdefer outline.deinit();
+    outline.byte_size = content.len;
+
+    var line_num: u32 = 0;
+    var prev_line_trimmed: []const u8 = "";
+    var php_state: PhpParseState = .{};
+    var in_py_docstring = false;
+    var in_block_comment = false;
+    var in_go_import_block = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        line_num += 1;
+        var trimmed = std.mem.trim(u8, line, " \t");
+
+        if (outline.language == .python) {
+            const triple_count = std.mem.count(u8, trimmed, "\"\"\"") + std.mem.count(u8, trimmed, "'''");
+            if (in_py_docstring) {
+                if (triple_count > 0) in_py_docstring = false;
+                continue;
+            }
+            if (triple_count >= 2) continue;
+            if (triple_count == 1) {
+                in_py_docstring = true;
+                continue;
+            }
         }
-        if (prior_outline) |*old_outline| {
-            old_outline.deinit();
+
+        if (outline.language == .ruby) {
+            if (in_py_docstring) {
+                if (startsWith(line, "=end")) in_py_docstring = false;
+                continue;
+            }
+            if (startsWith(line, "=begin")) {
+                in_py_docstring = true;
+                continue;
+            }
         }
+
+        if (outline.language == .typescript or outline.language == .javascript or
+            outline.language == .go_lang or outline.language == .c or
+            outline.language == .cpp or outline.language == .rust or
+            outline.language == .zig)
+        {
+            if (in_block_comment) {
+                if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
+                    in_block_comment = false;
+                    const after = std.mem.trimLeft(u8, trimmed[close_pos + 2 ..], " \t");
+                    if (after.len == 0) continue;
+                    trimmed = after;
+                } else continue;
+            }
+            if (std.mem.startsWith(u8, trimmed, "/*")) {
+                if (std.mem.indexOf(u8, trimmed[2..], "*/")) |close_pos| {
+                    const after = std.mem.trimLeft(u8, trimmed[2 + close_pos + 2 ..], " \t");
+                    if (after.len == 0) continue;
+                    trimmed = after;
+                } else {
+                    in_block_comment = true;
+                    continue;
+                }
+            }
+        }
+
+        if (outline.language == .zig) {
+            try parser.parseZigLine(trimmed, line_num, &outline);
+        } else if (outline.language == .python) {
+            try parser.parsePythonLine(trimmed, line_num, &outline);
+        } else if (outline.language == .typescript or outline.language == .javascript) {
+            try parser.parseTsLine(trimmed, line_num, &outline);
+        } else if (outline.language == .rust) {
+            try parser.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
+        } else if (outline.language == .php) {
+            try parser.parsePhpLine(trimmed, line_num, &outline, &php_state);
+        } else if (outline.language == .go_lang) {
+            if (in_go_import_block) {
+                if (startsWith(trimmed, ")")) {
+                    in_go_import_block = false;
+                } else if (extractStringLiteral(trimmed)) |imp_path| {
+                    const import_copy = try parser.allocator.dupe(u8, imp_path);
+                    errdefer parser.allocator.free(import_copy);
+                    try outline.imports.append(parser.allocator, import_copy);
+                    const symbol_copy = try parser.allocator.dupe(u8, trimmed);
+                    errdefer parser.allocator.free(symbol_copy);
+                    try outline.symbols.append(parser.allocator, .{
+                        .name = symbol_copy,
+                        .kind = .import,
+                        .line_start = line_num,
+                        .line_end = line_num,
+                    });
+                }
+            } else if (std.mem.eql(u8, trimmed, "import (")) {
+                in_go_import_block = true;
+            } else {
+                try parser.parseGoLine(trimmed, line_num, &outline);
+            }
+        } else if (outline.language == .ruby) {
+            try parser.parseRubyLine(trimmed, line_num, &outline);
+        }
+
+        prev_line_trimmed = trimmed;
+    }
+    outline.line_count = line_num;
+    return outline;
+}
+
+pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, content: []const u8) !ParsedFile {
+    var parser = Explorer.init(allocator);
+    defer parser.deinit();
+    return .{
+        .content = content,
+        .outline = try parseOutlineWithParser(&parser, path, content),
+    };
+}
+
+    fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool, skip_trigram: bool) !void {
+        const parsed = try parseContentForIndexing(self.allocator, path, content);
+        return self.commitParsedFileOwnedOutline(path, parsed.content, parsed.outline, full_index, skip_trigram);
     }
     /// Rebuild trigram index from the stored file contents.
     /// Used after a cache hit to populate trigrams when they were skipped during the fast scan.
@@ -1376,13 +1396,6 @@ pub const Explorer = struct {
             }
         }
     }
-
-    const PhpParseState = struct {
-        in_class: bool = false,
-        brace_depth: i32 = 0,
-        class_brace_depth: i32 = 0,
-        in_block_comment: bool = false,
-    };
 
     fn parsePhpLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline, state: *PhpParseState) !void {
         const a = self.allocator;

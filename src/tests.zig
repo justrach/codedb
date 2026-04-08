@@ -1079,6 +1079,47 @@ test "watcher: queue event copies path bytes" {
     try testing.expect(event.seq == 99);
 }
 
+test "watcher: parallel initial scan matches sequential results" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makePath("src/nested");
+    try tmp_dir.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "const std = @import(\"std\");\npub fn alpha() void {}\n// TODO: keep me\n" });
+    try tmp_dir.dir.writeFile(.{ .sub_path = "src/nested/util.py", .data = "def beta():\n    return 42\n# TODO later\n" });
+    try tmp_dir.dir.writeFile(.{ .sub_path = "README.md", .data = "# demo\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try tmp_dir.dir.realpath(".", &root_buf);
+
+    var store_seq = Store.init(testing.allocator);
+    defer store_seq.deinit();
+    var explorer_seq = Explorer.init(testing.allocator);
+    defer explorer_seq.deinit();
+    explorer_seq.setRoot(root);
+    try watcher.initialScanWithWorkerCount(&store_seq, &explorer_seq, root, testing.allocator, false, 1);
+
+    var store_par = Store.init(testing.allocator);
+    defer store_par.deinit();
+    var explorer_par = Explorer.init(testing.allocator);
+    defer explorer_par.deinit();
+    explorer_par.setRoot(root);
+    try watcher.initialScanWithWorkerCount(&store_par, &explorer_par, root, testing.allocator, false, 4);
+
+    const tree_seq = try explorer_seq.getTree(testing.allocator, false);
+    defer testing.allocator.free(tree_seq);
+    const tree_par = try explorer_par.getTree(testing.allocator, false);
+    defer testing.allocator.free(tree_par);
+    try testing.expectEqualStrings(tree_seq, tree_par);
+
+    const seq_hits = try explorer_seq.searchWord("TODO", testing.allocator);
+    defer testing.allocator.free(seq_hits);
+    const par_hits = try explorer_par.searchWord("TODO", testing.allocator);
+    defer testing.allocator.free(par_hits);
+    try testing.expectEqual(seq_hits.len, par_hits.len);
+
+    try testing.expectEqual(explorer_seq.outlines.count(), explorer_par.outlines.count());
+}
+
 test "edit: range_start zero is invalid" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

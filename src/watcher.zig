@@ -2,6 +2,7 @@ const std = @import("std");
 const compat = @import("compat.zig");
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
+const explore_mod = @import("explore.zig");
 const git_mod = @import("git.zig");
 pub const EventKind = enum(u8) {
     created,
@@ -74,6 +75,36 @@ const FileState = struct {
 };
 
 const FileMap = std.StringHashMap(FileState);
+
+const InitialScanEntry = struct {
+    path: []u8,
+    skip_trigram: bool,
+};
+
+const ParsedScanFile = struct {
+    path: []const u8,
+    content: []const u8,
+    outline: explore_mod.FileOutline,
+    skip_trigram: bool,
+};
+
+const WorkerParsedResults = struct {
+    arena: std.heap.ArenaAllocator,
+    items: std.ArrayList(ParsedScanFile),
+
+    fn init(backing: std.mem.Allocator) WorkerParsedResults {
+        return .{
+            .arena = std.heap.ArenaAllocator.init(backing),
+            .items = .{},
+        };
+    }
+
+    fn deinit(self: *WorkerParsedResults, backing: std.mem.Allocator) void {
+        _ = backing;
+        self.items.deinit(self.arena.allocator());
+        self.arena.deinit();
+    }
+};
 
 const skip_dirs = [_][]const u8{
     ".git",
@@ -317,25 +348,133 @@ const FilteredWalker = struct {
     }
 };
 
-/// Called from main thread to do the initial scan before listening.
-pub fn initialScan(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
-    var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
-    defer dir.close();
-
+fn collectInitialScanEntries(store: *Store, dir: std.fs.Dir, allocator: std.mem.Allocator, skip_trigram: bool) !std.ArrayList(InitialScanEntry) {
     var walker = try FilteredWalker.init(dir, allocator);
     defer walker.deinit();
 
+    var entries: std.ArrayList(InitialScanEntry) = .{};
+    errdefer {
+        for (entries.items) |entry| allocator.free(entry.path);
+        entries.deinit(allocator);
+    }
+
     const max_trigram_files: usize = 15_000;
     var file_count: usize = 0;
-
     while (try walker.next()) |entry| {
         const stat = compat.dirStatFile(dir, entry.path) catch continue;
         _ = try store.recordSnapshot(entry.path, stat.size, 0);
         file_count += 1;
-        // Auto-skip trigram indexing beyond file count cap to prevent OOM
-        const effective_skip = skip_trigram or (file_count > max_trigram_files);
-        indexFileContent(explorer, dir, entry.path, allocator, effective_skip) catch {};
+        try entries.append(allocator, .{
+            .path = try allocator.dupe(u8, entry.path),
+            .skip_trigram = skip_trigram or (file_count > max_trigram_files),
+        });
     }
+    return entries;
+}
+
+fn parseInitialScanEntry(root: []const u8, entry: InitialScanEntry, arena_alloc: std.mem.Allocator) !?ParsedScanFile {
+    if (shouldSkipFile(entry.path)) return null;
+    var dir = try std.fs.cwd().openDir(root, .{});
+    defer dir.close();
+    const file = try dir.openFile(entry.path, .{});
+    defer file.close();
+    const stat = try compat.fileStat(file);
+    if (stat.size > 512 * 1024) return null;
+    const content = try file.readToEndAlloc(arena_alloc, 512 * 1024);
+    const check_len = @min(content.len, 512);
+    for (content[0..check_len]) |c| {
+        if (c == 0) return null;
+    }
+    const effective_skip_trigram = entry.skip_trigram or (content.len > 64 * 1024);
+    const parsed = try explore_mod.Explorer.parseContentForIndexing(arena_alloc, entry.path, content);
+    return .{
+        .path = entry.path,
+        .content = parsed.content,
+        .outline = parsed.outline,
+        .skip_trigram = effective_skip_trigram,
+    };
+}
+
+fn initialScanWorker(results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry) void {
+    const arena_alloc = results.arena.allocator();
+    for (entries) |entry| {
+        const parsed = parseInitialScanEntry(root, entry, arena_alloc) catch null;
+        if (parsed) |file| {
+            results.items.append(arena_alloc, file) catch return;
+        }
+    }
+}
+
+pub fn initialScanWithWorkerCount(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, skip_trigram: bool, worker_count: usize) !void {
+    var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
+    defer dir.close();
+
+    var entries = try collectInitialScanEntries(store, dir, allocator, skip_trigram);
+    defer {
+        for (entries.items) |entry| allocator.free(entry.path);
+        entries.deinit(allocator);
+    }
+
+    if (entries.items.len == 0) return;
+    const n_workers = @max(@as(usize, 1), @min(worker_count, entries.items.len));
+    if (n_workers == 1) {
+        for (entries.items) |entry| {
+            {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const parsed = try parseInitialScanEntry(root, entry, arena.allocator());
+                if (parsed) |file| {
+                    var outline = file.outline;
+                    defer outline.deinit();
+                    try explorer.commitParsedFileOwnedOutline(file.path, file.content, outline, true, file.skip_trigram);
+                }
+            }
+        }
+        return;
+    }
+
+    const workers = try allocator.alloc(WorkerParsedResults, n_workers);
+    defer {
+        for (workers) |*worker| worker.deinit(allocator);
+        allocator.free(workers);
+    }
+    const threads = try allocator.alloc(std.Thread, n_workers);
+    defer allocator.free(threads);
+
+    const chunk_size = entries.items.len / n_workers;
+    const remainder = entries.items.len % n_workers;
+    var offset: usize = 0;
+    for (workers, 0..) |*worker, i| {
+        worker.* = WorkerParsedResults.init(allocator);
+        const extra: usize = if (i < remainder) 1 else 0;
+        const count = chunk_size + extra;
+        const chunk = entries.items[offset .. offset + count];
+        offset += count;
+        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ worker, root, chunk });
+    }
+    for (threads) |thread| thread.join();
+
+    for (workers) |*worker| {
+        for (worker.items.items) |file| {
+            var outline = file.outline;
+            defer outline.deinit();
+            try explorer.commitParsedFileOwnedOutline(file.path, file.content, outline, true, file.skip_trigram);
+        }
+    }
+}
+
+/// Called from main thread to do the initial scan before listening.
+pub fn initialScan(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
+    const worker_count = blk: {
+        if (std.process.getEnvVarOwned(allocator, "CODEDB_SCAN_WORKERS")) |raw| {
+            defer allocator.free(raw);
+            const parsed = std.fmt.parseInt(usize, raw, 10) catch 0;
+            if (parsed > 0) break :blk parsed;
+        } else |_| {}
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        break :blk @min(@as(usize, @intCast(cpu_count)), 4);
+    };
+    try initialScanWithWorkerCount(store, explorer, root, allocator, skip_trigram, worker_count);
 }
 
 /// Fast index: parse symbols/outline only, skip expensive word+trigram indexes.
