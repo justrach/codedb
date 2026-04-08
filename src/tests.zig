@@ -3389,6 +3389,7 @@ test "issue-220: snapshot fast load restores outlines and lazily rebuilds word i
     try testing.expectEqual(@as(usize, 0), exp2.word_index.index.count());
     try testing.expect(exp2.wordIndexCanLoadFromDisk());
     try testing.expect(!exp2.wordIndexIsComplete());
+    try testing.expect(!exp2.wordIndexNeedsPersist());
 
     const deps = try exp2.getImportedBy("src/store.zig", testing.allocator);
     defer {
@@ -3403,6 +3404,7 @@ test "issue-220: snapshot fast load restores outlines and lazily rebuilds word i
     try testing.expect(hits.len >= 1);
     try testing.expect(exp2.word_index.index.count() > 0);
     try testing.expect(exp2.wordIndexIsComplete());
+    try testing.expect(exp2.wordIndexNeedsPersist());
 }
 
 test "issue-220: partial word index state rebuilds before search" {
@@ -3443,6 +3445,31 @@ test "issue-220: partial word index state rebuilds before search" {
     try testing.expectEqual(@as(usize, 1), gamma_hits.len);
     try testing.expect(std.mem.eql(u8, gamma_hits[0].path, "src/b.zig"));
     try testing.expect(exp2.wordIndexIsComplete());
+    try testing.expect(exp2.wordIndexNeedsPersist());
+}
+
+test "issue-220: word index persistence tracking skips redundant rewrites" {
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+
+    try exp.indexFile("src/a.zig", "pub const Alpha = 1;\n");
+    try testing.expect(exp.wordIndexIsComplete());
+    try testing.expect(exp.wordIndexNeedsPersist());
+
+    const first_gen = exp.wordIndexGenerationToPersist() orelse return error.TestUnexpectedResult;
+    exp.markWordIndexPersisted(first_gen);
+    try testing.expect(!exp.wordIndexNeedsPersist());
+    try testing.expect(exp.wordIndexGenerationToPersist() == null);
+
+    try exp.indexFile("src/a.zig", "pub const Beta = 2;\n");
+    try testing.expect(exp.wordIndexNeedsPersist());
+
+    const second_gen = exp.wordIndexGenerationToPersist() orelse return error.TestUnexpectedResult;
+    try testing.expect(second_gen != first_gen);
+    exp.markWordIndexPersisted(first_gen);
+    try testing.expect(exp.wordIndexNeedsPersist());
+    exp.markWordIndexPersisted(second_gen);
+    try testing.expect(!exp.wordIndexNeedsPersist());
 }
 
 // ── Snapshot non-git tests ───────────────────────────────────

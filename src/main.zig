@@ -641,13 +641,16 @@ fn loadWordIndexFromDiskIfPresent(
 }
 
 fn persistWordIndexToDisk(explorer: *Explorer, data_dir: []const u8, git_head: ?[40]u8) void {
-    if (!explorer.wordIndexIsComplete()) return;
+    const generation = explorer.wordIndexGenerationToPersist() orelse return;
 
     explorer.mu.lockShared();
-    defer explorer.mu.unlockShared();
     explorer.word_index.writeToDisk(data_dir, git_head) catch |err| {
+        explorer.mu.unlockShared();
         std.log.warn("could not persist word index: {}", .{err});
+        return;
     };
+    explorer.mu.unlockShared();
+    explorer.markWordIndexPersisted(generation);
 }
 
 fn saveProjectInfo(allocator: std.mem.Allocator, data_dir: []const u8, abs_root: []const u8) !void {
