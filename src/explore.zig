@@ -7,7 +7,6 @@ const MmapTrigramIndex = idx.MmapTrigramIndex;
 const AnyTrigramIndex = idx.AnyTrigramIndex;
 const SparseNgramIndex = idx.SparseNgramIndex;
 
-
 pub const SymbolKind = enum(u8) {
     function,
     struct_def,
@@ -119,6 +118,10 @@ pub const Explorer = struct {
     trigram_index: AnyTrigramIndex,
     sparse_ngram_index: SparseNgramIndex,
     allocator: std.mem.Allocator,
+    word_index_complete: bool = true,
+    word_index_can_load_from_disk: bool = false,
+    word_index_generation: u64 = 0,
+    word_index_persisted_generation: u64 = 0,
     mu: std.Thread.RwLock = .{},
     root_dir: ?std.fs.Dir = null,
 
@@ -136,7 +139,6 @@ pub const Explorer = struct {
             .allocator = allocator,
         };
     }
-
 
     pub fn deinit(self: *Explorer) void {
         var iter = self.outlines.iterator();
@@ -195,190 +197,197 @@ pub const Explorer = struct {
         return self.indexFileInner(path, content, true, true);
     }
 
+    fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool, skip_trigram: bool) !void {
+        // Parse outline outside the global explorer write lock.
+        // This keeps HTTP/MCP readers from being blocked on line-by-line parsing.
+        var outline = FileOutline.init(self.allocator, path);
+        errdefer outline.deinit();
+        outline.byte_size = content.len;
 
-fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool, skip_trigram: bool) !void {
-    // Parse outline outside the global explorer write lock.
-    // This keeps HTTP/MCP readers from being blocked on line-by-line parsing.
-    var outline = FileOutline.init(self.allocator, path);
-    errdefer outline.deinit();
-    outline.byte_size = content.len;
+        var line_num: u32 = 0;
+        var prev_line_trimmed: []const u8 = "";
+        var php_state: PhpParseState = .{};
+        var in_py_docstring = false;
+        var in_block_comment = false;
+        var in_go_import_block = false;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            line_num += 1;
+            var trimmed = std.mem.trim(u8, line, " \t");
 
-    var line_num: u32 = 0;
-    var prev_line_trimmed: []const u8 = "";
-    var php_state: PhpParseState = .{};
-    var in_py_docstring = false;
-    var in_block_comment = false;
-    var in_go_import_block = false;
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        line_num += 1;
-        var trimmed = std.mem.trim(u8, line, " \t");
-
-        // Track Python triple-quote docstrings (#111)
-        if (outline.language == .python) {
-            const triple_count = std.mem.count(u8, trimmed, "\"\"\"") + std.mem.count(u8, trimmed, "'''");
-            if (in_py_docstring) {
-                if (triple_count > 0) in_py_docstring = false;
-                continue;
-            }
-            // Detect docstring/triple-quoted string open
-            if (triple_count >= 2) {
-                // Single-line: """text""" or x = """text""" — skip, no state change
-                continue;
-            }
-            if (triple_count == 1) {
-                // Unmatched triple-quote anywhere on line opens multi-line mode
-                // Catches: """text, '''text, x = """, etc.
-                in_py_docstring = true;
-                continue;
-            }
-        }
-
-        // Track Ruby =begin/=end block comments (must be at column 0 per Ruby spec)
-        if (outline.language == .ruby) {
-            if (in_py_docstring) {
-                if (startsWith(line, "=end")) in_py_docstring = false;
-                continue;
-            }
-            if (startsWith(line, "=begin")) { in_py_docstring = true; continue; }
-        }
-
-        // Track block comments for all languages that use /* */
-        if (outline.language == .typescript or outline.language == .javascript or
-            outline.language == .go_lang or outline.language == .c or
-            outline.language == .cpp or outline.language == .rust or
-            outline.language == .zig)
-        {
-            if (in_block_comment) {
-                if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
-                    in_block_comment = false;
-                    const after = std.mem.trimLeft(u8, trimmed[close_pos + 2 ..], " \t");
-                    if (after.len == 0) continue;
-                    trimmed = after; // parse code after */ on the same line
-                } else continue;
-            }
-            if (std.mem.startsWith(u8, trimmed, "/*")) {
-                if (std.mem.indexOf(u8, trimmed[2..], "*/")) |close_pos| {
-                    // Single-line /* ... */ — check for code after it
-                    const after = std.mem.trimLeft(u8, trimmed[2 + close_pos + 2 ..], " \t");
-                    if (after.len == 0) continue;
-                    trimmed = after;
-                } else {
-                    in_block_comment = true;
+            // Track Python triple-quote docstrings (#111)
+            if (outline.language == .python) {
+                const triple_count = std.mem.count(u8, trimmed, "\"\"\"") + std.mem.count(u8, trimmed, "'''");
+                if (in_py_docstring) {
+                    if (triple_count > 0) in_py_docstring = false;
+                    continue;
+                }
+                // Detect docstring/triple-quoted string open
+                if (triple_count >= 2) {
+                    // Single-line: """text""" or x = """text""" — skip, no state change
+                    continue;
+                }
+                if (triple_count == 1) {
+                    // Unmatched triple-quote anywhere on line opens multi-line mode
+                    // Catches: """text, '''text, x = """, etc.
+                    in_py_docstring = true;
                     continue;
                 }
             }
-        }
 
-        if (outline.language == .zig) {
-            try self.parseZigLine(trimmed, line_num, &outline);
-        } else if (outline.language == .python) {
-            try self.parsePythonLine(trimmed, line_num, &outline);
-        } else if (outline.language == .typescript or outline.language == .javascript) {
-            try self.parseTsLine(trimmed, line_num, &outline);
-        } else if (outline.language == .rust) {
-            try self.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
-        } else if (outline.language == .php) {
-            try self.parsePhpLine(trimmed, line_num, &outline, &php_state);
-        } else if (outline.language == .go_lang) {
-            // Handle Go import block: import ( "fmt" \n "net/http" )
-            if (in_go_import_block) {
-                if (startsWith(trimmed, ")")) {
-                    in_go_import_block = false;
-                } else if (extractStringLiteral(trimmed)) |imp_path| {
-                    const import_copy = try self.allocator.dupe(u8, imp_path);
-                    errdefer self.allocator.free(import_copy);
-                    try outline.imports.append(self.allocator, import_copy);
-                    const symbol_copy = try self.allocator.dupe(u8, trimmed);
-                    errdefer self.allocator.free(symbol_copy);
-                    try outline.symbols.append(self.allocator, .{
-                        .name = symbol_copy,
-                        .kind = .import,
-                        .line_start = line_num,
-                        .line_end = line_num,
-                    });
+            // Track Ruby =begin/=end block comments (must be at column 0 per Ruby spec)
+            if (outline.language == .ruby) {
+                if (in_py_docstring) {
+                    if (startsWith(line, "=end")) in_py_docstring = false;
+                    continue;
                 }
-            } else if (std.mem.eql(u8, trimmed, "import (")) {
-                in_go_import_block = true;
-            } else {
-                try self.parseGoLine(trimmed, line_num, &outline);
+                if (startsWith(line, "=begin")) {
+                    in_py_docstring = true;
+                    continue;
+                }
             }
-        } else if (outline.language == .ruby) {
-            try self.parseRubyLine(trimmed, line_num, &outline);
+
+            // Track block comments for all languages that use /* */
+            if (outline.language == .typescript or outline.language == .javascript or
+                outline.language == .go_lang or outline.language == .c or
+                outline.language == .cpp or outline.language == .rust or
+                outline.language == .zig)
+            {
+                if (in_block_comment) {
+                    if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
+                        in_block_comment = false;
+                        const after = std.mem.trimLeft(u8, trimmed[close_pos + 2 ..], " \t");
+                        if (after.len == 0) continue;
+                        trimmed = after; // parse code after */ on the same line
+                    } else continue;
+                }
+                if (std.mem.startsWith(u8, trimmed, "/*")) {
+                    if (std.mem.indexOf(u8, trimmed[2..], "*/")) |close_pos| {
+                        // Single-line /* ... */ — check for code after it
+                        const after = std.mem.trimLeft(u8, trimmed[2 + close_pos + 2 ..], " \t");
+                        if (after.len == 0) continue;
+                        trimmed = after;
+                    } else {
+                        in_block_comment = true;
+                        continue;
+                    }
+                }
+            }
+
+            if (outline.language == .zig) {
+                try self.parseZigLine(trimmed, line_num, &outline);
+            } else if (outline.language == .python) {
+                try self.parsePythonLine(trimmed, line_num, &outline);
+            } else if (outline.language == .typescript or outline.language == .javascript) {
+                try self.parseTsLine(trimmed, line_num, &outline);
+            } else if (outline.language == .rust) {
+                try self.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
+            } else if (outline.language == .php) {
+                try self.parsePhpLine(trimmed, line_num, &outline, &php_state);
+            } else if (outline.language == .go_lang) {
+                // Handle Go import block: import ( "fmt" \n "net/http" )
+                if (in_go_import_block) {
+                    if (startsWith(trimmed, ")")) {
+                        in_go_import_block = false;
+                    } else if (extractStringLiteral(trimmed)) |imp_path| {
+                        const import_copy = try self.allocator.dupe(u8, imp_path);
+                        errdefer self.allocator.free(import_copy);
+                        try outline.imports.append(self.allocator, import_copy);
+                        const symbol_copy = try self.allocator.dupe(u8, trimmed);
+                        errdefer self.allocator.free(symbol_copy);
+                        try outline.symbols.append(self.allocator, .{
+                            .name = symbol_copy,
+                            .kind = .import,
+                            .line_start = line_num,
+                            .line_end = line_num,
+                        });
+                    }
+                } else if (std.mem.eql(u8, trimmed, "import (")) {
+                    in_go_import_block = true;
+                } else {
+                    try self.parseGoLine(trimmed, line_num, &outline);
+                }
+            } else if (outline.language == .ruby) {
+                try self.parseRubyLine(trimmed, line_num, &outline);
+            }
+
+            prev_line_trimmed = trimmed;
         }
+        outline.line_count = line_num;
 
-        prev_line_trimmed = trimmed;
-    }
-    outline.line_count = line_num;
+        self.mu.lock();
+        defer self.mu.unlock();
 
-    self.mu.lock();
-    defer self.mu.unlock();
+        // Reuse existing key if file was already indexed, else dupe.
+        const outline_gop = try self.outlines.getOrPut(path);
+        const is_new = !outline_gop.found_existing;
+        var prior_outline: ?FileOutline = if (outline_gop.found_existing)
+            outline_gop.value_ptr.*
+        else
+            null;
+        const stable_path = if (outline_gop.found_existing) blk: {
+            break :blk outline_gop.key_ptr.*;
+        } else blk: {
+            const duped = try self.allocator.dupe(u8, path);
+            outline_gop.key_ptr.* = duped;
+            break :blk duped;
+        };
+        // If we added a new entry but later fail, remove it so the map stays consistent.
+        errdefer if (is_new) {
+            _ = self.outlines.remove(stable_path);
+            self.allocator.free(stable_path);
+        };
 
-    // Reuse existing key if file was already indexed, else dupe.
-    const outline_gop = try self.outlines.getOrPut(path);
-    const is_new = !outline_gop.found_existing;
-    var prior_outline: ?FileOutline = if (outline_gop.found_existing)
-        outline_gop.value_ptr.*
-    else
-        null;
-    const stable_path = if (outline_gop.found_existing) blk: {
-        break :blk outline_gop.key_ptr.*;
-    } else blk: {
-        const duped = try self.allocator.dupe(u8, path);
-        outline_gop.key_ptr.* = duped;
-        break :blk duped;
-    };
-    // If we added a new entry but later fail, remove it so the map stays consistent.
-    errdefer if (is_new) {
-        _ = self.outlines.remove(stable_path);
-        self.allocator.free(stable_path);
-    };
+        // Ensure outline path uses the stable map key.
+        outline.path = stable_path;
 
-    // Ensure outline path uses the stable map key.
-    outline.path = stable_path;
-
-    const duped_content = try self.allocator.dupe(u8, content);
-    errdefer self.allocator.free(duped_content);
-    const content_gop = try self.contents.getOrPut(stable_path);
-    var prior_content: ?[]const u8 = null;
-    if (content_gop.found_existing) {
-        prior_content = content_gop.value_ptr.*;
-    } else {
-        content_gop.key_ptr.* = stable_path;
-    }
-    content_gop.value_ptr.* = duped_content;
-    errdefer {
+        const duped_content = try self.allocator.dupe(u8, content);
+        errdefer self.allocator.free(duped_content);
+        const content_gop = try self.contents.getOrPut(stable_path);
+        var prior_content: ?[]const u8 = null;
         if (content_gop.found_existing) {
-            content_gop.value_ptr.* = prior_content.?;
+            prior_content = content_gop.value_ptr.*;
         } else {
-            _ = self.contents.remove(stable_path);
+            content_gop.key_ptr.* = stable_path;
+        }
+        content_gop.value_ptr.* = duped_content;
+        errdefer {
+            if (content_gop.found_existing) {
+                content_gop.value_ptr.* = prior_content.?;
+            } else {
+                _ = self.contents.remove(stable_path);
+            }
+        }
+
+        // Build search indexes.
+        if (full_index) {
+            if (!self.word_index_complete) {
+                self.word_index_can_load_from_disk = false;
+            }
+            try self.word_index.indexFile(stable_path, content);
+            if (self.word_index_complete) {
+                self.word_index_generation +%= 1;
+            }
+            if (!skip_trigram) {
+                try self.trigram_index.indexFile(stable_path, content);
+                try self.sparse_ngram_index.indexFile(stable_path, content);
+            } else {
+                // Clean stale trigram/sparse entries if file was previously indexed
+                self.trigram_index.removeFile(stable_path);
+                self.sparse_ngram_index.removeFile(stable_path);
+            }
+        }
+
+        try self.rebuildDepsFor(stable_path, &outline);
+
+        outline_gop.value_ptr.* = outline;
+        if (prior_content) |old_content| {
+            self.allocator.free(old_content);
+        }
+        if (prior_outline) |*old_outline| {
+            old_outline.deinit();
         }
     }
-
-    // Build search indexes.
-    if (full_index) {
-        try self.word_index.indexFile(stable_path, content);
-        if (!skip_trigram) {
-            try self.trigram_index.indexFile(stable_path, content);
-            try self.sparse_ngram_index.indexFile(stable_path, content);
-        } else {
-            // Clean stale trigram/sparse entries if file was previously indexed
-            self.trigram_index.removeFile(stable_path);
-            self.sparse_ngram_index.removeFile(stable_path);
-        }
-    }
-
-
-    try self.rebuildDepsFor(stable_path, &outline);
-
-    outline_gop.value_ptr.* = outline;
-    if (prior_content) |old_content| {
-        self.allocator.free(old_content);
-    }
-    if (prior_outline) |*old_outline| {
-        old_outline.deinit();
-    }
-}
     /// Rebuild trigram index from the stored file contents.
     /// Used after a cache hit to populate trigrams when they were skipped during the fast scan.
     pub fn rebuildTrigrams(self: *Explorer) !void {
@@ -403,10 +412,94 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
         }
     }
 
+    /// Rebuild the inverted word index from stored contents.
+    /// Used after fast snapshot restore, which intentionally avoids per-file tokenization.
+    pub fn rebuildWordIndex(self: *Explorer) !void {
+        self.mu.lock();
+        defer self.mu.unlock();
+
+        self.word_index.deinit();
+        self.word_index = WordIndex.init(self.allocator);
+
+        var iter = self.contents.iterator();
+        while (iter.next()) |entry| {
+            try self.word_index.indexFile(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        self.word_index_generation +%= 1;
+        self.word_index_complete = true;
+        self.word_index_can_load_from_disk = false;
+    }
+
+    pub fn markWordIndexIncomplete(self: *Explorer, can_load_from_disk: bool) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        self.word_index.deinit();
+        self.word_index = WordIndex.init(self.allocator);
+        self.word_index_complete = false;
+        self.word_index_can_load_from_disk = can_load_from_disk;
+    }
+
+    pub fn disableWordIndexDiskLoad(self: *Explorer) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (!self.word_index_complete) {
+            self.word_index_can_load_from_disk = false;
+        }
+    }
+
+    pub fn wordIndexCanLoadFromDisk(self: *Explorer) bool {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        return !self.word_index_complete and self.word_index_can_load_from_disk;
+    }
+
+    pub fn wordIndexIsComplete(self: *Explorer) bool {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        return self.word_index_complete;
+    }
+
+    pub fn wordIndexNeedsPersist(self: *Explorer) bool {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        return self.word_index_complete and self.word_index_generation != self.word_index_persisted_generation;
+    }
+
+    pub fn wordIndexGenerationToPersist(self: *Explorer) ?u64 {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        if (!self.word_index_complete) return null;
+        if (self.word_index_generation == self.word_index_persisted_generation) return null;
+        return self.word_index_generation;
+    }
+
+    pub fn markWordIndexPersisted(self: *Explorer, generation: u64) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (self.word_index_complete and self.word_index_generation == generation) {
+            self.word_index_persisted_generation = generation;
+        }
+    }
+
+    pub fn replaceWordIndex(self: *Explorer, word_index: WordIndex) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        self.word_index.deinit();
+        self.word_index = word_index;
+        self.word_index_generation +%= 1;
+        self.word_index_complete = true;
+        self.word_index_can_load_from_disk = false;
+        self.word_index_persisted_generation = self.word_index_generation;
+    }
 
     pub fn removeFile(self: *Explorer, path: []const u8) void {
         self.mu.lock();
         defer self.mu.unlock();
+        if (!self.word_index_complete) {
+            self.word_index_can_load_from_disk = false;
+        } else {
+            self.word_index_generation +%= 1;
+        }
         if (self.dep_graph.getPtr(path)) |deps| {
             deps.deinit(self.allocator);
             _ = self.dep_graph.remove(path);
@@ -445,7 +538,7 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
 
     const ContentRef = struct {
         data: []const u8,
-        owned: bool,  // true = caller must free; false = borrowed from cache
+        owned: bool, // true = caller must free; false = borrowed from cache
         allocator: std.mem.Allocator,
 
         fn deinit(self: ContentRef) void {
@@ -465,100 +558,105 @@ fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_i
         return .{ .data = data, .owned = true, .allocator = allocator };
     }
 
-fn cloneOutline(src: *const FileOutline, allocator: std.mem.Allocator) !FileOutline {
-    const copied_path = try allocator.dupe(u8, src.path);
-    // No errdefer here: dst.deinit() below handles freeing copied_path via owns_path.
+    fn cloneOutline(src: *const FileOutline, allocator: std.mem.Allocator) !FileOutline {
+        const copied_path = try allocator.dupe(u8, src.path);
+        // No errdefer here: dst.deinit() below handles freeing copied_path via owns_path.
 
-    var dst = FileOutline.init(allocator, copied_path);
-    dst.owns_path = true;
-    errdefer dst.deinit();
-    dst.line_count = src.line_count;
-    dst.byte_size = src.byte_size;
-    for (src.symbols.items) |sym| {
-        const copied_name = try allocator.dupe(u8, sym.name);
-        errdefer allocator.free(copied_name);
+        var dst = FileOutline.init(allocator, copied_path);
+        dst.owns_path = true;
+        errdefer dst.deinit();
+        dst.line_count = src.line_count;
+        dst.byte_size = src.byte_size;
+        for (src.symbols.items) |sym| {
+            const copied_name = try allocator.dupe(u8, sym.name);
+            errdefer allocator.free(copied_name);
 
-        const copied_detail = if (sym.detail) |d| blk: {
-            const detail = try allocator.dupe(u8, d);
-            break :blk detail;
-        } else null;
-        errdefer if (copied_detail) |d| allocator.free(d);
+            const copied_detail = if (sym.detail) |d| blk: {
+                const detail = try allocator.dupe(u8, d);
+                break :blk detail;
+            } else null;
+            errdefer if (copied_detail) |d| allocator.free(d);
 
-        try dst.symbols.append(allocator, .{
-            .name = copied_name,
-            .kind = sym.kind,
-            .line_start = sym.line_start,
-            .line_end = sym.line_end,
-            .detail = copied_detail,
-        });
-    }
-    for (src.imports.items) |imp| {
-        const copied_import = try allocator.dupe(u8, imp);
-        errdefer allocator.free(copied_import);
-        try dst.imports.append(allocator, copied_import);
-    }
-
-    return dst;
-}
-
-pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) ![]u8 {
-    const s = @import("style.zig").style(use_color);
-
-    self.mu.lockShared();
-    defer self.mu.unlockShared();
-
-    var buf: std.ArrayList(u8) = .{};
-    errdefer buf.deinit(allocator);
-    const writer = buf.writer(allocator);
-
-    var paths: std.ArrayList([]const u8) = .{};
-    defer paths.deinit(allocator);
-
-    var iter = self.outlines.iterator();
-    while (iter.next()) |entry| {
-        try paths.append(allocator, entry.key_ptr.*);
-    }
-
-    std.mem.sort([]const u8, paths.items, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.order(u8, a, b) == .lt;
+            try dst.symbols.append(allocator, .{
+                .name = copied_name,
+                .kind = sym.kind,
+                .line_start = sym.line_start,
+                .line_end = sym.line_end,
+                .detail = copied_detail,
+            });
         }
-    }.lessThan);
+        for (src.imports.items) |imp| {
+            const copied_import = try allocator.dupe(u8, imp);
+            errdefer allocator.free(copied_import);
+            try dst.imports.append(allocator, copied_import);
+        }
 
-    var seen_dirs = std.StringHashMap(void).init(allocator);
-    defer seen_dirs.deinit();
+        return dst;
+    }
 
-    for (paths.items) |path| {
-        const outline = self.outlines.get(path) orelse continue;
+    pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) ![]u8 {
+        const s = @import("style.zig").style(use_color);
 
-        // Emit directory nodes we haven't seen yet
-        var prefix_end: usize = 0;
-        while (std.mem.indexOfScalarPos(u8, path, prefix_end, '/')) |sep| {
-            const dir = path[0 .. sep + 1];
-            if (!seen_dirs.contains(dir)) {
-                try seen_dirs.put(dir, {});
-                const depth = std.mem.count(u8, dir[0..sep], "/");
-                for (0..depth) |_| try writer.writeAll("  ");
-                const dir_name = path[if (depth > 0) std.mem.lastIndexOfScalar(u8, dir[0..sep], '/').? + 1 else 0 .. sep];
-                try writer.print("{s}{s}/{s}\n", .{ s.bold, dir_name, s.reset });
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        var buf: std.ArrayList(u8) = .{};
+        errdefer buf.deinit(allocator);
+        const writer = buf.writer(allocator);
+
+        var paths: std.ArrayList([]const u8) = .{};
+        defer paths.deinit(allocator);
+
+        var iter = self.outlines.iterator();
+        while (iter.next()) |entry| {
+            try paths.append(allocator, entry.key_ptr.*);
+        }
+
+        std.mem.sort([]const u8, paths.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
             }
-            prefix_end = sep + 1;
+        }.lessThan);
+
+        var seen_dirs = std.StringHashMap(void).init(allocator);
+        defer seen_dirs.deinit();
+
+        for (paths.items) |path| {
+            const outline = self.outlines.get(path) orelse continue;
+
+            // Emit directory nodes we haven't seen yet
+            var prefix_end: usize = 0;
+            while (std.mem.indexOfScalarPos(u8, path, prefix_end, '/')) |sep| {
+                const dir = path[0 .. sep + 1];
+                if (!seen_dirs.contains(dir)) {
+                    try seen_dirs.put(dir, {});
+                    const depth = std.mem.count(u8, dir[0..sep], "/");
+                    for (0..depth) |_| try writer.writeAll("  ");
+                    const dir_name = path[if (depth > 0) std.mem.lastIndexOfScalar(u8, dir[0..sep], '/').? + 1 else 0..sep];
+                    try writer.print("{s}{s}/{s}\n", .{ s.bold, dir_name, s.reset });
+                }
+                prefix_end = sep + 1;
+            }
+
+            // Emit file leaf
+            const depth = std.mem.count(u8, path, "/");
+            for (0..depth) |_| try writer.writeAll("  ");
+            const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
+            const lang = @tagName(outline.language);
+            try writer.print("{s}  {s}{s}{s}  {s}{d}L  {d} sym{s}\n", .{
+                basename,
+                s.langColor(lang),
+                lang,
+                s.reset,
+                s.dim,
+                outline.line_count,
+                outline.symbols.items.len,
+                s.reset,
+            });
         }
 
-        // Emit file leaf
-        const depth = std.mem.count(u8, path, "/");
-        for (0..depth) |_| try writer.writeAll("  ");
-        const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
-        const lang = @tagName(outline.language);
-        try writer.print("{s}  {s}{s}{s}  {s}{d}L  {d} sym{s}\n", .{
-            basename,
-            s.langColor(lang), lang, s.reset,
-            s.dim, outline.line_count, outline.symbols.items.len, s.reset,
-        });
+        return buf.toOwnedSlice(allocator);
     }
-
-    return buf.toOwnedSlice(allocator);
-}
 
     pub fn findSymbol(self: *Explorer, name: []const u8, allocator: std.mem.Allocator) !?struct { path: []const u8, symbol: Symbol } {
         self.mu.lockShared();
@@ -685,7 +783,6 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
         return result_list.toOwnedSlice(allocator);
     }
 
-
     /// Search file contents using a regex pattern with trigram acceleration.
     /// Decomposes the regex to extract literal trigrams for candidate filtering,
     /// then does actual regex matching on candidates.
@@ -744,9 +841,15 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
         return result_list.toOwnedSlice(allocator);
     }
 
-
     /// Search for a word using the inverted word index. O(1) lookup.
     pub fn searchWord(self: *Explorer, word: []const u8, allocator: std.mem.Allocator) ![]const idx.WordHit {
+        self.mu.lockShared();
+        const needs_rebuild = !self.word_index_complete and self.contents.count() > 0;
+        self.mu.unlockShared();
+        if (needs_rebuild) {
+            try self.rebuildWordIndex();
+        }
+
         self.mu.lockShared();
         defer self.mu.unlockShared();
         return self.word_index.searchDeduped(word, allocator);
@@ -828,80 +931,81 @@ pub fn getTree(self: *Explorer, allocator: std.mem.Allocator, use_color: bool) !
         };
     }
 
-pub fn getImportedBy(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
-    self.mu.lockShared();
-    defer self.mu.unlockShared();
-
-    // Extract basename for matching against raw import strings
-    // e.g., "src/store.zig" -> "store.zig"
-    const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
-
-    var result: std.ArrayList([]const u8) = .{};
-    errdefer {
-        for (result.items) |p| allocator.free(p);
-        result.deinit(allocator);
-    }
-
-    var iter = self.dep_graph.iterator();
-    while (iter.next()) |entry| {
-        for (entry.value_ptr.items) |dep| {
-            if (std.mem.eql(u8, dep, path) or std.mem.eql(u8, dep, basename)) {
-                const dep_path = try allocator.dupe(u8, entry.key_ptr.*);
-                try result.append(allocator, dep_path);
-                break;
-            }
-        }
-    }
-    return result.toOwnedSlice(allocator);
-}
-
-pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator, limit: usize) ![]const []const u8 {
-    // Collect stable path copies under explorer lock.
-    var path_list: std.ArrayList([]u8) = .{};
-    errdefer {
-        for (path_list.items) |path| allocator.free(path);
-        path_list.deinit(allocator);
-    }
-    defer path_list.deinit(allocator);
-    {
+    pub fn getImportedBy(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
         self.mu.lockShared();
         defer self.mu.unlockShared();
-        var iter = self.outlines.iterator();
-        while (iter.next()) |kv| {
-            const path_copy = try allocator.dupe(u8, kv.key_ptr.*);
-            try path_list.append(allocator, path_copy);
+
+        // Extract basename for matching against raw import strings
+        // e.g., "src/store.zig" -> "store.zig"
+        const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
+
+        var result: std.ArrayList([]const u8) = .{};
+        errdefer {
+            for (result.items) |p| allocator.free(p);
+            result.deinit(allocator);
         }
+
+        var iter = self.dep_graph.iterator();
+        while (iter.next()) |entry| {
+            for (entry.value_ptr.items) |dep| {
+                if (std.mem.eql(u8, dep, path) or std.mem.eql(u8, dep, basename)) {
+                    const dep_path = try allocator.dupe(u8, entry.key_ptr.*);
+                    try result.append(allocator, dep_path);
+                    break;
+                }
+            }
+        }
+        return result.toOwnedSlice(allocator);
     }
 
-    // Query store seqs without holding explorer lock.
-    const Entry = struct { path: []u8, seq: u64 };
-    var entries: std.ArrayList(Entry) = .{};
-    defer entries.deinit(allocator);
-    {
-        store.mu.lock();
-        defer store.mu.unlock();
-        for (path_list.items) |path| {
-            const seq = store.getLatestSeqUnlocked(path);
-            try entries.append(allocator, .{ .path = path, .seq = seq });
+    pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator, limit: usize) ![]const []const u8 {
+        // Collect stable path copies under explorer lock.
+        var path_list: std.ArrayList([]u8) = .{};
+        errdefer {
+            for (path_list.items) |path| allocator.free(path);
+            path_list.deinit(allocator);
         }
+        defer path_list.deinit(allocator);
+        {
+            self.mu.lockShared();
+            defer self.mu.unlockShared();
+            var iter = self.outlines.iterator();
+            while (iter.next()) |kv| {
+                const path_copy = try allocator.dupe(u8, kv.key_ptr.*);
+                try path_list.append(allocator, path_copy);
+            }
+        }
+
+        // Query store seqs without holding explorer lock.
+        const Entry = struct { path: []u8, seq: u64 };
+        var entries: std.ArrayList(Entry) = .{};
+        defer entries.deinit(allocator);
+        {
+            store.mu.lock();
+            defer store.mu.unlock();
+            for (path_list.items) |path| {
+                const seq = store.getLatestSeqUnlocked(path);
+                try entries.append(allocator, .{ .path = path, .seq = seq });
+            }
+        }
+
+        std.mem.sort(Entry, entries.items, {}, struct {
+            fn cmp(_: void, a: Entry, b: Entry) bool {
+                return a.seq > b.seq;
+            }
+        }.cmp);
+
+        const count = @min(limit, entries.items.len);
+        const paths = try allocator.alloc([]const u8, count);
+        for (entries.items[0..count], 0..) |e, i| {
+            paths[i] = e.path;
+        }
+        for (entries.items[count..]) |e| {
+            allocator.free(e.path);
+        }
+        return paths;
     }
 
-    std.mem.sort(Entry, entries.items, {}, struct {
-        fn cmp(_: void, a: Entry, b: Entry) bool {
-            return a.seq > b.seq;
-        }
-    }.cmp);
-
-    const count = @min(limit, entries.items.len);
-    const paths = try allocator.alloc([]const u8, count);
-    for (entries.items[0..count], 0..) |e, i| {
-        paths[i] = e.path;
-    }
-    for (entries.items[count..]) |e| {
-        allocator.free(e.path);
-    }
-    return paths;
-}
     // ── Language parsers ──────────────────────────────────────
 
     fn parseZigLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
@@ -1484,7 +1588,7 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
             if (rest.len > 0 and rest[0] == '(') {
                 // Skip past receiver: find ") "
                 if (std.mem.indexOf(u8, rest, ") ")) |close| {
-                    name_start = rest[close + 2..];
+                    name_start = rest[close + 2 ..];
                 }
             }
             if (extractIdent(name_start)) |name| {
@@ -1615,26 +1719,26 @@ pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator,
         }
     }
 
-fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
-    var deps: std.ArrayList([]const u8) = .{};
-    errdefer deps.deinit(self.allocator);
+    fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
+        var deps: std.ArrayList([]const u8) = .{};
+        errdefer deps.deinit(self.allocator);
 
-    for (outline.imports.items) |imp| {
-        // Skip imports with path traversal sequences
-        if (std.mem.indexOf(u8, imp, "..") != null) continue;
-        try deps.append(self.allocator, imp);
-    }
+        for (outline.imports.items) |imp| {
+            // Skip imports with path traversal sequences
+            if (std.mem.indexOf(u8, imp, "..") != null) continue;
+            try deps.append(self.allocator, imp);
+        }
 
-    const gop = try self.dep_graph.getOrPut(path);
-    if (gop.found_existing) {
-        var old = gop.value_ptr.*;
-        gop.value_ptr.* = deps;
-        old.deinit(self.allocator);
-    } else {
-        gop.key_ptr.* = path;
-        gop.value_ptr.* = deps;
+        const gop = try self.dep_graph.getOrPut(path);
+        if (gop.found_existing) {
+            var old = gop.value_ptr.*;
+            gop.value_ptr.* = deps;
+            old.deinit(self.allocator);
+        } else {
+            gop.key_ptr.* = path;
+            gop.value_ptr.* = deps;
+        }
     }
-}
 
     /// Return the source body for a symbol given its file path and line range.
     /// Caller owns the returned slice.
@@ -1910,12 +2014,34 @@ pub fn regexMatch(haystack: []const u8, pattern: []const u8) bool {
     var in_bracket = false;
     while (i < pattern.len) {
         const c = pattern[i];
-        if (c == '\\' and i + 1 < pattern.len) { i += 2; continue; }
-        if (c == '[') { in_bracket = true; i += 1; continue; }
-        if (c == ']') { in_bracket = false; i += 1; continue; }
-        if (in_bracket) { i += 1; continue; }
-        if (c == '(') { depth += 1; i += 1; continue; }
-        if (c == ')') { if (depth > 0) depth -= 1; i += 1; continue; }
+        if (c == '\\' and i + 1 < pattern.len) {
+            i += 2;
+            continue;
+        }
+        if (c == '[') {
+            in_bracket = true;
+            i += 1;
+            continue;
+        }
+        if (c == ']') {
+            in_bracket = false;
+            i += 1;
+            continue;
+        }
+        if (in_bracket) {
+            i += 1;
+            continue;
+        }
+        if (c == '(') {
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if (c == ')') {
+            if (depth > 0) depth -= 1;
+            i += 1;
+            continue;
+        }
         if (c == '|' and depth == 0) {
             if (regexMatchSingle(haystack, pattern[prev..i])) return true;
             prev = i + 1;
@@ -1978,7 +2104,9 @@ fn matchHere(haystack: []const u8, pattern: []const u8, pos: usize) bool {
                     continue;
                 }
                 if (group_content[i] == '(') d += 1;
-                if (group_content[i] == ')') { if (d > 0) d -= 1; }
+                if (group_content[i] == ')') {
+                    if (d > 0) d -= 1;
+                }
                 if (group_content[i] == '|' and d == 0) {
                     // Try this branch
                     if (matchGroupBranch(haystack, group_content[branch_start..i], after_group, h)) return true;
@@ -2072,8 +2200,8 @@ fn matchBranchThenRest(haystack: []const u8, branch: []const u8, rest: []const u
     var buf: [4096]u8 = undefined;
     if (branch.len + rest.len > buf.len) return false;
     @memcpy(buf[0..branch.len], branch);
-    @memcpy(buf[branch.len..branch.len + rest.len], rest);
-    return matchHere(haystack, buf[0..branch.len + rest.len], pos);
+    @memcpy(buf[branch.len .. branch.len + rest.len], rest);
+    return matchHere(haystack, buf[0 .. branch.len + rest.len], pos);
 }
 
 /// Match a quantified element (greedy).
@@ -2180,7 +2308,6 @@ fn matchElement(c: u8, pattern: []const u8, start: usize, end: usize) bool {
     // Literal
     return c == pattern[start];
 }
-
 
 fn indexOfCaseInsensitive(haystack: []const u8, needle: []const u8) ?usize {
     if (needle.len == 0) return 0;
@@ -2303,14 +2430,15 @@ fn isWordBoundary(path: []const u8, pi: usize) bool {
 
 fn isSpecialEntryPoint(filename: []const u8) bool {
     const specials = [_][]const u8{
-        "main.zig", "lib.zig", "root.zig",
-        "main.rs", "lib.rs", "mod.rs",
-        "main.go", "main.c", "main.cpp",
-        "index.ts", "index.tsx", "index.js", "index.jsx",
-        "index.mjs", "index.cjs", "index.vue",
-        "index.php", "main.rb", "index.rb",
-        "__init__.py", "__main__.py",
-        "Makefile", "build.zig", "Cargo.toml", "package.json",
+        "main.zig",     "lib.zig",     "root.zig",
+        "main.rs",      "lib.rs",      "mod.rs",
+        "main.go",      "main.c",      "main.cpp",
+        "index.ts",     "index.tsx",   "index.js",
+        "index.jsx",    "index.mjs",   "index.cjs",
+        "index.vue",    "index.php",   "main.rb",
+        "index.rb",     "__init__.py", "__main__.py",
+        "Makefile",     "build.zig",   "Cargo.toml",
+        "package.json",
     };
     for (specials) |s| {
         if (std.mem.eql(u8, filename, s)) return true;

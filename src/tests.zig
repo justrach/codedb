@@ -2866,6 +2866,51 @@ test "perf regression: bloom filter reduces scan work" {
 
 // ── Disk persistence tests ──────────────────────────────────
 
+test "disk word index: round-trip write and read preserves hits" {
+    const alloc = testing.allocator;
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+
+    try wi.indexFile("src/main.zig", "const Store = @import(\"store.zig\").Store;\npub fn main() void {}\n");
+    try wi.indexFile("src/store.zig", "pub const Store = struct {};\npub fn open() void {}\n");
+
+    const hits_before = try wi.searchDeduped("Store", alloc);
+    defer alloc.free(hits_before);
+    try testing.expectEqual(@as(usize, 2), hits_before.len);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const fake_head = "0123456789abcdef0123456789abcdef01234567".*;
+    try wi.writeToDisk(dir_path, fake_head);
+
+    const header = try WordIndex.readDiskHeader(dir_path, alloc);
+    try testing.expect(header != null);
+    try testing.expectEqual(@as(u32, 2), header.?.file_count);
+    try testing.expect(header.?.git_head != null);
+    try testing.expectEqualSlices(u8, &fake_head, &header.?.git_head.?);
+
+    const loaded = WordIndex.readFromDisk(dir_path, alloc);
+    try testing.expect(loaded != null);
+    var loaded_wi = loaded.?;
+    defer loaded_wi.deinit();
+
+    const hits_after = try loaded_wi.searchDeduped("Store", alloc);
+    defer alloc.free(hits_after);
+    try testing.expectEqual(hits_before.len, hits_after.len);
+
+    var found_main = false;
+    var found_store = false;
+    for (hits_after) |hit| {
+        if (std.mem.eql(u8, hit.path, "src/main.zig")) found_main = true;
+        if (std.mem.eql(u8, hit.path, "src/store.zig")) found_store = true;
+    }
+    try testing.expect(found_main);
+    try testing.expect(found_store);
+}
+
 test "disk index: round-trip write and read preserves candidates" {
     const alloc = testing.allocator;
     var ti = TrigramIndex.init(alloc);
@@ -3311,6 +3356,120 @@ test "issue-46: empty-repo snapshot rejected on load" {
     const loaded = snapshot_mod.loadSnapshot(snap_path, &exp2, &store, testing.allocator);
     // Valid empty-repo snapshot should be accepted; currently returns false (bug: file_count == 0)
     try testing.expect(loaded);
+}
+
+test "issue-220: snapshot fast load restores outlines and lazily rebuilds word index" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var exp = Explorer.init(aa);
+    try exp.indexFile("src/store.zig", "pub const Store = struct {};\n");
+    try exp.indexFile("src/main.zig", "const Store = @import(\"store.zig\").Store;\npub fn main() void {}\n");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/fast.codedb", .{dir_path});
+    defer testing.allocator.free(snap_path);
+    try snapshot_mod.writeSnapshot(&exp, dir_path, snap_path, testing.allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena2.deinit();
+    var exp2 = Explorer.init(arena2.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    const loaded = snapshot_mod.loadSnapshot(snap_path, &exp2, &store, arena2.allocator());
+    try testing.expect(loaded);
+    try testing.expectEqual(@as(usize, 2), exp2.outlines.count());
+    try testing.expectEqual(@as(u32, 0), exp2.trigram_index.fileCount());
+    try testing.expectEqual(@as(usize, 0), exp2.word_index.index.count());
+    try testing.expect(exp2.wordIndexCanLoadFromDisk());
+    try testing.expect(!exp2.wordIndexIsComplete());
+    try testing.expect(!exp2.wordIndexNeedsPersist());
+
+    const deps = try exp2.getImportedBy("src/store.zig", testing.allocator);
+    defer {
+        for (deps) |dep| testing.allocator.free(dep);
+        testing.allocator.free(deps);
+    }
+    try testing.expectEqual(@as(usize, 1), deps.len);
+    try testing.expect(std.mem.eql(u8, deps[0], "src/main.zig"));
+
+    const hits = try exp2.searchWord("Store", testing.allocator);
+    defer testing.allocator.free(hits);
+    try testing.expect(hits.len >= 1);
+    try testing.expect(exp2.word_index.index.count() > 0);
+    try testing.expect(exp2.wordIndexIsComplete());
+    try testing.expect(exp2.wordIndexNeedsPersist());
+}
+
+test "issue-220: partial word index state rebuilds before search" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+    try exp.indexFile("src/a.zig", "pub const Alpha = 1;\n");
+    try exp.indexFile("src/b.zig", "pub const Beta = 2;\n");
+
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/partial.codedb", .{dir_path});
+    defer testing.allocator.free(snap_path);
+    try snapshot_mod.writeSnapshot(&exp, dir_path, snap_path, testing.allocator);
+
+    var exp2 = Explorer.init(testing.allocator);
+    defer exp2.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    try testing.expect(snapshot_mod.loadSnapshot(snap_path, &exp2, &store, testing.allocator));
+    try testing.expect(exp2.wordIndexCanLoadFromDisk());
+    try testing.expect(!exp2.wordIndexIsComplete());
+
+    try exp2.indexFileSkipTrigram("src/b.zig", "pub const Gamma = 3;\n");
+    try testing.expect(!exp2.wordIndexCanLoadFromDisk());
+    try testing.expect(!exp2.wordIndexIsComplete());
+
+    const alpha_hits = try exp2.searchWord("Alpha", testing.allocator);
+    defer testing.allocator.free(alpha_hits);
+    try testing.expectEqual(@as(usize, 1), alpha_hits.len);
+    try testing.expect(std.mem.eql(u8, alpha_hits[0].path, "src/a.zig"));
+
+    const gamma_hits = try exp2.searchWord("Gamma", testing.allocator);
+    defer testing.allocator.free(gamma_hits);
+    try testing.expectEqual(@as(usize, 1), gamma_hits.len);
+    try testing.expect(std.mem.eql(u8, gamma_hits[0].path, "src/b.zig"));
+    try testing.expect(exp2.wordIndexIsComplete());
+    try testing.expect(exp2.wordIndexNeedsPersist());
+}
+
+test "issue-220: word index persistence tracking skips redundant rewrites" {
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+
+    try exp.indexFile("src/a.zig", "pub const Alpha = 1;\n");
+    try testing.expect(exp.wordIndexIsComplete());
+    try testing.expect(exp.wordIndexNeedsPersist());
+
+    const first_gen = exp.wordIndexGenerationToPersist() orelse return error.TestUnexpectedResult;
+    exp.markWordIndexPersisted(first_gen);
+    try testing.expect(!exp.wordIndexNeedsPersist());
+    try testing.expect(exp.wordIndexGenerationToPersist() == null);
+
+    try exp.indexFile("src/a.zig", "pub const Beta = 2;\n");
+    try testing.expect(exp.wordIndexNeedsPersist());
+
+    const second_gen = exp.wordIndexGenerationToPersist() orelse return error.TestUnexpectedResult;
+    try testing.expect(second_gen != first_gen);
+    exp.markWordIndexPersisted(first_gen);
+    try testing.expect(exp.wordIndexNeedsPersist());
+    exp.markWordIndexPersisted(second_gen);
+    try testing.expect(!exp.wordIndexNeedsPersist());
 }
 
 // ── Snapshot non-git tests ───────────────────────────────────
@@ -4529,7 +4688,6 @@ test "issue-151: Go block comments skipped" {
     }
     try testing.expect(func_count == 1); // only realFunc
 }
-
 
 test "issue-150: --help prints usage" {
     const result = try std.process.Child.run(.{
