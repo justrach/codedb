@@ -688,11 +688,16 @@ fn drainNotifyFile(store: *Store, explorer: *Explorer, queue: *EventQueue, known
         else
             path;
 
+        // Skip re-indexing if the file has not changed since last index
+        const stat = compat.dirStatFile(dir, rel) catch continue;
+        const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
+        if (known.getPtr(rel)) |existing| {
+            if (existing.mtime == mtime and existing.size == stat.size) continue;
+        }
+
         indexFileContent(explorer, dir, rel, alloc, false) catch continue;
 
         // Update known-file state so incrementalDiff doesn't double-process
-        const stat = compat.dirStatFile(dir, rel) catch continue;
-        const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
         const hash = hashFile(dir, rel, stat.size) catch continue;
         if (known.getPtr(rel)) |existing| {
             existing.mtime = mtime;
