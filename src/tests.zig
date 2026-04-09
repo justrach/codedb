@@ -5369,3 +5369,39 @@ test "issue-179: Python docstring with text does not leak symbols" {
     try testing.expect(found_real);
     try testing.expect(!found_fake);
 }
+
+test "issue-224: codedb_symbol body=true returns only signature — line_end never populated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var explorer = Explorer.init(alloc);
+
+    // Multi-line function: signature on line 1, body on lines 2..4, closing brace on line 5.
+    try explorer.indexFile("t.zig",
+        \\pub fn foo() u32 {
+        \\    const a: u32 = 1;
+        \\    const b: u32 = 2;
+        \\    return a + b;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("foo", alloc);
+    defer alloc.free(results);
+    try testing.expect(results.len == 1);
+
+    const sym = results[0].symbol;
+    try testing.expectEqual(@as(u32, 1), sym.line_start);
+    // With the bug, line_end == line_start (== 1). After the fix, it must reach
+    // the closing brace on line 5.
+    try testing.expectEqual(@as(u32, 5), sym.line_end);
+
+    // Full-body extraction via getSymbolBody — the exact path codedb_symbol body=true
+    // takes — must contain every body line, not just the signature.
+    const body = (try explorer.getSymbolBody("t.zig", sym.line_start, sym.line_end, alloc)) orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, body, "pub fn foo()") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "const a: u32 = 1;") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "const b: u32 = 2;") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "return a + b;") != null);
+}
