@@ -688,21 +688,28 @@ fn drainNotifyFile(store: *Store, explorer: *Explorer, queue: *EventQueue, known
         else
             path;
 
-        // Skip re-indexing if the file has not changed since last index
-        const stat = compat.dirStatFile(dir, rel) catch continue;
-        const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
+        // Skip re-indexing if the file has not changed since last index.
+        // Check mtime+size first (cheap), then content hash for same-size rewrites.
+        const pre_stat = compat.dirStatFile(dir, rel) catch continue;
+        const pre_mtime: i64 = @intCast(@divTrunc(pre_stat.mtime, std.time.ns_per_ms));
         if (known.getPtr(rel)) |existing| {
-            if (existing.mtime == mtime and existing.size == stat.size) continue;
+            if (existing.mtime == pre_mtime and existing.size == pre_stat.size) {
+                const hash = hashFile(dir, rel, pre_stat.size) catch continue;
+                if (existing.hash == hash) continue;
+            }
         }
 
         indexFileContent(explorer, dir, rel, alloc, false) catch continue;
 
-        // Update known-file state so incrementalDiff doesn't double-process
-        const hash = hashFile(dir, rel, stat.size) catch continue;
+        // Re-stat after indexing so known-state reflects what was actually indexed,
+        // avoiding stale values if the file changed between pre-stat and indexing.
+        const post_stat = compat.dirStatFile(dir, rel) catch continue;
+        const post_mtime: i64 = @intCast(@divTrunc(post_stat.mtime, std.time.ns_per_ms));
+        const post_hash = hashFile(dir, rel, post_stat.size) catch continue;
         if (known.getPtr(rel)) |existing| {
-            existing.mtime = mtime;
-            existing.size = stat.size;
-            existing.hash = hash;
+            existing.mtime = post_mtime;
+            existing.size = post_stat.size;
+            existing.hash = post_hash;
         }
 
         // Push event to queue
