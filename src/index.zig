@@ -644,12 +644,11 @@ pub const TrigramIndex = struct {
             if (!idx_gop.found_existing) {
                 idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
             }
-            // Single append (not sorted insert) since doc_id is monotonically increasing
-            try idx_gop.value_ptr.items.append(self.allocator, .{
-                .doc_id = doc_id,
-                .next_mask = mask.next_mask,
-                .loc_mask = mask.loc_mask,
-            });
+            // Use sorted insert to maintain posting-list order, since
+            // doc_id reuse from the free-list can be non-monotonic.
+            const posting = try idx_gop.value_ptr.getOrAddPosting(self.allocator, doc_id);
+            posting.next_mask = mask.next_mask;
+            posting.loc_mask = mask.loc_mask;
 
             try tri_list.append(self.allocator, tri);
         }
