@@ -6,7 +6,7 @@ const index = @import("index.zig");
 
 const RING_SIZE = 256;
 const CLOUD_URL = "https://codedb.codegraff.com/telemetry/ingest";
-const VERSION = "0.2.54";
+const VERSION = "0.2.55";
 const PLATFORM = std.fmt.comptimePrint("{s}-{s}", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
 
 pub const Event = struct {

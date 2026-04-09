@@ -494,7 +494,7 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
         }
     }
     writeResult(s.alloc, s.stdout, id,
-        \\{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"codedb","version":"0.2.54"}}
+        \\{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"codedb","version":"0.2.55"}}
     );
 }
 
