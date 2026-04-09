@@ -5708,3 +5708,69 @@ test "issue-224: Rust fn with trailing return type does not break angles" {
     try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
     try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
 }
+
+test "issue-224: Zig fn body with `if (a < b)` comparison does not leak angle depth" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // The `<` in `if (a < b)` must be read as a comparison, not a generic opener.
+    // Otherwise scanBraceBlock would treat the inner `{` as inside `<...>` and
+    // never close the outer block, truncating line_end.
+    try explorer.indexFile("cmp.zig",
+        \\pub fn cmp(a: u32, b: u32) u32 {
+        \\    if (a < b) {
+        \\        return b;
+        \\    }
+        \\    return a;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("cmp", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 6), results[0].symbol.line_end);
+}
+
+test "issue-224: Rust fn body with `if a < b` comparison" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("cmp.rs",
+        \\pub fn cmp(a: i32, b: i32) -> i32 {
+        \\    if a < b {
+        \\        return b;
+        \\    }
+        \\    a
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("cmp", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 6), results[0].symbol.line_end);
+}
+
+test "issue-224: Python def with multi-line parenthesized signature" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // The parameter continuation lines are indented deeper than the `def` line,
+    // but they belong to the signature — not the body. findPythonBlockEnd must
+    // walk past them to the line ending in `:` before starting the body scan.
+    try explorer.indexFile("t.py",
+        \\def foo(
+        \\    a: int,
+        \\    b: int,
+        \\) -> int:
+        \\    x = a + b
+        \\    return x
+    );
+
+    const results = try explorer.findAllSymbols("foo", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 6), results[0].symbol.line_end);
+}

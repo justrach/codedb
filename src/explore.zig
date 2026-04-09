@@ -2030,26 +2030,27 @@ fn scanBraceBlock(lines: []const []const u8, start_idx: usize) ?u32 {
                 in_dq = true;
                 continue;
             }
-            // Generic angle-bracket tracking. While inside `<...>`, treat `{` / `}`
-            // as part of an embedded type literal and skip them entirely.
+            // Generic angle-bracket tracking. A `<` is treated as a type-parameter
+            // opener only when its immediate previous character is an identifier
+            // character (e.g. `Vec<T>`, `Map<K, V>`, `impl<T>`, `Foo<{a: string}>`).
+            // `<` after whitespace, punctuation, `(`, `=`, etc. is a comparison
+            // operator — crucially covering `if (a < b) { ... }`, which must not
+            // swallow the following `{`. `<<` / `<=` fall through naturally because
+            // the second char is not an ident either.
+            //
+            // Known limitation: `a<b` with no spaces is misread as a generic opener.
+            // Idiomatic code uses spaces around comparisons, so this is rare.
             if (c == '<') {
-                // Skip '<=' comparison.
-                if (j + 1 < line.len and line[j + 1] == '=') {
-                    j += 1;
-                    continue;
+                const prev: u8 = if (j > 0) line[j - 1] else 0;
+                if (isIdentChar(prev)) {
+                    angle_depth += 1;
                 }
-                angle_depth += 1;
                 continue;
             }
             if (c == '>') {
                 const prev: u8 = if (j > 0) line[j - 1] else 0;
                 // Skip '=>' arrow and '->' trailing return.
                 if (prev == '=' or prev == '-') continue;
-                // Skip '>=' comparison.
-                if (j + 1 < line.len and line[j + 1] == '=') {
-                    j += 1;
-                    continue;
-                }
                 if (angle_depth > 0) angle_depth -= 1;
                 continue;
             }
@@ -2078,17 +2079,39 @@ fn scanBraceBlock(lines: []const []const u8, start_idx: usize) ?u32 {
     return null;
 }
 
-/// Indent-based block detection for Python. The signature is on `start_idx`; the body
-/// is the contiguous run of lines with indent strictly greater than the signature's.
-/// Blank and comment lines inside the body do not terminate the block. Multi-line
-/// signatures (e.g. `def foo(\n  a,\n) -> int:`) are tolerated by skipping lines with
-/// indent <= sig until we first see the body.
+/// Indent-based block detection for Python. Handles multi-line signatures like
+/// `def foo(\n    a,\n    b,\n) -> int:` by first walking past continuation lines
+/// until we reach the one that terminates with `:` — only then do we start the
+/// body scan. Without this step, indented parameter lines are misclassified as
+/// body, and the dedented `):` line ends the scan prematurely, truncating the
+/// reported body range.
+///
+/// The body itself is the contiguous run of lines with indent strictly greater
+/// than the signature's. Blank and comment lines inside the body do not terminate
+/// the block.
 fn findPythonBlockEnd(lines: []const []const u8, start_idx: usize) ?u32 {
     if (start_idx >= lines.len) return null;
     const sig_indent = leadingIndent(lines[start_idx]);
-    var last_body: u32 = @intCast(start_idx + 1);
+
+    // Find the line on which the signature terminates (ends with `:`, ignoring
+    // trailing whitespace and inline `#` comments). Capped at 20 lines to avoid
+    // runaway scans on malformed input; if no terminator is found, fall back to
+    // treating start_idx as the end-of-signature line.
+    var sig_end_idx: usize = start_idx;
+    {
+        var k: usize = start_idx;
+        const cap = @min(lines.len, start_idx + 20);
+        while (k < cap) : (k += 1) {
+            if (pythonLineEndsWithColon(lines[k])) {
+                sig_end_idx = k;
+                break;
+            }
+        }
+    }
+
+    var last_body: u32 = @intCast(sig_end_idx + 1);
     var seen_body = false;
-    var i: usize = start_idx + 1;
+    var i: usize = sig_end_idx + 1;
     while (i < lines.len) : (i += 1) {
         const line = lines[i];
         const trimmed = std.mem.trim(u8, line, " \t");
@@ -2103,6 +2126,50 @@ fn findPythonBlockEnd(lines: []const []const u8, start_idx: usize) ?u32 {
         }
     }
     return if (seen_body) last_body else null;
+}
+
+/// True when `line`, with any inline `#...` comment and trailing whitespace
+/// stripped, ends with `:`. Tracks single- and double-quoted strings so a `#`
+/// inside `"foo#bar"` is not treated as a comment opener.
+fn pythonLineEndsWithColon(line: []const u8) bool {
+    var end: usize = line.len;
+    var in_sq = false;
+    var in_dq = false;
+    var k: usize = 0;
+    while (k < line.len) : (k += 1) {
+        const c = line[k];
+        if (in_sq) {
+            if (c == '\\' and k + 1 < line.len) {
+                k += 1;
+                continue;
+            }
+            if (c == '\'') in_sq = false;
+            continue;
+        }
+        if (in_dq) {
+            if (c == '\\' and k + 1 < line.len) {
+                k += 1;
+                continue;
+            }
+            if (c == '"') in_dq = false;
+            continue;
+        }
+        if (c == '#') {
+            end = k;
+            break;
+        }
+        if (c == '\'') {
+            in_sq = true;
+        } else if (c == '"') {
+            in_dq = true;
+        }
+    }
+    const trimmed = std.mem.trimRight(u8, line[0..end], " \t");
+    return trimmed.len > 0 and trimmed[trimmed.len - 1] == ':';
+}
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
 }
 
 /// Indent-based block detection for Ruby. Ruby's `end` keyword is the true delimiter,
