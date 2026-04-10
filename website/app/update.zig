@@ -197,7 +197,7 @@ const html =
     \\      <div class="change-card"><div class="tag tag-perf">performance</div><h3>Batch-accumulate trigrams</h3><p>Local HashMap per file, bulk-insert to global index. Skip whitespace-only trigrams (12% of occurrences).</p></div>
     \\      <div class="change-card"><div class="tag tag-perf">performance</div><h3>Memory optimization</h3><p>Release file contents after indexing. Zero-copy ContentRef for search. 47% less memory at 40k files.</p></div>
     \\      <div class="change-card"><div class="tag tag-fix">fix</div><h3>Python &amp; TypeScript parsers</h3><p>Triple-quote docstrings, block comments, import alias handling. Fixed dependency matching for Python imports.</p></div>
-    \\      <div class="change-card"><div class="tag tag-fix">fix</div><h3>MCP reliability</h3><p>2-minute idle timeout. Singleton PID lock. Fixed crash on exit (duplicate thread join). Linux /bin/bash update.</p></div>
+    \\      <div class="change-card"><div class="tag tag-fix">fix</div><h3>MCP reliability</h3><p>10-minute idle timeout. Faster disconnect exit via stdin polling. Singleton PID lock. Fixed crash on exit (duplicate thread join). Linux /bin/bash update.</p></div>
     \\      <div class="change-card"><div class="tag tag-doc">docs</div><h3>16 MCP tools documented</h3><p>Added codedb_bundle, codedb_remote, codedb_projects, codedb_index. CLI commands table in README.</p></div>
     \\    </div>
     \\  </div>

@@ -53,7 +53,7 @@
 | Auto-registration in Claude, Codex, Gemini, Cursor     |                                          |
 | Polling file watcher with filtered directory walker    |                                          |
 | Portable snapshot for instant MCP startup              |                                          |
-| Singleton MCP with PID lock + 2min idle timeout        |                                          |
+| Singleton MCP with PID lock + 10min idle timeout       |                                          |
 | Sensitive file blocking (.env, credentials, keys)      |                                          |
 | Codesigned + notarized macOS binaries                  |                                          |
 | SHA256 checksum verification in installer              |                                          |
