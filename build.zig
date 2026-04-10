@@ -30,6 +30,12 @@ pub fn build(b: *std.Build) void {
     // ── mcp-zig dependency ──
     const mcp_dep = b.dependency("mcp_zig", .{});
     exe.root_module.addImport("mcp", mcp_dep.module("mcp"));
+
+    // Windows default stack is 1MB; match the 8MB Linux default for headroom.
+    if (target.result.os.tag == .windows) {
+        exe.stack_size = 8 * 1024 * 1024;
+    }
+
     b.installArtifact(exe);
 
     // ── macOS codesign (ad-hoc by default; configurable for release builds) ──
