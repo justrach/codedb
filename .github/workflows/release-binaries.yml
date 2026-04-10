@@ -71,6 +71,7 @@ jobs:
           mkdir -p scripts
           # Use the helper reviewed with this workflow revision, not the rebuilt tag.
           gh api repos/${{ github.repository }}/contents/scripts/notarize-macos.sh \
+            --method GET \
             -f ref="$HELPER_REF" \
             -H "Accept: application/vnd.github.raw" > scripts/notarize-macos.sh
           chmod +x scripts/notarize-macos.sh
