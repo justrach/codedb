@@ -1974,9 +1974,8 @@ pub fn computeSymbolEnds(content: []const u8, outline: *FileOutline) void {
 }
 
 /// Scan forward from `start_idx` counting braces until the first opened `{` is closed.
-/// Skips `"..."` strings, `//` line comments, and `/* */` block comments. Does NOT
-/// track single-quoted strings or backticks — rare imprecision in char literals
-/// (e.g. `'{'`) and template literals is accepted in exchange for simplicity.
+/// Skips `"..."`, `'...'`, and `` `...` `` literals, `//` line comments, and `/* */`
+/// block comments so that braces inside strings/chars/templates are not miscounted.
 ///
 /// Tracks angle-bracket depth for generics: `{`/`}` inside `<...>` are ignored so
 /// signatures like `Promise<{ ok: boolean }>` or `<T extends { id: string }>` do
@@ -1996,6 +1995,8 @@ fn scanBraceBlock(lines: []const []const u8, start_idx: usize) ?u32 {
     var crossed_newline = false;
     var ever_opened = false;
     var in_dq = false;
+    var in_sq = false;
+    var in_bt = false;
     var in_bc = false;
     var i: usize = start_idx;
     while (i < lines.len) : (i += 1) {
@@ -2018,6 +2019,22 @@ fn scanBraceBlock(lines: []const []const u8, start_idx: usize) ?u32 {
                 if (c == '"') in_dq = false;
                 continue;
             }
+            if (in_sq) {
+                if (c == '\\' and j + 1 < line.len) {
+                    j += 1;
+                    continue;
+                }
+                if (c == '\'') in_sq = false;
+                continue;
+            }
+            if (in_bt) {
+                if (c == '\\' and j + 1 < line.len) {
+                    j += 1;
+                    continue;
+                }
+                if (c == '`') in_bt = false;
+                continue;
+            }
             if (c == '/' and j + 1 < line.len) {
                 if (line[j + 1] == '/') break; // rest of line is a line comment
                 if (line[j + 1] == '*') {
@@ -2028,6 +2045,14 @@ fn scanBraceBlock(lines: []const []const u8, start_idx: usize) ?u32 {
             }
             if (c == '"') {
                 in_dq = true;
+                continue;
+            }
+            if (c == '\'') {
+                in_sq = true;
+                continue;
+            }
+            if (c == '`') {
+                in_bt = true;
                 continue;
             }
             // Generic angle-bracket tracking. A `<` is treated as a type-parameter

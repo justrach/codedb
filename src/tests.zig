@@ -5774,3 +5774,43 @@ test "issue-224: Python def with multi-line parenthesized signature" {
     try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
     try testing.expectEqual(@as(u32, 6), results[0].symbol.line_end);
 }
+
+test "issue-224: Zig char literal with closing brace does not truncate" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // `const c: u8 = '}';` contains a `}` inside a char literal — scanBraceBlock
+    // must not count it as a closing brace, or line_end will be truncated to line 2.
+    try explorer.indexFile("t.zig",
+        \\pub fn charLit() u8 {
+        \\    const c: u8 = '}';
+        \\    return c;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("charLit", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: TS template literal with closing brace does not truncate" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // `` const s = `}` `` contains a `}` inside a template literal — scanBraceBlock
+    // must not count it as a closing brace.
+    try explorer.indexFile("t.ts",
+        \\function tmpl() {
+        \\  const s = `}`;
+        \\  return s;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("tmpl", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
