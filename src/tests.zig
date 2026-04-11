@@ -5429,3 +5429,448 @@ test "issue-179: Python docstring with text does not leak symbols" {
     try testing.expect(found_real);
     try testing.expect(!found_fake);
 }
+
+test "issue-224: codedb_symbol body=true returns only signature — line_end never populated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var explorer = Explorer.init(alloc);
+
+    // Multi-line function: signature on line 1, body on lines 2..4, closing brace on line 5.
+    try explorer.indexFile("t.zig",
+        \\pub fn foo() u32 {
+        \\    const a: u32 = 1;
+        \\    const b: u32 = 2;
+        \\    return a + b;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("foo", alloc);
+    defer alloc.free(results);
+    try testing.expect(results.len == 1);
+
+    const sym = results[0].symbol;
+    try testing.expectEqual(@as(u32, 1), sym.line_start);
+    // With the bug, line_end == line_start (== 1). After the fix, it must reach
+    // the closing brace on line 5.
+    try testing.expectEqual(@as(u32, 5), sym.line_end);
+
+    // Full-body extraction via getSymbolBody — the exact path codedb_symbol body=true
+    // takes — must contain every body line, not just the signature.
+    const body = (try explorer.getSymbolBody("t.zig", sym.line_start, sym.line_end, alloc)) orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, body, "pub fn foo()") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "const a: u32 = 1;") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "const b: u32 = 2;") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "return a + b;") != null);
+}
+
+test "issue-224: Zig struct_def line_end spans full block" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("s.zig",
+        \\pub const Point = struct {
+        \\    x: f32,
+        \\    y: f32,
+        \\};
+    );
+
+    const results = try explorer.findAllSymbols("Point", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: Python def line_end via indent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("t.py",
+        \\def greet(name):
+        \\    msg = "hi " + name
+        \\    print(msg)
+        \\    return msg
+        \\
+        \\def other():
+        \\    pass
+    );
+
+    const results = try explorer.findAllSymbols("greet", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: Python class with method" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("c.py",
+        \\class Foo:
+        \\    def bar(self):
+        \\        return 1
+        \\    def baz(self):
+        \\        return 2
+    );
+
+    const results = try explorer.findAllSymbols("Foo", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 5), results[0].symbol.line_end);
+}
+
+test "issue-224: TypeScript function line_end" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("t.ts",
+        \\export function add(a: number, b: number): number {
+        \\    const sum = a + b;
+        \\    return sum;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("add", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: Rust fn line_end" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("t.rs",
+        \\pub fn compute(x: i32) -> i32 {
+        \\    let y = x * 2;
+        \\    y + 1
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("compute", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: Go func line_end" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("t.go",
+        \\func Handle(req *Request) error {
+        \\    if req == nil {
+        \\        return nil
+        \\    }
+        \\    return process(req)
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("Handle", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 6), results[0].symbol.line_end);
+}
+
+test "issue-224: PHP function line_end" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("t.php",
+        \\<?php
+        \\function greet($name) {
+        \\    $msg = "hello " . $name;
+        \\    return $msg;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("greet", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 2), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 5), results[0].symbol.line_end);
+}
+
+test "issue-224: Ruby def line_end via end keyword" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("t.rb",
+        \\def process(items)
+        \\  items.each do |x|
+        \\    puts x
+        \\  end
+        \\  return items.size
+        \\end
+    );
+
+    const results = try explorer.findAllSymbols("process", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 6), results[0].symbol.line_end);
+}
+
+test "issue-224: abstract method with no body keeps line_end == line_start" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // Allman-style or abstract-ish: body-less forward-ish. Use a line that has
+    // a function signature but no brace within 10 lines — should stay single-line.
+    try explorer.indexFile("t.ts",
+        \\export function abstractOne(): void;
+        \\export function abstractTwo(): void;
+    );
+
+    const r1 = try explorer.findAllSymbols("abstractOne", arena.allocator());
+    try testing.expect(r1.len == 1);
+    try testing.expectEqual(@as(u32, 1), r1[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 1), r1[0].symbol.line_end);
+}
+
+test "issue-224: TS function with Promise<{...}> return type" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // Reproduces the real-world handleResendWebhook regression: object literal
+    // inside the generic return type balances braces on the signature line and
+    // fools the body scanner.
+    try explorer.indexFile("t.ts",
+        \\export async function handleEvent(): Promise<{ handled: boolean; message: string }> {
+        \\    const result = 42;
+        \\    return { handled: true, message: "ok" };
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("handleEvent", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: TS function with bare object return type" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("t.ts",
+        \\export function makePoint(): { x: number; y: number } {
+        \\    return { x: 1, y: 2 };
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("makePoint", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 3), results[0].symbol.line_end);
+}
+
+test "issue-224: TS function with destructured typed parameter" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("t.ts",
+        \\export function add({ x, y }: { x: number; y: number }): number {
+        \\    const sum = x + y;
+        \\    return sum;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("add", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: TS generic constraint with object literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("t.ts",
+        \\export function idOf<T extends { id: string }>(x: T): string {
+        \\    const result = x.id;
+        \\    return result;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("idOf", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: TS arrow type in parameter does not break scanner" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // The '=>' in the callback type must not be parsed as a closing angle
+    // bracket; otherwise angle depth goes negative and body detection breaks.
+    try explorer.indexFile("t.ts",
+        \\export function run(cb: () => void): void {
+        \\    const step = 1;
+        \\    cb();
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("run", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: TS nested generics with closing >>" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("t.ts",
+        \\export function flatten(rows: Array<Array<number>>): number {
+        \\    const count = rows.length;
+        \\    return count;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("flatten", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: Rust fn with trailing return type does not break angles" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // '->' in Rust signatures must not be counted as an angle close, and the
+    // generic `Result<i32, String>` must balance correctly.
+    try explorer.indexFile("t.rs",
+        \\pub fn parse(input: &str) -> Result<i32, String> {
+        \\    let n = 1;
+        \\    Ok(n)
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("parse", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: Zig fn body with `if (a < b)` comparison does not leak angle depth" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // The `<` in `if (a < b)` must be read as a comparison, not a generic opener.
+    // Otherwise scanBraceBlock would treat the inner `{` as inside `<...>` and
+    // never close the outer block, truncating line_end.
+    try explorer.indexFile("cmp.zig",
+        \\pub fn cmp(a: u32, b: u32) u32 {
+        \\    if (a < b) {
+        \\        return b;
+        \\    }
+        \\    return a;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("cmp", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 6), results[0].symbol.line_end);
+}
+
+test "issue-224: Rust fn body with `if a < b` comparison" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("cmp.rs",
+        \\pub fn cmp(a: i32, b: i32) -> i32 {
+        \\    if a < b {
+        \\        return b;
+        \\    }
+        \\    a
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("cmp", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 6), results[0].symbol.line_end);
+}
+
+test "issue-224: Python def with multi-line parenthesized signature" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // The parameter continuation lines are indented deeper than the `def` line,
+    // but they belong to the signature — not the body. findPythonBlockEnd must
+    // walk past them to the line ending in `:` before starting the body scan.
+    try explorer.indexFile("t.py",
+        \\def foo(
+        \\    a: int,
+        \\    b: int,
+        \\) -> int:
+        \\    x = a + b
+        \\    return x
+    );
+
+    const results = try explorer.findAllSymbols("foo", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 6), results[0].symbol.line_end);
+}
+
+test "issue-224: Zig char literal with closing brace does not truncate" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // `const c: u8 = '}';` contains a `}` inside a char literal — scanBraceBlock
+    // must not count it as a closing brace, or line_end will be truncated to line 2.
+    try explorer.indexFile("t.zig",
+        \\pub fn charLit() u8 {
+        \\    const c: u8 = '}';
+        \\    return c;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("charLit", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}
+
+test "issue-224: TS template literal with closing brace does not truncate" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // `` const s = `}` `` contains a `}` inside a template literal — scanBraceBlock
+    // must not count it as a closing brace.
+    try explorer.indexFile("t.ts",
+        \\function tmpl() {
+        \\  const s = `}`;
+        \\  return s;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("tmpl", arena.allocator());
+    try testing.expect(results.len == 1);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 4), results[0].symbol.line_end);
+}

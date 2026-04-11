@@ -315,6 +315,10 @@ pub const Explorer = struct {
         }
         outline.line_count = line_num;
 
+        // Fill in Symbol.line_end for multi-line symbols (parsers only record line_start).
+        // Must happen while `content` is still in scope and before the lock is taken.
+        computeSymbolEnds(content, &outline);
+
         self.mu.lock();
         defer self.mu.unlock();
 
@@ -1924,6 +1928,306 @@ fn phpNamespaceToPath(allocator: std.mem.Allocator, ns: []const u8) ![]u8 {
     }
     try parts.appendSlice(allocator, ".php");
     return try parts.toOwnedSlice(allocator);
+}
+
+/// Compute Symbol.line_end for multi-line symbols by scanning content after parsing.
+/// The per-language parsers in parseXLine record only line_start; this post-pass fills
+/// in line_end using brace-balance (C-family), indent (Python), or `end`-matching (Ruby).
+/// Symbol kinds that are naturally single-line (import, variable, constant, etc.) are
+/// left untouched. Best-effort: on allocation failure or unrecognized language, returns
+/// silently and symbols keep line_end == line_start.
+pub fn computeSymbolEnds(content: []const u8, outline: *FileOutline) void {
+    if (outline.symbols.items.len == 0) return;
+
+    var lines_list: std.ArrayList([]const u8) = .{};
+    defer lines_list.deinit(outline.allocator);
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |line| {
+        lines_list.append(outline.allocator, line) catch return;
+    }
+    const lines = lines_list.items;
+
+    for (outline.symbols.items) |*sym| {
+        // Skip kinds that are naturally single-line. Zig struct/enum/union defs use
+        // .struct_def/.enum_def/.union_def kinds (not .constant), so skipping .constant
+        // is safe for Zig. TS `const x = () => { ... }` lands as .constant too and is
+        // left alone — users can still reach the body via codedb_read.
+        switch (sym.kind) {
+            .import, .variable, .constant, .comment_block, .type_alias, .macro_def => continue,
+            else => {},
+        }
+
+        if (sym.line_start == 0 or sym.line_start > lines.len) continue;
+        const start_idx: usize = @intCast(sym.line_start - 1);
+
+        const end_line: ?u32 = switch (outline.language) {
+            .python => findPythonBlockEnd(lines, start_idx),
+            .ruby => findRubyBlockEnd(lines, start_idx),
+            .zig, .c, .cpp, .javascript, .typescript, .rust, .go_lang, .php => scanBraceBlock(lines, start_idx),
+            else => null,
+        };
+
+        if (end_line) |e| {
+            if (e > sym.line_end) sym.line_end = e;
+        }
+    }
+}
+
+/// Scan forward from `start_idx` counting braces until the first opened `{` is closed.
+/// Skips `"..."`, `'...'`, and `` `...` `` literals, `//` line comments, and `/* */`
+/// block comments so that braces inside strings/chars/templates are not miscounted.
+///
+/// Tracks angle-bracket depth for generics: `{`/`}` inside `<...>` are ignored so
+/// signatures like `Promise<{ ok: boolean }>` or `<T extends { id: string }>` do
+/// not fool the body detector. `=>` (arrow types), `->` (trailing return), and
+/// `<=` / `>=` (comparisons) are excluded from angle tracking.
+///
+/// Only reports a block as closed after depth has survived at least one newline —
+/// `{...}` that opens and closes on the same signature line is treated as a type
+/// literal or destructured default, not the function body.
+///
+/// Returns the 1-based line number of the closing `}`, or null if no block is found
+/// within 10 lines of the signature (treated as a forward declaration / abstract).
+fn scanBraceBlock(lines: []const []const u8, start_idx: usize) ?u32 {
+    if (start_idx >= lines.len) return null;
+    var depth: i32 = 0;
+    var angle_depth: i32 = 0;
+    var crossed_newline = false;
+    var ever_opened = false;
+    var in_dq = false;
+    var in_sq = false;
+    var in_bt = false;
+    var in_bc = false;
+    var i: usize = start_idx;
+    while (i < lines.len) : (i += 1) {
+        const line = lines[i];
+        var j: usize = 0;
+        while (j < line.len) : (j += 1) {
+            const c = line[j];
+            if (in_bc) {
+                if (c == '*' and j + 1 < line.len and line[j + 1] == '/') {
+                    in_bc = false;
+                    j += 1;
+                }
+                continue;
+            }
+            if (in_dq) {
+                if (c == '\\' and j + 1 < line.len) {
+                    j += 1;
+                    continue;
+                }
+                if (c == '"') in_dq = false;
+                continue;
+            }
+            if (in_sq) {
+                if (c == '\\' and j + 1 < line.len) {
+                    j += 1;
+                    continue;
+                }
+                if (c == '\'') in_sq = false;
+                continue;
+            }
+            if (in_bt) {
+                if (c == '\\' and j + 1 < line.len) {
+                    j += 1;
+                    continue;
+                }
+                if (c == '`') in_bt = false;
+                continue;
+            }
+            if (c == '/' and j + 1 < line.len) {
+                if (line[j + 1] == '/') break; // rest of line is a line comment
+                if (line[j + 1] == '*') {
+                    in_bc = true;
+                    j += 1;
+                    continue;
+                }
+            }
+            if (c == '"') {
+                in_dq = true;
+                continue;
+            }
+            if (c == '\'') {
+                in_sq = true;
+                continue;
+            }
+            if (c == '`') {
+                in_bt = true;
+                continue;
+            }
+            // Generic angle-bracket tracking. A `<` is treated as a type-parameter
+            // opener only when its immediate previous character is an identifier
+            // character (e.g. `Vec<T>`, `Map<K, V>`, `impl<T>`, `Foo<{a: string}>`).
+            // `<` after whitespace, punctuation, `(`, `=`, etc. is a comparison
+            // operator — crucially covering `if (a < b) { ... }`, which must not
+            // swallow the following `{`. `<<` / `<=` fall through naturally because
+            // the second char is not an ident either.
+            //
+            // Known limitation: `a<b` with no spaces is misread as a generic opener.
+            // Idiomatic code uses spaces around comparisons, so this is rare.
+            if (c == '<') {
+                const prev: u8 = if (j > 0) line[j - 1] else 0;
+                if (isIdentChar(prev)) {
+                    angle_depth += 1;
+                }
+                continue;
+            }
+            if (c == '>') {
+                const prev: u8 = if (j > 0) line[j - 1] else 0;
+                // Skip '=>' arrow and '->' trailing return.
+                if (prev == '=' or prev == '-') continue;
+                if (angle_depth > 0) angle_depth -= 1;
+                continue;
+            }
+            if (angle_depth > 0) continue;
+            if (c == '{') {
+                depth += 1;
+                ever_opened = true;
+            } else if (c == '}') {
+                if (depth > 0) {
+                    depth -= 1;
+                    // Only count this as the body-close if the block has survived
+                    // at least one newline — otherwise it was a same-line type
+                    // literal, object default, or one-liner that isn't the body.
+                    if (depth == 0 and crossed_newline) {
+                        return @intCast(i + 1);
+                    }
+                }
+            }
+        }
+        // If we end a line with depth > 0, the currently-open block has now
+        // crossed a newline and is a genuine multi-line body.
+        if (depth > 0) crossed_newline = true;
+        // Bail out if we've scanned many lines without even finding an opening brace.
+        if (!ever_opened and i - start_idx >= 10) return null;
+    }
+    return null;
+}
+
+/// Indent-based block detection for Python. Handles multi-line signatures like
+/// `def foo(\n    a,\n    b,\n) -> int:` by first walking past continuation lines
+/// until we reach the one that terminates with `:` — only then do we start the
+/// body scan. Without this step, indented parameter lines are misclassified as
+/// body, and the dedented `):` line ends the scan prematurely, truncating the
+/// reported body range.
+///
+/// The body itself is the contiguous run of lines with indent strictly greater
+/// than the signature's. Blank and comment lines inside the body do not terminate
+/// the block.
+fn findPythonBlockEnd(lines: []const []const u8, start_idx: usize) ?u32 {
+    if (start_idx >= lines.len) return null;
+    const sig_indent = leadingIndent(lines[start_idx]);
+
+    // Find the line on which the signature terminates (ends with `:`, ignoring
+    // trailing whitespace and inline `#` comments). Capped at 20 lines to avoid
+    // runaway scans on malformed input; if no terminator is found, fall back to
+    // treating start_idx as the end-of-signature line.
+    var sig_end_idx: usize = start_idx;
+    {
+        var k: usize = start_idx;
+        const cap = @min(lines.len, start_idx + 20);
+        while (k < cap) : (k += 1) {
+            if (pythonLineEndsWithColon(lines[k])) {
+                sig_end_idx = k;
+                break;
+            }
+        }
+    }
+
+    var last_body: u32 = @intCast(sig_end_idx + 1);
+    var seen_body = false;
+    var i: usize = sig_end_idx + 1;
+    while (i < lines.len) : (i += 1) {
+        const line = lines[i];
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (trimmed.len == 0) continue;
+        if (std.mem.startsWith(u8, trimmed, "#")) continue;
+        const ind = leadingIndent(line);
+        if (ind > sig_indent) {
+            seen_body = true;
+            last_body = @intCast(i + 1);
+        } else if (seen_body) {
+            return last_body;
+        }
+    }
+    return if (seen_body) last_body else null;
+}
+
+/// True when `line`, with any inline `#...` comment and trailing whitespace
+/// stripped, ends with `:`. Tracks single- and double-quoted strings so a `#`
+/// inside `"foo#bar"` is not treated as a comment opener.
+fn pythonLineEndsWithColon(line: []const u8) bool {
+    var end: usize = line.len;
+    var in_sq = false;
+    var in_dq = false;
+    var k: usize = 0;
+    while (k < line.len) : (k += 1) {
+        const c = line[k];
+        if (in_sq) {
+            if (c == '\\' and k + 1 < line.len) {
+                k += 1;
+                continue;
+            }
+            if (c == '\'') in_sq = false;
+            continue;
+        }
+        if (in_dq) {
+            if (c == '\\' and k + 1 < line.len) {
+                k += 1;
+                continue;
+            }
+            if (c == '"') in_dq = false;
+            continue;
+        }
+        if (c == '#') {
+            end = k;
+            break;
+        }
+        if (c == '\'') {
+            in_sq = true;
+        } else if (c == '"') {
+            in_dq = true;
+        }
+    }
+    const trimmed = std.mem.trimRight(u8, line[0..end], " \t");
+    return trimmed.len > 0 and trimmed[trimmed.len - 1] == ':';
+}
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
+}
+
+/// Indent-based block detection for Ruby. Ruby's `end` keyword is the true delimiter,
+/// but since blocks are conventionally indented, we find the first line at the signature's
+/// indent level after body lines have been seen. If that line is a standalone `end`, use
+/// it; otherwise fall back to the last observed body line.
+fn findRubyBlockEnd(lines: []const []const u8, start_idx: usize) ?u32 {
+    if (start_idx >= lines.len) return null;
+    const sig_indent = leadingIndent(lines[start_idx]);
+    var last_body: u32 = @intCast(start_idx + 1);
+    var seen_body = false;
+    var i: usize = start_idx + 1;
+    while (i < lines.len) : (i += 1) {
+        const line = lines[i];
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (trimmed.len == 0) continue;
+        if (std.mem.startsWith(u8, trimmed, "#")) continue;
+        const ind = leadingIndent(line);
+        if (ind > sig_indent) {
+            seen_body = true;
+            last_body = @intCast(i + 1);
+        } else if (seen_body) {
+            if (std.mem.eql(u8, trimmed, "end")) return @intCast(i + 1);
+            return last_body;
+        }
+    }
+    return if (seen_body) last_body else null;
+}
+
+fn leadingIndent(line: []const u8) usize {
+    var i: usize = 0;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+    return i;
 }
 
 /// Extract lines from content string as a range [start..end] (1-indexed, inclusive).
