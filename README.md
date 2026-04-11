@@ -172,6 +172,7 @@ codedb_remote repo="justrach/merjs" action="meta"
 | `codedb serve` | HTTP daemon on :7719 |
 | `codedb mcp [path]` | JSON-RPC/MCP server over stdio |
 | `codedb update` | Self-update via install script |
+| `codedb nuke` | Uninstall codedb, remove caches/snapshots, and deregister MCP integrations |
 | `codedb --version` | Print version |
 
 **Options:** `--no-telemetry` (or set `CODEDB_NO_TELEMETRY` env var)
@@ -365,8 +366,9 @@ To disable telemetry: set `CODEDB_NO_TELEMETRY=1` or pass `--no-telemetry`.
 To sync the local NDJSON file into Postgres for analysis or dashboards, use [`scripts/sync-telemetry.py`](./scripts/sync-telemetry.py) with the schema in [`docs/telemetry/postgres-schema.sql`](./docs/telemetry/postgres-schema.sql). The data flow is documented in [`docs/telemetry.md`](./docs/telemetry.md).
 
 ```bash
-rm -rf ~/.codedb/          # clear all cached indexes
-rm -f codedb.snapshot      # remove snapshot from project
+codedb nuke                # uninstall binary, clear caches/snapshots, remove MCP registrations
+rm -rf ~/.codedb/          # cache-only cleanup if you want to keep the binary installed
+rm -f codedb.snapshot      # remove snapshot from current project only
 ```
 
 ---
