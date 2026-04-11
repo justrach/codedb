@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const testing = std.testing;
 
@@ -1049,7 +1050,9 @@ test "explorer: removeFile frees owned map key" {
     try testing.expect(explorer.dep_graph.count() == 0);
 }
 test "watcher: queue overflow is explicit" {
-    var queue = watcher.EventQueue{};
+    const queue = try testing.allocator.create(watcher.EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = .{};
 
     var pushed: usize = 0;
     while (true) : (pushed += 1) {
@@ -1068,7 +1071,9 @@ test "watcher: queue overflow is explicit" {
 }
 
 test "watcher: queue event copies path bytes" {
-    var queue = watcher.EventQueue{};
+    const queue = try testing.allocator.create(watcher.EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = .{};
     const original = try testing.allocator.dupe(u8, "tmp/deleted.zig");
     try testing.expect(queue.push(watcher.FsEvent.init(original, .deleted, 99) orelse unreachable));
     testing.allocator.free(original);
@@ -1493,7 +1498,9 @@ test "regression: searchContent frees empty trigram candidate slice" {
 }
 
 test "regression: queue push stays non-blocking when full" {
-    var queue = watcher.EventQueue{};
+    const queue = try testing.allocator.create(watcher.EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = .{};
 
     var pushed: usize = 0;
     while (true) : (pushed += 1) {
@@ -4731,6 +4738,8 @@ test "issue-151: Go block comments skipped" {
 }
 
 test "issue-150: --help prints usage" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
     const result = try std.process.Child.run(.{
         .allocator = testing.allocator,
         .argv = &.{ "zig", "build", "run", "--", "--help" },
@@ -4744,6 +4753,8 @@ test "issue-150: --help prints usage" {
 }
 
 test "issue-150: -h prints usage" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
     const result = try std.process.Child.run(.{
         .allocator = testing.allocator,
         .argv = &.{ "zig", "build", "run", "--", "-h" },
@@ -4776,6 +4787,8 @@ test "issue-148: idle timeout is 10 minutes" {
 }
 
 test "issue-148: POLLHUP detects closed pipe" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
     // Verify the polling infrastructure works for pipe-based transports
     const pipe = try std.posix.pipe();
     defer std.posix.close(pipe[0]);
@@ -4929,6 +4942,8 @@ const MmapTrigramIndex = @import("index.zig").MmapTrigramIndex;
 const AnyTrigramIndex = @import("index.zig").AnyTrigramIndex;
 
 test "issue-164: mmap trigram index returns same candidates as heap index" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -4969,6 +4984,8 @@ test "issue-164: mmap trigram index returns same candidates as heap index" {
 }
 
 test "issue-164: mmap binary search on sorted lookup table" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -5004,11 +5021,15 @@ test "issue-164: mmap binary search on sorted lookup table" {
 }
 
 test "issue-164: mmap handles missing files gracefully" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
     const result = MmapTrigramIndex.initFromDisk("/tmp/nonexistent-codedb-test-dir-164", testing.allocator);
     try testing.expect(result == null);
 }
 
 test "issue-164: AnyTrigramIndex dispatches to mmap variant" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();

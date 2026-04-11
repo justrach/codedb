@@ -1,0 +1,55 @@
+name: zig-tests
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  test:
+    name: test-${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu
+            runner: ubuntu-24.04
+            zig_archive: zig-x86_64-linux-0.15.2.tar.xz
+            zig_dir: zig-x86_64-linux-0.15.2
+          - name: macos
+            runner: macos-14
+            zig_archive: zig-aarch64-macos-0.15.2.tar.xz
+            zig_dir: zig-aarch64-macos-0.15.2
+          - name: windows
+            runner: windows-2022
+            zig_archive: zig-x86_64-windows-0.15.2.zip
+            zig_dir: zig-x86_64-windows-0.15.2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L "https://ziglang.org/download/${ZIG_VERSION}/${{ matrix.zig_archive }}" -o zig.tar.xz
+          tar -xf zig.tar.xz
+          echo "$PWD/${{ matrix.zig_dir }}" >> "$GITHUB_PATH"
+
+      - name: Install Zig
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://ziglang.org/download/$env:ZIG_VERSION/${{ matrix.zig_archive }}" -OutFile zig.zip
+          Expand-Archive -Path zig.zip -DestinationPath .
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $PWD '${{ matrix.zig_dir }}')
+
+      - name: Run tests
+        run: zig build test
