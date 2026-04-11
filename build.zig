@@ -34,7 +34,10 @@ pub fn build(b: *std.Build) void {
 
     // ── macOS codesign (ad-hoc by default; configurable for release builds) ──
     if (target.result.os.tag == .macos and builtin.os.tag == .macos) {
-        const codesign = b.addSystemCommand(&.{ "codesign", "-f", "-s", codesign_identity });
+        const codesign = if (std.mem.eql(u8, codesign_identity, "-"))
+            b.addSystemCommand(&.{ "codesign", "-f", "-s", codesign_identity })
+        else
+            b.addSystemCommand(&.{ "codesign", "-f", "-s", codesign_identity, "--options", "runtime", "--timestamp" });
         codesign.addArtifactArg(exe);
         b.getInstallStep().dependOn(&codesign.step);
     }
