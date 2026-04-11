@@ -73,9 +73,13 @@ fn mainImpl() !void {
         root = ".";
         cmd = "--version";
         cmd_args_start = 2;
-    } else if (args.len >= 2 and std.mem.eql(u8, args[1], "--help")) {
+    } else if (args.len >= 2 and
+        (std.mem.eql(u8, args[1], "--help") or
+            std.mem.eql(u8, args[1], "-h") or
+            std.mem.eql(u8, args[1], "help")))
+    {
         root = ".";
-        cmd = "--help";
+        cmd = args[1];
         cmd_args_start = 2;
     } else if (args.len < 2) {
         printUsage(out, s);

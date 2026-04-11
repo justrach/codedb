@@ -4731,27 +4731,53 @@ test "issue-151: Go block comments skipped" {
 }
 
 test "issue-150: --help prints usage" {
+    const build = try std.process.Child.run(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "zig", "build" },
+        .max_output_bytes = 8192,
+    });
+    defer testing.allocator.free(build.stdout);
+    defer testing.allocator.free(build.stderr);
+
+    try testing.expect(build.term == .Exited);
+    try testing.expect(build.term.Exited == 0);
+
     const result = try std.process.Child.run(.{
         .allocator = testing.allocator,
-        .argv = &.{ "zig", "build", "run", "--", "--help" },
+        .argv = &.{ "./zig-out/bin/codedb", "--help" },
         .max_output_bytes = 8192,
     });
     defer testing.allocator.free(result.stdout);
     defer testing.allocator.free(result.stderr);
 
+    try testing.expect(result.term == .Exited);
+    try testing.expect(result.term.Exited == 0);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
         std.mem.indexOf(u8, result.stderr, "usage:") != null);
 }
 
 test "issue-150: -h prints usage" {
+    const build = try std.process.Child.run(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "zig", "build" },
+        .max_output_bytes = 8192,
+    });
+    defer testing.allocator.free(build.stdout);
+    defer testing.allocator.free(build.stderr);
+
+    try testing.expect(build.term == .Exited);
+    try testing.expect(build.term.Exited == 0);
+
     const result = try std.process.Child.run(.{
         .allocator = testing.allocator,
-        .argv = &.{ "zig", "build", "run", "--", "-h" },
+        .argv = &.{ "./zig-out/bin/codedb", "-h" },
         .max_output_bytes = 8192,
     });
     defer testing.allocator.free(result.stdout);
     defer testing.allocator.free(result.stderr);
 
+    try testing.expect(result.term == .Exited);
+    try testing.expect(result.term.Exited == 0);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
         std.mem.indexOf(u8, result.stderr, "usage:") != null);
 }
@@ -5262,7 +5288,6 @@ test "issue-168: query pipeline handles empty results gracefully" {
 // ── codedb_query recall tests ───────────────────────────────────
 // These test that pipeline composition preserves precision and recall:
 // the right files survive each step, and irrelevant files are eliminated.
-
 
 test "issue-168: recall — find + filter preserves only matching extension" {
     var explorer = Explorer.init(testing.allocator);

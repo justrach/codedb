@@ -181,6 +181,11 @@ pub const Telemetry = struct {
         } else |_| {}
     }
 
+    pub fn syncWalToCloud(self: *Telemetry, wal_path: ?[]const u8) void {
+        _ = wal_path;
+        self.syncToCloud();
+    }
+
     fn formatEvent(self: *Telemetry, ev: *const Event) !usize {
         var fbs = std.io.fixedBufferStream(&self.buf);
         const w = fbs.writer();
