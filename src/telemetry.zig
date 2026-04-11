@@ -181,6 +181,11 @@ pub const Telemetry = struct {
         } else |_| {}
     }
 
+    pub fn syncWalToCloud(self: *Telemetry, wal_path: ?[]const u8) void {
+        _ = wal_path;
+        self.syncToCloud();
+    }
+
     fn formatEvent(self: *Telemetry, ev: *const Event) !usize {
         var fbs = std.io.fixedBufferStream(&self.buf);
         const w = fbs.writer();
@@ -240,7 +245,7 @@ fn writeLanguages(writer: anytype, language_mask: u16) !void {
     }
 }
 
-fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
+pub fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
     var total: u64 = 0;
 
     var word_iter = explorer.word_index.index.iterator();
