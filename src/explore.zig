@@ -79,6 +79,7 @@ pub const Language = enum(u8) {
     markdown,
     json,
     yaml,
+    svelte,
     unknown,
 };
 
@@ -96,6 +97,7 @@ pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".md")) return .markdown;
     if (std.mem.endsWith(u8, path, ".json")) return .json;
     if (std.mem.endsWith(u8, path, ".yaml") or std.mem.endsWith(u8, path, ".yml")) return .yaml;
+    if (std.mem.endsWith(u8, path, ".svelte")) return .svelte;
     return .unknown;
 }
 
@@ -210,6 +212,7 @@ pub const Explorer = struct {
         var in_py_docstring = false;
         var in_block_comment = false;
         var in_go_import_block = false;
+        var in_svelte_script = false;
         var lines = std.mem.splitScalar(u8, content, '\n');
         while (lines.next()) |line| {
             line_num += 1;
@@ -251,7 +254,7 @@ pub const Explorer = struct {
             if (outline.language == .typescript or outline.language == .javascript or
                 outline.language == .go_lang or outline.language == .c or
                 outline.language == .cpp or outline.language == .rust or
-                outline.language == .zig)
+                outline.language == .zig or outline.language == .svelte)
             {
                 if (in_block_comment) {
                     if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
@@ -309,6 +312,8 @@ pub const Explorer = struct {
                 }
             } else if (outline.language == .ruby) {
                 try self.parseRubyLine(trimmed, line_num, &outline);
+            } else if (outline.language == .svelte) {
+                try self.parseSvelteLine(trimmed, line_num, &outline, &in_svelte_script);
             }
 
             prev_line_trimmed = trimmed;
@@ -1719,6 +1724,53 @@ pub const Explorer = struct {
         }
     }
 
+    fn parseSvelteLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline, in_script: *bool) !void {
+        var script_line = line;
+
+        if (!in_script.*) {
+            const open_pos = std.mem.indexOf(u8, line, "<script") orelse return;
+            const open_tag = line[open_pos..];
+            const tag_end = std.mem.indexOfScalar(u8, open_tag, '>') orelse {
+                in_script.* = true;
+                return;
+            };
+            in_script.* = true;
+            script_line = std.mem.trimLeft(u8, open_tag[tag_end + 1 ..], " \t");
+        }
+
+        if (std.mem.indexOf(u8, script_line, "</script>")) |close_pos| {
+            const before_close = std.mem.trim(u8, script_line[0..close_pos], " \t");
+            if (before_close.len != 0) try self.parseSvelteScriptLine(before_close, line_num, outline);
+            in_script.* = false;
+            return;
+        }
+
+        const trimmed = std.mem.trim(u8, script_line, " \t");
+        if (trimmed.len == 0) return;
+        try self.parseSvelteScriptLine(trimmed, line_num, outline);
+    }
+
+    fn parseSvelteScriptLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        if (startsWith(line, "export let ") or startsWith(line, "let ") or startsWith(line, "var ")) {
+            const trimmed = skipKeywords(line);
+            if (extractIdent(trimmed)) |name| {
+                const name_copy = try a.dupe(u8, name);
+                errdefer a.free(name_copy);
+                const detail_copy = try a.dupe(u8, line);
+                errdefer a.free(detail_copy);
+                try outline.symbols.append(a, .{
+                    .name = name_copy,
+                    .kind = .variable,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail_copy,
+                });
+            }
+        }
+        try self.parseTsLine(line, line_num, outline);
+    }
+
     fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
         var deps: std.ArrayList([]const u8) = .{};
         errdefer deps.deinit(self.allocator);
@@ -1957,7 +2009,7 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
     return switch (language) {
         .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
         .python, .ruby => std.mem.startsWith(u8, trimmed, "#"),
-        .javascript, .typescript, .c, .cpp => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .javascript, .typescript, .c, .cpp, .svelte => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
         else => false,
     };
 }
@@ -2430,15 +2482,15 @@ fn isWordBoundary(path: []const u8, pi: usize) bool {
 
 fn isSpecialEntryPoint(filename: []const u8) bool {
     const specials = [_][]const u8{
-        "main.zig",     "lib.zig",     "root.zig",
-        "main.rs",      "lib.rs",      "mod.rs",
-        "main.go",      "main.c",      "main.cpp",
-        "index.ts",     "index.tsx",   "index.js",
-        "index.jsx",    "index.mjs",   "index.cjs",
-        "index.vue",    "index.php",   "main.rb",
-        "index.rb",     "__init__.py", "__main__.py",
-        "Makefile",     "build.zig",   "Cargo.toml",
-        "package.json",
+        "main.zig",    "lib.zig",      "root.zig",
+        "main.rs",     "lib.rs",       "mod.rs",
+        "main.go",     "main.c",       "main.cpp",
+        "index.ts",    "index.tsx",    "index.js",
+        "index.jsx",   "index.mjs",    "index.cjs",
+        "index.vue",   "index.svelte", "index.php",
+        "main.rb",     "index.rb",     "__init__.py",
+        "__main__.py", "Makefile",     "build.zig",
+        "Cargo.toml",  "package.json",
     };
     for (specials) |s| {
         if (std.mem.eql(u8, filename, s)) return true;

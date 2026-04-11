@@ -1679,6 +1679,7 @@ test "isCommentOrBlank: detects language-specific comments" {
     try testing.expect(isCommentOrBlank("  # python comment", .python));
     try testing.expect(isCommentOrBlank("  /* c comment */", .c));
     try testing.expect(isCommentOrBlank("  * continuation", .javascript));
+    try testing.expect(isCommentOrBlank("  // svelte script comment", .svelte));
     try testing.expect(isCommentOrBlank("   ", .zig));
     try testing.expect(isCommentOrBlank("", .zig));
     try testing.expect(!isCommentOrBlank("  const x = 1;", .zig));
@@ -1773,6 +1774,7 @@ test "detectLanguage: public access and correct detection" {
     try testing.expect(explore.detectLanguage("src/main.zig") == .zig);
     try testing.expect(explore.detectLanguage("app.py") == .python);
     try testing.expect(explore.detectLanguage("index.ts") == .typescript);
+    try testing.expect(explore.detectLanguage("App.svelte") == .svelte);
     try testing.expect(explore.detectLanguage("style.css") == .unknown);
 }
 
@@ -2018,6 +2020,7 @@ test "detectLanguage: all supported extensions" {
     try testing.expect(explore.detectLanguage("comp.jsx") == .javascript);
     try testing.expect(explore.detectLanguage("app.ts") == .typescript);
     try testing.expect(explore.detectLanguage("comp.tsx") == .typescript);
+    try testing.expect(explore.detectLanguage("Component.svelte") == .svelte);
     try testing.expect(explore.detectLanguage("main.rs") == .rust);
     try testing.expect(explore.detectLanguage("main.go") == .go_lang);
     try testing.expect(explore.detectLanguage("README.md") == .markdown);
@@ -3688,6 +3691,9 @@ test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
     try explorer.indexFile("src/lib.py", "def run():\n    return 1\n");
+    try explorer.indexFile("src/app.php", "<?php\nfunction run() {}\n");
+    try explorer.indexFile("src/lib.rb", "def run\nend\n");
+    try explorer.indexFile("src/App.svelte", "<script>export let name = \"world\";</script>\n");
 
     telem.recordCodebaseStats(&explorer, 42);
     telem.flush();
@@ -3703,7 +3709,70 @@ test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
     try testing.expect(std.mem.indexOf(u8, contents, "\"tool\":\"codedb_status\"") != null);
     try testing.expect(std.mem.indexOf(u8, contents, "\"event_type\":\"codebase_stats\"") != null);
     try testing.expect(std.mem.indexOf(u8, contents, "\"startup_time_ms\":42") != null);
-    try testing.expect(std.mem.indexOf(u8, contents, "\"languages\":[\"zig\",\"python\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"languages\":[\"zig\",\"python\",\"php\",\"ruby\",\"svelte\"]") != null);
+}
+
+test "Svelte: parse script blocks and ignore template markup" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("Component.svelte",
+        \\<script lang="ts">
+        \\  import { onMount } from "svelte";
+        \\  export let name = "world";
+        \\  const count = 0;
+        \\  function greet() {
+        \\    return name;
+        \\  }
+        \\</script>
+        \\
+        \\<button on:click={greet}>{name}</button>
+        \\{#if name}
+        \\  <Child value={name} />
+        \\{/if}
+    );
+
+    var outline = (try explorer.getOutline("Component.svelte", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    var found_import = false;
+    var found_prop = false;
+    var found_const = false;
+    var found_function = false;
+    var found_template_noise = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .import and std.mem.eql(u8, sym.name, "import { onMount } from \"svelte\";")) found_import = true;
+        if (sym.kind == .variable and std.mem.eql(u8, sym.name, "name")) found_prop = true;
+        if (sym.kind == .constant and std.mem.eql(u8, sym.name, "count")) found_const = true;
+        if (sym.kind == .function and std.mem.eql(u8, sym.name, "greet")) found_function = true;
+        if (std.mem.eql(u8, sym.name, "button") or std.mem.eql(u8, sym.name, "Child")) found_template_noise = true;
+    }
+
+    try testing.expect(found_import);
+    try testing.expect(found_prop);
+    try testing.expect(found_const);
+    try testing.expect(found_function);
+    try testing.expect(!found_template_noise);
+    try testing.expect(outline.imports.items.len == 1);
+    try testing.expectEqualStrings("svelte", outline.imports.items[0]);
+}
+
+test "Svelte: inline script tag on one line is parsed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("Inline.svelte",
+        \\<script>const ready = true;</script>
+        \\<div>{ready}</div>
+    );
+
+    var outline = (try explorer.getOutline("Inline.svelte", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expect(outline.symbols.items.len == 1);
+    try testing.expect(outline.symbols.items[0].kind == .constant);
+    try testing.expectEqualStrings("ready", outline.symbols.items[0].name);
 }
 
 test "issue-60: telemetry disabled path is a no-op" {
@@ -5221,7 +5290,6 @@ test "issue-168: query pipeline handles empty results gracefully" {
 // ── codedb_query recall tests ───────────────────────────────────
 // These test that pipeline composition preserves precision and recall:
 // the right files survive each step, and irrelevant files are eliminated.
-
 
 test "issue-168: recall — find + filter preserves only matching extension" {
     var explorer = Explorer.init(testing.allocator);

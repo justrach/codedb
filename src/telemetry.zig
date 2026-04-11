@@ -225,9 +225,12 @@ fn writeLanguages(writer: anytype, language_mask: u16) !void {
         "typescript",
         "rust",
         "go_lang",
+        "php",
+        "ruby",
         "markdown",
         "json",
         "yaml",
+        "svelte",
         "unknown",
     };
     var first = true;

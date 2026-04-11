@@ -36,7 +36,7 @@
 > **Alpha software — API is stabilizing but may change**
 >
 > codedb works and is used daily in production AI workflows, but:
-> - **Language support** — Zig, Python, TypeScript/JavaScript, Rust, PHP, C# (more planned)
+> - **Language support** — Zig, C/C++, Python, TypeScript/JavaScript, Svelte, Rust, Go, PHP, Ruby
 > - **No auth** — HTTP server binds to localhost only
 > - **Snapshot format** may change between versions
 > - **MCP protocol** is JSON-RPC 2.0 over stdio (stable)
