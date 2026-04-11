@@ -4843,6 +4843,59 @@ test "nuke: removeCodexMcpServerBlock removes codedb block only" {
     try testing.expect(std.mem.indexOf(u8, output, "command = \"other\"") != null);
 }
 
+test "nuke: removeCodexMcpServerBlock matches indented header with inline comment" {
+    const input =
+        \\  [mcp_servers.codedb] # local override
+        \\command = "/Users/me/bin/codedb"
+        \\args = ["mcp"]
+        \\
+        \\[mcp_servers.other]
+        \\command = "other"
+        \\args = []
+    ;
+
+    const output = (try main_mod.removeCodexMcpServerBlock(testing.allocator, input, "codedb")) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.indexOf(u8, output, "codedb") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "[mcp_servers.other]") != null);
+}
+
+test "nuke: deregisterJsonIntegrationFile handles configs larger than 64 KiB" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/large-claude.json", .{tmp.sub_path});
+    defer testing.allocator.free(rel_path);
+
+    var content: std.ArrayList(u8) = .{};
+    defer content.deinit(testing.allocator);
+    try content.appendSlice(testing.allocator,
+        \\{
+        \\  "mcpServers": {
+        \\    "codedb": { "command": "/Users/me/bin/codedb", "args": ["mcp"] },
+        \\    "other": { "command": "other", "args": [] }
+        \\  },
+        \\  "padding": "
+    );
+    try content.appendNTimes(testing.allocator, 'x', 70 * 1024);
+    try content.appendSlice(testing.allocator, "\"\n}\n");
+
+    var file = try tmp.dir.createFile("large-claude.json", .{});
+    defer file.close();
+    try file.writeAll(content.items);
+
+    try testing.expect(try main_mod.deregisterJsonIntegrationFile(testing.allocator, rel_path));
+
+    const rewritten = try std.fs.cwd().readFileAlloc(testing.allocator, rel_path, std.math.maxInt(usize));
+    defer testing.allocator.free(rewritten);
+
+    try testing.expect(std.mem.indexOf(u8, rewritten, "\"codedb\"") == null);
+    try testing.expect(std.mem.indexOf(u8, rewritten, "\"other\"") != null);
+    try testing.expect(std.mem.indexOf(u8, rewritten, "\"padding\"") != null);
+}
+
 test "issue-116: getGitHead returns valid SHA for git repos" {
     const git = @import("git.zig");
 

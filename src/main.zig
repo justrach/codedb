@@ -886,11 +886,16 @@ fn deleteFileIfExists(path: []const u8) bool {
     return true;
 }
 
-fn deregisterJsonIntegrationFile(allocator: std.mem.Allocator, path: []const u8) !bool {
-    const content = std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024) catch |err| switch (err) {
-        error.FileNotFound => return false,
+fn readOptionalConfigFile(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    const content = std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize)) catch |err| switch (err) {
+        error.FileNotFound => return null,
         else => return err,
     };
+    return content;
+}
+
+pub fn deregisterJsonIntegrationFile(allocator: std.mem.Allocator, path: []const u8) !bool {
+    const content = (try readOptionalConfigFile(allocator, path)) orelse return false;
     defer allocator.free(content);
 
     const rewritten = try removeJsonMcpServerEntry(allocator, content, "codedb") orelse return false;
@@ -899,11 +904,8 @@ fn deregisterJsonIntegrationFile(allocator: std.mem.Allocator, path: []const u8)
     return true;
 }
 
-fn deregisterCodexIntegrationFile(allocator: std.mem.Allocator, path: []const u8) !bool {
-    const content = std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024) catch |err| switch (err) {
-        error.FileNotFound => return false,
-        else => return err,
-    };
+pub fn deregisterCodexIntegrationFile(allocator: std.mem.Allocator, path: []const u8) !bool {
+    const content = (try readOptionalConfigFile(allocator, path)) orelse return false;
     defer allocator.free(content);
 
     const rewritten = try removeCodexMcpServerBlock(allocator, content, "codedb") orelse return false;
@@ -956,7 +958,7 @@ pub fn removeCodexMcpServerBlock(allocator: std.mem.Allocator, content: []const 
     var line_start: usize = 0;
     while (line_start < content.len) {
         const line_end = std.mem.indexOfScalarPos(u8, content, line_start, '\n') orelse content.len;
-        const line = std.mem.trimRight(u8, content[line_start..line_end], "\r");
+        const line = trimTomlLineForHeader(content[line_start..line_end]);
         if (std.mem.eql(u8, line, header)) {
             var remove_start = line_start;
             if (remove_start > 0) {
@@ -971,9 +973,8 @@ pub fn removeCodexMcpServerBlock(allocator: std.mem.Allocator, content: []const 
             var remove_end: usize = if (line_end < content.len) line_end + 1 else content.len;
             while (remove_end < content.len) {
                 const next_end = std.mem.indexOfScalarPos(u8, content, remove_end, '\n') orelse content.len;
-                const next_line = std.mem.trimRight(u8, content[remove_end..next_end], "\r");
-                const trimmed = std.mem.trim(u8, next_line, " \t");
-                if (trimmed.len > 0 and trimmed[0] == '[') break;
+                const next_line = trimTomlLineForHeader(content[remove_end..next_end]);
+                if (next_line.len > 0 and next_line[0] == '[') break;
                 remove_end = if (next_end < content.len) next_end + 1 else content.len;
             }
 
@@ -987,6 +988,13 @@ pub fn removeCodexMcpServerBlock(allocator: std.mem.Allocator, content: []const 
     }
 
     return null;
+}
+
+fn trimTomlLineForHeader(line: []const u8) []const u8 {
+    const no_cr = std.mem.trimRight(u8, line, "\r");
+    const trimmed = std.mem.trim(u8, no_cr, " \t");
+    const comment_start = std.mem.indexOfScalar(u8, trimmed, '#') orelse return trimmed;
+    return std.mem.trimRight(u8, trimmed[0..comment_start], " \t");
 }
 
 fn printUsage(out: Out, s: sty.Style) void {
