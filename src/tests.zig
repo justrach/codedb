@@ -30,6 +30,7 @@ const isCommentOrBlank = explore.isCommentOrBlank;
 const Language = explore.Language;
 const SymbolKind = explore.SymbolKind;
 const mcp_mod = @import("mcp.zig");
+const main_mod = @import("main.zig");
 const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
 // ── Store tests ─────────────────────────────────────────────
@@ -4780,6 +4781,66 @@ test "issue-150: -h prints usage" {
     try testing.expect(result.term.Exited == 0);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
         std.mem.indexOf(u8, result.stderr, "usage:") != null);
+}
+
+test "nuke: removeJsonMcpServerEntry drops only codedb integration" {
+    const input =
+        \\{
+        \\  "mcpServers": {
+        \\    "codedb": { "command": "/Users/me/bin/codedb", "args": ["mcp"] },
+        \\    "other": { "command": "other", "args": [] }
+        \\  },
+        \\  "theme": "dark"
+        \\}
+    ;
+
+    const output = (try main_mod.removeJsonMcpServerEntry(testing.allocator, input, "codedb")) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.indexOf(u8, output, "\"codedb\"") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "\"other\"") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "\"theme\"") != null);
+}
+
+test "nuke: removeJsonMcpServerEntry removes empty mcpServers object" {
+    const input =
+        \\{
+        \\  "mcpServers": {
+        \\    "codedb": { "command": "/Users/me/bin/codedb", "args": ["mcp"] }
+        \\  },
+        \\  "theme": "dark"
+        \\}
+    ;
+
+    const output = (try main_mod.removeJsonMcpServerEntry(testing.allocator, input, "codedb")) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.indexOf(u8, output, "\"codedb\"") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "\"mcpServers\"") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "\"theme\"") != null);
+}
+
+test "nuke: removeCodexMcpServerBlock removes codedb block only" {
+    const input =
+        \\[mcp_servers.codedb]
+        \\command = "/Users/me/bin/codedb"
+        \\args = ["mcp"]
+        \\startup_timeout_sec = 30
+        \\
+        \\[mcp_servers.other]
+        \\command = "other"
+        \\args = []
+    ;
+
+    const output = (try main_mod.removeCodexMcpServerBlock(testing.allocator, input, "codedb")) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.indexOf(u8, output, "[mcp_servers.codedb]") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "[mcp_servers.other]") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "command = \"other\"") != null);
 }
 
 test "issue-116: getGitHead returns valid SHA for git repos" {
