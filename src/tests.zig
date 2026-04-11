@@ -31,6 +31,7 @@ const Language = explore.Language;
 const SymbolKind = explore.SymbolKind;
 const mcp_mod = @import("mcp.zig");
 const main_mod = @import("main.zig");
+const nuke_mod = @import("nuke.zig");
 const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
 // ── Store tests ─────────────────────────────────────────────
@@ -4794,7 +4795,7 @@ test "nuke: removeJsonMcpServerEntry drops only codedb integration" {
         \\}
     ;
 
-    const output = (try main_mod.removeJsonMcpServerEntry(testing.allocator, input, "codedb")) orelse
+    const output = (try nuke_mod.removeJsonMcpServerEntry(testing.allocator, input, "codedb")) orelse
         return error.TestUnexpectedResult;
     defer testing.allocator.free(output);
 
@@ -4813,7 +4814,7 @@ test "nuke: removeJsonMcpServerEntry removes empty mcpServers object" {
         \\}
     ;
 
-    const output = (try main_mod.removeJsonMcpServerEntry(testing.allocator, input, "codedb")) orelse
+    const output = (try nuke_mod.removeJsonMcpServerEntry(testing.allocator, input, "codedb")) orelse
         return error.TestUnexpectedResult;
     defer testing.allocator.free(output);
 
@@ -4834,7 +4835,7 @@ test "nuke: removeCodexMcpServerBlock removes codedb block only" {
         \\args = []
     ;
 
-    const output = (try main_mod.removeCodexMcpServerBlock(testing.allocator, input, "codedb")) orelse
+    const output = (try nuke_mod.removeCodexMcpServerBlock(testing.allocator, input, "codedb")) orelse
         return error.TestUnexpectedResult;
     defer testing.allocator.free(output);
 
@@ -4854,7 +4855,7 @@ test "nuke: removeCodexMcpServerBlock matches indented header with inline commen
         \\args = []
     ;
 
-    const output = (try main_mod.removeCodexMcpServerBlock(testing.allocator, input, "codedb")) orelse
+    const output = (try nuke_mod.removeCodexMcpServerBlock(testing.allocator, input, "codedb")) orelse
         return error.TestUnexpectedResult;
     defer testing.allocator.free(output);
 
@@ -4886,7 +4887,7 @@ test "nuke: deregisterJsonIntegrationFile handles configs larger than 64 KiB" {
     defer file.close();
     try file.writeAll(content.items);
 
-    try testing.expect(try main_mod.deregisterJsonIntegrationFile(testing.allocator, rel_path));
+    try testing.expect(try nuke_mod.deregisterJsonIntegrationFile(testing.allocator, rel_path));
 
     const rewritten = try std.fs.cwd().readFileAlloc(testing.allocator, rel_path, std.math.maxInt(usize));
     defer testing.allocator.free(rewritten);
