@@ -159,19 +159,73 @@ register_swival() {
     return
   fi
 
-  if [ -f "$config" ] && grep -q '\[mcp_servers\.codedb\]' "$config" 2>/dev/null; then
-    printf "  ${G}✓${N} swival       ${D}→ $config (already registered)${N}\n"
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf "  ${D}swival:  skip (python3 not found)${N}\n"
     return
   fi
 
-  {
-    [ -f "$config" ] && [ -s "$config" ] && echo ""
-    echo '[mcp_servers.codedb]'
-    echo "command = \"$codedb_bin\""
-    echo 'args = ["mcp"]'
-  } >> "$config"
+  local status
+  if python3 - "$config" "$codedb_bin" << 'PYEOF'
+import os, stat, sys, tempfile
 
-  printf "  ${G}✓${N} swival       ${D}→ $config${N}\n"
+config_path, codedb_bin = sys.argv[1], sys.argv[2]
+block_header = "[mcp_servers.codedb]"
+
+if os.path.exists(config_path):
+    with open(config_path, encoding="utf-8") as f:
+        content = f.read()
+    if block_header in content:
+        sys.exit(10)
+else:
+    content = ""
+
+command = codedb_bin.translate(str.maketrans({
+    "\\": "\\\\",
+    '"': '\\"',
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}))
+block = f'{block_header}\ncommand = "{command}"\nargs = ["mcp"]\n'
+if content and not content.endswith("\n"):
+    content += "\n"
+if content:
+    content += "\n"
+content += block
+
+fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(config_path) or ".")
+try:
+    os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(temp_path, config_path)
+    os.chmod(config_path, stat.S_IRUSR | stat.S_IWUSR)
+except Exception:
+    try:
+        os.unlink(temp_path)
+    except FileNotFoundError:
+        pass
+    raise
+PYEOF
+  then
+    status=0
+  else
+    status=$?
+  fi
+
+  case "$status" in
+    0)
+      printf "  ${G}✓${N} swival       ${D}→ $config${N}\n"
+      ;;
+    10)
+      printf "  ${G}✓${N} swival       ${D}→ $config (already registered)${N}\n"
+      ;;
+    *)
+      return "$status"
+      ;;
+  esac
 }
 
 main() {
