@@ -370,6 +370,54 @@ test "trigram index: re-index removes old trigrams" {
     try testing.expect(c3 != null and c3.?.len == 1);
 }
 
+test "trigram index: reuses freed doc_id without stale candidates" {
+    var ti = TrigramIndex.init(testing.allocator);
+    defer ti.deinit();
+
+    try ti.indexFile("stale.zig", "sharedNeedle stale_only_marker");
+    try ti.indexFile("keep.zig", "sharedNeedle keep_marker");
+    try ti.indexFile("high.zig", "sharedNeedle high_marker");
+
+    try testing.expectEqual(@as(usize, 3), ti.id_to_path.items.len);
+    try testing.expectEqual(@as(usize, 0), ti.free_ids.items.len);
+
+    ti.removeFile("stale.zig");
+    try testing.expectEqual(@as(usize, 1), ti.free_ids.items.len);
+    try testing.expect(ti.id_to_path.items[0] == null);
+
+    try ti.indexFile("reused.zig", "sharedNeedle reused_marker");
+    try testing.expectEqual(@as(usize, 3), ti.id_to_path.items.len);
+    try testing.expectEqual(@as(usize, 0), ti.free_ids.items.len);
+    try testing.expectEqualStrings("reused.zig", ti.id_to_path.items[0].?);
+
+    const shared = ti.candidates("sharedNeedle", testing.allocator);
+    defer if (shared) |c| testing.allocator.free(c);
+    try testing.expect(shared != null);
+    try testing.expectEqual(@as(usize, 3), shared.?.len);
+
+    var saw_reused = false;
+    var saw_keep = false;
+    var saw_high = false;
+    for (shared.?) |path| {
+        if (std.mem.eql(u8, path, "reused.zig")) saw_reused = true;
+        if (std.mem.eql(u8, path, "keep.zig")) saw_keep = true;
+        if (std.mem.eql(u8, path, "high.zig")) saw_high = true;
+        try testing.expect(!std.mem.eql(u8, path, "stale.zig"));
+    }
+    try testing.expect(saw_reused);
+    try testing.expect(saw_keep);
+    try testing.expect(saw_high);
+
+    const stale = ti.candidates("stale_only_marker", testing.allocator);
+    defer if (stale) |c| testing.allocator.free(c);
+    try testing.expect(stale != null and stale.?.len == 0);
+
+    const reused = ti.candidates("reused_marker", testing.allocator);
+    defer if (reused) |c| testing.allocator.free(c);
+    try testing.expect(reused != null and reused.?.len == 1);
+    try testing.expectEqualStrings("reused.zig", reused.?[0]);
+}
+
 // ── Sparse N-gram tests ─────────────────────────────────────
 
 test "pairWeight: deterministic" {

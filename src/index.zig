@@ -516,7 +516,8 @@ pub const TrigramIndex = struct {
     /// path → doc_id mapping
     path_to_id: std.StringHashMap(u32),
     /// doc_id → path mapping
-    id_to_path: std.ArrayList([]const u8),
+    id_to_path: std.ArrayList(?[]const u8),
+    free_ids: std.ArrayList(u32),
     allocator: std.mem.Allocator,
     /// When true, deinit frees the path keys in file_trigrams (set by readFromDisk).
     owns_paths: bool = false,
@@ -527,6 +528,7 @@ pub const TrigramIndex = struct {
             .file_trigrams = std.StringHashMap(std.ArrayList(Trigram)).init(allocator),
             .path_to_id = std.StringHashMap(u32).init(allocator),
             .id_to_path = .{},
+            .free_ids = .{},
             .allocator = allocator,
         };
     }
@@ -547,10 +549,19 @@ pub const TrigramIndex = struct {
 
         self.path_to_id.deinit();
         self.id_to_path.deinit(self.allocator);
+        self.free_ids.deinit(self.allocator);
     }
 
     fn getOrCreateDocId(self: *TrigramIndex, path: []const u8) !u32 {
         if (self.path_to_id.get(path)) |id| return id;
+        // Reuse a freed slot if available, otherwise append
+        if (self.free_ids.items.len > 0) {
+            const id = self.free_ids.items[self.free_ids.items.len - 1];
+            self.free_ids.items.len -= 1;
+            self.id_to_path.items[id] = path;
+            try self.path_to_id.put(path, id);
+            return id;
+        }
         const id: u32 = @intCast(self.id_to_path.items.len);
         try self.id_to_path.append(self.allocator, path);
         try self.path_to_id.put(path, id);
@@ -577,6 +588,9 @@ pub const TrigramIndex = struct {
         trigrams.deinit(self.allocator);
         _ = self.file_trigrams.remove(path);
         _ = self.path_to_id.remove(path);
+        // Null out the slot and reclaim for reuse
+        self.id_to_path.items[doc_id] = null;
+        self.free_ids.append(self.allocator, doc_id) catch {};
     }
 
     pub fn indexFile(self: *TrigramIndex, path: []const u8, content: []const u8) !void {
@@ -630,12 +644,11 @@ pub const TrigramIndex = struct {
             if (!idx_gop.found_existing) {
                 idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
             }
-            // Single append (not sorted insert) since doc_id is monotonically increasing
-            try idx_gop.value_ptr.items.append(self.allocator, .{
-                .doc_id = doc_id,
-                .next_mask = mask.next_mask,
-                .loc_mask = mask.loc_mask,
-            });
+            // Use sorted insert to maintain posting-list order, since
+            // doc_id reuse from the free-list can be non-monotonic.
+            const posting = try idx_gop.value_ptr.getOrAddPosting(self.allocator, doc_id);
+            posting.next_mask = mask.next_mask;
+            posting.loc_mask = mask.loc_mask;
 
             try tri_list.append(self.allocator, tri);
         }
@@ -743,7 +756,9 @@ pub const TrigramIndex = struct {
             }
 
             if (doc_id < self.id_to_path.items.len) {
-                result.appendAssumeCapacity(self.id_to_path.items[doc_id]);
+                if (self.id_to_path.items[doc_id]) |path| {
+                    result.appendAssumeCapacity(path);
+                }
             }
         }
 
@@ -829,7 +844,9 @@ pub const TrigramIndex = struct {
         while (it.next()) |id_ptr| {
             const doc_id = id_ptr.*;
             if (doc_id < self.id_to_path.items.len) {
-                result.appendAssumeCapacity(self.id_to_path.items[doc_id]);
+                if (self.id_to_path.items[doc_id]) |path| {
+                    result.appendAssumeCapacity(path);
+                }
             }
         }
         return result.toOwnedSlice(allocator) catch {
@@ -912,7 +929,7 @@ pub const TrigramIndex = struct {
             for (posting_list.items.items) |p| {
                 // Map in-memory doc_id to disk file_id via path lookup
                 if (p.doc_id >= self.id_to_path.items.len) continue;
-                const path = self.id_to_path.items[p.doc_id];
+                const path = self.id_to_path.items[p.doc_id] orelse continue;
                 const fid = disk_path_to_id.get(path) orelse continue;
                 try postings_buf.append(self.allocator, .{
                     .file_id = fid,
