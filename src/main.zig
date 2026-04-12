@@ -18,6 +18,8 @@ const snapshot_mod = @import("snapshot.zig");
 const telemetry = @import("telemetry.zig");
 const root_policy = @import("root_policy.zig");
 const nuke_mod = @import("nuke.zig");
+const update_mod = @import("update.zig");
+const release_info = @import("release_info.zig");
 
 /// Thin wrapper: format + write to a File via allocator.
 const Out = struct {
@@ -100,7 +102,7 @@ fn mainImpl() !void {
 
     // Handle --version early (no root needed)
     if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-v") or std.mem.eql(u8, cmd, "version")) {
-        out.p("codedb 0.2.56\n", .{});
+        out.p("codedb {s}\n", .{release_info.semver});
         return;
     }
 
@@ -110,48 +112,9 @@ fn mainImpl() !void {
         return;
     }
 
-    // Handle update command — direct binary download from GitHub releases.
-    // The CDN install script has issues with set -euo pipefail on macOS,
-    // so we download the binary directly and replace in-place.
+    // Handle update command early — before root resolution so it works from anywhere.
     if (std.mem.eql(u8, cmd, "update")) {
-        out.p("updating codedb...\n", .{});
-        var child = std.process.Child.init(
-            &.{
-                "/bin/bash", "-c",
-                \\set -e
-                \\PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
-                \\case "$PLATFORM" in
-                \\  darwin-arm64) BIN="codedb-darwin-arm64" ;;
-                \\  darwin-x86_64) BIN="codedb-darwin-x86_64" ;;
-                \\  linux-x86_64) BIN="codedb-linux-x86_64" ;;
-                \\  linux-aarch64) BIN="codedb-linux-aarch64" ;;
-                \\  *) echo "unsupported platform: $PLATFORM" >&2; exit 1 ;;
-                \\esac
-                \\VERSION=$(curl -fsSL https://api.github.com/repos/justrach/codedb/releases/latest 2>/dev/null | grep -oE '"tag_name"\s*:\s*"v[^"]*"' | cut -d'"' -f4 | sed 's/^v//')
-                \\if [ -z "$VERSION" ]; then
-                \\  VERSION=$(curl -fsSL https://codedb.codegraff.com/latest.json | grep -oE '"version"\s*:\s*"[^"]*"' | cut -d'"' -f4)
-                \\fi
-                \\if [ -z "$VERSION" ]; then
-                \\  echo "failed to determine latest version" >&2
-                \\  exit 1
-                \\fi
-                \\echo "  latest: v${VERSION}"
-                \\TMP=$(mktemp)
-                \\curl -fsSL "https://github.com/justrach/codedb/releases/download/v${VERSION}/${BIN}" -o "$TMP"
-                \\SELF=$(which codedb 2>/dev/null || echo "$HOME/bin/codedb")
-                \\chmod +x "$TMP"
-                \\mv -f "$TMP" "$SELF"
-                \\echo "  updated: $($SELF --version)"
-            },
-            allocator,
-        );
-        child.stdin_behavior = .Inherit;
-        child.stdout_behavior = .Inherit;
-        child.stderr_behavior = .Inherit;
-        _ = child.spawnAndWait() catch {
-            out.p("update failed\n", .{});
-            std.process.exit(1);
-        };
+        update_mod.run(stdout, s, allocator);
         return;
     }
 
@@ -732,10 +695,6 @@ fn printUsage(out: Out, s: sty.Style) void {
         \\    {s}find{s}    {s}<name>{s}         find where a symbol is defined
         \\    {s}search{s}  {s}<query>{s}        full-text search (trigram, case-insensitive)
         \\    {s}word{s}    {s}<identifier>{s}   exact word lookup via inverted index
-        \\    {s}hot{s}                       recently modified files
-        \\    {s}serve{s}                     HTTP daemon on :7719
-        \\    {s}mcp{s}                       JSON-RPC/MCP server over stdio
-        \\    {s}nuke{s}                      uninstall codedb, clear caches, and deregister integrations
         \\
     , .{
         s.bold, s.reset,
@@ -750,6 +709,16 @@ fn printUsage(out: Out, s: sty.Style) void {
         s.dim,  s.reset,
         s.cyan, s.reset,
         s.dim,  s.reset,
+    });
+    out.p(
+        \\    {s}hot{s}                       recently modified files
+        \\    {s}serve{s}                     HTTP daemon on :7719
+        \\    {s}mcp{s}                       JSON-RPC/MCP server over stdio
+        \\    {s}update{s}                    self-update to the latest verified release
+        \\    {s}nuke{s}                      uninstall codedb, clear caches, and deregister integrations
+        \\
+    , .{
+        s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,
