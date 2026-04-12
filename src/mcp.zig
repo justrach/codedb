@@ -19,6 +19,7 @@ const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
 const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
+const release_info = @import("release_info.zig");
 // ── Project cache ────────────────────────────────────────────────────────────
 
 const ProjectCtx = struct {
@@ -493,9 +494,11 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
             s.client_name = name;
         }
     }
-    writeResult(s.alloc, s.stdout, id,
-        \\{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"codedb","version":"0.2.56"}}
-    );
+    const init_result = std.fmt.allocPrint(s.alloc,
+        \\{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{"listChanged":false}}}},"serverInfo":{{"name":"codedb","version":"{s}"}}}}
+    , .{release_info.semver}) catch return;
+    defer s.alloc.free(init_result);
+    writeResult(s.alloc, s.stdout, id, init_result);
 }
 
 fn requestRoots(s: *Session) void {
