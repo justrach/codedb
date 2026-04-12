@@ -689,13 +689,20 @@ fn drainNotifyFile(store: *Store, explorer: *Explorer, queue: *EventQueue, known
             path;
 
         // Skip re-indexing if the file has not changed since last index.
-        // Check mtime+size first (cheap), then content hash for same-size rewrites.
+        // Mirror incrementalDiff: unchanged mtime is a cheap skip, and same-size
+        // rewrites only skip when both sides have a matching content hash.
         const pre_stat = compat.dirStatFile(dir, rel) catch continue;
         const pre_mtime: i64 = @intCast(@divTrunc(pre_stat.mtime, std.time.ns_per_ms));
         if (known.getPtr(rel)) |existing| {
-            if (existing.mtime == pre_mtime and existing.size == pre_stat.size) {
-                const hash = hashFile(dir, rel, pre_stat.size) catch continue;
-                if (existing.hash == hash) continue;
+            if (existing.mtime == pre_mtime) continue;
+
+            if (existing.size == pre_stat.size) {
+                const pre_hash = hashFile(dir, rel, pre_stat.size) catch 0;
+                if (pre_hash != 0 and existing.hash != 0 and pre_hash == existing.hash) {
+                    existing.mtime = pre_mtime;
+                    existing.size = pre_stat.size;
+                    continue;
+                }
             }
         }
 
@@ -710,6 +717,18 @@ fn drainNotifyFile(store: *Store, explorer: *Explorer, queue: *EventQueue, known
             existing.mtime = post_mtime;
             existing.size = post_stat.size;
             existing.hash = post_hash;
+        } else {
+            const duped = alloc.dupe(u8, rel) catch continue;
+            errdefer alloc.free(duped);
+            known.put(duped, .{
+                .mtime = post_mtime,
+                .size = post_stat.size,
+                .hash = post_hash,
+                .seen = false,
+            }) catch {
+                alloc.free(duped);
+                continue;
+            };
         }
 
         // Push event to queue
