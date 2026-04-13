@@ -497,12 +497,17 @@ pub const PostingList = struct {
     }
 
     pub fn removeDocId(self: *PostingList, doc_id: u32) void {
-        var i: usize = 0;
-        while (i < self.items.items.len) {
-            if (self.items.items[i].doc_id == doc_id) {
-                _ = self.items.orderedRemove(i);
+        var lo: usize = 0;
+        var hi: usize = self.items.items.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (self.items.items[mid].doc_id < doc_id) {
+                lo = mid + 1;
+            } else if (self.items.items[mid].doc_id > doc_id) {
+                hi = mid;
             } else {
-                i += 1;
+                _ = self.items.orderedRemove(mid);
+                return;
             }
         }
     }
@@ -515,8 +520,10 @@ pub const TrigramIndex = struct {
     file_trigrams: std.StringHashMap(std.ArrayList(Trigram)),
     /// path → doc_id mapping
     path_to_id: std.StringHashMap(u32),
-    /// doc_id → path mapping
+    /// doc_id → path mapping (may contain "" sentinels for freed slots)
     id_to_path: std.ArrayList([]const u8),
+    /// freed doc_id slots available for reuse by getOrCreateDocId
+    free_ids: std.ArrayList(u32),
     allocator: std.mem.Allocator,
     /// When true, deinit frees the path keys in file_trigrams (set by readFromDisk).
     owns_paths: bool = false,
@@ -527,6 +534,7 @@ pub const TrigramIndex = struct {
             .file_trigrams = std.StringHashMap(std.ArrayList(Trigram)).init(allocator),
             .path_to_id = std.StringHashMap(u32).init(allocator),
             .id_to_path = .{},
+            .free_ids = .{},
             .allocator = allocator,
         };
     }
@@ -547,12 +555,20 @@ pub const TrigramIndex = struct {
 
         self.path_to_id.deinit();
         self.id_to_path.deinit(self.allocator);
+        self.free_ids.deinit(self.allocator);
     }
 
     fn getOrCreateDocId(self: *TrigramIndex, path: []const u8) !u32 {
         if (self.path_to_id.get(path)) |id| return id;
-        const id: u32 = @intCast(self.id_to_path.items.len);
-        try self.id_to_path.append(self.allocator, path);
+        const id: u32 = if (self.free_ids.items.len > 0) blk: {
+            const freed: u32 = self.free_ids.pop() orelse unreachable;
+            self.id_to_path.items[@as(usize, freed)] = path;
+            break :blk freed;
+        } else blk: {
+            const new_id: u32 = @intCast(self.id_to_path.items.len);
+            try self.id_to_path.append(self.allocator, path);
+            break :blk new_id;
+        };
         try self.path_to_id.put(path, id);
         return id;
     }
@@ -564,6 +580,11 @@ pub const TrigramIndex = struct {
             _ = self.file_trigrams.remove(path);
             return;
         };
+        // Always clean path_to_id first, regardless of whether file_trigrams has an entry.
+        _ = self.path_to_id.remove(path);
+        // Free the doc_id slot for reuse on next indexFile call.
+        self.free_ids.append(self.allocator, doc_id) catch {};
+        self.id_to_path.items[doc_id] = "";
         const trigrams = self.file_trigrams.getPtr(path) orelse return;
         for (trigrams.items) |tri| {
             if (self.index.getPtr(tri)) |posting_list| {
@@ -576,13 +597,17 @@ pub const TrigramIndex = struct {
         }
         trigrams.deinit(self.allocator);
         _ = self.file_trigrams.remove(path);
-        _ = self.path_to_id.remove(path);
     }
 
     pub fn indexFile(self: *TrigramIndex, path: []const u8, content: []const u8) !void {
+        const id_count_before = self.id_to_path.items.len;
         self.removeFile(path);
 
         const doc_id = try self.getOrCreateDocId(path);
+        // If id_to_path grew, this is a brand-new file (doc_id == max), so append
+        // maintains sorted PostingList order.  If it did not grow, a freed slot was
+        // reused and we must use sorted insert to preserve the invariant.
+        const is_new_doc = self.id_to_path.items.len > id_count_before;
 
         // Phase 1: accumulate masks locally per trigram (no global index writes)
         var local = std.AutoHashMap(Trigram, PostingMask).init(self.allocator);
@@ -630,12 +655,19 @@ pub const TrigramIndex = struct {
             if (!idx_gop.found_existing) {
                 idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
             }
-            // Single append (not sorted insert) since doc_id is monotonically increasing
-            try idx_gop.value_ptr.items.append(self.allocator, .{
-                .doc_id = doc_id,
-                .next_mask = mask.next_mask,
-                .loc_mask = mask.loc_mask,
-            });
+            if (is_new_doc) {
+                // New doc_id is always max: append maintains sorted PostingList order.
+                try idx_gop.value_ptr.items.append(self.allocator, .{
+                    .doc_id = doc_id,
+                    .next_mask = mask.next_mask,
+                    .loc_mask = mask.loc_mask,
+                });
+            } else {
+                // Reused doc_id: sorted insert to maintain PostingList binary-search invariant.
+                const posting = try idx_gop.value_ptr.getOrAddPosting(self.allocator, doc_id);
+                posting.next_mask = mask.next_mask;
+                posting.loc_mask = mask.loc_mask;
+            }
 
             try tri_list.append(self.allocator, tri);
         }
@@ -1649,7 +1681,10 @@ pub const AnyTrigramIndex = union(enum) {
                 result.ensureTotalCapacity(allocator, merged.count()) catch break :blk null;
                 var it = merged.keyIterator();
                 while (it.next()) |k| result.appendAssumeCapacity(k.*);
-                break :blk result.toOwnedSlice(allocator) catch null;
+                break :blk result.toOwnedSlice(allocator) catch {
+                    result.deinit(allocator);
+                    break :blk null;
+                };
             },
         };
     }
@@ -1682,7 +1717,10 @@ pub const AnyTrigramIndex = union(enum) {
                 result.ensureTotalCapacity(allocator, merged.count()) catch break :blk null;
                 var it = merged.keyIterator();
                 while (it.next()) |k| result.appendAssumeCapacity(k.*);
-                break :blk result.toOwnedSlice(allocator) catch null;
+                break :blk result.toOwnedSlice(allocator) catch {
+                    result.deinit(allocator);
+                    break :blk null;
+                };
             },
         };
     }

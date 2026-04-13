@@ -133,6 +133,9 @@ pub const Explorer = struct {
     word_index: WordIndex,
     trigram_index: AnyTrigramIndex,
     sparse_ngram_index: SparseNgramIndex,
+    /// Paths indexed with skip_trigram=true (past 15k cap or excluded).
+    /// Used to restrict the searchContent fallback to only these files.
+    skip_trigram_files: std.StringHashMap(void),
     allocator: std.mem.Allocator,
     word_index_complete: bool = true,
     word_index_can_load_from_disk: bool = false,
@@ -152,6 +155,7 @@ pub const Explorer = struct {
             .word_index = WordIndex.init(allocator),
             .trigram_index = .{ .heap = TrigramIndex.init(allocator) },
             .sparse_ngram_index = SparseNgramIndex.init(allocator),
+            .skip_trigram_files = std.StringHashMap(void).init(allocator),
             .allocator = allocator,
         };
     }
@@ -179,6 +183,7 @@ pub const Explorer = struct {
         self.word_index.deinit();
         self.trigram_index.deinit();
         self.sparse_ngram_index.deinit();
+        self.skip_trigram_files.deinit();
         if (self.root_dir) |*d| d.close();
     }
 
@@ -270,15 +275,24 @@ pub const Explorer = struct {
                 self.word_index_can_load_from_disk = false;
             }
             try self.word_index.indexFile(stable_path, content);
+            // If trigram indexing fails below, restore word_index to its previous state
+            // to prevent word_index and trigram_index from diverging.
+            errdefer if (prior_content) |old| {
+                self.word_index.indexFile(stable_path, old) catch {};
+            } else {
+                self.word_index.removeFile(stable_path);
+            };
             if (self.word_index_complete) {
                 self.word_index_generation +%= 1;
             }
             if (!skip_trigram) {
                 try self.trigram_index.indexFile(stable_path, content);
                 try self.sparse_ngram_index.indexFile(stable_path, content);
+                _ = self.skip_trigram_files.remove(stable_path);
             } else {
                 self.trigram_index.removeFile(stable_path);
                 self.sparse_ngram_index.removeFile(stable_path);
+                try self.skip_trigram_files.put(stable_path, {});
             }
         }
 
@@ -792,10 +806,9 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         }
 
         if (result_list.items.len < max_results) {
-            var iter = self.outlines.keyIterator();
+            var iter = self.skip_trigram_files.keyIterator();
             while (iter.next()) |key_ptr| {
                 if (searched.contains(key_ptr.*)) continue;
-                if (self.trigram_index.containsFile(key_ptr.*)) continue;
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
                 try searchInContent(key_ptr.*, ref.data, query, allocator, max_results, &result_list);

@@ -298,10 +298,7 @@ pub fn writeSnapshot(
 }
 
 /// Read section table from a `.codedb` file.
-pub fn readSections(path: []const u8, allocator: std.mem.Allocator) !?std.AutoHashMap(u32, SectionEntry) {
-    const file = std.fs.cwd().openFile(path, .{}) catch return null;
-    defer file.close();
-
+fn readSectionsFromFile(file: std.fs.File, allocator: std.mem.Allocator) !?std.AutoHashMap(u32, SectionEntry) {
     var magic_buf: [4]u8 = undefined;
     const n = file.readAll(&magic_buf) catch return null;
     if (n != 4 or !std.mem.eql(u8, &magic_buf, &MAGIC)) return null;
@@ -332,15 +329,22 @@ pub fn readSections(path: []const u8, allocator: std.mem.Allocator) !?std.AutoHa
     return result;
 }
 
+pub fn readSections(path: []const u8, allocator: std.mem.Allocator) !?std.AutoHashMap(u32, SectionEntry) {
+    const file = std.fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+    return readSectionsFromFile(file, allocator);
+}
+
 /// Read a section's raw bytes from a `.codedb` file.
 pub fn readSectionBytes(path: []const u8, section_id: SectionId, allocator: std.mem.Allocator) !?[]u8 {
-    var sections = try readSections(path, allocator) orelse return null;
+    const file = std.fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+
+    var sections = try readSectionsFromFile(file, allocator) orelse return null;
     defer sections.deinit();
 
     const entry = sections.get(@intFromEnum(section_id)) orelse return null;
     if (entry.length > 256 * 1024 * 1024) return null; // sanity cap: 256MB
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
 
     // Validate section fits within file
     const stat = try compat.fileStat(file);
@@ -349,8 +353,8 @@ pub fn readSectionBytes(path: []const u8, section_id: SectionId, allocator: std.
     try file.seekTo(entry.offset);
     const buf = try allocator.alloc(u8, @intCast(entry.length));
     errdefer allocator.free(buf);
-    const n = try file.readAll(buf);
-    if (n != buf.len) {
+    const nr = try file.readAll(buf);
+    if (nr != buf.len) {
         allocator.free(buf);
         return null;
     }
@@ -626,7 +630,7 @@ fn loadOutlineStateMap(snapshot_path: []const u8, allocator: std.mem.Allocator) 
 
         const symbol_count = try readSectionInt(u32, bytes, &cursor);
         for (0..symbol_count) |_| {
-            const name = try readSectionString(bytes, &cursor, allocator, 4096);
+            const name = try readSectionString(bytes, &cursor, allocator, std.math.maxInt(u16));
             if (name.len == 0) return error.InvalidData;
             errdefer allocator.free(name);
 
@@ -637,7 +641,7 @@ fn loadOutlineStateMap(snapshot_path: []const u8, allocator: std.mem.Allocator) 
             const has_detail = try readSectionByte(bytes, &cursor);
             const detail = switch (has_detail) {
                 0 => null,
-                1 => try readSectionString(bytes, &cursor, allocator, 4096),
+                1 => try readSectionString(bytes, &cursor, allocator, std.math.maxInt(u16)),
                 else => return error.InvalidData,
             };
             errdefer if (detail) |d| allocator.free(d);
@@ -700,7 +704,7 @@ fn loadSnapshotFast(
     store: *Store,
     allocator: std.mem.Allocator,
 ) !bool {
-    var outline_states = try loadOutlineStateMap(snapshot_path, allocator);
+    var outline_states = loadOutlineStateMap(snapshot_path, allocator) catch std.StringHashMap(FileOutline).init(allocator);
     defer deinitOutlineStateMap(&outline_states, allocator);
 
     var sections = (try readSections(snapshot_path, allocator)) orelse return false;

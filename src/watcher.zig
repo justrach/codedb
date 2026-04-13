@@ -37,20 +37,19 @@ pub const EventQueue = struct {
     const CAPACITY = 4096;
 
     events: [CAPACITY]?FsEvent = [_]?FsEvent{null} ** CAPACITY,
-    head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    head: usize = 0,
+    tail: usize = 0,
     mu: std.Thread.Mutex = .{},
 
     pub fn push(self: *EventQueue, event: FsEvent) bool {
         self.mu.lock();
         defer self.mu.unlock();
 
-        // Mutex provides the memory ordering guarantee; .monotonic is sufficient here.
-        const cur_tail = self.tail.load(.monotonic);
+        const cur_tail = self.tail;
         const next_tail = (cur_tail + 1) % CAPACITY;
-        if (next_tail == self.head.load(.monotonic)) return false;
+        if (next_tail == self.head) return false;
         self.events[cur_tail] = event;
-        self.tail.store(next_tail, .monotonic);
+        self.tail = next_tail;
         return true;
     }
 
@@ -58,11 +57,10 @@ pub const EventQueue = struct {
         self.mu.lock();
         defer self.mu.unlock();
 
-        // Mutex provides the memory ordering guarantee; .monotonic is sufficient here.
-        const cur_head = self.head.load(.monotonic);
-        if (cur_head == self.tail.load(.monotonic)) return null;
+        const cur_head = self.head;
+        if (cur_head == self.tail) return null;
         const event = self.events[cur_head];
-        self.head.store((cur_head + 1) % CAPACITY, .monotonic);
+        self.head = (cur_head + 1) % CAPACITY;
         return event;
     }
 };
@@ -531,6 +529,14 @@ pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, r
     // Track current git HEAD to detect branch switches (#116)
     var last_git_head: ?[40]u8 = git_mod.getGitHead(root, backing) catch null;
 
+    // Cache .git/HEAD mtime so we only fork git rev-parse when the file changes (#254)
+    var git_head_mtime: i128 = blk: {
+        var root_dir = std.fs.cwd().openDir(root, .{}) catch break :blk -1;
+        defer root_dir.close();
+        const st = compat.dirStatFile(root_dir, ".git/HEAD") catch break :blk -1;
+        break :blk st.mtime;
+    };
+
     while (!shutdown.load(.acquire)) {
         // Check for muonry edit notifications (instant re-index, no 2s delay)
         drainNotifyFile(store, explorer, queue, &known, root, backing);
@@ -538,13 +544,22 @@ pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, r
         // Poll every 2s — gentle on CPU, fast enough to catch saves
         std.Thread.sleep(2 * std.time.ns_per_s);
 
-        // Check if git HEAD changed (branch switch, checkout, rebase)
-        const current_head = git_mod.getGitHead(root, backing) catch null;
+        // Check if git HEAD changed — stat .git/HEAD mtime first to skip fork+exec (#254)
+        var current_head: ?[40]u8 = last_git_head;
         const head_changed = blk: {
+            {
+                var root_dir = std.fs.cwd().openDir(root, .{}) catch break :blk false;
+                defer root_dir.close();
+                const st = compat.dirStatFile(root_dir, ".git/HEAD") catch break :blk false;
+                if (st.mtime == git_head_mtime) break :blk false;
+                git_head_mtime = st.mtime;
+            }
+            current_head = git_mod.getGitHead(root, backing) catch null;
             if (last_git_head == null and current_head == null) break :blk false;
             if (last_git_head == null or current_head == null) break :blk true;
             break :blk !std.mem.eql(u8, &last_git_head.?, &current_head.?);
         };
+
 
         if (head_changed) {
             std.log.info("git HEAD changed — re-scanning", .{});

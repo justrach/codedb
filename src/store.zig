@@ -16,7 +16,7 @@ pub const ChangeEntry = struct {
 
 pub const Store = struct {
     files: std.StringHashMap(FileVersions),
-    seq: std.atomic.Value(u64),
+    seq: u64,
     allocator: std.mem.Allocator,
     mu: std.Thread.Mutex = .{},
     data_log: ?std.fs.File = null,
@@ -25,7 +25,7 @@ pub const Store = struct {
     pub fn init(allocator: std.mem.Allocator) Store {
         return .{
             .files = std.StringHashMap(FileVersions).init(allocator),
-            .seq = std.atomic.Value(u64).init(0),
+            .seq = 0,
             .allocator = allocator,
         };
     }
@@ -66,7 +66,8 @@ pub const Store = struct {
         self.mu.lock();
         defer self.mu.unlock();
 
-        const next_seq = self.seq.fetchAdd(1, .monotonic) + 1;
+        self.seq += 1;
+        const next_seq = self.seq;
 
         const entry = try self.files.getOrPut(path);
         if (!entry.found_existing) {
@@ -187,7 +188,9 @@ pub const Store = struct {
     }
 
     pub fn currentSeq(self: *Store) u64 {
-        return self.seq.load(.acquire);
+        self.mu.lock();
+        defer self.mu.unlock();
+        return self.seq;
     }
 
     pub fn listFiles(self: *Store) ![][]const u8 {

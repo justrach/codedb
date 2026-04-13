@@ -27,11 +27,13 @@ pub fn run(stdout: std.fs.File, s: sty.Style, allocator: std.mem.Allocator) void
         std.process.exit(1);
     };
     defer allocator.free(home);
+    const self_exe = std.fs.selfExePathAlloc(allocator) catch null;
+    defer if (self_exe) |path| allocator.free(path);
 
     var stats = NukeStats{};
 
     const self_pid = std.c.getpid();
-    stats.killed_processes = killOtherCodedbProcesses(allocator, self_pid);
+    stats.killed_processes = killOtherCodedbProcesses(allocator, self_pid, self_exe);
     stats.integrations_removed = deregisterInstalledIntegrations(allocator, home);
     stats.snapshots_removed = removeRegisteredSnapshots(allocator, home);
 
@@ -39,7 +41,7 @@ pub fn run(stdout: std.fs.File, s: sty.Style, allocator: std.mem.Allocator) void
         stats.snapshots_removed += 1;
     }
 
-    stats.binaries_removed = removeInstalledBinaries(allocator, home);
+    stats.binaries_removed = removeInstalledBinaries(home, self_exe);
 
     const codedb_dir = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch {
         out.p("{s}\xe2\x9c\x97{s} failed to allocate uninstall paths\n", .{ s.red, s.reset });
@@ -66,7 +68,8 @@ pub fn run(stdout: std.fs.File, s: sty.Style, allocator: std.mem.Allocator) void
     out.p("\n  to reinstall: {s}curl -fsSL https://codedb.codegraff.com/install.sh | bash{s}\n", .{ s.cyan, s.reset });
 }
 
-fn killOtherCodedbProcesses(allocator: std.mem.Allocator, self_pid: std.c.pid_t) usize {
+fn killOtherCodedbProcesses(allocator: std.mem.Allocator, self_pid: std.c.pid_t, self_exe: ?[]const u8) usize {
+    const executable_path = self_exe orelse return 0;
     var killed: usize = 0;
     var pid_buf: [32]u8 = undefined;
     const self_pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{self_pid}) catch "0";
@@ -84,6 +87,9 @@ fn killOtherCodedbProcesses(allocator: std.mem.Allocator, self_pid: std.c.pid_t)
         const trimmed = std.mem.trim(u8, pid_line, " \t\r\n");
         if (trimmed.len == 0) continue;
         if (std.mem.eql(u8, trimmed, self_pid_str)) continue;
+        const command_line = readProcessCommandLine(allocator, trimmed) orelse continue;
+        defer allocator.free(command_line);
+        if (!commandTargetsBinary(command_line, executable_path)) continue;
         const kill_result = std.process.Child.run(.{
             .allocator = allocator,
             .argv = &.{ "kill", trimmed },
@@ -97,6 +103,43 @@ fn killOtherCodedbProcesses(allocator: std.mem.Allocator, self_pid: std.c.pid_t)
     }
 
     return killed;
+}
+
+fn readProcessCommandLine(allocator: std.mem.Allocator, pid: []const u8) ?[]u8 {
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "ps", "-p", pid, "-o", "args=" },
+        .max_output_bytes = 4096,
+    }) catch return null;
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        allocator.free(result.stdout);
+        return null;
+    }
+
+    return result.stdout;
+}
+
+pub fn commandTargetsBinary(command_line: []const u8, executable_path: []const u8) bool {
+    if (std.mem.indexOf(u8, command_line, executable_path) != null) return true;
+
+    const command_exe = commandExecutablePath(command_line) orelse return false;
+    return std.mem.eql(u8, normalizeExecutablePath(command_exe), normalizeExecutablePath(executable_path));
+}
+
+fn commandExecutablePath(command_line: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, command_line, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    const exe_end = std.mem.indexOfScalar(u8, trimmed, ' ') orelse trimmed.len;
+    return trimmed[0..exe_end];
+}
+
+fn normalizeExecutablePath(path: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, path, "/private/")) {
+        return path["/private".len..];
+    }
+    return path;
 }
 
 fn removeRegisteredSnapshots(allocator: std.mem.Allocator, home: []const u8) usize {
@@ -148,24 +191,21 @@ fn deregisterInstalledIntegrations(allocator: std.mem.Allocator, home: []const u
     return removed;
 }
 
-fn removeInstalledBinaries(allocator: std.mem.Allocator, home: []const u8) usize {
+fn removeInstalledBinaries(home: []const u8, self_exe: ?[]const u8) usize {
     var removed: usize = 0;
-
-    const self_exe = std.fs.selfExePathAlloc(allocator) catch null;
-    defer if (self_exe) |path| allocator.free(path);
 
     if (self_exe) |path| {
         if (deleteFileIfExists(path)) removed += 1;
     }
 
-    const home_bin = std.fmt.allocPrint(allocator, "{s}/bin/codedb", .{home}) catch return removed;
-    defer allocator.free(home_bin);
+    var home_bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home_bin = std.fmt.bufPrint(&home_bin_buf, "{s}/bin/codedb", .{home}) catch return removed;
     if (self_exe == null or !std.mem.eql(u8, self_exe.?, home_bin)) {
         if (deleteFileIfExists(home_bin)) removed += 1;
     }
 
-    const home_bin_exe = std.fmt.allocPrint(allocator, "{s}/bin/codedb.exe", .{home}) catch return removed;
-    defer allocator.free(home_bin_exe);
+    var home_bin_exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home_bin_exe = std.fmt.bufPrint(&home_bin_exe_buf, "{s}/bin/codedb.exe", .{home}) catch return removed;
     if ((self_exe == null or !std.mem.eql(u8, self_exe.?, home_bin_exe)) and !std.mem.eql(u8, home_bin, home_bin_exe)) {
         if (deleteFileIfExists(home_bin_exe)) removed += 1;
     }
@@ -195,7 +235,7 @@ pub fn deregisterJsonIntegrationFile(allocator: std.mem.Allocator, path: []const
 
     const rewritten = try removeJsonMcpServerEntry(allocator, content, "codedb") orelse return false;
     defer allocator.free(rewritten);
-    try rewriteConfigFile(path, rewritten);
+    try rewriteConfigFile(allocator, path, rewritten);
     return true;
 }
 
@@ -205,11 +245,11 @@ pub fn deregisterCodexIntegrationFile(allocator: std.mem.Allocator, path: []cons
 
     const rewritten = try removeCodexMcpServerBlock(allocator, content, "codedb") orelse return false;
     defer allocator.free(rewritten);
-    try rewriteConfigFile(path, rewritten);
+    try rewriteConfigFile(allocator, path, rewritten);
     return true;
 }
 
-fn rewriteConfigFile(path: []const u8, content: []const u8) !void {
+fn rewriteConfigFile(allocator: std.mem.Allocator, path: []const u8, content: []const u8) !void {
     if (std.mem.trim(u8, content, " \t\r\n").len == 0) {
         std.fs.cwd().deleteFile(path) catch |err| switch (err) {
             error.FileNotFound => {},
@@ -218,9 +258,16 @@ fn rewriteConfigFile(path: []const u8, content: []const u8) !void {
         return;
     }
 
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(content);
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
+    defer allocator.free(tmp_path);
+    errdefer std.fs.cwd().deleteFile(tmp_path) catch {};
+    {
+        const file = try std.fs.cwd().createFile(tmp_path, .{});
+        defer file.close();
+        try file.writeAll(content);
+        try file.sync();
+    }
+    try std.fs.rename(std.fs.cwd(), tmp_path, std.fs.cwd(), path);
 }
 
 pub fn removeJsonMcpServerEntry(allocator: std.mem.Allocator, content: []const u8, server_name: []const u8) !?[]u8 {
