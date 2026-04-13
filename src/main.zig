@@ -52,9 +52,8 @@ fn mainInner() void {
 }
 
 fn mainImpl() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    // Use c_allocator (libc malloc) — better page reclamation than GPA
+    const allocator = std.heap.c_allocator;
 
     const stdout = std.fs.File.stdout();
     const use_color = stdout.isTty();
@@ -213,7 +212,9 @@ fn mainImpl() !void {
             }
 
             const t_scan = std.time.nanoTimestamp();
-            try watcher.initialScan(&store, &explorer, root, allocator, heads_match);
+            // Always skip trigrams during scan — build them after to halve peak RSS.
+            // Trigrams are either loaded from disk (warm) or rebuilt file-by-file (cold).
+            try watcher.initialScan(&store, &explorer, root, allocator, true);
             const scan_elapsed = std.time.nanoTimestamp() - t_scan;
             var dur_buf: [64]u8 = undefined;
             out.p("{s}\xe2\x9c\x93{s} {s}indexed{s}  {s}{s}{s}\n", .{
@@ -250,11 +251,34 @@ fn mainImpl() !void {
                     };
                 }
             } else {
-                // Persist trigram index to disk for fast future startup
+                // Cold run: build trigrams file-by-file from disk.
+                // This avoids holding outlines + word_index + trigrams simultaneously,
+                // halving peak RSS compared to building trigrams during initialScan.
+                {
+                    var tri_dir = std.fs.cwd().openDir(root, .{}) catch null;
+                    defer if (tri_dir) |*d| d.close();
+                    if (tri_dir) |dir| {
+                        explorer.mu.lock();
+                        var key_iter = explorer.outlines.keyIterator();
+                        while (key_iter.next()) |path_ptr| {
+                            const p = path_ptr.*;
+                            const f = dir.openFile(p, .{}) catch continue;
+                            defer f.close();
+                            const c = f.readToEndAlloc(allocator, 512 * 1024) catch continue;
+                            defer allocator.free(c);
+                            if (c.len <= 64 * 1024) {
+                                explorer.trigram_index.indexFile(p, c) catch continue;
+                                explorer.sparse_ngram_index.indexFile(p, c) catch continue;
+                                _ = explorer.skip_trigram_files.remove(p);
+                            }
+                        }
+                        explorer.mu.unlock();
+                    }
+                }
+                // Write to disk + swap to mmap
                 explorer.trigram_index.writeToDisk(data_dir, git_head) catch |err| {
                     std.log.warn("could not persist trigram index: {}", .{err});
                 };
-                // Swap heap→mmap to free posting list allocations
                 if (MmapTrigramIndex.initFromDisk(data_dir, allocator)) |loaded| {
                     explorer.mu.lock();
                     explorer.trigram_index.deinit();

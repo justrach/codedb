@@ -788,14 +788,18 @@ pub fn isSensitivePath(path: []const u8) bool {
 }
 
 fn indexFileContent(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
+    _ = allocator;
     if (shouldSkipFile(path)) return;
     const file = try dir.openFile(path, .{});
     defer file.close();
     const stat = try compat.fileStat(file);
     // Skip files over 512KB (likely minified bundles or generated)
     if (stat.size > 512 * 1024) return;
-    const content = try file.readToEndAlloc(allocator, 512 * 1024);
-    defer allocator.free(content);
+    // Use page_allocator arena for content — pages returned to OS immediately
+    // via munmap on deinit, eliminating GPA page retention from content churn.
+    var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer content_arena.deinit();
+    const content = try file.readToEndAlloc(content_arena.allocator(), 512 * 1024);
     // Skip binary content (check first 512 bytes for null bytes)
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
