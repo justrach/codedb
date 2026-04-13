@@ -20,7 +20,7 @@ fn page() h.Node {
         h.h1(.{ .class = "section-title" }, "Up and running in 60 seconds"),
 
         h.h2(.{}, "1. Install"),
-        h.p(.{}, "One command. Downloads the binary for your platform and auto-registers codedb as an MCP server in Claude Code, Codex, Gemini CLI, and Cursor."),
+        h.p(.{}, "One command. Downloads the binary for your platform and auto-registers codedb as an MCP server in Claude Code, Codex, Gemini CLI, Cursor, and Swival."),
         h.pre(.{},
             \\curl -fsSL https://codedb.codegraff.com/install.sh | bash
         ),

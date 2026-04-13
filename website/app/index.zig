@@ -348,7 +348,7 @@ const html =
     \\<div class="cta-section">
     \\  <div class="cta-inner">
     \\    <div class="cta-title">Give your agent a brain</div>
-    \\    <div class="cta-sub">One command. Auto-registers in Claude Code, Codex, Gemini CLI, and Cursor.</div>
+    \\    <div class="cta-sub">One command. Auto-registers in Claude Code, Codex, Gemini CLI, Cursor, and Swival.</div>
     \\    <div class="hero-install" style="margin:0 auto 20px;justify-content:center;">
     \\      <span class="prompt">$</span> curl -fsSL https://codedb.codegraff.com/install.sh | bash
     \\    </div>
