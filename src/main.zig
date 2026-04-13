@@ -184,6 +184,7 @@ fn mainImpl() !void {
         };
         const snapshot_elapsed = std.time.nanoTimestamp() - snapshot_t0;
 
+        const needs_word_index = std.mem.eql(u8, cmd, "word");
         if (snapshot_loaded) {
             if (std.mem.eql(u8, cmd, "search")) {
                 loadTrigramFromDiskIfPresent(&explorer, data_dir, allocator);
@@ -221,6 +222,7 @@ fn mainImpl() !void {
             // Skip file_words tracking during bulk scan — saves ~450MB.
             // Only needed for removeFile (incremental re-indexing), not initial scan.
             explorer.word_index.skip_file_words = true;
+            if (!needs_word_index) explorer.word_index.enabled = false;
             // Always skip trigrams during scan — build them after to halve peak RSS.
             // Trigrams are either loaded from disk (warm) or rebuilt file-by-file (cold).
             try watcher.initialScan(&store, &explorer, root, allocator, true);
@@ -263,11 +265,13 @@ fn mainImpl() !void {
                 // Cold run: persist word index → free → build trigrams → reload.
                 // This prevents word index + trigram index from coexisting in memory.
                 explorer.releaseContents();
-                persistWordIndexToDisk(&explorer, data_dir, git_head);
-                explorer.mu.lock();
-                explorer.word_index.deinit();
-                explorer.word_index = WordIndex.init(allocator);
-                explorer.mu.unlock();
+                if (needs_word_index) persistWordIndexToDisk(&explorer, data_dir, git_head);
+                if (needs_word_index) {
+                    explorer.mu.lock();
+                    explorer.word_index.deinit();
+                    explorer.word_index = WordIndex.init(allocator);
+                    explorer.mu.unlock();
+                }
                 {
                     // Build trigrams — read files from disk, index one at a time.
                     // Uses c_allocator so freed pages return to OS on resize.

@@ -17,6 +17,7 @@ pub const WordIndex = struct {
     file_words: std.StringHashMap([]const []const u8),
     allocator: std.mem.Allocator,
     skip_file_words: bool = false,
+    enabled: bool = true,
     path_to_id: std.StringHashMap(u32),
     id_to_path: std.ArrayList([]const u8),
 
@@ -110,6 +111,7 @@ pub const WordIndex = struct {
 
     /// Index a file's content — tokenizes into words and records hits.
     pub fn indexFile(self: *WordIndex, path: []const u8, content: []const u8) !void {
+        if (!self.enabled) return;
         // Clean up old entries first
         self.removeFile(path);
 
