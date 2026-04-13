@@ -419,7 +419,7 @@ pub fn initialScanWithWorkerCount(store: *Store, explorer: *Explorer, root: []co
     if (n_workers == 1) {
         for (entries.items) |entry| {
             {
-                var arena = std.heap.ArenaAllocator.init(allocator);
+                var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                 defer arena.deinit();
                 const parsed = try parseInitialScanEntry(root, entry, arena.allocator());
                 if (parsed) |file| {
@@ -431,8 +431,10 @@ pub fn initialScanWithWorkerCount(store: *Store, explorer: *Explorer, root: []co
     }
 
     const workers = try allocator.alloc(WorkerParsedResults, n_workers);
+    var workers_committed: usize = 0;
     defer {
-        for (workers) |*worker| worker.deinit(allocator);
+        // Free any workers not yet committed (on error path)
+        for (workers[workers_committed..]) |*worker| worker.deinit(allocator);
         allocator.free(workers);
     }
     const threads = try allocator.alloc(std.Thread, n_workers);
@@ -442,7 +444,7 @@ pub fn initialScanWithWorkerCount(store: *Store, explorer: *Explorer, root: []co
     const remainder = entries.items.len % n_workers;
     var offset: usize = 0;
     for (workers, 0..) |*worker, i| {
-        worker.* = WorkerParsedResults.init(allocator);
+        worker.* = WorkerParsedResults.init(std.heap.page_allocator);
         const extra: usize = if (i < remainder) 1 else 0;
         const count = chunk_size + extra;
         const chunk = entries.items[offset .. offset + count];
@@ -455,6 +457,10 @@ pub fn initialScanWithWorkerCount(store: *Store, explorer: *Explorer, root: []co
         for (worker.items.items) |file| {
             try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
         }
+        // Free this worker's arena immediately — releases pages to OS,
+        // prevents holding all workers' content simultaneously.
+        worker.deinit(allocator);
+        workers_committed += 1;
     }
 }
 
