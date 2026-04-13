@@ -318,6 +318,196 @@ pub const Explorer = struct {
         if (prior_outline) |*old_outline| old_outline.deinit();
     }
 
+fn computeSymbolEnds(content: []const u8, outline: *FileOutline) void {
+    if (outline.symbols.items.len == 0) return;
+
+    // Build a line offset table for O(1) line lookups
+    var line_offsets: std.ArrayList(usize) = .{};
+    defer line_offsets.deinit(outline.allocator);
+    line_offsets.append(outline.allocator, 0) catch return; // line 1 starts at offset 0
+    for (content, 0..) |c, i| {
+        if (c == '\n' and i + 1 <= content.len) {
+            line_offsets.append(outline.allocator, i + 1) catch return;
+        }
+    }
+    const total_lines: u32 = @intCast(line_offsets.items.len);
+
+    const is_brace_lang = outline.language == .zig or outline.language == .c or
+        outline.language == .cpp or outline.language == .typescript or
+        outline.language == .javascript or outline.language == .rust or
+        outline.language == .go_lang or outline.language == .php;
+
+    for (outline.symbols.items) |*sym| {
+        // Skip single-line kinds
+        switch (sym.kind) {
+            .import, .variable, .constant, .comment_block, .type_alias, .macro_def => continue,
+            else => {},
+        }
+
+        if (sym.line_start == 0 or sym.line_start > total_lines) continue;
+
+        if (is_brace_lang) {
+            sym.line_end = findBraceEnd(content, line_offsets.items, sym.line_start, total_lines);
+        } else if (outline.language == .python) {
+            sym.line_end = findPythonEnd(content, line_offsets.items, sym.line_start, total_lines);
+        } else if (outline.language == .ruby) {
+            sym.line_end = findRubyEnd(content, line_offsets.items, sym.line_start, total_lines);
+        }
+    }
+}
+
+fn findBraceEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) u32 {
+    const start_idx = line_offsets[line_start - 1];
+    var depth: i32 = 0;
+    var found_open = false;
+    var in_string: u8 = 0; // 0=none, '"', '\''
+    var in_line_comment = false;
+    var in_block_comment = false;
+    var i = start_idx;
+    var current_line = line_start;
+
+    while (i < content.len) : (i += 1) {
+        const c = content[i];
+
+        if (c == '\n') {
+            current_line += 1;
+            in_line_comment = false;
+            // Bail out if no opening brace found within 10 lines
+            if (!found_open and current_line > line_start + 10) return line_start;
+            continue;
+        }
+
+        if (in_line_comment) continue;
+
+        if (in_block_comment) {
+            if (c == '*' and i + 1 < content.len and content[i + 1] == '/') {
+                in_block_comment = false;
+                i += 1;
+            }
+            continue;
+        }
+
+        if (in_string != 0) {
+            if (c == '\\') {
+                i += 1; // skip escaped char
+            } else if (c == in_string) {
+                in_string = 0;
+            }
+            continue;
+        }
+
+        // Check for comments
+        if (c == '/' and i + 1 < content.len) {
+            if (content[i + 1] == '/') {
+                in_line_comment = true;
+                continue;
+            } else if (content[i + 1] == '*') {
+                in_block_comment = true;
+                i += 1;
+                continue;
+            }
+        }
+
+        // Check for strings
+        if (c == '"' or c == '\'') {
+            in_string = c;
+            continue;
+        }
+
+        if (c == '{') {
+            depth += 1;
+            found_open = true;
+        } else if (c == '}') {
+            depth -= 1;
+            if (found_open and depth == 0) {
+                return @min(current_line, total_lines);
+            }
+        }
+    }
+
+    return if (found_open) total_lines else line_start;
+}
+
+fn findPythonEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) u32 {
+    if (line_start >= total_lines) return line_start;
+
+    // Get the indent of the signature line
+    const sig_offset = line_offsets[line_start - 1];
+    const sig_indent = countIndent(content, sig_offset);
+
+    // Find the colon-terminated signature (may span multiple lines)
+    var body_start = line_start + 1;
+    // Check if signature line itself has the colon
+    {
+        const line_end_offset = if (line_start < total_lines) line_offsets[line_start] else content.len;
+        const sig_line = content[sig_offset..line_end_offset];
+        if (std.mem.indexOf(u8, sig_line, ":") == null) {
+            // Multi-line signature — skip ahead to find the colon
+            var ln = line_start + 1;
+            while (ln <= total_lines) : (ln += 1) {
+                const lo = line_offsets[ln - 1];
+                const le = if (ln < total_lines) line_offsets[ln] else content.len;
+                const line = content[lo..le];
+                if (std.mem.indexOf(u8, line, ":") != null) {
+                    body_start = ln + 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    var last_body_line = line_start;
+    var ln = body_start;
+    while (ln <= total_lines) : (ln += 1) {
+        const lo = line_offsets[ln - 1];
+        const le = if (ln < total_lines) line_offsets[ln] else content.len;
+        const line = content[lo..le];
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+
+        // Blank lines and comments don't end the body
+        if (trimmed.len == 0 or std.mem.startsWith(u8, trimmed, "#")) {
+            continue;
+        }
+
+        const indent = countIndent(content, lo);
+        if (indent <= sig_indent) break;
+        last_body_line = ln;
+    }
+
+    return if (last_body_line > line_start) last_body_line else line_start;
+}
+
+fn findRubyEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) u32 {
+    if (line_start >= total_lines) return line_start;
+
+    const sig_offset = line_offsets[line_start - 1];
+    const sig_indent = countIndent(content, sig_offset);
+
+    var ln = line_start + 1;
+    while (ln <= total_lines) : (ln += 1) {
+        const lo = line_offsets[ln - 1];
+        const le = if (ln < total_lines) line_offsets[ln] else content.len;
+        const line = content[lo..le];
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+
+        if (std.mem.eql(u8, trimmed, "end")) {
+            const indent = countIndent(content, lo);
+            if (indent <= sig_indent) return ln;
+        }
+    }
+
+    return line_start;
+}
+
+fn countIndent(content: []const u8, offset: usize) usize {
+    var count: usize = 0;
+    var i = offset;
+    while (i < content.len and (content[i] == ' ' or content[i] == '\t')) : (i += 1) {
+        count += if (content[i] == '\t') 4 else 1;
+    }
+    return count;
+}
+
 fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []const u8) !FileOutline {
     var outline = FileOutline.init(parser.allocator, path);
     errdefer outline.deinit();
@@ -422,6 +612,7 @@ fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []const 
         prev_line_trimmed = trimmed;
     }
     outline.line_count = line_num;
+    computeSymbolEnds(content, &outline);
     return outline;
 }
 
@@ -809,14 +1000,29 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
                     if (result_list.items.len >= max_results) break;
                 }
             } else {
-                var iter = self.outlines.keyIterator();
-                while (iter.next()) |key_ptr| {
-                    const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
-                    defer ref.deinit();
-                    try searchInContent(key_ptr.*, ref.data, query, allocator, max_results, &result_list);
-                    if (result_list.items.len >= max_results) break;
+                // No trigram/sparse candidates — use word_index to narrow (#250)
+                const word_hits = self.word_index.search(query);
+                if (word_hits.len > 0) {
+                    var word_paths = std.StringHashMap(void).init(allocator);
+                    defer word_paths.deinit();
+                    for (word_hits) |hit| word_paths.put(hit.path, {}) catch {};
+                    var wp_iter = word_paths.keyIterator();
+                    while (wp_iter.next()) |key_ptr| {
+                        const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
+                        defer ref.deinit();
+                        try searched.put(key_ptr.*, {});
+                        try searchInContent(key_ptr.*, ref.data, query, allocator, max_results, &result_list);
+                        if (result_list.items.len >= max_results) break;
+                    }
+                } else {
+                    var iter = self.outlines.keyIterator();
+                    while (iter.next()) |key_ptr| {
+                        const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
+                        defer ref.deinit();
+                        try searchInContent(key_ptr.*, ref.data, query, allocator, max_results, &result_list);
+                        if (result_list.items.len >= max_results) break;
+                    }
                 }
-                return result_list.toOwnedSlice(allocator);
             }
         }
 

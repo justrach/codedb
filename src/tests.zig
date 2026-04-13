@@ -5861,3 +5861,55 @@ test "snapshot: corrupted OUTLINE_STATE section falls back to CONTENT load" {
     const results = try exp2.findAllSymbols("aFunc", sym_arena.allocator());
     try testing.expect(results.len >= 1);
 }
+
+test "issue-224: codedb_symbol body=true returns full body — line_end populated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("t.zig",
+        \\pub fn foo() u32 {
+        \\    const a: u32 = 1;
+        \\    const b: u32 = 2;
+        \\    return a + b;
+        \\}
+    );
+
+    const results = try explorer.findAllSymbols("foo", alloc);
+    defer alloc.free(results);
+    try testing.expect(results.len == 1);
+
+    const sym = results[0].symbol;
+    try testing.expectEqual(@as(u32, 1), sym.line_start);
+    try testing.expectEqual(@as(u32, 5), sym.line_end);
+
+    const body = (try explorer.getSymbolBody("t.zig", sym.line_start, sym.line_end, alloc)) orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, body, "pub fn foo()") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "return a + b;") != null);
+}
+
+test "issue-224: Python def line_end covers full body" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("t.py",
+        \\def greet(name):
+        \\    msg = "hello"
+        \\    return msg + name
+    );
+
+    const results = try explorer.findAllSymbols("greet", alloc);
+    defer alloc.free(results);
+    try testing.expect(results.len == 1);
+
+    const sym = results[0].symbol;
+    try testing.expectEqual(@as(u32, 1), sym.line_start);
+    try testing.expectEqual(@as(u32, 3), sym.line_end);
+}
+

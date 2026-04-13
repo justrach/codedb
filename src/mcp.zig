@@ -200,6 +200,14 @@ const ProjectCache = struct {
 
         loadProjectTrigramFromDiskIfPresent(&new_entry.explorer, p, self.alloc);
 
+        // Release raw file contents retained by the snapshot load — outlines,
+        // trigram index, and word index are sufficient for all query tools.
+        const fc = new_entry.explorer.outlines.count();
+        if (fc > 1000) {
+            new_entry.explorer.releaseContents();
+            new_entry.explorer.releaseSecondaryIndexes();
+        }
+
         // Find free slot or evict LRU
         var target_slot: usize = 0;
         var found_free = false;
