@@ -252,18 +252,25 @@ codedb returns structured, relevant results — not raw line dumps. For AI agent
 
 ### Indexing Speed
 
-### Indexing Speed
+codedb v0.2.57 uses worker-local parallel scan with deterministic merge — each worker builds its own partial index, then results are merged on the main thread:
 
-codedb v0.2.52+ uses trigram v2 (integer doc IDs, batch-accumulate, sorted merge intersection):
-
-| Repo | Files | Lines | Cold start | Per file | vs v0.2.3 |
-|------|-------|-------|-----------|----------|-----------|
-| codedb | 20 | 12.6k | **17 ms** | 0.85 ms | — |
-| merjs | 100 | 17.3k | **16 ms** | 0.16 ms | — |
-| 5,200 mixed files | 5,200 | — | **310 ms** | 0.06 ms | **-36%** |
-| [openclaw/openclaw](https://github.com/openclaw/openclaw) | 11,281 | 2.29M | **2.9 s** | 6.66 ms | — |
+| Repo | Files | Cold start | Per file | vs v0.2.56 |
+|------|-------|-----------|----------|-----------|
+| codedb | 20 | **17 ms** | 0.85 ms | — |
+| merjs | 100 | **16 ms** | 0.16 ms | — |
+| 5,200 mixed files | 5,200 | **310 ms** | 0.06 ms | — |
+| [openclaw/openclaw](https://github.com/openclaw/openclaw) | 6,315 | **346 ms** | 0.05 ms | **10× faster** |
 
 Indexes are built once on startup. After that, the file watcher keeps them updated incrementally (single-file re-index: **<2ms**). Queries never re-scan the filesystem. For repos >1000 files, file contents are released after indexing to save ~300-500MB.
+
+### Background Resource Usage (`openclaw`, 6,315 files, Apple M4 Pro)
+
+| Metric | v0.2.56 | v0.2.57 | Delta |
+|--------|---------|---------|-------|
+| Steady-state RSS | 1,867 MB | 1,706 MB | −161 MB |
+| `git` subprocesses / min (idle) | ~30 | ~0 | **mtime-gated** |
+
+The watcher now stats `.git/HEAD` mtime before forking `git rev-parse HEAD`. On an idle repo the subprocess never fires.
 ### Why codedb is fast
 
 - **MCP server** indexes once on startup → all queries hit in-memory data structures (O(1) hash lookups)

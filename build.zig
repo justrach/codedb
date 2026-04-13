@@ -93,6 +93,22 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| bench_run.addArgs(args);
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&bench_run.step);
+
+    // ── Benchmark (repo benchmark — indexing speed, query latency, recall) ──
+    const benchmark = b.addExecutable(.{
+        .name = "benchmark",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/benchmark.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    benchmark.root_module.addImport("mcp", mcp_dep.module("mcp"));
+    const benchmark_run = b.addRunArtifact(benchmark);
+    if (b.args) |args| benchmark_run.addArgs(args);
+    const benchmark_step = b.step("benchmark", "Run repo benchmark (use -- --root /path/to/repo)");
+    benchmark_step.dependOn(&benchmark_run.step);
+
     // Make module available so dependents don't need to wire it up manually
     _ = codedb_mod;
 

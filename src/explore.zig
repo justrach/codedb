@@ -187,6 +187,21 @@ pub const Explorer = struct {
         if (self.root_dir) |*d| d.close();
     }
 
+    /// Number of slots in the heap trigram index id_to_path array (benchmark helper).
+    pub fn trigramIdToPathLen(self: *Explorer) usize {
+        return switch (self.trigram_index) {
+            .heap => |*h| h.id_to_path.items.len,
+            else => 0,
+        };
+    }
+
+    /// Number of reusable free_ids slots in the heap trigram index (benchmark helper).
+    pub fn trigramFreeIdsLen(self: *Explorer) usize {
+        return switch (self.trigram_index) {
+            .heap => |*h| h.free_ids.items.len,
+            else => 0,
+        };
+    }
     pub fn releaseContents(self: *Explorer) void {
         self.mu.lock();
         defer self.mu.unlock();
