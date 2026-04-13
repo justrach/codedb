@@ -823,16 +823,47 @@ fn drainNotifyFile(store: *Store, explorer: *Explorer, queue: *EventQueue, known
         else
             path;
 
+        // Skip re-indexing if the file has not changed since last index.
+        // Mirror incrementalDiff: unchanged mtime is a cheap skip, and same-size
+        // rewrites only skip when both sides have a matching content hash.
+        const pre_stat = compat.dirStatFile(dir, rel) catch continue;
+        const pre_mtime: i64 = @intCast(@divTrunc(pre_stat.mtime, std.time.ns_per_ms));
+        if (known.getPtr(rel)) |existing| {
+            if (existing.mtime == pre_mtime) continue;
+
+            if (existing.size == pre_stat.size) {
+                const pre_hash = hashFile(dir, rel, pre_stat.size) catch 0;
+                if (pre_hash != 0 and existing.hash != 0 and pre_hash == existing.hash) {
+                    existing.mtime = pre_mtime;
+                    existing.size = pre_stat.size;
+                    continue;
+                }
+            }
+        }
+
         indexFileContent(explorer, dir, rel, alloc, false) catch continue;
 
-        // Update known-file state so incrementalDiff doesn't double-process
-        const stat = compat.dirStatFile(dir, rel) catch continue;
-        const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
-        const hash = hashFile(dir, rel, stat.size) catch continue;
+        // Re-stat after indexing so known-state reflects what was actually indexed,
+        // avoiding stale values if the file changed between pre-stat and indexing.
+        const post_stat = compat.dirStatFile(dir, rel) catch continue;
+        const post_mtime: i64 = @intCast(@divTrunc(post_stat.mtime, std.time.ns_per_ms));
+        const post_hash = hashFile(dir, rel, post_stat.size) catch continue;
         if (known.getPtr(rel)) |existing| {
-            existing.mtime = mtime;
-            existing.size = stat.size;
-            existing.hash = hash;
+            existing.mtime = post_mtime;
+            existing.size = post_stat.size;
+            existing.hash = post_hash;
+        } else {
+            const duped = alloc.dupe(u8, rel) catch continue;
+            errdefer alloc.free(duped);
+            known.put(duped, .{
+                .mtime = post_mtime,
+                .size = post_stat.size,
+                .hash = post_hash,
+                .seen = false,
+            }) catch {
+                alloc.free(duped);
+                continue;
+            };
         }
 
         // Push event to queue
