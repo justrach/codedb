@@ -32,6 +32,7 @@ const SymbolKind = explore.SymbolKind;
 const mcp_mod = @import("mcp.zig");
 const main_mod = @import("main.zig");
 const nuke_mod = @import("nuke.zig");
+const update_mod = @import("update.zig");
 const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
 // ── Store tests ─────────────────────────────────────────────
@@ -4756,6 +4757,10 @@ test "issue-150: --help prints usage" {
     try testing.expect(result.term.Exited == 0);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
         std.mem.indexOf(u8, result.stderr, "usage:") != null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "update") != null or
+        std.mem.indexOf(u8, result.stderr, "update") != null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "nuke") != null or
+        std.mem.indexOf(u8, result.stderr, "nuke") != null);
 }
 
 test "issue-150: -h prints usage" {
@@ -4782,6 +4787,50 @@ test "issue-150: -h prints usage" {
     try testing.expect(result.term.Exited == 0);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
         std.mem.indexOf(u8, result.stderr, "usage:") != null);
+}
+
+test "update: compareVersions orders semantic versions" {
+    try testing.expect(try update_mod.compareVersions("0.2.55", "0.2.56") == .lt);
+    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56") == .eq);
+    try testing.expect(try update_mod.compareVersions("v0.2.57", "0.2.56") == .gt);
+    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56.0") == .eq);
+}
+
+test "update: checksumForBinary parses release manifest" {
+    const manifest =
+        \\7be38140d090b2e23723c8cde02be150171c818daa16b18c520b44cc1e078add  codedb-darwin-arm64
+        \\76bc7b81bc9fd211aa2c1ac59d1d26e8c80bc211ab560de2dc998ea9e04ec471  codedb-darwin-x86_64
+        \\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  *codedb-linux-arm64
+    ;
+
+    try testing.expectEqualStrings(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        update_mod.checksumForBinary(manifest, "codedb-linux-arm64") orelse return error.TestUnexpectedResult,
+    );
+    try testing.expect(update_mod.checksumForBinary(manifest, "codedb-linux-x86_64") == null);
+}
+
+test "update: asset names match published release naming" {
+    try testing.expectEqualStrings("codedb-darwin-arm64", update_mod.assetNameForTarget(.macos, .aarch64).?);
+    try testing.expectEqualStrings("codedb-darwin-x86_64", update_mod.assetNameForTarget(.macos, .x86_64).?);
+    try testing.expectEqualStrings("codedb-linux-arm64", update_mod.assetNameForTarget(.linux, .aarch64).?);
+    try testing.expectEqualStrings("codedb-linux-x86_64", update_mod.assetNameForTarget(.linux, .x86_64).?);
+    try testing.expect(update_mod.assetNameForTarget(.windows, .x86_64) == null);
+}
+
+test "nuke: commandTargetsBinary only matches the current install path" {
+    try testing.expect(nuke_mod.commandTargetsBinary(
+        "/tmp/codedb-test/bin/codedb serve",
+        "/tmp/codedb-test/bin/codedb",
+    ));
+    try testing.expect(nuke_mod.commandTargetsBinary(
+        "/var/folders/example/codedb serve",
+        "/private/var/folders/example/codedb",
+    ));
+    try testing.expect(!nuke_mod.commandTargetsBinary(
+        "/Users/rachpradhan/bin/codedb --mcp",
+        "/tmp/codedb-test/bin/codedb",
+    ));
 }
 
 test "nuke: removeJsonMcpServerEntry drops only codedb integration" {
