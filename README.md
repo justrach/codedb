@@ -21,6 +21,7 @@
 <p align="center">
   <a href="#-status">Status</a> ·
   <a href="#-install">Install</a> ·
+  <a href="#-security-posture">Security</a> ·
   <a href="#-quick-start">Quick Start</a> ·
   <a href="#-mcp-tools">MCP Tools</a> ·
   <a href="#-benchmarks">Benchmarks</a> ·
@@ -77,6 +78,28 @@ Downloads the binary for your platform and auto-registers codedb as an MCP serve
 | Linux x86_64 | `codedb-linux-x86_64` | — |
 
 Or install manually from [GitHub Releases](https://github.com/justrach/codedb/releases/latest).
+
+---
+
+## 🔐 Security Posture
+
+codedb is maintained with a supply-chain security mindset similar to the one Astral described in its April 8, 2026 post on open source security: treat CI, release automation, and installer behavior as part of the product's security boundary, not as separate operational details.
+
+What codedb does today:
+
+- Sensitive files such as `.env*`, credentials, keys, SSH material, and common secret paths are excluded from indexing, search, and snapshots.
+- The standalone installer verifies release checksums before installing binaries.
+- macOS release binaries are codesigned and notarized.
+- HTTP mode binds to `localhost` only.
+
+What that means for changes to this repo:
+
+- Workflow, release, and installer changes are reviewed as security-sensitive changes, even when they do not touch runtime code.
+- New downloads in CI, release scripts, or installers should be pinned and verified instead of fetched and executed from mutable locations.
+- Secrets and elevated permissions should stay scoped to the smallest possible job or environment.
+- Privileged automation for external pull requests should avoid unsafe GitHub Actions patterns and prefer isolated app or bot flows where possible.
+
+We use this as a maintainer policy and review bar. It is not a claim that codedb already implements every control described by Astral, but it is the direction we use when evaluating changes.
 
 ---
 

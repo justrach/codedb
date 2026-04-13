@@ -595,8 +595,8 @@ fn readSectionString(buf: []const u8, cursor: *usize, allocator: std.mem.Allocat
     return out;
 }
 
-fn loadOutlineStateMap(snapshot_path: []const u8, allocator: std.mem.Allocator) !std.StringHashMap(FileOutline) {
-    const bytes = (try readSectionBytes(snapshot_path, .outline_state, allocator)) orelse return error.InvalidData;
+[zigread:lines] L600-659
+
     defer allocator.free(bytes);
 
     var result = std.StringHashMap(FileOutline).init(allocator);
@@ -605,7 +605,7 @@ fn loadOutlineStateMap(snapshot_path: []const u8, allocator: std.mem.Allocator) 
     var cursor: usize = 0;
     const file_count = try readSectionInt(u32, bytes, &cursor);
     for (0..file_count) |_| {
-        const path = try readSectionString(bytes, &cursor, allocator, 4096);
+        const path = try readSectionString(bytes, &cursor, allocator, std.math.maxInt(u16));
         if (path.len == 0) return error.InvalidData;
         errdefer allocator.free(path);
 
@@ -619,14 +619,14 @@ fn loadOutlineStateMap(snapshot_path: []const u8, allocator: std.mem.Allocator) 
 
         const import_count = try readSectionInt(u32, bytes, &cursor);
         for (0..import_count) |_| {
-            const imp = try readSectionString(bytes, &cursor, allocator, 4096);
+            const imp = try readSectionString(bytes, &cursor, allocator, std.math.maxInt(u16));
             errdefer allocator.free(imp);
             try outline.imports.append(allocator, imp);
         }
 
         const symbol_count = try readSectionInt(u32, bytes, &cursor);
         for (0..symbol_count) |_| {
-            const name = try readSectionString(bytes, &cursor, allocator, 4096);
+            const name = try readSectionString(bytes, &cursor, allocator, std.math.maxInt(u16));
             if (name.len == 0) return error.InvalidData;
             errdefer allocator.free(name);
 
@@ -637,7 +637,7 @@ fn loadOutlineStateMap(snapshot_path: []const u8, allocator: std.mem.Allocator) 
             const has_detail = try readSectionByte(bytes, &cursor);
             const detail = switch (has_detail) {
                 0 => null,
-                1 => try readSectionString(bytes, &cursor, allocator, 4096),
+                1 => try readSectionString(bytes, &cursor, allocator, std.math.maxInt(u16)),
                 else => return error.InvalidData,
             };
             errdefer if (detail) |d| allocator.free(d);

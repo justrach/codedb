@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "codedb": {
+      "type": "stdio",
+      "command": "/Users/rachpradhan/bin/codedb",
+      "args": ["mcp"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}

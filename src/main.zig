@@ -532,11 +532,17 @@ fn mainImpl() !void {
             break :blk snapshot_mod.loadSnapshot("codedb.snapshot", &explorer, &store, allocator);
         };
         var telemetry_disabled = false;
+        var timeout_minutes: ?u32 = null;
         for (args[cmd_args_start..]) |arg| {
             if (std.mem.eql(u8, arg, "--no-telemetry")) {
                 telemetry_disabled = true;
-                break;
+            } else if (std.mem.startsWith(u8, arg, "--timeout=")) {
+                const val = arg[10..];
+                timeout_minutes = std.fmt.parseInt(u32, val, 10) catch null;
             }
+        }
+        if (timeout_minutes) |mins| {
+            mcp_server.setIdleTimeout(mins);
         }
 
         var telem = telemetry.Telemetry.init(data_dir, allocator, telemetry_disabled);
@@ -727,6 +733,7 @@ fn printUsage(out: Out, s: sty.Style) void {
     out.p(
         \\  {s}options:{s}
         \\    {s}--no-telemetry{s}             disable usage telemetry (or set CODEDB_NO_TELEMETRY)
+        \\    {s}--timeout=N{s}              set idle timeout in minutes (default: 10)
         \\
         \\  If root is omitted, uses current working directory.
         \\  Data stored in {s}~/.codedb/projects/<hash>/{s}
@@ -734,6 +741,7 @@ fn printUsage(out: Out, s: sty.Style) void {
         \\
     , .{
         s.dim,  s.reset,
+        s.cyan, s.reset,
         s.cyan, s.reset,
         s.dim,  s.reset,
     });

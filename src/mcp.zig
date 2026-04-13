@@ -369,8 +369,14 @@ pub var last_activity: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 
 /// How long (ms) the server may sit idle before auto-exiting.
 /// Claude Code restarts MCP servers on demand, so this is safe.
-pub const idle_timeout_ms: i64 = 10 * 60 * 1000; // 10 minutes — allows long debugging sessions; stdin EOF is detected by the watchdog poll
+/// How long (ms) the server may sit idle before auto-exiting.
+/// Claude Code restarts MCP servers on demand, so this is safe.
+pub var idle_timeout_ms: i64 = 10 * 60 * 1000; // 10 minutes — allows long debugging sessions; stdin EOF is detected by the watchdog poll
 
+/// Set the idle timeout in minutes.
+pub fn setIdleTimeout(minutes: u32) void {
+    idle_timeout_ms = @as(i64, minutes) * 60 * 1000;
+}
 // ── Session state for MCP protocol ──────────────────────────────────────────
 
 const Session = struct {
