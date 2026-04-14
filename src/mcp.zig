@@ -379,6 +379,7 @@ pub var last_activity: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 
 /// How long (ms) the server may sit idle before auto-exiting.
 /// Claude Code restarts MCP servers on demand, so this is safe.
+/// Set CODEDB_NO_IDLE_TIMEOUT=1 to disable idle exit (useful for clients that do not auto-restart).
 pub const idle_timeout_ms: i64 = 10 * 60 * 1000; // 10 minutes — allows long debugging sessions; stdin EOF is detected by the watchdog poll
 
 // ── Session state for MCP protocol ──────────────────────────────────────────
@@ -1708,9 +1709,15 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
         };
 
         if (std.mem.eql(u8, op, "find")) {
-            const query = getStr(step, "query") orelse { w.print("error: find needs 'query'\n", .{}) catch {}; return; };
+            const query = getStr(step, "query") orelse {
+                w.print("error: find needs 'query'\n", .{}) catch {};
+                return;
+            };
             const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
-            const matches = explorer.fuzzyFindFiles(query, alloc, max) catch { w.print("error: find failed\n", .{}) catch {}; return; };
+            const matches = explorer.fuzzyFindFiles(query, alloc, max) catch {
+                w.print("error: find failed\n", .{}) catch {};
+                return;
+            };
             defer alloc.free(matches);
             if (have_set) {
                 // Intersect: keep only files from current set that also appear in find results
@@ -1719,7 +1726,10 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 for (matches) |m| match_set.put(m.path, {}) catch {};
                 var wr: usize = 0;
                 for (file_set.items) |p| {
-                    if (match_set.contains(p)) { file_set.items[wr] = p; wr += 1; }
+                    if (match_set.contains(p)) {
+                        file_set.items[wr] = p;
+                        wr += 1;
+                    }
                 }
                 file_set.items.len = wr;
             } else {
@@ -1728,9 +1738,15 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 have_set = true;
             }
         } else if (std.mem.eql(u8, op, "search")) {
-            const query = getStr(step, "query") orelse { w.print("error: search needs 'query'\n", .{}) catch {}; return; };
+            const query = getStr(step, "query") orelse {
+                w.print("error: search needs 'query'\n", .{}) catch {};
+                return;
+            };
             const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
-            const results = explorer.searchContent(query, alloc, max) catch { w.print("error: search failed\n", .{}) catch {}; return; };
+            const results = explorer.searchContent(query, alloc, max) catch {
+                w.print("error: search failed\n", .{}) catch {};
+                return;
+            };
             defer {
                 for (results) |r| {
                     alloc.free(r.line_text);
@@ -1754,7 +1770,10 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 // Narrow file_set to only files that had hits
                 var wr: usize = 0;
                 for (file_set.items) |p| {
-                    if (hit_set.contains(p)) { file_set.items[wr] = p; wr += 1; }
+                    if (hit_set.contains(p)) {
+                        file_set.items[wr] = p;
+                        wr += 1;
+                    }
                 }
                 file_set.items.len = wr;
             } else {
@@ -1767,8 +1786,14 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                         // Dupe path — search results are freed by the defer above,
                         // but file_set must outlive this step for downstream ops
                         const duped = alloc.dupe(u8, r.path) catch continue;
-                        seen.put(duped, {}) catch { alloc.free(duped); continue; };
-                        file_set.append(alloc, duped) catch { alloc.free(duped); continue; };
+                        seen.put(duped, {}) catch {
+                            alloc.free(duped);
+                            continue;
+                        };
+                        file_set.append(alloc, duped) catch {
+                            alloc.free(duped);
+                            continue;
+                        };
                     }
                 }
                 have_set = true;
@@ -1843,13 +1868,23 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
             var wr: usize = 0;
             for (file_set.items) |path| {
                 var keep = true;
-                if (ext) |e| { if (!std.mem.endsWith(u8, path, e)) keep = false; }
-                if (keep) if (glob_pat) |g| { if (!globMatch(g, path)) keep = false; };
-                if (keep) { file_set.items[wr] = path; wr += 1; }
+                if (ext) |e| {
+                    if (!std.mem.endsWith(u8, path, e)) keep = false;
+                }
+                if (keep) if (glob_pat) |g| {
+                    if (!globMatch(g, path)) keep = false;
+                };
+                if (keep) {
+                    file_set.items[wr] = path;
+                    wr += 1;
+                }
             }
             file_set.items.len = wr;
         } else if (std.mem.eql(u8, op, "outline")) {
-            if (!have_set) { w.print("error: outline needs prior step\n", .{}) catch {}; return; }
+            if (!have_set) {
+                w.print("error: outline needs prior step\n", .{}) catch {};
+                return;
+            }
             for (file_set.items) |path| {
                 var outline = explorer.getOutline(path, alloc) catch continue;
                 if (outline) |*o| {
@@ -1857,10 +1892,16 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                     w.print("--- {s} ({s}, {d} sym) ---\n", .{ path, @tagName(o.language), o.symbols.items.len }) catch {};
                     for (o.symbols.items) |sym| w.print("  L{d} {s} {s}\n", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
                 }
-                if (out.items.len > 100 * 1024) { w.print("... truncated\n", .{}) catch {}; break; }
+                if (out.items.len > 100 * 1024) {
+                    w.print("... truncated\n", .{}) catch {};
+                    break;
+                }
             }
         } else if (std.mem.eql(u8, op, "read")) {
-            if (!have_set) { w.print("error: read needs prior step\n", .{}) catch {}; return; }
+            if (!have_set) {
+                w.print("error: read needs prior step\n", .{}) catch {};
+                return;
+            }
             const max_lines: usize = if (getInt(step, "lines")) |n| @intCast(@max(1, @min(n, 200))) else 50;
             for (file_set.items) |path| {
                 const content = explorer.getContent(path, alloc) catch continue;
@@ -1870,15 +1911,24 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                     var ln: usize = 1;
                     var it = std.mem.splitScalar(u8, data, '\n');
                     while (it.next()) |line| {
-                        if (ln > max_lines) { w.print("  ... (truncated)\n", .{}) catch {}; break; }
+                        if (ln > max_lines) {
+                            w.print("  ... (truncated)\n", .{}) catch {};
+                            break;
+                        }
                         w.print("{d:>4}| {s}\n", .{ ln, line }) catch {};
                         ln += 1;
                     }
                 }
-                if (out.items.len > 100 * 1024) { w.print("... truncated\n", .{}) catch {}; break; }
+                if (out.items.len > 100 * 1024) {
+                    w.print("... truncated\n", .{}) catch {};
+                    break;
+                }
             }
         } else if (std.mem.eql(u8, op, "sort")) {
-            if (!have_set) { w.print("error: sort needs prior step\n", .{}) catch {}; return; }
+            if (!have_set) {
+                w.print("error: sort needs prior step\n", .{}) catch {};
+                return;
+            }
             const by = getStr(step, "by") orelse "path";
             if (std.mem.eql(u8, by, "path")) {
                 std.mem.sort([]const u8, file_set.items, {}, struct {
@@ -1903,8 +1953,6 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
     }
 }
 
-
-
 // Query tracking — append-only WAL in ~/.codedb/projects/<hash>/queries.log
 var query_log_path: ?[]const u8 = null;
 
@@ -1916,10 +1964,22 @@ fn escapeJsonStr(input: []const u8, out: *[256]u8) usize {
     var elen: usize = 0;
     for (input) |c| {
         if (elen >= out.len - 1) break;
-        if (c == '"') { out[elen] = '\''; elen += 1; }
-        else if (c == '\\') { if (elen + 1 < out.len) { out[elen] = '\\'; out[elen + 1] = '\\'; elen += 2; } }
-        else if (c == '\n' or c == '\r' or c == '\t') { out[elen] = ' '; elen += 1; }
-        else { out[elen] = c; elen += 1; }
+        if (c == '"') {
+            out[elen] = '\'';
+            elen += 1;
+        } else if (c == '\\') {
+            if (elen + 1 < out.len) {
+                out[elen] = '\\';
+                out[elen + 1] = '\\';
+                elen += 2;
+            }
+        } else if (c == '\n' or c == '\r' or c == '\t') {
+            out[elen] = ' ';
+            elen += 1;
+        } else {
+            out[elen] = c;
+            elen += 1;
+        }
     }
     return elen;
 }

@@ -968,7 +968,7 @@ fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
         const last = mcp.last_activity.load(.acquire);
         if (last == 0) continue;
         const now = std.time.milliTimestamp();
-        if (now - last > mcp.idle_timeout_ms) {
+        if (!std.process.hasEnvVarConstant("CODEDB_NO_IDLE_TIMEOUT") and now - last > mcp.idle_timeout_ms) {
             std.log.info("idle for {d}s, exiting", .{@divTrunc(now - last, 1000)});
             stdin.close();
             shutdown.store(true, .release);
