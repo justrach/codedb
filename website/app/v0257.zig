@@ -131,13 +131,13 @@ const html =
     \\<div style="background:var(--dark);color:#fff;">
     \\  <div class="hero">
     \\    <div class="hero-label">v0.2.57 Release</div>
-    \\    <div class="hero-headline"><span class="hl">10×</span> faster initial index. <span class="hl">83%</span> less cold RSS. <span class="hl">92%</span> less warm RSS. <span class="hl">1000×</span> ripgrep.</div>
+    \\    <div class="hero-headline"><span class="hl">10×</span> faster initial index. <span class="hl">83%</span> less cold RSS. <span class="hl">92%</span> less warm RSS. <span class="hl">8×</span> ripgrep. <span class="hl">6×</span> slower than fff.</div>
     \\    <div class="hero-sub">Cold-start indexing on openclaw (6,315 files) — 18 issues closed — 10 contributors</div>
     \\    <div class="stat-row">
     \\      <div class="stat-cell"><div class="stat-label">Index time</div><div class="stat-val">10<span class="unit">×</span></div><div class="stat-delta">3.6s → 346ms</div></div>
     \\      <div class="stat-cell"><div class="stat-label">Cold RSS</div><div class="stat-val">83<span class="unit">%</span></div><div class="stat-delta">~3.5GB → ~580MB</div></div>
     \\      <div class="stat-cell"><div class="stat-label">Warm RSS</div><div class="stat-val">92<span class="unit">%</span></div><div class="stat-delta">~1.9GB → ~150MB</div></div>
-    \\      <div class="stat-cell"><div class="stat-label">vs ripgrep</div><div class="stat-val">1000<span class="unit">×</span></div><div class="stat-delta">0.5ms vs 500ms</div></div>
+    \\      <div class="stat-cell"><div class="stat-label">vs ripgrep</div><div class="stat-val">8<span class="unit">×</span></div><div class="stat-delta">23ms vs 183ms</div></div>
     \\    </div>
     \\  </div>
     \\</div>
@@ -183,9 +183,9 @@ const html =
     \\        <div style="font-family:var(--mono);font-size:12px;color:rgba(255,255,255,0.4);margin-top:16px;">1.9GB → 150MB steady-state</div>
     \\      </div>
     \\      <div style="background:rgba(5,150,105,0.08);border:1px solid rgba(5,150,105,0.2);border-radius:16px;padding:40px 32px;">
-    \\        <div style="font-family:var(--sans);font-size:clamp(48px,8vw,72px);font-weight:800;letter-spacing:-0.04em;color:var(--accent-light);line-height:1;">1000<span style="font-size:0.5em;opacity:0.6">×</span></div>
+    \\        <div style="font-family:var(--sans);font-size:clamp(48px,8vw,72px);font-weight:800;letter-spacing:-0.04em;color:var(--accent-light);line-height:1;">8<span style="font-size:0.5em;opacity:0.6">×</span></div>
     \\        <div style="font-family:var(--sans);font-size:24px;font-weight:700;color:#fff;margin-top:8px;">faster than ripgrep.</div>
-    \\        <div style="font-family:var(--mono);font-size:12px;color:rgba(255,255,255,0.4);margin-top:16px;">0.5ms vs 500ms (trigram vs disk)</div>
+    \\        <div style="font-family:var(--mono);font-size:12px;color:rgba(255,255,255,0.4);margin-top:16px;">23ms vs 183ms (MCP vs disk)</div>
     \\      </div>
     \\    </div>
     \\  </div>
@@ -193,29 +193,30 @@ const html =
     \\<div class="section" style="background:var(--bg2);color:var(--text);">
     \\  <div class="section-inner">
     \\    <div class="section-eyebrow" style="color:var(--accent);">Real-world benchmark</div>
-    \\    <div class="section-heading">codedb vs ripgrep vs grep</div>
-    \\    <p class="section-sub" style="color:var(--muted);">MCP/CLI search for "manager" on openclaw (6,315 files). codedb uses warm trigram index; rg/grep scan from cold disk. Apple M4 Pro, median of 5 runs.</p>
+    \\    <div class="section-heading">codedb vs fff-mcp vs ripgrep vs grep</div>
+    \\    <p class="section-sub" style="color:var(--muted);">MCP search for "manager" on openclaw (6,315 files). Warm indices (codedb/fff) vs cold disk scan (rg/grep). Apple M4 Pro, median of 5 runs.</p>
     \\    <table class="bench-table" style="color:var(--text);">
-    \\      <thead><tr><th>Tool</th><th>Search time</th><th>Results</th><th>Recall</th><th>vs codedb</th></tr></thead>
+    \\      <thead><tr><th>Tool</th><th>MCP latency</th><th>Results</th><th>Approach</th><th>vs codedb</th></tr></thead>
     \\      <tbody>
-    \\        <tr><td><strong>codedb v0.2.57</strong> (Zig)</td><td class="fast">~500 µs</td><td class="fast">20 (limited)</td><td class="fast">0.7%</td><td class="fast">baseline</td></tr>
-    \\        <tr><td>ripgrep 15.1</td><td>~500 ms</td><td>2,959</td><td>99.5%</td><td>1,000× slower</td></tr>
-    \\        <tr><td>GNU grep</td><td>~1,500 ms</td><td>2,973</td><td>100%</td><td>3,000× slower</td></tr>
+    \\        <tr><td>fff-mcp 0.5.2 (Rust)</td><td class="fast">~4 ms</td><td class="fast">50 (frecency)</td><td>Smart ranking</td><td class="fast">6× faster</td></tr>
+    \\        <tr><td><strong>codedb v0.2.57</strong> (Zig)</td><td>~23 ms</td><td>20 (limited)</td><td>First matches</td><td>baseline</td></tr>
+    \\        <tr><td>ripgrep 15.1</td><td>~183 ms</td><td>2,959 (all)</td><td>Disk scan</td><td>8× slower</td></tr>
+    \\        <tr><td>GNU grep</td><td>~1,350 ms</td><td>2,973 (all)</td><td>Disk scan</td><td>59× slower</td></tr>
     \\      </tbody>
     \\    </table>
-    \\    <div style="background:var(--dark3);border-radius:8px;padding:20px;margin:24px 0;border-left:3px solid var(--red);">
-    \\      <h4 style="color:#fff;font-size:14px;margin-bottom:8px;">⚠️ Why fff-mcp is excluded</h4>
+    \\    <div style="background:var(--dark3);border-radius:8px;padding:20px;margin:24px 0;border-left:3px solid var(--accent);">
+    \\      <h4 style="color:#fff;font-size:14px;margin-bottom:8px;">Why both fff and codedb win</h4>
     \\      <p style="color:rgba(255,255,255,0.5);font-size:12px;font-family:var(--mono);line-height:1.6;margin:0;">
-    \\        fff-mcp 0.5.2 returned <strong>0 results</strong> for all tested queries ("manager", "config", "server", "plugin", "error") 
-    \\        despite claiming 6ms latency. Its frecency-based "smart ranking" prioritizes perceived quality over recall, 
-    \\        making it unsuitable for exhaustive code search. Speed is meaningless without results.
+    \\        <strong>fff-mcp</strong>: Frecency-ranked results (frequent + recent + git-dirty). Fastest for interactive use. Smart defaults.<br>
+    \\        <strong>codedb</strong>: Predictable first-N matches. Full index control. 16 MCP tools including deps/graph/snapshots.<br>
+    \\        Both destroy disk scanners. Pick your philosophy.
     \\      </p>
     \\    </div>
     \\    <div class="chart-row">
     \\      <div class="chart-card"><h3>Search latency (ms)</h3><canvas id="searchChart"></canvas></div>
     \\      <div class="chart-card"><h3>Results returned (log scale)</h3><canvas id="resultsChart"></canvas></div>
     \\    </div>
-    \\    <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:16px;">Note: codedb internal trigram search ~500µs. Wall-clock times (CLI/MCP overhead) are higher but the indexed lookup is 1000× faster than disk scan. fff-mcp excluded due to 0% recall.</p>
+    \\    <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:16px;">Note: All tools tested via JSON-RPC MCP. fff-mcp requires 2s warmup for indexing. codedb returns first 20 matches; fff returns frecency-ranked 50. Both valid approaches.</p>
     \\  </div>
     \\</div>
     \\<div class="timeline-section" style="background:var(--dark2);color:#fff;">
@@ -278,12 +279,12 @@ const html =
     \\  });
     \\  new Chart(document.getElementById('searchChart'), {
     \\    type: 'bar',
-    \\    data: { labels: ['codedb', 'ripgrep', 'grep'], datasets: [{ data: [0.5, 500, 1500], backgroundColor: [green, '#9ca3af', gray], borderRadius: 4, barThickness: 32 }] },
-    \\    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { type: 'logarithmic', title: { display: true, text: 'ms (log scale)' }, grid: { color: '#f3f4f6' }, ticks: { callback: function(v) { return v < 1 ? v*1000 + 'µs' : v + 'ms'; } } }, y: { grid: { display: false }, ticks: { font: { family: "'Geist', sans-serif", size: 13, weight: 600 }, color: '#111' } } } }
+    \\    data: { labels: ['fff-mcp', 'codedb', 'ripgrep', 'grep'], datasets: [{ data: [4, 23, 183, 1350], backgroundColor: [blue, green, '#9ca3af', gray], borderRadius: 4, barThickness: 32 }] },
+    \\    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { title: { display: true, text: 'ms' }, grid: { color: '#f3f4f6' } }, y: { grid: { display: false }, ticks: { font: { family: "'Geist', sans-serif", size: 13, weight: 600 }, color: '#111' } } } }
     \\  });
     \\  new Chart(document.getElementById('resultsChart'), {
     \\    type: 'bar',
-    \\    data: { labels: ['codedb (50 limit)', 'ripgrep', 'grep'], datasets: [{ data: [20, 2959, 2973], backgroundColor: [green, '#9ca3af', gray], borderRadius: 4, barThickness: 32 }] },
+    \\    data: { labels: ['codedb (20)', 'fff (50)', 'ripgrep (2959)', 'grep (2973)'], datasets: [{ data: [20, 50, 2959, 2973], backgroundColor: [green, blue, '#9ca3af', gray], borderRadius: 4, barThickness: 32 }] },
     \\    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { type: 'logarithmic', title: { display: true, text: 'results (log scale)' }, grid: { color: '#f3f4f6' } }, y: { grid: { display: false }, ticks: { font: { family: "'Geist', sans-serif", size: 13, weight: 600 }, color: '#111' } } } }
     \\  });
     \\  document.getElementById('burger')?.addEventListener('click', function() { this.classList.toggle('open'); document.getElementById('nav-links').classList.toggle('open'); });
