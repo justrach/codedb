@@ -6,7 +6,7 @@
     .dependencies = .{
         .mcp_zig = .{
             .url = "https://github.com/justrach/mcp-zig/archive/refs/heads/main.tar.gz",
-            .hash = "mcp_zig-0.2.0-_PilzEQOAQDkPuk0L_bUFzMinJbl7uGyZsEBHUKOjzRx",
+            .hash = "mcp_zig-0.2.0-_PilzLpHAQB8fMQDxahVhjcYNSe-U9y_R4mNZRB1AzSN",
         },
     },
     .paths = .{
