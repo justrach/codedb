@@ -20,6 +20,7 @@ pub const SymbolResult = @import("explore.zig").SymbolResult;
 pub const SearchResult = @import("explore.zig").SearchResult;
 pub const Language = @import("explore.zig").Language;
 pub const DependencyGraph = @import("explore.zig").DependencyGraph;
+pub const SymbolLocation = @import("explore.zig").SymbolLocation;
 
 pub const WordIndex = @import("index.zig").WordIndex;
 pub const TrigramIndex = @import("index.zig").TrigramIndex;

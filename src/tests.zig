@@ -30,6 +30,7 @@ const isCommentOrBlank = explore.isCommentOrBlank;
 const Language = explore.Language;
 const SymbolKind = explore.SymbolKind;
 const DependencyGraph = explore.DependencyGraph;
+const SymbolLocation = explore.SymbolLocation;
 const mcp_mod = @import("mcp.zig");
 const main_mod = @import("main.zig");
 const nuke_mod = @import("nuke.zig");
@@ -6437,4 +6438,102 @@ test "dep-graph: Explorer transitive dependents" {
         testing.allocator.free(blast);
     }
     try testing.expectEqual(@as(usize, 2), blast.len);
+}
+
+// ── Symbol index tests ─────────────────────────────────────
+
+test "symbol-index: O(1) findSymbol via symbol_index" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("math.zig", "pub fn add(a: i32, b: i32) i32 { return a + b; }\npub fn subtract(a: i32, b: i32) i32 { return a - b; }\n");
+    try explorer.indexFile("utils.zig", "pub fn add(x: f64, y: f64) f64 { return x + y; }\npub fn format() void {}\n");
+
+    // findSymbol should return first match via index
+    const result = try explorer.findSymbol("add", testing.allocator);
+    try testing.expect(result != null);
+    const r = result.?;
+    defer {
+        testing.allocator.free(r.path);
+        testing.allocator.free(r.symbol.name);
+        if (r.symbol.detail) |d| testing.allocator.free(d);
+    }
+    try testing.expectEqualStrings("add", r.symbol.name);
+
+    // findAllSymbols should return both
+    const all = try explorer.findAllSymbols("add", testing.allocator);
+    defer {
+        for (all) |s| {
+            testing.allocator.free(s.path);
+            testing.allocator.free(s.symbol.name);
+            if (s.symbol.detail) |d| testing.allocator.free(d);
+        }
+        testing.allocator.free(all);
+    }
+    try testing.expectEqual(@as(usize, 2), all.len);
+}
+
+test "symbol-index: removeFile cleans symbol_index" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("a.zig", "pub fn unique_func() void {}");
+    const before = try explorer.findSymbol("unique_func", testing.allocator);
+    try testing.expect(before != null);
+    testing.allocator.free(before.?.path);
+    testing.allocator.free(before.?.symbol.name);
+
+    explorer.removeFile("a.zig");
+
+    const after = try explorer.findSymbol("unique_func", testing.allocator);
+    try testing.expect(after == null);
+}
+
+test "symbol-index: re-index updates symbol_index" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("a.zig", "pub fn old_name() void {}");
+    const r1 = try explorer.findSymbol("old_name", testing.allocator);
+    try testing.expect(r1 != null);
+    testing.allocator.free(r1.?.path);
+    testing.allocator.free(r1.?.symbol.name);
+
+    // Re-index same file with different content
+    try explorer.indexFile("a.zig", "pub fn new_name() void {}");
+    const r2 = try explorer.findSymbol("old_name", testing.allocator);
+    try testing.expect(r2 == null);
+
+    const r3 = try explorer.findSymbol("new_name", testing.allocator);
+    try testing.expect(r3 != null);
+    testing.allocator.free(r3.?.path);
+    testing.allocator.free(r3.?.symbol.name);
+}
+
+// ── searchInContent incremental line counting test ─────────
+
+test "search: line numbers correct with incremental counting" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // File with target on specific lines
+    const content = "line1\nline2\ntarget_here\nline4\nline5\ntarget_here\nline7\n";
+    try explorer.indexFile("test.zig", content);
+
+    const results = try explorer.searchContent("target_here", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqual(@as(u32, 3), results[0].line_num);
+    try testing.expectEqual(@as(u32, 6), results[1].line_num);
 }

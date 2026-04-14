@@ -364,10 +364,18 @@ pub const DependencyGraph = struct {
     }
 };
 
+pub const SymbolLocation = struct {
+    path: []const u8,
+    kind: SymbolKind,
+    line_start: u32,
+    line_end: u32,
+};
+
 pub const Explorer = struct {
     outlines: std.StringHashMap(FileOutline),
     dep_graph: DependencyGraph,
     contents: std.StringHashMap([]const u8),
+    symbol_index: std.StringHashMap(std.ArrayList(SymbolLocation)),
     word_index: WordIndex,
     trigram_index: AnyTrigramIndex,
     sparse_ngram_index: SparseNgramIndex,
@@ -390,6 +398,7 @@ pub const Explorer = struct {
             .outlines = std.StringHashMap(FileOutline).init(allocator),
             .dep_graph = DependencyGraph.init(allocator),
             .contents = std.StringHashMap([]const u8).init(allocator),
+            .symbol_index = std.StringHashMap(std.ArrayList(SymbolLocation)).init(allocator),
             .word_index = WordIndex.init(allocator),
             .trigram_index = .{ .heap = TrigramIndex.init(allocator) },
             .sparse_ngram_index = SparseNgramIndex.init(allocator),
@@ -407,6 +416,12 @@ pub const Explorer = struct {
         self.outlines.deinit();
 
         self.dep_graph.deinit();
+
+        var sym_iter = self.symbol_index.iterator();
+        while (sym_iter.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.symbol_index.deinit();
 
         var content_iter = self.contents.iterator();
         while (content_iter.next()) |entry| {
@@ -559,6 +574,7 @@ pub const Explorer = struct {
         }
 
         try self.rebuildDepsFor(stable_path, &persistent_outline);
+        self.rebuildSymbolIndexFor(stable_path, &persistent_outline);
 
         outline_gop.value_ptr.* = persistent_outline;
         if (should_cache) {
@@ -1005,6 +1021,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
             self.word_index_generation +%= 1;
         }
         self.dep_graph.remove(path);
+        self.removeSymbolIndexFor(path);
         if (self.contents.getPtr(path)) |content| {
             self.allocator.free(content.*);
             _ = self.contents.remove(path);
@@ -1163,6 +1180,34 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
+        // O(1) lookup via symbol_index
+        if (self.symbol_index.get(name)) |locs| {
+            if (locs.items.len > 0) {
+                const loc = locs.items[0];
+                // Fetch detail from outline
+                var detail: ?[]const u8 = null;
+                if (self.outlines.getPtr(loc.path)) |outline| {
+                    for (outline.symbols.items) |sym| {
+                        if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, name)) {
+                            detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
+                            break;
+                        }
+                    }
+                }
+                return .{
+                    .path = try allocator.dupe(u8, loc.path),
+                    .symbol = .{
+                        .name = try allocator.dupe(u8, name),
+                        .kind = loc.kind,
+                        .line_start = loc.line_start,
+                        .line_end = loc.line_end,
+                        .detail = detail,
+                    },
+                };
+            }
+        }
+
+        // Fallback: scan outlines (handles edge cases during index build)
         var iter = self.outlines.iterator();
         while (iter.next()) |entry| {
             for (entry.value_ptr.symbols.items) |sym| {
@@ -1189,6 +1234,34 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
 
         var result_list: std.ArrayList(SymbolResult) = .{};
         errdefer result_list.deinit(allocator);
+
+        // O(1) lookup via symbol_index
+        if (self.symbol_index.get(name)) |locs| {
+            for (locs.items) |loc| {
+                var detail: ?[]const u8 = null;
+                if (self.outlines.getPtr(loc.path)) |outline| {
+                    for (outline.symbols.items) |sym| {
+                        if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, name)) {
+                            detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
+                            break;
+                        }
+                    }
+                }
+                try result_list.append(allocator, .{
+                    .path = try allocator.dupe(u8, loc.path),
+                    .symbol = .{
+                        .name = try allocator.dupe(u8, name),
+                        .kind = loc.kind,
+                        .line_start = loc.line_start,
+                        .line_end = loc.line_end,
+                        .detail = detail,
+                    },
+                });
+            }
+            return result_list.toOwnedSlice(allocator);
+        }
+
+        // Fallback: scan outlines
         var iter = self.outlines.iterator();
         while (iter.next()) |entry| {
             for (entry.value_ptr.symbols.items) |sym| {
@@ -2340,6 +2413,48 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         try self.dep_graph.setDeps(path, deps);
     }
 
+    fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOutline) void {
+        self.removeSymbolIndexFor(path);
+        for (outline.symbols.items) |sym| {
+            if (sym.kind == .import or sym.kind == .comment_block) continue;
+            const gop = self.symbol_index.getOrPut(sym.name) catch continue;
+            if (!gop.found_existing) {
+                gop.value_ptr.* = std.ArrayList(SymbolLocation){};
+            }
+            gop.value_ptr.append(self.allocator, .{
+                .path = path,
+                .kind = sym.kind,
+                .line_start = sym.line_start,
+                .line_end = sym.line_end,
+            }) catch {};
+        }
+    }
+
+    fn removeSymbolIndexFor(self: *Explorer, path: []const u8) void {
+        var to_remove: std.ArrayList([]const u8) = .{};
+        defer to_remove.deinit(self.allocator);
+
+        var iter = self.symbol_index.iterator();
+        while (iter.next()) |entry| {
+            var list = entry.value_ptr;
+            var i: usize = 0;
+            while (i < list.items.len) {
+                if (std.mem.eql(u8, list.items[i].path, path)) {
+                    _ = list.orderedRemove(i);
+                } else {
+                    i += 1;
+                }
+            }
+            if (list.items.len == 0) {
+                list.deinit(self.allocator);
+                to_remove.append(self.allocator, entry.key_ptr.*) catch {};
+            }
+        }
+        for (to_remove.items) |key| {
+            _ = self.symbol_index.remove(key);
+        }
+    }
+
     /// Return the source body for a symbol given its file path and line range.
     /// Caller owns the returned slice.
     pub fn getSymbolBody(self: *Explorer, path: []const u8, line_start: u32, line_end: u32, allocator: std.mem.Allocator) !?[]u8 {
@@ -2354,31 +2469,45 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
     /// Must be called while holding at least a shared lock.
     fn findEnclosingSymbolLocked(self: *Explorer, path: []const u8, line_num: u32) ?Symbol {
         const outline = self.outlines.getPtr(path) orelse return null;
+        const symbols = outline.symbols.items;
+        if (symbols.len == 0) return null;
+
+        // Binary search: find rightmost symbol with line_start <= line_num.
+        // Symbols are stored in source order (line_start ascending).
+        var lo: usize = 0;
+        var hi: usize = symbols.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (symbols[mid].line_start <= line_num) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        // lo is the insertion point; candidates are symbols[0..lo] with line_start <= line_num.
+
+        // Check candidates in reverse for tightest enclosing (line_end >= line_num).
         var best: ?Symbol = null;
         var best_span: u32 = std.math.maxInt(u32);
-        for (outline.symbols.items) |sym| {
-            if (sym.line_start <= line_num and sym.line_end >= line_num) {
+        var i: usize = lo;
+        while (i > 0) {
+            i -= 1;
+            const sym = symbols[i];
+            if (sym.line_end >= line_num) {
                 const span = sym.line_end - sym.line_start;
                 if (span < best_span) {
                     best = sym;
                     best_span = span;
                 }
             }
+            // Once we're past a reasonable gap, stop scanning backwards
+            if (line_num - sym.line_start > 500 and best != null) break;
         }
         if (best != null) return best;
-        // Fallback: nearest preceding symbol
-        var nearest: ?Symbol = null;
-        var nearest_dist: u32 = std.math.maxInt(u32);
-        for (outline.symbols.items) |sym| {
-            if (sym.line_start <= line_num) {
-                const dist = line_num - sym.line_start;
-                if (dist < nearest_dist) {
-                    nearest = sym;
-                    nearest_dist = dist;
-                }
-            }
-        }
-        return nearest;
+
+        // Fallback: nearest preceding symbol (already at the right position from binary search)
+        if (lo > 0) return symbols[lo - 1];
+        return null;
     }
 
     pub const ScopedSearchResult = struct {
@@ -2566,30 +2695,40 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
 fn searchInContent(path: []const u8, content: []const u8, query: []const u8, allocator: std.mem.Allocator, max_per_file: usize, max_results: usize, result_list: *std.ArrayList(SearchResult)) !void {
     if (query.len == 0 or content.len == 0) return;
 
-    // Scan the whole buffer for matches, extract line info only on hit.
     const first_lower: u8 = if (query[0] >= 'A' and query[0] <= 'Z') query[0] + 32 else query[0];
     const first_upper: u8 = if (query[0] >= 'a' and query[0] <= 'z') query[0] - 32 else query[0];
     var file_hits: usize = 0;
     var pos: usize = 0;
 
+    // Track line number incrementally — O(1) per match instead of O(pos).
+    var current_line: u32 = 1;
+    var current_line_start: usize = 0;
+
     while (pos + query.len <= content.len) {
-        // Fast first-byte scan to find potential match positions.
         const c = content[pos];
         if (c != first_lower and c != first_upper) {
             pos += 1;
             continue;
         }
 
-        // Check if full query matches at this position.
         if (!matchAtCaseInsensitive(content, pos, query)) {
             pos += 1;
             continue;
         }
 
-        // Match found — extract line boundaries and line number.
-        const line_start = if (std.mem.lastIndexOfScalar(u8, content[0..pos], '\n')) |nl| nl + 1 else 0;
+        // Advance line counter from current_line_start to pos.
+        // Only counts newlines in the gap since last match — O(gap) not O(pos).
+        while (current_line_start < pos) {
+            if (std.mem.indexOfScalarPos(u8, content, current_line_start, '\n')) |nl| {
+                if (nl < pos) {
+                    current_line += 1;
+                    current_line_start = nl + 1;
+                } else break;
+            } else break;
+        }
+
+        const line_start = current_line_start;
         const line_end = if (std.mem.indexOfScalarPos(u8, content, pos, '\n')) |nl| nl else content.len;
-        const line_num: u32 = @intCast(std.mem.count(u8, content[0..line_start], "\n") + 1);
 
         const line_text = try allocator.dupe(u8, content[line_start..line_end]);
         errdefer allocator.free(line_text);
@@ -2597,13 +2736,15 @@ fn searchInContent(path: []const u8, content: []const u8, query: []const u8, all
         errdefer allocator.free(path_copy);
         try result_list.append(allocator, .{
             .path = path_copy,
-            .line_num = line_num,
+            .line_num = current_line,
             .line_text = line_text,
         });
         file_hits += 1;
         if (file_hits >= max_per_file or result_list.items.len >= max_results) return;
 
-        // Skip to next line to avoid duplicate matches on the same line.
+        // Skip to next line.
+        current_line += 1;
+        current_line_start = line_end + 1;
         pos = line_end + 1;
     }
 }
