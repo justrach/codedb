@@ -562,8 +562,21 @@ fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
         const obj = item.object;
         const uri_raw = mcpj.getStr(&obj, "uri") orelse continue;
         const name_raw = mcpj.getStr(&obj, "name") orelse "";
-        // Strip file:// prefix for policy check
-        const path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+        // Strip file:// or file://localhost prefix
+        const stripped = if (std.mem.startsWith(u8, uri_raw, "file://localhost/"))
+            uri_raw["file://localhost".len..]
+        else if (std.mem.startsWith(u8, uri_raw, "file:///"))
+            uri_raw["file://".len..]
+        else if (std.mem.startsWith(u8, uri_raw, "file://"))
+            uri_raw["file://".len..]
+        else
+            uri_raw;
+        // Canonicalize to resolve symlinks and normalize
+        var canon_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = std.fs.cwd().realpath(stripped, &canon_buf) catch {
+            std.log.warn("codedb mcp: cannot resolve root \"{s}\"", .{uri_raw});
+            continue;
+        };
         if (!root_policy.isIndexableRoot(path)) {
             std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
             continue;
@@ -796,8 +809,8 @@ fn dispatch(
         .codedb_word => handleWord(alloc, args, out, ctx_explorer),
         .codedb_hot => handleHot(alloc, args, out, ctx_store, ctx_explorer),
         .codedb_deps => handleDeps(alloc, args, out, ctx_explorer),
-        .codedb_read => handleRead(alloc, args, out, ctx_explorer),
-        .codedb_edit => handleEdit(alloc, args, out, ctx_store, ctx_explorer, agents),
+        .codedb_read => handleRead(alloc, args, out, ctx_explorer, effective_project),
+        .codedb_edit => handleEdit(alloc, args, out, ctx_store, ctx_explorer, agents, effective_project),
         .codedb_changes => handleChanges(alloc, args, out, ctx_store),
         .codedb_status => handleStatus(alloc, out, ctx_store, ctx_explorer),
         .codedb_snapshot => handleSnapshot(alloc, out, ctx_explorer, ctx_store),
@@ -1079,7 +1092,7 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     }
 }
 
-fn handleRead(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+fn handleRead(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_path: []const u8) void {
     const path = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path' argument") catch {};
         return;
@@ -1100,8 +1113,13 @@ fn handleRead(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     const content = if (cached) |owned_content|
         owned_content
     else blk: {
-        // Fall back to disk read
-        const file = std.fs.cwd().openFile(path, .{}) catch {
+        // Fall back to disk read — build absolute path so secondary roots work
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ project_path, path }) catch {
+            out.appendSlice(alloc, "error: path too long") catch {};
+            return;
+        };
+        const file = std.fs.cwd().openFile(full_path, .{}) catch {
             out.appendSlice(alloc, "error: file not found: ") catch {};
             out.appendSlice(alloc, path) catch {};
             return;
@@ -1152,7 +1170,7 @@ fn handleRead(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     }
 }
 
-fn handleEdit(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, agents: *AgentRegistry) void {
+fn handleEdit(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, agents: *AgentRegistry, project_path: []const u8) void {
     const path = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path'") catch {};
         return;
@@ -1182,12 +1200,20 @@ fn handleEdit(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     const range_end = getInt(args, "range_end");
     const after = getInt(args, "after");
 
+    // Build absolute path so secondary roots resolve correctly.
+    // edit.zig uses cwd().openFile(req.path) — absolute paths bypass cwd.
+    const full_path = std.fmt.allocPrint(alloc, "{s}/{s}", .{ project_path, path }) catch {
+        out.appendSlice(alloc, "error: alloc failed for path") catch {};
+        return;
+    };
+    defer alloc.free(full_path);
+
     // Use agent 1 (the __filesystem__ agent registered at startup).
     // TODO: agent_id is hardcoded to 1 — two MCP clients share the same agent_id and
     // could both acquire locks on different files without conflict, but cannot detect
     // concurrent edits to the same file from separate connections.
     var req = edit_mod.EditRequest{
-        .path = path,
+        .path = full_path,
         .agent_id = 1,
         .op = op,
         .content = content,

@@ -92,6 +92,17 @@ pub const LiveRoot = struct {
             .owned_store = Store.init(alloc),
             .alloc = alloc,
         };
+        errdefer {
+            // Signal any spawned threads to stop and wait for them.
+            self.shutdown.store(true, .release);
+            if (self.watch_thread) |t| t.join();
+            if (self.scan_thread) |t| t.join();
+            if (self.queue) |q| alloc.destroy(q);
+            var exp = &self.owned_explorer.?;
+            exp.deinit();
+            var st = &self.owned_store.?;
+            st.deinit();
+        }
 
         // Set root dir on the explorer so relative file opens work.
         self.explorer().setRoot(duped_path);
