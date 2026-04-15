@@ -20,6 +20,8 @@ const telemetry_mod = @import("telemetry.zig");
 const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
 const release_info = @import("release_info.zig");
+const live_root = @import("live_root.zig");
+const LiveRootManager = live_root.LiveRootManager;
 // ── Project cache ────────────────────────────────────────────────────────────
 
 const ProjectCtx = struct {
@@ -242,10 +244,12 @@ const ProjectCache = struct {
 
 pub const BenchContext = struct {
     cache: ProjectCache,
+    root_mgr: *LiveRootManager,
 
-    pub fn init(alloc: std.mem.Allocator, default_path: []const u8) BenchContext {
+    pub fn init(alloc: std.mem.Allocator, default_path: []const u8, root_mgr: *LiveRootManager) BenchContext {
         return .{
             .cache = ProjectCache.init(alloc, default_path),
+            .root_mgr = root_mgr,
         };
     }
 
@@ -263,7 +267,7 @@ pub const BenchContext = struct {
         explorer: *Explorer,
         agents: *AgentRegistry,
     ) void {
-        dispatch(alloc, tool, args, out, store, explorer, agents, &self.cache);
+        dispatch(alloc, tool, args, out, store, explorer, agents, &self.cache, self.cache.default_path, &.{}, self.root_mgr);
     }
 
     pub fn runToolCall(
@@ -281,7 +285,7 @@ pub const BenchContext = struct {
         defer out.deinit(alloc);
 
         const t0 = std.time.nanoTimestamp();
-        dispatch(alloc, tool, args, &out, store, explorer, agents, &self.cache);
+        dispatch(alloc, tool, args, &out, store, explorer, agents, &self.cache, self.cache.default_path, &.{}, self.root_mgr);
         const elapsed = std.time.nanoTimestamp() - t0;
 
         const is_error = std.mem.startsWith(u8, out.items, "error:");
@@ -384,6 +388,12 @@ pub const idle_timeout_ms: i64 = 10 * 60 * 1000; // 10 minutes — allows long d
 
 // ── Session state for MCP protocol ──────────────────────────────────────────
 
+const SessionRoot = struct {
+    uri: []u8,
+    name: []u8,
+    path: []u8, // normalized filesystem path (decoded from file:// URI)
+};
+
 const Session = struct {
     alloc: std.mem.Allocator,
     stdout: std.fs.File,
@@ -392,12 +402,14 @@ const Session = struct {
     client_roots_list_changed: bool = false,
     client_name: ?[]const u8 = null,
     pending_roots_id: ?i64 = null,
-    roots: std.ArrayList(Root) = .empty,
+    roots: std.ArrayList(SessionRoot) = .empty,
+    root_mgr: ?*LiveRootManager = null,
 
     fn freeRoots(self: *Session) void {
         for (self.roots.items) |r| {
             self.alloc.free(r.uri);
             self.alloc.free(r.name);
+            self.alloc.free(r.path);
         }
         self.roots.clearRetainingCapacity();
     }
@@ -415,6 +427,7 @@ pub fn run(
     agents: *AgentRegistry,
     default_path: []const u8,
     telem: *telemetry_mod.Telemetry,
+    root_mgr: *LiveRootManager,
 ) void {
     const stdout = std.fs.File.stdout();
     const stdin = std.fs.File.stdin();
@@ -426,6 +439,7 @@ pub fn run(
     var session = Session{
         .alloc = alloc,
         .stdout = stdout,
+        .root_mgr = root_mgr,
     };
     defer session.deinit();
 
@@ -478,7 +492,7 @@ pub fn run(
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) writeResult(alloc, stdout, id, tools_list);
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(alloc, root, stdout, id, store, explorer, agents, &cache, telem);
+            handleCall(alloc, root, stdout, id, store, explorer, agents, &cache, telem, default_path, session.roots.items, root_mgr);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
         } else {
@@ -559,11 +573,27 @@ fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
             s.alloc.free(uri);
             continue;
         };
-        s.roots.append(s.alloc, .{ .uri = uri, .name = name }) catch {
+        const fs_path = s.alloc.dupe(u8, path) catch {
             s.alloc.free(uri);
             s.alloc.free(name);
             continue;
         };
+        s.roots.append(s.alloc, .{ .uri = uri, .name = name, .path = fs_path }) catch {
+            s.alloc.free(uri);
+            s.alloc.free(name);
+            s.alloc.free(fs_path);
+            continue;
+        };
+    }
+
+    // Sync live root manager with new workspace roots
+    if (s.root_mgr) |mgr| {
+        var paths: std.ArrayList([]const u8) = .{};
+        defer paths.deinit(s.alloc);
+        for (s.roots.items) |r| {
+            paths.append(s.alloc, r.path) catch continue;
+        }
+        mgr.syncRoots(paths.items);
     }
 }
 
@@ -592,6 +622,9 @@ fn handleCall(
     agents: *AgentRegistry,
     cache: *ProjectCache,
     telem: *telemetry_mod.Telemetry,
+    fallback_project: []const u8,
+    roots: []const SessionRoot,
+    root_mgr: *LiveRootManager,
 ) void {
     const is_notification = id == null;
 
@@ -625,7 +658,7 @@ fn handleCall(
     defer out.deinit(alloc);
 
     const t0 = std.time.nanoTimestamp();
-    dispatch(alloc, tool, args, &out, store, explorer, agents, cache);
+    dispatch(alloc, tool, args, &out, store, explorer, agents, cache, fallback_project, roots, root_mgr);
     const elapsed = std.time.nanoTimestamp() - t0;
 
     const is_error = std.mem.startsWith(u8, out.items, "error:");
@@ -689,6 +722,45 @@ fn handleCall(
     writeResult(alloc, stdout, id, result.items);
 }
 
+/// Resolve the effective project path for a tool call.
+/// Priority: explicit `project` arg > single workspace root > path-based root match > first root > fallback.
+fn resolveProjectPath(
+    args: *const std.json.ObjectMap,
+    fallback_project: []const u8,
+    roots: []const SessionRoot,
+) []const u8 {
+    // 1. Explicit project arg takes priority
+    if (getStr(args, "project")) |p| return p;
+
+    // 2. No workspace roots — use startup default
+    if (roots.len == 0) return fallback_project;
+
+    // 3. Single root — use it
+    if (roots.len == 1) return roots[0].path;
+
+    // 4. Multiple roots — try to match based on file path argument
+    if (getStr(args, "path")) |rel_path| {
+        if (isPathSafe(rel_path)) {
+            var match_count: usize = 0;
+            var matched_root: []const u8 = fallback_project;
+            for (roots) |r| {
+                // Check if the relative path exists under this root
+                var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const full = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ r.path, rel_path }) catch continue;
+                if (std.fs.cwd().openFile(full, .{})) |f| {
+                    f.close();
+                    match_count += 1;
+                    matched_root = r.path;
+                } else |_| {}
+            }
+            if (match_count == 1) return matched_root;
+        }
+    }
+
+    // 5. Fallback to first root
+    return roots[0].path;
+}
+
 fn dispatch(
     alloc: std.mem.Allocator,
     tool: Tool,
@@ -698,38 +770,43 @@ fn dispatch(
     default_explorer: *Explorer,
     agents: *AgentRegistry,
     cache: *ProjectCache,
+    fallback_project: []const u8,
+    roots: []const SessionRoot,
+    root_mgr: *LiveRootManager,
 ) void {
-    const project_path = getStr(args, "project");
-    const ctx = cache.get(project_path, default_explorer, default_store) catch |err| {
-        out.appendSlice(alloc, "error: failed to load project: ") catch {};
-        out.appendSlice(alloc, @errorName(err)) catch {};
-        return;
-    };
+    _ = default_store;
+    _ = default_explorer;
+
+    const effective_project = resolveProjectPath(args, fallback_project, roots);
+
+    // Use LiveRootManager for resolution — handles startup root and spawned roots
+    const live = root_mgr.resolve(effective_project);
+    const ctx_explorer = live.explorerPtr();
+    const ctx_store = live.storePtr();
 
     if (tool == .codedb_word) {
-        const effective_project = project_path orelse cache.default_path;
-        loadProjectWordIndexFromDiskIfPresent(ctx.explorer, effective_project, alloc);
+        loadProjectWordIndexFromDiskIfPresent(ctx_explorer, effective_project, alloc);
     }
 
     switch (tool) {
-        .codedb_tree => handleTree(alloc, out, ctx.explorer),
-        .codedb_outline => handleOutline(alloc, args, out, ctx.explorer),
-        .codedb_symbol => handleSymbol(alloc, args, out, ctx.explorer),
-        .codedb_search => handleSearch(alloc, args, out, ctx.explorer),
-        .codedb_word => handleWord(alloc, args, out, ctx.explorer),
-        .codedb_hot => handleHot(alloc, args, out, ctx.store, ctx.explorer),
-        .codedb_deps => handleDeps(alloc, args, out, ctx.explorer),
-        .codedb_read => handleRead(alloc, args, out, ctx.explorer),
-        .codedb_edit => handleEdit(alloc, args, out, default_store, default_explorer, agents),
-        .codedb_changes => handleChanges(alloc, args, out, default_store),
-        .codedb_status => handleStatus(alloc, out, ctx.store, ctx.explorer),
-        .codedb_snapshot => handleSnapshot(alloc, out, ctx.explorer, ctx.store),
-        .codedb_bundle => handleBundle(alloc, args, out, ctx.store, ctx.explorer, agents, cache),
+        .codedb_tree => handleTree(alloc, out, ctx_explorer),
+        .codedb_outline => handleOutline(alloc, args, out, ctx_explorer),
+        .codedb_symbol => handleSymbol(alloc, args, out, ctx_explorer),
+        .codedb_search => handleSearch(alloc, args, out, ctx_explorer),
+        .codedb_word => handleWord(alloc, args, out, ctx_explorer),
+        .codedb_hot => handleHot(alloc, args, out, ctx_store, ctx_explorer),
+        .codedb_deps => handleDeps(alloc, args, out, ctx_explorer),
+        .codedb_read => handleRead(alloc, args, out, ctx_explorer),
+        .codedb_edit => handleEdit(alloc, args, out, ctx_store, ctx_explorer, agents),
+        .codedb_changes => handleChanges(alloc, args, out, ctx_store),
+        .codedb_status => handleStatus(alloc, out, ctx_store, ctx_explorer),
+        .codedb_snapshot => handleSnapshot(alloc, out, ctx_explorer, ctx_store),
+        .codedb_bundle => handleBundle(alloc, args, out, ctx_store, ctx_explorer, agents, cache, fallback_project, roots, root_mgr),
         .codedb_remote => handleRemote(alloc, args, out),
         .codedb_projects => handleProjects(alloc, out),
         .codedb_index => handleIndex(alloc, args, out),
-        .codedb_find => handleFind(alloc, args, out, ctx.explorer),
-        .codedb_query => handleQuery(alloc, args, out, ctx.explorer, ctx.store),
+        .codedb_find => handleFind(alloc, args, out, ctx_explorer),
+        .codedb_query => handleQuery(alloc, args, out, ctx_explorer, ctx_store),
     }
 }
 
@@ -952,7 +1029,10 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
                 var result_list: std.ArrayList([]const u8) = .{};
                 for (deps) |dep| {
                     const d = alloc.dupe(u8, dep) catch continue;
-                    result_list.append(alloc, d) catch { alloc.free(d); continue; };
+                    result_list.append(alloc, d) catch {
+                        alloc.free(d);
+                        continue;
+                    };
                 }
                 results = result_list.toOwnedSlice(alloc) catch &.{};
             }
@@ -1208,6 +1288,9 @@ fn handleBundle(
     default_explorer: *Explorer,
     agents: *AgentRegistry,
     cache: *ProjectCache,
+    fallback_project: []const u8,
+    roots: []const SessionRoot,
+    root_mgr: *LiveRootManager,
 ) void {
     const ops_val = args.get("ops") orelse {
         out.appendSlice(alloc, "error: missing 'ops' argument") catch {};
@@ -1268,7 +1351,7 @@ fn handleBundle(
         var sub_out: std.ArrayList(u8) = .{};
         defer sub_out.deinit(alloc);
 
-        dispatch(alloc, tool, sub_args, &sub_out, default_store, default_explorer, agents, cache);
+        dispatch(alloc, tool, sub_args, &sub_out, default_store, default_explorer, agents, cache, fallback_project, roots, root_mgr);
 
         // Check size BEFORE appending to prevent blowout
         if (out.items.len + sub_out.items.len > 200 * 1024) {
@@ -1800,7 +1883,10 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
             }
         } else if (std.mem.eql(u8, op, "deps")) {
             // Expand file set by adding dependents/dependencies of current files
-            if (!have_set) { w.print("error: deps needs prior step\n", .{}) catch {}; return; }
+            if (!have_set) {
+                w.print("error: deps needs prior step\n", .{}) catch {};
+                return;
+            }
             const direction = getStr(step, "direction") orelse "imported_by";
             const transitive = getBool(step, "transitive");
             const max_depth_val: ?u32 = if (getInt(step, "max_depth")) |n| @intCast(@max(1, n)) else null;
@@ -1828,7 +1914,10 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                             var res: std.ArrayList([]const u8) = .{};
                             for (deps) |dep| {
                                 const d = alloc.dupe(u8, dep) catch continue;
-                                res.append(alloc, d) catch { alloc.free(d); continue; };
+                                res.append(alloc, d) catch {
+                                    alloc.free(d);
+                                    continue;
+                                };
                             }
                             deps_result = res.toOwnedSlice(alloc) catch &.{};
                             needs_free = true;
@@ -2139,7 +2228,6 @@ const getStr = mcpj.getStr;
 const getInt = mcpj.getInt;
 pub const getBool = mcpj.getBool;
 const eql = mcpj.eql;
-
 
 fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Value) void {
     if (id) |v| switch (v) {

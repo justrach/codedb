@@ -5,6 +5,7 @@ const AgentRegistry = @import("agent.zig").AgentRegistry;
 const watcher = @import("watcher.zig");
 const mcp = @import("mcp.zig");
 const telemetry = @import("telemetry.zig");
+const live_root = @import("live_root.zig");
 
 const ToolBench = struct {
     tool: []const u8,
@@ -77,7 +78,10 @@ pub fn main() !void {
 
     try watcher.initialScan(&store, &explorer, tmp_root, allocator, false);
 
-    var bench_ctx = mcp.BenchContext.init(allocator, tmp_root);
+    var root_mgr = live_root.LiveRootManager.init(allocator, tmp_root, &explorer, &store);
+    defer root_mgr.deinit();
+
+    var bench_ctx = mcp.BenchContext.init(allocator, tmp_root, &root_mgr);
     defer bench_ctx.deinit();
 
     var telem_off = telemetry.Telemetry{ .enabled = false };

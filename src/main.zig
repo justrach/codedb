@@ -7,6 +7,7 @@ const Explorer = @import("explore.zig").Explorer;
 const watcher = @import("watcher.zig");
 const server = @import("server.zig");
 const mcp_server = @import("mcp.zig");
+const live_root = @import("live_root.zig");
 const sty = @import("style.zig");
 const git_mod = @import("git.zig");
 const TrigramIndex = @import("index.zig").TrigramIndex;
@@ -643,7 +644,10 @@ fn mainImpl() !void {
 
         std.log.info("codedb mcp: root={s} files={d} data={s}", .{ abs_root, store.currentSeq(), data_dir });
 
-        mcp_server.run(allocator, &store, &explorer, &agents, abs_root, &telem);
+        var root_mgr = live_root.LiveRootManager.init(allocator, abs_root, &explorer, &store);
+        defer root_mgr.deinit();
+
+        mcp_server.run(allocator, &store, &explorer, &agents, abs_root, &telem, &root_mgr);
 
         shutdown.store(true, .release);
         if (scan_thread) |st| st.join();
