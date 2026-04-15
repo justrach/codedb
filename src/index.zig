@@ -134,36 +134,51 @@ pub const WordIndex = struct {
             line_num += 1;
             var tok = WordTokenizer{ .buf = line };
             while (tok.next()) |word| {
-                if (word.len < 2) continue; // skip single chars
+                if (word.len < 2) continue;
 
-                // Ensure word is in the global index
-                const gop = try self.index.getOrPut(word);
-                if (!gop.found_existing) {
-                    const duped_word = try self.allocator.dupe(u8, word);
-                    gop.key_ptr.* = duped_word;
-                    gop.value_ptr.* = .{};
-                }
+                const aa = words_arena.allocator();
 
-                if (gop.value_ptr.items.len > 0) {
-                    const last = gop.value_ptr.items[gop.value_ptr.items.len - 1];
-                    if (last.doc_id == doc_id and last.line_num == line_num) {
-                        // Avoid duplicate hits for repeated words on the same line.
-                        const wgop = try words_set.getOrPut(word);
-                        if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
-                        continue;
+                // Lowercase the full word for case-insensitive lookup.
+                const lower_word = try aa.alloc(u8, word.len);
+                for (word, 0..) |c, j| lower_word[j] = normalizeChar(c);
+
+                // Collect sub-tokens from identifier splitting (camelCase, snake_case, etc.)
+                var sub_toks: std.ArrayList([]const u8) = .{};
+                defer sub_toks.deinit(aa);
+                try splitIdentifier(word, &sub_toks, aa);
+
+                // Build combined list: [lower_word] ++ sub_toks
+                const all_len = 1 + sub_toks.items.len;
+                const all_toks = try aa.alloc([]const u8, all_len);
+                all_toks[0] = lower_word;
+                @memcpy(all_toks[1..], sub_toks.items);
+
+                for (all_toks) |token| {
+                    const gop = try self.index.getOrPut(token);
+                    if (!gop.found_existing) {
+                        const duped = try self.allocator.dupe(u8, token);
+                        gop.key_ptr.* = duped;
+                        gop.value_ptr.* = .{};
                     }
-                }
 
-                try gop.value_ptr.append(self.allocator, .{
-                    .doc_id = doc_id,
-                    .line_num = line_num,
-                });
+                    if (gop.value_ptr.items.len > 0) {
+                        const last = gop.value_ptr.items[gop.value_ptr.items.len - 1];
+                        if (last.doc_id == doc_id and last.line_num == line_num) {
+                            const wgop = try words_set.getOrPut(gop.key_ptr.*);
+                            if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
+                            continue;
+                        }
+                    }
 
-                // Track that this file contributed this word
-                const wgop = try words_set.getOrPut(word);
-                if (!wgop.found_existing) {
-                    // Point to the same key in the index (no extra alloc)
-                    wgop.key_ptr.* = gop.key_ptr.*;
+                    try gop.value_ptr.append(self.allocator, .{
+                        .doc_id = doc_id,
+                        .line_num = line_num,
+                    });
+
+                    const wgop = try words_set.getOrPut(gop.key_ptr.*);
+                    if (!wgop.found_existing) {
+                        wgop.key_ptr.* = gop.key_ptr.*;
+                    }
                 }
             }
         }
@@ -182,10 +197,15 @@ pub const WordIndex = struct {
     }
 
     /// Look up all hits for a word. O(1) lookup + O(hits) iteration.
+    /// Look up all hits for a word. O(1) lookup + O(hits) iteration.
+    /// Query is normalized to lowercase (all index keys are stored lowercase).
     pub fn search(self: *WordIndex, word: []const u8) []const WordHit {
-        if (self.index.get(word)) |hits| {
-            return hits.items;
-        }
+        var buf: [512]u8 = undefined;
+        const lower = if (word.len <= buf.len) blk: {
+            for (word, 0..) |c, i| buf[i] = normalizeChar(c);
+            break :blk buf[0..word.len];
+        } else word;
+        if (self.index.get(lower)) |hits| return hits.items;
         return &.{};
     }
 
@@ -239,7 +259,7 @@ pub const WordIndex = struct {
     };
 
     const DISK_MAGIC = [4]u8{ 'C', 'D', 'B', 'W' };
-    const DISK_FORMAT_VERSION: u16 = 1;
+    const DISK_FORMAT_VERSION: u16 = 2;
 
     pub fn writeToDisk(self: *WordIndex, dir_path: []const u8, git_head: ?[40]u8) !void {
         var file_table: std.ArrayList([]const u8) = .{};
@@ -341,7 +361,7 @@ pub const WordIndex = struct {
         if (data.len < 51) return null;
         if (!std.mem.eql(u8, data[0..4], &DISK_MAGIC)) return null;
         const version = std.mem.readInt(u16, data[4..6], .little);
-        if (version < 1 or version > DISK_FORMAT_VERSION) return null;
+        if (version != DISK_FORMAT_VERSION) return null;
         const file_count = std.mem.readInt(u32, data[6..10], .little);
 
         var file_paths = try allocator.alloc([]u8, file_count);
@@ -2300,6 +2320,55 @@ pub fn normalizeChar(c: u8) u8 {
     return if (c >= 'A' and c <= 'Z') c + 32 else c;
 }
 
+fn emitSubToken(seg: []const u8, out: *std.ArrayList([]const u8), arena: std.mem.Allocator) !void {
+    if (seg.len < 2) return;
+    const lower = try arena.alloc(u8, seg.len);
+    for (seg, 0..) |c, j| lower[j] = normalizeChar(c);
+    try out.append(arena, lower);
+}
+
+/// Split an identifier into lowercased sub-tokens.
+/// Handles: snake_case, camelCase, SCREAMING_CASE, HTTPHandler-style acronyms.
+/// Appends to `out`; strings are allocated from `arena`.
+pub fn splitIdentifier(token: []const u8, out: *std.ArrayList([]const u8), arena: std.mem.Allocator) !void {
+    if (token.len < 2) return;
+
+    var start: usize = 0;
+    var i: usize = 1;
+    while (i < token.len) : (i += 1) {
+        const c = token[i];
+        const prev = token[i - 1];
+        var split = false;
+
+        if (c == '_') {
+            try emitSubToken(token[start..i], out, arena);
+            start = i + 1;
+            continue;
+        }
+        if (prev == '_') continue;
+
+        // CamelCase: lowercase → uppercase boundary
+        if (c >= 'A' and c <= 'Z' and prev >= 'a' and prev <= 'z') split = true;
+
+        // Digit/letter transition
+        if (!split) {
+            const c_d = c >= '0' and c <= '9';
+            const p_d = prev >= '0' and prev <= '9';
+            if (c_d != p_d) split = true;
+        }
+
+        // Acronym end: HTTPHandler → HTTP|Handler
+        if (!split and c >= 'A' and c <= 'Z' and prev >= 'A' and prev <= 'Z') {
+            if (i + 1 < token.len and token[i + 1] >= 'a' and token[i + 1] <= 'z') split = true;
+        }
+
+        if (split) {
+            try emitSubToken(token[start..i], out, arena);
+            start = i;
+        }
+    }
+    try emitSubToken(token[start..token.len], out, arena);
+}
 // ── Sparse N-gram index ───────────────────────────────────────────────────────
 
 pub const MAX_NGRAM_LEN: usize = 16;

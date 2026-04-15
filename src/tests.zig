@@ -19,6 +19,7 @@ const writeFrequencyTable = @import("index.zig").writeFrequencyTable;
 const readFrequencyTable = @import("index.zig").readFrequencyTable;
 
 const WordTokenizer = @import("index.zig").WordTokenizer;
+const splitIdentifier = @import("index.zig").splitIdentifier;
 
 const version = @import("version.zig");
 const watcher = @import("watcher.zig");
@@ -6539,4 +6540,144 @@ test "search: line numbers correct with incremental counting" {
     try testing.expectEqual(@as(usize, 2), results.len);
     try testing.expectEqual(@as(u32, 3), results[0].line_num);
     try testing.expectEqual(@as(u32, 6), results[1].line_num);
+}
+
+// ── Identifier splitting tests ──────────────────────────────────────────────
+
+test "word-index: splitIdentifier snake_case" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var out: std.ArrayList([]const u8) = .{};
+    defer out.deinit(a);
+    try splitIdentifier("get_or_put", &out, a);
+
+    try testing.expectEqual(@as(usize, 3), out.items.len);
+    try testing.expectEqualStrings("get", out.items[0]);
+    try testing.expectEqualStrings("or", out.items[1]);
+    try testing.expectEqualStrings("put", out.items[2]);
+}
+
+test "word-index: splitIdentifier camelCase" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var out: std.ArrayList([]const u8) = .{};
+    defer out.deinit(a);
+    try splitIdentifier("validateToken", &out, a);
+
+    try testing.expectEqual(@as(usize, 2), out.items.len);
+    try testing.expectEqualStrings("validate", out.items[0]);
+    try testing.expectEqualStrings("token", out.items[1]);
+}
+
+test "word-index: splitIdentifier acronym (HTTPHandler)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var out: std.ArrayList([]const u8) = .{};
+    defer out.deinit(a);
+    try splitIdentifier("HTTPHandler", &out, a);
+
+    try testing.expectEqual(@as(usize, 2), out.items.len);
+    try testing.expectEqualStrings("http", out.items[0]);
+    try testing.expectEqualStrings("handler", out.items[1]);
+}
+
+test "word-index: splitIdentifier simple word emits itself" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var out: std.ArrayList([]const u8) = .{};
+    defer out.deinit(a);
+    try splitIdentifier("handler", &out, a);
+
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    try testing.expectEqualStrings("handler", out.items[0]);
+}
+
+test "word-index: sub-token search finds camelCase components" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("a.zig", "fn validateToken(x: u32) void {}");
+    try explorer.indexFile("b.zig", "fn processRequest() void {}");
+
+    // "validate" should find validateToken via sub-token splitting
+    const r1 = try explorer.searchContent("validate", testing.allocator, 10);
+    defer {
+        for (r1) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(r1);
+    }
+    try testing.expectEqual(@as(usize, 1), r1.len);
+    try testing.expectEqualStrings("a.zig", r1[0].path);
+
+    // "process" should find processRequest
+    const r2 = try explorer.searchContent("process", testing.allocator, 10);
+    defer {
+        for (r2) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(r2);
+    }
+    try testing.expectEqual(@as(usize, 1), r2.len);
+    try testing.expectEqualStrings("b.zig", r2[0].path);
+}
+
+test "word-index: sub-token search finds snake_case components" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("a.zig", "const http_handler = null;");
+
+    // "http" should find http_handler
+    const r1 = try explorer.searchContent("http", testing.allocator, 10);
+    defer {
+        for (r1) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(r1);
+    }
+    try testing.expect(r1.len >= 1);
+
+    // "handler" should find http_handler
+    const r2 = try explorer.searchContent("handler", testing.allocator, 10);
+    defer {
+        for (r2) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(r2);
+    }
+    try testing.expect(r2.len >= 1);
+}
+
+test "word-index: case-insensitive lookup finds exact identifiers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("a.zig", "fn validateToken() void {}");
+
+    // Case-insensitive search for the full identifier
+    const r1 = try explorer.searchContent("validatetoken", testing.allocator, 10);
+    defer {
+        for (r1) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(r1);
+    }
+    try testing.expectEqual(@as(usize, 1), r1.len);
 }
