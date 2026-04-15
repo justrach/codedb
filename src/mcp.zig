@@ -591,19 +591,25 @@ fn handleCall(
 
 /// Resolve the effective project path for a tool call.
 /// Priority: explicit `project` arg > single workspace root > path-based root match > first root > fallback.
+/// Returns null when the path exists in multiple roots (ambiguous) — callers must require explicit `project`.
+const ResolveResult = union(enum) {
+    resolved: []const u8,
+    ambiguous: void,
+};
+
 fn resolveProjectPath(
     args: *const std.json.ObjectMap,
     fallback_project: []const u8,
     roots: []const SessionRoot,
-) []const u8 {
+) ResolveResult {
     // 1. Explicit project arg takes priority
-    if (getStr(args, "project")) |p| return p;
+    if (getStr(args, "project")) |p| return .{ .resolved = p };
 
     // 2. No workspace roots — use startup default
-    if (roots.len == 0) return fallback_project;
+    if (roots.len == 0) return .{ .resolved = fallback_project };
 
     // 3. Single root — use it
-    if (roots.len == 1) return roots[0].path;
+    if (roots.len == 1) return .{ .resolved = roots[0].path };
 
     // 4. Multiple roots — try to match based on file path argument
     if (getStr(args, "path")) |rel_path| {
@@ -620,12 +626,13 @@ fn resolveProjectPath(
                     matched_root = r.path;
                 } else |_| {}
             }
-            if (match_count == 1) return matched_root;
+            if (match_count == 1) return .{ .resolved = matched_root };
+            if (match_count > 1) return .ambiguous;
         }
     }
 
     // 5. Fallback to first root
-    return roots[0].path;
+    return .{ .resolved = roots[0].path };
 }
 
 fn dispatch(
@@ -638,7 +645,14 @@ fn dispatch(
     roots: []const SessionRoot,
     root_mgr: *LiveRootManager,
 ) void {
-    const effective_project = resolveProjectPath(args, fallback_project, roots);
+    const resolve_result = resolveProjectPath(args, fallback_project, roots);
+    const effective_project = switch (resolve_result) {
+        .resolved => |p| p,
+        .ambiguous => {
+            out.appendSlice(alloc, "error: ambiguous workspace — the requested path exists in multiple roots. Specify the 'project' parameter with the absolute path to the intended workspace root.") catch {};
+            return;
+        },
+    };
 
     // Use LiveRootManager for resolution — handles startup root and spawned roots
     const live = root_mgr.resolve(effective_project);
