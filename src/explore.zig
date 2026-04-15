@@ -1235,33 +1235,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         var result_list: std.ArrayList(SymbolResult) = .{};
         errdefer result_list.deinit(allocator);
 
-        // O(1) lookup via symbol_index
-        if (self.symbol_index.get(name)) |locs| {
-            for (locs.items) |loc| {
-                var detail: ?[]const u8 = null;
-                if (self.outlines.getPtr(loc.path)) |outline| {
-                    for (outline.symbols.items) |sym| {
-                        if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, name)) {
-                            detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
-                            break;
-                        }
-                    }
-                }
-                try result_list.append(allocator, .{
-                    .path = try allocator.dupe(u8, loc.path),
-                    .symbol = .{
-                        .name = try allocator.dupe(u8, name),
-                        .kind = loc.kind,
-                        .line_start = loc.line_start,
-                        .line_end = loc.line_end,
-                        .detail = detail,
-                    },
-                });
-            }
-            return result_list.toOwnedSlice(allocator);
-        }
-
-        // Fallback: scan outlines
+        // Scan outlines for all symbols by name (catches all kinds including imports).
         var iter = self.outlines.iterator();
         while (iter.next()) |entry| {
             for (entry.value_ptr.symbols.items) |sym| {
@@ -1289,6 +1263,10 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         var result_list: std.ArrayList(SearchResult) = .{};
         errdefer result_list.deinit(allocator);
 
+        // searched tracks which paths have been scanned — shared across all tiers.
+        var searched = std.StringHashMap(void).init(allocator);
+        defer searched.deinit();
+
         // Tier 0: word index direct lookup — O(1) hash lookup, no content scan.
         const word_hits = self.word_index.search(query);
         if (word_hits.len > 0 and word_hits.len <= max_results * 2) {
@@ -1307,6 +1285,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
                     .line_num = hit.line_num,
                     .line_text = duped_text,
                 });
+                searched.put(hit_path, {}) catch {};
                 if (result_list.items.len >= max_results) return result_list.toOwnedSlice(allocator);
             }
             if (result_list.items.len >= max_results)
@@ -1316,8 +1295,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         const candidate_paths = self.trigram_index.candidates(query, allocator);
         defer if (candidate_paths) |cp| allocator.free(cp);
 
-        // Tier 1: trigram candidates — fast path without searched HashMap.
-        // If Tier 1 fills results, we skip HashMap allocation entirely.
+        // Tier 1: trigram candidates — fast path, skips files already found by Tier 0.
         if (candidate_paths) |cp| {
             if (cp.len > 0) {
                 const SortCtx = struct {
@@ -1333,6 +1311,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
                 const estimated_total = cp.len + self.skip_trigram_files.count();
                 const max_per_file = @max(@as(usize, 1), max_results / @max(@as(usize, 1), estimated_total));
                 for (cp) |path| {
+                    if (searched.contains(path)) continue;
                     const ref = self.readContentForSearch(path, allocator) orelse continue;
                     defer ref.deinit();
                     try searchInContent(path, ref.data, query, allocator, max_per_file, max_results, &result_list);
@@ -1342,9 +1321,6 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
             }
         }
 
-        // Only allocate searched HashMap if we need tiers 2-5.
-        var searched = std.StringHashMap(void).init(allocator);
-        defer searched.deinit();
         // Mark all Tier 1 candidates as searched.
         if (candidate_paths) |cp| {
             for (cp) |p| searched.put(p, {}) catch {};
