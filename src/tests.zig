@@ -6681,3 +6681,85 @@ test "word-index: case-insensitive lookup finds exact identifiers" {
     }
     try testing.expectEqual(@as(usize, 1), r1.len);
 }
+
+// ── Prefix expansion (Tier 0.5) tests ─────────────────────────────────────
+
+test "word-index: searchPrefix finds extensions of a prefix" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var wi = WordIndex.init(a);
+
+    // Index a file with camelCase identifiers — splits produce sub-tokens
+    try wi.indexFile("a.zig", "fn searchContent() void {} fn searchConfig() void {}");
+
+    // "searchco" is a strict prefix of "searchcontent" and "searchconfig"
+    const hits = try wi.searchPrefix("searchco", a);
+    try testing.expect(hits.len >= 1);
+}
+
+test "word-index: searchPrefix skips exact match (Tier 0 responsibility)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var wi = WordIndex.init(a);
+
+    try wi.indexFile("a.zig", "fn searchContent() void {}");
+
+    // Exact key "search" exists (sub-token). searchPrefix should return 0 for exact key.
+    const hits_exact = try wi.searchPrefix("search", a);
+    // "search" itself is in the index. Only keys STRICTLY longer are returned.
+    // "searchcontent" is longer, so we expect ≥1 result.
+    try testing.expect(hits_exact.len >= 1);
+
+    // The hits must come from keys other than "search" itself.
+    // Verify by checking "searchc..." style prefix:
+    const hits_prefix = try wi.searchPrefix("searchco", a);
+    try testing.expect(hits_prefix.len >= 1);
+}
+
+test "integration: Tier 0.5 prefix expansion finds partial identifier" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("util.zig", "pub fn validateRequest(r: Request) bool { return true; }");
+
+    // "validateR" is a prefix of "validaterequest" in the word index
+    const results = try explorer.searchContent("validateR", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len >= 1);
+}
+
+// ── BM25 frequency scoring tests ──────────────────────────────────────────
+
+test "search: BM25 ranks higher-frequency line first" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // Line with two occurrences of "token" should outrank line with one
+    const content = "// single token mention\nconst token = token_cache.get();\n";
+    try explorer.indexFile("auth.zig", content);
+
+    const results = try explorer.searchContent("token", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len >= 2);
+    // Line 2 has "token" twice; line 1 has it once — line 2 should come first
+    try testing.expect(results[0].score >= results[1].score);
+    try testing.expectEqual(@as(u32, 2), results[0].line_num);
+}

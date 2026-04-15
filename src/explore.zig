@@ -128,6 +128,7 @@ pub const SearchResult = struct {
     path: []const u8,
     line_num: u32,
     line_text: []const u8,
+    score: f32 = 0.0,
 };
 
 pub const DependencyGraph = struct {
@@ -1292,6 +1293,32 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
                 return result_list.toOwnedSlice(allocator);
         }
 
+        // Tier 0.5: prefix expansion — find all indexed keys that begin with the query.
+        // Activates when Tier 0 found nothing and query is ≥3 chars, catching partial
+        // identifier queries like "searchC" that match "searchContent" in the word index.
+        if (result_list.items.len == 0 and query.len >= 3) {
+            const prefix_hits = try self.word_index.searchPrefix(query, allocator);
+            defer allocator.free(prefix_hits);
+            for (prefix_hits) |hit| {
+                const hit_path = self.word_index.hitPath(hit);
+                if (hit_path.len == 0) continue;
+                const cached = self.contents.get(hit_path) orelse continue;
+                const line_text = extractLineByNumber(cached, hit.line_num) orelse continue;
+                if (indexOfCaseInsensitive(line_text, query) == null) continue;
+                const duped_text = try allocator.dupe(u8, line_text);
+                errdefer allocator.free(duped_text);
+                const duped_path = try allocator.dupe(u8, hit_path);
+                errdefer allocator.free(duped_path);
+                try result_list.append(allocator, .{
+                    .path = duped_path,
+                    .line_num = hit.line_num,
+                    .line_text = duped_text,
+                });
+                searched.put(hit_path, {}) catch {};
+                if (result_list.items.len >= max_results) break;
+            }
+        }
+
         const candidate_paths = self.trigram_index.candidates(query, allocator);
         defer if (candidate_paths) |cp| allocator.free(cp);
 
@@ -1385,6 +1412,22 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
                 try searchInContent(key_ptr.*, ref.data, query, allocator, max_results, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
+        }
+
+        // Frequency scoring: count query occurrences per line, then stable-sort by
+        // (score desc, path asc, line_num asc) so high-density hits surface first.
+        if (result_list.items.len > 1) {
+            for (result_list.items) |*r| {
+                r.score = countOccurrences(r.line_text, query);
+            }
+            std.sort.block(SearchResult, result_list.items, {}, struct {
+                pub fn lessThan(_: void, a: SearchResult, b: SearchResult) bool {
+                    if (a.score != b.score) return a.score > b.score;
+                    const ord = std.mem.order(u8, a.path, b.path);
+                    if (ord != .eq) return ord == .lt;
+                    return a.line_num < b.line_num;
+                }
+            }.lessThan);
         }
 
         return result_list.toOwnedSlice(allocator);
@@ -3219,6 +3262,19 @@ fn indexOfCaseInsensitive(haystack: []const u8, needle: []const u8) ?usize {
     return null;
 }
 
+/// Count non-overlapping case-insensitive occurrences of `needle` in `text`.
+fn countOccurrences(text: []const u8, needle: []const u8) f32 {
+    if (needle.len == 0 or needle.len > text.len) return 0;
+    var count: f32 = 0;
+    var pos: usize = 0;
+    while (pos + needle.len <= text.len) {
+        if (indexOfCaseInsensitive(text[pos..], needle)) |off| {
+            count += 1;
+            pos += off + needle.len;
+        } else break;
+    }
+    return count;
+}
 fn startsWith(haystack: []const u8, needle: []const u8) bool {
     return std.mem.startsWith(u8, haystack, needle);
 }

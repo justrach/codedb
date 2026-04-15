@@ -197,7 +197,6 @@ pub const WordIndex = struct {
     }
 
     /// Look up all hits for a word. O(1) lookup + O(hits) iteration.
-    /// Look up all hits for a word. O(1) lookup + O(hits) iteration.
     /// Query is normalized to lowercase (all index keys are stored lowercase).
     pub fn search(self: *WordIndex, word: []const u8) []const WordHit {
         var buf: [512]u8 = undefined;
@@ -234,6 +233,38 @@ pub const WordIndex = struct {
             const gop = try seen.getOrPut(key);
             if (!gop.found_existing) {
                 result.appendAssumeCapacity(hit);
+            }
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
+    /// Collect all hits for index keys that begin with `prefix_raw` (normalized internally to
+    /// lowercase). Only keys strictly longer than the normalized prefix are considered —
+    /// exact-match keys are already handled by Tier 0 (`search`).
+    /// Results are deduplicated by (doc_id, line_num) and returned as an owned slice.
+    pub fn searchPrefix(self: *WordIndex, prefix_raw: []const u8, allocator: std.mem.Allocator) ![]const WordHit {
+        if (prefix_raw.len == 0) return try allocator.alloc(WordHit, 0);
+        var buf: [512]u8 = undefined;
+        const prefix = if (prefix_raw.len <= buf.len) blk: {
+            for (prefix_raw, 0..) |c, i| buf[i] = normalizeChar(c);
+            break :blk buf[0..prefix_raw.len];
+        } else prefix_raw;
+
+        var result: std.ArrayList(WordHit) = .{};
+        errdefer result.deinit(allocator);
+        const DedupKey = struct { doc_id: u32, line_num: u32 };
+        var seen = std.AutoHashMap(DedupKey, void).init(allocator);
+        defer seen.deinit();
+
+        var key_iter = self.index.keyIterator();
+        while (key_iter.next()) |k| {
+            if (k.len <= prefix.len) continue; // strictly longer: exact match is Tier 0
+            if (!std.mem.startsWith(u8, k.*, prefix)) continue;
+            const hits = self.index.get(k.*) orelse continue;
+            for (hits.items) |hit| {
+                const dk = DedupKey{ .doc_id = hit.doc_id, .line_num = hit.line_num };
+                const gop = try seen.getOrPut(dk);
+                if (!gop.found_existing) try result.append(allocator, hit);
             }
         }
         return result.toOwnedSlice(allocator);
