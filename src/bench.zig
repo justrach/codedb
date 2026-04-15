@@ -81,7 +81,7 @@ pub fn main() !void {
     var root_mgr = live_root.LiveRootManager.init(allocator, tmp_root, &explorer, &store);
     defer root_mgr.deinit();
 
-    var bench_ctx = mcp.BenchContext.init(allocator, tmp_root, &root_mgr);
+    var bench_ctx = mcp.BenchContext.init(tmp_root, &root_mgr);
     defer bench_ctx.deinit();
 
     var telem_off = telemetry.Telemetry{ .enabled = false };
@@ -99,8 +99,8 @@ pub fn main() !void {
     var results: [cases.len]ToolBench = undefined;
     for (cases, 0..) |case, idx| {
         const args = &args_store[idx].value.object;
-        const base = try runCase(allocator, &bench_ctx, &store, &explorer, &agents, case, args, &telem_off);
-        const with_telem = try runCase(allocator, &bench_ctx, &store, &explorer, &agents, case, args, &telem_on);
+        const base = try runCase(allocator, &bench_ctx, &agents, case, args, &telem_off);
+        const with_telem = try runCase(allocator, &bench_ctx, &agents, case, args, &telem_on);
         results[idx] = .{
             .tool = case.name,
             .avg_latency_ns = base.avg_latency_ns,
@@ -121,8 +121,6 @@ pub fn main() !void {
 fn runCase(
     allocator: std.mem.Allocator,
     bench_ctx: *mcp.BenchContext,
-    store: *Store,
-    explorer: *Explorer,
     agents: *AgentRegistry,
     case: Case,
     args: *const std.json.ObjectMap,
@@ -133,11 +131,12 @@ fn runCase(
 
     for (0..case.iterations) |_| {
         if (case.tool == .codedb_edit) {
-            try resetBenchTarget(explorer, store);
+            const startup = bench_ctx.root_mgr.getStartup();
+            try resetBenchTarget(startup.explorerPtr(), startup.storePtr());
         }
 
         var timer = try std.time.Timer.start();
-        response_bytes = bench_ctx.runToolCall(allocator, case.name, case.tool, args, store, explorer, agents, telem);
+        response_bytes = bench_ctx.runToolCall(allocator, case.name, case.tool, args, agents, telem);
         const elapsed = timer.read();
         total_ns +|= elapsed;
     }

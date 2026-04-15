@@ -647,7 +647,7 @@ fn mainImpl() !void {
         var root_mgr = live_root.LiveRootManager.init(allocator, abs_root, &explorer, &store);
         defer root_mgr.deinit();
 
-        mcp_server.run(allocator, &store, &explorer, &agents, abs_root, &telem, &root_mgr);
+        mcp_server.run(allocator, &agents, abs_root, &telem, &root_mgr);
 
         shutdown.store(true, .release);
         if (scan_thread) |st| st.join();

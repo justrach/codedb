@@ -109,16 +109,19 @@ pub const LiveRoot = struct {
 
         // Attempt snapshot load: try {path}/codedb.snapshot first, then
         // the global ~/.codedb/projects/{hash}/codedb.snapshot fallback.
+        // Only accept snapshot if its git HEAD matches the current working tree.
         const snapshot_loaded = blk: {
+            const current_git_head = git_mod.getGitHead(duped_path, alloc) catch null;
+
             const local_snap = std.fmt.allocPrint(alloc, "{s}/codedb.snapshot", .{duped_path}) catch break :blk false;
             defer alloc.free(local_snap);
-            if (snapshot_mod.loadSnapshot(local_snap, self.explorer(), self.store(), alloc))
+            if (loadSnapshotIfFresh(local_snap, current_git_head, self.explorer(), self.store(), alloc))
                 break :blk true;
 
             // Fallback: global data dir
             const global_snap = globalSnapshotPath(alloc, duped_path) catch break :blk false;
             defer alloc.free(global_snap);
-            if (snapshot_mod.loadSnapshot(global_snap, self.explorer(), self.store(), alloc))
+            if (loadSnapshotIfFresh(global_snap, current_git_head, self.explorer(), self.store(), alloc))
                 break :blk true;
 
             break :blk false;
@@ -246,7 +249,7 @@ pub const LiveRootManager = struct {
     }
 
     /// Given an absolute path (or null for default), find the matching LiveRoot.
-    /// Falls back to startup root if no match is found.
+    /// Falls back to startup root if no match is found (logs a warning for non-null paths).
     pub fn resolve(self: *LiveRootManager, path: ?[]const u8) *LiveRoot {
         const p = path orelse return &self.startup_root;
         if (std.mem.eql(u8, p, self.startup_path)) return &self.startup_root;
@@ -268,7 +271,12 @@ pub const LiveRootManager = struct {
         if (isPathPrefixOf(self.startup_path, p) and self.startup_path.len > best_len) {
             return &self.startup_root;
         }
-        return best orelse &self.startup_root;
+        if (best) |b| return b;
+
+        // No match — warn and fall back to startup root so callers know
+        // the resolved project may not match what the user intended.
+        std.log.warn("live_root: path '{s}' does not match any registered root, falling back to startup root '{s}'", .{ p, self.startup_path });
+        return &self.startup_root;
     }
 
     /// Add a new workspace root (called when roots/list_changed adds a root).
@@ -350,6 +358,38 @@ pub const LiveRootManager = struct {
 
 // ── Module-private helpers ──────────────────────────────────
 
+/// Load snapshot only if its git HEAD matches the current working tree's HEAD.
+/// This prevents using stale snapshots from a different branch/commit.
+fn loadSnapshotIfFresh(
+    snap_path: []const u8,
+    current_git_head: ?[40]u8,
+    exp: *Explorer,
+    st: *Store,
+    alloc: std.mem.Allocator,
+) bool {
+    // If we can't determine the current HEAD, only accept a snapshot that also
+    // has no HEAD — matching main.zig's stricter startup behavior.  A snapshot
+    // with a HEAD but no way to verify it could be from a different branch.
+    const cur_head = current_git_head orelse {
+        const snap_head = snapshot_mod.readSnapshotGitHead(snap_path);
+        if (snap_head != null) {
+            std.log.info("live_root: snapshot has HEAD but current HEAD unknown for {s}, will re-scan", .{snap_path});
+            return false;
+        }
+        return snapshot_mod.loadSnapshot(snap_path, exp, st, alloc);
+    };
+
+    // Read the snapshot's embedded git HEAD. If absent or mismatched, skip.
+    const snap_head = snapshot_mod.readSnapshotGitHead(snap_path) orelse
+        return false;
+    if (!std.mem.eql(u8, &snap_head, &cur_head)) {
+        std.log.info("live_root: snapshot git HEAD mismatch for {s}, will re-scan", .{snap_path});
+        return false;
+    }
+
+    return snapshot_mod.loadSnapshot(snap_path, exp, st, alloc);
+}
+
 /// Returns true if `prefix` is a path prefix of `full_path`.
 /// i.e. full_path starts with prefix and the next char is '/' or end-of-string.
 fn isPathPrefixOf(prefix: []const u8, full_path: []const u8) bool {
@@ -422,4 +462,77 @@ test "containsPath" {
     try testing.expect(containsPath(&paths, "/a"));
     try testing.expect(containsPath(&paths, "/b/c"));
     try testing.expect(!containsPath(&paths, "/x"));
+}
+
+test "resolve returns startup for null path" {
+    const testing = std.testing;
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+    var st = Store.init(testing.allocator);
+    defer st.deinit();
+
+    var mgr = LiveRootManager.init(testing.allocator, "/projects/main", &exp, &st);
+    defer mgr.deinit();
+
+    const resolved = mgr.resolve(null);
+    try testing.expectEqual(@as(*LiveRoot, mgr.getStartup()), resolved);
+}
+
+test "resolve returns startup for matching path" {
+    const testing = std.testing;
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+    var st = Store.init(testing.allocator);
+    defer st.deinit();
+
+    var mgr = LiveRootManager.init(testing.allocator, "/projects/main", &exp, &st);
+    defer mgr.deinit();
+
+    const resolved = mgr.resolve("/projects/main");
+    try testing.expectEqual(@as(*LiveRoot, mgr.getStartup()), resolved);
+}
+
+test "resolve falls back to startup for unmatched path" {
+    const testing = std.testing;
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+    var st = Store.init(testing.allocator);
+    defer st.deinit();
+
+    var mgr = LiveRootManager.init(testing.allocator, "/projects/main", &exp, &st);
+    defer mgr.deinit();
+
+    const resolved = mgr.resolve("/completely/different/path");
+    try testing.expectEqual(@as(*LiveRoot, mgr.getStartup()), resolved);
+}
+
+test "isPathPrefixOf edge cases" {
+    const testing = std.testing;
+    // /foo is NOT a prefix of /foobar (must have '/' separator or exact match)
+    try testing.expect(!isPathPrefixOf("/foo", "/foobar"));
+    // /foo IS a prefix of /foo/bar
+    try testing.expect(isPathPrefixOf("/foo", "/foo/bar"));
+    // /foo IS a prefix of /foo (exact match)
+    try testing.expect(isPathPrefixOf("/foo", "/foo"));
+    // empty prefix is a prefix of anything (startsWith always true, len == 0 so exact-len branch taken)
+    try testing.expect(isPathPrefixOf("", "/foo"));
+    try testing.expect(isPathPrefixOf("", ""));
+}
+
+test "LiveRootManager init and getStartup" {
+    const testing = std.testing;
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+    var st = Store.init(testing.allocator);
+    defer st.deinit();
+
+    var mgr = LiveRootManager.init(testing.allocator, "/test/root", &exp, &st);
+    defer mgr.deinit();
+
+    // defaultPath returns the startup_path
+    try testing.expectEqualStrings("/test/root", mgr.defaultPath());
+
+    // getStartup returns a non-null pointer
+    const startup = mgr.getStartup();
+    try testing.expect(@intFromPtr(startup) != 0);
 }

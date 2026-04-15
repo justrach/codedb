@@ -15,7 +15,6 @@ const snapshot_json = @import("snapshot_json.zig");
 const watcher = @import("watcher.zig");
 const edit_mod = @import("edit.zig");
 const idx = @import("index.zig");
-const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
 const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
@@ -23,11 +22,6 @@ const release_info = @import("release_info.zig");
 const live_root = @import("live_root.zig");
 const LiveRootManager = live_root.LiveRootManager;
 // ── Project cache ────────────────────────────────────────────────────────────
-
-const ProjectCtx = struct {
-    explorer: *Explorer,
-    store: *Store,
-};
 
 fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
     const hash = std.hash.Wyhash.hash(0, project_path);
@@ -37,28 +31,6 @@ fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]
     defer allocator.free(home);
 
     return std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch null;
-}
-
-fn loadProjectTrigramFromDiskIfPresent(explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
-    explorer.mu.lockShared();
-    const already_loaded = explorer.trigram_index.fileCount() > 0;
-    explorer.mu.unlockShared();
-    if (already_loaded) return;
-
-    const data_dir = getProjectDataDir(allocator, project_path) orelse return;
-    defer allocator.free(data_dir);
-
-    if (idx.MmapTrigramIndex.initFromDisk(data_dir, allocator)) |loaded| {
-        explorer.mu.lock();
-        defer explorer.mu.unlock();
-        explorer.trigram_index.deinit();
-        explorer.trigram_index = .{ .mmap = loaded };
-    } else if (idx.TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
-        explorer.mu.lock();
-        defer explorer.mu.unlock();
-        explorer.trigram_index.deinit();
-        explorer.trigram_index = .{ .heap = loaded };
-    }
 }
 
 fn loadProjectWordIndexFromDiskIfPresent(explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
@@ -101,160 +73,19 @@ fn loadProjectWordIndexFromDiskIfPresent(explorer: *Explorer, project_path: []co
     }
 }
 
-const ProjectCache = struct {
-    const MAX_CACHED = 5;
-
-    const Entry = struct {
-        path: []u8,
-        explorer: Explorer,
-        store: Store,
-        last_used: i64,
-    };
-
-    mu: std.Thread.RwLock,
-    alloc: std.mem.Allocator,
-    entries: [MAX_CACHED]?*Entry,
+pub const BenchContext = struct {
+    root_mgr: *LiveRootManager,
     default_path: []const u8,
 
-    fn init(alloc_: std.mem.Allocator, default_path_: []const u8) ProjectCache {
+    pub fn init(default_path: []const u8, root_mgr: *LiveRootManager) BenchContext {
         return .{
-            .mu = .{},
-            .alloc = alloc_,
-            .entries = [_]?*Entry{null} ** MAX_CACHED,
-            .default_path = default_path_,
-        };
-    }
-
-    fn deinit(self: *ProjectCache) void {
-        for (&self.entries) |*slot| {
-            if (slot.*) |entry| {
-                entry.explorer.deinit();
-                entry.store.deinit();
-                self.alloc.free(entry.path);
-                self.alloc.destroy(entry);
-                slot.* = null;
-            }
-        }
-    }
-
-    fn get(
-        self: *ProjectCache,
-        path: ?[]const u8,
-        default_exp: *Explorer,
-        default_store: *Store,
-    ) !ProjectCtx {
-        const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store };
-        if (std.mem.eql(u8, p, self.default_path))
-            return ProjectCtx{ .explorer = default_exp, .store = default_store };
-        if (!root_policy.isIndexableRoot(p))
-            return error.PathNotAllowed;
-
-        self.mu.lock();
-        defer self.mu.unlock();
-
-        const now = std.time.milliTimestamp();
-        for (&self.entries) |*slot| {
-            if (slot.*) |entry| {
-                if (std.mem.eql(u8, entry.path, p)) {
-                    entry.last_used = now;
-                    return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store };
-                }
-            }
-        }
-
-        // Cache miss — load from snapshot
-        const new_entry = self.alloc.create(Entry) catch return error.OutOfMemory;
-        new_entry.path = self.alloc.dupe(u8, p) catch {
-            self.alloc.destroy(new_entry);
-            return error.OutOfMemory;
-        };
-        new_entry.explorer = Explorer.init(self.alloc);
-        new_entry.store = Store.init(self.alloc);
-        new_entry.last_used = now;
-
-        var snap_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const snap_path = std.fmt.bufPrint(&snap_buf, "{s}/codedb.snapshot", .{p}) catch {
-            new_entry.store.deinit();
-            new_entry.explorer.deinit();
-            self.alloc.free(new_entry.path);
-            self.alloc.destroy(new_entry);
-            return error.PathTooLong;
-        };
-
-        if (!snapshot_mod.loadSnapshot(snap_path, &new_entry.explorer, &new_entry.store, self.alloc)) {
-            // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
-            const hash = std.hash.Wyhash.hash(0, p);
-            var central_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const loaded_central = blk: {
-                const home = std.process.getEnvVarOwned(self.alloc, "HOME") catch break :blk false;
-                defer self.alloc.free(home);
-                const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
-                break :blk snapshot_mod.loadSnapshot(central, &new_entry.explorer, &new_entry.store, self.alloc);
-            };
-            if (!loaded_central) {
-                new_entry.store.deinit();
-                new_entry.explorer.deinit();
-                self.alloc.free(new_entry.path);
-                self.alloc.destroy(new_entry);
-                return error.SnapshotLoadFailed;
-            }
-        }
-
-        loadProjectTrigramFromDiskIfPresent(&new_entry.explorer, p, self.alloc);
-
-        // Release raw file contents retained by the snapshot load — outlines,
-        // trigram index, and word index are sufficient for all query tools.
-        const fc = new_entry.explorer.outlines.count();
-        if (fc > 1000) {
-            new_entry.explorer.releaseContents();
-            new_entry.explorer.releaseSecondaryIndexes();
-        }
-
-        // Find free slot or evict LRU
-        var target_slot: usize = 0;
-        var found_free = false;
-        for (self.entries, 0..) |slot, i| {
-            if (slot == null) {
-                target_slot = i;
-                found_free = true;
-                break;
-            }
-        }
-        if (!found_free) {
-            var oldest_i: usize = 0;
-            var oldest_t: i64 = self.entries[0].?.last_used;
-            for (self.entries[1..], 0..) |slot_opt, j| {
-                if (slot_opt.?.last_used < oldest_t) {
-                    oldest_t = slot_opt.?.last_used;
-                    oldest_i = j + 1;
-                }
-            }
-            const evict = self.entries[oldest_i].?;
-            evict.explorer.deinit();
-            evict.store.deinit();
-            self.alloc.free(evict.path);
-            self.alloc.destroy(evict);
-            target_slot = oldest_i;
-        }
-
-        self.entries[target_slot] = new_entry;
-        return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store };
-    }
-};
-
-pub const BenchContext = struct {
-    cache: ProjectCache,
-    root_mgr: *LiveRootManager,
-
-    pub fn init(alloc: std.mem.Allocator, default_path: []const u8, root_mgr: *LiveRootManager) BenchContext {
-        return .{
-            .cache = ProjectCache.init(alloc, default_path),
             .root_mgr = root_mgr,
+            .default_path = default_path,
         };
     }
 
     pub fn deinit(self: *BenchContext) void {
-        self.cache.deinit();
+        _ = self;
     }
 
     pub fn runDispatch(
@@ -263,11 +94,9 @@ pub const BenchContext = struct {
         tool: Tool,
         args: *const std.json.ObjectMap,
         out: *std.ArrayList(u8),
-        store: *Store,
-        explorer: *Explorer,
         agents: *AgentRegistry,
     ) void {
-        dispatch(alloc, tool, args, out, store, explorer, agents, &self.cache, self.cache.default_path, &.{}, self.root_mgr);
+        dispatch(alloc, tool, args, out, agents, self.default_path, &.{}, self.root_mgr);
     }
 
     pub fn runToolCall(
@@ -276,8 +105,6 @@ pub const BenchContext = struct {
         name: []const u8,
         tool: Tool,
         args: *const std.json.ObjectMap,
-        store: *Store,
-        explorer: *Explorer,
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
     ) usize {
@@ -285,7 +112,7 @@ pub const BenchContext = struct {
         defer out.deinit(alloc);
 
         const t0 = std.time.nanoTimestamp();
-        dispatch(alloc, tool, args, &out, store, explorer, agents, &self.cache, self.cache.default_path, &.{}, self.root_mgr);
+        dispatch(alloc, tool, args, &out, agents, self.default_path, &.{}, self.root_mgr);
         const elapsed = std.time.nanoTimestamp() - t0;
 
         const is_error = std.mem.startsWith(u8, out.items, "error:");
@@ -355,24 +182,24 @@ pub const Tool = enum {
 
 const tools_list =
     \\{"tools":[
-    \\{"name":"codedb_tree","description":"Get the full file tree of the indexed codebase with language detection, line counts, and symbol counts per file. Use this first to understand the project structure.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_outline","description":"START HERE. Get the structural outline of a file: all functions, structs, enums, imports, constants with line numbers. Returns 4-15x fewer tokens than reading the raw file. Always use this before codedb_read to understand file structure first.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_symbol","description":"Find where a symbol is defined across the codebase. Returns file, line, and kind (function/struct/import). Use body=true to include source code. Much more precise than search — finds definitions, not just text matches.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name to search for (exact match)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
-    \\{"name":"codedb_search","description":"Full-text search across all indexed files. Returns matching lines with file paths and line numbers. Start with max_results=10 for broad queries. Use scope=true to see the enclosing function/struct for each match. For single identifiers, prefer codedb_word (O(1) lookup) or codedb_symbol (definitions only).","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Maximum results to return (default: 50, start with 10 for broad queries)"},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
-    \\{"name":"codedb_word","description":"O(1) word lookup using inverted index. Finds all occurrences of an exact word (identifier) across the codebase. Much faster than search for single-word queries.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
-    \\{"name":"codedb_hot","description":"Get the most recently modified files in the codebase, ordered by recency. Useful to see what's been actively worked on.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_deps","description":"Dependency graph queries. Default: which files import the given file (reverse deps). Use direction=depends_on for forward deps. Use transitive=true for full blast radius via BFS traversal. O(1) lookups via bidirectional graph index.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_read","description":"Read file contents. IMPORTANT: Use codedb_outline first to find the line numbers you need, then read only that range with line_start/line_end. Avoid reading entire large files — use compact=true to skip comments and blanks. For understanding file structure, codedb_outline is 4-15x more token-efficient.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_edit","description":"Apply a line-based edit to a file. Supports replace (range), insert (after line), and delete (range) operations.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to edit"},"op":{"type":"string","enum":["replace","insert","delete"],"description":"Edit operation type"},"content":{"type":"string","description":"New content (for replace/insert)"},"range_start":{"type":"integer","description":"Start line number (for replace/delete, 1-indexed)"},"range_end":{"type":"integer","description":"End line number (for replace/delete, 1-indexed)"},"after":{"type":"integer","description":"Insert after this line number (for insert)"}},"required":["path","op"]}},
-    \\{"name":"codedb_changes","description":"Get files that changed since a sequence number. Use with codedb_status to poll for changes.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
-    \\{"name":"codedb_status","description":"Get current codedb status: number of indexed files and current sequence number.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_snapshot","description":"Get the full pre-rendered snapshot of the codebase as a single JSON blob. Contains tree, all outlines, symbol index, and dependency graph. Ideal for caching or deploying to edge workers.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_bundle","description":"Batch multiple queries in one call. Max 20 ops. WARNING: Avoid bundling multiple codedb_read calls on large files — use codedb_outline + codedb_symbol instead. Bundle outline+symbol+search, not full file reads. Total response is not size-capped, so large bundles can exceed token limits.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string","description":"Tool name (e.g. codedb_outline, codedb_symbol, codedb_read)"},"arguments":{"type":"object","description":"Tool arguments"}},"required":["tool"]},"description":"Array of tool calls to execute"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
+    \\{"name":"codedb_tree","description":"Get the full file tree of the indexed codebase with language detection, line counts, and symbol counts per file. Use this first to understand the project structure.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":[]}},
+    \\{"name":"codedb_outline","description":"START HERE. Get the structural outline of a file: all functions, structs, enums, imports, constants with line numbers. Returns 4-15x fewer tokens than reading the raw file. Always use this before codedb_read to understand file structure first.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":["path"]}},
+    \\{"name":"codedb_symbol","description":"Find where a symbol is defined across the codebase. Returns file, line, and kind (function/struct/import). Use body=true to include source code. Much more precise than search — finds definitions, not just text matches.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name to search for (exact match)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":["name"]}},
+    \\{"name":"codedb_search","description":"Full-text search across all indexed files. Returns matching lines with file paths and line numbers. Start with max_results=10 for broad queries. Use scope=true to see the enclosing function/struct for each match. For single identifiers, prefer codedb_word (O(1) lookup) or codedb_symbol (definitions only).","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Maximum results to return (default: 50, start with 10 for broad queries)"},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":["query"]}},
+    \\{"name":"codedb_word","description":"O(1) word lookup using inverted index. Finds all occurrences of an exact word (identifier) across the codebase. Much faster than search for single-word queries.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":["word"]}},
+    \\{"name":"codedb_hot","description":"Get the most recently modified files in the codebase, ordered by recency. Useful to see what's been actively worked on.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":[]}},
+    \\{"name":"codedb_deps","description":"Dependency graph queries. Default: which files import the given file (reverse deps). Use direction=depends_on for forward deps. Use transitive=true for full blast radius via BFS traversal. O(1) lookups via bidirectional graph index.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":["path"]}},
+    \\{"name":"codedb_read","description":"Read file contents. IMPORTANT: Use codedb_outline first to find the line numbers you need, then read only that range with line_start/line_end. Avoid reading entire large files — use compact=true to skip comments and blanks. For understanding file structure, codedb_outline is 4-15x more token-efficient.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":["path"]}},
+    \\{"name":"codedb_edit","description":"Apply a line-based edit to a file. Supports replace (range), insert (after line), and delete (range) operations.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to edit"},"op":{"type":"string","enum":["replace","insert","delete"],"description":"Edit operation type"},"content":{"type":"string","description":"New content (for replace/insert)"},"range_start":{"type":"integer","description":"Start line number (for replace/delete, 1-indexed)"},"range_end":{"type":"integer","description":"End line number (for replace/delete, 1-indexed)"},"after":{"type":"integer","description":"Insert after this line number (for insert)"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":["path","op"]}},
+    \\{"name":"codedb_changes","description":"Get files that changed since a sequence number. Use with codedb_status to poll for changes.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":[]}},
+    \\{"name":"codedb_status","description":"Get current codedb status: number of indexed files and current sequence number.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":[]}},
+    \\{"name":"codedb_snapshot","description":"Get the full pre-rendered snapshot of the codebase as a single JSON blob. Contains tree, all outlines, symbol index, and dependency graph. Ideal for caching or deploying to edge workers.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":[]}},
+    \\{"name":"codedb_bundle","description":"Batch multiple queries in one call. Max 20 ops. WARNING: Avoid bundling multiple codedb_read calls on large files — use codedb_outline + codedb_symbol instead. Bundle outline+symbol+search, not full file reads. Total response is not size-capped, so large bundles can exceed token limits.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string","description":"Tool name (e.g. codedb_outline, codedb_symbol, codedb_read)"},"arguments":{"type":"object","description":"Tool arguments"}},"required":["tool"]},"description":"Array of tool calls to execute"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":["ops"]}},
     \\{"name":"codedb_remote","description":"Query any GitHub repo via codedb.codegraff.com cloud intelligence. Gets file tree, symbol outlines, or searches code in external repos without cloning. Use when you need to understand a dependency, check an external API, or explore a repo you don't have locally.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. justrach/merjs)"},"action":{"type":"string","enum":["tree","outline","search","meta"],"description":"What to query: tree (file list), outline (symbols), search (text search), meta (repo info)"},"query":{"type":"string","description":"Search query (required when action=search)"}},"required":["repo","action"]}},
     \\{"name":"codedb_projects","description":"List all locally indexed projects on this machine. Shows project paths, data directory hashes, and whether a snapshot exists. Use to discover what codebases are available.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"codedb_index","description":"Index a local folder on this machine. Scans all source files, builds outlines/trigrams/word indexes, and creates a codedb.snapshot in the target directory. After indexing, the folder is queryable via the project param on any tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the folder to index (e.g. /Users/you/myproject)"}},"required":["path"]}},
-    \\{"name":"codedb_find","description":"Fuzzy file search — finds files by approximate name. Typo-tolerant subsequence matching with word-boundary and filename bonuses. Use when you know roughly what file you're looking for but not the exact path. Much faster than codedb_tree + manual scan.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy search query (e.g. 'authmidlware', 'test_auth', 'main.zig')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
-    \\{"name":"codedb_query","description":"Composable search pipeline — chain multiple operations where each step feeds the next. Replaces multi-tool workflows with a single call. Pipeline ops: find (fuzzy file search), search (content grep), filter (by extension/path glob), deps (expand via dependency graph), outline (get symbols), read (file contents), sort (by score/path), limit (truncate). Each step operates on the file set from the previous step.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}}
+    \\{"name":"codedb_find","description":"Fuzzy file search — finds files by approximate name. Typo-tolerant subsequence matching with word-boundary and filename bonuses. Use when you know roughly what file you're looking for but not the exact path. Much faster than codedb_tree + manual scan.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy search query (e.g. 'authmidlware', 'test_auth', 'main.zig')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":["query"]}},
+    \\{"name":"codedb_query","description":"Composable search pipeline — chain multiple operations where each step feeds the next. Replaces multi-tool workflows with a single call. Pipeline ops: find (fuzzy file search), search (content grep), filter (by extension/path glob), deps (expand via dependency graph), outline (get symbols), read (file contents), sort (by score/path), limit (truncate). Each step operates on the file set from the previous step.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}"},"project":{"type":"string","description":"Optional absolute path to a registered workspace root"}},"required":["pipeline"]}}
     \\]}
 ;
 
@@ -422,8 +249,6 @@ const Session = struct {
 
 pub fn run(
     alloc: std.mem.Allocator,
-    store: *Store,
-    explorer: *Explorer,
     agents: *AgentRegistry,
     default_path: []const u8,
     telem: *telemetry_mod.Telemetry,
@@ -432,9 +257,6 @@ pub fn run(
     const stdout = std.fs.File.stdout();
     const stdin = std.fs.File.stdin();
     last_activity.store(std.time.milliTimestamp(), .release);
-
-    var cache = ProjectCache.init(alloc, default_path);
-    defer cache.deinit();
 
     var session = Session{
         .alloc = alloc,
@@ -492,7 +314,7 @@ pub fn run(
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) writeResult(alloc, stdout, id, tools_list);
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(alloc, root, stdout, id, store, explorer, agents, &cache, telem, default_path, session.roots.items, root_mgr);
+            handleCall(alloc, root, stdout, id, agents, telem, default_path, session.roots.items, root_mgr);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
         } else {
@@ -665,10 +487,7 @@ fn handleCall(
     root: *const std.json.ObjectMap,
     stdout: std.fs.File,
     id: ?std.json.Value,
-    store: *Store,
-    explorer: *Explorer,
     agents: *AgentRegistry,
-    cache: *ProjectCache,
     telem: *telemetry_mod.Telemetry,
     fallback_project: []const u8,
     roots: []const SessionRoot,
@@ -706,7 +525,7 @@ fn handleCall(
     defer out.deinit(alloc);
 
     const t0 = std.time.nanoTimestamp();
-    dispatch(alloc, tool, args, &out, store, explorer, agents, cache, fallback_project, roots, root_mgr);
+    dispatch(alloc, tool, args, &out, agents, fallback_project, roots, root_mgr);
     const elapsed = std.time.nanoTimestamp() - t0;
 
     const is_error = std.mem.startsWith(u8, out.items, "error:");
@@ -814,17 +633,11 @@ fn dispatch(
     tool: Tool,
     args: *const std.json.ObjectMap,
     out: *std.ArrayList(u8),
-    default_store: *Store,
-    default_explorer: *Explorer,
     agents: *AgentRegistry,
-    cache: *ProjectCache,
     fallback_project: []const u8,
     roots: []const SessionRoot,
     root_mgr: *LiveRootManager,
 ) void {
-    _ = default_store;
-    _ = default_explorer;
-
     const effective_project = resolveProjectPath(args, fallback_project, roots);
 
     // Use LiveRootManager for resolution — handles startup root and spawned roots
@@ -832,8 +645,12 @@ fn dispatch(
     const ctx_explorer = live.explorerPtr();
     const ctx_store = live.storePtr();
 
+    // Use the resolved root's actual path for disk I/O — NOT the raw effective_project
+    // from tool args. This prevents arbitrary project paths from bypassing root boundaries.
+    const resolved_path = live.path;
+
     if (tool == .codedb_word) {
-        loadProjectWordIndexFromDiskIfPresent(ctx_explorer, effective_project, alloc);
+        loadProjectWordIndexFromDiskIfPresent(ctx_explorer, resolved_path, alloc);
     }
 
     switch (tool) {
@@ -844,12 +661,12 @@ fn dispatch(
         .codedb_word => handleWord(alloc, args, out, ctx_explorer),
         .codedb_hot => handleHot(alloc, args, out, ctx_store, ctx_explorer),
         .codedb_deps => handleDeps(alloc, args, out, ctx_explorer),
-        .codedb_read => handleRead(alloc, args, out, ctx_explorer, effective_project),
-        .codedb_edit => handleEdit(alloc, args, out, ctx_store, ctx_explorer, agents, effective_project),
+        .codedb_read => handleRead(alloc, args, out, ctx_explorer, resolved_path),
+        .codedb_edit => handleEdit(alloc, args, out, ctx_store, ctx_explorer, agents, resolved_path),
         .codedb_changes => handleChanges(alloc, args, out, ctx_store),
         .codedb_status => handleStatus(alloc, out, ctx_store, ctx_explorer),
         .codedb_snapshot => handleSnapshot(alloc, out, ctx_explorer, ctx_store),
-        .codedb_bundle => handleBundle(alloc, args, out, ctx_store, ctx_explorer, agents, cache, fallback_project, roots, root_mgr),
+        .codedb_bundle => handleBundle(alloc, args, out, agents, fallback_project, roots, root_mgr),
         .codedb_remote => handleRemote(alloc, args, out),
         .codedb_projects => handleProjects(alloc, out),
         .codedb_index => handleIndex(alloc, args, out),
@@ -1346,10 +1163,7 @@ fn handleBundle(
     alloc: std.mem.Allocator,
     args: *const std.json.ObjectMap,
     out: *std.ArrayList(u8),
-    default_store: *Store,
-    default_explorer: *Explorer,
     agents: *AgentRegistry,
-    cache: *ProjectCache,
     fallback_project: []const u8,
     roots: []const SessionRoot,
     root_mgr: *LiveRootManager,
@@ -1413,7 +1227,7 @@ fn handleBundle(
         var sub_out: std.ArrayList(u8) = .{};
         defer sub_out.deinit(alloc);
 
-        dispatch(alloc, tool, sub_args, &sub_out, default_store, default_explorer, agents, cache, fallback_project, roots, root_mgr);
+        dispatch(alloc, tool, sub_args, &sub_out, agents, fallback_project, roots, root_mgr);
 
         // Check size BEFORE appending to prevent blowout
         if (out.items.len + sub_out.items.len > 200 * 1024) {
