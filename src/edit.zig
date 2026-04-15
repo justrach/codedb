@@ -12,6 +12,7 @@ pub const EditRequest = struct {
     range: ?[2]usize = null,
     after: ?usize = null,
     content: ?[]const u8 = null,
+    root_dir: ?std.fs.Dir = null,
 };
 
 pub const EditResult = struct {
@@ -31,7 +32,8 @@ pub fn applyEdit(
     if (!has_lock) return error.FileLocked;
     errdefer agents.releaseLock(req.agent_id, req.path);
 
-    const file = try std.fs.cwd().openFile(req.path, .{});
+    const dir = req.root_dir orelse std.fs.cwd();
+    const file = try dir.openFile(req.path, .{});
     defer file.close();
     const source = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
     defer allocator.free(source);
@@ -89,7 +91,6 @@ pub fn applyEdit(
     defer allocator.free(result);
 
     // Atomic write: write to temp file then rename to prevent corruption on crash
-    const dir = std.fs.cwd();
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.codedb_tmp", .{req.path});
     defer allocator.free(tmp_path);
 

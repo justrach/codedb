@@ -571,9 +571,44 @@ fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
             uri_raw["file://".len..]
         else
             uri_raw;
+        // Percent-decode the URI path (e.g. %20 → space)
+        var decode_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var decode_len: usize = 0;
+        {
+            var i: usize = 0;
+            while (i < stripped.len) : (i += 1) {
+                if (i + 2 < stripped.len and stripped[i] == '%') {
+                    const hi = std.fmt.charToDigit(stripped[i + 1], 16) catch {
+                        if (decode_len < decode_buf.len) {
+                            decode_buf[decode_len] = stripped[i];
+                            decode_len += 1;
+                        }
+                        continue;
+                    };
+                    const lo = std.fmt.charToDigit(stripped[i + 2], 16) catch {
+                        if (decode_len < decode_buf.len) {
+                            decode_buf[decode_len] = stripped[i];
+                            decode_len += 1;
+                        }
+                        continue;
+                    };
+                    if (decode_len < decode_buf.len) {
+                        decode_buf[decode_len] = @as(u8, hi) << 4 | lo;
+                        decode_len += 1;
+                    }
+                    i += 2; // skip the two hex digits (loop will add 1 more)
+                } else {
+                    if (decode_len < decode_buf.len) {
+                        decode_buf[decode_len] = stripped[i];
+                        decode_len += 1;
+                    }
+                }
+            }
+        }
+        const decoded = decode_buf[0..decode_len];
         // Canonicalize to resolve symlinks and normalize
         var canon_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const path = std.fs.cwd().realpath(stripped, &canon_buf) catch {
+        const path = std.fs.cwd().realpath(decoded, &canon_buf) catch {
             std.log.warn("codedb mcp: cannot resolve root \"{s}\"", .{uri_raw});
             continue;
         };
@@ -1200,23 +1235,24 @@ fn handleEdit(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     const range_end = getInt(args, "range_end");
     const after = getInt(args, "after");
 
-    // Build absolute path so secondary roots resolve correctly.
-    // edit.zig uses cwd().openFile(req.path) — absolute paths bypass cwd.
-    const full_path = std.fmt.allocPrint(alloc, "{s}/{s}", .{ project_path, path }) catch {
-        out.appendSlice(alloc, "error: alloc failed for path") catch {};
+    // Open the project root as a Dir so edit.zig resolves relative paths against it.
+    // The relative path is kept as req.path so store/explorer record it correctly.
+    var root_dir = std.fs.cwd().openDir(project_path, .{}) catch {
+        out.appendSlice(alloc, "error: cannot open project root") catch {};
         return;
     };
-    defer alloc.free(full_path);
+    defer root_dir.close();
 
     // Use agent 1 (the __filesystem__ agent registered at startup).
     // TODO: agent_id is hardcoded to 1 — two MCP clients share the same agent_id and
     // could both acquire locks on different files without conflict, but cannot detect
     // concurrent edits to the same file from separate connections.
     var req = edit_mod.EditRequest{
-        .path = full_path,
+        .path = path,
         .agent_id = 1,
         .op = op,
         .content = content,
+        .root_dir = root_dir,
     };
     if (range_start != null and range_end != null) {
         if (range_start.? <= 0 or range_end.? <= 0) {
