@@ -63,6 +63,7 @@ pub fn writeSnapshot(
     defer allocator.free(tmp_path);
 
     var file = try std.fs.cwd().createFile(tmp_path, .{});
+    errdefer std.fs.cwd().deleteFile(tmp_path) catch {};
 
     var sections: std.ArrayList(SectionEntry) = .{};
     defer sections.deinit(allocator);

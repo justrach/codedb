@@ -96,6 +96,7 @@ pub fn applyEdit(
 
     {
         const tmp_file = try dir.createFile(tmp_path, .{});
+        errdefer dir.deleteFile(tmp_path) catch {};
         defer tmp_file.close();
         try tmp_file.writeAll(result);
     }

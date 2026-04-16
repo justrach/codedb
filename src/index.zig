@@ -277,6 +277,7 @@ pub const WordIndex = struct {
         defer self.allocator.free(final_path);
 
         const file = try std.fs.cwd().createFile(tmp_path, .{});
+        errdefer std.fs.cwd().deleteFile(tmp_path) catch {};
         defer file.close();
 
         var file_buf: [256 * 1024]u8 = undefined;
@@ -807,7 +808,9 @@ pub const TrigramIndex = struct {
             }
             if (is_new_doc) {
                 try idx_gop.value_ptr.items.append(self.allocator, .{
-                    .doc_id = doc_id, .next_mask = mask.next_mask, .loc_mask = mask.loc_mask,
+                    .doc_id = doc_id,
+                    .next_mask = mask.next_mask,
+                    .loc_mask = mask.loc_mask,
                 });
             } else {
                 const posting = try idx_gop.value_ptr.getOrAddPosting(self.allocator, doc_id);
@@ -859,7 +862,9 @@ pub const TrigramIndex = struct {
                 idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
             }
             try idx_gop.value_ptr.items.append(self.allocator, .{
-                .doc_id = doc_id, .next_mask = mask.next_mask, .loc_mask = mask.loc_mask,
+                .doc_id = doc_id,
+                .next_mask = mask.next_mask,
+                .loc_mask = mask.loc_mask,
             });
             try tri_list.append(self.allocator, tri);
         }
@@ -878,7 +883,9 @@ pub const TrigramIndex = struct {
                 idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
             }
             try idx_gop.value_ptr.items.append(self.allocator, .{
-                .doc_id = doc_id, .next_mask = te.mask.next_mask, .loc_mask = te.mask.loc_mask,
+                .doc_id = doc_id,
+                .next_mask = te.mask.next_mask,
+                .loc_mask = te.mask.loc_mask,
             });
         }
     }
@@ -1185,6 +1192,7 @@ pub const TrigramIndex = struct {
         const postings_final = try std.fmt.allocPrint(self.allocator, "{s}/trigram.postings", .{dir_path});
         defer self.allocator.free(postings_final);
 
+        errdefer std.fs.cwd().deleteFile(postings_tmp) catch {};
         {
             const file = try std.fs.cwd().createFile(postings_tmp, .{});
             defer file.close();
@@ -1227,6 +1235,7 @@ pub const TrigramIndex = struct {
         const lookup_final = try std.fmt.allocPrint(self.allocator, "{s}/trigram.lookup", .{dir_path});
         defer self.allocator.free(lookup_final);
 
+        errdefer std.fs.cwd().deleteFile(lookup_tmp) catch {};
         {
             const file = try std.fs.cwd().createFile(lookup_tmp, .{});
             defer file.close();
@@ -1864,7 +1873,6 @@ pub const MmapTrigramIndex = struct {
     }
 };
 
-
 pub const AnyTrigramIndex = union(enum) {
     heap: TrigramIndex,
     mmap: MmapTrigramIndex,
@@ -2471,6 +2479,7 @@ fn finishFrequencyTable(counts: *const [256][256]u64) [256][256]u16 {
 pub fn writeFrequencyTable(table: *const [256][256]u16, dir_path: []const u8) !void {
     var dir = try std.fs.cwd().openDir(dir_path, .{});
     defer dir.close();
+    errdefer dir.deleteFile("pair_freq.bin.tmp") catch {};
     {
         const tmp = try dir.createFile("pair_freq.bin.tmp", .{});
         defer tmp.close();
