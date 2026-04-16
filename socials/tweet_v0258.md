@@ -16,7 +16,7 @@ Identifier splitting + lowercase normalization moved sub-token queries into Tier
 
 ## LinkedIn
 
-First time posting codedb on LinkedIn, so here is the clean intro.
+Hey guys!! I haven't properly posted about codedb on LinkedIn yet, so here's the clean intro.
 
 codedb is a local code intelligence engine for AI agents, written in Zig.
 
