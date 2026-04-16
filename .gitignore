@@ -21,5 +21,10 @@ install/.wrangler/
 # Generated snapshot (machine-specific)
 codedb.snapshot
 release/
-release/
 socials/
+
+# Build artifacts / release binaries
+dist/
+
+# Zig package cache/vendor dir
+zig-pkg/
