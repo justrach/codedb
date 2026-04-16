@@ -16,44 +16,29 @@ Identifier splitting + lowercase normalization moved sub-token queries into Tier
 
 ## LinkedIn
 
-First time posting codedb on LinkedIn, so here is the short version.
+First time posting codedb on LinkedIn, so here is the clean intro.
 
-codedb is a local code search and indexing engine for AI agents, written in Zig.
+codedb is a local code intelligence engine for AI agents, written in Zig.
 
-The problem I wanted to solve was simple: most agent workflows still keep bouncing between `grep`, file reads, and huge prompt dumps just to answer basic codebase questions. That wastes latency, tokens, and a lot of context window on raw text the model should never have needed in the first place.
+The problem it solves is pretty straightforward: most agent workflows still bounce between `grep`, full-file reads, and raw shell output just to answer simple questions about a codebase. The repo barely changes between queries, but the agent keeps paying the same cost over and over again in latency, process startup, and token waste.
 
-codedb indexes a repo once, keeps the useful structure in memory, and gives agents direct access to things like:
+codedb indexes a repo once on startup, keeps structural information in memory, and serves it back over MCP. So instead of rescanning the filesystem every time, an agent can ask directly for symbol outlines, exact identifier hits, dependency edges, file trees, structured reads, and edits.
 
-- file trees
-- symbol outlines
-- exact symbol lookup
-- full-text search
-- dependency lookups
-- structured file reads and edits
+The speedup matters, but the bigger win is shape. Agents do better when they get structured answers instead of giant walls of raw text.
 
-So instead of rescanning the filesystem every time, the agent can ask the codebase directly.
+The latest release, v0.2.58, is a good example of the direction I want the project to keep moving in. People do not search code the way identifiers are written. They search for the fragment they remember: `search`, not `searchContent`; `http`, not `HTTPHandler`; `index`, not `word_index`.
 
-v0.2.58 is a small release, but it shows the kind of improvements I care about.
+So v0.2.58 changes the word index to split identifiers into lowercased sub-tokens and normalize lookups to lowercase. A lot of those queries now resolve in the Tier 0 word index instead of falling through to the heavier trigram/content scan path.
 
-People do not search code the way identifiers are written. They type the piece they remember:
+On a warm, pre-indexed repo, sub-token queries are 3.9x faster p50, full identifier queries are 2.9x faster, and recall stays the same.
 
-- `search`, not `searchContent`
-- `http`, not `HTTPHandler`
-- `index`, not `word_index`
+If you want the deeper write-up, I published two posts on Codegraff:
 
-So I changed the word index to split identifiers into lowercased sub-tokens and normalize lookups to lowercase.
+- Why codedb feels instant for agents: https://codegraff.com/blog/codedb-code-intelligence
+- codedb 0.2.572: https://codegraff.com/blog/codedb-0-2-572
 
-That moved a lot of common queries out of the trigram/content scan path and into Tier 0 word-index lookup.
+codedb is open source here: https://github.com/justrach/codedb
 
-Benchmark on a warm, pre-indexed repo:
-
-- sub-token queries: 3.9x faster p50
-- full identifier queries: 2.9x faster
-- recall: unchanged
-
-My favorite kind of optimization is the one where the user does nothing differently. You type the thing you remember, and the engine gets better at meeting you there.
-
-Release: https://github.com/justrach/codedb2/releases/tag/v0.2.58
-Benchmark: https://github.com/justrach/codedb2/blob/main/benchmarks/v0.2.58-vs-v0.2.572.md
+I think AI agents should have the same kind of structural code intelligence that IDEs have had for years. codedb is my attempt to make that usable everywhere, not just inside one editor.
 
 #codedb #zig #ai #mcp #devtools
