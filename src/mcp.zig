@@ -364,7 +364,7 @@ const tools_list =
     \\{"name":"codedb_status","description":"Get current codedb status: number of indexed files and current sequence number.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_snapshot","description":"Get the full pre-rendered snapshot of the codebase as a single JSON blob. Contains tree, all outlines, symbol index, and dependency graph. Ideal for caching or deploying to edge workers.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_bundle","description":"Batch multiple queries in one call. Max 20 ops. WARNING: Avoid bundling multiple codedb_read calls on large files — use codedb_outline + codedb_symbol instead. Bundle outline+symbol+search, not full file reads. Total response is not size-capped, so large bundles can exceed token limits.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string","description":"Tool name (e.g. codedb_outline, codedb_symbol, codedb_read)"},"arguments":{"type":"object","description":"Tool arguments"}},"required":["tool"]},"description":"Array of tool calls to execute"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
-    \\{"name":"codedb_remote","description":"Query any GitHub repo via codedb.codegraff.com cloud intelligence. Gets file tree, symbol outlines, or searches code in external repos without cloning. Use when you need to understand a dependency, check an external API, or explore a repo you don't have locally.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. justrach/merjs)"},"action":{"type":"string","enum":["tree","outline","search","meta"],"description":"What to query: tree (file list), outline (symbols), search (text search), meta (repo info)"},"query":{"type":"string","description":"Search query (required when action=search)"}},"required":["repo","action"]}},
+    \\{"name":"codedb_remote","description":"Query any GitHub repo via codedb.codegraff.com cloud intelligence. Works without cloning. Use for dependencies, external APIs, or repos you don't have locally. Actions: tree (file list), outline (all symbols by file), search (fuzzy-ranked; returns {files, symbols, results} with content_truncated flag on big repos), meta (repo info + hash), pages (DeepWiki-style TOC: overview/hotspots/api/types/tests), page (one page's contents — pass 'slug' arg), file (read one file's full contents — pass 'path' arg, works on any repo size via streaming).","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. justrach/merjs)"},"action":{"type":"string","enum":["tree","outline","search","meta","pages","page","file"],"description":"What to query. Start with 'pages' for a new repo to see the structural TOC, then drill in with 'page' or 'search'."},"query":{"type":"string","description":"Search query (required when action=search)"},"slug":{"type":"string","description":"Page slug for action=page. One of: overview, hotspots, api, types, tests"},"path":{"type":"string","description":"File path for action=file (e.g. src/main.zig)"},"fresh":{"type":"boolean","description":"Bypass any codedb.snapshot committed in the repo and force a fresh tarball build. Useful when the committed snapshot is stale."}},"required":["repo","action"]}},
     \\{"name":"codedb_projects","description":"List all locally indexed projects on this machine. Shows project paths, data directory hashes, and whether a snapshot exists. Use to discover what codebases are available.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"codedb_index","description":"Index a local folder on this machine. Scans all source files, builds outlines/trigrams/word indexes, and creates a codedb.snapshot in the target directory. After indexing, the folder is queryable via the project param on any tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the folder to index (e.g. /Users/you/myproject)"}},"required":["path"]}},
     \\{"name":"codedb_find","description":"Fuzzy file search — finds files by approximate name. Typo-tolerant subsequence matching with word-boundary and filename bonuses. Use when you know roughly what file you're looking for but not the exact path. Much faster than codedb_tree + manual scan.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy search query (e.g. 'authmidlware', 'test_auth', 'main.zig')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
@@ -1287,11 +1287,11 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         return;
     };
     const action = getStr(args, "action") orelse {
-        out.appendSlice(alloc, "error: missing 'action' (tree, outline, search, meta)") catch {};
+        out.appendSlice(alloc, "error: missing 'action' (tree, outline, search, meta, pages, page, file)") catch {};
         return;
     };
     // Validate action against whitelist to prevent SSRF/path injection
-    const valid_actions = [_][]const u8{ "tree", "outline", "search", "meta" };
+    const valid_actions = [_][]const u8{ "tree", "outline", "search", "meta", "pages", "page", "file" };
     var action_valid = false;
     for (valid_actions) |va| {
         if (std.mem.eql(u8, action, va)) {
@@ -1300,7 +1300,7 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         }
     }
     if (!action_valid) {
-        out.appendSlice(alloc, "error: invalid action, must be one of: tree, outline, search, meta") catch {};
+        out.appendSlice(alloc, "error: invalid action, must be one of: tree, outline, search, meta, pages, page, file") catch {};
         return;
     }
 
@@ -1320,12 +1320,26 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         return;
     }
 
-    // Build URL and curl args
-    var url_buf: [512]u8 = undefined;
+    // Build URL and curl args.
+    //
+    // URL shape by action:
+    //   tree / outline / meta / pages  → /:repo/:action
+    //   page                            → /:repo/pages/:slug
+    //   search                          → /:repo/search?q=<query>
+    //   file                            → /:repo/file?path=<path>
+    // ?fresh=1 applies to any action and bypasses the committed codedb.snapshot.
+    var url_buf: [768]u8 = undefined;
     const query = getStr(args, "query");
+    const slug = getStr(args, "slug");
+    const path = getStr(args, "path");
+    const fresh = if (args.get("fresh")) |v| switch (v) {
+        .bool => |b| b,
+        else => false,
+    } else false;
+    const fresh_suffix: []const u8 = if (fresh) "?fresh=1" else "";
 
     if (std.mem.eql(u8, action, "search")) {
-        const base_url = std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/search", .{repo}) catch {
+        const base_url = std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/search{s}", .{ repo, fresh_suffix }) catch {
             out.appendSlice(alloc, "error: URL too long") catch {};
             return;
         };
@@ -1354,7 +1368,90 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         return;
     }
 
-    const url = std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/{s}", .{ repo, action }) catch {
+    if (std.mem.eql(u8, action, "file")) {
+        const wanted_path = path orelse {
+            out.appendSlice(alloc, "error: action=file requires 'path' arg (e.g. src/main.zig)") catch {};
+            return;
+        };
+        // Reject path traversal or leading slash up-front — the Worker also
+        // validates, but fail fast locally with a clear message.
+        if (std.mem.indexOf(u8, wanted_path, "..") != null or (wanted_path.len > 0 and wanted_path[0] == '/')) {
+            out.appendSlice(alloc, "error: invalid path") catch {};
+            return;
+        }
+        const base_url = std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/file{s}", .{ repo, fresh_suffix }) catch {
+            out.appendSlice(alloc, "error: URL too long") catch {};
+            return;
+        };
+        var p_buf: [512]u8 = undefined;
+        const p_param = std.fmt.bufPrint(&p_buf, "path={s}", .{wanted_path}) catch {
+            out.appendSlice(alloc, "error: path too long") catch {};
+            return;
+        };
+        const result = std.process.Child.run(.{
+            .allocator = alloc,
+            .argv = &.{ "curl", "-sf", "--max-time", "60", "-G", "--data-urlencode", p_param, base_url },
+        }) catch {
+            out.appendSlice(alloc, "error: failed to fetch from codedb.codegraff.com") catch {};
+            return;
+        };
+        defer alloc.free(result.stdout);
+        defer alloc.free(result.stderr);
+        if (result.term.Exited != 0) {
+            out.appendSlice(alloc, "error: codedb.codegraff.com returned error for ") catch {};
+            out.appendSlice(alloc, repo) catch {};
+            out.appendSlice(alloc, "/file?path=") catch {};
+            out.appendSlice(alloc, wanted_path) catch {};
+            return;
+        }
+        out.appendSlice(alloc, result.stdout) catch {};
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "page")) {
+        const page_slug = slug orelse {
+            out.appendSlice(alloc, "error: action=page requires 'slug' arg (overview, hotspots, api, types, tests)") catch {};
+            return;
+        };
+        // Whitelist slugs so we don't become a proxy for arbitrary paths.
+        const valid_slugs = [_][]const u8{ "overview", "hotspots", "api", "types", "tests" };
+        var slug_ok = false;
+        for (valid_slugs) |vs| {
+            if (std.mem.eql(u8, page_slug, vs)) {
+                slug_ok = true;
+                break;
+            }
+        }
+        if (!slug_ok) {
+            out.appendSlice(alloc, "error: invalid slug, must be one of: overview, hotspots, api, types, tests") catch {};
+            return;
+        }
+        const url = std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/pages/{s}{s}", .{ repo, page_slug, fresh_suffix }) catch {
+            out.appendSlice(alloc, "error: URL too long") catch {};
+            return;
+        };
+        const result = std.process.Child.run(.{
+            .allocator = alloc,
+            .argv = &.{ "curl", "-sf", "--max-time", "30", url },
+        }) catch {
+            out.appendSlice(alloc, "error: failed to fetch from codedb.codegraff.com") catch {};
+            return;
+        };
+        defer alloc.free(result.stdout);
+        defer alloc.free(result.stderr);
+        if (result.term.Exited != 0) {
+            out.appendSlice(alloc, "error: codedb.codegraff.com returned error for ") catch {};
+            out.appendSlice(alloc, repo) catch {};
+            out.appendSlice(alloc, "/pages/") catch {};
+            out.appendSlice(alloc, page_slug) catch {};
+            return;
+        }
+        out.appendSlice(alloc, result.stdout) catch {};
+        return;
+    }
+
+    // tree / outline / meta / pages
+    const url = std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/{s}{s}", .{ repo, action, fresh_suffix }) catch {
         out.appendSlice(alloc, "error: URL too long") catch {};
         return;
     };
