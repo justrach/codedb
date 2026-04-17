@@ -51,6 +51,25 @@ const SectionEntry = struct {
     length: u64,
 };
 
+/// Returns true if all per-file fields fit in the snapshot's on-disk widths.
+/// If any field exceeds its width, the file should be skipped from OUTLINE_STATE
+/// and reindexed from CONTENT at load time.
+fn outlineFitsFormat(path: []const u8, outline: *const FileOutline) bool {
+    if (path.len > std.math.maxInt(u16)) return false;
+    if (outline.imports.items.len > std.math.maxInt(u32)) return false;
+    for (outline.imports.items) |imp| {
+        if (imp.len > std.math.maxInt(u16)) return false;
+    }
+    if (outline.symbols.items.len > std.math.maxInt(u32)) return false;
+    for (outline.symbols.items) |sym| {
+        if (sym.name.len > std.math.maxInt(u16)) return false;
+        if (sym.detail) |d| {
+            if (d.len > std.math.maxInt(u16)) return false;
+        }
+    }
+    return true;
+}
+
 /// Write a portable `.codedb` snapshot file.
 pub fn writeSnapshot(
     explorer: *Explorer,
@@ -145,19 +164,32 @@ pub fn writeSnapshot(
 
         var file_count_buf: [4]u8 = undefined;
         var file_count: u32 = 0;
-        var count_iter = explorer.outlines.keyIterator();
-        while (count_iter.next()) |key_ptr| {
-            if (!isSensitivePath(key_ptr.*)) file_count += 1;
+        var count_iter = explorer.outlines.iterator();
+        while (count_iter.next()) |entry| {
+            if (isSensitivePath(entry.key_ptr.*)) continue;
+            if (!outlineFitsFormat(entry.key_ptr.*, entry.value_ptr)) continue;
+            file_count += 1;
         }
         std.mem.writeInt(u32, &file_count_buf, file_count, .little);
         try writer.writeAll(&file_count_buf);
 
+        var skip_warn_count: u32 = 0;
         var iter = explorer.outlines.iterator();
         while (iter.next()) |entry| {
             if (isSensitivePath(entry.key_ptr.*)) continue;
 
             const path = entry.key_ptr.*;
             const outline = entry.value_ptr;
+
+            if (!outlineFitsFormat(path, outline)) {
+                if (skip_warn_count < 5) {
+                    std.log.warn("codedb: skipping OUTLINE_STATE entry for '{s}' (field too large for snapshot format); will reparse from CONTENT at load time", .{path});
+                } else if (skip_warn_count == 5) {
+                    std.log.warn("codedb: further OUTLINE_STATE skip warnings suppressed", .{});
+                }
+                skip_warn_count += 1;
+                continue;
+            }
 
             var path_len_buf: [2]u8 = undefined;
             std.mem.writeInt(u16, &path_len_buf, @intCast(path.len), .little);
@@ -228,7 +260,16 @@ pub fn writeSnapshot(
             const path = entry.key_ptr.*;
             // Skip sensitive files that may contain secrets
             if (isSensitivePath(path)) continue;
+            // Skip files whose path or content length exceeds on-disk width
+            if (path.len > std.math.maxInt(u16)) {
+                std.log.warn("codedb: skipping CONTENT entry for '{s}' (path too long for snapshot format)", .{path});
+                continue;
+            }
             const content = entry.value_ptr.*;
+            if (content.len > std.math.maxInt(u32)) {
+                std.log.warn("codedb: skipping CONTENT entry for '{s}' (content too large for snapshot format)", .{path});
+                continue;
+            }
             var pl_buf: [2]u8 = undefined;
             std.mem.writeInt(u16, &pl_buf, @intCast(path.len), .little);
             try file.writeAll(&pl_buf);
@@ -935,6 +976,9 @@ fn cleanupStaleTmpFiles(output_path: []const u8) void {
     var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
     defer dir.close();
 
+    const now_ms = std.time.milliTimestamp();
+    const stale_threshold_ms: i64 = 5 * 60 * 1000; // 5 minutes
+
     var iter = dir.iterate();
     while (iter.next() catch null) |entry| {
         if (entry.kind != .file) continue;
@@ -944,6 +988,11 @@ fn cleanupStaleTmpFiles(output_path: []const u8) void {
             std.mem.startsWith(u8, name, basename) and
             endsWith(name, ".tmp"))
         {
+            // Only delete if file is older than threshold (avoids races with
+            // concurrent writers from other codedb processes on same project).
+            const stat = dir.statFile(name) catch continue;
+            const mtime_ms: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_ms));
+            if (now_ms - mtime_ms < stale_threshold_ms) continue;
             dir.deleteFile(name) catch {};
         }
     }

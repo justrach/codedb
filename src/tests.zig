@@ -6094,7 +6094,6 @@ test "issue-179: Python multi-line docstring with def inside" {
     try testing.expectEqual(@as(usize, 0), inner.len);
 }
 
-
 test "issue-262: sparse+trigram intersection drops files only in trigram index" {
     // When both sparse and trigram indices return candidates, searchContent
     // intersects them.  A file present in trigram candidates but absent from
@@ -6539,4 +6538,97 @@ test "search: line numbers correct with incremental counting" {
     try testing.expectEqual(@as(usize, 2), results.len);
     try testing.expectEqual(@as(u32, 3), results[0].line_num);
     try testing.expectEqual(@as(u32, 6), results[1].line_num);
+}
+
+test "snapshot: u16 overflow in OUTLINE_STATE skips file instead of panicking" {
+    // Regression: writeSnapshot used @intCast to narrow symbol detail length
+    // from usize to u16. If the detail exceeded 65535 bytes, it panicked.
+    // After the fix, files whose outline fields don't fit the on-disk widths
+    // are skipped from OUTLINE_STATE and re-indexed from CONTENT at load time.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // Build a Zig source whose first function line exceeds u16 max (65535 chars).
+    var src: std.ArrayList(u8) = .{};
+    defer src.deinit(testing.allocator);
+    try src.appendSlice(testing.allocator, "pub fn hugeDetail(");
+    var param_i: usize = 0;
+    while (src.items.len < 70000) : (param_i += 1) {
+        var pb: [20]u8 = undefined;
+        const ps = std.fmt.bufPrint(&pb, "p{d}: u8, ", .{param_i}) catch break;
+        try src.appendSlice(testing.allocator, ps);
+    }
+    try src.appendSlice(testing.allocator, ") void {}\n");
+    try testing.expect(src.items.len > std.math.maxInt(u16)); // guard: detail exceeds u16
+
+    var exp = Explorer.init(aa);
+    try exp.indexFile("src/huge.zig", src.items);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/huge.codedb", .{dir_path});
+    defer testing.allocator.free(snap_path);
+
+    // Must NOT panic — previously this would @intCast panic
+    try snapshot_mod.writeSnapshot(&exp, dir_path, snap_path, testing.allocator);
+
+    // Load it back — file should be recoverable from CONTENT section
+    var exp2 = Explorer.init(testing.allocator);
+    defer exp2.deinit();
+    var store2 = Store.init(testing.allocator);
+    defer store2.deinit();
+
+    const loaded = snapshot_mod.loadSnapshot(snap_path, &exp2, &store2, testing.allocator);
+    try testing.expect(loaded);
+
+    // The symbol must still be findable — re-indexed from CONTENT
+    var sym_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer sym_arena.deinit();
+    const results = try exp2.findAllSymbols("hugeDetail", sym_arena.allocator());
+    try testing.expect(results.len >= 1);
+}
+
+test "snapshot: file with u16-safe detail still written to OUTLINE_STATE" {
+    // Verify that files with normal-sized fields are still written to OUTLINE_STATE
+    // (not skipped). The 4096-byte detail test above covers a < u16::max detail.
+    // This test ensures OUTLINE_STATE is populated for a normal file and that
+    // the round-trip via fast path works.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var exp = Explorer.init(aa);
+    try exp.indexFile("src/normal.zig", "pub fn normalFn() void {}\n");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/normal.codedb", .{dir_path});
+    defer testing.allocator.free(snap_path);
+
+    try snapshot_mod.writeSnapshot(&exp, dir_path, snap_path, testing.allocator);
+
+    // OUTLINE_STATE section should exist and have nonzero length
+    var sections = (try snapshot_mod.readSections(snap_path, testing.allocator)).?;
+    defer sections.deinit();
+    const ols = sections.get(@intFromEnum(snapshot_mod.SectionId.outline_state));
+    try testing.expect(ols != null);
+    try testing.expect(ols.?.length > 4); // more than just the file_count u32
+
+    // Round-trip loads correctly
+    var exp2 = Explorer.init(testing.allocator);
+    defer exp2.deinit();
+    var store2 = Store.init(testing.allocator);
+    defer store2.deinit();
+    const loaded = snapshot_mod.loadSnapshot(snap_path, &exp2, &store2, testing.allocator);
+    try testing.expect(loaded);
+
+    var sym_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer sym_arena.deinit();
+    const results = try exp2.findAllSymbols("normalFn", sym_arena.allocator());
+    try testing.expect(results.len >= 1);
 }
