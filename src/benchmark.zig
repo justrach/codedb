@@ -1,4 +1,5 @@
 /// codedb benchmark — measures indexing speed, query latency, recall, and
+const cio = @import("cio.zig");
 /// watcher efficiency against a real repository.
 ///
 /// Usage:
@@ -26,8 +27,8 @@ const Args = struct {
 };
 
 fn parseArgs(allocator: std.mem.Allocator) !Args {
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
+    const argv = try cio.argsAlloc(allocator);
+    defer cio.argsFree(allocator, argv);
     var out = Args{};
     var i: usize = 1;
     while (i < argv.len) : (i += 1) {
@@ -81,7 +82,7 @@ fn benchSearch(explorer: *Explorer, query: []const u8, n: usize, alloc: std.mem.
     var total: u64 = 0;
     var hits: usize = 0;
     for (0..n) |_| {
-        var t = try std.time.Timer.start();
+        var t = try cio.Timer.start();
         const r = try explorer.searchContent(query, alloc, 50);
         total +|= t.read();
         hits = r.len;
@@ -95,7 +96,7 @@ fn benchWord(explorer: *Explorer, word: []const u8, n: usize, alloc: std.mem.All
     var total: u64 = 0;
     var hits: usize = 0;
     for (0..n) |_| {
-        var t = try std.time.Timer.start();
+        var t = try cio.Timer.start();
         const r = try explorer.searchWord(word, alloc);
         total +|= t.read();
         hits = r.len;
@@ -108,7 +109,7 @@ fn benchSymbol(explorer: *Explorer, name: []const u8, n: usize, alloc: std.mem.A
     var total: u64 = 0;
     var hits: usize = 0;
     for (0..n) |_| {
-        var t = try std.time.Timer.start();
+        var t = try cio.Timer.start();
         const r = try explorer.findAllSymbols(name, alloc);
         total +|= t.read();
         hits = r.len;
@@ -189,7 +190,7 @@ fn benchGitHead(root: []const u8) GitHeadResult {
     for (0..5) |_| {
         var d = std.fs.cwd().openDir(root, .{}) catch break;
         defer d.close();
-        var t = std.time.Timer.start() catch break;
+        var t = cio.Timer.start() catch break;
         const st = compat.dirStatFile(d, ".git/HEAD") catch break;
         total +|= t.read();
         if (st.mtime != st0.mtime) stable = false;
@@ -283,7 +284,7 @@ pub fn main() !void {
     var explorer = Explorer.init(alloc);
     defer explorer.deinit();
 
-    var t0 = try std.time.Timer.start();
+    var t0 = try cio.Timer.start();
     watcher.initialScan(&store, &explorer, root, alloc, false) catch |err| {
         var errbuf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&errbuf, "benchmark: initialScan failed: {}\n", .{err}) catch "benchmark: initialScan failed\n";
@@ -316,7 +317,7 @@ pub fn main() !void {
     };
 
     if (args.json) {
-        try printJson(alloc, std.fs.File.stdout(), result);
+        try printJson(alloc, cio.File.stdout(), result);
     } else {
         try printHuman(alloc, std.fs.File.stderr(), result);
     }

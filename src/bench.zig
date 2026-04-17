@@ -1,4 +1,5 @@
 const std = @import("std");
+const cio = @import("cio.zig");
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
@@ -45,8 +46,8 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     const emit_json = blk: {
-        const args = try std.process.argsAlloc(allocator);
-        defer std.process.argsFree(allocator, args);
+        const args = try cio.argsAlloc(allocator);
+        defer cio.argsFree(allocator, args);
         for (args[1..]) |arg| {
             if (std.mem.eql(u8, arg, "--json")) break :blk true;
         }
@@ -110,7 +111,7 @@ pub fn main() !void {
     const corpus = summarizeCorpus(&explorer);
     try writeHumanSummary(allocator, std.fs.File.stderr(), corpus.files, corpus.bytes, &results);
     if (emit_json) {
-        try writeJsonSummary(allocator, std.fs.File.stdout(), repo_root, tmp_root, corpus.files, corpus.bytes, &results);
+        try writeJsonSummary(allocator, cio.File.stdout(), repo_root, tmp_root, corpus.files, corpus.bytes, &results);
     }
 }
 
@@ -132,7 +133,7 @@ fn runCase(
             try resetBenchTarget(explorer, store);
         }
 
-        var timer = try std.time.Timer.start();
+        var timer = try cio.Timer.start();
         response_bytes = bench_ctx.runToolCall(allocator, case.name, case.tool, args, store, explorer, agents, telem);
         const elapsed = timer.read();
         total_ns +|= elapsed;

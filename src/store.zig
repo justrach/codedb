@@ -1,4 +1,5 @@
 const std = @import("std");
+const cio = @import("cio.zig");
 const compat = @import("compat.zig");
 const AgentId = @import("agent.zig").AgentId;
 const version = @import("version.zig");
@@ -18,7 +19,7 @@ pub const Store = struct {
     files: std.StringHashMap(FileVersions),
     seq: u64,
     allocator: std.mem.Allocator,
-    mu: std.Thread.Mutex = .{},
+    mu: cio.Mutex = .{},
     data_log: ?std.fs.File = null,
     data_log_pos: u64 = 0,
 

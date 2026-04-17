@@ -1,4 +1,5 @@
 const std = @import("std");
+const cio = @import("cio.zig");
 const builtin = @import("builtin");
 const sty = @import("style.zig");
 const release_info = @import("release_info.zig");
@@ -242,7 +243,7 @@ fn downloadAndReplaceBinary(allocator: std.mem.Allocator, version: []const u8, a
     const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/{s}", .{ github_repo, version, asset_name });
     defer allocator.free(url);
 
-    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ dest_path, std.time.nanoTimestamp() });
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ dest_path, cio.nanoTimestamp() });
     defer allocator.free(tmp_path);
     errdefer std.fs.deleteFileAbsolute(tmp_path) catch {};
 

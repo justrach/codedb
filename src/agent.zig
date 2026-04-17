@@ -1,4 +1,5 @@
 const std = @import("std");
+const cio = @import("cio.zig");
 
 /// An Agent is a first-class citizen — not a string column, but a live entity
 /// with its own identity, write log, cursor position, and capabilities.
@@ -31,7 +32,7 @@ pub const AgentRegistry = struct {
     agents: std.AutoHashMap(AgentId, Agent),
     next_id: AgentId,
     allocator: std.mem.Allocator,
-    mu: std.Thread.Mutex = .{},
+    mu: cio.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator) AgentRegistry {
         return .{

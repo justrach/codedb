@@ -1,4 +1,5 @@
 const std = @import("std");
+const cio = @import("cio.zig");
 
 fn isExactOrChild(path: []const u8, prefix: []const u8) bool {
     if (!std.mem.startsWith(u8, path, prefix)) return false;
@@ -13,7 +14,7 @@ pub fn isIndexableRoot(path: []const u8) bool {
     if (isExactOrChild(path, "/var/tmp")) return false;
 
     // Block home directory itself (not subdirectories) — prevents 17GB RAM spike (#174)
-    if (std.posix.getenv("HOME")) |home| {
+    if (cio.posixGetenv("HOME")) |home| {
         if (home.len > 0 and std.mem.eql(u8, path, home)) return false;
     }
     // Also block common home patterns directly

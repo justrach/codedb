@@ -1,4 +1,5 @@
 const std = @import("std");
+const cio = @import("cio.zig");
 const builtin = @import("builtin");
 const compat = @import("compat.zig");
 const explore = @import("explore.zig");
@@ -41,7 +42,7 @@ pub const Telemetry = struct {
     path_buf: [std.fs.max_path_bytes]u8 = undefined,
     path_len: usize = 0,
     call_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    write_lock: std.Thread.Mutex = .{},
+    write_lock: cio.Mutex = .{},
 
     pub fn init(data_dir: []const u8, allocator: std.mem.Allocator, disabled: bool) Telemetry {
         var self = Telemetry{};

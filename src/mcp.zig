@@ -1,9 +1,11 @@
 // codedb MCP server — JSON-RPC 2.0 over stdio
+const cio = @import("cio.zig");
 //
 // Exposes codedb's exploration + edit engine as MCP tools.
 // Uses mcp-zig for protocol utilities; adds roots support for workspace awareness.
 
 const std = @import("std");
+const testing = std.testing;
 const mcp_lib = @import("mcp");
 const mcpj = mcp_lib.json;
 const Root = mcp_lib.mcp.Root;
@@ -109,7 +111,7 @@ const ProjectCache = struct {
         last_used: i64,
     };
 
-    mu: std.Thread.RwLock,
+    mu: cio.RwLock,
     alloc: std.mem.Allocator,
     entries: [MAX_CACHED]?*Entry,
     default_path: []const u8,
@@ -167,6 +169,7 @@ const ProjectCache = struct {
             return error.OutOfMemory;
         };
         new_entry.explorer = Explorer.init(self.alloc);
+        new_entry.explorer.setRoot(p);
         new_entry.store = Store.init(self.alloc);
         new_entry.last_used = now;
 
@@ -280,9 +283,9 @@ pub const BenchContext = struct {
         var out: std.ArrayList(u8) = .{};
         defer out.deinit(alloc);
 
-        const t0 = std.time.nanoTimestamp();
+        const t0 = cio.nanoTimestamp();
         dispatch(alloc, tool, args, &out, store, explorer, agents, &self.cache);
-        const elapsed = std.time.nanoTimestamp() - t0;
+        const elapsed = cio.nanoTimestamp() - t0;
 
         const is_error = std.mem.startsWith(u8, out.items, "error:");
         telem.recordToolCall(name, elapsed, is_error, out.items.len);
@@ -415,7 +418,7 @@ pub fn run(
     default_path: []const u8,
     telem: *telemetry_mod.Telemetry,
 ) void {
-    const stdout = std.fs.File.stdout();
+    const stdout = cio.File.stdout();
     const stdin = std.fs.File.stdin();
     last_activity.store(std.time.milliTimestamp(), .release);
 
@@ -623,9 +626,9 @@ fn handleCall(
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(alloc);
 
-    const t0 = std.time.nanoTimestamp();
+    const t0 = cio.nanoTimestamp();
     dispatch(alloc, tool, args, &out, store, explorer, agents, cache);
-    const elapsed = std.time.nanoTimestamp() - t0;
+    const elapsed = cio.nanoTimestamp() - t0;
 
     const is_error = std.mem.startsWith(u8, out.items, "error:");
     telem.recordToolCall(name, elapsed, is_error, out.items.len);
@@ -951,7 +954,10 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
                 var result_list: std.ArrayList([]const u8) = .{};
                 for (deps) |dep| {
                     const d = alloc.dupe(u8, dep) catch continue;
-                    result_list.append(alloc, d) catch { alloc.free(d); continue; };
+                    result_list.append(alloc, d) catch {
+                        alloc.free(d);
+                        continue;
+                    };
                 }
                 results = result_list.toOwnedSlice(alloc) catch &.{};
             }
@@ -1708,9 +1714,15 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
         };
 
         if (std.mem.eql(u8, op, "find")) {
-            const query = getStr(step, "query") orelse { w.print("error: find needs 'query'\n", .{}) catch {}; return; };
+            const query = getStr(step, "query") orelse {
+                w.print("error: find needs 'query'\n", .{}) catch {};
+                return;
+            };
             const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
-            const matches = explorer.fuzzyFindFiles(query, alloc, max) catch { w.print("error: find failed\n", .{}) catch {}; return; };
+            const matches = explorer.fuzzyFindFiles(query, alloc, max) catch {
+                w.print("error: find failed\n", .{}) catch {};
+                return;
+            };
             defer alloc.free(matches);
             if (have_set) {
                 // Intersect: keep only files from current set that also appear in find results
@@ -1719,7 +1731,10 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 for (matches) |m| match_set.put(m.path, {}) catch {};
                 var wr: usize = 0;
                 for (file_set.items) |p| {
-                    if (match_set.contains(p)) { file_set.items[wr] = p; wr += 1; }
+                    if (match_set.contains(p)) {
+                        file_set.items[wr] = p;
+                        wr += 1;
+                    }
                 }
                 file_set.items.len = wr;
             } else {
@@ -1728,9 +1743,15 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 have_set = true;
             }
         } else if (std.mem.eql(u8, op, "search")) {
-            const query = getStr(step, "query") orelse { w.print("error: search needs 'query'\n", .{}) catch {}; return; };
+            const query = getStr(step, "query") orelse {
+                w.print("error: search needs 'query'\n", .{}) catch {};
+                return;
+            };
             const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
-            const results = explorer.searchContent(query, alloc, max) catch { w.print("error: search failed\n", .{}) catch {}; return; };
+            const results = explorer.searchContent(query, alloc, max) catch {
+                w.print("error: search failed\n", .{}) catch {};
+                return;
+            };
             defer {
                 for (results) |r| {
                     alloc.free(r.line_text);
@@ -1754,7 +1775,10 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 // Narrow file_set to only files that had hits
                 var wr: usize = 0;
                 for (file_set.items) |p| {
-                    if (hit_set.contains(p)) { file_set.items[wr] = p; wr += 1; }
+                    if (hit_set.contains(p)) {
+                        file_set.items[wr] = p;
+                        wr += 1;
+                    }
                 }
                 file_set.items.len = wr;
             } else {
@@ -1767,15 +1791,24 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                         // Dupe path — search results are freed by the defer above,
                         // but file_set must outlive this step for downstream ops
                         const duped = alloc.dupe(u8, r.path) catch continue;
-                        seen.put(duped, {}) catch { alloc.free(duped); continue; };
-                        file_set.append(alloc, duped) catch { alloc.free(duped); continue; };
+                        seen.put(duped, {}) catch {
+                            alloc.free(duped);
+                            continue;
+                        };
+                        file_set.append(alloc, duped) catch {
+                            alloc.free(duped);
+                            continue;
+                        };
                     }
                 }
                 have_set = true;
             }
         } else if (std.mem.eql(u8, op, "deps")) {
             // Expand file set by adding dependents/dependencies of current files
-            if (!have_set) { w.print("error: deps needs prior step\n", .{}) catch {}; return; }
+            if (!have_set) {
+                w.print("error: deps needs prior step\n", .{}) catch {};
+                return;
+            }
             const direction = getStr(step, "direction") orelse "imported_by";
             const transitive = getBool(step, "transitive");
             const max_depth_val: ?u32 = if (getInt(step, "max_depth")) |n| @intCast(@max(1, n)) else null;
@@ -1803,7 +1836,10 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                             var res: std.ArrayList([]const u8) = .{};
                             for (deps) |dep| {
                                 const d = alloc.dupe(u8, dep) catch continue;
-                                res.append(alloc, d) catch { alloc.free(d); continue; };
+                                res.append(alloc, d) catch {
+                                    alloc.free(d);
+                                    continue;
+                                };
                             }
                             deps_result = res.toOwnedSlice(alloc) catch &.{};
                             needs_free = true;
@@ -1843,13 +1879,23 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
             var wr: usize = 0;
             for (file_set.items) |path| {
                 var keep = true;
-                if (ext) |e| { if (!std.mem.endsWith(u8, path, e)) keep = false; }
-                if (keep) if (glob_pat) |g| { if (!globMatch(g, path)) keep = false; };
-                if (keep) { file_set.items[wr] = path; wr += 1; }
+                if (ext) |e| {
+                    if (!std.mem.endsWith(u8, path, e)) keep = false;
+                }
+                if (keep) if (glob_pat) |g| {
+                    if (!globMatch(g, path)) keep = false;
+                };
+                if (keep) {
+                    file_set.items[wr] = path;
+                    wr += 1;
+                }
             }
             file_set.items.len = wr;
         } else if (std.mem.eql(u8, op, "outline")) {
-            if (!have_set) { w.print("error: outline needs prior step\n", .{}) catch {}; return; }
+            if (!have_set) {
+                w.print("error: outline needs prior step\n", .{}) catch {};
+                return;
+            }
             for (file_set.items) |path| {
                 var outline = explorer.getOutline(path, alloc) catch continue;
                 if (outline) |*o| {
@@ -1857,10 +1903,16 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                     w.print("--- {s} ({s}, {d} sym) ---\n", .{ path, @tagName(o.language), o.symbols.items.len }) catch {};
                     for (o.symbols.items) |sym| w.print("  L{d} {s} {s}\n", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
                 }
-                if (out.items.len > 100 * 1024) { w.print("... truncated\n", .{}) catch {}; break; }
+                if (out.items.len > 100 * 1024) {
+                    w.print("... truncated\n", .{}) catch {};
+                    break;
+                }
             }
         } else if (std.mem.eql(u8, op, "read")) {
-            if (!have_set) { w.print("error: read needs prior step\n", .{}) catch {}; return; }
+            if (!have_set) {
+                w.print("error: read needs prior step\n", .{}) catch {};
+                return;
+            }
             const max_lines: usize = if (getInt(step, "lines")) |n| @intCast(@max(1, @min(n, 200))) else 50;
             for (file_set.items) |path| {
                 const content = explorer.getContent(path, alloc) catch continue;
@@ -1870,15 +1922,24 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                     var ln: usize = 1;
                     var it = std.mem.splitScalar(u8, data, '\n');
                     while (it.next()) |line| {
-                        if (ln > max_lines) { w.print("  ... (truncated)\n", .{}) catch {}; break; }
+                        if (ln > max_lines) {
+                            w.print("  ... (truncated)\n", .{}) catch {};
+                            break;
+                        }
                         w.print("{d:>4}| {s}\n", .{ ln, line }) catch {};
                         ln += 1;
                     }
                 }
-                if (out.items.len > 100 * 1024) { w.print("... truncated\n", .{}) catch {}; break; }
+                if (out.items.len > 100 * 1024) {
+                    w.print("... truncated\n", .{}) catch {};
+                    break;
+                }
             }
         } else if (std.mem.eql(u8, op, "sort")) {
-            if (!have_set) { w.print("error: sort needs prior step\n", .{}) catch {}; return; }
+            if (!have_set) {
+                w.print("error: sort needs prior step\n", .{}) catch {};
+                return;
+            }
             const by = getStr(step, "by") orelse "path";
             if (std.mem.eql(u8, by, "path")) {
                 std.mem.sort([]const u8, file_set.items, {}, struct {
@@ -1903,8 +1964,6 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
     }
 }
 
-
-
 // Query tracking — append-only WAL in ~/.codedb/projects/<hash>/queries.log
 var query_log_path: ?[]const u8 = null;
 
@@ -1916,10 +1975,22 @@ fn escapeJsonStr(input: []const u8, out: *[256]u8) usize {
     var elen: usize = 0;
     for (input) |c| {
         if (elen >= out.len - 1) break;
-        if (c == '"') { out[elen] = '\''; elen += 1; }
-        else if (c == '\\') { if (elen + 1 < out.len) { out[elen] = '\\'; out[elen + 1] = '\\'; elen += 2; } }
-        else if (c == '\n' or c == '\r' or c == '\t') { out[elen] = ' '; elen += 1; }
-        else { out[elen] = c; elen += 1; }
+        if (c == '"') {
+            out[elen] = '\'';
+            elen += 1;
+        } else if (c == '\\') {
+            if (elen + 1 < out.len) {
+                out[elen] = '\\';
+                out[elen + 1] = '\\';
+                elen += 2;
+            }
+        } else if (c == '\n' or c == '\r' or c == '\t') {
+            out[elen] = ' ';
+            elen += 1;
+        } else {
+            out[elen] = c;
+            elen += 1;
+        }
     }
     return elen;
 }
@@ -2079,7 +2150,6 @@ const getStr = mcpj.getStr;
 const getInt = mcpj.getInt;
 pub const getBool = mcpj.getBool;
 const eql = mcpj.eql;
-
 
 fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Value) void {
     if (id) |v| switch (v) {
@@ -2332,4 +2402,50 @@ fn mcpGenerateGuidance(
     } else if (eql(tool_name, "codedb_hot")) {
         buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_outline on a hot file to see recent changes" ++ MCP_RESET) catch {};
     }
+}
+
+test "issue-258: cached project reads use the project root after contents are released" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("src");
+    try tmp.dir.writeFile(.{
+        .sub_path = "src/main.zig",
+        .data = "const project = \"secondary\";\n",
+    });
+
+    var project_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_path = try tmp.dir.realpath(".", &project_path_buf);
+
+    var snapshot_src = Explorer.init(testing.allocator);
+    defer snapshot_src.deinit();
+    snapshot_src.setRoot(project_path);
+    try snapshot_src.indexFile("src/main.zig", "const project = \"secondary\";\n");
+
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{project_path});
+    defer testing.allocator.free(snap_path);
+    try snapshot_mod.writeSnapshot(&snapshot_src, project_path, snap_path, testing.allocator);
+
+    var default_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const default_path = try std.fs.cwd().realpath(".", &default_path_buf);
+
+    var default_explorer = Explorer.init(testing.allocator);
+    defer default_explorer.deinit();
+    var default_store = Store.init(testing.allocator);
+    defer default_store.deinit();
+
+    var cache = ProjectCache.init(testing.allocator, default_path);
+    defer cache.deinit();
+
+    const ctx = try cache.get(project_path, &default_explorer, &default_store);
+    ctx.explorer.releaseContents();
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"src/main.zig\"}", .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .{};
+    defer out.deinit(testing.allocator);
+    handleRead(testing.allocator, &parsed.value.object, &out, ctx.explorer);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "const project = \"secondary\";") != null);
 }

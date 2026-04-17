@@ -1,4 +1,5 @@
 const std = @import("std");
+const cio = @import("cio.zig");
 const Store = @import("store.zig").Store;
 const idx = @import("index.zig");
 const WordIndex = idx.WordIndex;
@@ -388,7 +389,7 @@ pub const Explorer = struct {
     word_index_can_load_from_disk: bool = false,
     word_index_generation: u64 = 0,
     word_index_persisted_generation: u64 = 0,
-    mu: std.Thread.RwLock = .{},
+    mu: cio.RwLock = .{},
     root_dir: ?std.fs.Dir = null,
 
     pub fn setRoot(self: *Explorer, root_path: []const u8) void {

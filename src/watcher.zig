@@ -1,4 +1,5 @@
 const std = @import("std");
+const cio = @import("cio.zig");
 const compat = @import("compat.zig");
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
@@ -40,7 +41,7 @@ pub const EventQueue = struct {
     events: [CAPACITY]?FsEvent = [_]?FsEvent{null} ** CAPACITY,
     head: usize = 0,
     tail: usize = 0,
-    mu: std.Thread.Mutex = .{},
+    mu: cio.Mutex = .{},
 
     pub fn push(self: *EventQueue, event: FsEvent) bool {
         self.mu.lock();
@@ -67,10 +68,10 @@ pub const EventQueue = struct {
 };
 
 const FileState = struct {
-    mtime: i64,   // milliseconds since epoch — cheap stat check
-    size: u64,    // cheap change discriminator before hashing
-    hash: u64,    // wyhash of content — confirms actual change
-    seen: bool,   // set during current poll cycle for deletion detection
+    mtime: i64, // milliseconds since epoch — cheap stat check
+    size: u64, // cheap change discriminator before hashing
+    hash: u64, // wyhash of content — confirms actual change
+    seen: bool, // set during current poll cycle for deletion detection
 };
 
 const FileMap = std.StringHashMap(FileState);
@@ -128,12 +129,12 @@ const skip_dirs = [_][]const u8{
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
-    "target",          // rust, java/maven
+    "target", // rust, java/maven
     ".gradle",
     ".idea",
     ".vs",
-    "vendor",          // go, php
-    "Pods",            // cocoapods
+    "vendor", // go, php
+    "Pods", // cocoapods
     ".dart_tool",
     ".pub-cache",
     "coverage",
@@ -777,7 +778,6 @@ pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, r
             break :blk !std.mem.eql(u8, &last_git_head.?, &current_head.?);
         };
 
-
         if (head_changed) {
             std.log.info("git HEAD changed — re-scanning", .{});
             last_git_head = current_head;
@@ -855,7 +855,6 @@ fn pushEventOrWait(queue: *EventQueue, event: FsEvent) void {
     _ = queue.push(event);
 }
 
-
 fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, persistent: std.mem.Allocator, tmp: std.mem.Allocator) !void {
     var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
     defer dir.close();
@@ -932,15 +931,13 @@ fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known
 }
 
 const skip_extensions = [_][]const u8{
-    ".png",  ".jpg",  ".jpeg", ".gif",  ".bmp",  ".ico",  ".icns", ".webp",
-    ".svg",  ".ttf",  ".otf",  ".woff", ".woff2", ".eot",
-    ".zip",  ".tar",  ".gz",   ".bz2",  ".xz",   ".7z",  ".rar",
-    ".pdf",  ".doc",  ".docx", ".xls",  ".xlsx", ".pptx",
-    ".mp3",  ".mp4",  ".wav",  ".avi",  ".mov",  ".flv",  ".ogg",  ".webm",
-    ".exe",  ".dll",  ".so",   ".dylib", ".o",   ".a",    ".lib",
-    ".wasm", ".pyc",  ".pyo",  ".class",
-    ".db",   ".sqlite", ".sqlite3",
-    ".lock", ".sum",
+    ".png",     ".jpg",  ".jpeg", ".gif",  ".bmp",   ".ico",   ".icns",  ".webp",
+    ".svg",     ".ttf",  ".otf",  ".woff", ".woff2", ".eot",   ".zip",   ".tar",
+    ".gz",      ".bz2",  ".xz",   ".7z",   ".rar",   ".pdf",   ".doc",   ".docx",
+    ".xls",     ".xlsx", ".pptx", ".mp3",  ".mp4",   ".wav",   ".avi",   ".mov",
+    ".flv",     ".ogg",  ".webm", ".exe",  ".dll",   ".so",    ".dylib", ".o",
+    ".a",       ".lib",  ".wasm", ".pyc",  ".pyo",   ".class", ".db",    ".sqlite",
+    ".sqlite3", ".lock", ".sum",
 };
 
 fn shouldSkipFile(path: []const u8) bool {
@@ -980,17 +977,18 @@ pub fn isSensitivePath(path: []const u8) bool {
     if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env")) return true;
     // Exact matches
     const sensitive_names = [_][]const u8{
-        ".dev.vars", ".npmrc", ".pypirc", ".netrc",
-        "credentials.json", "service-account.json",
-        "secrets.json", "secrets.yaml", "secrets.yml",
-        "id_rsa", "id_ed25519",
+        ".dev.vars",        ".npmrc",               ".pypirc",      ".netrc",
+        "credentials.json", "service-account.json", "secrets.json", "secrets.yaml",
+        "secrets.yml",      "id_rsa",               "id_ed25519",
     };
     for (sensitive_names) |name| {
         if (std.mem.eql(u8, basename, name)) return true;
     }
     if (std.mem.endsWith(u8, basename, ".pem") or
         std.mem.endsWith(u8, basename, ".key") or
-        std.mem.endsWith(u8, basename, ".p12")) return true;
+        std.mem.endsWith(u8, basename, ".p12") or
+        std.mem.endsWith(u8, basename, ".pfx") or
+        std.mem.endsWith(u8, basename, ".jks")) return true;
     if (std.mem.indexOf(u8, path, ".ssh/") != null or
         std.mem.indexOf(u8, path, ".gnupg/") != null or
         std.mem.indexOf(u8, path, ".aws/") != null) return true;

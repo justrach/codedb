@@ -1,4 +1,5 @@
 const std = @import("std");
+const cio = @import("cio.zig");
 const testing = std.testing;
 
 const Store = @import("store.zig").Store;
@@ -2795,7 +2796,7 @@ test "perf regression: indexing 200 files under 200ms" {
         testing.allocator.free(names[i]);
     };
 
-    var timer = try std.time.Timer.start();
+    var timer = try cio.Timer.start();
     for (0..200) |i| {
         try ti.indexFile(names[i], bufs[i]);
         try wi.indexFile(names[i], bufs[i]);
@@ -2833,7 +2834,7 @@ test "perf regression: trigram candidate lookup under 1ms per query" {
         "validate(result)",
     };
 
-    var timer = try std.time.Timer.start();
+    var timer = try cio.Timer.start();
     const iters: usize = 1000;
     for (0..iters) |_| {
         for (queries) |q| {
@@ -2864,7 +2865,7 @@ test "perf regression: word index lookup under 100ns per query" {
 
     const queries = [_][]const u8{ "handleRequest_50", "allocator", "getDefaultAllocator", "Context" };
 
-    var timer = try std.time.Timer.start();
+    var timer = try cio.Timer.start();
     const iters: usize = 100_000;
     for (0..iters) |_| {
         for (queries) |q| {
@@ -4335,6 +4336,8 @@ test "issue-93: isSensitivePath blocks .env and credentials" {
     try testing.expect(watcher.isSensitivePath("config/secrets.yml"));
     try testing.expect(watcher.isSensitivePath("server.key"));
     try testing.expect(watcher.isSensitivePath("cert.pem"));
+    try testing.expect(watcher.isSensitivePath("keystore.jks"));
+    try testing.expect(watcher.isSensitivePath("identity.pfx"));
     try testing.expect(watcher.isSensitivePath(".ssh/known_hosts"));
     // Normal files should NOT be blocked
     try testing.expect(!watcher.isSensitivePath("main.zig"));
@@ -4737,16 +4740,7 @@ test "issue-151: Go block comments skipped" {
 }
 
 test "issue-150: --help prints usage" {
-    const build = try std.process.Child.run(.{
-        .allocator = testing.allocator,
-        .argv = &.{ "zig", "build" },
-        .max_output_bytes = 8192,
-    });
-    defer testing.allocator.free(build.stdout);
-    defer testing.allocator.free(build.stderr);
-
-    try testing.expect(build.term == .Exited);
-    try testing.expect(build.term.Exited == 0);
+    try buildCliForHelpTests();
 
     const result = try std.process.Child.run(.{
         .allocator = testing.allocator,
@@ -4767,16 +4761,7 @@ test "issue-150: --help prints usage" {
 }
 
 test "issue-150: -h prints usage" {
-    const build = try std.process.Child.run(.{
-        .allocator = testing.allocator,
-        .argv = &.{ "zig", "build" },
-        .max_output_bytes = 8192,
-    });
-    defer testing.allocator.free(build.stdout);
-    defer testing.allocator.free(build.stderr);
-
-    try testing.expect(build.term == .Exited);
-    try testing.expect(build.term.Exited == 0);
+    try buildCliForHelpTests();
 
     const result = try std.process.Child.run(.{
         .allocator = testing.allocator,
@@ -4790,6 +4775,36 @@ test "issue-150: -h prints usage" {
     try testing.expect(result.term.Exited == 0);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
         std.mem.indexOf(u8, result.stderr, "usage:") != null);
+}
+
+fn buildCliForHelpTests() !void {
+    const zigup_build = std.process.Child.run(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "zigup", "run", "0.15.2", "build" },
+        .max_output_bytes = 8192,
+    }) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    if (zigup_build) |build| {
+        defer testing.allocator.free(build.stdout);
+        defer testing.allocator.free(build.stderr);
+
+        try testing.expect(build.term == .Exited);
+        try testing.expect(build.term.Exited == 0);
+        return;
+    }
+
+    const build = try std.process.Child.run(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "zig", "build" },
+        .max_output_bytes = 8192,
+    });
+    defer testing.allocator.free(build.stdout);
+    defer testing.allocator.free(build.stderr);
+
+    try testing.expect(build.term == .Exited);
+    try testing.expect(build.term.Exited == 0);
 }
 
 test "update: compareVersions orders semantic versions" {
@@ -6094,7 +6109,6 @@ test "issue-179: Python multi-line docstring with def inside" {
     defer alloc.free(inner);
     try testing.expectEqual(@as(usize, 0), inner.len);
 }
-
 
 test "issue-262: sparse+trigram intersection drops files only in trigram index" {
     // When both sparse and trigram indices return candidates, searchContent

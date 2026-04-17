@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const compat = @import("compat.zig");
+const cio = @import("cio.zig");
 const Store = @import("store.zig").Store;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Explorer = @import("explore.zig").Explorer;
@@ -23,7 +24,7 @@ const release_info = @import("release_info.zig");
 
 /// Thin wrapper: format + write to a File via allocator.
 const Out = struct {
-    file: std.fs.File,
+    file: cio.File,
     alloc: std.mem.Allocator,
 
     fn p(self: Out, comptime fmt: []const u8, args: anytype) void {
@@ -55,13 +56,13 @@ fn mainImpl() !void {
     // Use c_allocator (libc malloc) — better page reclamation than GPA
     const allocator = std.heap.c_allocator;
 
-    const stdout = std.fs.File.stdout();
+    const stdout = cio.File.stdout();
     const use_color = stdout.isTty();
     const s = sty.style(use_color);
     const out = Out{ .file = stdout, .alloc = allocator };
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try cio.argsAlloc(allocator);
+    defer cio.argsFree(allocator, args);
 
     var root: []const u8 = undefined;
     var cmd: []const u8 = undefined;
@@ -171,7 +172,7 @@ fn mainImpl() !void {
 
         // Try loading from codedb.snapshot if it exists and git HEAD matches.
         const snapshot_path = "codedb.snapshot";
-        const snapshot_t0 = std.time.nanoTimestamp();
+        const snapshot_t0 = cio.nanoTimestamp();
         const snapshot_loaded = blk: {
             const snap_head = snapshot_mod.readSnapshotGitHead(snapshot_path) orelse {
                 // No git HEAD in snapshot (non-git project or missing) — load if current project also has no git
@@ -182,7 +183,7 @@ fn mainImpl() !void {
             if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
             break :blk snapshot_mod.loadSnapshot(snapshot_path, &explorer, &store, allocator);
         };
-        const snapshot_elapsed = std.time.nanoTimestamp() - snapshot_t0;
+        const snapshot_elapsed = cio.nanoTimestamp() - snapshot_t0;
 
         const needs_word_index = std.mem.eql(u8, cmd, "word");
         if (snapshot_loaded) {
@@ -212,7 +213,7 @@ fn mainImpl() !void {
                 index_mod.setFrequencyTable(ft);
             }
 
-            const t_scan = std.time.nanoTimestamp();
+            const t_scan = cio.nanoTimestamp();
             // Use page_allocator for word index during scan — freed pages
             // return to OS immediately instead of c_allocator retention.
             explorer.mu.lock();
@@ -242,7 +243,7 @@ fn mainImpl() !void {
             } else {
                 try watcher.initialScan(&store, &explorer, root, allocator, true);
             }
-            const scan_elapsed = std.time.nanoTimestamp() - t_scan;
+            const scan_elapsed = cio.nanoTimestamp() - t_scan;
             var dur_buf: [64]u8 = undefined;
             out.p("{s}\xe2\x9c\x93{s} {s}indexed{s}  {s}{s}{s}\n", .{
                 s.green,                            s.reset,
@@ -348,10 +349,10 @@ fn mainImpl() !void {
     }
 
     if (std.mem.eql(u8, cmd, "tree")) {
-        const t0 = std.time.nanoTimestamp();
+        const t0 = cio.nanoTimestamp();
         const tree = try explorer.getTree(allocator, use_color);
         defer allocator.free(tree);
-        const elapsed = std.time.nanoTimestamp() - t0;
+        const elapsed = cio.nanoTimestamp() - t0;
         var dur_buf: [64]u8 = undefined;
         out.p("{s}", .{tree});
         out.p("{s}{s}{s}\n", .{
@@ -364,7 +365,7 @@ fn mainImpl() !void {
             });
             std.process.exit(1);
         };
-        const t0 = std.time.nanoTimestamp();
+        const t0 = cio.nanoTimestamp();
         var outline = explorer.getOutline(path, allocator) catch {
             out.p("{s}\xe2\x9c\x97{s} {s}{s}{s} \xe2\x80\x94 failed to load outline\n", .{
                 s.red, s.reset, s.bold, path, s.reset,
@@ -377,7 +378,7 @@ fn mainImpl() !void {
             return;
         };
         defer outline.deinit();
-        const elapsed = std.time.nanoTimestamp() - t0;
+        const elapsed = cio.nanoTimestamp() - t0;
         var dur_buf: [64]u8 = undefined;
         const lang = @tagName(outline.language);
         out.p("{s}\xe2\x9c\x93{s} {s}{s}{s}  {s}{s}{s}  {s}{d} lines{s}  {s}{s}{s}\n", .{
@@ -408,14 +409,14 @@ fn mainImpl() !void {
             });
             std.process.exit(1);
         };
-        const t0 = std.time.nanoTimestamp();
+        const t0 = cio.nanoTimestamp();
         if (try explorer.findSymbol(name, allocator)) |r| {
             defer {
                 allocator.free(r.path);
                 allocator.free(r.symbol.name);
                 if (r.symbol.detail) |d| allocator.free(d);
             }
-            const elapsed = std.time.nanoTimestamp() - t0;
+            const elapsed = cio.nanoTimestamp() - t0;
             var dur_buf: [64]u8 = undefined;
             const kind = @tagName(r.symbol.kind);
             out.p("{s}\xe2\x9c\x93{s} {s}{s}{s} {s}{s}{s}  {s}{s}{s}:{s}{d}{s}  {s}{s}{s}\n", .{
@@ -450,7 +451,7 @@ fn mainImpl() !void {
             });
             std.process.exit(1);
         };
-        const t0 = std.time.nanoTimestamp();
+        const t0 = cio.nanoTimestamp();
         const results = if (use_regex)
             try explorer.searchContentRegex(query, allocator, 50)
         else
@@ -462,7 +463,7 @@ fn mainImpl() !void {
             }
             allocator.free(results);
         }
-        const elapsed = std.time.nanoTimestamp() - t0;
+        const elapsed = cio.nanoTimestamp() - t0;
         var dur_buf: [64]u8 = undefined;
         if (results.len == 0) {
             out.p("{s}\xe2\x9c\x97{s} no results for {s}\"{s}\"{s}\n", .{
@@ -493,10 +494,10 @@ fn mainImpl() !void {
             });
             std.process.exit(1);
         };
-        const t0 = std.time.nanoTimestamp();
+        const t0 = cio.nanoTimestamp();
         const hits = try explorer.searchWord(word, allocator);
         defer allocator.free(hits);
-        const elapsed = std.time.nanoTimestamp() - t0;
+        const elapsed = cio.nanoTimestamp() - t0;
         var dur_buf: [64]u8 = undefined;
         if (hits.len == 0) {
             out.p("{s}\xe2\x9c\x97{s} no hits for {s}'{s}'{s}\n", .{
@@ -521,13 +522,13 @@ fn mainImpl() !void {
             }
         }
     } else if (std.mem.eql(u8, cmd, "hot")) {
-        const t0 = std.time.nanoTimestamp();
+        const t0 = cio.nanoTimestamp();
         const hot = try explorer.getHotFiles(&store, allocator, 10);
         defer {
             for (hot) |path| allocator.free(path);
             allocator.free(hot);
         }
-        const elapsed = std.time.nanoTimestamp() - t0;
+        const elapsed = cio.nanoTimestamp() - t0;
         var dur_buf: [64]u8 = undefined;
         out.p("{s}\xe2\x9c\x93{s} {s}recently modified{s}  {s}{s}{s}\n", .{
             s.green,                       s.reset,
@@ -542,7 +543,7 @@ fn mainImpl() !void {
             });
         }
     } else if (std.mem.eql(u8, cmd, "snapshot")) {
-        const t0 = std.time.nanoTimestamp();
+        const t0 = cio.nanoTimestamp();
         const output = if (args.len > cmd_args_start) args[cmd_args_start] else "codedb.snapshot";
         snapshot_mod.writeSnapshotDual(&explorer, abs_root, output, allocator) catch |err| {
             out.p("{s}\xe2\x9c\x97{s} snapshot failed: {}\n", .{ s.red, s.reset, err });
@@ -557,7 +558,7 @@ fn mainImpl() !void {
             };
         }
         persistWordIndexToDisk(&explorer, data_dir, git_head);
-        const elapsed = std.time.nanoTimestamp() - t0;
+        const elapsed = cio.nanoTimestamp() - t0;
         var dur_buf: [64]u8 = undefined;
         out.p("{s}\xe2\x9c\x93{s} {s}snapshot{s}  {s}{s}{s}  {s}{d} files{s}  {s}{s}{s}\n", .{
             s.green,                       s.reset,
