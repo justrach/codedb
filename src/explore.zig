@@ -1,4 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+/// Host filesystem is only available on targets that ship std.posix. On
+/// wasm32-freestanding (Cloudflare Workers WASM builds) any use of
+/// std.fs.cwd() or Dir.openFile would pull in std.posix and fail to compile,
+/// so these paths must be gated at comptime.
+const has_posix_fs = builtin.target.os.tag != .freestanding;
 const Store = @import("store.zig").Store;
 const idx = @import("index.zig");
 const WordIndex = idx.WordIndex;
@@ -392,6 +399,7 @@ pub const Explorer = struct {
     root_dir: ?std.fs.Dir = null,
 
     pub fn setRoot(self: *Explorer, root_path: []const u8) void {
+        if (!has_posix_fs) return;
         self.root_dir = std.fs.cwd().openDir(root_path, .{}) catch null;
     }
     pub fn init(allocator: std.mem.Allocator) Explorer {
@@ -434,7 +442,9 @@ pub const Explorer = struct {
         self.trigram_index.deinit();
         self.sparse_ngram_index.deinit();
         self.skip_trigram_files.deinit();
-        if (self.root_dir) |*d| d.close();
+        if (has_posix_fs) {
+            if (self.root_dir) |*d| d.close();
+        }
     }
 
     /// Number of slots in the heap trigram index id_to_path array (benchmark helper).
@@ -1070,6 +1080,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         if (self.contents.get(path)) |cached| {
             return .{ .data = cached, .owned = false, .allocator = allocator };
         }
+        if (!has_posix_fs) return null;
         const dir = self.root_dir orelse std.fs.cwd();
         const file = dir.openFile(path, .{}) catch return null;
         defer file.close();
