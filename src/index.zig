@@ -1,5 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const compat = @import("compat.zig");
+
+/// Host filesystem + mmap are only available on targets that ship std.posix.
+/// The on-disk trigram index and persisted word index paths must be gated on
+/// this for wasm32-freestanding builds (Cloudflare Workers).
+const has_posix_fs = builtin.target.os.tag != .freestanding;
 
 // ── Inverted word index ─────────────────────────────────────
 // Maps word → list of (path, line) hits. O(1) word lookup.
@@ -1649,8 +1655,10 @@ pub const MmapTrigramIndex = struct {
         for (self.file_table) |p| self.allocator.free(p);
         self.allocator.free(self.file_table);
         self.file_set.deinit();
-        std.posix.munmap(self.postings_data);
-        std.posix.munmap(self.lookup_data);
+        if (has_posix_fs) {
+            std.posix.munmap(self.postings_data);
+            std.posix.munmap(self.lookup_data);
+        }
     }
 
     pub fn fileCount(self: *const MmapTrigramIndex) u32 {
