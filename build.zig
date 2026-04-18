@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
 
@@ -52,6 +53,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/tests.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     tests.root_module.addImport("mcp", mcp_dep.module("mcp"));
@@ -65,6 +67,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     test_step.dependOn(&b.addRunArtifact(lib_tests).step);
@@ -75,6 +78,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/adversarial_tests.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     test_step.dependOn(&b.addRunArtifact(adversarial_tests).step);
@@ -86,6 +90,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/bench.zig"),
             .target = target,
             .optimize = .ReleaseFast,
+            .link_libc = true,
         }),
     });
     const bench_run = b.addRunArtifact(bench);
@@ -101,6 +106,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/benchmark.zig"),
             .target = target,
             .optimize = .ReleaseFast,
+            .link_libc = true,
         }),
     });
     benchmark.root_module.addImport("mcp", mcp_dep.module("mcp"));

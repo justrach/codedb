@@ -40,7 +40,8 @@ const cases = [_]Case{
     .{ .tool = .codedb_find, .name = "codedb_find", .args_json = "{\"query\":\"main\"}", .iterations = 100 },
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
+    cio.setProcessArgs(init.args.vector);
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();

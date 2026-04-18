@@ -190,14 +190,27 @@ pub fn posixGetenv(name: []const u8) ?[]const u8 {
 
 // ── Arguments ────────────────────────────────────────────────────────────
 
+// Darwin: argv lives in __NSGetArgv() (libc, from <crt_externs.h>).
+// Linux/other POSIX: 0.16 doesn't expose argv globally — main() must call
+// `setProcessArgs(argv_slice)` once at startup to populate `process_args`.
 extern "c" fn _NSGetArgc() *c_int;
 extern "c" fn _NSGetArgv() *[*][*:0]u8;
+
+var process_args: ?[]const [*:0]const u8 = null;
+
+/// Called once by `pub fn main` to register the argv slice on non-Darwin
+/// platforms. No-op on macOS (it reads from `_NSGetArgv` directly).
+pub fn setProcessArgs(args: []const [*:0]const u8) void {
+    process_args = args;
+}
 
 /// Shim for cio.argsAlloc (removed in 0.16). Returns a duplicated
 /// slice of argv strings owned by the allocator; free with argsFree.
 pub fn argsAlloc(alloc: std.mem.Allocator) ![][:0]u8 {
-    const argc: usize = @intCast(_NSGetArgc().*);
-    const argv = _NSGetArgv().*;
+    const argc: usize = if (builtin.os.tag == .macos)
+        @intCast(_NSGetArgc().*)
+    else
+        (process_args orelse return error.ProcessArgsNotSet).len;
     const out = try alloc.alloc([:0]u8, argc);
     errdefer alloc.free(out);
     var filled: usize = 0;
@@ -206,7 +219,11 @@ pub fn argsAlloc(alloc: std.mem.Allocator) ![][:0]u8 {
         while (i < filled) : (i += 1) alloc.free(out[i]);
     }
     while (filled < argc) : (filled += 1) {
-        const s = std.mem.span(@as([*:0]const u8, argv[filled]));
+        const cstr: [*:0]const u8 = if (builtin.os.tag == .macos)
+            _NSGetArgv().*[filled]
+        else
+            process_args.?[filled];
+        const s = std.mem.span(cstr);
         const dup = try alloc.allocSentinel(u8, s.len, 0);
         @memcpy(dup[0..s.len], s);
         out[filled] = dup;
@@ -275,8 +292,33 @@ pub const RunOptions = struct {
     cwd: ?[]const u8 = null,
     max_output_bytes: usize = 50 * 1024 * 1024,
 };
-
 extern "c" fn _NSGetEnviron() *[*:null]?[*:0]u8;
+
+// posix_spawn family — declared directly via extern "c" so this builds on
+// both Darwin and Linux. (std.c.posix_spawnp is gated to .isDarwin() in 0.16
+// and would fail to compile on Linux even though glibc/musl provide it.)
+const PosixSpawnFileActions = opaque {};
+const PosixSpawnAttr = opaque {};
+const pid_t = c_int;
+
+extern "c" fn posix_spawnp(
+    pid: *pid_t,
+    path: [*:0]const u8,
+    file_actions: ?*const PosixSpawnFileActions,
+    attrp: ?*const PosixSpawnAttr,
+    argv: [*:null]const ?[*:0]const u8,
+    envp: [*:null]const ?[*:0]const u8,
+) c_int;
+extern "c" fn posix_spawn_file_actions_init(fa: *PosixSpawnFileActions) c_int;
+extern "c" fn posix_spawn_file_actions_destroy(fa: *PosixSpawnFileActions) c_int;
+extern "c" fn posix_spawn_file_actions_adddup2(fa: *PosixSpawnFileActions, fd: c_int, newfd: c_int) c_int;
+extern "c" fn posix_spawn_file_actions_addclose(fa: *PosixSpawnFileActions, fd: c_int) c_int;
+extern "c" fn posix_spawn_file_actions_addchdir_np(fa: *PosixSpawnFileActions, path: [*:0]const u8) c_int;
+extern "c" fn waitpid(pid: pid_t, status: *c_int, options: c_int) pid_t;
+
+// posix_spawn_file_actions_t is a struct of unknown size on each libc. We
+// allocate a generously-sized buffer and cast to the opaque pointer type.
+const PosixSpawnFAStorage = [256]u8;
 
 /// Shim for std.process.Child.run — fast posix_spawnp path, merges stderr into stdout.
 pub fn runCapture(opts: RunOptions) !CaptureResult {
@@ -307,34 +349,35 @@ pub fn runCapture(opts: RunOptions) !CaptureResult {
         if (out_pipe[1] >= 0) _ = close(out_pipe[1]);
     }
 
-    var fa: std.c.posix_spawn_file_actions_t = undefined;
-    if (std.c.posix_spawn_file_actions_init(&fa) != 0) return error.SpawnInitFailed;
-    defer _ = std.c.posix_spawn_file_actions_destroy(&fa);
+    var fa_storage: PosixSpawnFAStorage = undefined;
+    const fa: *PosixSpawnFileActions = @ptrCast(&fa_storage);
+    if (posix_spawn_file_actions_init(fa) != 0) return error.SpawnInitFailed;
+    defer _ = posix_spawn_file_actions_destroy(fa);
 
     if (opts.cwd) |cwd| {
         var cwd_buf: [4096]u8 = undefined;
         if (cwd.len >= cwd_buf.len) return error.PathTooLong;
         @memcpy(cwd_buf[0..cwd.len], cwd);
         cwd_buf[cwd.len] = 0;
-        if (@hasDecl(std.c, "posix_spawn_file_actions_addchdir_np")) {
-            _ = std.c.posix_spawn_file_actions_addchdir_np(&fa, @ptrCast(&cwd_buf));
-        } else {
+        // posix_spawn_file_actions_addchdir_np is glibc 2.29+ / macOS 10.15+.
+        // Returns ENOSYS on older systems — caller treats that as fatal here.
+        if (posix_spawn_file_actions_addchdir_np(fa, @ptrCast(&cwd_buf)) != 0) {
             return error.CwdNotSupported;
         }
     }
 
-    _ = std.c.posix_spawn_file_actions_adddup2(&fa, out_pipe[1], 1);
-    _ = std.c.posix_spawn_file_actions_adddup2(&fa, out_pipe[1], 2);
-    _ = std.c.posix_spawn_file_actions_addclose(&fa, out_pipe[0]);
-    _ = std.c.posix_spawn_file_actions_addclose(&fa, out_pipe[1]);
+    _ = posix_spawn_file_actions_adddup2(fa, out_pipe[1], 1);
+    _ = posix_spawn_file_actions_adddup2(fa, out_pipe[1], 2);
+    _ = posix_spawn_file_actions_addclose(fa, out_pipe[0]);
+    _ = posix_spawn_file_actions_addclose(fa, out_pipe[1]);
 
     const envp: [*:null]const ?[*:0]const u8 = if (builtin.os.tag == .macos)
         @ptrCast(_NSGetEnviron().*)
     else
         @ptrCast(std.c.environ);
 
-    var pid: std.c.pid_t = 0;
-    if (std.c.posix_spawnp(&pid, c_argv[0].?, &fa, null, c_argv_z, envp) != 0)
+    var pid: pid_t = 0;
+    if (posix_spawnp(&pid, c_argv[0].?, fa, null, c_argv_z, envp) != 0)
         return error.SpawnFailed;
 
     _ = close(out_pipe[1]);

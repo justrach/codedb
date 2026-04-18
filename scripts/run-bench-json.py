@@ -32,10 +32,17 @@ def main() -> int:
         ["zig", "build", "bench", "--", "--json"],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    # Always surface stderr so CI logs show compile errors even on success.
     if proc.stderr:
         sys.stderr.write(proc.stderr)
+    if proc.returncode != 0:
+        sys.stderr.write(f"\n[run-bench-json] zig build bench exited {proc.returncode}\n")
+        if proc.stdout:
+            sys.stderr.write("---- stdout ----\n")
+            sys.stderr.write(proc.stdout)
+        return proc.returncode
     payload = extract_json(proc.stdout, proc.stderr)
     pathlib.Path(args.output).write_text(payload, encoding="utf-8")
     return 0

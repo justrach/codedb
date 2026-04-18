@@ -270,7 +270,8 @@ fn printJson(allocator: std.mem.Allocator, file: cio.File, r: BenchResult) !void
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
+    cio.setProcessArgs(init.args.vector);
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();

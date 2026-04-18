@@ -38,7 +38,8 @@ const Out = struct {
 /// so we trampoline through a thread with an explicit 64 MB stack.
 /// In optimised builds the merged frame is ~190 KB, so 8 MB is ample and
 /// avoids triggering Rosetta 2's 64 MB stack allocation bug on x86_64-macos.
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
+    cio.setProcessArgs(init.args.vector);
     const stack_size: usize = if (builtin.mode == .Debug) 64 * 1024 * 1024 else 8 * 1024 * 1024;
     const thread = try std.Thread.spawn(.{ .stack_size = stack_size }, mainInner, .{});
     thread.join();
