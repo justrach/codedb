@@ -21,6 +21,7 @@ pub const EditResult = struct {
 };
 
 pub fn applyEdit(
+    io: std.Io,
     allocator: std.mem.Allocator,
     store: *Store,
     agents: *AgentRegistry,
@@ -31,12 +32,10 @@ pub fn applyEdit(
     if (!has_lock) return error.FileLocked;
     errdefer agents.releaseLock(req.agent_id, req.path);
 
-    const file = try std.fs.cwd().openFile(req.path, .{});
-    defer file.close();
-    const source = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+    const source = try std.Io.Dir.cwd().readFileAlloc(io, req.path, allocator, .limited(10 * 1024 * 1024));
     defer allocator.free(source);
 
-    var lines: std.ArrayList([]const u8) = .{};
+    var lines: std.ArrayList([]const u8) = .empty;
     defer lines.deinit(allocator);
     var iter = std.mem.splitScalar(u8, source, '\n');
     while (iter.next()) |line| try lines.append(allocator, line);
@@ -54,7 +53,7 @@ pub fn applyEdit(
                 const start = range[0] - 1;
                 const end = @min(range[1], lines.items.len);
                 const new_content = req.content orelse return error.MissingContent;
-                var new_lines: std.ArrayList([]const u8) = .{};
+                var new_lines: std.ArrayList([]const u8) = .empty;
                 defer new_lines.deinit(allocator);
                 var ni = std.mem.splitScalar(u8, new_content, '\n');
                 while (ni.next()) |nl| try new_lines.append(allocator, nl);
@@ -89,19 +88,19 @@ pub fn applyEdit(
     defer allocator.free(result);
 
     // Atomic write: write to temp file then rename to prevent corruption on crash
-    const dir = std.fs.cwd();
+    const dir = std.Io.Dir.cwd();
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.codedb_tmp", .{req.path});
     defer allocator.free(tmp_path);
 
     {
-        const tmp_file = try dir.createFile(tmp_path, .{});
-        defer tmp_file.close();
-        try tmp_file.writeAll(result);
+        const tmp_file = try dir.createFile(io, tmp_path, .{});
+        defer tmp_file.close(io);
+        try tmp_file.writeStreamingAll(io, result);
     }
 
-    dir.rename(tmp_path, req.path) catch |err| {
+    std.Io.Dir.rename(dir, tmp_path, dir, req.path, io) catch |err| {
         // Clean up temp file on rename failure
-        dir.deleteFile(tmp_path) catch {};
+        dir.deleteFile(io, tmp_path) catch {};
         return err;
     };
 

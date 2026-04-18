@@ -40,8 +40,8 @@ pub const FileOutline = struct {
     language: Language,
     line_count: u32,
     byte_size: u64,
-    symbols: std.ArrayList(Symbol) = .{},
-    imports: std.ArrayList([]const u8) = .{},
+    symbols: std.ArrayList(Symbol) = .empty,
+    imports: std.ArrayList([]const u8) = .empty,
     allocator: std.mem.Allocator,
     owns_path: bool = false,
 
@@ -215,7 +215,7 @@ pub const DependencyGraph = struct {
         // Extract basename for matching (e.g., "src/store.zig" -> "store.zig")
         const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
 
-        var result: std.ArrayList([]const u8) = .{};
+        var result: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (result.items) |p| allocator.free(p);
             result.deinit(allocator);
@@ -260,7 +260,7 @@ pub const DependencyGraph = struct {
         var visited = std.StringHashMap(void).init(allocator);
         defer visited.deinit();
 
-        var queue: std.ArrayList(struct { path: []const u8, depth: u32 }) = .{};
+        var queue: std.ArrayList(struct { path: []const u8, depth: u32 }) = .empty;
         defer queue.deinit(allocator);
 
         try visited.put(path, {});
@@ -272,7 +272,7 @@ pub const DependencyGraph = struct {
             try queue.append(allocator, .{ .path = basename, .depth = 0 });
         }
 
-        var result: std.ArrayList([]const u8) = .{};
+        var result: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (result.items) |p| allocator.free(p);
             result.deinit(allocator);
@@ -314,13 +314,13 @@ pub const DependencyGraph = struct {
         var visited = std.StringHashMap(void).init(allocator);
         defer visited.deinit();
 
-        var queue: std.ArrayList(struct { path: []const u8, depth: u32 }) = .{};
+        var queue: std.ArrayList(struct { path: []const u8, depth: u32 }) = .empty;
         defer queue.deinit(allocator);
 
         try visited.put(path, {});
         try queue.append(allocator, .{ .path = path, .depth = 0 });
 
-        var result: std.ArrayList([]const u8) = .{};
+        var result: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (result.items) |p| allocator.free(p);
             result.deinit(allocator);
@@ -390,10 +390,12 @@ pub const Explorer = struct {
     word_index_generation: u64 = 0,
     word_index_persisted_generation: u64 = 0,
     mu: cio.RwLock = .{},
-    root_dir: ?std.fs.Dir = null,
+    root_dir: ?std.Io.Dir = null,
+    io: ?std.Io = null,
 
-    pub fn setRoot(self: *Explorer, root_path: []const u8) void {
-        self.root_dir = std.fs.cwd().openDir(root_path, .{}) catch null;
+    pub fn setRoot(self: *Explorer, io: std.Io, root_path: []const u8) void {
+        self.io = io;
+        self.root_dir = std.Io.Dir.cwd().openDir(io, root_path, .{}) catch null;
     }
     pub fn init(allocator: std.mem.Allocator) Explorer {
         return .{
@@ -435,7 +437,9 @@ pub const Explorer = struct {
         self.trigram_index.deinit();
         self.sparse_ngram_index.deinit();
         self.skip_trigram_files.deinit();
-        if (self.root_dir) |*d| d.close();
+        if (self.root_dir) |d| {
+            if (self.io) |io| d.close(io);
+        }
     }
 
     /// Number of slots in the heap trigram index id_to_path array (benchmark helper).
@@ -589,7 +593,7 @@ fn computeSymbolEnds(content: []const u8, outline: *FileOutline) void {
     if (outline.symbols.items.len == 0) return;
 
     // Build a line offset table for O(1) line lookups
-    var line_offsets: std.ArrayList(usize) = .{};
+    var line_offsets: std.ArrayList(usize) = .empty;
     defer line_offsets.deinit(outline.allocator);
     line_offsets.append(outline.allocator, 0) catch return; // line 1 starts at offset 0
     for (content, 0..) |c, i| {
@@ -831,14 +835,14 @@ fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []const 
             if (in_block_comment) {
                 if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
                     in_block_comment = false;
-                    const after = std.mem.trimLeft(u8, trimmed[close_pos + 2 ..], " \t");
+                    const after = std.mem.trimStart(u8, trimmed[close_pos + 2 ..], " \t");
                     if (after.len == 0) continue;
                     trimmed = after;
                 } else continue;
             }
             if (std.mem.startsWith(u8, trimmed, "/*")) {
                 if (std.mem.indexOf(u8, trimmed[2..], "*/")) |close_pos| {
-                    const after = std.mem.trimLeft(u8, trimmed[2 + close_pos + 2 ..], " \t");
+                    const after = std.mem.trimStart(u8, trimmed[2 + close_pos + 2 ..], " \t");
                     if (after.len == 0) continue;
                     trimmed = after;
                 } else {
@@ -1071,10 +1075,9 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         if (self.contents.get(path)) |cached| {
             return .{ .data = cached, .owned = false, .allocator = allocator };
         }
-        const dir = self.root_dir orelse std.fs.cwd();
-        const file = dir.openFile(path, .{}) catch return null;
-        defer file.close();
-        const data = file.readToEndAlloc(allocator, 512 * 1024) catch return null;
+        const io = self.io orelse return null;
+        const dir = self.root_dir orelse std.Io.Dir.cwd();
+        const data = dir.readFileAlloc(io, path, allocator, .limited(512 * 1024)) catch return null;
         return .{ .data = data, .owned = true, .allocator = allocator };
     }
 
@@ -1120,11 +1123,11 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
-        var buf: std.ArrayList(u8) = .{};
-        errdefer buf.deinit(allocator);
-        const writer = buf.writer(allocator);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        errdefer aw.deinit();
+        const writer = &aw.writer;
 
-        var paths: std.ArrayList([]const u8) = .{};
+        var paths: std.ArrayList([]const u8) = .empty;
         defer paths.deinit(allocator);
 
         var iter = self.outlines.iterator();
@@ -1175,7 +1178,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
             });
         }
 
-        return buf.toOwnedSlice(allocator);
+        return aw.toOwnedSlice();
     }
 
     pub fn findSymbol(self: *Explorer, name: []const u8, allocator: std.mem.Allocator) !?struct { path: []const u8, symbol: Symbol } {
@@ -1234,7 +1237,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
-        var result_list: std.ArrayList(SymbolResult) = .{};
+        var result_list: std.ArrayList(SymbolResult) = .empty;
         errdefer result_list.deinit(allocator);
 
         // Scan outlines for all symbols by name (catches all kinds including imports).
@@ -1262,7 +1265,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
-        var result_list: std.ArrayList(SearchResult) = .{};
+        var result_list: std.ArrayList(SearchResult) = .empty;
         errdefer result_list.deinit(allocator);
 
         // searched tracks which paths have been scanned — shared across all tiers.
@@ -1441,7 +1444,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
-        var result_list: std.ArrayList(SearchResult) = .{};
+        var result_list: std.ArrayList(SearchResult) = .empty;
         errdefer result_list.deinit(allocator);
 
         var query = idx.decomposeRegex(pattern, self.allocator) catch {
@@ -1518,7 +1521,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         defer self.mu.unlockShared();
 
         // Parse query: split on spaces, extract extension constraints (*.py, *.ts)
-        var parts: std.ArrayList([]const u8) = .{};
+        var parts: std.ArrayList([]const u8) = .empty;
         defer parts.deinit(allocator);
         var ext_filter: ?[]const u8 = null;
 
@@ -1535,7 +1538,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
 
         if (parts.items.len == 0) return &.{};
 
-        var matches: std.ArrayList(FuzzyMatch) = .{};
+        var matches: std.ArrayList(FuzzyMatch) = .empty;
         errdefer matches.deinit(allocator);
 
         var iter = self.outlines.keyIterator();
@@ -1602,7 +1605,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
 
     pub fn getHotFiles(self: *Explorer, store: *Store, allocator: std.mem.Allocator, limit: usize) ![]const []const u8 {
         // Collect stable path copies under explorer lock.
-        var path_list: std.ArrayList([]u8) = .{};
+        var path_list: std.ArrayList([]u8) = .empty;
         errdefer {
             for (path_list.items) |path| allocator.free(path);
             path_list.deinit(allocator);
@@ -1620,7 +1623,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
 
         // Query store seqs without holding explorer lock.
         const Entry = struct { path: []u8, seq: u64 };
-        var entries: std.ArrayList(Entry) = .{};
+        var entries: std.ArrayList(Entry) = .empty;
         defer entries.deinit(allocator);
         {
             store.mu.lock();
@@ -2459,7 +2462,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
     }
 
     fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
-        var deps: std.ArrayList([]const u8) = .{};
+        var deps: std.ArrayList([]const u8) = .empty;
         errdefer deps.deinit(self.allocator);
 
         for (outline.imports.items) |imp| {
@@ -2488,7 +2491,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
     }
 
     fn removeSymbolIndexFor(self: *Explorer, path: []const u8) void {
-        var to_remove: std.ArrayList([]const u8) = .{};
+        var to_remove: std.ArrayList([]const u8) = .empty;
         defer to_remove.deinit(self.allocator);
 
         var iter = self.symbol_index.iterator();
@@ -2582,7 +2585,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
-        var result_list: std.ArrayList(ScopedSearchResult) = .{};
+        var result_list: std.ArrayList(ScopedSearchResult) = .empty;
         errdefer {
             for (result_list.items) |r| {
                 allocator.free(r.line_text);
@@ -2690,7 +2693,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
 };
 
 fn phpNamespaceToPath(allocator: std.mem.Allocator, ns: []const u8) ![]u8 {
-    var parts: std.ArrayList(u8) = .{};
+    var parts: std.ArrayList(u8) = .empty;
     errdefer parts.deinit(allocator);
 
     var first_segment = true;
@@ -2716,9 +2719,9 @@ fn phpNamespaceToPath(allocator: std.mem.Allocator, ns: []const u8) ![]u8 {
 /// When line_numbers is true, prepends "{d:>5} | " prefix. When compact is true,
 /// skips comment/blank lines based on language.
 pub fn extractLines(content: []const u8, start: u32, end: u32, line_numbers: bool, compact: bool, language: Language, allocator: std.mem.Allocator) ![]u8 {
-    var buf: std.ArrayList(u8) = .{};
-    errdefer buf.deinit(allocator);
-    const w = buf.writer(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    const w = &aw.writer;
 
     var line_num: u32 = 0;
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -2733,7 +2736,7 @@ pub fn extractLines(content: []const u8, start: u32, end: u32, line_numbers: boo
             try w.print("{s}\n", .{line});
         }
     }
-    return buf.toOwnedSlice(allocator);
+    return aw.toOwnedSlice();
 }
 
 /// Returns true if a line is blank or a single-line comment for the given language.
@@ -3310,7 +3313,7 @@ fn extractRubyMethodName(s: []const u8) ?[]const u8 {
 }
 
 fn extractHclQuotedName(text: []const u8) ?[]const u8 {
-    const trimmed = std.mem.trimLeft(u8, text, " \t");
+    const trimmed = std.mem.trimStart(u8, text, " \t");
     if (trimmed.len < 2 or trimmed[0] != '"') return null;
     if (std.mem.indexOfScalar(u8, trimmed[1..], '"')) |end| {
         if (end == 0) return null;
@@ -3320,12 +3323,12 @@ fn extractHclQuotedName(text: []const u8) ?[]const u8 {
 }
 
 fn extractHclBlockName(text: []const u8) ?[]const u8 {
-    const trimmed = std.mem.trimLeft(u8, text, " \t");
+    const trimmed = std.mem.trimStart(u8, text, " \t");
     if (trimmed.len < 2 or trimmed[0] != '"') return null;
     // Skip first quoted string
     if (std.mem.indexOfScalar(u8, trimmed[1..], '"')) |end1| {
         const after_first = trimmed[end1 + 2 ..];
-        const rest = std.mem.trimLeft(u8, after_first, " \t");
+        const rest = std.mem.trimStart(u8, after_first, " \t");
         // Extract second quoted string (the name)
         if (rest.len >= 2 and rest[0] == '"') {
             if (std.mem.indexOfScalar(u8, rest[1..], '"')) |end2| {
@@ -3373,17 +3376,17 @@ fn skipKeywords(s: []const u8) []const u8 {
 /// "from . import foo" / "from .rel import bar" → null (relative imports too ambiguous)
 fn extractPythonModulePath(line: []const u8) ?[]const u8 {
     if (startsWith(line, "from ")) {
-        const rest = std.mem.trimLeft(u8, line[5..], " \t");
+        const rest = std.mem.trimStart(u8, line[5..], " \t");
         // Skip relative imports (start with dot)
         if (rest.len > 0 and rest[0] == '.') return null;
         // "from module.path import ..." — extract up to " import"
         if (std.mem.indexOf(u8, rest, " import")) |imp_pos| {
-            const mod = std.mem.trimRight(u8, rest[0..imp_pos], " \t");
+            const mod = std.mem.trimEnd(u8, rest[0..imp_pos], " \t");
             if (mod.len > 0) return mod;
         }
         return null;
     } else if (startsWith(line, "import ")) {
-        const rest = std.mem.trimLeft(u8, line[7..], " \t");
+        const rest = std.mem.trimStart(u8, line[7..], " \t");
         // "import os.path" or "import foo" — take up to comma or space
         var end: usize = 0;
         while (end < rest.len and rest[end] != ' ' and rest[end] != ',' and rest[end] != '\t') : (end += 1) {}
