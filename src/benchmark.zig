@@ -16,7 +16,6 @@ const std = @import("std");
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
 const watcher = @import("watcher.zig");
-const compat = @import("compat.zig");
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
 
@@ -120,44 +119,47 @@ fn benchSymbol(explorer: *Explorer, name: []const u8, n: usize, alloc: std.mem.A
 
 // ── Re-index efficiency ───────────────────────────────────────────────────────
 
-fn benchReindex(explorer: *Explorer, root: []const u8, alloc: std.mem.Allocator) !ReindexResult {
-    var paths: std.ArrayList([]const u8) = .{};
+fn benchReindex(io: std.Io, explorer: *Explorer, root: []const u8, alloc: std.mem.Allocator) !ReindexResult {
+    var paths: std.ArrayList([]const u8) = .empty;
     defer {
         for (paths.items) |p| alloc.free(p);
         paths.deinit(alloc);
     }
-    var contents: std.ArrayList([]const u8) = .{};
+    var contents: std.ArrayList([]const u8) = .empty;
     defer {
         for (contents.items) |c| alloc.free(c);
         contents.deinit(alloc);
     }
 
     // Collect up to 10 small source files with known content
-    var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch
+    var dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch
         return ReindexResult{ .cycles = 0, .files_per_cycle = 0, .id_to_path_before = 0, .id_to_path_after = 0, .free_ids_after = 0 };
-    defer dir.close();
+    defer dir.close(io);
     var walker = try dir.walk(alloc);
     defer walker.deinit();
-    while (try walker.next()) |entry| {
+    while (try walker.next(io)) |entry| {
         if (entry.kind != .file or paths.items.len >= 10) continue;
         const ext = std.fs.path.extension(entry.path);
         const wanted = [_][]const u8{ ".zig", ".js", ".ts", ".py", ".go", ".c", ".cpp", ".rs" };
-        const keep = for (wanted) |e| { if (std.mem.eql(u8, ext, e)) break true; } else false;
+        const keep = for (wanted) |e| {
+            if (std.mem.eql(u8, ext, e)) break true;
+        } else false;
         if (!keep) continue;
         const full = std.fs.path.join(alloc, &.{ root, entry.path }) catch continue;
         defer alloc.free(full);
-        const f = std.fs.cwd().openFile(full, .{}) catch continue;
-        defer f.close();
-        const st = compat.fileStat(f) catch continue;
+        const st = std.Io.Dir.cwd().statFile(io, full, .{}) catch continue;
         if (st.size > 128 * 1024) continue;
-        const content = f.readToEndAlloc(alloc, 128 * 1024) catch continue;
+        const content = std.Io.Dir.cwd().readFileAlloc(io, full, alloc, .limited(128 * 1024)) catch continue;
         try paths.append(alloc, try alloc.dupe(u8, entry.path));
         try contents.append(alloc, content);
     }
 
     if (paths.items.len == 0) return ReindexResult{
-        .cycles = 0, .files_per_cycle = 0,
-        .id_to_path_before = 0, .id_to_path_after = 0, .free_ids_after = 0,
+        .cycles = 0,
+        .files_per_cycle = 0,
+        .id_to_path_before = 0,
+        .id_to_path_after = 0,
+        .free_ids_after = 0,
     };
 
     const before = explorer.trigramIdToPathLen();
@@ -179,21 +181,21 @@ fn benchReindex(explorer: *Explorer, root: []const u8, alloc: std.mem.Allocator)
 
 // ── Git HEAD mtime check ──────────────────────────────────────────────────────
 
-fn benchGitHead(root: []const u8) GitHeadResult {
-    var root_dir = std.fs.cwd().openDir(root, .{}) catch
+fn benchGitHead(io: std.Io, root: []const u8) GitHeadResult {
+    var root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch
         return .{ .stat_stable = false, .stat_ns = 0 };
-    defer root_dir.close();
-    const st0 = compat.dirStatFile(root_dir, ".git/HEAD") catch
+    defer root_dir.close(io);
+    const st0 = root_dir.statFile(io, ".git/HEAD", .{}) catch
         return .{ .stat_stable = false, .stat_ns = 0 };
     var total: u64 = 0;
     var stable = true;
     for (0..5) |_| {
-        var d = std.fs.cwd().openDir(root, .{}) catch break;
-        defer d.close();
+        var d = std.Io.Dir.cwd().openDir(io, root, .{}) catch break;
+        defer d.close(io);
         var t = cio.Timer.start() catch break;
-        const st = compat.dirStatFile(d, ".git/HEAD") catch break;
+        const st = d.statFile(io, ".git/HEAD", .{}) catch break;
         total +|= t.read();
-        if (st.mtime != st0.mtime) stable = false;
+        if (st.mtime.nanoseconds != st0.mtime.nanoseconds) stable = false;
     }
     return .{ .stat_stable = stable, .stat_ns = total / 5 };
 }
@@ -212,8 +214,8 @@ fn fmtBytes(b: usize, buf: *[32]u8) []const u8 {
     return std.fmt.bufPrint(buf, "{d:.1} MB", .{@as(f64, @floatFromInt(b)) / (1024.0 * 1024.0)}) catch "";
 }
 
-fn printHuman(allocator: std.mem.Allocator, file: std.fs.File, r: BenchResult) !void {
-    var out: std.ArrayList(u8) = .{};
+fn printHuman(allocator: std.mem.Allocator, file: cio.File, r: BenchResult) !void {
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
     const w = out.writer(allocator);
     try w.print("\n=== codedb benchmark: {s} ===\n\n", .{r.root});
@@ -242,8 +244,8 @@ fn printHuman(allocator: std.mem.Allocator, file: std.fs.File, r: BenchResult) !
     try file.writeAll(out.items);
 }
 
-fn printJson(allocator: std.mem.Allocator, file: std.fs.File, r: BenchResult) !void {
-    var out: std.ArrayList(u8) = .{};
+fn printJson(allocator: std.mem.Allocator, file: cio.File, r: BenchResult) !void {
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
     const w = out.writer(allocator);
     try w.print("{{\"root\":\"{s}\",\"file_count\":{d},\"index_ms\":{d},\"queries\":[", .{
@@ -256,8 +258,9 @@ fn printJson(allocator: std.mem.Allocator, file: std.fs.File, r: BenchResult) !v
         });
     }
     try w.print("],\"reindex\":{{\"cycles\":{d},\"files_per_cycle\":{d},\"id_to_path_before\":{d},\"id_to_path_after\":{d},\"free_ids\":{d}}},", .{
-        r.reindex.cycles, r.reindex.files_per_cycle,
-        r.reindex.id_to_path_before, r.reindex.id_to_path_after, r.reindex.free_ids_after,
+        r.reindex.cycles,            r.reindex.files_per_cycle,
+        r.reindex.id_to_path_before, r.reindex.id_to_path_after,
+        r.reindex.free_ids_after,
     });
     try w.print("\"git_head\":{{\"stat_ns\":{d},\"stable\":{}}}}}\n", .{
         r.git_head.stat_ns, r.git_head.stat_stable,
@@ -268,15 +271,22 @@ fn printJson(allocator: std.mem.Allocator, file: std.fs.File, r: BenchResult) !v
 // ── main ──────────────────────────────────────────────────────────────────────
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
+
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
     const args = try parseArgs(alloc);
     defer if (!std.mem.eql(u8, args.root, ".")) alloc.free(args.root);
 
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root = std.fs.cwd().realpath(args.root, &root_buf) catch args.root;
+    const root: []const u8 = blk: {
+        const n = std.Io.Dir.cwd().realPathFile(io, args.root, &root_buf) catch break :blk args.root;
+        break :blk root_buf[0..n];
+    };
 
     // Index
     var store = Store.init(alloc);
@@ -285,16 +295,16 @@ pub fn main() !void {
     defer explorer.deinit();
 
     var t0 = try cio.Timer.start();
-    watcher.initialScan(&store, &explorer, root, alloc, false) catch |err| {
+    watcher.initialScan(io, &store, &explorer, root, alloc, false) catch |err| {
         var errbuf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&errbuf, "benchmark: initialScan failed: {}\n", .{err}) catch "benchmark: initialScan failed\n";
-        try std.fs.File.stderr().writeAll(msg);
+        try cio.File.stderr().writeAll(msg);
         return;
     };
     const index_ns = t0.read();
 
     // Queries
-    var qlist: std.ArrayList(QueryResult) = .{};
+    var qlist: std.ArrayList(QueryResult) = .empty;
     defer qlist.deinit(alloc);
 
     for ([_][]const u8{ "middleware", "authentication", "webhook", "database", "error" }) |q|
@@ -304,8 +314,8 @@ pub fn main() !void {
     for ([_][]const u8{ "init", "main", "handleRequest", "render" }) |q|
         (qlist.append(alloc, try benchSymbol(&explorer, q, args.iterations, alloc)) catch {});
 
-    const reindex = try benchReindex(&explorer, root, alloc);
-    const git_head = benchGitHead(root);
+    const reindex = try benchReindex(io, &explorer, root, alloc);
+    const git_head = benchGitHead(io, root);
 
     const result = BenchResult{
         .root = root,
@@ -319,6 +329,6 @@ pub fn main() !void {
     if (args.json) {
         try printJson(alloc, cio.File.stdout(), result);
     } else {
-        try printHuman(alloc, std.fs.File.stderr(), result);
+        try printHuman(alloc, cio.File.stderr(), result);
     }
 }
