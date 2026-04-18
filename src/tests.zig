@@ -6873,3 +6873,29 @@ test "issue-290: codedb_search guidance does not warn on plain hyphen" {
     mcp_mod.mcpGenerateGuidance(testing.allocator, "codedb_search", &parsed.value.object, false, &buf);
     try testing.expect(std.mem.indexOf(u8, buf.items, "regex=true") == null);
 }
+
+// ── Issue #207: serve-first scan state ─────────────────────────────────────
+
+test "issue-207: ScanState round-trips through atomic" {
+    const initial = mcp_mod.getScanState();
+    defer mcp_mod.setScanState(initial);
+
+    mcp_mod.setScanState(.loading_snapshot);
+    try testing.expectEqual(mcp_mod.ScanState.loading_snapshot, mcp_mod.getScanState());
+
+    mcp_mod.setScanState(.walking);
+    try testing.expectEqual(mcp_mod.ScanState.walking, mcp_mod.getScanState());
+
+    mcp_mod.setScanState(.indexing);
+    try testing.expectEqual(mcp_mod.ScanState.indexing, mcp_mod.getScanState());
+
+    mcp_mod.setScanState(.ready);
+    try testing.expectEqual(mcp_mod.ScanState.ready, mcp_mod.getScanState());
+}
+
+test "issue-207: ScanState.name covers all states" {
+    try testing.expectEqualStrings("loading_snapshot", mcp_mod.ScanState.loading_snapshot.name());
+    try testing.expectEqualStrings("walking", mcp_mod.ScanState.walking.name());
+    try testing.expectEqualStrings("indexing", mcp_mod.ScanState.indexing.name());
+    try testing.expectEqualStrings("ready", mcp_mod.ScanState.ready.name());
+}

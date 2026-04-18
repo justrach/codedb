@@ -385,6 +385,39 @@ pub var last_activity: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 /// Claude Code restarts MCP servers on demand, so this is safe.
 pub const idle_timeout_ms: i64 = 10 * 60 * 1000; // 10 minutes — allows long debugging sessions; stdin EOF is detected by the watchdog poll
 
+// ── Serve-first scan state (issue #207) ─────────────────────────────────────
+//
+// MCP serves immediately on startup; the file walk + index build runs in a
+// background thread. Tools that query the explorer during this window may see
+// partial results, so we expose the current scan phase via codedb_status so
+// callers can decide whether to retry or proceed with what's available.
+
+pub const ScanState = enum(u8) {
+    loading_snapshot = 0,
+    walking = 1,
+    indexing = 2,
+    ready = 3,
+
+    pub fn name(self: ScanState) []const u8 {
+        return switch (self) {
+            .loading_snapshot => "loading_snapshot",
+            .walking => "walking",
+            .indexing => "indexing",
+            .ready => "ready",
+        };
+    }
+};
+
+var scan_state_atomic: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(ScanState.ready));
+
+pub fn setScanState(s: ScanState) void {
+    scan_state_atomic.store(@intFromEnum(s), .release);
+}
+
+pub fn getScanState() ScanState {
+    return @enumFromInt(scan_state_atomic.load(.acquire));
+}
+
 // ── Session state for MCP protocol ──────────────────────────────────────────
 
 const Session = struct {
@@ -1183,6 +1216,7 @@ fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store
         \\  contents_cached: {d}
         \\  trigram_index: {s} ({d} files)
         \\  index_memory: {d}KB
+        \\  scan: {s}
         \\
     , .{
         store.currentSeq(),
@@ -1192,6 +1226,7 @@ fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store
         trigram_type,
         trigram_files,
         index_bytes / 1024,
+        getScanState().name(),
     }) catch {};
 }
 

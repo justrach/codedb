@@ -583,6 +583,7 @@ fn mainImpl() !void {
 
         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
         const startup_t0 = cio.milliTimestamp();
+        mcp_server.setScanState(.loading_snapshot);
         const snapshot_loaded = blk: {
             const snap_head = snapshot_mod.readSnapshotGitHead(io, "codedb.snapshot") orelse {
                 if (git_head != null) break :blk false;
@@ -612,17 +613,19 @@ fn mainImpl() !void {
         queue.* = watcher.EventQueue{};
         var scan_thread: ?std.Thread = null;
         if (!snapshot_loaded) {
+            mcp_server.setScanState(.walking);
             scan_thread = try std.Thread.spawn(.{}, scanBg, .{ io, &store, &explorer, root, allocator, &scan_done, &shutdown, data_dir, abs_root, &telem, startup_t0 });
         } else {
             const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - startup_t0, 0));
             loadTrigramFromDiskIfPresent(io, &explorer, data_dir, allocator);
             telem.recordCodebaseStats(&explorer, startup_time_ms);
+            mcp_server.setScanState(.ready);
         }
 
         const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, &store, &explorer, queue, root, &shutdown, &scan_done });
         const idle_thread = try std.Thread.spawn(.{}, idleWatchdog, .{&shutdown});
 
-        std.log.info("codedb mcp: root={s} files={d} data={s}", .{ abs_root, store.currentSeq(), data_dir });
+        std.log.info("codedb mcp: root={s} files={d} data={s} scan={s}", .{ abs_root, store.currentSeq(), data_dir, mcp_server.getScanState().name() });
 
         mcp_server.run(io, allocator, &store, &explorer, &agents, abs_root, &telem);
 
@@ -821,6 +824,7 @@ fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allo
         break :blk std.mem.eql(u8, &a, &b);
     };
 
+    mcp_server.setScanState(.walking);
     watcher.initialScan(io, store, explorer, root, allocator, heads_match) catch |err| {
         std.log.warn("background scan failed: {}", .{err});
     };
@@ -828,8 +832,10 @@ fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allo
     // Phase gate: bail if shutting down after initial scan
     if (shutdown.load(.acquire)) {
         scan_done.store(true, .release);
+        mcp_server.setScanState(.ready);
         return;
     }
+    mcp_server.setScanState(.indexing);
     persistWordIndexToDisk(io, explorer, data_dir, git_head);
 
     if (heads_match) {
@@ -841,6 +847,7 @@ fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allo
                 explorer.trigram_index = .{ .mmap = loaded };
                 explorer.mu.unlock();
                 scan_done.store(true, .release);
+                mcp_server.setScanState(.ready);
                 if (shutdown.load(.acquire)) return;
                 telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
                 snapshot_mod.writeSnapshotDual(io, explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
@@ -862,6 +869,7 @@ fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allo
                 explorer.trigram_index = .{ .heap = loaded };
                 explorer.mu.unlock();
                 scan_done.store(true, .release);
+                mcp_server.setScanState(.ready);
                 if (shutdown.load(.acquire)) return;
                 telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
                 snapshot_mod.writeSnapshotDual(io, explorer, abs_root, "codedb.snapshot", allocator) catch |err| {
@@ -881,6 +889,7 @@ fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allo
     // Phase gate: bail before disk write if shutting down
     if (shutdown.load(.acquire)) {
         scan_done.store(true, .release);
+        mcp_server.setScanState(.ready);
         return;
     }
 
@@ -891,6 +900,7 @@ fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allo
     // Phase gate: bail before mmap swap if shutting down
     if (shutdown.load(.acquire)) {
         scan_done.store(true, .release);
+        mcp_server.setScanState(.ready);
         return;
     }
 
@@ -908,6 +918,7 @@ fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allo
     }
 
     scan_done.store(true, .release);
+    mcp_server.setScanState(.ready);
 
     if (shutdown.load(.acquire)) return;
 
