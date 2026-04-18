@@ -1311,7 +1311,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         // Activates when Tier 0 found nothing and query is ≥3 chars, catching partial
         // identifier queries like "searchC" that match "searchContent" in the word index.
         if (result_list.items.len == 0 and query.len >= 3) {
-            const prefix_hits = try self.word_index.searchPrefix(query, allocator);
+            const prefix_hits = try self.word_index.searchPrefix(query, allocator, max_results);
             defer allocator.free(prefix_hits);
             for (prefix_hits) |hit| {
                 const hit_path = self.word_index.hitPath(hit);

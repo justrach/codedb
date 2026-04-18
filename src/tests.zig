@@ -6722,7 +6722,7 @@ test "word-index: searchPrefix finds extensions of a prefix" {
     try wi.indexFile("a.zig", "fn searchContent() void {} fn searchConfig() void {}");
 
     // "searchco" is a strict prefix of "searchcontent" and "searchconfig"
-    const hits = try wi.searchPrefix("searchco", a);
+    const hits = try wi.searchPrefix("searchco", a, 32);
     try testing.expect(hits.len >= 1);
 }
 
@@ -6735,15 +6735,35 @@ test "word-index: searchPrefix skips exact match (Tier 0 responsibility)" {
     try wi.indexFile("a.zig", "fn searchContent() void {}");
 
     // Exact key "search" exists (sub-token). searchPrefix should return 0 for exact key.
-    const hits_exact = try wi.searchPrefix("search", a);
+    const hits_exact = try wi.searchPrefix("search", a, 32);
     // "search" itself is in the index. Only keys STRICTLY longer are returned.
     // "searchcontent" is longer, so we expect ≥1 result.
     try testing.expect(hits_exact.len >= 1);
 
     // The hits must come from keys other than "search" itself.
     // Verify by checking "searchc..." style prefix:
-    const hits_prefix = try wi.searchPrefix("searchco", a);
+    const hits_prefix = try wi.searchPrefix("searchco", a, 32);
     try testing.expect(hits_prefix.len >= 1);
+}
+
+test "word-index: searchPrefix respects max_results cap" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var wi = WordIndex.init(a);
+
+    // Index many distinct files producing many keys that share the "fooBar" prefix.
+    var i: usize = 0;
+    while (i < 50) : (i += 1) {
+        const path = try std.fmt.allocPrint(a, "f{d}.zig", .{i});
+        const content = try std.fmt.allocPrint(a, "fn fooBar{d}() void {{}}\n", .{i});
+        try wi.indexFile(path, content);
+    }
+
+    const cap: usize = 5;
+    const hits = try wi.searchPrefix("foobar", a, cap);
+    try testing.expect(hits.len <= cap);
+    try testing.expect(hits.len > 0);
 }
 
 test "integration: Tier 0.5 prefix expansion finds partial identifier" {

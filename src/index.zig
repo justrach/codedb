@@ -267,9 +267,9 @@ pub const WordIndex = struct {
     /// Collect all hits for index keys that begin with `prefix_raw` (normalized internally to
     /// lowercase). Only keys strictly longer than the normalized prefix are considered —
     /// exact-match keys are already handled by Tier 0 (`search`).
-    /// Results are deduplicated by (doc_id, line_num) and returned as an owned slice.
-    pub fn searchPrefix(self: *WordIndex, prefix_raw: []const u8, allocator: std.mem.Allocator) ![]const WordHit {
-        if (prefix_raw.len == 0) return try allocator.alloc(WordHit, 0);
+    /// Results are deduplicated by (doc_id, line_num), capped at `max_results`, and returned as an owned slice.
+    pub fn searchPrefix(self: *WordIndex, prefix_raw: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const WordHit {
+        if (prefix_raw.len == 0 or max_results == 0) return try allocator.alloc(WordHit, 0);
         var buf: [512]u8 = undefined;
         const prefix = if (prefix_raw.len <= buf.len) blk: {
             for (prefix_raw, 0..) |c, i| buf[i] = normalizeChar(c);
@@ -278,19 +278,24 @@ pub const WordIndex = struct {
 
         var result: std.ArrayList(WordHit) = .empty;
         errdefer result.deinit(allocator);
+        try result.ensureTotalCapacity(allocator, max_results);
         const DedupKey = struct { doc_id: u32, line_num: u32 };
         var seen = std.AutoHashMap(DedupKey, void).init(allocator);
         defer seen.deinit();
+        try seen.ensureTotalCapacity(@intCast(max_results));
 
         var key_iter = self.index.keyIterator();
-        while (key_iter.next()) |k| {
+        outer: while (key_iter.next()) |k| {
             if (k.len <= prefix.len) continue; // strictly longer: exact match is Tier 0
             if (!std.mem.startsWith(u8, k.*, prefix)) continue;
             const hits = self.index.get(k.*) orelse continue;
             for (hits.items) |hit| {
                 const dk = DedupKey{ .doc_id = hit.doc_id, .line_num = hit.line_num };
                 const gop = try seen.getOrPut(dk);
-                if (!gop.found_existing) try result.append(allocator, hit);
+                if (!gop.found_existing) {
+                    result.appendAssumeCapacity(hit);
+                    if (result.items.len >= max_results) break :outer;
+                }
             }
         }
         return result.toOwnedSlice(allocator);
