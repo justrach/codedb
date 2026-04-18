@@ -59,7 +59,7 @@ pub fn writeSnapshot(
     output_path: []const u8,
     allocator: std.mem.Allocator,
 ) !void {
-    const rand_suffix = (blk: { var __cr_ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &__cr_ts); break :blk @as(u64, @intCast(__cr_ts.nsec)) ^ (@as(u64, @intCast(__cr_ts.sec)) << 1); });
+    const rand_suffix = cio.randU64();
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ output_path, rand_suffix });
     defer allocator.free(tmp_path);
 

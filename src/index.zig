@@ -1,4 +1,5 @@
 const std = @import("std");
+const cio = @import("cio.zig");
 
 // ── Inverted word index ─────────────────────────────────────
 // Maps word → list of (path, line) hits. O(1) word lookup.
@@ -1246,7 +1247,7 @@ pub const TrigramIndex = struct {
         }
 
         // Step 4: Write postings file atomically (random suffix prevents collisions)
-        var post_ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &post_ts); const post_rand: u64 = @as(u64, @intCast(post_ts.nsec)) ^ @as(u64, @intCast(post_ts.sec));
+        const post_rand: u64 = cio.randU64();
         const postings_tmp = try std.fmt.allocPrint(self.allocator, "{s}/trigram.postings.{x}.tmp", .{ dir_path, post_rand });
         defer self.allocator.free(postings_tmp);
         const postings_final = try std.fmt.allocPrint(self.allocator, "{s}/trigram.postings", .{dir_path});
@@ -1292,7 +1293,7 @@ pub const TrigramIndex = struct {
         try std.Io.Dir.cwd().rename(postings_tmp, std.Io.Dir.cwd(), postings_final, io);
 
         // Step 5: Write lookup file atomically (random suffix prevents collisions)
-        var lk_ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &lk_ts); const lk_rand: u64 = @as(u64, @intCast(lk_ts.nsec)) ^ (@as(u64, @intCast(lk_ts.sec)) << 1);
+        const lk_rand: u64 = cio.randU64();
         const lookup_tmp = try std.fmt.allocPrint(self.allocator, "{s}/trigram.lookup.{x}.tmp", .{ dir_path, lk_rand });
         defer self.allocator.free(lookup_tmp);
         const lookup_final = try std.fmt.allocPrint(self.allocator, "{s}/trigram.lookup", .{dir_path});

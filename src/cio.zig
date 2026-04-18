@@ -139,6 +139,27 @@ pub const Timer = struct {
 
 // ── Environment ──────────────────────────────────────────────────────────
 
+/// Non-cryptographic random u64 mixing nanotime, PID, and thread ID.
+/// Replaces `std.crypto.random.int(u64)` (removed in 0.16) for tmp-file
+/// suffix collision avoidance. Thread-safe: each thread gets a unique
+/// mix per-call even at the same nanosecond.
+pub fn randU64() u64 {
+    var ts: std.c.timespec = undefined;
+    _ = clock_gettime(CLOCK_REALTIME, &ts);
+    const ns = @as(u64, @intCast(ts.nsec));
+    const sec = @as(u64, @intCast(ts.sec));
+    const tid = std.Thread.getCurrentId();
+    const pid: u64 = @intCast(std.c.getpid());
+    // splitmix64-style final mixing to avoid close-timestamp collisions
+    var x = ns ^ (sec *% 2) ^ (tid *% (1 << 17)) ^ (pid *% (1 << 23));
+    x ^= x >> 33;
+    x *%= 0xff51afd7ed558ccd;
+    x ^= x >> 33;
+    x *%= 0xc4ceb9fe1a85ec53;
+    x ^= x >> 33;
+    return x;
+}
+
 pub fn sleepMs(ms: u64) void {
     var ts: std.c.timespec = .{
         .sec = @intCast(ms / 1000),
