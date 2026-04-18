@@ -1,8 +1,8 @@
 .{
     .name = .codedb2,
     .fingerprint = 0x6e18d96ca2a31757,
-    .version = "0.2.3",
-    .minimum_zig_version = "0.15.0",
+    .version = "0.2.578",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .mcp_zig = .{
             .url = "https://github.com/justrach/mcp-zig/archive/refs/heads/main.tar.gz",
