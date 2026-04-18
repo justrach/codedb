@@ -71,7 +71,7 @@ pub const AgentRegistry = struct {
             .name = duped_name,
             .state = .active,
             .cursor = 0,
-            .last_seen = std.time.milliTimestamp(),
+            .last_seen = cio.milliTimestamp(),
             .edit_count = 0,
             .locked_paths = std.StringHashMap(i64).init(self.allocator),
         });
@@ -85,7 +85,7 @@ pub const AgentRegistry = struct {
         defer self.mu.unlock();
 
         if (self.agents.getPtr(id)) |a| {
-            a.last_seen = std.time.milliTimestamp();
+            a.last_seen = cio.milliTimestamp();
             if (a.state == .crashed) a.state = .active;
         }
     }
@@ -95,7 +95,7 @@ pub const AgentRegistry = struct {
         self.mu.lock();
         defer self.mu.unlock();
 
-        const now = std.time.milliTimestamp();
+        const now = cio.milliTimestamp();
         var iter = self.agents.iterator();
         while (iter.next()) |entry| {
             const a = entry.value_ptr;
@@ -116,7 +116,7 @@ pub const AgentRegistry = struct {
         self.mu.lock();
         defer self.mu.unlock();
 
-        const now = std.time.milliTimestamp();
+        const now = cio.milliTimestamp();
 
         // Check if any other active agent holds this lock.
         var iter = self.agents.iterator();

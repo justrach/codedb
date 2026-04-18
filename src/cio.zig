@@ -139,6 +139,14 @@ pub const Timer = struct {
 
 // ── Environment ──────────────────────────────────────────────────────────
 
+pub fn sleepMs(ms: u64) void {
+    var ts: std.c.timespec = .{
+        .sec = @intCast(ms / 1000),
+        .nsec = @intCast((ms % 1000) * 1_000_000),
+    };
+    _ = std.c.nanosleep(&ts, null);
+}
+
 pub fn posixGetenv(name: []const u8) ?[]const u8 {
     var buf: [256]u8 = undefined;
     if (name.len >= buf.len) return null;
@@ -177,6 +185,41 @@ pub fn argsAlloc(alloc: std.mem.Allocator) ![][:0]u8 {
 pub fn argsFree(alloc: std.mem.Allocator, args: [][:0]u8) void {
     for (args) |a| alloc.free(a);
     alloc.free(args);
+}
+
+// ── ArrayList writer helper (replaces 0.15's ArrayList(u8).writer(alloc)) ────
+
+pub const ListWriter = struct {
+    list: *std.ArrayList(u8),
+    alloc: std.mem.Allocator,
+
+    pub fn writeAll(self: ListWriter, bytes: []const u8) !void {
+        try self.list.appendSlice(self.alloc, bytes);
+    }
+    pub fn writeByte(self: ListWriter, b: u8) !void {
+        try self.list.append(self.alloc, b);
+    }
+    pub fn writeByteNTimes(self: ListWriter, b: u8, n: usize) !void {
+        try self.list.appendNTimes(self.alloc, b, n);
+    }
+    pub fn writeBytesNTimes(self: ListWriter, bytes: []const u8, n: usize) !void {
+        var i: usize = 0;
+        while (i < n) : (i += 1) try self.list.appendSlice(self.alloc, bytes);
+    }
+    pub fn print(self: ListWriter, comptime fmt: []const u8, args: anytype) !void {
+        var stack_buf: [8192]u8 = undefined;
+        const s = std.fmt.bufPrint(&stack_buf, fmt, args) catch {
+            const big = try std.fmt.allocPrint(self.alloc, fmt, args);
+            defer self.alloc.free(big);
+            try self.list.appendSlice(self.alloc, big);
+            return;
+        };
+        try self.list.appendSlice(self.alloc, s);
+    }
+};
+
+pub fn listWriter(list: *std.ArrayList(u8), alloc: std.mem.Allocator) ListWriter {
+    return .{ .list = list, .alloc = alloc };
 }
 
 // ── Subprocess ───────────────────────────────────────────────────────────

@@ -107,7 +107,7 @@ pub const Store = struct {
         try entry.value_ptr.versions.append(self.allocator, .{
             .seq = next_seq,
             .agent = agent,
-            .timestamp = std.time.milliTimestamp(),
+            .timestamp = cio.milliTimestamp(),
             .op = op,
             .hash = hash,
             .size = size,
@@ -166,7 +166,7 @@ pub const Store = struct {
     pub fn changesSinceDetailed(self: *Store, since: u64, allocator: std.mem.Allocator) ![]const ChangeEntry {
         self.mu.lock();
         defer self.mu.unlock();
-        var result: std.ArrayList(ChangeEntry) = .{};
+        var result: std.ArrayList(ChangeEntry) = .empty;
         errdefer result.deinit(allocator);
         var iter = self.files.iterator();
         while (iter.next()) |entry| {
@@ -202,7 +202,7 @@ pub const Store = struct {
         self.mu.lock();
         defer self.mu.unlock();
 
-        var paths: std.ArrayList([]const u8) = .{};
+        var paths: std.ArrayList([]const u8) = .empty;
         var iter = self.files.iterator();
         while (iter.next()) |entry| {
             try paths.append(self.allocator, entry.key_ptr.*);

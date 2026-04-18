@@ -4937,7 +4937,7 @@ test "nuke: deregisterJsonIntegrationFile handles configs larger than 64 KiB" {
     const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/large-claude.json", .{tmp.sub_path});
     defer testing.allocator.free(rel_path);
 
-    var content: std.ArrayList(u8) = .{};
+    var content: std.ArrayList(u8) = .empty;
     defer content.deinit(testing.allocator);
     try content.appendSlice(testing.allocator,
         \\{
@@ -5008,7 +5008,7 @@ test "issue-148: idle watchdog exits on shutdown signal" {
     // and return quickly when signalled
     var shutdown = std.atomic.Value(bool).init(false);
 
-    const t0 = std.time.milliTimestamp();
+    const t0 = cio.milliTimestamp();
     // Signal shutdown after a small delay
     const signal_thread = try std.Thread.spawn(.{}, struct {
         fn run(s: *std.atomic.Value(bool)) void {
@@ -5027,7 +5027,7 @@ test "issue-148: idle watchdog exits on shutdown signal" {
     }
     signal_thread.join();
 
-    const elapsed = std.time.milliTimestamp() - t0;
+    const elapsed = cio.milliTimestamp() - t0;
     // With 1s granularity, should respond well under 5s (not 30s)
     // Using 100ms intervals in test, so should be ~500ms
     if (elapsed > 0) {
@@ -5044,11 +5044,11 @@ test "issue-148: idle watchdog respects activity timestamp" {
     defer mcp.last_activity.store(saved, .release);
 
     // Set activity to "just now"
-    mcp.last_activity.store(std.time.milliTimestamp(), .release);
+    mcp.last_activity.store(cio.milliTimestamp(), .release);
 
     // With 10-minute timeout, checking now should NOT trigger exit
     const last = mcp.last_activity.load(.acquire);
-    const now = std.time.milliTimestamp();
+    const now = cio.milliTimestamp();
     try testing.expect(now - last < mcp.idle_timeout_ms);
 }
 
@@ -5056,7 +5056,7 @@ test "issue-148: MCP session survives 2-minute idle" {
     const mcp = @import("mcp.zig");
     // With the old 2-min timeout, an activity 3 minutes ago would trigger exit.
     // With the new 10-min timeout, it should be fine.
-    const three_min_ago = std.time.milliTimestamp() - (3 * 60 * 1000);
+    const three_min_ago = cio.milliTimestamp() - (3 * 60 * 1000);
 
     // Save and restore
     const saved = mcp.last_activity.load(.acquire);
@@ -5064,7 +5064,7 @@ test "issue-148: MCP session survives 2-minute idle" {
 
     mcp.last_activity.store(three_min_ago, .release);
     const last = mcp.last_activity.load(.acquire);
-    const now = std.time.milliTimestamp();
+    const now = cio.milliTimestamp();
 
     // Should NOT exceed 10-minute timeout
     try testing.expect(now - last < mcp.idle_timeout_ms);
@@ -5114,14 +5114,14 @@ test "issue-148: codedb mcp exits when stdin is closed" {
 
     // Wait up to 15 seconds for the process to exit
     // (watchdog polls every 10s, so it should detect POLLHUP within ~10s)
-    const start = std.time.milliTimestamp();
+    const start = cio.milliTimestamp();
     const term = child.wait() catch {
         // If wait fails, the process is stuck — test fails
         try testing.expect(false);
         return;
     };
 
-    const elapsed = std.time.milliTimestamp() - start;
+    const elapsed = cio.milliTimestamp() - start;
 
     // Should have exited (not been killed by us)
     switch (term) {
@@ -5793,7 +5793,7 @@ test "snapshot: symbol detail longer than 4096 bytes survives round-trip" {
     const aa = arena.allocator();
 
     // Build a Zig source whose first function line exceeds 4 096 characters.
-    var src: std.ArrayList(u8) = .{};
+    var src: std.ArrayList(u8) = .empty;
     defer src.deinit(testing.allocator);
     try src.appendSlice(testing.allocator, "pub fn bigSig(");
     var param_i: usize = 0;
@@ -6222,13 +6222,13 @@ test "dep-graph: reverse index gives O(1) imported_by lookup" {
     defer graph.deinit();
 
     // main.zig imports store.zig and utils.zig
-    var deps1: std.ArrayList([]const u8) = .{};
+    var deps1: std.ArrayList([]const u8) = .empty;
     try deps1.append(testing.allocator, "store.zig");
     try deps1.append(testing.allocator, "utils.zig");
     try graph.setDeps("main.zig", deps1);
 
     // server.zig imports store.zig
-    var deps2: std.ArrayList([]const u8) = .{};
+    var deps2: std.ArrayList([]const u8) = .empty;
     try deps2.append(testing.allocator, "store.zig");
     try graph.setDeps("server.zig", deps2);
 
@@ -6255,7 +6255,7 @@ test "dep-graph: setDeps removes old reverse edges" {
     defer graph.deinit();
 
     // main.zig initially imports store.zig
-    var deps1: std.ArrayList([]const u8) = .{};
+    var deps1: std.ArrayList([]const u8) = .empty;
     try deps1.append(testing.allocator, "store.zig");
     try graph.setDeps("main.zig", deps1);
 
@@ -6267,7 +6267,7 @@ test "dep-graph: setDeps removes old reverse edges" {
     try testing.expectEqual(@as(usize, 1), before.len);
 
     // main.zig re-indexed, now imports utils.zig instead
-    var deps2: std.ArrayList([]const u8) = .{};
+    var deps2: std.ArrayList([]const u8) = .empty;
     try deps2.append(testing.allocator, "utils.zig");
     try graph.setDeps("main.zig", deps2);
 
@@ -6293,15 +6293,15 @@ test "dep-graph: transitive dependents via BFS" {
     defer graph.deinit();
 
     // Build chain: app.zig -> server.zig -> store.zig -> utils.zig
-    var deps1: std.ArrayList([]const u8) = .{};
+    var deps1: std.ArrayList([]const u8) = .empty;
     try deps1.append(testing.allocator, "server.zig");
     try graph.setDeps("app.zig", deps1);
 
-    var deps2: std.ArrayList([]const u8) = .{};
+    var deps2: std.ArrayList([]const u8) = .empty;
     try deps2.append(testing.allocator, "store.zig");
     try graph.setDeps("server.zig", deps2);
 
-    var deps3: std.ArrayList([]const u8) = .{};
+    var deps3: std.ArrayList([]const u8) = .empty;
     try deps3.append(testing.allocator, "utils.zig");
     try graph.setDeps("store.zig", deps3);
 
@@ -6328,15 +6328,15 @@ test "dep-graph: transitive dependencies (forward BFS)" {
     defer graph.deinit();
 
     // app.zig -> server.zig -> store.zig -> utils.zig
-    var deps1: std.ArrayList([]const u8) = .{};
+    var deps1: std.ArrayList([]const u8) = .empty;
     try deps1.append(testing.allocator, "server.zig");
     try graph.setDeps("app.zig", deps1);
 
-    var deps2: std.ArrayList([]const u8) = .{};
+    var deps2: std.ArrayList([]const u8) = .empty;
     try deps2.append(testing.allocator, "store.zig");
     try graph.setDeps("server.zig", deps2);
 
-    var deps3: std.ArrayList([]const u8) = .{};
+    var deps3: std.ArrayList([]const u8) = .empty;
     try deps3.append(testing.allocator, "utils.zig");
     try graph.setDeps("store.zig", deps3);
 
@@ -6361,11 +6361,11 @@ test "dep-graph: remove cleans forward and reverse edges" {
     var graph = DependencyGraph.init(testing.allocator);
     defer graph.deinit();
 
-    var deps1: std.ArrayList([]const u8) = .{};
+    var deps1: std.ArrayList([]const u8) = .empty;
     try deps1.append(testing.allocator, "store.zig");
     try graph.setDeps("main.zig", deps1);
 
-    var deps2: std.ArrayList([]const u8) = .{};
+    var deps2: std.ArrayList([]const u8) = .empty;
     try deps2.append(testing.allocator, "store.zig");
     try graph.setDeps("server.zig", deps2);
 
@@ -6390,15 +6390,15 @@ test "dep-graph: cycle does not cause infinite BFS" {
     defer graph.deinit();
 
     // Create a cycle: a.zig -> b.zig -> c.zig -> a.zig
-    var deps1: std.ArrayList([]const u8) = .{};
+    var deps1: std.ArrayList([]const u8) = .empty;
     try deps1.append(testing.allocator, "b.zig");
     try graph.setDeps("a.zig", deps1);
 
-    var deps2: std.ArrayList([]const u8) = .{};
+    var deps2: std.ArrayList([]const u8) = .empty;
     try deps2.append(testing.allocator, "c.zig");
     try graph.setDeps("b.zig", deps2);
 
-    var deps3: std.ArrayList([]const u8) = .{};
+    var deps3: std.ArrayList([]const u8) = .empty;
     try deps3.append(testing.allocator, "a.zig");
     try graph.setDeps("c.zig", deps3);
 
@@ -6563,7 +6563,7 @@ test "word-index: splitIdentifier snake_case" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var out: std.ArrayList([]const u8) = .{};
+    var out: std.ArrayList([]const u8) = .empty;
     defer out.deinit(a);
     try splitIdentifier("get_or_put", &out, a);
 
@@ -6578,7 +6578,7 @@ test "word-index: splitIdentifier camelCase" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var out: std.ArrayList([]const u8) = .{};
+    var out: std.ArrayList([]const u8) = .empty;
     defer out.deinit(a);
     try splitIdentifier("validateToken", &out, a);
 
@@ -6592,7 +6592,7 @@ test "word-index: splitIdentifier acronym (HTTPHandler)" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var out: std.ArrayList([]const u8) = .{};
+    var out: std.ArrayList([]const u8) = .empty;
     defer out.deinit(a);
     try splitIdentifier("HTTPHandler", &out, a);
 
@@ -6606,7 +6606,7 @@ test "word-index: splitIdentifier simple word emits itself" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var out: std.ArrayList([]const u8) = .{};
+    var out: std.ArrayList([]const u8) = .empty;
     defer out.deinit(a);
     try splitIdentifier("handler", &out, a);
 

@@ -152,7 +152,7 @@ const ProjectCache = struct {
         self.mu.lock();
         defer self.mu.unlock();
 
-        const now = std.time.milliTimestamp();
+        const now = cio.milliTimestamp();
         for (&self.entries) |*slot| {
             if (slot.*) |entry| {
                 if (std.mem.eql(u8, entry.path, p)) {
@@ -280,7 +280,7 @@ pub const BenchContext = struct {
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
     ) usize {
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(alloc);
 
         const t0 = cio.nanoTimestamp();
@@ -290,7 +290,7 @@ pub const BenchContext = struct {
         const is_error = std.mem.startsWith(u8, out.items, "error:");
         telem.recordToolCall(name, elapsed, is_error, out.items.len);
 
-        var summary: std.ArrayList(u8) = .{};
+        var summary: std.ArrayList(u8) = .empty;
         defer summary.deinit(alloc);
         summary.ensureTotalCapacity(alloc, 256) catch {};
         summary.appendSlice(alloc, if (is_error) MCP_RED ++ MCP_CROSS ++ " " ++ MCP_RESET else MCP_GREEN ++ MCP_CHECK ++ " " ++ MCP_RESET) catch {};
@@ -299,11 +299,11 @@ pub const BenchContext = struct {
         var dur_buf: [96]u8 = undefined;
         summary.appendSlice(alloc, mcpFormatDuration(&dur_buf, elapsed)) catch {};
 
-        var guidance: std.ArrayList(u8) = .{};
+        var guidance: std.ArrayList(u8) = .empty;
         defer guidance.deinit(alloc);
         mcpGenerateGuidance(alloc, name, args, is_error, &guidance);
 
-        var result: std.ArrayList(u8) = .{};
+        var result: std.ArrayList(u8) = .empty;
         defer result.deinit(alloc);
         result.ensureTotalCapacity(alloc, out.items.len + summary.items.len + guidance.items.len + 256) catch {};
         result.appendSlice(alloc, "{\"content\":[") catch return 0;
@@ -411,6 +411,7 @@ const Session = struct {
 };
 
 pub fn run(
+    io: std.Io,
     alloc: std.mem.Allocator,
     store: *Store,
     explorer: *Explorer,
@@ -418,9 +419,10 @@ pub fn run(
     default_path: []const u8,
     telem: *telemetry_mod.Telemetry,
 ) void {
+    _ = io;
     const stdout = cio.File.stdout();
-    const stdin = std.fs.File.stdin();
-    last_activity.store(std.time.milliTimestamp(), .release);
+    const stdin = cio.File.stdin();
+    last_activity.store(cio.milliTimestamp(), .release);
 
     var cache = ProjectCache.init(alloc, default_path);
     defer cache.deinit();
@@ -436,7 +438,7 @@ pub fn run(
 
     while (true) {
         const msg = mcpj.readLineBuf(alloc, &stdin_reader.interface) orelse break;
-        last_activity.store(std.time.milliTimestamp(), .release);
+        last_activity.store(cio.milliTimestamp(), .release);
         defer alloc.free(msg);
 
         const input = std.mem.trim(u8, msg, " \t\r");
@@ -570,7 +572,7 @@ fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
 }
 
 fn writeRequest(alloc: std.mem.Allocator, stdout: std.fs.File, id: i64, method: []const u8, params: []const u8) void {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
     var tmp: [32]u8 = undefined;
@@ -623,7 +625,7 @@ fn handleCall(
         return;
     };
 
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
 
     const t0 = cio.nanoTimestamp();
@@ -648,7 +650,7 @@ fn handleCall(
     if (is_notification) return;
 
     // Block 1: Human-readable colored summary (ANSI — preview pane always renders it)
-    var summary: std.ArrayList(u8) = .{};
+    var summary: std.ArrayList(u8) = .empty;
     defer summary.deinit(alloc);
     summary.ensureTotalCapacity(alloc, 256) catch {};
     summary.appendSlice(alloc, if (is_error) MCP_RED ++ MCP_CROSS ++ " " ++ MCP_RESET else MCP_GREEN ++ MCP_CHECK ++ " " ++ MCP_RESET) catch {};
@@ -658,12 +660,12 @@ fn handleCall(
     summary.appendSlice(alloc, mcpFormatDuration(&dur_buf, elapsed)) catch {};
 
     // Block 3: Guidance hints
-    var guidance: std.ArrayList(u8) = .{};
+    var guidance: std.ArrayList(u8) = .empty;
     defer guidance.deinit(alloc);
     mcpGenerateGuidance(alloc, name, args, is_error, &guidance);
 
     // Assemble 3-block MCP content envelope
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     defer result.deinit(alloc);
     result.ensureTotalCapacity(alloc, out.items.len + summary.items.len + guidance.items.len + 256) catch {};
     result.appendSlice(alloc, "{\"content\":[") catch return;
@@ -951,7 +953,7 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
             const fwd = explorer.dep_graph.getForwardDeps(path);
             explorer.mu.unlockShared();
             if (fwd) |deps| {
-                var result_list: std.ArrayList([]const u8) = .{};
+                var result_list: std.ArrayList([]const u8) = .empty;
                 for (deps) |dep| {
                     const d = alloc.dupe(u8, dep) catch continue;
                     result_list.append(alloc, d) catch {
@@ -1270,7 +1272,7 @@ fn handleBundle(
         }
         const sub_args = &sub_args_val.object;
 
-        var sub_out: std.ArrayList(u8) = .{};
+        var sub_out: std.ArrayList(u8) = .empty;
         defer sub_out.deinit(alloc);
 
         dispatch(alloc, tool, sub_args, &sub_out, default_store, default_explorer, agents, cache);
@@ -1697,7 +1699,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
         return;
     }
 
-    var file_set: std.ArrayList([]const u8) = .{};
+    var file_set: std.ArrayList([]const u8) = .empty;
     defer file_set.deinit(alloc);
     var have_set = false;
     const w = out.writer(alloc);
@@ -1833,7 +1835,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                         const fwd = explorer.dep_graph.getForwardDeps(path);
                         explorer.mu.unlockShared();
                         if (fwd) |deps| {
-                            var res: std.ArrayList([]const u8) = .{};
+                            var res: std.ArrayList([]const u8) = .empty;
                             for (deps) |dep| {
                                 const d = alloc.dupe(u8, dep) catch continue;
                                 res.append(alloc, d) catch {
@@ -2011,7 +2013,7 @@ fn logQuery(tool: []const u8, query: []const u8, result_bytes: usize, latency_ns
     const latency_us: i64 = @intCast(@divTrunc(latency_ns, 1000));
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"ev\":\"query\",\"tool\":\"{s}\",\"query\":\"{s}\",\"result_bytes\":{d},\"latency_us\":{d}}}\n", .{
-        std.time.milliTimestamp(), tool, escaped[0..elen], result_bytes, latency_us,
+        cio.milliTimestamp(), tool, escaped[0..elen], result_bytes, latency_us,
     }) catch return;
     appendToWal(line);
 }
@@ -2022,7 +2024,7 @@ fn logFileAccess(tool: []const u8, file_path: []const u8, latency_ns: i128) void
     const latency_us: i64 = @intCast(@divTrunc(latency_ns, 1000));
     var buf: [512]u8 = undefined;
     const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"ev\":\"access\",\"tool\":\"{s}\",\"path\":\"{s}\",\"latency_us\":{d}}}\n", .{
-        std.time.milliTimestamp(), tool, escaped[0..elen], latency_us,
+        cio.milliTimestamp(), tool, escaped[0..elen], latency_us,
     }) catch return;
     appendToWal(line);
 }
@@ -2085,7 +2087,7 @@ pub fn isPathSafe(path: []const u8) bool {
 }
 
 fn writeResult(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Value, result: []const u8) void {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     buf.ensureTotalCapacity(alloc, result.len + 64) catch {};
     buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
@@ -2104,7 +2106,7 @@ fn writeResult(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Valu
 }
 
 fn writeError(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Value, code: i32, msg: []const u8) void {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
     appendId(alloc, &buf, id);
@@ -2443,7 +2445,7 @@ test "issue-258: cached project reads use the project root after contents are re
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"src/main.zig\"}", .{});
     defer parsed.deinit();
 
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
     handleRead(testing.allocator, &parsed.value.object, &out, ctx.explorer);
 

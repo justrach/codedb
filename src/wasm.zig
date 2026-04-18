@@ -96,7 +96,7 @@ export fn wasm_get_outline(
     defer outline.deinit();
 
     // Serialize to JSON with proper escaping
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     const writer = buf.writer(allocator);
     writer.writeByte('[') catch return null;
     for (outline.symbols.items, 0..) |sym, i| {
@@ -142,7 +142,7 @@ export fn wasm_search(
     }
 
     // Serialize to JSON
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     const writer = buf.writer(allocator);
     writer.writeByte('[') catch return null;
     for (results, 0..) |r, i| {
@@ -180,7 +180,7 @@ export fn wasm_search(
 export fn wasm_get_tree(out_len_ptr: *usize) ?[*]u8 {
     const exp = getExplorer();
 
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     const writer = buf.writer(allocator);
     writer.writeByte('[') catch return null;
     var first = true;
@@ -210,7 +210,7 @@ export fn wasm_get_tree(out_len_ptr: *usize) ?[*]u8 {
 export fn wasm_get_all_outlines(out_len_ptr: *usize) ?[*]u8 {
     const exp = getExplorer();
 
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     const writer = buf.writer(allocator);
     writer.writeByte('{') catch return null;
     var first = true;

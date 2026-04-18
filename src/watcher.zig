@@ -94,7 +94,7 @@ const WorkerParsedResults = struct {
     fn init(backing: std.mem.Allocator) WorkerParsedResults {
         return .{
             .arena = std.heap.ArenaAllocator.init(backing),
-            .items = .{},
+            .items = .empty,
         };
     }
 
@@ -702,7 +702,7 @@ fn indexFileOutline(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []co
 
 /// Background thread: polls for incremental FS changes.
 pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, root: []const u8, shutdown: *std.atomic.Value(bool), scan_done: *std.atomic.Value(bool)) void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const backing = gpa.allocator();
 
@@ -711,7 +711,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
     // only pick up changes that happen after.
     while (!scan_done.load(.acquire)) {
         if (shutdown.load(.acquire)) return;
-        std.Thread.sleep(100 * std.time.ns_per_ms);
+        cio.sleepMs(100);
     }
 
     var known = FileMap.init(backing);
@@ -755,7 +755,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
         drainNotifyFile(io, store, explorer, queue, &known, root, backing);
 
         // Poll every 2s — gentle on CPU, fast enough to catch saves
-        std.Thread.sleep(2 * std.time.ns_per_s);
+        cio.sleepMs(2 * std.time.ns_per_s / 1_000_000);
 
         // Check if git HEAD changed — stat .git/HEAD mtime first to skip fork+exec (#254)
         var current_head: ?[40]u8 = last_git_head;

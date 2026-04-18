@@ -7,6 +7,7 @@ const watcher = @import("watcher.zig");
 const edit_mod = @import("edit.zig");
 
 pub fn serve(
+    io: std.Io,
     allocator: std.mem.Allocator,
     store: *Store,
     agents: *AgentRegistry,
@@ -14,7 +15,17 @@ pub fn serve(
     queue: *watcher.EventQueue,
     port: u16,
 ) !void {
+    _ = io;
+    _ = allocator;
+    _ = store;
+    _ = agents;
+    _ = explorer;
     _ = queue;
+    _ = port;
+    return error.ServerDisabledOn016;
+}
+// stub for 0.16 #285
+fn _disabledServeBody(allocator: std.mem.Allocator, store: *Store, agents: *AgentRegistry, explorer: *Explorer, port: u16) !void {
     const addr = std.net.Address.parseIp("127.0.0.1", port) catch unreachable;
 
     var srv = try addr.listen(.{ .reuse_address = true });
@@ -116,7 +127,7 @@ fn handleConnection(
             respondJson(conn, "500 Internal Server Error", "{\"error\":\"register failed\"}");
             return;
         };
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
         const w = out.writer(allocator);
         w.print("{{\"id\":{d},\"name\":\"", .{id}) catch return;
@@ -255,7 +266,7 @@ fn handleConnection(
             return;
         };
 
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
         const w = out.writer(allocator);
         w.print("{{\"seq\":{d},\"hash\":{d},\"size\":{d}}}", .{ result.seq, result.new_hash, result.new_size }) catch return;
@@ -285,7 +296,7 @@ fn handleConnection(
         defer allocator.free(content);
 
         // Return as JSON with escaped content
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
         const w = out.writer(allocator);
         w.writeAll("{\"path\":\"") catch return;
@@ -306,7 +317,7 @@ fn handleConnection(
         };
         defer allocator.free(changes);
 
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
         const w = out.writer(allocator);
         w.print("{{\"since\":{d},\"seq\":{d},\"changes\":[", .{ since, store.currentSeq() }) catch return;
@@ -331,7 +342,7 @@ fn handleConnection(
         };
         defer allocator.free(tree);
 
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
         const w = out.writer(allocator);
         w.writeAll("{\"tree\":\"") catch return;
@@ -364,7 +375,7 @@ fn handleConnection(
             return;
         };
         defer outline.deinit();
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
         const w = out.writer(allocator);
         w.writeAll("{\"path\":\"") catch return;
@@ -403,7 +414,7 @@ fn handleConnection(
         };
         defer allocator.free(results);
 
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
         const w = out.writer(allocator);
         w.writeAll("{\"name\":\"") catch return;
@@ -438,7 +449,7 @@ fn handleConnection(
             for (hot) |entry| allocator.free(entry);
             allocator.free(hot);
         }
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
         const w = out.writer(allocator);
         w.writeAll("{\"files\":[") catch return;
@@ -473,7 +484,7 @@ fn handleConnection(
             allocator.free(imported_by);
         }
 
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
         const w = out.writer(allocator);
         w.writeAll("{\"path\":\"") catch return;
@@ -507,7 +518,7 @@ fn handleConnection(
         };
         defer allocator.free(hits);
 
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
         const w = out.writer(allocator);
         w.writeAll("{\"query\":\"") catch return;
@@ -546,7 +557,7 @@ fn handleConnection(
             allocator.free(results);
         }
 
-        var out: std.ArrayList(u8) = .{};
+        var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
         const w = out.writer(allocator);
         w.writeAll("{\"query\":\"") catch return;
@@ -652,7 +663,7 @@ fn extractQueryParam(request: []const u8, key: []const u8) ?[]const u8 {
 }
 
 fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     var i: usize = 0;
     while (i < input.len) {

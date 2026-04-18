@@ -23,6 +23,7 @@
 //     OUTLINE_STATE (7): binary per-file outline/import metadata for fast warm restore
 
 const std = @import("std");
+const cio = @import("cio.zig");
 const explore_mod = @import("explore.zig");
 const Explorer = explore_mod.Explorer;
 const FileOutline = explore_mod.FileOutline;
@@ -58,13 +59,13 @@ pub fn writeSnapshot(
     output_path: []const u8,
     allocator: std.mem.Allocator,
 ) !void {
-    const rand_suffix = std.crypto.random.int(u64);
+    const rand_suffix = (blk: { var __cr_ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &__cr_ts); break :blk @as(u64, @intCast(__cr_ts.nsec)) ^ (@as(u64, @intCast(__cr_ts.sec)) << 1); });
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ output_path, rand_suffix });
     defer allocator.free(tmp_path);
 
     var file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{});
 
-    var sections: std.ArrayList(SectionEntry) = .{};
+    var sections: std.ArrayList(SectionEntry) = .empty;
     defer sections.deinit(allocator);
 
     var fw_buf: [64 * 1024]u8 = undefined;
@@ -83,9 +84,9 @@ pub fn writeSnapshot(
     // ── Section: META ──
     {
         const offset = file_writer.logicalPos();
-        var buf: std.ArrayList(u8) = .{};
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
-        const writer = buf.writer(allocator);
+        const writer = cio.listWriter(&buf, allocator);
         var total_bytes: u64 = 0;
         var ct_iter = explorer.contents.valueIterator();
         while (ct_iter.next()) |v| total_bytes += v.*.len;
@@ -101,7 +102,7 @@ pub fn writeSnapshot(
         , .{
             file_count_meta,
             total_bytes,
-            std.time.timestamp(),
+            @divTrunc(cio.nanoTimestamp(), 1_000_000_000),
             FORMAT_VERSION,
             root_hash,
         });
@@ -112,9 +113,9 @@ pub fn writeSnapshot(
     // ── Section: TREE ──
     {
         const offset = file_writer.logicalPos();
-        var buf: std.ArrayList(u8) = .{};
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
-        const writer = buf.writer(allocator);
+        const writer = cio.listWriter(&buf, allocator);
         try writer.writeByte('[');
         var first = true;
         var iter = explorer.outlines.iterator();
@@ -142,9 +143,9 @@ pub fn writeSnapshot(
     // ── Section: OUTLINE_STATE ──
     {
         const offset = file_writer.logicalPos();
-        var buf: std.ArrayList(u8) = .{};
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
-        const writer = buf.writer(allocator);
+        const writer = cio.listWriter(&buf, allocator);
 
         var file_count_buf: [4]u8 = undefined;
         var file_count: u32 = 0;
@@ -616,7 +617,7 @@ fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std.mem
         errdefer outline.deinit();
 
         const language_raw = try readSectionByte(bytes, &cursor);
-        outline.language = std.meta.intToEnum(Language, language_raw) catch return error.InvalidData;
+        outline.language = std.enums.fromInt(Language, language_raw) orelse return error.InvalidData;
         outline.line_count = try readSectionInt(u32, bytes, &cursor);
         outline.byte_size = try readSectionInt(u64, bytes, &cursor);
 
@@ -634,7 +635,7 @@ fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std.mem
             errdefer allocator.free(name);
 
             const kind_raw = try readSectionByte(bytes, &cursor);
-            const kind = std.meta.intToEnum(SymbolKind, kind_raw) catch return error.InvalidData;
+            const kind = std.enums.fromInt(SymbolKind, kind_raw) orelse return error.InvalidData;
             const line_start = try readSectionInt(u32, bytes, &cursor);
             const line_end = try readSectionInt(u32, bytes, &cursor);
             const has_detail = try readSectionByte(bytes, &cursor);
@@ -662,7 +663,7 @@ fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std.mem
 }
 
 fn rebuildDepsFromOutline(explorer: *Explorer, path: []const u8, outline: *const FileOutline, allocator: std.mem.Allocator) !void {
-    var deps: std.ArrayList([]const u8) = .{};
+    var deps: std.ArrayList([]const u8) = .empty;
     errdefer deps.deinit(allocator);
 
     for (outline.imports.items) |imp| {
@@ -971,7 +972,8 @@ pub fn writeSnapshotDual(
     try writeSnapshot(io, explorer, root_path, output_path, allocator);
 
     const hash = std.hash.Wyhash.hash(0, root_path);
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch return;
+    const home_raw = cio.posixGetenv("HOME") orelse return;
+    const home = allocator.dupe(u8, home_raw) catch return;
     defer allocator.free(home);
     const secondary = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch return;
     defer allocator.free(secondary);

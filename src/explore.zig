@@ -2479,7 +2479,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
             if (sym.kind == .import or sym.kind == .comment_block) continue;
             const gop = self.symbol_index.getOrPut(sym.name) catch continue;
             if (!gop.found_existing) {
-                gop.value_ptr.* = std.ArrayList(SymbolLocation){};
+                gop.value_ptr.* = std.ArrayList(SymbolLocation).empty;
             }
             gop.value_ptr.append(self.allocator, .{
                 .path = path,

@@ -22,7 +22,7 @@ pub const Op = enum(u8) {
 
 pub const FileVersions = struct {
     path: []const u8,
-    versions: std.ArrayList(Version) = .{},
+    versions: std.ArrayList(Version) = .empty,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8) FileVersions {

@@ -193,9 +193,9 @@ pub const Telemetry = struct {
     }
 
     fn formatEvent(self: *Telemetry, ev: *const Event) !usize {
-        var fbs = std.io.fixedBufferStream(&self.buf);
-        const w = fbs.writer();
-        try w.print("{{\"timestamp_ms\":{d}", .{std.time.milliTimestamp()});
+        var stream = std.Io.Writer.fixed(&self.buf);
+        const w = &stream;
+        try w.print("{{\"timestamp_ms\":{d}", .{cio.milliTimestamp()});
         switch (ev.kind) {
             .tool_call => |tc| {
                 const name = tc.tool[0..tc.tool_len];
@@ -222,7 +222,7 @@ pub const Telemetry = struct {
             },
         }
         try w.writeAll("}\n");
-        return fbs.pos;
+        return w.end;
     }
 };
 
