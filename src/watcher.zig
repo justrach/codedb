@@ -519,6 +519,113 @@ const TriExtractResults = struct {
     }
 };
 
+// Extract trigrams from a chunk of (path, content) entries that are already
+// in memory — no file reads. Used by the cold-run non-search path to
+// parallelize what was previously a serial main-thread loop.
+const CachedEntry = struct { path: []const u8, content: []const u8 };
+
+fn cachedTrigramExtractWorker(results: *TriExtractResults, entries: []const CachedEntry) void {
+    const alloc = results.arena.allocator();
+    const index_m = @import("index.zig");
+    var local = std.AutoHashMap(index_m.Trigram, index_m.PostingMask).init(std.heap.c_allocator);
+    defer local.deinit();
+    local.ensureTotalCapacity(4096) catch {};
+    for (entries) |entry| {
+        if (entry.content.len > 64 * 1024) continue;
+        local.clearRetainingCapacity();
+        if (entry.content.len >= 3) {
+            for (0..entry.content.len - 2) |i| {
+                const c0 = entry.content[i];
+                const c1 = entry.content[i + 1];
+                const c2 = entry.content[i + 2];
+                if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
+                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
+                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
+                const tri = index_m.packTrigram(index_m.normalizeChar(c0), index_m.normalizeChar(c1), index_m.normalizeChar(c2));
+                const gop = local.getOrPut(tri) catch continue;
+                if (!gop.found_existing) gop.value_ptr.* = index_m.PostingMask{};
+                gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
+                if (i + 3 < entry.content.len) {
+                    gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(index_m.normalizeChar(entry.content[i + 3]) % 8);
+                }
+            }
+        }
+        const tri_entries = alloc.alloc(TriExtractEntry, local.count()) catch continue;
+        var ti: usize = 0;
+        var iter = local.iterator();
+        while (iter.next()) |e| {
+            tri_entries[ti] = .{ .tri = e.key_ptr.*, .mask = e.value_ptr.* };
+            ti += 1;
+        }
+        results.items.append(alloc, .{ .path = entry.path, .trigrams = tri_entries }) catch {};
+    }
+}
+
+/// Build a TrigramIndex from contents already in memory, parallelized across
+/// `n_workers` threads. Caller owns the returned index (must deinit + destroy).
+pub fn buildTrigramsFromCache(
+    contents: *const std.StringHashMap([]const u8),
+    allocator: std.mem.Allocator,
+    trigram_alloc: std.mem.Allocator,
+    worker_count: usize,
+) !*TrigramIndex {
+    var tmp_tri = try trigram_alloc.create(TrigramIndex);
+    tmp_tri.* = TrigramIndex.init(trigram_alloc);
+    tmp_tri.owns_paths = true;
+    tmp_tri.index.ensureTotalCapacity(131072) catch {};
+    tmp_tri.path_to_id.ensureTotalCapacity(@intCast(@min(contents.count(), 65536))) catch {};
+
+    if (contents.count() == 0) return tmp_tri;
+
+    var entries: std.ArrayList(CachedEntry) = .empty;
+    defer entries.deinit(allocator);
+    try entries.ensureTotalCapacity(allocator, contents.count());
+    var iter = contents.iterator();
+    while (iter.next()) |e| {
+        if (e.value_ptr.*.len > 64 * 1024) continue;
+        entries.appendAssumeCapacity(.{ .path = e.key_ptr.*, .content = e.value_ptr.* });
+    }
+    if (entries.items.len == 0) return tmp_tri;
+
+    const n_workers = @max(@as(usize, 1), @min(worker_count, entries.items.len));
+    if (n_workers == 1) {
+        var results = TriExtractResults.init(std.heap.page_allocator);
+        defer results.deinit(allocator);
+        cachedTrigramExtractWorker(&results, entries.items);
+        for (results.items.items) |r| tmp_tri.insertBulkNew(r.path, r.trigrams) catch {};
+        return tmp_tri;
+    }
+
+    const extractors = try allocator.alloc(TriExtractResults, n_workers);
+    var extractors_done: usize = 0;
+    defer {
+        for (extractors[extractors_done..]) |*r| r.deinit(allocator);
+        allocator.free(extractors);
+    }
+    const threads = try allocator.alloc(std.Thread, n_workers);
+    defer allocator.free(threads);
+
+    const chunk_size = entries.items.len / n_workers;
+    const remainder = entries.items.len % n_workers;
+    var offset: usize = 0;
+    for (extractors, 0..) |*ext, i| {
+        ext.* = TriExtractResults.init(std.heap.page_allocator);
+        const extra: usize = if (i < remainder) 1 else 0;
+        const count = chunk_size + extra;
+        const chunk = entries.items[offset .. offset + count];
+        offset += count;
+        threads[i] = try std.Thread.spawn(.{}, cachedTrigramExtractWorker, .{ ext, chunk });
+    }
+    for (threads) |t| t.join();
+
+    for (extractors) |*ext| {
+        for (ext.items.items) |r| tmp_tri.insertBulkNew(r.path, r.trigrams) catch {};
+        ext.deinit(allocator);
+        extractors_done += 1;
+    }
+    return tmp_tri;
+}
+
 fn trigramExtractWorker(io: std.Io, results: *TriExtractResults, root: []const u8, entries: []const InitialScanEntry) void {
     const alloc = results.arena.allocator();
     const index_m = @import("index.zig");
@@ -556,7 +663,6 @@ fn trigramExtractWorker(io: std.Io, results: *TriExtractResults, root: []const u
         results.items.append(alloc, .{ .path = r.path, .trigrams = tri_entries }) catch {};
     }
 }
-
 pub fn initialScanWithTrigrams(
     io: std.Io,
     store: *Store,
