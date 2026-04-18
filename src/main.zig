@@ -51,10 +51,17 @@ fn mainInner() void {
         std.process.exit(1);
     };
 }
-
 fn mainImpl() !void {
     // Use c_allocator (libc malloc) — better page reclamation than GPA
     const allocator = std.heap.c_allocator;
+
+    // 0.16: single Threaded I/O instance passed down through every subsystem
+    // that touches fs/subprocess. See issue #282. `io` flows into mcp.run,
+    // update.run, nuke.run, watcher.initialScan, server.serve, Store, Explorer.
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    _ = io;
 
     const stdout = cio.File.stdout();
     const use_color = stdout.isTty();
