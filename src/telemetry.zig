@@ -1,7 +1,6 @@
 const std = @import("std");
 const cio = @import("cio.zig");
 const builtin = @import("builtin");
-const compat = @import("compat.zig");
 const explore = @import("explore.zig");
 const index = @import("index.zig");
 
@@ -36,7 +35,9 @@ pub const Telemetry = struct {
     ring: [RING_SIZE]Event = undefined,
     head: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     tail: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    file: ?std.fs.File = null,
+    file: ?std.Io.File = null,
+    io: std.Io = undefined,
+    write_offset: u64 = 0,
     enabled: bool = true,
     buf: [4096]u8 = undefined,
     path_buf: [std.fs.max_path_bytes]u8 = undefined,
@@ -44,10 +45,11 @@ pub const Telemetry = struct {
     call_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     write_lock: cio.Mutex = .{},
 
-    pub fn init(data_dir: []const u8, allocator: std.mem.Allocator, disabled: bool) Telemetry {
+    pub fn init(io: std.Io, data_dir: []const u8, allocator: std.mem.Allocator, disabled: bool) Telemetry {
         var self = Telemetry{};
+        self.io = io;
 
-        if (disabled or std.process.hasEnvVarConstant("CODEDB_NO_TELEMETRY")) {
+        if (disabled or cio.posixGetenv("CODEDB_NO_TELEMETRY") != null) {
             self.enabled = false;
             return self;
         }
@@ -58,14 +60,16 @@ pub const Telemetry = struct {
             @memcpy(self.path_buf[0..path.len], path);
             self.path_len = path.len;
         }
-        self.file = std.fs.cwd().createFile(path, .{ .truncate = false }) catch return self;
-        if (self.file) |f| f.seekFromEnd(0) catch {};
+        self.file = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = false }) catch return self;
+        if (self.file) |f| {
+            self.write_offset = f.length(io) catch 0;
+        }
         return self;
     }
 
     pub fn deinit(self: *Telemetry) void {
         if (self.enabled) self.flush();
-        if (self.file) |f| f.close();
+        if (self.file) |f| f.close(self.io);
         self.file = null;
         if (self.enabled) self.syncToCloud();
     }
@@ -151,7 +155,8 @@ pub const Telemetry = struct {
         while (i != head) : (i +%= 1) {
             const ev = self.ring[i % RING_SIZE];
             const len = self.formatEvent(&ev) catch continue;
-            f.writeAll(self.buf[0..len]) catch continue;
+            f.writePositionalAll(self.io, self.buf[0..len], self.write_offset) catch continue;
+            self.write_offset += len;
         }
         self.tail.store(head, .monotonic);
     }
@@ -160,25 +165,25 @@ pub const Telemetry = struct {
         if (!self.enabled or self.path_len == 0) return;
         const path = self.path_buf[0..self.path_len];
 
-        const stat = compat.dirStatFile(std.fs.cwd(), path) catch return;
+        const stat = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch return;
         if (stat.size == 0) return;
 
         // Use argv-based exec (no shell interpolation) to avoid injection
         var data_arg_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
         const data_arg = std.fmt.bufPrint(&data_arg_buf, "@{s}", .{path}) catch return;
 
-        var child = std.process.Child.init(
-            &.{ "curl", "-sf", "-X", "POST", CLOUD_URL, "-H", "Content-Type: application/json", "--data-binary", data_arg, "--max-time", "5" },
-            std.heap.page_allocator,
-        );
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        _ = child.spawnAndWait() catch return;
+        const result = cio.runCapture(.{
+            .allocator = std.heap.page_allocator,
+            .argv = &.{ "curl", "-sf", "-X", "POST", CLOUD_URL, "-H", "Content-Type: application/json", "--data-binary", data_arg, "--max-time", "5" },
+            .max_output_bytes = 4096,
+        }) catch return;
+        std.heap.page_allocator.free(result.stdout);
+        std.heap.page_allocator.free(result.stderr);
 
         // Truncate the file after successful sync
-        if (std.fs.cwd().createFile(path, .{ .truncate = true })) |f| {
-            f.close();
+        if (std.Io.Dir.cwd().createFile(self.io, path, .{ .truncate = true })) |f| {
+            f.close(self.io);
+            self.write_offset = 0;
         } else |_| {}
     }
 

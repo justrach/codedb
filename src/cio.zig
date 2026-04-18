@@ -233,7 +233,7 @@ pub fn runCapture(opts: RunOptions) !CaptureResult {
     }
 
     var fa: std.c.posix_spawn_file_actions_t = undefined;
-    if (std.c.posix_spawn_file_actions_init(&fa) != .SUCCESS) return error.SpawnInitFailed;
+    if (std.c.posix_spawn_file_actions_init(&fa) != 0) return error.SpawnInitFailed;
     defer _ = std.c.posix_spawn_file_actions_destroy(&fa);
 
     if (opts.cwd) |cwd| {
@@ -259,7 +259,7 @@ pub fn runCapture(opts: RunOptions) !CaptureResult {
         @ptrCast(std.c.environ);
 
     var pid: std.c.pid_t = 0;
-    if (std.c.posix_spawnp(&pid, c_argv[0].?, &fa, null, c_argv_z, envp) != .SUCCESS)
+    if (std.c.posix_spawnp(&pid, c_argv[0].?, &fa, null, c_argv_z, envp) != 0)
         return error.SpawnFailed;
 
     _ = close(out_pipe[1]);
