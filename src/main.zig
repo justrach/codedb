@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const compat = @import("compat.zig");
 const cio = @import("cio.zig");
 const Store = @import("store.zig").Store;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
@@ -135,7 +134,7 @@ fn mainImpl() !void {
     }
 
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_root = resolveRoot(root, &root_buf) catch {
+    const abs_root = resolveRoot(io, root, &root_buf) catch {
         out.p("{s}\xe2\x9c\x97{s} cannot resolve root: {s}{s}{s}\n", .{
             s.red, s.reset, s.bold, root, s.reset,
         });
@@ -148,7 +147,7 @@ fn mainImpl() !void {
         std.process.exit(1);
     }
 
-    const data_dir = try getDataDir(allocator, abs_root);
+    const data_dir = try getDataDir(io, allocator, abs_root);
     defer allocator.free(data_dir);
 
     var store = Store.init(allocator);
@@ -156,12 +155,12 @@ fn mainImpl() !void {
 
     const data_log_path = try std.fmt.allocPrint(allocator, "{s}/data.log", .{data_dir});
     defer allocator.free(data_log_path);
-    store.openDataLog(data_log_path) catch |err| {
+    store.openDataLog(io, data_log_path) catch |err| {
         std.log.warn("could not open data log at {s}: {}", .{ data_log_path, err });
     };
 
     var explorer = Explorer.init(allocator);
-    explorer.setRoot(root);
+    explorer.setRoot(io, root);
     defer explorer.deinit();
 
     // Per-project frequency table for sparse n-gram boundary selection.
@@ -234,7 +233,7 @@ fn mainImpl() !void {
             // For other commands: outline-only scan, trigrams from disk or rebuild.
             const is_search = std.mem.eql(u8, cmd, "search");
             if (is_search and !heads_match) {
-                const tmp_tri = try watcher.initialScanWithTrigrams(&store, &explorer, root, allocator, std.heap.c_allocator, true);
+                const tmp_tri = try watcher.initialScanWithTrigrams(io, &store, &explorer, root, allocator, std.heap.c_allocator, true);
                 if (tmp_tri) |tri| {
                     tri.writeToDisk(data_dir, git_head) catch {};
                     tri.deinit();
@@ -247,7 +246,7 @@ fn mainImpl() !void {
                     }
                 }
             } else {
-                try watcher.initialScan(&store, &explorer, root, allocator, true);
+                try watcher.initialScan(io, &store, &explorer, root, allocator, true);
             }
             const scan_elapsed = cio.nanoTimestamp() - t_scan;
             var dur_buf: [64]u8 = undefined;
@@ -310,15 +309,13 @@ fn mainImpl() !void {
                         }
                     }
 
-                    var tri_dir = std.fs.cwd().openDir(root, .{}) catch null;
-                    defer if (tri_dir) |*d| d.close();
+                    var tri_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch null;
+                    defer if (tri_dir) |*d| d.close(io);
                     if (tri_dir) |dir| {
                         for (paths.items) |p| {
-                            const f = dir.openFile(p, .{}) catch continue;
-                            defer f.close();
                             var fa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                             defer fa.deinit();
-                            const c = f.readToEndAlloc(fa.allocator(), 512 * 1024) catch continue;
+                            const c = dir.readFileAlloc(io, p, fa.allocator(), .limited(512 * 1024)) catch continue;
                             if (c.len <= 64 * 1024) {
                                 tmp_tri.indexFile(p, c) catch continue;
                             }
@@ -588,20 +585,20 @@ fn mainImpl() !void {
         const queue = try allocator.create(watcher.EventQueue);
         defer allocator.destroy(queue);
         queue.* = watcher.EventQueue{};
-        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, queue, root, &shutdown, &scan_already_done });
+        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, &store, &explorer, queue, root, &shutdown, &scan_already_done });
         defer watch_thread.join();
 
         const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
         defer reap_thread.join();
 
         std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
-        try server.serve(allocator, &store, &agents, &explorer, queue, port);
+        try server.serve(io, allocator, &store, &agents, &explorer, queue, port);
     } else if (std.mem.eql(u8, cmd, "mcp")) {
         var agents = AgentRegistry.init(allocator);
         defer agents.deinit();
         _ = try agents.register("__filesystem__");
 
-        saveProjectInfo(allocator, data_dir, abs_root) catch {};
+        saveProjectInfo(io, allocator, data_dir, abs_root) catch {};
 
         // Set up query tracking WAL
         const query_log = std.fmt.allocPrint(allocator, "{s}/queries.log", .{data_dir}) catch null;
@@ -626,7 +623,7 @@ fn mainImpl() !void {
             }
         }
 
-        var telem = telemetry.Telemetry.init(data_dir, allocator, telemetry_disabled);
+        var telem = telemetry.Telemetry.init(io, data_dir, allocator, telemetry_disabled);
         defer telem.deinit();
         telem.recordSessionStart();
 
@@ -638,19 +635,19 @@ fn mainImpl() !void {
         queue.* = watcher.EventQueue{};
         var scan_thread: ?std.Thread = null;
         if (!snapshot_loaded) {
-            scan_thread = try std.Thread.spawn(.{}, scanBg, .{ &store, &explorer, root, allocator, &scan_done, &shutdown, data_dir, abs_root, &telem, startup_t0 });
+            scan_thread = try std.Thread.spawn(.{}, scanBg, .{ io, &store, &explorer, root, allocator, &scan_done, &shutdown, data_dir, abs_root, &telem, startup_t0 });
         } else {
             const startup_time_ms: u64 = @intCast(@max(std.time.milliTimestamp() - startup_t0, 0));
             loadTrigramFromDiskIfPresent(&explorer, data_dir, allocator);
             telem.recordCodebaseStats(&explorer, startup_time_ms);
         }
 
-        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ &store, &explorer, queue, root, &shutdown, &scan_done });
+        const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, &store, &explorer, queue, root, &shutdown, &scan_done });
         const idle_thread = try std.Thread.spawn(.{}, idleWatchdog, .{&shutdown});
 
         std.log.info("codedb mcp: root={s} files={d} data={s}", .{ abs_root, store.currentSeq(), data_dir });
 
-        mcp_server.run(allocator, &store, &explorer, &agents, abs_root, &telem);
+        mcp_server.run(io, allocator, &store, &explorer, &agents, abs_root, &telem);
 
         shutdown.store(true, .release);
         if (scan_thread) |st| st.join();
@@ -671,21 +668,21 @@ fn isCommand(arg: []const u8) bool {
     return false;
 }
 
-fn resolveRoot(root: []const u8, buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
-    if (std.mem.eql(u8, root, ".")) {
-        return std.fs.cwd().realpath(".", buf) catch return error.ResolveFailed;
-    }
-    return std.fs.cwd().realpath(root, buf) catch return error.ResolveFailed;
+fn resolveRoot(io: std.Io, root: []const u8, buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
+    const sub = if (std.mem.eql(u8, root, ".")) "." else root;
+    const n = std.Io.Dir.cwd().realPathFile(io, sub, buf) catch return error.ResolveFailed;
+    return buf[0..n];
 }
 
-fn getDataDir(allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {
+fn getDataDir(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {
     const hash = std.hash.Wyhash.hash(0, abs_root);
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
+    const home_env = cio.posixGetenv("HOME") orelse {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{abs_root});
     };
+    const home = try allocator.dupe(u8, home_env);
     defer allocator.free(home);
     const dir = try std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash });
-    compat.makePath(std.fs.cwd(), dir) catch |err| {
+    std.Io.Dir.cwd().createDirPath(io, dir) catch |err| {
         std.log.warn("could not create data dir {s}: {}", .{ dir, err });
     };
     return dir;
@@ -761,12 +758,12 @@ fn persistWordIndexToDisk(explorer: *Explorer, data_dir: []const u8, git_head: ?
     explorer.markWordIndexPersisted(generation);
 }
 
-fn saveProjectInfo(allocator: std.mem.Allocator, data_dir: []const u8, abs_root: []const u8) !void {
+fn saveProjectInfo(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8, abs_root: []const u8) !void {
     const info_path = try std.fmt.allocPrint(allocator, "{s}/project.txt", .{data_dir});
     defer allocator.free(info_path);
-    const file = try std.fs.cwd().createFile(info_path, .{});
-    defer file.close();
-    try file.writeAll(abs_root);
+    const file = try std.Io.Dir.cwd().createFile(io, info_path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, abs_root);
 }
 
 fn printUsage(out: Out, s: sty.Style) void {
@@ -837,7 +834,7 @@ fn reapLoop(agents: *AgentRegistry, shutdown: *std.atomic.Value(bool)) void {
     }
 }
 
-fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), shutdown: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8, telem: *telemetry.Telemetry, startup_t0: i64) void {
+fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), shutdown: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8, telem: *telemetry.Telemetry, startup_t0: i64) void {
     const git_head = git_mod.getGitHead(root, allocator) catch null;
     const disk_hdr = TrigramIndex.readDiskHeader(data_dir, allocator) catch null;
     const heads_match = blk: {
@@ -846,7 +843,7 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
         break :blk std.mem.eql(u8, &a, &b);
     };
 
-    watcher.initialScan(store, explorer, root, allocator, heads_match) catch |err| {
+    watcher.initialScan(io, store, explorer, root, allocator, heads_match) catch |err| {
         std.log.warn("background scan failed: {}", .{err});
     };
 
@@ -872,7 +869,7 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
                     std.log.warn("could not auto-write snapshot: {}", .{err});
                 };
                 const fc = explorer.outlines.count();
-                if (fc > 1000 or std.process.hasEnvVarConstant("CODEDB_LOW_MEMORY")) {
+                if (fc > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
                     explorer.releaseContents();
                     explorer.releaseSecondaryIndexes();
                 }
@@ -893,7 +890,7 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
                     std.log.warn("could not auto-write snapshot: {}", .{err});
                 };
                 const fc = explorer.outlines.count();
-                if (fc > 1000 or std.process.hasEnvVarConstant("CODEDB_LOW_MEMORY")) {
+                if (fc > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
                     explorer.releaseContents();
                     explorer.releaseSecondaryIndexes();
                 }
@@ -942,7 +939,7 @@ fn scanBg(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.m
         std.log.warn("could not auto-write snapshot: {}", .{err});
     };
     const file_count = explorer.outlines.count();
-    if (file_count > 1000 or std.process.hasEnvVarConstant("CODEDB_LOW_MEMORY")) {
+    if (file_count > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
         explorer.releaseContents();
         explorer.releaseSecondaryIndexes();
     }
@@ -957,7 +954,7 @@ fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
         }
 
         // Quick liveness check: poll stdin for POLLHUP (client disconnected)
-        const stdin = std.fs.File.stdin();
+        const stdin = cio.File.stdin();
         var poll_fds = [_]std.posix.pollfd{.{
             .fd = stdin.handle,
             .events = std.posix.POLL.IN | std.posix.POLL.HUP,
@@ -966,7 +963,7 @@ fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
         const poll_result = std.posix.poll(&poll_fds, 0) catch 0;
         if (poll_result > 0 and (poll_fds[0].revents & std.posix.POLL.HUP) != 0) {
             std.log.info("stdin closed (client disconnected), exiting", .{});
-            stdin.close();
+            std.posix.close(stdin.handle);
             shutdown.store(true, .release);
             return;
         }
@@ -977,7 +974,7 @@ fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
         const now = std.time.milliTimestamp();
         if (now - last > mcp.idle_timeout_ms) {
             std.log.info("idle for {d}s, exiting", .{@divTrunc(now - last, 1000)});
-            stdin.close();
+            std.posix.close(stdin.handle);
             shutdown.store(true, .release);
             return;
         }
