@@ -284,59 +284,60 @@ fn mainImpl() !void {
                     };
                 }
             } else if (!is_search) {
-                // Cold run (non-search): persist word index → build trigrams.
-                // Keep word_index in memory (don't wipe) so immediate queries
-                // don't pay a reload from disk. For very large corpora the
-                // caller can explicitly release to reclaim RAM later.
-                explorer.releaseContents();
+                // Cold run (non-search): persist word index, then build trigrams
+                // from the content already cached in Explorer.contents — no
+                // second pass over the filesystem.
                 if (needs_word_index) {
                     persistWordIndexToDisk(io, &explorer, data_dir, git_head);
-                    // In-memory index already holds the full data; mark
-                    // complete + persisted so warm queries skip reload.
                     explorer.markWordIndexAsComplete();
                 }
                 {
-                    // Build trigrams — read files from disk, index one at a time.
-                    // Uses c_allocator so freed pages return to OS on resize.
                     var tmp_tri = TrigramIndex.init(std.heap.c_allocator);
+                    defer tmp_tri.deinit();
 
-                    // Collect outline paths for parallel access
-                    var paths: std.ArrayList([]const u8) = .empty;
-                    defer paths.deinit(allocator);
-                    {
-                        var key_iter = explorer.outlines.keyIterator();
-                        while (key_iter.next()) |k| {
-                            paths.append(allocator, k.*) catch {};
+                    // Use cached contents directly when populated; fall back
+                    // to disk reads only for files that missed the cache
+                    // (corpora larger than content_cache_limit).
+                    if (explorer.contents.count() > 0) {
+                        var ct_iter = explorer.contents.iterator();
+                        while (ct_iter.next()) |entry| {
+                            if (entry.value_ptr.*.len <= 64 * 1024) {
+                                tmp_tri.indexFile(entry.key_ptr.*, entry.value_ptr.*) catch continue;
+                            }
                         }
-                    }
+                    } else {
+                        var paths: std.ArrayList([]const u8) = .empty;
+                        defer paths.deinit(allocator);
+                        var key_iter = explorer.outlines.keyIterator();
+                        while (key_iter.next()) |k| paths.append(allocator, k.*) catch {};
 
-                    var tri_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch null;
-                    defer if (tri_dir) |*d| d.close(io);
-                    if (tri_dir) |dir| {
-                        for (paths.items) |p| {
-                            var fa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-                            defer fa.deinit();
-                            const c = dir.readFileAlloc(io, p, fa.allocator(), .limited(512 * 1024)) catch continue;
-                            if (c.len <= 64 * 1024) {
-                                tmp_tri.indexFile(p, c) catch continue;
+                        var tri_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch null;
+                        defer if (tri_dir) |*d| d.close(io);
+                        if (tri_dir) |dir| {
+                            for (paths.items) |p| {
+                                var fa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                                defer fa.deinit();
+                                const c = dir.readFileAlloc(io, p, fa.allocator(), .limited(512 * 1024)) catch continue;
+                                if (c.len <= 64 * 1024) {
+                                    tmp_tri.indexFile(p, c) catch continue;
+                                }
                             }
                         }
                     }
-                    // Write + free
+
                     tmp_tri.writeToDisk(io, data_dir, git_head) catch |err| {
                         std.log.warn("could not persist trigram index: {}", .{err});
                     };
-                    tmp_tri.deinit();
                 }
-                // Load trigrams as mmap (zero heap cost)
+                // Load trigrams as mmap (zero heap cost); then we can safely
+                // release file contents since mmap serves future searches.
                 if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
                     explorer.mu.lock();
                     explorer.trigram_index.deinit();
                     explorer.trigram_index = .{ .mmap = loaded };
                     explorer.mu.unlock();
                 }
-                // Reload word index from disk
-                loadWordIndexFromDiskIfPresent(io, &explorer, data_dir, git_head, allocator);
+                explorer.releaseContents();
             }
 
             // If no freq table was loaded, build one from indexed content and
