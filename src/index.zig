@@ -297,13 +297,23 @@ pub const WordIndex = struct {
         var disk_path_to_id = std.StringHashMap(u32).init(self.allocator);
         defer disk_path_to_id.deinit();
 
-        var file_iter = self.file_words.iterator();
-        while (file_iter.next()) |entry| {
-            const path = entry.key_ptr.*;
-            if (path.len > std.math.maxInt(u16)) return error.NameTooLong;
-            const id: u32 = @intCast(file_table.items.len);
-            try file_table.append(self.allocator, path);
-            try disk_path_to_id.put(path, id);
+        if (self.file_words.count() > 0) {
+            var file_iter = self.file_words.iterator();
+            while (file_iter.next()) |entry| {
+                const path = entry.key_ptr.*;
+                if (path.len > std.math.maxInt(u16)) return error.NameTooLong;
+                const id: u32 = @intCast(file_table.items.len);
+                try file_table.append(self.allocator, path);
+                try disk_path_to_id.put(path, id);
+            }
+        } else {
+            for (self.id_to_path.items) |path| {
+                if (path.len == 0) continue;
+                if (path.len > std.math.maxInt(u16)) return error.NameTooLong;
+                const id: u32 = @intCast(file_table.items.len);
+                try file_table.append(self.allocator, path);
+                try disk_path_to_id.put(path, id);
+            }
         }
 
         var words_sorted: std.ArrayList([]const u8) = .empty;
@@ -703,16 +713,22 @@ pub const TrigramIndex = struct {
 
     fn getOrCreateDocId(self: *TrigramIndex, path: []const u8) !u32 {
         if (self.path_to_id.get(path)) |id| return id;
+        // owns_paths=true stores a dup so callers can free their source memory.
+        const stored_path: []const u8 = if (self.owns_paths)
+            try self.allocator.dupe(u8, path)
+        else
+            path;
+        errdefer if (self.owns_paths) self.allocator.free(stored_path);
         const id: u32 = if (self.free_ids.items.len > 0) blk: {
             const freed: u32 = self.free_ids.pop() orelse unreachable;
-            self.id_to_path.items[@as(usize, freed)] = path;
+            self.id_to_path.items[@as(usize, freed)] = stored_path;
             break :blk freed;
         } else blk: {
             const new_id: u32 = @intCast(self.id_to_path.items.len);
-            try self.id_to_path.append(self.allocator, path);
+            try self.id_to_path.append(self.allocator, stored_path);
             break :blk new_id;
         };
-        try self.path_to_id.put(path, id);
+        try self.path_to_id.put(stored_path, id);
         return id;
     }
 
@@ -814,7 +830,8 @@ pub const TrigramIndex = struct {
 
             try tri_list.append(self.allocator, tri);
         }
-        try self.file_trigrams.put(path, tri_list);
+        const stable_path = self.id_to_path.items[doc_id];
+        try self.file_trigrams.put(stable_path, tri_list);
     }
 
     /// Like indexFile but reuses a caller-provided local HashMap to avoid alloc/free per file.

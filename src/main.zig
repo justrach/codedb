@@ -289,10 +289,9 @@ fn mainImpl() !void {
                 explorer.releaseContents();
                 if (needs_word_index) persistWordIndexToDisk(io, &explorer, data_dir, git_head);
                 if (needs_word_index) {
-                    explorer.mu.lock();
-                    explorer.word_index.deinit();
-                    explorer.word_index = WordIndex.init(allocator);
-                    explorer.mu.unlock();
+                    // Mark incomplete + can_load_from_disk so loadWordIndexFromDiskIfPresent
+                    // below actually reloads the in-memory index we just freed.
+                    explorer.markWordIndexIncomplete(true);
                 }
                 {
                     // Build trigrams — read files from disk, index one at a time.

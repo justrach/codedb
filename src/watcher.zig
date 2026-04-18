@@ -582,6 +582,7 @@ pub fn initialScanWithTrigrams(
     // Single-worker fast path
     var tmp_tri = try trigram_alloc.create(TrigramIndex);
     tmp_tri.* = TrigramIndex.init(trigram_alloc);
+    tmp_tri.owns_paths = true;
     // Pre-size to avoid resize copies during bulk insert (~99K unique trigrams typical)
     tmp_tri.index.ensureTotalCapacity(131072) catch {};
     tmp_tri.path_to_id.ensureTotalCapacity(@intCast(@min(entries.items.len, 65536))) catch {};
