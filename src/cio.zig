@@ -147,6 +147,17 @@ pub fn sleepMs(ms: u64) void {
     _ = std.c.nanosleep(&ts, null);
 }
 
+pub const PipeError = error{PipeFailed};
+pub fn makePipe() PipeError![2]c_int {
+    var fds: [2]c_int = .{ -1, -1 };
+    if (pipe(&fds) != 0) return error.PipeFailed;
+    return fds;
+}
+
+pub fn closeFd(fd: c_int) void {
+    _ = close(fd);
+}
+
 pub fn posixGetenv(name: []const u8) ?[]const u8 {
     var buf: [256]u8 = undefined;
     if (name.len >= buf.len) return null;
