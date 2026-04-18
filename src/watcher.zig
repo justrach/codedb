@@ -1,6 +1,5 @@
 const std = @import("std");
 const cio = @import("cio.zig");
-const compat = @import("compat.zig");
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
 const TrigramIndex = @import("index.zig").TrigramIndex;
@@ -184,29 +183,31 @@ fn shouldSkipDir(name: []const u8) bool {
 }
 
 /// Recursive directory walker that prunes skip_dirs before descending.
-/// Unlike std.fs.Dir.walk(), this never enters .git, node_modules, etc.,
+/// Unlike std.Io.Dir.walk(), this never enters .git, node_modules, etc.,
 /// avoiding the CPU cost of traversing potentially huge directory trees.
 const FilteredWalker = struct {
     const StackItem = struct {
-        dir_handle: std.fs.Dir,
-        iter: std.fs.Dir.Iterator,
+        dir_handle: std.Io.Dir,
+        iter: std.Io.Dir.Iterator,
     };
 
     stack: std.ArrayList(StackItem),
     name_buffer: std.ArrayList(u8),
     allocator: std.mem.Allocator,
+    io: std.Io,
     dir_prefix_len: usize = 0,
-    ignore_patterns: std.ArrayList([]const u8) = .{},
+    ignore_patterns: std.ArrayList([]const u8) = .empty,
 
     pub const Entry = struct {
         path: []const u8, // relative path — valid until next call to next()
     };
 
-    pub fn init(root: std.fs.Dir, allocator: std.mem.Allocator) !FilteredWalker {
+    pub fn init(io: std.Io, root: std.Io.Dir, allocator: std.mem.Allocator) !FilteredWalker {
         var self = FilteredWalker{
-            .stack = .{},
-            .name_buffer = .{},
+            .stack = .empty,
+            .name_buffer = .empty,
             .allocator = allocator,
+            .io = io,
         };
         try self.stack.append(allocator, .{
             .dir_handle = root,
@@ -214,7 +215,7 @@ const FilteredWalker = struct {
         });
 
         // Load .codedbignore if it exists
-        if (root.readFileAlloc(allocator, ".codedbignore", 64 * 1024)) |content| {
+        if (root.readFileAlloc(io, ".codedbignore", allocator, .limited(64 * 1024))) |content| {
             defer allocator.free(content);
             var lines = std.mem.splitScalar(u8, content, '\n');
             while (lines.next()) |line| {
@@ -226,7 +227,7 @@ const FilteredWalker = struct {
         } else |_| {}
 
         // Also load .gitignore patterns (respect git's ignore rules)
-        if (root.readFileAlloc(allocator, ".gitignore", 64 * 1024)) |content| {
+        if (root.readFileAlloc(io, ".gitignore", allocator, .limited(64 * 1024))) |content| {
             defer allocator.free(content);
             var lines = std.mem.splitScalar(u8, content, '\n');
             while (lines.next()) |line| {
@@ -244,7 +245,7 @@ const FilteredWalker = struct {
 
     pub fn deinit(self: *FilteredWalker) void {
         for (self.stack.items, 0..) |*item, i| {
-            if (i > 0) item.dir_handle.close();
+            if (i > 0) item.dir_handle.close(self.io);
         }
         self.stack.deinit(self.allocator);
         self.name_buffer.deinit(self.allocator);
@@ -287,7 +288,7 @@ const FilteredWalker = struct {
 
         while (self.stack.items.len > 0) {
             const top = &self.stack.items[self.stack.items.len - 1];
-            if (try top.iter.next()) |entry| {
+            if (try top.iter.next(self.io)) |entry| {
                 if (entry.kind == .directory) {
                     if (shouldSkipDir(entry.name)) continue;
                     // Check .codedbignore patterns
@@ -300,7 +301,7 @@ const FilteredWalker = struct {
                             entry.name;
                         if (self.isIgnored(entry.name, check_path)) continue;
                     }
-                    const sub = top.dir_handle.openDir(entry.name, .{ .iterate = true }) catch continue;
+                    const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
 
                     // Extend the directory prefix in name_buffer
                     if (self.name_buffer.items.len > 0)
@@ -333,7 +334,7 @@ const FilteredWalker = struct {
                 // Directory exhausted — pop and restore parent prefix
                 if (self.stack.items.len > 1) {
                     var item = self.stack.pop().?;
-                    item.dir_handle.close();
+                    item.dir_handle.close(self.io);
                 } else {
                     _ = self.stack.pop();
                 }
@@ -349,11 +350,11 @@ const FilteredWalker = struct {
     }
 };
 
-fn collectInitialScanEntries(store: *Store, dir: std.fs.Dir, allocator: std.mem.Allocator, skip_trigram: bool) !std.ArrayList(InitialScanEntry) {
-    var walker = try FilteredWalker.init(dir, allocator);
+fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocator: std.mem.Allocator, skip_trigram: bool) !std.ArrayList(InitialScanEntry) {
+    var walker = try FilteredWalker.init(io, dir, allocator);
     defer walker.deinit();
 
-    var entries: std.ArrayList(InitialScanEntry) = .{};
+    var entries: std.ArrayList(InitialScanEntry) = .empty;
     errdefer {
         for (entries.items) |entry| allocator.free(entry.path);
         entries.deinit(allocator);
@@ -362,7 +363,7 @@ fn collectInitialScanEntries(store: *Store, dir: std.fs.Dir, allocator: std.mem.
     const max_trigram_files: usize = 15_000;
     var file_count: usize = 0;
     while (try walker.next()) |entry| {
-        const stat = compat.dirStatFile(dir, entry.path) catch continue;
+        const stat = dir.statFile(io, entry.path, .{}) catch continue;
         _ = try store.recordSnapshot(entry.path, stat.size, 0);
         file_count += 1;
         try entries.append(allocator, .{
@@ -373,15 +374,13 @@ fn collectInitialScanEntries(store: *Store, dir: std.fs.Dir, allocator: std.mem.
     return entries;
 }
 
-fn parseInitialScanEntry(root: []const u8, entry: InitialScanEntry, arena_alloc: std.mem.Allocator) !?ParsedScanFile {
+fn parseInitialScanEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, arena_alloc: std.mem.Allocator) !?ParsedScanFile {
     if (shouldSkipFile(entry.path)) return null;
-    var dir = try std.fs.cwd().openDir(root, .{});
-    defer dir.close();
-    const file = try dir.openFile(entry.path, .{});
-    defer file.close();
-    const stat = try compat.fileStat(file);
+    const dir = try std.Io.Dir.cwd().openDir(io, root, .{});
+    defer dir.close(io);
+    const stat = try dir.statFile(io, entry.path, .{});
     if (stat.size > 512 * 1024) return null;
-    const content = try file.readToEndAlloc(arena_alloc, 512 * 1024);
+    const content = try dir.readFileAlloc(io, entry.path, arena_alloc, .limited(512 * 1024));
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
         if (c == 0) return null;
@@ -396,21 +395,21 @@ fn parseInitialScanEntry(root: []const u8, entry: InitialScanEntry, arena_alloc:
     };
 }
 
-fn initialScanWorker(results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry) void {
+fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry) void {
     const arena_alloc = results.arena.allocator();
     for (entries) |entry| {
-        const parsed = parseInitialScanEntry(root, entry, arena_alloc) catch null;
+        const parsed = parseInitialScanEntry(io, root, entry, arena_alloc) catch null;
         if (parsed) |file| {
             results.items.append(arena_alloc, file) catch return;
         }
     }
 }
 
-pub fn initialScanWithWorkerCount(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, skip_trigram: bool, worker_count: usize) !void {
-    var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
-    defer dir.close();
+pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, skip_trigram: bool, worker_count: usize) !void {
+    const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+    defer dir.close(io);
 
-    var entries = try collectInitialScanEntries(store, dir, allocator, skip_trigram);
+    var entries = try collectInitialScanEntries(io, store, dir, allocator, skip_trigram);
     defer {
         for (entries.items) |entry| allocator.free(entry.path);
         entries.deinit(allocator);
@@ -423,7 +422,7 @@ pub fn initialScanWithWorkerCount(store: *Store, explorer: *Explorer, root: []co
             {
                 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                 defer arena.deinit();
-                const parsed = try parseInitialScanEntry(root, entry, arena.allocator());
+                const parsed = try parseInitialScanEntry(io, root, entry, arena.allocator());
                 if (parsed) |file| {
                     try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
                 }
@@ -451,7 +450,7 @@ pub fn initialScanWithWorkerCount(store: *Store, explorer: *Explorer, root: []co
         const count = chunk_size + extra;
         const chunk = entries.items[offset .. offset + count];
         offset += count;
-        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ worker, root, chunk });
+        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk });
     }
     for (threads) |thread| thread.join();
 
@@ -469,15 +468,13 @@ pub fn initialScanWithWorkerCount(store: *Store, explorer: *Explorer, root: []co
 /// Fast scan: walk + parse outlines + build trigrams in one pass.
 /// Avoids re-reading files for trigram build. Returns a TrigramIndex
 /// allocated with the given trigram_alloc (caller owns).
-fn readFileEntry(root: []const u8, entry: InitialScanEntry, arena_alloc: std.mem.Allocator) ?struct { path: []const u8, content: []const u8 } {
+fn readFileEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, arena_alloc: std.mem.Allocator) ?struct { path: []const u8, content: []const u8 } {
     if (shouldSkipFile(entry.path)) return null;
-    var dir = std.fs.cwd().openDir(root, .{}) catch return null;
-    defer dir.close();
-    const file = dir.openFile(entry.path, .{}) catch return null;
-    defer file.close();
-    const stat = compat.fileStat(file) catch return null;
+    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return null;
+    defer dir.close(io);
+    const stat = dir.statFile(io, entry.path, .{}) catch return null;
     if (stat.size > 512 * 1024) return null;
-    const c = file.readToEndAlloc(arena_alloc, 512 * 1024) catch return null;
+    const c = dir.readFileAlloc(io, entry.path, arena_alloc, .limited(512 * 1024)) catch return null;
     const check_len = @min(c.len, 512);
     for (c[0..check_len]) |ch| {
         if (ch == 0) return null;
@@ -491,7 +488,7 @@ const ReadResults = struct {
     items: std.ArrayList(ReadResult),
 
     fn init(backing: std.mem.Allocator) ReadResults {
-        return .{ .arena = std.heap.ArenaAllocator.init(backing), .items = .{} };
+        return .{ .arena = std.heap.ArenaAllocator.init(backing), .items = .empty };
     }
     fn deinit(self: *ReadResults, _: std.mem.Allocator) void {
         self.items.deinit(self.arena.allocator());
@@ -499,10 +496,10 @@ const ReadResults = struct {
     }
 };
 
-fn readWorker(results: *ReadResults, root: []const u8, entries: []const InitialScanEntry) void {
+fn readWorker(io: std.Io, results: *ReadResults, root: []const u8, entries: []const InitialScanEntry) void {
     const alloc = results.arena.allocator();
     for (entries) |entry| {
-        if (readFileEntry(root, entry, alloc)) |r| {
+        if (readFileEntry(io, root, entry, alloc)) |r| {
             results.items.append(alloc, r) catch {};
         }
     }
@@ -514,7 +511,7 @@ const TriExtractResults = struct {
     arena: std.heap.ArenaAllocator,
     items: std.ArrayList(TriExtractResult),
     fn init(backing: std.mem.Allocator) TriExtractResults {
-        return .{ .arena = std.heap.ArenaAllocator.init(backing), .items = .{} };
+        return .{ .arena = std.heap.ArenaAllocator.init(backing), .items = .empty };
     }
     fn deinit(self: *TriExtractResults, _: std.mem.Allocator) void {
         self.items.deinit(self.arena.allocator());
@@ -522,14 +519,14 @@ const TriExtractResults = struct {
     }
 };
 
-fn trigramExtractWorker(results: *TriExtractResults, root: []const u8, entries: []const InitialScanEntry) void {
+fn trigramExtractWorker(io: std.Io, results: *TriExtractResults, root: []const u8, entries: []const InitialScanEntry) void {
     const alloc = results.arena.allocator();
     const index_m = @import("index.zig");
     var local = std.AutoHashMap(index_m.Trigram, index_m.PostingMask).init(std.heap.c_allocator);
     defer local.deinit();
     local.ensureTotalCapacity(4096) catch {};
     for (entries) |entry| {
-        const r = readFileEntry(root, entry, alloc) orelse continue;
+        const r = readFileEntry(io, root, entry, alloc) orelse continue;
         if (r.content.len > 64 * 1024) continue;
         local.clearRetainingCapacity();
         if (r.content.len >= 3) {
@@ -561,6 +558,7 @@ fn trigramExtractWorker(results: *TriExtractResults, root: []const u8, entries: 
 }
 
 pub fn initialScanWithTrigrams(
+    io: std.Io,
     store: *Store,
     explorer: *Explorer,
     root: []const u8,
@@ -568,10 +566,10 @@ pub fn initialScanWithTrigrams(
     trigram_alloc: std.mem.Allocator,
     skip_outlines: bool,
 ) !?*TrigramIndex {
-    var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
-    defer dir.close();
+    const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+    defer dir.close(io);
 
-    var entries = try collectInitialScanEntries(store, dir, allocator, true);
+    var entries = try collectInitialScanEntries(io, store, dir, allocator, true);
     defer {
         for (entries.items) |entry| allocator.free(entry.path);
         entries.deinit(allocator);
@@ -592,7 +590,7 @@ pub fn initialScanWithTrigrams(
         for (entries.items) |entry| {
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
-            const parsed = parseInitialScanEntry(root, entry, arena.allocator()) catch null;
+            const parsed = parseInitialScanEntry(io, root, entry, arena.allocator()) catch null;
             if (parsed) |file| {
                 if (!skip_outlines) {
                     explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, true) catch continue;
@@ -626,7 +624,7 @@ pub fn initialScanWithTrigrams(
             const count = chunk_size + extra;
             const chunk = entries.items[offset .. offset + count];
             offset += count;
-            threads[i] = try std.Thread.spawn(.{}, trigramExtractWorker, .{ ext, root, chunk });
+            threads[i] = try std.Thread.spawn(.{}, trigramExtractWorker, .{ io, ext, root, chunk });
         }
         for (threads) |thread| thread.join();
 
@@ -657,7 +655,7 @@ pub fn initialScanWithTrigrams(
             const count = chunk_size + extra;
             const chunk = entries.items[offset .. offset + count];
             offset += count;
-            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ worker, root, chunk });
+            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk });
         }
         for (threads) |thread| thread.join();
 
@@ -676,27 +674,24 @@ pub fn initialScanWithTrigrams(
 }
 
 /// Called from main thread to do the initial scan before listening.
-pub fn initialScan(store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
+pub fn initialScan(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
     const worker_count = blk: {
-        if (std.process.getEnvVarOwned(allocator, "CODEDB_SCAN_WORKERS")) |raw| {
-            defer allocator.free(raw);
+        if (cio.posixGetenv("CODEDB_SCAN_WORKERS")) |raw| {
             const parsed = std.fmt.parseInt(usize, raw, 10) catch 0;
             if (parsed > 0) break :blk parsed;
-        } else |_| {}
+        }
         const cpu_count = std.Thread.getCpuCount() catch 1;
         break :blk @min(@as(usize, @intCast(cpu_count)), 8);
     };
-    try initialScanWithWorkerCount(store, explorer, root, allocator, skip_trigram, worker_count);
+    try initialScanWithWorkerCount(io, store, explorer, root, allocator, skip_trigram, worker_count);
 }
 
 /// Fast index: parse symbols/outline only, skip expensive word+trigram indexes.
-fn indexFileOutline(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allocator: std.mem.Allocator) !void {
+fn indexFileOutline(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator) !void {
     if (shouldSkipFile(path)) return;
-    const file = try dir.openFile(path, .{});
-    defer file.close();
-    const stat = try compat.fileStat(file);
+    const stat = try dir.statFile(io, path, .{});
     if (stat.size > 512 * 1024) return;
-    const content = try file.readToEndAlloc(allocator, 512 * 1024);
+    const content = try dir.readFileAlloc(io, path, allocator, .limited(512 * 1024));
     defer allocator.free(content);
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
@@ -706,7 +701,7 @@ fn indexFileOutline(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allo
 }
 
 /// Background thread: polls for incremental FS changes.
-pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, root: []const u8, shutdown: *std.atomic.Value(bool), scan_done: *std.atomic.Value(bool)) void {
+pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, root: []const u8, shutdown: *std.atomic.Value(bool), scan_done: *std.atomic.Value(bool)) void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const backing = gpa.allocator();
@@ -732,13 +727,13 @@ pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, r
         var snap_arena = std.heap.ArenaAllocator.init(backing);
         defer snap_arena.deinit();
         const tmp = snap_arena.allocator();
-        var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch return;
-        defer dir.close();
-        var walker = FilteredWalker.init(dir, tmp) catch return;
+        const dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return;
+        defer dir.close(io);
+        var walker = FilteredWalker.init(io, dir, tmp) catch return;
         defer walker.deinit();
         while (walker.next() catch null) |entry| {
-            const stat = compat.dirStatFile(dir, entry.path) catch continue;
-            const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
+            const stat = dir.statFile(io, entry.path, .{}) catch continue;
+            const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
             const duped = backing.dupe(u8, entry.path) catch continue;
             known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = false }) catch backing.free(duped);
         }
@@ -749,15 +744,15 @@ pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, r
 
     // Cache .git/HEAD mtime so we only fork git rev-parse when the file changes (#254)
     var git_head_mtime: i128 = blk: {
-        var root_dir = std.fs.cwd().openDir(root, .{}) catch break :blk -1;
-        defer root_dir.close();
-        const st = compat.dirStatFile(root_dir, ".git/HEAD") catch break :blk -1;
-        break :blk st.mtime;
+        const root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch break :blk -1;
+        defer root_dir.close(io);
+        const st = root_dir.statFile(io, ".git/HEAD", .{}) catch break :blk -1;
+        break :blk @intCast(st.mtime.nanoseconds);
     };
 
     while (!shutdown.load(.acquire)) {
         // Check for muonry edit notifications (instant re-index, no 2s delay)
-        drainNotifyFile(store, explorer, queue, &known, root, backing);
+        drainNotifyFile(io, store, explorer, queue, &known, root, backing);
 
         // Poll every 2s — gentle on CPU, fast enough to catch saves
         std.Thread.sleep(2 * std.time.ns_per_s);
@@ -766,11 +761,12 @@ pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, r
         var current_head: ?[40]u8 = last_git_head;
         const head_changed = blk: {
             {
-                var root_dir = std.fs.cwd().openDir(root, .{}) catch break :blk false;
-                defer root_dir.close();
-                const st = compat.dirStatFile(root_dir, ".git/HEAD") catch break :blk false;
-                if (st.mtime == git_head_mtime) break :blk false;
-                git_head_mtime = st.mtime;
+                const root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch break :blk false;
+                defer root_dir.close(io);
+                const st = root_dir.statFile(io, ".git/HEAD", .{}) catch break :blk false;
+                const st_mtime: i128 = @intCast(st.mtime.nanoseconds);
+                if (st_mtime == git_head_mtime) break :blk false;
+                git_head_mtime = st_mtime;
             }
             current_head = git_mod.getGitHead(root, backing) catch null;
             if (last_git_head == null and current_head == null) break :blk false;
@@ -783,7 +779,7 @@ pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, r
             last_git_head = current_head;
 
             // Remove stale files from Explorer that may not exist on the new branch
-            var remove_list: std.ArrayList([]const u8) = .{};
+            var remove_list: std.ArrayList([]const u8) = .empty;
             defer remove_list.deinit(backing);
             var kiter = known.iterator();
             while (kiter.next()) |kv| {
@@ -802,19 +798,19 @@ pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, r
             var rescan_arena = std.heap.ArenaAllocator.init(backing);
             defer rescan_arena.deinit();
             const tmp = rescan_arena.allocator();
-            var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch continue;
-            defer dir.close();
-            var walker = FilteredWalker.init(dir, tmp) catch continue;
+            const dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch continue;
+            defer dir.close(io);
+            var walker = FilteredWalker.init(io, dir, tmp) catch continue;
             defer walker.deinit();
             const max_trigram_files: usize = 15_000;
             var file_count: usize = 0;
             while (walker.next() catch null) |entry| {
-                const stat = dir.statFile(entry.path) catch continue;
+                const stat = dir.statFile(io, entry.path, .{}) catch continue;
                 _ = store.recordSnapshot(entry.path, stat.size, 0) catch {};
                 file_count += 1;
                 const effective_skip = file_count > max_trigram_files;
-                indexFileContent(explorer, dir, entry.path, backing, effective_skip) catch {};
-                const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
+                indexFileContent(io, explorer, dir, entry.path, backing, effective_skip) catch {};
+                const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
                 const duped = backing.dupe(u8, entry.path) catch continue;
                 known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = false }) catch backing.free(duped);
             }
@@ -825,27 +821,30 @@ pub fn incrementalLoop(store: *Store, explorer: *Explorer, queue: *EventQueue, r
         var cycle_arena = std.heap.ArenaAllocator.init(backing);
         defer cycle_arena.deinit();
 
-        incrementalDiff(store, explorer, queue, &known, root, backing, cycle_arena.allocator()) catch |err| {
+        incrementalDiff(io, store, explorer, queue, &known, root, backing, cycle_arena.allocator()) catch |err| {
             std.log.err("watcher: diff failed: {}", .{err});
         };
     }
 }
 
-fn hashFile(dir: std.fs.Dir, path: []const u8, size: u64) !u64 {
+fn hashFile(io: std.Io, dir: std.Io.Dir, path: []const u8, size: u64) !u64 {
     // Returns 0 for intentional skip (large files, filtered extensions).
     // Returns maxInt(u64) on IO error so the value always differs from a valid
     // previously stored hash of 0, preventing a false "content unchanged" conclusion.
     if (shouldSkipFile(path)) return 0;
-    const file = dir.openFile(path, .{}) catch return std.math.maxInt(u64);
-    defer file.close();
     if (size > 512 * 1024) return 0;
+    const file = dir.openFile(io, path, .{}) catch return std.math.maxInt(u64);
+    defer file.close(io);
 
     var hasher = std.hash.Wyhash.init(0);
     var buf: [16 * 1024]u8 = undefined;
+    var offset: u64 = 0;
     while (true) {
-        const n = file.read(&buf) catch return std.math.maxInt(u64);
+        const n = file.readPositionalAll(io, &buf, offset) catch return std.math.maxInt(u64);
         if (n == 0) break;
         hasher.update(buf[0..n]);
+        offset += n;
+        if (n < buf.len) break;
     }
     return hasher.final();
 }
@@ -855,9 +854,9 @@ fn pushEventOrWait(queue: *EventQueue, event: FsEvent) void {
     _ = queue.push(event);
 }
 
-fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, persistent: std.mem.Allocator, tmp: std.mem.Allocator) !void {
-    var dir = try std.fs.cwd().openDir(root, .{ .iterate = true });
-    defer dir.close();
+fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, persistent: std.mem.Allocator, tmp: std.mem.Allocator) !void {
+    const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+    defer dir.close(io);
 
     // Mark all known files unseen for this cycle.
     var known_iter = known.iterator();
@@ -865,12 +864,12 @@ fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known
         kv.value_ptr.seen = false;
     }
 
-    var walker = try FilteredWalker.init(dir, tmp);
+    var walker = try FilteredWalker.init(io, dir, tmp);
     defer walker.deinit();
 
     while (try walker.next()) |entry| {
-        const stat = compat.dirStatFile(dir, entry.path) catch continue;
-        const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
+        const stat = dir.statFile(io, entry.path, .{}) catch continue;
+        const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
 
         if (known.getEntry(entry.path)) |known_entry| {
             const old = known_entry.value_ptr;
@@ -883,7 +882,7 @@ fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known
             var hash: u64 = 0;
             if (old.size == stat.size) {
                 // Same size + changed mtime -> hash to confirm content actually differs.
-                hash = hashFile(dir, entry.path, stat.size) catch 0;
+                hash = hashFile(io, dir, entry.path, stat.size) catch 0;
             }
             if (old.size == stat.size and hash != 0 and old.hash != 0 and hash == old.hash) {
                 // Content identical (e.g. touch, git checkout) -> update metadata only.
@@ -898,7 +897,7 @@ fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known
             old.hash = hash;
             const stable_path = known_entry.key_ptr.*;
             if (FsEvent.init(stable_path, .modified, seq)) |ev| pushEventOrWait(queue, ev);
-            indexFileContent(explorer, dir, stable_path, tmp, false) catch {};
+            indexFileContent(io, explorer, dir, stable_path, tmp, false) catch {};
         } else {
             // New files always generate an event, so skip the extra full-file hash pass.
             const duped = try persistent.dupe(u8, entry.path);
@@ -906,12 +905,12 @@ fn incrementalDiff(store: *Store, explorer: *Explorer, queue: *EventQueue, known
             const seq = try store.recordSnapshot(duped, stat.size, 0);
             try known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = true });
             if (FsEvent.init(duped, .created, seq)) |ev| pushEventOrWait(queue, ev);
-            indexFileContent(explorer, dir, duped, tmp, false) catch {};
+            indexFileContent(io, explorer, dir, duped, tmp, false) catch {};
         }
     }
 
     // Detect deleted files
-    var to_remove: std.ArrayList([]const u8) = .{};
+    var to_remove: std.ArrayList([]const u8) = .empty;
     defer to_remove.deinit(tmp);
 
     var iter = known.iterator();
@@ -995,19 +994,17 @@ pub fn isSensitivePath(path: []const u8) bool {
     return false;
 }
 
-fn indexFileContent(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
+fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
     _ = allocator;
     if (shouldSkipFile(path)) return;
-    const file = try dir.openFile(path, .{});
-    defer file.close();
-    const stat = try compat.fileStat(file);
+    const stat = try dir.statFile(io, path, .{});
     // Skip files over 512KB (likely minified bundles or generated)
     if (stat.size > 512 * 1024) return;
     // Use page_allocator arena for content — pages returned to OS immediately
     // via munmap on deinit, eliminating GPA page retention from content churn.
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
-    const content = try file.readToEndAlloc(content_arena.allocator(), 512 * 1024);
+    const content = try dir.readFileAlloc(io, path, content_arena.allocator(), .limited(512 * 1024));
     // Skip binary content (check first 512 bytes for null bytes)
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
@@ -1028,46 +1025,51 @@ fn indexFileContent(explorer: *Explorer, dir: std.fs.Dir, path: []const u8, allo
 // We drain this file on every poll cycle and re-index the listed files
 // immediately, eliminating the 2s polling delay for muonry-sourced edits.
 
-fn drainNotifyFile(store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, alloc: std.mem.Allocator) void {
+fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, alloc: std.mem.Allocator) void {
     // Atomically read + truncate
     const notify_path = "/tmp/codedb-notify";
-    const file = std.fs.cwd().openFile(notify_path, .{ .mode = .read_write }) catch return;
-    defer file.close();
+    const file = std.Io.Dir.cwd().openFile(io, notify_path, .{ .mode = .read_write }) catch return;
+    defer file.close(io);
 
-    const data = file.readToEndAlloc(alloc, 64 * 1024) catch return;
+    const file_len = file.length(io) catch return;
+    if (file_len == 0) return;
+    const cap: u64 = 64 * 1024;
+    const read_len: usize = @intCast(@min(file_len, cap));
+    const data = alloc.alloc(u8, read_len) catch return;
     defer alloc.free(data);
-    if (data.len == 0) return;
+    const n = file.readPositionalAll(io, data, 0) catch return;
+    if (n == 0) return;
+    const data_slice = data[0..n];
 
     // Truncate after reading
-    file.seekTo(0) catch return;
-    std.posix.ftruncate(file.handle, 0) catch return;
+    file.setLength(io, 0) catch return;
 
     // Re-index each notified path
-    var dir = std.fs.cwd().openDir(root, .{}) catch return;
-    defer dir.close();
+    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return;
+    defer dir.close(io);
 
-    var lines = std.mem.splitScalar(u8, data, '\n');
+    var lines = std.mem.splitScalar(u8, data_slice, '\n');
     while (lines.next()) |line| {
         const path = std.mem.trim(u8, line, " \t\r");
         if (path.len == 0) continue;
 
         // Make path relative to root if it's absolute
         const rel = if (std.mem.startsWith(u8, path, root))
-            std.mem.trimLeft(u8, path[root.len..], "/")
+            std.mem.trimStart(u8, path[root.len..], "/")
         else
             path;
 
         // Skip re-indexing if file hasn't changed since last known state (#228)
-        const stat = compat.dirStatFile(dir, rel) catch continue;
-        const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_ms));
+        const stat = dir.statFile(io, rel, .{}) catch continue;
+        const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
         if (known.getPtr(rel)) |existing| {
             if (existing.mtime == mtime and existing.size == stat.size) continue;
         }
 
-        indexFileContent(explorer, dir, rel, alloc, false) catch continue;
+        indexFileContent(io, explorer, dir, rel, alloc, false) catch continue;
 
         // Update known-file state so incrementalDiff doesn't double-process
-        const hash = hashFile(dir, rel, stat.size) catch continue;
+        const hash = hashFile(io, dir, rel, stat.size) catch continue;
         if (known.getPtr(rel)) |existing| {
             existing.mtime = mtime;
             existing.size = stat.size;
