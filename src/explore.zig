@@ -965,6 +965,16 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         self.word_index_can_load_from_disk = can_load_from_disk;
     }
 
+    /// Declare that the current in-memory word_index holds the complete,
+    /// persisted-to-disk state. Warm queries will skip rebuild/reload.
+    pub fn markWordIndexAsComplete(self: *Explorer) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        self.word_index_complete = true;
+        self.word_index_can_load_from_disk = false;
+        self.word_index_persisted_generation = self.word_index_generation;
+    }
+
     pub fn disableWordIndexDiskLoad(self: *Explorer) void {
         self.mu.lock();
         defer self.mu.unlock();

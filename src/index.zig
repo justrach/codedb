@@ -108,8 +108,35 @@ pub const WordIndex = struct {
             }
         }
     }
+    fn indexOneToken(
+        self: *WordIndex,
+        token: []const u8,
+        doc_id: u32,
+        line_num: u32,
+        words_set: *std.StringHashMap(void),
+    ) !void {
+        const gop = try self.index.getOrPut(token);
+        if (!gop.found_existing) {
+            const duped = try self.allocator.dupe(u8, token);
+            gop.key_ptr.* = duped;
+            gop.value_ptr.* = .empty;
+        }
+        if (gop.value_ptr.items.len > 0) {
+            const last = gop.value_ptr.items[gop.value_ptr.items.len - 1];
+            if (last.doc_id == doc_id and last.line_num == line_num) {
+                const wgop = try words_set.getOrPut(gop.key_ptr.*);
+                if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
+                return;
+            }
+        }
+        try gop.value_ptr.append(self.allocator, .{
+            .doc_id = doc_id,
+            .line_num = line_num,
+        });
+        const wgop = try words_set.getOrPut(gop.key_ptr.*);
+        if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
+    }
 
-    /// Index a file's content — tokenizes into words and records hits.
     pub fn indexFile(self: *WordIndex, path: []const u8, content: []const u8) !void {
         if (!self.enabled) return;
         // Clean up old entries first
@@ -138,46 +165,45 @@ pub const WordIndex = struct {
 
                 const aa = words_arena.allocator();
 
-                // Lowercase the full word for case-insensitive lookup.
-                const lower_word = try aa.alloc(u8, word.len);
-                for (word, 0..) |c, j| lower_word[j] = normalizeChar(c);
+                // Fast path: lowercase into a stack buffer (avoids one alloc per word).
+                // Most identifiers fit in 256 bytes; rare longer ones fall through
+                // to the arena path.
+                var stack_buf: [256]u8 = undefined;
+                const lower_word: []const u8 = if (word.len <= stack_buf.len) blk: {
+                    for (word, 0..) |c, j| stack_buf[j] = normalizeChar(c);
+                    // Check if the lowercase form differs from the original;
+                    // if identical (already lowercase) and word is the actual
+                    // source token, we can use `word` directly — but we'd need
+                    // the string to outlive the stack frame when stored, so
+                    // dup only at the insert-key boundary below.
+                    break :blk stack_buf[0..word.len];
+                } else blk: {
+                    const buf = aa.alloc(u8, word.len) catch continue;
+                    for (word, 0..) |c, j| buf[j] = normalizeChar(c);
+                    break :blk buf;
+                };
 
-                // Collect sub-tokens from identifier splitting (camelCase, snake_case, etc.)
-                var sub_toks: std.ArrayList([]const u8) = .empty;
-                defer sub_toks.deinit(aa);
-                try splitIdentifier(word, &sub_toks, aa);
+                // Index the lowercase form.
+                try indexOneToken(self, lower_word, doc_id, line_num, &words_set);
 
-                // Build combined list: [lower_word] ++ sub_toks
-                const all_len = 1 + sub_toks.items.len;
-                const all_toks = try aa.alloc([]const u8, all_len);
-                all_toks[0] = lower_word;
-                @memcpy(all_toks[1..], sub_toks.items);
-
-                for (all_toks) |token| {
-                    const gop = try self.index.getOrPut(token);
-                    if (!gop.found_existing) {
-                        const duped = try self.allocator.dupe(u8, token);
-                        gop.key_ptr.* = duped;
-                        gop.value_ptr.* = .empty;
-                    }
-
-                    if (gop.value_ptr.items.len > 0) {
-                        const last = gop.value_ptr.items[gop.value_ptr.items.len - 1];
-                        if (last.doc_id == doc_id and last.line_num == line_num) {
-                            const wgop = try words_set.getOrPut(gop.key_ptr.*);
-                            if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
-                            continue;
+                // Sub-tokens from identifier splitting (camelCase, snake_case, etc.).
+                // Skip the alloc'd ArrayList when the word is too short or all-lower
+                // (no split possible).
+                var needs_split: bool = false;
+                if (word.len >= 4) {
+                    for (word) |c| {
+                        if (c == '_' or (c >= 'A' and c <= 'Z')) {
+                            needs_split = true;
+                            break;
                         }
                     }
-
-                    try gop.value_ptr.append(self.allocator, .{
-                        .doc_id = doc_id,
-                        .line_num = line_num,
-                    });
-
-                    const wgop = try words_set.getOrPut(gop.key_ptr.*);
-                    if (!wgop.found_existing) {
-                        wgop.key_ptr.* = gop.key_ptr.*;
+                }
+                if (needs_split) {
+                    var sub_toks: std.ArrayList([]const u8) = .empty;
+                    defer sub_toks.deinit(aa);
+                    splitIdentifier(word, &sub_toks, aa) catch continue;
+                    for (sub_toks.items) |sub| {
+                        try indexOneToken(self, sub, doc_id, line_num, &words_set);
                     }
                 }
             }

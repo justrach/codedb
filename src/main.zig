@@ -284,14 +284,16 @@ fn mainImpl() !void {
                     };
                 }
             } else if (!is_search) {
-                // Cold run (non-search): persist word index → free → build trigrams → reload.
-                // This prevents word index + trigram index from coexisting in memory.
+                // Cold run (non-search): persist word index → build trigrams.
+                // Keep word_index in memory (don't wipe) so immediate queries
+                // don't pay a reload from disk. For very large corpora the
+                // caller can explicitly release to reclaim RAM later.
                 explorer.releaseContents();
-                if (needs_word_index) persistWordIndexToDisk(io, &explorer, data_dir, git_head);
                 if (needs_word_index) {
-                    // Mark incomplete + can_load_from_disk so loadWordIndexFromDiskIfPresent
-                    // below actually reloads the in-memory index we just freed.
-                    explorer.markWordIndexIncomplete(true);
+                    persistWordIndexToDisk(io, &explorer, data_dir, git_head);
+                    // In-memory index already holds the full data; mark
+                    // complete + persisted so warm queries skip reload.
+                    explorer.markWordIndexAsComplete();
                 }
                 {
                     // Build trigrams — read files from disk, index one at a time.
