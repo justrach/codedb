@@ -1,6 +1,5 @@
 const std = @import("std");
 const cio = @import("cio.zig");
-const compat = @import("compat.zig");
 const AgentId = @import("agent.zig").AgentId;
 const version = @import("version.zig");
 const Version = version.Version;
@@ -20,8 +19,9 @@ pub const Store = struct {
     seq: u64,
     allocator: std.mem.Allocator,
     mu: cio.Mutex = .{},
-    data_log: ?std.fs.File = null,
+    data_log: ?std.Io.File = null,
     data_log_pos: u64 = 0,
+    io: ?std.Io = null,
 
     pub fn init(allocator: std.mem.Allocator) Store {
         return .{
@@ -38,17 +38,21 @@ pub const Store = struct {
             entry.value_ptr.deinit();
         }
         self.files.deinit();
-        if (self.data_log) |f| f.close();
+        if (self.data_log) |f| {
+            if (self.io) |io| f.close(io);
+        }
     }
 
-    pub fn openDataLog(self: *Store, path: []const u8) !void {
+    pub fn openDataLog(self: *Store, io: std.Io, path: []const u8) !void {
         // Extract parent dir and ensure it exists
         if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| {
-            compat.makePath(std.fs.cwd(), path[0..sep]) catch {};
+            std.Io.Dir.cwd().createDirPath(io, path[0..sep]) catch {};
         }
-        self.data_log = try std.fs.cwd().createFile(path, .{ .read = true, .truncate = false });
-        const stat = try compat.fileStat(self.data_log.?);
-        self.data_log_pos = stat.size;
+        const file = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true, .truncate = false });
+        self.data_log = file;
+        self.io = io;
+        const sz = try file.length(io);
+        self.data_log_pos = sz;
     }
 
     pub fn recordSnapshot(self: *Store, path: []const u8, size: u64, hash: u64) !u64 {
@@ -81,21 +85,21 @@ pub const Store = struct {
         var data_len: u32 = 0;
         if (diff) |d| {
             if (self.data_log) |log| {
+                const io = self.io orelse return error.Unexpected;
                 // Advisory lock for cross-process safety
                 const locked = blk: {
-                    log.lock(.exclusive) catch break :blk false;
+                    log.lock(io, .exclusive) catch break :blk false;
                     break :blk true;
                 };
-                defer if (locked) log.unlock();
+                defer if (locked) log.unlock(io);
 
                 // Re-stat to get current end position (another process may have appended)
-                const stat = compat.fileStat(log) catch return error.Unexpected;
-                self.data_log_pos = stat.size;
+                const end_pos = log.length(io) catch return error.Unexpected;
+                self.data_log_pos = end_pos;
 
                 data_offset = self.data_log_pos;
                 data_len = @intCast(d.len);
-                try log.seekTo(self.data_log_pos);
-                try log.writeAll(d);
+                try log.writePositionalAll(io, d, self.data_log_pos);
                 self.data_log_pos += d.len;
             }
         }

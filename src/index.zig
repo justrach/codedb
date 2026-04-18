@@ -1,5 +1,4 @@
 const std = @import("std");
-const compat = @import("compat.zig");
 
 // ── Inverted word index ─────────────────────────────────────
 // Maps word → list of (path, line) hits. O(1) word lookup.
@@ -292,7 +291,7 @@ pub const WordIndex = struct {
     const DISK_MAGIC = [4]u8{ 'C', 'D', 'B', 'W' };
     const DISK_FORMAT_VERSION: u16 = 2;
 
-    pub fn writeToDisk(self: *WordIndex, dir_path: []const u8, git_head: ?[40]u8) !void {
+    pub fn writeToDisk(self: *WordIndex, io: std.Io, dir_path: []const u8, git_head: ?[40]u8) !void {
         var file_table: std.ArrayList([]const u8) = .{};
         defer file_table.deinit(self.allocator);
         var disk_path_to_id = std.StringHashMap(u32).init(self.allocator);
@@ -327,11 +326,11 @@ pub const WordIndex = struct {
         const final_path = try std.fmt.allocPrint(self.allocator, "{s}/word.index", .{dir_path});
         defer self.allocator.free(final_path);
 
-        const file = try std.fs.cwd().createFile(tmp_path, .{});
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{});
+        defer file.close(io);
 
         var file_buf: [256 * 1024]u8 = undefined;
-        var writer = file.writer(&file_buf);
+        var writer = file.writer(io, &file_buf);
 
         var header_buf: [51]u8 = [_]u8{0} ** 51;
         @memcpy(header_buf[0..4], &DISK_MAGIC);
@@ -375,18 +374,18 @@ pub const WordIndex = struct {
         }
         try writer.interface.flush();
 
-        try std.fs.cwd().rename(tmp_path, final_path);
+        try std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), final_path, io);
     }
 
-    pub fn readFromDisk(dir_path: []const u8, allocator: std.mem.Allocator) ?WordIndex {
-        return readFromDiskInner(dir_path, allocator) catch null;
+    pub fn readFromDisk(io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) ?WordIndex {
+        return readFromDiskInner(io, dir_path, allocator) catch null;
     }
 
-    fn readFromDiskInner(dir_path: []const u8, allocator: std.mem.Allocator) !?WordIndex {
+    fn readFromDiskInner(io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) !?WordIndex {
         const index_path = try std.fmt.allocPrint(allocator, "{s}/word.index", .{dir_path});
         defer allocator.free(index_path);
 
-        const data = std.fs.cwd().readFileAlloc(allocator, index_path, 512 * 1024 * 1024) catch return null;
+        const data = std.Io.Dir.cwd().readFileAlloc(io, index_path, allocator, .limited(512 * 1024 * 1024)) catch return null;
         defer allocator.free(data);
 
         if (data.len < 51) return null;
@@ -508,15 +507,15 @@ pub const WordIndex = struct {
         return result;
     }
 
-    pub fn readDiskHeader(dir_path: []const u8, allocator: std.mem.Allocator) !?DiskHeader {
+    pub fn readDiskHeader(io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) !?DiskHeader {
         const index_path = try std.fmt.allocPrint(allocator, "{s}/word.index", .{dir_path});
         defer allocator.free(index_path);
 
-        const file = std.fs.cwd().openFile(index_path, .{}) catch return null;
-        defer file.close();
+        const file = std.Io.Dir.cwd().openFile(io, index_path, .{}) catch return null;
+        defer file.close(io);
 
         var buf: [51]u8 = undefined;
-        const n = file.readAll(&buf) catch return null;
+        const n = file.readPositionalAll(io, &buf, 0) catch return null;
         if (n < 51) return null;
         if (!std.mem.eql(u8, buf[0..4], &DISK_MAGIC)) return null;
         const version = std.mem.readInt(u16, buf[4..6], .little);
@@ -535,8 +534,8 @@ pub const WordIndex = struct {
         };
     }
 
-    pub fn readGitHead(dir_path: []const u8, allocator: std.mem.Allocator) !?[40]u8 {
-        const header = try readDiskHeader(dir_path, allocator) orelse return null;
+    pub fn readGitHead(io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) !?[40]u8 {
+        const header = try readDiskHeader(io, dir_path, allocator) orelse return null;
         return header.git_head;
     }
 };
@@ -1160,7 +1159,7 @@ pub const TrigramIndex = struct {
 
     /// Write the current in-memory index to disk in a two-file format.
     /// Files are written atomically (write to tmp, then rename).
-    pub fn writeToDisk(self: *TrigramIndex, dir_path: []const u8, git_head: ?[40]u8) !void {
+    pub fn writeToDisk(self: *TrigramIndex, io: std.Io, dir_path: []const u8, git_head: ?[40]u8) !void {
         // Step 1: Build file table from path_to_id (reuse existing doc IDs for consistency)
         var file_table: std.ArrayList([]const u8) = .{};
         defer file_table.deinit(self.allocator);
@@ -1237,39 +1236,43 @@ pub const TrigramIndex = struct {
         defer self.allocator.free(postings_final);
 
         {
-            const file = try std.fs.cwd().createFile(postings_tmp, .{});
-            defer file.close();
+            const file = try std.Io.Dir.cwd().createFile(io, postings_tmp, .{});
+            defer file.close(io);
+
+            var pw_buf: [256 * 1024]u8 = undefined;
+            var pw = file.writer(io, &pw_buf);
 
             // Header v3: magic(4) + version(2) + file_count(4) + head_len(1) + head(40) = 51 bytes
-            try file.writeAll(&POSTINGS_MAGIC);
+            try pw.interface.writeAll(&POSTINGS_MAGIC);
             var ver_buf: [2]u8 = undefined;
             std.mem.writeInt(u16, &ver_buf, FORMAT_VERSION, .little);
-            try file.writeAll(&ver_buf);
+            try pw.interface.writeAll(&ver_buf);
             var fc_buf: [4]u8 = undefined;
             std.mem.writeInt(u32, &fc_buf, file_count, .little);
-            try file.writeAll(&fc_buf);
+            try pw.interface.writeAll(&fc_buf);
             // Git HEAD: head_len (1 byte) + head (40 bytes)
             if (git_head) |head| {
-                try file.writeAll(&.{40});
-                try file.writeAll(&head);
+                try pw.interface.writeAll(&.{40});
+                try pw.interface.writeAll(&head);
             } else {
-                try file.writeAll(&.{0});
-                try file.writeAll(&([_]u8{0} ** 40));
+                try pw.interface.writeAll(&.{0});
+                try pw.interface.writeAll(&([_]u8{0} ** 40));
             }
 
             // File table: for each file, path_len(u16) + path bytes
             for (file_table.items) |path| {
                 var pl_buf: [2]u8 = undefined;
                 std.mem.writeInt(u16, &pl_buf, @intCast(path.len), .little);
-                try file.writeAll(&pl_buf);
-                try file.writeAll(path);
+                try pw.interface.writeAll(&pl_buf);
+                try pw.interface.writeAll(path);
             }
 
             // Postings data
             const postings_bytes = std.mem.sliceAsBytes(postings_buf.items);
-            try file.writeAll(postings_bytes);
+            try pw.interface.writeAll(postings_bytes);
+            try pw.interface.flush();
         }
-        try std.fs.cwd().rename(postings_tmp, postings_final);
+        try std.Io.Dir.cwd().rename(postings_tmp, std.Io.Dir.cwd(), postings_final, io);
 
         // Step 5: Write lookup file atomically (random suffix prevents collisions)
         const lk_rand = std.crypto.random.int(u64);
@@ -1279,43 +1282,47 @@ pub const TrigramIndex = struct {
         defer self.allocator.free(lookup_final);
 
         {
-            const file = try std.fs.cwd().createFile(lookup_tmp, .{});
-            defer file.close();
+            const file = try std.Io.Dir.cwd().createFile(io, lookup_tmp, .{});
+            defer file.close(io);
+
+            var lw_buf: [64 * 1024]u8 = undefined;
+            var lw = file.writer(io, &lw_buf);
 
             // Header: magic(4) + version(2) + pad(2) + entry_count(4) = 12 bytes
-            try file.writeAll(&LOOKUP_MAGIC);
+            try lw.interface.writeAll(&LOOKUP_MAGIC);
             var ver_buf2: [2]u8 = undefined;
             std.mem.writeInt(u16, &ver_buf2, FORMAT_VERSION, .little);
-            try file.writeAll(&ver_buf2);
+            try lw.interface.writeAll(&ver_buf2);
             var pad_buf: [2]u8 = .{ 0, 0 };
-            try file.writeAll(&pad_buf);
+            try lw.interface.writeAll(&pad_buf);
             var ec_buf: [4]u8 = undefined;
             std.mem.writeInt(u32, &ec_buf, @intCast(lookup_entries.items.len), .little);
-            try file.writeAll(&ec_buf);
+            try lw.interface.writeAll(&ec_buf);
 
             // Entries (already aligned at 12 bytes each)
             const entry_bytes = std.mem.sliceAsBytes(lookup_entries.items);
-            try file.writeAll(entry_bytes);
+            try lw.interface.writeAll(entry_bytes);
+            try lw.interface.flush();
         }
-        try std.fs.cwd().rename(lookup_tmp, lookup_final);
+        try std.Io.Dir.cwd().rename(lookup_tmp, std.Io.Dir.cwd(), lookup_final, io);
     }
 
     /// Load index from disk files into a fresh TrigramIndex.
     /// Returns null if files don't exist or are corrupt/stale.
-    pub fn readFromDisk(dir_path: []const u8, allocator: std.mem.Allocator) ?TrigramIndex {
-        return readFromDiskInner(dir_path, allocator) catch null;
+    pub fn readFromDisk(io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) ?TrigramIndex {
+        return readFromDiskInner(io, dir_path, allocator) catch null;
     }
 
-    fn readFromDiskInner(dir_path: []const u8, allocator: std.mem.Allocator) !?TrigramIndex {
+    fn readFromDiskInner(io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) !?TrigramIndex {
         const postings_path = try std.fmt.allocPrint(allocator, "{s}/trigram.postings", .{dir_path});
         defer allocator.free(postings_path);
         const lookup_path = try std.fmt.allocPrint(allocator, "{s}/trigram.lookup", .{dir_path});
         defer allocator.free(lookup_path);
 
         // Read both files
-        const postings_data = std.fs.cwd().readFileAlloc(allocator, postings_path, 64 * 1024 * 1024) catch return null;
+        const postings_data = std.Io.Dir.cwd().readFileAlloc(io, postings_path, allocator, .limited(64 * 1024 * 1024)) catch return null;
         defer allocator.free(postings_data);
-        const lookup_data = std.fs.cwd().readFileAlloc(allocator, lookup_path, 64 * 1024 * 1024) catch return null;
+        const lookup_data = std.Io.Dir.cwd().readFileAlloc(io, lookup_path, allocator, .limited(64 * 1024 * 1024)) catch return null;
         defer allocator.free(lookup_data);
 
         // Validate postings header (v1: 8 bytes, v2: 49 bytes, v3: 51 bytes)
@@ -1469,15 +1476,15 @@ pub const TrigramIndex = struct {
 
     /// Read just the postings file header — fast, no full file load.
     /// Returns null if the file doesn't exist or has an unrecognised format.
-    pub fn readDiskHeader(dir_path: []const u8, allocator: std.mem.Allocator) !?DiskHeader {
+    pub fn readDiskHeader(io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) !?DiskHeader {
         const postings_path = try std.fmt.allocPrint(allocator, "{s}/trigram.postings", .{dir_path});
         defer allocator.free(postings_path);
 
-        const file = std.fs.cwd().openFile(postings_path, .{}) catch return null;
-        defer file.close();
+        const file = std.Io.Dir.cwd().openFile(io, postings_path, .{}) catch return null;
+        defer file.close(io);
 
         var buf: [51]u8 = undefined;
-        const n = file.readAll(&buf) catch return null;
+        const n = file.readPositionalAll(io, &buf, 0) catch return null;
         if (n < 8) return null;
         if (!std.mem.eql(u8, buf[0..4], &POSTINGS_MAGIC)) return null;
         const version = std.mem.readInt(u16, buf[4..6], .little);
@@ -1508,8 +1515,8 @@ pub const TrigramIndex = struct {
 
     /// Read the git HEAD stored in the disk index header.
     /// Returns null if no git HEAD is stored or the file doesn't exist.
-    pub fn readGitHead(dir_path: []const u8, allocator: std.mem.Allocator) !?[40]u8 {
-        const header = try readDiskHeader(dir_path, allocator) orelse return null;
+    pub fn readGitHead(io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) !?[40]u8 {
+        const header = try readDiskHeader(io, dir_path, allocator) orelse return null;
         return header.git_head;
     }
 };
@@ -1530,25 +1537,25 @@ pub const MmapTrigramIndex = struct {
     post_version: u16,
     allocator: std.mem.Allocator,
 
-    pub fn initFromDisk(dir_path: []const u8, allocator: std.mem.Allocator) ?MmapTrigramIndex {
-        return initFromDiskInner(dir_path, allocator) catch null;
+    pub fn initFromDisk(io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) ?MmapTrigramIndex {
+        return initFromDiskInner(io, dir_path, allocator) catch null;
     }
 
-    fn initFromDiskInner(dir_path: []const u8, allocator: std.mem.Allocator) !?MmapTrigramIndex {
+    fn initFromDiskInner(io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) !?MmapTrigramIndex {
         const postings_path = try std.fmt.allocPrint(allocator, "{s}/trigram.postings", .{dir_path});
         defer allocator.free(postings_path);
         const lookup_path = try std.fmt.allocPrint(allocator, "{s}/trigram.lookup", .{dir_path});
         defer allocator.free(lookup_path);
 
         // mmap postings file
-        const post_file = std.fs.cwd().openFile(postings_path, .{}) catch return null;
-        defer post_file.close();
-        const post_stat = post_file.stat() catch return null;
-        if (post_stat.size < 8) return null;
+        const post_file = std.Io.Dir.cwd().openFile(io, postings_path, .{}) catch return null;
+        defer post_file.close(io);
+        const post_size = post_file.length(io) catch return null;
+        if (post_size < 8) return null;
         const postings_data = std.posix.mmap(
             null,
-            post_stat.size,
-            std.posix.PROT.READ,
+            post_size,
+            .{ .READ = true },
             .{ .TYPE = .SHARED },
             post_file.handle,
             0,
@@ -1556,23 +1563,23 @@ pub const MmapTrigramIndex = struct {
         errdefer std.posix.munmap(postings_data);
 
         // mmap lookup file
-        const lk_file = std.fs.cwd().openFile(lookup_path, .{}) catch {
+        const lk_file = std.Io.Dir.cwd().openFile(io, lookup_path, .{}) catch {
             std.posix.munmap(postings_data);
             return null;
         };
-        defer lk_file.close();
-        const lk_stat = lk_file.stat() catch {
+        defer lk_file.close(io);
+        const lk_size = lk_file.length(io) catch {
             std.posix.munmap(postings_data);
             return null;
         };
-        if (lk_stat.size < 12) {
+        if (lk_size < 12) {
             std.posix.munmap(postings_data);
             return null;
         }
         const lookup_data = std.posix.mmap(
             null,
-            lk_stat.size,
-            std.posix.PROT.READ,
+            lk_size,
+            .{ .READ = true },
             .{ .TYPE = .SHARED },
             lk_file.handle,
             0,
@@ -2045,9 +2052,9 @@ pub const AnyTrigramIndex = union(enum) {
         }
     }
 
-    pub fn writeToDisk(self: *AnyTrigramIndex, dir_path: []const u8, git_head: ?[40]u8) !void {
+    pub fn writeToDisk(self: *AnyTrigramIndex, io: std.Io, dir_path: []const u8, git_head: ?[40]u8) !void {
         switch (self.*) {
-            .heap => |*h| try h.writeToDisk(dir_path, git_head),
+            .heap => |*h| try h.writeToDisk(io, dir_path, git_head),
             .mmap => {},
             .mmap_overlay => {},
         }
@@ -2568,46 +2575,51 @@ fn finishFrequencyTable(counts: *const [256][256]u64) [256][256]u16 {
 
 /// Persist a frequency table as a raw binary blob to `<dir_path>/pair_freq.bin`.
 /// Uses tmp+rename for atomic writes.
-pub fn writeFrequencyTable(table: *const [256][256]u16, dir_path: []const u8) !void {
-    var dir = try std.fs.cwd().openDir(dir_path, .{});
-    defer dir.close();
+pub fn writeFrequencyTable(io: std.Io, table: *const [256][256]u16, dir_path: []const u8) !void {
+    var dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{});
+    defer dir.close(io);
     {
-        const tmp = try dir.createFile("pair_freq.bin.tmp", .{});
-        defer tmp.close();
+        const tmp = try dir.createFile(io, "pair_freq.bin.tmp", .{});
+        defer tmp.close(io);
+        var tw_buf: [64 * 1024]u8 = undefined;
+        var tw = tmp.writer(io, &tw_buf);
         var row_buf: [256 * 2]u8 = undefined;
         for (table) |row| {
             for (row, 0..) |val, j| {
                 std.mem.writeInt(u16, row_buf[j * 2 ..][0..2], val, .little);
             }
-            try tmp.writeAll(&row_buf);
+            try tw.interface.writeAll(&row_buf);
         }
+        try tw.interface.flush();
     }
-    try dir.rename("pair_freq.bin.tmp", "pair_freq.bin");
+    try dir.rename("pair_freq.bin.tmp", dir, "pair_freq.bin", io);
 }
 
 /// Load a frequency table from `<dir_path>/pair_freq.bin`.
 /// Returns null if the file does not exist or has the wrong size.
 /// Caller owns the returned allocation.
-pub fn readFrequencyTable(dir_path: []const u8, allocator: std.mem.Allocator) !?*[256][256]u16 {
+pub fn readFrequencyTable(io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) !?*[256][256]u16 {
     const path = try std.fmt.allocPrint(allocator, "{s}/pair_freq.bin", .{dir_path});
     defer allocator.free(path);
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
-    defer file.close();
+    defer file.close(io);
     const expected_size = 256 * 256 * @sizeOf(u16);
-    const stat = try compat.fileStat(file);
-    if (stat.size != expected_size) return null;
+    const size = try file.length(io);
+    if (size != expected_size) return null;
     const result = try allocator.create([256][256]u16);
     errdefer allocator.destroy(result);
+    var read_pos: u64 = 0;
     var row_buf: [256 * 2]u8 = undefined;
     for (result) |*row| {
-        const n = try file.readAll(&row_buf);
+        const n = try file.readPositionalAll(io, &row_buf, read_pos);
         if (n != row_buf.len) {
             allocator.destroy(result);
             return null;
         }
+        read_pos += row_buf.len;
         for (row, 0..) |*val, j| {
             val.* = std.mem.readInt(u16, row_buf[j * 2 ..][0..2], .little);
         }
