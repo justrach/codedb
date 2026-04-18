@@ -728,10 +728,21 @@ pub const TrigramIndex = struct {
 
         var ft_iter = self.file_trigrams.iterator();
         while (ft_iter.next()) |entry| {
-            if (self.owns_paths) self.allocator.free(entry.key_ptr.*);
             entry.value_ptr.deinit(self.allocator);
         }
         self.file_trigrams.deinit();
+
+        // When owns_paths=true, paths were dup'd in getOrCreateDocId and stored
+        // in id_to_path. Free them here from id_to_path (not file_trigrams),
+        // because lean code paths like insertBulkNew never populate file_trigrams,
+        // and removeFile clears file_trigrams entries before deinit can see them.
+        // id_to_path is the single source of truth for owned path memory.
+        // Tombstone slots (empty strings from removeFile) are skipped.
+        if (self.owns_paths) {
+            for (self.id_to_path.items) |p| {
+                if (p.len > 0) self.allocator.free(p);
+            }
+        }
 
         self.path_to_id.deinit();
         self.id_to_path.deinit(self.allocator);

@@ -320,7 +320,10 @@ extern "c" fn waitpid(pid: pid_t, status: *c_int, options: c_int) pid_t;
 // allocate a generously-sized buffer and cast to the opaque pointer type.
 const PosixSpawnFAStorage = [256]u8;
 
-/// Shim for std.process.Child.run — fast posix_spawnp path, merges stderr into stdout.
+/// Shim for std.process.Child.run — fast posix_spawnp path.
+/// Captures stdout and stderr into separate streams (drained concurrently by
+/// a background thread to avoid pipe-buffer deadlock when the child writes
+/// substantially to either stream).
 pub fn runCapture(opts: RunOptions) !CaptureResult {
     if (opts.argv.len == 0) return error.EmptyArgv;
     const alloc = opts.allocator;
@@ -343,10 +346,16 @@ pub fn runCapture(opts: RunOptions) !CaptureResult {
     const c_argv_z: [*:null]const ?[*:0]const u8 = @ptrCast(c_argv.ptr);
 
     var out_pipe: [2]c_int = .{ -1, -1 };
+    var err_pipe: [2]c_int = .{ -1, -1 };
     if (pipe(&out_pipe) != 0) return error.PipeFailed;
     errdefer {
         if (out_pipe[0] >= 0) _ = close(out_pipe[0]);
         if (out_pipe[1] >= 0) _ = close(out_pipe[1]);
+    }
+    if (pipe(&err_pipe) != 0) return error.PipeFailed;
+    errdefer {
+        if (err_pipe[0] >= 0) _ = close(err_pipe[0]);
+        if (err_pipe[1] >= 0) _ = close(err_pipe[1]);
     }
 
     var fa_storage: PosixSpawnFAStorage = undefined;
@@ -367,9 +376,11 @@ pub fn runCapture(opts: RunOptions) !CaptureResult {
     }
 
     _ = posix_spawn_file_actions_adddup2(fa, out_pipe[1], 1);
-    _ = posix_spawn_file_actions_adddup2(fa, out_pipe[1], 2);
+    _ = posix_spawn_file_actions_adddup2(fa, err_pipe[1], 2);
     _ = posix_spawn_file_actions_addclose(fa, out_pipe[0]);
     _ = posix_spawn_file_actions_addclose(fa, out_pipe[1]);
+    _ = posix_spawn_file_actions_addclose(fa, err_pipe[0]);
+    _ = posix_spawn_file_actions_addclose(fa, err_pipe[1]);
 
     const envp: [*:null]const ?[*:0]const u8 = if (builtin.os.tag == .macos)
         @ptrCast(_NSGetEnviron().*)
@@ -382,6 +393,34 @@ pub fn runCapture(opts: RunOptions) !CaptureResult {
 
     _ = close(out_pipe[1]);
     out_pipe[1] = -1;
+    _ = close(err_pipe[1]);
+    err_pipe[1] = -1;
+
+    // Drain stderr on a background thread so neither pipe can fill up and
+    // deadlock the child. Main thread drains stdout.
+    const DrainCtx = struct {
+        fd: c_int,
+        cap: usize,
+        alloc: std.mem.Allocator,
+        out: std.ArrayList(u8) = .empty,
+        err: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            var chunk: [64 * 1024]u8 = undefined;
+            while (self.out.items.len < self.cap) {
+                const want = @min(chunk.len, self.cap - self.out.items.len);
+                const n = read(self.fd, &chunk, want);
+                if (n <= 0) break;
+                self.out.appendSlice(self.alloc, chunk[0..@intCast(n)]) catch |e| {
+                    self.err = e;
+                    return;
+                };
+            }
+        }
+    };
+    var err_ctx: DrainCtx = .{ .fd = err_pipe[0], .cap = opts.max_output_bytes, .alloc = alloc };
+    errdefer err_ctx.out.deinit(alloc);
+    const err_thread = try std.Thread.spawn(.{}, DrainCtx.run, .{&err_ctx});
 
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(alloc);
@@ -395,8 +434,16 @@ pub fn runCapture(opts: RunOptions) !CaptureResult {
     _ = close(out_pipe[0]);
     out_pipe[0] = -1;
 
+    err_thread.join();
+    _ = close(err_pipe[0]);
+    err_pipe[0] = -1;
+    if (err_ctx.err) |e| {
+        err_ctx.out.deinit(alloc);
+        return e;
+    }
+
     var status: c_int = 0;
-    _ = std.c.waitpid(pid, &status, 0);
+    _ = waitpid(pid, &status, 0);
 
     const term: CaptureResult.Term = if ((status & 0x7f) == 0)
         .{ .Exited = @intCast((status >> 8) & 0xff) }
@@ -407,7 +454,7 @@ pub fn runCapture(opts: RunOptions) !CaptureResult {
 
     return .{
         .stdout = try out.toOwnedSlice(alloc),
-        .stderr = try alloc.alloc(u8, 0),
+        .stderr = try err_ctx.out.toOwnedSlice(alloc),
         .term = term,
     };
 }
