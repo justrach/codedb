@@ -373,6 +373,160 @@ pub const SymbolLocation = struct {
     line_end: u32,
 };
 
+/// CLOCK (second-chance) eviction cache sitting between `readContentForSearch`
+/// and disk. Orthogonal to `Explorer.contents` — index rebuilds iterate
+/// `contents`, not this cache, so a bounded cache size never hides files from
+/// the indexer.
+///
+/// Lessons from PR #259's revert (commit 5a5ee8a):
+///   1. DO NOT replace `Explorer.contents` with a bounded cache. Functions
+///      like `rebuildTrigrams`/`rebuildWordIndex` iterate `contents` and
+///      silently drop files once capacity is exceeded.
+///   2. Return an OWNED copy from `get` so concurrent eviction by another
+///      thread can't invalidate a caller's handle.
+///   3. Dupe both path and data internally — the cache outlives the outline
+///      paths for slots it holds.
+pub const ContentCache = struct {
+    pub const MAX_ENTRIES: u32 = 4096;
+
+    const Entry = struct {
+        path: []u8 = &[_]u8{},
+        data: []u8 = &[_]u8{},
+        ref_bit: bool = false,
+        occupied: bool = false,
+    };
+
+    slots: [MAX_ENTRIES]Entry = [_]Entry{.{}} ** MAX_ENTRIES,
+    lookup: std.StringHashMap(u32),
+    hand: u32 = 0,
+    count: u32 = 0,
+    mu: cio.Mutex = .{},
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) ContentCache {
+        return .{
+            .lookup = std.StringHashMap(u32).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ContentCache) void {
+        for (&self.slots) |*slot| {
+            if (slot.occupied) {
+                self.allocator.free(slot.path);
+                self.allocator.free(slot.data);
+            }
+        }
+        self.lookup.deinit();
+    }
+
+    pub fn get(self: *ContentCache, path: []const u8, allocator: std.mem.Allocator) ?[]u8 {
+        self.mu.lock();
+        defer self.mu.unlock();
+        const si = self.lookup.get(path) orelse return null;
+        self.slots[si].ref_bit = true;
+        return allocator.dupe(u8, self.slots[si].data) catch null;
+    }
+
+    pub fn put(self: *ContentCache, path: []const u8, data: []const u8) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+
+        if (self.lookup.get(path)) |si| {
+            const new_data = self.allocator.dupe(u8, data) catch return;
+            self.allocator.free(self.slots[si].data);
+            self.slots[si].data = new_data;
+            self.slots[si].ref_bit = true;
+            return;
+        }
+
+        const path_dup = self.allocator.dupe(u8, path) catch return;
+        const data_dup = self.allocator.dupe(u8, data) catch {
+            self.allocator.free(path_dup);
+            return;
+        };
+
+        const slot_idx = self.findSlotLocked();
+        const slot = &self.slots[slot_idx];
+        const had_occupant = slot.occupied;
+
+        if (had_occupant) {
+            _ = self.lookup.remove(slot.path);
+            self.allocator.free(slot.path);
+            self.allocator.free(slot.data);
+        }
+
+        slot.* = .{
+            .path = path_dup,
+            .data = data_dup,
+            .ref_bit = true,
+            .occupied = true,
+        };
+
+        self.lookup.put(path_dup, slot_idx) catch {
+            self.allocator.free(path_dup);
+            self.allocator.free(data_dup);
+            slot.* = Entry{};
+            if (had_occupant) self.count -= 1;
+            return;
+        };
+
+        if (!had_occupant) self.count += 1;
+    }
+
+    pub fn remove(self: *ContentCache, path: []const u8) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        const si = self.lookup.get(path) orelse return;
+        _ = self.lookup.remove(path);
+        self.allocator.free(self.slots[si].path);
+        self.allocator.free(self.slots[si].data);
+        self.slots[si] = Entry{};
+        self.count -= 1;
+    }
+
+    pub fn clear(self: *ContentCache) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        for (&self.slots) |*slot| {
+            if (slot.occupied) {
+                self.allocator.free(slot.path);
+                self.allocator.free(slot.data);
+                slot.* = Entry{};
+            }
+        }
+        self.lookup.clearAndFree();
+        self.count = 0;
+        self.hand = 0;
+    }
+
+    pub fn size(self: *ContentCache) u32 {
+        self.mu.lock();
+        defer self.mu.unlock();
+        return self.count;
+    }
+
+    fn findSlotLocked(self: *ContentCache) u32 {
+        if (self.count < MAX_ENTRIES) {
+            for (&self.slots, 0..) |*slot, i| {
+                if (!slot.occupied) return @intCast(i);
+            }
+        }
+        var probes: u32 = 0;
+        while (probes < MAX_ENTRIES * 2) : (probes += 1) {
+            const si = self.hand;
+            self.hand = (self.hand + 1) % MAX_ENTRIES;
+            const slot = &self.slots[si];
+            if (!slot.occupied) return si;
+            if (!slot.ref_bit) return si;
+            slot.ref_bit = false;
+        }
+        const si = self.hand;
+        self.hand = (self.hand + 1) % MAX_ENTRIES;
+        return si;
+    }
+};
+
 pub const Explorer = struct {
     outlines: std.StringHashMap(FileOutline),
     dep_graph: DependencyGraph,
@@ -384,6 +538,9 @@ pub const Explorer = struct {
     /// Paths indexed with skip_trigram=true (past 15k cap or excluded).
     /// Used to restrict the searchContent fallback to only these files.
     skip_trigram_files: std.StringHashMap(void),
+    /// Read-through cache for `readContentForSearch` disk fallback (issue #208).
+    /// Orthogonal to `contents` — index rebuilds iterate `contents`, never this.
+    search_cache: ContentCache,
     allocator: std.mem.Allocator,
     word_index_complete: bool = true,
     word_index_can_load_from_disk: bool = false,
@@ -407,6 +564,7 @@ pub const Explorer = struct {
             .trigram_index = .{ .heap = TrigramIndex.init(allocator) },
             .sparse_ngram_index = SparseNgramIndex.init(allocator),
             .skip_trigram_files = std.StringHashMap(void).init(allocator),
+            .search_cache = ContentCache.init(allocator),
             .allocator = allocator,
         };
     }
@@ -437,6 +595,7 @@ pub const Explorer = struct {
         self.trigram_index.deinit();
         self.sparse_ngram_index.deinit();
         self.skip_trigram_files.deinit();
+        self.search_cache.deinit();
         if (self.root_dir) |d| {
             if (self.io) |io| d.close(io);
         }
@@ -1042,6 +1201,7 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
             self.allocator.free(content.*);
             _ = self.contents.remove(path);
         }
+        self.search_cache.remove(path);
         self.word_index.removeFile(path);
         self.trigram_index.removeFile(path);
         self.sparse_ngram_index.removeFile(path);
@@ -1082,12 +1242,19 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
 
     /// Get content: zero-copy from cache, or read from disk (caller-owned).
     fn readContentForSearch(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ?ContentRef {
+        // Fast path: primary content store (first ~1000 files).
         if (self.contents.get(path)) |cached| {
             return .{ .data = cached, .owned = false, .allocator = allocator };
         }
+        // Warm path: search cache from prior disk reads after releaseContents.
+        if (self.search_cache.get(path, allocator)) |cached_copy| {
+            return .{ .data = cached_copy, .owned = true, .allocator = allocator };
+        }
+        // Cold path: read from disk, populate search cache for next time.
         const io = self.io orelse return null;
         const dir = self.root_dir orelse std.Io.Dir.cwd();
         const data = dir.readFileAlloc(io, path, allocator, .limited(512 * 1024)) catch return null;
+        self.search_cache.put(path, data);
         return .{ .data = data, .owned = true, .allocator = allocator };
     }
 

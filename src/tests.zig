@@ -6899,3 +6899,82 @@ test "issue-207: ScanState.name covers all states" {
     try testing.expectEqualStrings("indexing", mcp_mod.ScanState.indexing.name());
     try testing.expectEqualStrings("ready", mcp_mod.ScanState.ready.name());
 }
+
+// ── Issue #208: CLOCK content cache for post-releaseContents search ────────
+
+test "issue-208: ContentCache put/get round-trip returns owned copy" {
+    const ContentCache = explore.ContentCache;
+    var cache = ContentCache.init(testing.allocator);
+    defer cache.deinit();
+
+    cache.put("a.zig", "hello world");
+    const got = cache.get("a.zig", testing.allocator) orelse return error.TestFailed;
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("hello world", got);
+}
+
+test "issue-208: ContentCache get returns independent copy (survives eviction)" {
+    const ContentCache = explore.ContentCache;
+    var cache = ContentCache.init(testing.allocator);
+    defer cache.deinit();
+
+    cache.put("a.zig", "original");
+    const snapshot = cache.get("a.zig", testing.allocator) orelse return error.TestFailed;
+    defer testing.allocator.free(snapshot);
+
+    // Update the entry — the caller's snapshot must still read "original".
+    cache.put("a.zig", "updated");
+    try testing.expectEqualStrings("original", snapshot);
+
+    const fresh = cache.get("a.zig", testing.allocator) orelse return error.TestFailed;
+    defer testing.allocator.free(fresh);
+    try testing.expectEqualStrings("updated", fresh);
+}
+
+test "issue-208: ContentCache bounds count at MAX_ENTRIES under pressure" {
+    const ContentCache = explore.ContentCache;
+    var cache = ContentCache.init(testing.allocator);
+    defer cache.deinit();
+
+    // Fill past capacity to force CLOCK eviction.
+    const N = ContentCache.MAX_ENTRIES + 500;
+    var path_buf: [32]u8 = undefined;
+    var i: usize = 0;
+    while (i < N) : (i += 1) {
+        const path = try std.fmt.bufPrint(&path_buf, "f{d}.zig", .{i});
+        cache.put(path, "body");
+    }
+
+    // Count must stay at the cap, not exceed it.
+    try testing.expect(cache.size() == ContentCache.MAX_ENTRIES);
+}
+
+test "issue-208: ContentCache remove drops entry and decrements count" {
+    const ContentCache = explore.ContentCache;
+    var cache = ContentCache.init(testing.allocator);
+    defer cache.deinit();
+
+    cache.put("a.zig", "x");
+    cache.put("b.zig", "y");
+    try testing.expectEqual(@as(u32, 2), cache.size());
+
+    cache.remove("a.zig");
+    try testing.expectEqual(@as(u32, 1), cache.size());
+    try testing.expect(cache.get("a.zig", testing.allocator) == null);
+
+    const b_got = cache.get("b.zig", testing.allocator) orelse return error.TestFailed;
+    defer testing.allocator.free(b_got);
+    try testing.expectEqualStrings("y", b_got);
+}
+
+test "issue-208: ContentCache clear resets state" {
+    const ContentCache = explore.ContentCache;
+    var cache = ContentCache.init(testing.allocator);
+    defer cache.deinit();
+
+    cache.put("a.zig", "x");
+    cache.put("b.zig", "y");
+    cache.clear();
+    try testing.expectEqual(@as(u32, 0), cache.size());
+    try testing.expect(cache.get("a.zig", testing.allocator) == null);
+}
