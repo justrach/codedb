@@ -31,15 +31,14 @@ const ProjectCtx = struct {
 
 fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
     const hash = std.hash.Wyhash.hash(0, project_path);
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
+    const home = cio.posixGetenv("HOME") orelse {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{project_path}) catch null;
     };
-    defer allocator.free(home);
 
     return std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch null;
 }
 
-fn loadProjectTrigramFromDiskIfPresent(explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
+fn loadProjectTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
     explorer.mu.lockShared();
     const already_loaded = explorer.trigram_index.fileCount() > 0;
     explorer.mu.unlockShared();
@@ -48,12 +47,12 @@ fn loadProjectTrigramFromDiskIfPresent(explorer: *Explorer, project_path: []cons
     const data_dir = getProjectDataDir(allocator, project_path) orelse return;
     defer allocator.free(data_dir);
 
-    if (idx.MmapTrigramIndex.initFromDisk(data_dir, allocator)) |loaded| {
+    if (idx.MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
         explorer.mu.lock();
         defer explorer.mu.unlock();
         explorer.trigram_index.deinit();
         explorer.trigram_index = .{ .mmap = loaded };
-    } else if (idx.TrigramIndex.readFromDisk(data_dir, allocator)) |loaded| {
+    } else if (idx.TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
         explorer.mu.lock();
         defer explorer.mu.unlock();
         explorer.trigram_index.deinit();
@@ -61,7 +60,7 @@ fn loadProjectTrigramFromDiskIfPresent(explorer: *Explorer, project_path: []cons
     }
 }
 
-fn loadProjectWordIndexFromDiskIfPresent(explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
+fn loadProjectWordIndexFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
     if (!explorer.wordIndexCanLoadFromDisk()) return;
 
     const data_dir = getProjectDataDir(allocator, project_path) orelse {
@@ -70,7 +69,7 @@ fn loadProjectWordIndexFromDiskIfPresent(explorer: *Explorer, project_path: []co
     };
     defer allocator.free(data_dir);
 
-    const header = idx.WordIndex.readDiskHeader(data_dir, allocator) catch null orelse {
+    const header = idx.WordIndex.readDiskHeader(io, data_dir, allocator) catch null orelse {
         explorer.disableWordIndexDiskLoad();
         return;
     };
@@ -94,7 +93,7 @@ fn loadProjectWordIndexFromDiskIfPresent(explorer: *Explorer, project_path: []co
         return;
     }
 
-    if (idx.WordIndex.readFromDisk(data_dir, allocator)) |loaded| {
+    if (idx.WordIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
         explorer.replaceWordIndex(loaded);
     } else {
         explorer.disableWordIndexDiskLoad();
@@ -139,6 +138,7 @@ const ProjectCache = struct {
 
     fn get(
         self: *ProjectCache,
+        io: std.Io,
         path: ?[]const u8,
         default_exp: *Explorer,
         default_store: *Store,
@@ -169,7 +169,7 @@ const ProjectCache = struct {
             return error.OutOfMemory;
         };
         new_entry.explorer = Explorer.init(self.alloc);
-        new_entry.explorer.setRoot(p);
+        new_entry.explorer.setRoot(io, p);
         new_entry.store = Store.init(self.alloc);
         new_entry.last_used = now;
 
@@ -182,15 +182,14 @@ const ProjectCache = struct {
             return error.PathTooLong;
         };
 
-        if (!snapshot_mod.loadSnapshot(snap_path, &new_entry.explorer, &new_entry.store, self.alloc)) {
+        if (!snapshot_mod.loadSnapshot(io, snap_path, &new_entry.explorer, &new_entry.store, self.alloc)) {
             // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
             const hash = std.hash.Wyhash.hash(0, p);
             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
             const loaded_central = blk: {
-                const home = std.process.getEnvVarOwned(self.alloc, "HOME") catch break :blk false;
-                defer self.alloc.free(home);
+                const home = cio.posixGetenv("HOME") orelse break :blk false;
                 const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
-                break :blk snapshot_mod.loadSnapshot(central, &new_entry.explorer, &new_entry.store, self.alloc);
+                break :blk snapshot_mod.loadSnapshot(io, central, &new_entry.explorer, &new_entry.store, self.alloc);
             };
             if (!loaded_central) {
                 new_entry.store.deinit();
@@ -201,7 +200,7 @@ const ProjectCache = struct {
             }
         }
 
-        loadProjectTrigramFromDiskIfPresent(&new_entry.explorer, p, self.alloc);
+        loadProjectTrigramFromDiskIfPresent(io, &new_entry.explorer, p, self.alloc);
 
         // Release raw file contents retained by the snapshot load — outlines,
         // trigram index, and word index are sufficient for all query tools.
@@ -258,6 +257,7 @@ pub const BenchContext = struct {
 
     pub fn runDispatch(
         self: *BenchContext,
+        io: std.Io,
         alloc: std.mem.Allocator,
         tool: Tool,
         args: *const std.json.ObjectMap,
@@ -266,11 +266,12 @@ pub const BenchContext = struct {
         explorer: *Explorer,
         agents: *AgentRegistry,
     ) void {
-        dispatch(alloc, tool, args, out, store, explorer, agents, &self.cache);
+        dispatch(io, alloc, tool, args, out, store, explorer, agents, &self.cache);
     }
 
     pub fn runToolCall(
         self: *BenchContext,
+        io: std.Io,
         alloc: std.mem.Allocator,
         name: []const u8,
         tool: Tool,
@@ -284,7 +285,7 @@ pub const BenchContext = struct {
         defer out.deinit(alloc);
 
         const t0 = cio.nanoTimestamp();
-        dispatch(alloc, tool, args, &out, store, explorer, agents, &self.cache);
+        dispatch(io, alloc, tool, args, &out, store, explorer, agents, &self.cache);
         const elapsed = cio.nanoTimestamp() - t0;
 
         const is_error = std.mem.startsWith(u8, out.items, "error:");
@@ -388,7 +389,7 @@ pub const idle_timeout_ms: i64 = 10 * 60 * 1000; // 10 minutes — allows long d
 
 const Session = struct {
     alloc: std.mem.Allocator,
-    stdout: std.fs.File,
+    stdout: cio.File,
     next_id: i64 = 100,
     client_supports_roots: bool = false,
     client_roots_list_changed: bool = false,
@@ -419,9 +420,8 @@ pub fn run(
     default_path: []const u8,
     telem: *telemetry_mod.Telemetry,
 ) void {
-    _ = io;
     const stdout = cio.File.stdout();
-    const stdin = cio.File.stdin();
+    const stdin = std.Io.File.stdin();
     last_activity.store(cio.milliTimestamp(), .release);
 
     var cache = ProjectCache.init(alloc, default_path);
@@ -434,7 +434,7 @@ pub fn run(
     defer session.deinit();
 
     var read_buf: [4096]u8 = undefined;
-    var stdin_reader = stdin.reader(&read_buf);
+    var stdin_reader = stdin.reader(io, &read_buf);
 
     while (true) {
         const msg = mcpj.readLineBuf(alloc, &stdin_reader.interface) orelse break;
@@ -482,7 +482,7 @@ pub fn run(
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) writeResult(alloc, stdout, id, tools_list);
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(alloc, root, stdout, id, store, explorer, agents, &cache, telem);
+            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
         } else {
@@ -571,7 +571,7 @@ fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
     }
 }
 
-fn writeRequest(alloc: std.mem.Allocator, stdout: std.fs.File, id: i64, method: []const u8, params: []const u8) void {
+fn writeRequest(alloc: std.mem.Allocator, stdout: cio.File, id: i64, method: []const u8, params: []const u8) void {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
@@ -587,9 +587,10 @@ fn writeRequest(alloc: std.mem.Allocator, stdout: std.fs.File, id: i64, method: 
 }
 
 fn handleCall(
+    io: std.Io,
     alloc: std.mem.Allocator,
     root: *const std.json.ObjectMap,
-    stdout: std.fs.File,
+    stdout: cio.File,
     id: ?std.json.Value,
     store: *Store,
     explorer: *Explorer,
@@ -613,7 +614,7 @@ fn handleCall(
         if (!is_notification) writeError(alloc, stdout, id, -32602, "Missing tool name");
         return;
     };
-    var args_value = params.get("arguments") orelse std.json.Value{ .object = std.json.ObjectMap.init(alloc) };
+    var args_value = params.get("arguments") orelse std.json.Value{ .object = .empty };
     if (args_value != .object) {
         if (!is_notification) writeError(alloc, stdout, id, -32602, "arguments must be object");
         return;
@@ -629,7 +630,7 @@ fn handleCall(
     defer out.deinit(alloc);
 
     const t0 = cio.nanoTimestamp();
-    dispatch(alloc, tool, args, &out, store, explorer, agents, cache);
+    dispatch(io, alloc, tool, args, &out, store, explorer, agents, cache);
     const elapsed = cio.nanoTimestamp() - t0;
 
     const is_error = std.mem.startsWith(u8, out.items, "error:");
@@ -639,11 +640,11 @@ fn handleCall(
     if (!is_error) {
         if (std.mem.eql(u8, name, "codedb_search") or std.mem.eql(u8, name, "codedb_find") or std.mem.eql(u8, name, "codedb_word")) {
             if (getStr(args, "query") orelse getStr(args, "word")) |q| {
-                logQuery(name, q, out.items.len, elapsed);
+                logQuery(io, name, q, out.items.len, elapsed);
             }
         } else if (std.mem.eql(u8, name, "codedb_read") or std.mem.eql(u8, name, "codedb_outline")) {
             if (getStr(args, "path")) |p| {
-                logFileAccess(name, p, elapsed);
+                logFileAccess(io, name, p, elapsed);
             }
         }
     }
@@ -694,6 +695,7 @@ fn handleCall(
 }
 
 fn dispatch(
+    io: std.Io,
     alloc: std.mem.Allocator,
     tool: Tool,
     args: *const std.json.ObjectMap,
@@ -704,7 +706,7 @@ fn dispatch(
     cache: *ProjectCache,
 ) void {
     const project_path = getStr(args, "project");
-    const ctx = cache.get(project_path, default_explorer, default_store) catch |err| {
+    const ctx = cache.get(io, project_path, default_explorer, default_store) catch |err| {
         out.appendSlice(alloc, "error: failed to load project: ") catch {};
         out.appendSlice(alloc, @errorName(err)) catch {};
         return;
@@ -712,7 +714,7 @@ fn dispatch(
 
     if (tool == .codedb_word) {
         const effective_project = project_path orelse cache.default_path;
-        loadProjectWordIndexFromDiskIfPresent(ctx.explorer, effective_project, alloc);
+        loadProjectWordIndexFromDiskIfPresent(io, ctx.explorer, effective_project, alloc);
     }
 
     switch (tool) {
@@ -723,16 +725,16 @@ fn dispatch(
         .codedb_word => handleWord(alloc, args, out, ctx.explorer),
         .codedb_hot => handleHot(alloc, args, out, ctx.store, ctx.explorer),
         .codedb_deps => handleDeps(alloc, args, out, ctx.explorer),
-        .codedb_read => handleRead(alloc, args, out, ctx.explorer),
-        .codedb_edit => handleEdit(alloc, args, out, default_store, default_explorer, agents),
+        .codedb_read => handleRead(io, alloc, args, out, ctx.explorer),
+        .codedb_edit => handleEdit(io, alloc, args, out, default_store, default_explorer, agents),
         .codedb_changes => handleChanges(alloc, args, out, default_store),
         .codedb_status => handleStatus(alloc, out, ctx.store, ctx.explorer),
         .codedb_snapshot => handleSnapshot(alloc, out, ctx.explorer, ctx.store),
-        .codedb_bundle => handleBundle(alloc, args, out, ctx.store, ctx.explorer, agents, cache),
+        .codedb_bundle => handleBundle(io, alloc, args, out, ctx.store, ctx.explorer, agents, cache),
         .codedb_remote => handleRemote(alloc, args, out),
-        .codedb_projects => handleProjects(alloc, out),
-        .codedb_index => handleIndex(alloc, args, out),
-        .codedb_find => handleFind(alloc, args, out, ctx.explorer),
+        .codedb_projects => handleProjects(io, alloc, out),
+        .codedb_index => handleIndex(io, alloc, args, out),
+        .codedb_find => handleFind(io, alloc, args, out, ctx.explorer),
         .codedb_query => handleQuery(alloc, args, out, ctx.explorer, ctx.store),
     }
 }
@@ -763,7 +765,7 @@ fn handleOutline(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
         return;
     };
     defer outline.deinit();
-    const w = out.writer(alloc);
+    const w = cio.listWriter(out, alloc);
     w.print("{s} ({s}, {d} lines, {d} bytes)\n", .{
         outline.path, @tagName(outline.language), outline.line_count, outline.byte_size,
     }) catch {};
@@ -796,7 +798,7 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         return;
     }
 
-    const w = out.writer(alloc);
+    const w = cio.listWriter(out, alloc);
     w.print("{d} results for '{s}':\n", .{ results.len, name }) catch {};
     for (results) |r| {
         w.print("  {s}:{d} ({s})", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind) }) catch {};
@@ -836,7 +838,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             alloc.free(results);
         }
 
-        const w = out.writer(alloc);
+        const w = cio.listWriter(out, alloc);
         w.print("{d} results for '{s}':\n", .{ results.len, query }) catch {};
         for (results) |r| {
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
@@ -867,7 +869,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             alloc.free(results);
         }
 
-        const w = out.writer(alloc);
+        const w = cio.listWriter(out, alloc);
         w.print("{d} results for '{s}':\n", .{ results.len, query }) catch {};
         var file_counts = std.StringHashMap(u8).init(alloc);
         defer file_counts.deinit();
@@ -904,7 +906,7 @@ fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     };
     defer alloc.free(hits);
 
-    const w = out.writer(alloc);
+    const w = cio.listWriter(out, alloc);
     w.print("{d} hits for '{s}':\n", .{ hits.len, word }) catch {};
     explorer.mu.lockShared();
     defer explorer.mu.unlockShared();
@@ -924,7 +926,7 @@ fn handleHot(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *st
         alloc.free(hot);
     }
 
-    const w = out.writer(alloc);
+    const w = cio.listWriter(out, alloc);
     for (hot, 0..) |path, i| {
         w.print("{d}. {s}\n", .{ i + 1, path }) catch {};
     }
@@ -982,7 +984,7 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
         alloc.free(results);
     }
 
-    const w = out.writer(alloc);
+    const w = cio.listWriter(out, alloc);
     if (is_forward) {
         if (transitive) {
             w.print("{s} transitively depends on:\n", .{path}) catch {};
@@ -1006,7 +1008,7 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     }
 }
 
-fn handleRead(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const path = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path' argument") catch {};
         return;
@@ -1028,14 +1030,9 @@ fn handleRead(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
         owned_content
     else blk: {
         // Fall back to disk read
-        const file = std.fs.cwd().openFile(path, .{}) catch {
-            out.appendSlice(alloc, "error: file not found: ") catch {};
+        break :blk std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch {
+            out.appendSlice(alloc, "error: failed to read file: ") catch {};
             out.appendSlice(alloc, path) catch {};
-            return;
-        };
-        defer file.close();
-        break :blk file.readToEndAlloc(alloc, 10 * 1024 * 1024) catch {
-            out.appendSlice(alloc, "error: failed to read file") catch {};
             return;
         };
     };
@@ -1061,7 +1058,7 @@ fn handleRead(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     const has_range = line_start_raw != null or line_end_raw != null;
 
     // Always prepend hash
-    const w = out.writer(alloc);
+    const w = cio.listWriter(out, alloc);
     w.print("hash:{s}\n", .{hash_str}) catch {};
 
     if (has_range or compact) {
@@ -1079,7 +1076,7 @@ fn handleRead(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     }
 }
 
-fn handleEdit(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, agents: *AgentRegistry) void {
+fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, agents: *AgentRegistry) void {
     const path = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path'") catch {};
         return;
@@ -1134,13 +1131,13 @@ fn handleEdit(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
         req.after = @intCast(a);
     }
 
-    const result = edit_mod.applyEdit(alloc, store, agents, explorer, req) catch |err| {
+    const result = edit_mod.applyEdit(io, alloc, store, agents, explorer, req) catch |err| {
         out.appendSlice(alloc, "error: edit failed: ") catch {};
         out.appendSlice(alloc, @errorName(err)) catch {};
         return;
     };
 
-    const w = out.writer(alloc);
+    const w = cio.listWriter(out, alloc);
     w.print("edit applied: seq={d}, size={d}, hash={d}", .{ result.seq, result.new_size, result.new_hash }) catch {};
 }
 
@@ -1152,7 +1149,7 @@ fn handleChanges(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     };
     defer alloc.free(changes);
 
-    const w = out.writer(alloc);
+    const w = cio.listWriter(out, alloc);
     w.print("seq: {d}, {d} files changed since {d}:\n", .{ store.currentSeq(), changes.len, since }) catch {};
     for (changes) |c| {
         w.print("  {s} (seq={d}, op={s}, size={d})\n", .{ c.path, c.seq, @tagName(c.op), c.size }) catch {};
@@ -1177,7 +1174,7 @@ fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store
     const trigram_files = explorer.trigram_index.fileCount();
     explorer.mu.unlockShared();
 
-    const w = out.writer(alloc);
+    const w = cio.listWriter(out, alloc);
     w.print(
         \\codedb status:
         \\  seq: {d}
@@ -1208,6 +1205,7 @@ fn handleSnapshot(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *
 }
 
 fn handleBundle(
+    io: std.Io,
     alloc: std.mem.Allocator,
     args: *const std.json.ObjectMap,
     out: *std.ArrayList(u8),
@@ -1236,7 +1234,7 @@ fn handleBundle(
         return;
     }
 
-    const w = out.writer(alloc);
+    const w = cio.listWriter(out, alloc);
     for (ops, 0..) |op, i| {
         if (op != .object) {
             w.print("--- [{d}] error ---\nop must be an object\n", .{i}) catch {};
@@ -1263,8 +1261,8 @@ fn handleBundle(
             continue;
         }
 
-        var empty_args = std.json.ObjectMap.init(alloc);
-        defer empty_args.deinit();
+        var empty_args: std.json.ObjectMap = .empty;
+        defer empty_args.deinit(alloc);
         var sub_args_val = op_obj.get("arguments") orelse std.json.Value{ .object = empty_args };
         if (sub_args_val != .object) {
             w.print("--- [{d}] {s} ---\nerror: arguments must be object\n", .{ i, tool_name }) catch {};
@@ -1275,7 +1273,7 @@ fn handleBundle(
         var sub_out: std.ArrayList(u8) = .empty;
         defer sub_out.deinit(alloc);
 
-        dispatch(alloc, tool, sub_args, &sub_out, default_store, default_explorer, agents, cache);
+        dispatch(io, alloc, tool, sub_args, &sub_out, default_store, default_explorer, agents, cache);
 
         // Check size BEFORE appending to prevent blowout
         if (out.items.len + sub_out.items.len > 200 * 1024) {
@@ -1343,7 +1341,7 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             return;
         };
         // -G + --data-urlencode lets curl handle encoding spaces etc.
-        const result = std.process.Child.run(.{
+        const result = cio.runCapture(.{
             .allocator = alloc,
             .argv = &.{ "curl", "-sf", "--max-time", "30", "-G", "--data-urlencode", q_param, base_url },
         }) catch {
@@ -1367,7 +1365,7 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         return;
     };
 
-    const result = std.process.Child.run(.{
+    const result = cio.runCapture(.{
         .allocator = alloc,
         .argv = &.{ "curl", "-sf", "--max-time", "30", url },
     }) catch {
@@ -1394,12 +1392,11 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
 
 // ── Local project tools ─────────────────────────────────────────────────────
 
-fn handleProjects(alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
-    const home = std.process.getEnvVarOwned(alloc, "HOME") catch {
+fn handleProjects(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
+    const home = cio.posixGetenv("HOME") orelse {
         out.appendSlice(alloc, "error: cannot read HOME") catch {};
         return;
     };
-    defer alloc.free(home);
 
     const projects_dir = std.fmt.allocPrint(alloc, "{s}/.codedb/projects", .{home}) catch {
         out.appendSlice(alloc, "error: alloc failed") catch {};
@@ -1407,24 +1404,24 @@ fn handleProjects(alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
     };
     defer alloc.free(projects_dir);
 
-    var dir = std.fs.cwd().openDir(projects_dir, .{ .iterate = true }) catch {
+    var dir = std.Io.Dir.cwd().openDir(io, projects_dir, .{ .iterate = true }) catch {
         out.appendSlice(alloc, "no indexed projects found") catch {};
         return;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var count: u32 = 0;
     var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(io) catch null) |entry| {
         if (entry.kind != .directory) continue;
 
         // Read project.txt to get the project path
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const sub_path = std.fmt.bufPrint(&path_buf, "{s}/project.txt", .{entry.name}) catch continue;
-        const project_file = dir.openFile(sub_path, .{}) catch continue;
-        defer project_file.close();
+        const project_file = dir.openFile(io, sub_path, .{}) catch continue;
+        defer project_file.close(io);
         var content_buf: [4096]u8 = undefined;
-        const n = project_file.readAll(&content_buf) catch continue;
+        const n = project_file.readPositionalAll(io, &content_buf, 0) catch continue;
         if (n == 0) continue;
         const project_path = content_buf[0..n];
 
@@ -1432,7 +1429,7 @@ fn handleProjects(alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
         var snap_exists = false;
         var snap_path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const snap_path = std.fmt.bufPrint(&snap_path_buf, "{s}/codedb.snapshot", .{project_path}) catch project_path;
-        if (std.fs.cwd().access(snap_path, .{})) |_| {
+        if (std.Io.Dir.cwd().access(io, snap_path, .{})) |_| {
             snap_exists = true;
         } else |_| {}
 
@@ -1449,7 +1446,7 @@ fn handleProjects(alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
     }
 }
 
-fn handleIndex(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8)) void {
+fn handleIndex(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8)) void {
     const path = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path'") catch {};
         return;
@@ -1457,11 +1454,12 @@ fn handleIndex(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
 
     // Resolve to absolute path
     var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = std.fs.cwd().realpath(path, &abs_buf) catch {
+    const abs_len = std.Io.Dir.cwd().realPathFile(io, path, &abs_buf) catch {
         out.appendSlice(alloc, "error: cannot resolve path: ") catch {};
         out.appendSlice(alloc, path) catch {};
         return;
     };
+    const abs_path = abs_buf[0..abs_len];
     if (!root_policy.isIndexableRoot(abs_path)) {
         out.appendSlice(alloc, "error: refusing to index temporary root: ") catch {};
         out.appendSlice(alloc, abs_path) catch {};
@@ -1469,22 +1467,22 @@ fn handleIndex(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
     }
 
     // Verify it's a directory
-    var check_dir = std.fs.cwd().openDir(abs_path, .{}) catch {
+    var check_dir = std.Io.Dir.cwd().openDir(io, abs_path, .{}) catch {
         out.appendSlice(alloc, "error: not a directory: ") catch {};
         out.appendSlice(alloc, abs_path) catch {};
         return;
     };
-    check_dir.close();
+    check_dir.close(io);
 
     // Get the codedb binary path (argv[0] equivalent — use /proc/self or just "codedb")
     // We spawn `codedb <path> snapshot` to create the snapshot
-    const exe_path = std.fs.selfExePathAlloc(alloc) catch {
+    const exe_path = std.process.executablePathAlloc(io, alloc) catch {
         out.appendSlice(alloc, "error: cannot find codedb binary") catch {};
         return;
     };
     defer alloc.free(exe_path);
 
-    const result = std.process.Child.run(.{
+    const result = cio.runCapture(.{
         .allocator = alloc,
         .argv = &.{ exe_path, abs_path, "snapshot" },
         .max_output_bytes = 64 * 1024,
@@ -1535,7 +1533,7 @@ fn handleIndex(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
     }
 }
 
-fn handleFind(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+fn handleFind(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const query = getStr(args, "query") orelse {
         out.appendSlice(alloc, "error: missing 'query'") catch {};
         return;
@@ -1577,7 +1575,7 @@ fn handleFind(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
         }
     }
     // Combo-boost: reward files that were previously opened after similar queries
-    applyComboBoosts(alloc, query, @constCast(matches));
+    applyComboBoosts(io, alloc, query, @constCast(matches));
 
     if (matches.len == 0) {
         out.appendSlice(alloc, "no matches") catch {};
@@ -1598,9 +1596,9 @@ fn handleFind(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
 const COMBO_WINDOW_MS: i64 = 5000; // 5 second window between query and file open
 const COMBO_BOOST_PER_HIT: f32 = 5.0; // score boost per historical open
 
-fn applyComboBoosts(alloc: std.mem.Allocator, query: []const u8, matches: []explore_mod.Explorer.FuzzyMatch) void {
+fn applyComboBoosts(io: std.Io, alloc: std.mem.Allocator, query: []const u8, matches: []explore_mod.Explorer.FuzzyMatch) void {
     const wal_path = query_log_path orelse return;
-    const data = std.fs.cwd().readFileAlloc(alloc, wal_path, 512 * 1024) catch return;
+    const data = std.Io.Dir.cwd().readFileAlloc(io, wal_path, alloc, .limited(512 * 1024)) catch return;
     defer alloc.free(data);
 
     // Scan WAL for query→access pairs within COMBO_WINDOW_MS
@@ -1702,7 +1700,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
     var file_set: std.ArrayList([]const u8) = .empty;
     defer file_set.deinit(alloc);
     var have_set = false;
-    const w = out.writer(alloc);
+    const w = cio.listWriter(out, alloc);
 
     for (pipeline, 0..) |step_val, step_i| {
         if (step_val != .object) {
@@ -1997,17 +1995,17 @@ fn escapeJsonStr(input: []const u8, out: *[256]u8) usize {
     return elen;
 }
 
-fn appendToWal(line: []const u8) void {
+fn appendToWal(io: std.Io, line: []const u8) void {
     const path = query_log_path orelse return;
-    const file = std.fs.cwd().openFile(path, .{ .mode = .write_only }) catch blk: {
-        break :blk std.fs.cwd().createFile(path, .{}) catch return;
+    const file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only }) catch blk: {
+        break :blk std.Io.Dir.cwd().createFile(io, path, .{}) catch return;
     };
-    defer file.close();
-    file.seekFromEnd(0) catch return;
-    file.writeAll(line) catch {};
+    defer file.close(io);
+    const end_offset = file.length(io) catch return;
+    file.writePositionalAll(io, line, end_offset) catch {};
 }
 
-fn logQuery(tool: []const u8, query: []const u8, result_bytes: usize, latency_ns: i128) void {
+fn logQuery(io: std.Io, tool: []const u8, query: []const u8, result_bytes: usize, latency_ns: i128) void {
     var escaped: [256]u8 = undefined;
     const elen = escapeJsonStr(query, &escaped);
     const latency_us: i64 = @intCast(@divTrunc(latency_ns, 1000));
@@ -2015,10 +2013,10 @@ fn logQuery(tool: []const u8, query: []const u8, result_bytes: usize, latency_ns
     const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"ev\":\"query\",\"tool\":\"{s}\",\"query\":\"{s}\",\"result_bytes\":{d},\"latency_us\":{d}}}\n", .{
         cio.milliTimestamp(), tool, escaped[0..elen], result_bytes, latency_us,
     }) catch return;
-    appendToWal(line);
+    appendToWal(io, line);
 }
 
-fn logFileAccess(tool: []const u8, file_path: []const u8, latency_ns: i128) void {
+fn logFileAccess(io: std.Io, tool: []const u8, file_path: []const u8, latency_ns: i128) void {
     var escaped: [256]u8 = undefined;
     const elen = escapeJsonStr(file_path, &escaped);
     const latency_us: i64 = @intCast(@divTrunc(latency_ns, 1000));
@@ -2026,7 +2024,7 @@ fn logFileAccess(tool: []const u8, file_path: []const u8, latency_ns: i128) void
     const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"ev\":\"access\",\"tool\":\"{s}\",\"path\":\"{s}\",\"latency_us\":{d}}}\n", .{
         cio.milliTimestamp(), tool, escaped[0..elen], latency_us,
     }) catch return;
-    appendToWal(line);
+    appendToWal(io, line);
 }
 fn globMatch(pattern: []const u8, path: []const u8) bool {
     var pi: usize = 0;
@@ -2086,7 +2084,7 @@ pub fn isPathSafe(path: []const u8) bool {
     return true;
 }
 
-fn writeResult(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Value, result: []const u8) void {
+fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8) void {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     buf.ensureTotalCapacity(alloc, result.len + 64) catch {};
@@ -2105,7 +2103,7 @@ fn writeResult(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Valu
     stdout.writeAll(buf.items) catch return;
 }
 
-fn writeError(alloc: std.mem.Allocator, stdout: std.fs.File, id: ?std.json.Value, code: i32, msg: []const u8) void {
+fn writeError(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, code: i32, msg: []const u8) void {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
@@ -2405,31 +2403,33 @@ fn mcpGenerateGuidance(
         buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_outline on a hot file to see recent changes" ++ MCP_RESET) catch {};
     }
 }
-
 test "issue-258: cached project reads use the project root after contents are released" {
+    const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("src");
-    try tmp.dir.writeFile(.{
+    try tmp.dir.createDirPath(io, "src");
+    try tmp.dir.writeFile(io, .{
         .sub_path = "src/main.zig",
         .data = "const project = \"secondary\";\n",
     });
 
     var project_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const project_path = try tmp.dir.realpath(".", &project_path_buf);
+    const project_path_len = try tmp.dir.realPathFile(io, ".", &project_path_buf);
+    const project_path = project_path_buf[0..project_path_len];
 
     var snapshot_src = Explorer.init(testing.allocator);
     defer snapshot_src.deinit();
-    snapshot_src.setRoot(project_path);
+    snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "const project = \"secondary\";\n");
 
     const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{project_path});
     defer testing.allocator.free(snap_path);
-    try snapshot_mod.writeSnapshot(&snapshot_src, project_path, snap_path, testing.allocator);
+    try snapshot_mod.writeSnapshot(io, &snapshot_src, project_path, snap_path, testing.allocator);
 
     var default_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const default_path = try std.fs.cwd().realpath(".", &default_path_buf);
+    const default_path_len = try std.Io.Dir.cwd().realPathFile(io, ".", &default_path_buf);
+    const default_path = default_path_buf[0..default_path_len];
 
     var default_explorer = Explorer.init(testing.allocator);
     defer default_explorer.deinit();
@@ -2439,7 +2439,7 @@ test "issue-258: cached project reads use the project root after contents are re
     var cache = ProjectCache.init(testing.allocator, default_path);
     defer cache.deinit();
 
-    const ctx = try cache.get(project_path, &default_explorer, &default_store);
+    const ctx = try cache.get(io, project_path, &default_explorer, &default_store);
     ctx.explorer.releaseContents();
 
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"src/main.zig\"}", .{});
@@ -2447,7 +2447,7 @@ test "issue-258: cached project reads use the project root after contents are re
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
-    handleRead(testing.allocator, &parsed.value.object, &out, ctx.explorer);
+    handleRead(io, testing.allocator, &parsed.value.object, &out, ctx.explorer);
 
     try testing.expect(std.mem.indexOf(u8, out.items, "const project = \"secondary\";") != null);
 }

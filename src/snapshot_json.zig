@@ -1,11 +1,12 @@
 const std = @import("std");
+const cio = @import("cio.zig");
 const Explorer = @import("explore.zig").Explorer;
 const Store = @import("store.zig").Store;
 
 pub fn buildSnapshot(explorer: *Explorer, store: *Store, alloc: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
-    const w = buf.writer(alloc);
+    const w = cio.listWriter(&buf, alloc);
 
     try w.writeAll("{");
     try w.print("\"seq\":{d},", .{store.currentSeq()});
