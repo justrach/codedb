@@ -6811,3 +6811,65 @@ test "search: BM25 ranks higher-frequency line first" {
     try testing.expect(results[0].score >= results[1].score);
     try testing.expectEqual(@as(u32, 2), results[0].line_num);
 }
+
+// ── Issue #290/#292: special-char queries must not crash MCP server ──
+
+test "issue-290: searchContent with hyphen query does not crash" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    try explorer.indexFile("a.zig", "const x = \"test-case\";\n");
+    const results = try explorer.searchContent("test-case", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+}
+
+test "issue-292: searchContent with pipe query does not crash" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    try explorer.indexFile("a.zig", "const x = \"timestamp|activity|filter\";\n");
+    const results = try explorer.searchContent("timestamp|activity|filter", testing.allocator, 5);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+}
+
+test "issue-292: codedb_search guidance hints regex=true on metachar query" {
+    const args_json = "{\"query\":\"timestamp|activity|filter\"}";
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    mcp_mod.mcpGenerateGuidance(testing.allocator, "codedb_search", &parsed.value.object, false, &buf);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "regex=true") != null);
+}
+
+test "issue-292: codedb_search guidance does not warn when regex=true is set" {
+    const args_json = "{\"query\":\"timestamp|activity\",\"regex\":true}";
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    mcp_mod.mcpGenerateGuidance(testing.allocator, "codedb_search", &parsed.value.object, false, &buf);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "regex=true") == null);
+}
+
+test "issue-290: codedb_search guidance does not warn on plain hyphen" {
+    const args_json = "{\"query\":\"test-case\"}";
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    mcp_mod.mcpGenerateGuidance(testing.allocator, "codedb_search", &parsed.value.object, false, &buf);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "regex=true") == null);
+}

@@ -2370,7 +2370,7 @@ fn mcpGenerateSummary(
     // codedb_snapshot, codedb_status: label + timer is enough
 }
 
-fn mcpGenerateGuidance(
+pub fn mcpGenerateGuidance(
     alloc: std.mem.Allocator,
     tool_name: []const u8,
     args: *const std.json.ObjectMap,
@@ -2392,7 +2392,18 @@ fn mcpGenerateGuidance(
     } else if (eql(tool_name, "codedb_symbol")) {
         buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_edit to modify this symbol" ++ MCP_RESET) catch {};
     } else if (eql(tool_name, "codedb_search")) {
-        if (!getBool(args, "scope")) {
+        const has_regex_meta = blk: {
+            if (getBool(args, "regex")) break :blk false;
+            const q = getStr(args, "query") orelse break :blk false;
+            for (q) |c| switch (c) {
+                '|', '(', ')', '[', ']', '?', '+', '*', '^', '$' => break :blk true,
+                else => {},
+            };
+            break :blk false;
+        };
+        if (has_regex_meta) {
+            buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "hint: query has regex metachars but regex=false; matched as literal — pass regex=true for OR/grouping" ++ MCP_RESET) catch {};
+        } else if (!getBool(args, "scope")) {
             buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: add scope=true to see enclosing functions" ++ MCP_RESET) catch {};
         }
     } else if (eql(tool_name, "codedb_word")) {
