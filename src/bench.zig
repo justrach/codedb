@@ -99,8 +99,8 @@ pub fn main() !void {
     var results: [cases.len]ToolBench = undefined;
     for (cases, 0..) |case, idx| {
         const args = &args_store[idx].value.object;
-        const base = try runCase(allocator, &bench_ctx, &store, &explorer, &agents, case, args, &telem_off);
-        const with_telem = try runCase(allocator, &bench_ctx, &store, &explorer, &agents, case, args, &telem_on);
+        const base = try runCase(io, allocator, &bench_ctx, &store, &explorer, &agents, case, args, &telem_off);
+        const with_telem = try runCase(io, allocator, &bench_ctx, &store, &explorer, &agents, case, args, &telem_on);
         results[idx] = .{
             .tool = case.name,
             .avg_latency_ns = base.avg_latency_ns,
@@ -119,6 +119,7 @@ pub fn main() !void {
 }
 
 fn runCase(
+    io: std.Io,
     allocator: std.mem.Allocator,
     bench_ctx: *mcp.BenchContext,
     store: *Store,
@@ -137,7 +138,7 @@ fn runCase(
         }
 
         var timer = try cio.Timer.start();
-        response_bytes = bench_ctx.runToolCall(allocator, case.name, case.tool, args, store, explorer, agents, telem);
+        response_bytes = bench_ctx.runToolCall(io, allocator, case.name, case.tool, args, store, explorer, agents, telem);
         const elapsed = timer.read();
         total_ns +|= elapsed;
     }
@@ -229,7 +230,7 @@ fn summarizeCorpus(explorer: *Explorer) struct { files: usize, bytes: u64 } {
 fn writeHumanSummary(allocator: std.mem.Allocator, file: cio.File, file_count: usize, total_bytes: u64, results: []const ToolBench) !void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
-    const writer = out.writer(allocator);
+    const writer = cio.listWriter(&out, allocator);
     try writer.print("── E2E MCP Tool Benchmarks ({d} files, {d}KB) ──\n", .{ file_count, total_bytes / 1024 });
     try writer.writeAll("Tool              Latency    Size     Ops/sec   TelemetryΔ\n");
     for (results) |result| {
@@ -249,7 +250,7 @@ fn writeHumanSummary(allocator: std.mem.Allocator, file: cio.File, file_count: u
 fn writeJsonSummary(allocator: std.mem.Allocator, file: cio.File, repo_root: []const u8, corpus_root: []const u8, file_count: usize, total_bytes: u64, results: []const ToolBench) !void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
-    const writer = out.writer(allocator);
+    const writer = cio.listWriter(&out, allocator);
     try writer.print("{{\"repo_root\":\"{s}\",\"corpus_root\":\"{s}\",\"file_count\":{d},\"total_bytes\":{d},\"tools\":[", .{
         repo_root,
         corpus_root,

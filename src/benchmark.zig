@@ -217,7 +217,7 @@ fn fmtBytes(b: usize, buf: *[32]u8) []const u8 {
 fn printHuman(allocator: std.mem.Allocator, file: cio.File, r: BenchResult) !void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
-    const w = out.writer(allocator);
+    const w = cio.listWriter(&out, allocator);
     try w.print("\n=== codedb benchmark: {s} ===\n\n", .{r.root});
     try w.print("  files indexed : {d}\n", .{r.file_count});
     var tb: [32]u8 = undefined;
@@ -247,7 +247,7 @@ fn printHuman(allocator: std.mem.Allocator, file: cio.File, r: BenchResult) !voi
 fn printJson(allocator: std.mem.Allocator, file: cio.File, r: BenchResult) !void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
-    const w = out.writer(allocator);
+    const w = cio.listWriter(&out, allocator);
     try w.print("{{\"root\":\"{s}\",\"file_count\":{d},\"index_ms\":{d},\"queries\":[", .{
         r.root, r.file_count, r.index_ms,
     });
