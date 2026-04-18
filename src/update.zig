@@ -9,7 +9,7 @@ const default_base_url = "https://codedb.codegraff.com";
 const user_agent = "codedb-update";
 
 const Out = struct {
-    file: std.fs.File,
+    file: cio.File,
     alloc: std.mem.Allocator,
 
     fn p(self: Out, comptime fmt: []const u8, args: anytype) void {
@@ -30,7 +30,7 @@ const ResolvedVersion = struct {
     source: VersionSource,
 };
 
-pub fn run(stdout: std.fs.File, s: sty.Style, allocator: std.mem.Allocator) void {
+pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
     const out = Out{ .file = stdout, .alloc = allocator };
 
     const resolved = resolveTargetVersion(allocator) catch |err| {
@@ -80,13 +80,13 @@ pub fn run(stdout: std.fs.File, s: sty.Style, allocator: std.mem.Allocator) void
         std.process.exit(1);
     };
 
-    const self_path = std.fs.selfExePathAlloc(allocator) catch |err| {
+    const self_path = std.process.executablePathAlloc(io, allocator) catch |err| {
         out.p("{s}✗{s} cannot locate current executable: {s}\n", .{ s.red, s.reset, @errorName(err) });
         std.process.exit(1);
     };
     defer allocator.free(self_path);
 
-    downloadAndReplaceBinary(allocator, resolved.value, asset_name, self_path, expected_hash) catch |err| {
+    downloadAndReplaceBinary(io, allocator, resolved.value, asset_name, self_path, expected_hash) catch |err| {
         out.p("{s}✗{s} update failed: {s}\n", .{ s.red, s.reset, @errorName(err) });
         std.process.exit(1);
     };
@@ -136,7 +136,7 @@ pub fn checksumForBinary(manifest: []const u8, binary_name: []const u8) ?[]const
 
         const hash_end = std.mem.indexOfAny(u8, line, " \t") orelse continue;
         const hash = line[0..hash_end];
-        var name = std.mem.trimLeft(u8, line[hash_end..], " \t");
+        var name = std.mem.trimStart(u8, line[hash_end..], " \t");
         if (name.len == 0) continue;
         if (name[0] == '*') name = name[1..];
         if (std.mem.eql(u8, name, binary_name)) return hash;
@@ -146,12 +146,11 @@ pub fn checksumForBinary(manifest: []const u8, binary_name: []const u8) ?[]const
 }
 
 fn resolveTargetVersion(allocator: std.mem.Allocator) !ResolvedVersion {
-    const explicit = std.process.getEnvVarOwned(allocator, "CODEDB_VERSION") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => return err,
-    };
-    if (explicit) |value| {
-        return .{ .value = value, .source = .env };
+    if (cio.posixGetenv("CODEDB_VERSION")) |value| {
+        if (value.len != 0) {
+            const dup = try allocator.dupe(u8, value);
+            return .{ .value = dup, .source = .env };
+        }
     }
 
     if (fetchLatestVersionFromGitHub(allocator) catch null) |value| {
@@ -190,7 +189,7 @@ fn fetchChecksumsManifest(allocator: std.mem.Allocator, version: []const u8) ![]
 }
 
 fn fetchUrlToMemory(allocator: std.mem.Allocator, url: []const u8, max_output_bytes: usize) ![]u8 {
-    const result = try std.process.Child.run(.{
+    const result = try cio.runCapture(.{
         .allocator = allocator,
         .argv = &.{ "curl", "-fsSL", "-A", user_agent, url },
         .max_output_bytes = max_output_bytes,
@@ -219,18 +218,17 @@ fn parseJsonStringField(allocator: std.mem.Allocator, json_text: []const u8, fie
 }
 
 fn getBaseUrl(allocator: std.mem.Allocator) !struct { value: []const u8, owned: bool } {
-    const env_value = std.process.getEnvVarOwned(allocator, "CODEDB_URL") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => return err,
-    };
-    if (env_value) |value| {
-        return .{ .value = value, .owned = true };
+    if (cio.posixGetenv("CODEDB_URL")) |value| {
+        if (value.len != 0) {
+            const dup = try allocator.dupe(u8, value);
+            return .{ .value = dup, .owned = true };
+        }
     }
     return .{ .value = default_base_url, .owned = false };
 }
 
 fn trimVersionPrefix(value: []const u8) []const u8 {
-    return std.mem.trimLeft(u8, value, "vV");
+    return std.mem.trimStart(u8, value, "vV");
 }
 
 fn parseVersionPart(part: []const u8) !u64 {
@@ -239,33 +237,33 @@ fn parseVersionPart(part: []const u8) !u64 {
     return std.fmt.parseInt(u64, trimmed, 10);
 }
 
-fn downloadAndReplaceBinary(allocator: std.mem.Allocator, version: []const u8, asset_name: []const u8, dest_path: []const u8, expected_hash: []const u8) !void {
+fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: []const u8, asset_name: []const u8, dest_path: []const u8, expected_hash: []const u8) !void {
     const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/{s}", .{ github_repo, version, asset_name });
     defer allocator.free(url);
 
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ dest_path, cio.nanoTimestamp() });
     defer allocator.free(tmp_path);
-    errdefer std.fs.deleteFileAbsolute(tmp_path) catch {};
+    errdefer std.Io.Dir.deleteFileAbsolute(io, tmp_path) catch {};
 
     try downloadToFile(allocator, url, tmp_path);
 
-    const actual_hash = try sha256FileHex(allocator, tmp_path);
+    const actual_hash = try sha256FileHex(io, allocator, tmp_path);
     defer allocator.free(actual_hash);
     if (!std.ascii.eqlIgnoreCase(actual_hash, expected_hash)) {
         return error.ChecksumMismatch;
     }
 
     {
-        var tmp_file = try std.fs.openFileAbsolute(tmp_path, .{ .mode = .read_write });
-        defer tmp_file.close();
-        try tmp_file.chmod(0o755);
+        var tmp_file = try std.Io.Dir.openFileAbsolute(io, tmp_path, .{ .mode = .read_write });
+        defer tmp_file.close(io);
+        try tmp_file.setPermissions(io, std.Io.File.Permissions.fromMode(0o755));
     }
 
-    try std.fs.renameAbsolute(tmp_path, dest_path);
+    try std.Io.Dir.renameAbsolute(tmp_path, dest_path, io);
 }
 
 fn downloadToFile(allocator: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
-    const result = try std.process.Child.run(.{
+    const result = try cio.runCapture(.{
         .allocator = allocator,
         .argv = &.{ "curl", "-fsSL", "-A", user_agent, url, "-o", dest_path },
         .max_output_bytes = 16 * 1024,
@@ -278,16 +276,19 @@ fn downloadToFile(allocator: std.mem.Allocator, url: []const u8, dest_path: []co
     }
 }
 
-fn sha256FileHex(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    var file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
+fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
 
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     var buf: [16 * 1024]u8 = undefined;
+    var offset: u64 = 0;
     while (true) {
-        const read_len = try file.read(&buf);
+        const read_len = try file.readPositionalAll(io, &buf, offset);
         if (read_len == 0) break;
         hasher.update(buf[0..read_len]);
+        offset += read_len;
+        if (read_len < buf.len) break;
     }
 
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;

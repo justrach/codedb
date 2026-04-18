@@ -61,7 +61,6 @@ fn mainImpl() !void {
     var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    _ = io;
 
     const stdout = cio.File.stdout();
     const use_color = stdout.isTty();
@@ -121,13 +120,13 @@ fn mainImpl() !void {
 
     // Handle update command early — before root resolution so it works from anywhere.
     if (std.mem.eql(u8, cmd, "update")) {
-        update_mod.run(stdout, s, allocator);
+        update_mod.run(io, stdout, s, allocator);
         return;
     }
 
     // Handle nuke command early — before root resolution so it works from anywhere
     if (std.mem.eql(u8, cmd, "nuke")) {
-        nuke_mod.run(stdout, s, allocator);
+        nuke_mod.run(io, stdout, s, allocator);
         return;
     }
 
