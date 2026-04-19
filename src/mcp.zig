@@ -683,19 +683,19 @@ fn handleCall(
     // Block 1 (summary)
     if (summary.items.len > 0) {
         result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return;
-        writeEscaped(alloc, &result, summary.items);
+        mcpj.writeEscaped(alloc, &result, summary.items);
         result.appendSlice(alloc, "\"},") catch return;
     }
 
     // Block 2 (raw data — no colors, zero extra tokens to model)
     result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return;
-    writeEscaped(alloc, &result, out.items);
+    mcpj.writeEscaped(alloc, &result, out.items);
     result.appendSlice(alloc, "\"}") catch return;
 
     // Block 3 (guidance)
     if (guidance.items.len > 0) {
         result.appendSlice(alloc, ",{\"type\":\"text\",\"text\":\"") catch return;
-        writeEscaped(alloc, &result, guidance.items);
+        mcpj.writeEscaped(alloc, &result, guidance.items);
         result.appendSlice(alloc, "\"}") catch return;
     }
 
