@@ -138,10 +138,9 @@ fn runCase(
             try resetBenchTarget(explorer, store);
         }
 
-        var timer = try cio.Timer.start();
-        response_bytes = bench_ctx.runToolCall(io, allocator, case.name, case.tool, args, store, explorer, agents, telem);
-        const elapsed = timer.read();
-        total_ns +|= elapsed;
+        const r = bench_ctx.runToolCall(io, allocator, case.name, case.tool, args, store, explorer, agents, telem);
+        total_ns +|= r.dispatch_ns;
+        response_bytes = r.response_bytes;
     }
 
     return .{

@@ -280,7 +280,7 @@ pub const BenchContext = struct {
         explorer: *Explorer,
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
-    ) usize {
+    ) struct { dispatch_ns: u64, response_bytes: usize } {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(alloc);
 
@@ -307,26 +307,26 @@ pub const BenchContext = struct {
         var result: std.ArrayList(u8) = .empty;
         defer result.deinit(alloc);
         result.ensureTotalCapacity(alloc, out.items.len + summary.items.len + guidance.items.len + 256) catch {};
-        result.appendSlice(alloc, "{\"content\":[") catch return 0;
+        result.appendSlice(alloc, "{\"content\":[") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0 };
 
         if (summary.items.len > 0) {
-            result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return result.items.len;
-            writeEscaped(alloc, &result, summary.items);
-            result.appendSlice(alloc, "\"},") catch return result.items.len;
+            result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+            mcpj.writeEscaped(alloc, &result, summary.items);
+            result.appendSlice(alloc, "\"},") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
         }
 
-        result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return result.items.len;
-        writeEscaped(alloc, &result, out.items);
-        result.appendSlice(alloc, "\"}") catch return result.items.len;
+        result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+        mcpj.writeEscaped(alloc, &result, out.items);
+        result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
 
         if (guidance.items.len > 0) {
-            result.appendSlice(alloc, ",{\"type\":\"text\",\"text\":\"") catch return result.items.len;
-            writeEscaped(alloc, &result, guidance.items);
-            result.appendSlice(alloc, "\"}") catch return result.items.len;
+            result.appendSlice(alloc, ",{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+            mcpj.writeEscaped(alloc, &result, guidance.items);
+            result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
         }
 
-        result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return result.items.len;
-        return result.items.len;
+        result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+        return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
     }
 };
 
