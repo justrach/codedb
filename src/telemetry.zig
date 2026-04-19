@@ -24,7 +24,7 @@ pub const Event = struct {
         codebase_stats: struct {
             file_count: u32,
             total_lines: u64,
-            language_mask: u16,
+            language_mask: u32,
             index_size_bytes: u64,
             startup_time_ms: u64,
         },
@@ -123,14 +123,14 @@ pub const Telemetry = struct {
 
         var file_count: u32 = 0;
         var total_lines: u64 = 0;
-        var language_mask: u16 = 0;
+        var language_mask: u32 = 0;
 
         var outline_iter = explorer.outlines.iterator();
         while (outline_iter.next()) |entry| {
             file_count +|= 1;
             total_lines +|= entry.value_ptr.line_count;
-            const bit_index: u4 = @intCast(@intFromEnum(entry.value_ptr.language));
-            language_mask |= @as(u16, 1) << bit_index;
+            const bit_index: u5 = @intCast(@intFromEnum(entry.value_ptr.language));
+            language_mask |= @as(u32, 1) << bit_index;
         }
 
         self.record(.{ .codebase_stats = .{
@@ -227,7 +227,7 @@ pub const Telemetry = struct {
     }
 };
 
-fn writeLanguages(writer: anytype, language_mask: u16) !void {
+fn writeLanguages(writer: anytype, language_mask: u32) !void {
     const names = [_][]const u8{
         "zig",
         "c",
@@ -245,11 +245,12 @@ fn writeLanguages(writer: anytype, language_mask: u16) !void {
         "json",
         "yaml",
         "unknown",
+        "dart",
     };
     var first = true;
     for (names, 0..) |name, idx| {
-        const bit_index: u4 = @intCast(idx);
-        if ((language_mask & (@as(u16, 1) << bit_index)) == 0) continue;
+        const bit_index: u5 = @intCast(idx);
+        if ((language_mask & (@as(u32, 1) << bit_index)) == 0) continue;
         if (!first) try writer.writeByte(',');
         first = false;
         try writer.print("\"{s}\"", .{name});

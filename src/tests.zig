@@ -890,6 +890,76 @@ test "explorer: typescript parser" {
     try testing.expect(outline.symbols.items.len >= 3);
 }
 
+test "issue-301: Dart / Flutter parser" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("lib/home_screen.dart",
+        \\import 'package:flutter/material.dart';
+        \\export 'src/helpers.dart';
+        \\part 'home_screen.g.dart';
+        \\
+        \\typedef ItemBuilder = Widget Function(BuildContext context);
+        \\
+        \\abstract class HomeScreen extends StatelessWidget {
+        \\  @override
+        \\  Widget build(BuildContext context) {
+        \\    return const Placeholder();
+        \\  }
+        \\}
+        \\
+        \\mixin Loader on State<StatefulWidget> {
+        \\  Future<void> loadData() async {}
+        \\}
+        \\
+        \\extension ContextX on BuildContext {
+        \\  ThemeData get theme => Theme.of(this);
+        \\}
+        \\
+        \\enum LoadState { idle, loading }
+        \\
+        \\const String appTitle = 'codedb';
+    );
+
+    var outline = (try explorer.getOutline("lib/home_screen.dart", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try testing.expectEqual(Language.dart, outline.language);
+    try testing.expectEqual(@as(usize, 3), outline.imports.items.len);
+
+    var found_typedef = false;
+    var found_class = false;
+    var found_mixin = false;
+    var found_extension = false;
+    var found_enum = false;
+    var found_build = false;
+    var found_load = false;
+    var found_const = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .type_alias and std.mem.eql(u8, sym.name, "ItemBuilder")) found_typedef = true;
+        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "HomeScreen")) found_class = true;
+        if (sym.kind == .trait_def and std.mem.eql(u8, sym.name, "Loader")) found_mixin = true;
+        if (sym.kind == .impl_block and std.mem.eql(u8, sym.name, "ContextX")) found_extension = true;
+        if (sym.kind == .enum_def and std.mem.eql(u8, sym.name, "LoadState")) found_enum = true;
+        if (sym.kind == .function and std.mem.eql(u8, sym.name, "build")) found_build = true;
+        if (sym.kind == .function and std.mem.eql(u8, sym.name, "loadData")) found_load = true;
+        if (sym.kind == .constant and std.mem.eql(u8, sym.name, "appTitle")) found_const = true;
+    }
+    try testing.expect(found_typedef);
+    try testing.expect(found_class);
+    try testing.expect(found_mixin);
+    try testing.expect(found_extension);
+    try testing.expect(found_enum);
+    try testing.expect(found_build);
+    try testing.expect(found_load);
+    try testing.expect(found_const);
+
+    const tree = try explorer.getTree(testing.allocator, false);
+    defer testing.allocator.free(tree);
+    try testing.expect(std.mem.indexOf(u8, tree, "home_screen.dart  dart") != null);
+}
+
 // ── Version tests ───────────────────────────────────────────
 
 test "file versions: append and latest" {
@@ -1910,6 +1980,12 @@ test "isCommentOrBlank: go double-slash" {
     try testing.expect(!isCommentOrBlank("  func main() {", .go_lang));
 }
 
+test "isCommentOrBlank: dart comments" {
+    try testing.expect(isCommentOrBlank("  // dart comment", .dart));
+    try testing.expect(isCommentOrBlank("  /* dart block comment */", .dart));
+    try testing.expect(!isCommentOrBlank("  class WidgetBuilder {}", .dart));
+}
+
 test "isCommentOrBlank: cpp block and line comments" {
     try testing.expect(isCommentOrBlank("  // cpp line comment", .cpp));
     try testing.expect(isCommentOrBlank("  /* cpp block comment */", .cpp));
@@ -2073,6 +2149,7 @@ test "detectLanguage: all supported extensions" {
     try testing.expect(explore.detectLanguage("comp.tsx") == .typescript);
     try testing.expect(explore.detectLanguage("main.rs") == .rust);
     try testing.expect(explore.detectLanguage("main.go") == .go_lang);
+    try testing.expect(explore.detectLanguage("app.dart") == .dart);
     try testing.expect(explore.detectLanguage("README.md") == .markdown);
     try testing.expect(explore.detectLanguage("pkg.json") == .json);
     try testing.expect(explore.detectLanguage("config.yaml") == .yaml);
@@ -4764,6 +4841,32 @@ test "issue-151: Go block comments skipped" {
         if (sym.kind == .function) func_count += 1;
     }
     try testing.expect(func_count == 1); // only realFunc
+}
+
+test "issue-301: Dart block comments skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("commented.dart",
+        \\class RealWidget {}
+        \\/*
+        \\class FakeWidget {}
+        \\void fakeHelper() {}
+        \\*/
+    );
+
+    var outline = (try explorer.getOutline("commented.dart", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    var class_count: usize = 0;
+    var func_count: usize = 0;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .class_def) class_count += 1;
+        if (sym.kind == .function) func_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), class_count);
+    try testing.expectEqual(@as(usize, 0), func_count);
 }
 
 test "issue-150: --help prints usage" {

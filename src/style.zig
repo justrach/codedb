@@ -22,6 +22,7 @@ pub const Style = struct {
         if (std.mem.eql(u8, lang, "go_lang")) return self.cyan;
         if (std.mem.eql(u8, lang, "rust")) return self.orange;
         if (std.mem.eql(u8, lang, "python")) return self.blue;
+        if (std.mem.eql(u8, lang, "dart")) return self.cyan;
         if (std.mem.eql(u8, lang, "c") or std.mem.eql(u8, lang, "cpp")) return self.blue;
         if (std.mem.eql(u8, lang, "markdown")) return self.dim;
         if (std.mem.eql(u8, lang, "json") or std.mem.eql(u8, lang, "yaml")) return self.dim;
@@ -103,8 +104,8 @@ pub fn formatDuration(buf: []u8, ns: i128) []const u8 {
 /// Return a color scaled to elapsed duration.
 pub fn durationColor(s: Style, ns: i128) []const u8 {
     const abs_ns: u128 = if (ns < 0) @intCast(-ns) else @intCast(ns);
-    if (abs_ns < 10_000_000) return s.cyan;    // <10ms  → cyan ⚡
-    if (abs_ns < 100_000_000) return s.green;  // <100ms → green
+    if (abs_ns < 10_000_000) return s.cyan; // <10ms  → cyan ⚡
+    if (abs_ns < 100_000_000) return s.green; // <100ms → green
     if (abs_ns < 1_000_000_000) return s.blue; // <1s    → blue
-    return s.yellow;                            // 1s+    → yellow
+    return s.yellow; // 1s+    → yellow
 }

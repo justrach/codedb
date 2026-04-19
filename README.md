@@ -36,14 +36,14 @@
 > **Alpha software — API is stabilizing but may change**
 >
 > codedb works and is used daily in production AI workflows, but:
-> - **Language support** — Zig, Python, TypeScript/JavaScript, Rust, PHP, C# (more planned)
+> - **Language support** — Zig, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, Dart/Flutter
 > - **No auth** — HTTP server binds to localhost only
 > - **Snapshot format** may change between versions
 > - **MCP protocol** is JSON-RPC 2.0 over stdio (stable)
 
 | What works today                                       | What's in progress                       |
 |--------------------------------------------------------|------------------------------------------|
-| 16 MCP tools for full codebase intelligence            | Additional language parsers (HCL/Go)     |
+| 16 MCP tools for full codebase intelligence            | Deeper parser coverage and edge-case handling |
 | Trigram v2: integer doc IDs, batch-accumulate, merge intersect | Incremental segment-based indexing |
 | 538x faster than ripgrep on pre-indexed queries        | WASM target for Cloudflare Workers       |
 | O(1) inverted word index for identifier lookup         | Multi-project support                    |
@@ -337,7 +337,7 @@ The watcher now stats `.git/HEAD` mtime before forking `git rev-parse HEAD`. On 
 
 **No SQLite. No dependencies.** Purpose-built data model:
 
-- **Explorer** — structural index engine. Parses Zig, Python, TypeScript/JavaScript. Maintains outlines, trigram index, inverted word index, content cache, and dependency graph behind a single mutex.
+- **Explorer** — structural index engine. Parses Zig, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, and Dart. Maintains outlines, trigram index, inverted word index, content cache, and dependency graph behind a single mutex.
 - **Store** — append-only version log. Every mutation (snapshot, edit, delete) gets a monotonically increasing sequence number. Version history capped at 100 per file.
 - **Watcher** — polling file watcher (2s interval). `FilteredWalker` prunes `.git`, `node_modules`, `zig-cache`, `__pycache__`, etc. before descending.
 - **Agents** — first-class structs with cursors, heartbeats, and exclusive file locks. Stale agents reaped after 30s.

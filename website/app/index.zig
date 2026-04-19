@@ -229,7 +229,7 @@ const html =
     \\    </div>
     \\    <div class="feature-card">
     \\      <h3>Structural parsing</h3>
-    \\      <p>Extracts functions, structs, imports with line numbers. Zig, Python, TypeScript/JavaScript.</p>
+    \\      <p>Extracts functions, structs, imports with line numbers. Zig, Python, TypeScript/JavaScript, Go, Dart, and more.</p>
     \\    </div>
     \\    <div class="feature-card">
     \\      <h3>Dependency graph</h3>

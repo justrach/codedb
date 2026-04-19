@@ -99,6 +99,7 @@ pub const Language = enum(u8) {
     json,
     yaml,
     unknown,
+    dart,
 };
 
 pub fn detectLanguage(path: []const u8) Language {
@@ -117,6 +118,7 @@ pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".md")) return .markdown;
     if (std.mem.endsWith(u8, path, ".json")) return .json;
     if (std.mem.endsWith(u8, path, ".yaml") or std.mem.endsWith(u8, path, ".yml")) return .yaml;
+    if (std.mem.endsWith(u8, path, ".dart")) return .dart;
     return .unknown;
 }
 
@@ -589,326 +591,330 @@ pub const Explorer = struct {
         if (prior_outline) |*old_outline| old_outline.deinit();
     }
 
-fn computeSymbolEnds(content: []const u8, outline: *FileOutline) void {
-    if (outline.symbols.items.len == 0) return;
+    fn computeSymbolEnds(content: []const u8, outline: *FileOutline) void {
+        if (outline.symbols.items.len == 0) return;
 
-    // Build a line offset table for O(1) line lookups
-    var line_offsets: std.ArrayList(usize) = .empty;
-    defer line_offsets.deinit(outline.allocator);
-    line_offsets.append(outline.allocator, 0) catch return; // line 1 starts at offset 0
-    for (content, 0..) |c, i| {
-        if (c == '\n' and i + 1 <= content.len) {
-            line_offsets.append(outline.allocator, i + 1) catch return;
+        // Build a line offset table for O(1) line lookups
+        var line_offsets: std.ArrayList(usize) = .empty;
+        defer line_offsets.deinit(outline.allocator);
+        line_offsets.append(outline.allocator, 0) catch return; // line 1 starts at offset 0
+        for (content, 0..) |c, i| {
+            if (c == '\n' and i + 1 <= content.len) {
+                line_offsets.append(outline.allocator, i + 1) catch return;
+            }
+        }
+        const total_lines: u32 = @intCast(line_offsets.items.len);
+
+        const is_brace_lang = outline.language == .zig or outline.language == .c or
+            outline.language == .cpp or outline.language == .typescript or
+            outline.language == .javascript or outline.language == .rust or
+            outline.language == .go_lang or outline.language == .php or
+            outline.language == .dart;
+
+        for (outline.symbols.items) |*sym| {
+            // Skip single-line kinds
+            switch (sym.kind) {
+                .import, .variable, .constant, .comment_block, .type_alias, .macro_def => continue,
+                else => {},
+            }
+
+            if (sym.line_start == 0 or sym.line_start > total_lines) continue;
+
+            if (is_brace_lang) {
+                sym.line_end = findBraceEnd(content, line_offsets.items, sym.line_start, total_lines);
+            } else if (outline.language == .python) {
+                sym.line_end = findPythonEnd(content, line_offsets.items, sym.line_start, total_lines);
+            } else if (outline.language == .ruby) {
+                sym.line_end = findRubyEnd(content, line_offsets.items, sym.line_start, total_lines);
+            }
         }
     }
-    const total_lines: u32 = @intCast(line_offsets.items.len);
 
-    const is_brace_lang = outline.language == .zig or outline.language == .c or
-        outline.language == .cpp or outline.language == .typescript or
-        outline.language == .javascript or outline.language == .rust or
-        outline.language == .go_lang or outline.language == .php;
+    fn findBraceEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) u32 {
+        const start_idx = line_offsets[line_start - 1];
+        var depth: i32 = 0;
+        var found_open = false;
+        var in_string: u8 = 0; // 0=none, '"', '\''
+        var in_line_comment = false;
+        var in_block_comment = false;
+        var i = start_idx;
+        var current_line = line_start;
 
-    for (outline.symbols.items) |*sym| {
-        // Skip single-line kinds
-        switch (sym.kind) {
-            .import, .variable, .constant, .comment_block, .type_alias, .macro_def => continue,
-            else => {},
-        }
+        while (i < content.len) : (i += 1) {
+            const c = content[i];
 
-        if (sym.line_start == 0 or sym.line_start > total_lines) continue;
-
-        if (is_brace_lang) {
-            sym.line_end = findBraceEnd(content, line_offsets.items, sym.line_start, total_lines);
-        } else if (outline.language == .python) {
-            sym.line_end = findPythonEnd(content, line_offsets.items, sym.line_start, total_lines);
-        } else if (outline.language == .ruby) {
-            sym.line_end = findRubyEnd(content, line_offsets.items, sym.line_start, total_lines);
-        }
-    }
-}
-
-fn findBraceEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) u32 {
-    const start_idx = line_offsets[line_start - 1];
-    var depth: i32 = 0;
-    var found_open = false;
-    var in_string: u8 = 0; // 0=none, '"', '\''
-    var in_line_comment = false;
-    var in_block_comment = false;
-    var i = start_idx;
-    var current_line = line_start;
-
-    while (i < content.len) : (i += 1) {
-        const c = content[i];
-
-        if (c == '\n') {
-            current_line += 1;
-            in_line_comment = false;
-            // Bail out if no opening brace found within 10 lines
-            if (!found_open and current_line > line_start + 10) return line_start;
-            continue;
-        }
-
-        if (in_line_comment) continue;
-
-        if (in_block_comment) {
-            if (c == '*' and i + 1 < content.len and content[i + 1] == '/') {
-                in_block_comment = false;
-                i += 1;
-            }
-            continue;
-        }
-
-        if (in_string != 0) {
-            if (c == '\\') {
-                i += 1; // skip escaped char
-            } else if (c == in_string) {
-                in_string = 0;
-            }
-            continue;
-        }
-
-        // Check for comments
-        if (c == '/' and i + 1 < content.len) {
-            if (content[i + 1] == '/') {
-                in_line_comment = true;
-                continue;
-            } else if (content[i + 1] == '*') {
-                in_block_comment = true;
-                i += 1;
+            if (c == '\n') {
+                current_line += 1;
+                in_line_comment = false;
+                // Bail out if no opening brace found within 10 lines
+                if (!found_open and current_line > line_start + 10) return line_start;
                 continue;
             }
-        }
 
-        // Check for strings
-        if (c == '"' or c == '\'') {
-            in_string = c;
-            continue;
-        }
+            if (in_line_comment) continue;
 
-        if (c == '{') {
-            depth += 1;
-            found_open = true;
-        } else if (c == '}') {
-            depth -= 1;
-            if (found_open and depth == 0) {
-                return @min(current_line, total_lines);
-            }
-        }
-    }
-
-    return if (found_open) total_lines else line_start;
-}
-
-fn findPythonEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) u32 {
-    if (line_start >= total_lines) return line_start;
-
-    // Get the indent of the signature line
-    const sig_offset = line_offsets[line_start - 1];
-    const sig_indent = countIndent(content, sig_offset);
-
-    // Find the colon-terminated signature (may span multiple lines)
-    var body_start = line_start + 1;
-    // Check if signature line itself has the colon
-    {
-        const line_end_offset = if (line_start < total_lines) line_offsets[line_start] else content.len;
-        const sig_line = content[sig_offset..line_end_offset];
-        if (std.mem.indexOf(u8, sig_line, ":") == null) {
-            // Multi-line signature — skip ahead to find the colon
-            var ln = line_start + 1;
-            while (ln <= total_lines) : (ln += 1) {
-                const lo = line_offsets[ln - 1];
-                const le = if (ln < total_lines) line_offsets[ln] else content.len;
-                const line = content[lo..le];
-                if (std.mem.indexOf(u8, line, ":") != null) {
-                    body_start = ln + 1;
-                    break;
-                }
-            }
-        }
-    }
-
-    var last_body_line = line_start;
-    var ln = body_start;
-    while (ln <= total_lines) : (ln += 1) {
-        const lo = line_offsets[ln - 1];
-        const le = if (ln < total_lines) line_offsets[ln] else content.len;
-        const line = content[lo..le];
-        const trimmed = std.mem.trim(u8, line, " \t\r\n");
-
-        // Blank lines and comments don't end the body
-        if (trimmed.len == 0 or std.mem.startsWith(u8, trimmed, "#")) {
-            continue;
-        }
-
-        const indent = countIndent(content, lo);
-        if (indent <= sig_indent) break;
-        last_body_line = ln;
-    }
-
-    return if (last_body_line > line_start) last_body_line else line_start;
-}
-
-fn findRubyEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) u32 {
-    if (line_start >= total_lines) return line_start;
-
-    const sig_offset = line_offsets[line_start - 1];
-    const sig_indent = countIndent(content, sig_offset);
-
-    var ln = line_start + 1;
-    while (ln <= total_lines) : (ln += 1) {
-        const lo = line_offsets[ln - 1];
-        const le = if (ln < total_lines) line_offsets[ln] else content.len;
-        const line = content[lo..le];
-        const trimmed = std.mem.trim(u8, line, " \t\r\n");
-
-        if (std.mem.eql(u8, trimmed, "end")) {
-            const indent = countIndent(content, lo);
-            if (indent <= sig_indent) return ln;
-        }
-    }
-
-    return line_start;
-}
-
-fn countIndent(content: []const u8, offset: usize) usize {
-    var count: usize = 0;
-    var i = offset;
-    while (i < content.len and (content[i] == ' ' or content[i] == '\t')) : (i += 1) {
-        count += if (content[i] == '\t') 4 else 1;
-    }
-    return count;
-}
-
-fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []const u8) !FileOutline {
-    var outline = FileOutline.init(parser.allocator, path);
-    errdefer outline.deinit();
-    outline.byte_size = content.len;
-
-    var line_num: u32 = 0;
-    var prev_line_trimmed: []const u8 = "";
-    var php_state: PhpParseState = .{};
-    var in_py_docstring = false;
-    var in_block_comment = false;
-    var in_go_import_block = false;
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |line| {
-        line_num += 1;
-        var trimmed = std.mem.trim(u8, line, " \t");
-
-        if (outline.language == .python) {
-            const has_dq = std.mem.indexOf(u8, trimmed, "\"\"\"");
-            const has_sq = std.mem.indexOf(u8, trimmed, "'''");
-            const has_triple = has_dq != null or has_sq != null;
-            if (in_py_docstring) {
-                if (has_triple) in_py_docstring = false;
-                continue;
-            }
-            if (has_triple) {
-                // Check if triple quote appears twice (single-line docstring like """text""")
-                const marker = if (has_dq != null) "\"\"\"" else "'''";
-                const first_pos = if (has_dq) |p| p else has_sq.?;
-                if (std.mem.indexOf(u8, trimmed[first_pos + 3 ..], marker) != null) {
-                    // Opens and closes on same line — skip as a single-line docstring
-                    continue;
-                }
-                in_py_docstring = true;
-                continue;
-            }
-        }
-
-        if (outline.language == .ruby) {
-            if (in_py_docstring) {
-                if (startsWith(line, "=end")) in_py_docstring = false;
-                continue;
-            }
-            if (startsWith(line, "=begin")) {
-                in_py_docstring = true;
-                continue;
-            }
-        }
-
-        if (outline.language == .typescript or outline.language == .javascript or
-            outline.language == .go_lang or outline.language == .c or
-            outline.language == .cpp or outline.language == .rust or
-            outline.language == .zig or outline.language == .hcl)
-        {
             if (in_block_comment) {
-                if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
+                if (c == '*' and i + 1 < content.len and content[i + 1] == '/') {
                     in_block_comment = false;
-                    const after = std.mem.trimStart(u8, trimmed[close_pos + 2 ..], " \t");
-                    if (after.len == 0) continue;
-                    trimmed = after;
-                } else continue;
+                    i += 1;
+                }
+                continue;
             }
-            if (std.mem.startsWith(u8, trimmed, "/*")) {
-                if (std.mem.indexOf(u8, trimmed[2..], "*/")) |close_pos| {
-                    const after = std.mem.trimStart(u8, trimmed[2 + close_pos + 2 ..], " \t");
-                    if (after.len == 0) continue;
-                    trimmed = after;
-                } else {
+
+            if (in_string != 0) {
+                if (c == '\\') {
+                    i += 1; // skip escaped char
+                } else if (c == in_string) {
+                    in_string = 0;
+                }
+                continue;
+            }
+
+            // Check for comments
+            if (c == '/' and i + 1 < content.len) {
+                if (content[i + 1] == '/') {
+                    in_line_comment = true;
+                    continue;
+                } else if (content[i + 1] == '*') {
                     in_block_comment = true;
+                    i += 1;
                     continue;
                 }
             }
-        }
 
-        if (outline.language == .zig) {
-            try parser.parseZigLine(trimmed, line_num, &outline);
-        } else if (outline.language == .python) {
-            try parser.parsePythonLine(trimmed, line_num, &outline);
-        } else if (outline.language == .typescript or outline.language == .javascript) {
-            try parser.parseTsLine(trimmed, line_num, &outline);
-        } else if (outline.language == .rust) {
-            try parser.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
-        } else if (outline.language == .php) {
-            try parser.parsePhpLine(trimmed, line_num, &outline, &php_state);
-        } else if (outline.language == .go_lang) {
-            if (in_go_import_block) {
-                if (startsWith(trimmed, ")")) {
-                    in_go_import_block = false;
-                } else if (extractStringLiteral(trimmed)) |imp_path| {
-                    const import_copy = try parser.allocator.dupe(u8, imp_path);
-                    errdefer parser.allocator.free(import_copy);
-                    try outline.imports.append(parser.allocator, import_copy);
-                    const symbol_copy = try parser.allocator.dupe(u8, trimmed);
-                    errdefer parser.allocator.free(symbol_copy);
-                    try outline.symbols.append(parser.allocator, .{
-                        .name = symbol_copy,
-                        .kind = .import,
-                        .line_start = line_num,
-                        .line_end = line_num,
-                    });
-                }
-            } else if (std.mem.eql(u8, trimmed, "import (")) {
-                in_go_import_block = true;
-            } else {
-                try parser.parseGoLine(trimmed, line_num, &outline);
+            // Check for strings
+            if (c == '"' or c == '\'') {
+                in_string = c;
+                continue;
             }
-        } else if (outline.language == .ruby) {
-            try parser.parseRubyLine(trimmed, line_num, &outline);
-        } else if (outline.language == .hcl) {
-            try parser.parseHclLine(trimmed, line_num, &outline);
-        } else if (outline.language == .r) {
-            try parser.parseRLine(trimmed, line_num, &outline);
+
+            if (c == '{') {
+                depth += 1;
+                found_open = true;
+            } else if (c == '}') {
+                depth -= 1;
+                if (found_open and depth == 0) {
+                    return @min(current_line, total_lines);
+                }
+            }
         }
 
-        prev_line_trimmed = trimmed;
+        return if (found_open) total_lines else line_start;
     }
-    outline.line_count = line_num;
-    computeSymbolEnds(content, &outline);
-    return outline;
-}
 
-pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, content: []const u8) !ParsedFile {
-    var parser = Explorer.init(allocator);
-    defer parser.deinit();
-    var parsed_outline = try parseOutlineWithParser(&parser, path, content);
-    defer parsed_outline.deinit();
-    return .{
-        .content = content,
-        .outline = try cloneOutline(&parsed_outline, allocator),
-    };
-}
+    fn findPythonEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) u32 {
+        if (line_start >= total_lines) return line_start;
+
+        // Get the indent of the signature line
+        const sig_offset = line_offsets[line_start - 1];
+        const sig_indent = countIndent(content, sig_offset);
+
+        // Find the colon-terminated signature (may span multiple lines)
+        var body_start = line_start + 1;
+        // Check if signature line itself has the colon
+        {
+            const line_end_offset = if (line_start < total_lines) line_offsets[line_start] else content.len;
+            const sig_line = content[sig_offset..line_end_offset];
+            if (std.mem.indexOf(u8, sig_line, ":") == null) {
+                // Multi-line signature — skip ahead to find the colon
+                var ln = line_start + 1;
+                while (ln <= total_lines) : (ln += 1) {
+                    const lo = line_offsets[ln - 1];
+                    const le = if (ln < total_lines) line_offsets[ln] else content.len;
+                    const line = content[lo..le];
+                    if (std.mem.indexOf(u8, line, ":") != null) {
+                        body_start = ln + 1;
+                        break;
+                    }
+                }
+            }
+        }
+
+        var last_body_line = line_start;
+        var ln = body_start;
+        while (ln <= total_lines) : (ln += 1) {
+            const lo = line_offsets[ln - 1];
+            const le = if (ln < total_lines) line_offsets[ln] else content.len;
+            const line = content[lo..le];
+            const trimmed = std.mem.trim(u8, line, " \t\r\n");
+
+            // Blank lines and comments don't end the body
+            if (trimmed.len == 0 or std.mem.startsWith(u8, trimmed, "#")) {
+                continue;
+            }
+
+            const indent = countIndent(content, lo);
+            if (indent <= sig_indent) break;
+            last_body_line = ln;
+        }
+
+        return if (last_body_line > line_start) last_body_line else line_start;
+    }
+
+    fn findRubyEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) u32 {
+        if (line_start >= total_lines) return line_start;
+
+        const sig_offset = line_offsets[line_start - 1];
+        const sig_indent = countIndent(content, sig_offset);
+
+        var ln = line_start + 1;
+        while (ln <= total_lines) : (ln += 1) {
+            const lo = line_offsets[ln - 1];
+            const le = if (ln < total_lines) line_offsets[ln] else content.len;
+            const line = content[lo..le];
+            const trimmed = std.mem.trim(u8, line, " \t\r\n");
+
+            if (std.mem.eql(u8, trimmed, "end")) {
+                const indent = countIndent(content, lo);
+                if (indent <= sig_indent) return ln;
+            }
+        }
+
+        return line_start;
+    }
+
+    fn countIndent(content: []const u8, offset: usize) usize {
+        var count: usize = 0;
+        var i = offset;
+        while (i < content.len and (content[i] == ' ' or content[i] == '\t')) : (i += 1) {
+            count += if (content[i] == '\t') 4 else 1;
+        }
+        return count;
+    }
+
+    fn parseOutlineWithParser(parser: *Explorer, path: []const u8, content: []const u8) !FileOutline {
+        var outline = FileOutline.init(parser.allocator, path);
+        errdefer outline.deinit();
+        outline.byte_size = content.len;
+
+        var line_num: u32 = 0;
+        var prev_line_trimmed: []const u8 = "";
+        var php_state: PhpParseState = .{};
+        var in_py_docstring = false;
+        var in_block_comment = false;
+        var in_go_import_block = false;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            line_num += 1;
+            var trimmed = std.mem.trim(u8, line, " \t");
+
+            if (outline.language == .python) {
+                const has_dq = std.mem.indexOf(u8, trimmed, "\"\"\"");
+                const has_sq = std.mem.indexOf(u8, trimmed, "'''");
+                const has_triple = has_dq != null or has_sq != null;
+                if (in_py_docstring) {
+                    if (has_triple) in_py_docstring = false;
+                    continue;
+                }
+                if (has_triple) {
+                    // Check if triple quote appears twice (single-line docstring like """text""")
+                    const marker = if (has_dq != null) "\"\"\"" else "'''";
+                    const first_pos = if (has_dq) |p| p else has_sq.?;
+                    if (std.mem.indexOf(u8, trimmed[first_pos + 3 ..], marker) != null) {
+                        // Opens and closes on same line — skip as a single-line docstring
+                        continue;
+                    }
+                    in_py_docstring = true;
+                    continue;
+                }
+            }
+
+            if (outline.language == .ruby) {
+                if (in_py_docstring) {
+                    if (startsWith(line, "=end")) in_py_docstring = false;
+                    continue;
+                }
+                if (startsWith(line, "=begin")) {
+                    in_py_docstring = true;
+                    continue;
+                }
+            }
+
+            if (outline.language == .typescript or outline.language == .javascript or
+                outline.language == .go_lang or outline.language == .c or
+                outline.language == .cpp or outline.language == .rust or
+                outline.language == .zig or outline.language == .hcl or
+                outline.language == .dart)
+            {
+                if (in_block_comment) {
+                    if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
+                        in_block_comment = false;
+                        const after = std.mem.trimStart(u8, trimmed[close_pos + 2 ..], " \t");
+                        if (after.len == 0) continue;
+                        trimmed = after;
+                    } else continue;
+                }
+                if (std.mem.startsWith(u8, trimmed, "/*")) {
+                    if (std.mem.indexOf(u8, trimmed[2..], "*/")) |close_pos| {
+                        const after = std.mem.trimStart(u8, trimmed[2 + close_pos + 2 ..], " \t");
+                        if (after.len == 0) continue;
+                        trimmed = after;
+                    } else {
+                        in_block_comment = true;
+                        continue;
+                    }
+                }
+            }
+
+            if (outline.language == .zig) {
+                try parser.parseZigLine(trimmed, line_num, &outline);
+            } else if (outline.language == .python) {
+                try parser.parsePythonLine(trimmed, line_num, &outline);
+            } else if (outline.language == .typescript or outline.language == .javascript) {
+                try parser.parseTsLine(trimmed, line_num, &outline);
+            } else if (outline.language == .rust) {
+                try parser.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
+            } else if (outline.language == .php) {
+                try parser.parsePhpLine(trimmed, line_num, &outline, &php_state);
+            } else if (outline.language == .go_lang) {
+                if (in_go_import_block) {
+                    if (startsWith(trimmed, ")")) {
+                        in_go_import_block = false;
+                    } else if (extractStringLiteral(trimmed)) |imp_path| {
+                        const import_copy = try parser.allocator.dupe(u8, imp_path);
+                        errdefer parser.allocator.free(import_copy);
+                        try outline.imports.append(parser.allocator, import_copy);
+                        const symbol_copy = try parser.allocator.dupe(u8, trimmed);
+                        errdefer parser.allocator.free(symbol_copy);
+                        try outline.symbols.append(parser.allocator, .{
+                            .name = symbol_copy,
+                            .kind = .import,
+                            .line_start = line_num,
+                            .line_end = line_num,
+                        });
+                    }
+                } else if (std.mem.eql(u8, trimmed, "import (")) {
+                    in_go_import_block = true;
+                } else {
+                    try parser.parseGoLine(trimmed, line_num, &outline);
+                }
+            } else if (outline.language == .dart) {
+                try parser.parseDartLine(trimmed, line_num, &outline);
+            } else if (outline.language == .ruby) {
+                try parser.parseRubyLine(trimmed, line_num, &outline);
+            } else if (outline.language == .hcl) {
+                try parser.parseHclLine(trimmed, line_num, &outline);
+            } else if (outline.language == .r) {
+                try parser.parseRLine(trimmed, line_num, &outline);
+            }
+
+            prev_line_trimmed = trimmed;
+        }
+        outline.line_count = line_num;
+        computeSymbolEnds(content, &outline);
+        return outline;
+    }
+
+    pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, content: []const u8) !ParsedFile {
+        var parser = Explorer.init(allocator);
+        defer parser.deinit();
+        var parsed_outline = try parseOutlineWithParser(&parser, path, content);
+        defer parsed_outline.deinit();
+        return .{
+            .content = content,
+            .outline = try cloneOutline(&parsed_outline, allocator),
+        };
+    }
 
     fn indexFileInner(self: *Explorer, path: []const u8, content: []const u8, full_index: bool, skip_trigram: bool) !void {
         const parsed = try parseContentForIndexing(self.allocator, path, content);
@@ -2301,6 +2307,198 @@ pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, c
         }
     }
 
+    fn parseDartLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+
+        if (line.len == 0 or startsWith(line, "@")) return;
+
+        if (startsWith(line, "import ") or startsWith(line, "export ") or
+            (startsWith(line, "part ") and !startsWith(line, "part of ")))
+        {
+            if (extractStringLiteral(line)) |path| {
+                const import_copy = try a.dupe(u8, path);
+                errdefer a.free(import_copy);
+                try outline.imports.append(a, import_copy);
+            }
+            const symbol_copy = try a.dupe(u8, line);
+            errdefer a.free(symbol_copy);
+            try outline.symbols.append(a, .{
+                .name = symbol_copy,
+                .kind = .import,
+                .line_start = line_num,
+                .line_end = line_num,
+            });
+            return;
+        }
+
+        if (startsWith(line, "typedef ")) {
+            if (extractIdent(line["typedef ".len..])) |name| {
+                const name_copy = try a.dupe(u8, name);
+                errdefer a.free(name_copy);
+                const detail_copy = try a.dupe(u8, line);
+                errdefer a.free(detail_copy);
+                try outline.symbols.append(a, .{
+                    .name = name_copy,
+                    .kind = .type_alias,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail_copy,
+                });
+            }
+            return;
+        }
+
+        var type_decl = line;
+        const type_modifiers = [_][]const u8{ "abstract ", "base ", "final ", "sealed ", "interface " };
+        while (true) {
+            var stripped = false;
+            for (type_modifiers) |modifier| {
+                if (startsWith(type_decl, modifier)) {
+                    type_decl = type_decl[modifier.len..];
+                    stripped = true;
+                    break;
+                }
+            }
+            if (!stripped) break;
+        }
+
+        const TypeDecl = struct {
+            prefix: []const u8,
+            kind: SymbolKind,
+        };
+        const type_decls = [_]TypeDecl{
+            .{ .prefix = "mixin class ", .kind = .class_def },
+            .{ .prefix = "class ", .kind = .class_def },
+            .{ .prefix = "enum ", .kind = .enum_def },
+            .{ .prefix = "mixin ", .kind = .trait_def },
+            .{ .prefix = "extension type ", .kind = .class_def },
+            .{ .prefix = "extension ", .kind = .impl_block },
+        };
+        for (type_decls) |decl| {
+            if (!startsWith(type_decl, decl.prefix)) continue;
+
+            const after = std.mem.trimStart(u8, type_decl[decl.prefix.len..], " \t");
+            if (decl.kind == .impl_block and startsWith(after, "on ")) return;
+            if (extractIdent(after)) |name| {
+                const name_copy = try a.dupe(u8, name);
+                errdefer a.free(name_copy);
+                const detail_copy = try a.dupe(u8, line);
+                errdefer a.free(detail_copy);
+                try outline.symbols.append(a, .{
+                    .name = name_copy,
+                    .kind = decl.kind,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail_copy,
+                });
+            }
+            return;
+        }
+
+        var var_decl = line;
+        var var_kind: ?SymbolKind = null;
+        while (true) {
+            if (startsWith(var_decl, "static ")) {
+                var_decl = std.mem.trimStart(u8, var_decl["static ".len..], " \t");
+                continue;
+            }
+            if (startsWith(var_decl, "late ")) {
+                var_decl = std.mem.trimStart(u8, var_decl["late ".len..], " \t");
+                continue;
+            }
+            if (startsWith(var_decl, "covariant ")) {
+                var_decl = std.mem.trimStart(u8, var_decl["covariant ".len..], " \t");
+                continue;
+            }
+            if (startsWith(var_decl, "const ")) {
+                var_kind = .constant;
+                var_decl = std.mem.trimStart(u8, var_decl["const ".len..], " \t");
+                continue;
+            }
+            if (startsWith(var_decl, "final ") or startsWith(var_decl, "var ")) {
+                var_kind = .variable;
+                const skip = if (startsWith(var_decl, "final ")) @as(usize, "final ".len) else "var ".len;
+                var_decl = std.mem.trimStart(u8, var_decl[skip..], " \t");
+                continue;
+            }
+            break;
+        }
+        if (var_kind) |kind| {
+            const boundary = firstIndexOfAny(var_decl, &.{ '=', ';' }) orelse var_decl.len;
+            const prefix = std.mem.trimEnd(u8, var_decl[0..boundary], " \t");
+            if (std.mem.indexOfScalar(u8, prefix, '(') == null) {
+                if (extractLastIdent(prefix)) |name| {
+                    const name_copy = try a.dupe(u8, name);
+                    errdefer a.free(name_copy);
+                    const detail_copy = try a.dupe(u8, line);
+                    errdefer a.free(detail_copy);
+                    try outline.symbols.append(a, .{
+                        .name = name_copy,
+                        .kind = kind,
+                        .line_start = line_num,
+                        .line_end = line_num,
+                        .detail = detail_copy,
+                    });
+                }
+            }
+            return;
+        }
+
+        if (containsAny(line, &.{ "(", "=>", "{", ";" })) {
+            const open_paren = std.mem.indexOfScalar(u8, line, '(') orelse return;
+            const prefix = std.mem.trimEnd(u8, line[0..open_paren], " \t");
+            if (prefix.len == 0) return;
+            if (containsAny(prefix, &.{ "=", "." })) return;
+            if (startsWith(prefix, "if") or startsWith(prefix, "for") or startsWith(prefix, "while") or
+                startsWith(prefix, "switch") or startsWith(prefix, "catch") or startsWith(prefix, "return") or
+                startsWith(prefix, "throw") or startsWith(prefix, "assert") or startsWith(prefix, "await") or
+                startsWith(prefix, "new ") or startsWith(prefix, "const "))
+            {
+                return;
+            }
+
+            var callable = prefix;
+            const callable_modifiers = [_][]const u8{
+                "external ",
+                "static ",
+                "factory ",
+                "covariant ",
+                "late ",
+                "final ",
+                "const ",
+            };
+            while (true) {
+                var stripped = false;
+                for (callable_modifiers) |modifier| {
+                    if (startsWith(callable, modifier)) {
+                        callable = std.mem.trimStart(u8, callable[modifier.len..], " \t");
+                        stripped = true;
+                        break;
+                    }
+                }
+                if (!stripped) break;
+            }
+            if (startsWith(callable, "operator ")) return;
+            if (startsWith(callable, "set ")) {
+                callable = std.mem.trimStart(u8, callable["set ".len..], " \t");
+            }
+            if (std.mem.indexOfScalar(u8, callable, ' ') == null) return;
+            if (extractLastIdent(callable)) |name| {
+                const name_copy = try a.dupe(u8, name);
+                errdefer a.free(name_copy);
+                const detail_copy = try a.dupe(u8, line);
+                errdefer a.free(detail_copy);
+                try outline.symbols.append(a, .{
+                    .name = name_copy,
+                    .kind = .function,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail_copy,
+                });
+            }
+        }
+    }
+
     fn parseRubyLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
         const a = self.allocator;
         if (startsWith(line, "def ")) {
@@ -2757,7 +2955,7 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
         .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
         .python, .ruby, .r => std.mem.startsWith(u8, trimmed, "#"),
         .hcl => std.mem.startsWith(u8, trimmed, "#") or std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
-        .javascript, .typescript, .c, .cpp => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .javascript, .typescript, .c, .cpp, .dart => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
         else => false,
     };
 }
@@ -2805,7 +3003,10 @@ fn searchInContent(path: []const u8, content: []const u8, query: []const u8, all
                     // ── Match found ──
                     while (current_line_start < cand) {
                         if (simdIndexOfNewline(content, current_line_start)) |nl| {
-                            if (nl < cand) { current_line += 1; current_line_start = nl + 1; } else break;
+                            if (nl < cand) {
+                                current_line += 1;
+                                current_line_start = nl + 1;
+                            } else break;
                         } else break;
                     }
                     const line_start = current_line_start;
@@ -2836,7 +3037,10 @@ fn searchInContent(path: []const u8, content: []const u8, query: []const u8, all
         if ((c == first_lower or c == first_upper) and matchAtCaseInsensitive(content, pos, query)) {
             while (current_line_start < pos) {
                 if (simdIndexOfNewline(content, current_line_start)) |nl| {
-                    if (nl < pos) { current_line += 1; current_line_start = nl + 1; } else break;
+                    if (nl < pos) {
+                        current_line += 1;
+                        current_line_start = nl + 1;
+                    } else break;
                 } else break;
             }
             const line_start = current_line_start;
@@ -2880,8 +3084,6 @@ inline fn simdIndexOfNewline(content: []const u8, start: usize) ?usize {
     }
     return null;
 }
-
-
 
 fn extractLineByNumber(content: []const u8, target_line: u32) ?[]const u8 {
     if (target_line == 0) return null;
@@ -3303,6 +3505,35 @@ fn extractIdent(s: []const u8) ?[]const u8 {
         } else break;
     }
     return if (end > 0) s[0..end] else null;
+}
+
+fn extractLastIdent(s: []const u8) ?[]const u8 {
+    if (s.len == 0) return null;
+
+    var end = s.len;
+    while (end > 0) {
+        const ch = s[end - 1];
+        if (std.ascii.isAlphanumeric(ch) or ch == '_') break;
+        end -= 1;
+    }
+    if (end == 0) return null;
+
+    var start = end;
+    while (start > 0) {
+        const ch = s[start - 1];
+        if (!(std.ascii.isAlphanumeric(ch) or ch == '_')) break;
+        start -= 1;
+    }
+    return s[start..end];
+}
+
+fn firstIndexOfAny(s: []const u8, chars: []const u8) ?usize {
+    for (s, 0..) |ch, pos| {
+        for (chars) |needle| {
+            if (ch == needle) return pos;
+        }
+    }
+    return null;
 }
 
 /// Extract a Ruby method name — supports trailing ?, !, = characters

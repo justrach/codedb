@@ -41,7 +41,7 @@ The central struct. Holds all indexed data behind a single mutex.
 - `word_index: WordIndex` — inverted word index for O(1) identifier lookup
 - `trigram_index: TrigramIndex` — trigram index for fast substring search
 
-**Language parsers:** Zig, Python, TypeScript/JavaScript. Each parser extracts functions, classes/structs, constants, imports, and test declarations from source lines.
+**Language parsers:** Zig, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, and Dart. Each parser extracts functions, classes/structs, constants, imports, and test declarations from source lines.
 
 **Key operations:**
 - `indexFile(path, content)` — parse + index a file (outline, content, words, trigrams, deps)
