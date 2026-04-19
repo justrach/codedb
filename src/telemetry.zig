@@ -103,6 +103,7 @@ pub const Telemetry = struct {
     }
 
     pub fn recordToolCall(self: *Telemetry, tool_name: []const u8, latency_ns: i128, is_error: bool, response_bytes: usize) void {
+        if (!self.enabled) return;
         var tc: Event.Kind = .{ .tool_call = .{
             .latency_ns = latency_ns,
             .err = is_error,
