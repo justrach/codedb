@@ -72,7 +72,7 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     data = {}
 servers = data.setdefault("mcpServers", {})
-servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
+servers["codedb"] = {"command": codedb_bin, "args": ["mcp", "--timeout=30"]}
 with open(config_path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
@@ -88,16 +88,22 @@ register_codex() {
 
   mkdir -p "$config_dir"
 
-  if [ -f "$config" ] && grep -q '\[mcp_servers\.codedb\]' "$config" 2>/dev/null; then
-    printf "  ${G}✓${N} codex        ${D}→ $config (already registered)${N}\n"
-    return
+  if [ -f "$config" ]; then
+    local tmp="$config.tmp.$$"
+    awk '
+      BEGIN { skip = 0 }
+      /^[[:space:]]*\[mcp_servers\.codedb\]([[:space:]]*#.*)?$/ { skip = 1; next }
+      skip && /^[[:space:]]*\[/ { skip = 0 }
+      !skip { print }
+    ' "$config" > "$tmp"
+    mv "$tmp" "$config"
   fi
 
   {
     [ -f "$config" ] && [ -s "$config" ] && echo ""
     echo '[mcp_servers.codedb]'
     echo "command = \"$codedb_bin\""
-    echo 'args = ["mcp"]'
+    echo 'args = ["mcp", "--timeout=30"]'
     echo 'startup_timeout_sec = 30'
   } >> "$config"
 
@@ -127,7 +133,7 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     data = {}
 servers = data.setdefault("mcpServers", {})
-servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
+servers["codedb"] = {"command": codedb_bin, "args": ["mcp", "--timeout=30"]}
 with open(config_path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
@@ -159,7 +165,7 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     data = {}
 servers = data.setdefault("mcpServers", {})
-servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
+servers["codedb"] = {"command": codedb_bin, "args": ["mcp", "--timeout=30"]}
 with open(config_path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")

@@ -383,7 +383,16 @@ pub var last_activity: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 
 /// How long (ms) the server may sit idle before auto-exiting.
 /// Claude Code restarts MCP servers on demand, so this is safe.
-pub const idle_timeout_ms: i64 = 10 * 60 * 1000; // 10 minutes — allows long debugging sessions; stdin EOF is detected by the watchdog poll
+pub var idle_timeout_ms: i64 = 10 * 60 * 1000; // 10 minutes — allows long debugging sessions; stdin EOF is detected by the watchdog poll
+
+
+pub fn setIdleTimeout(minutes: u32) void {
+    idle_timeout_ms = @as(i64, minutes) * 60 * 1000;
+}
+
+pub fn resetIdleTimeout() void {
+    idle_timeout_ms = 10 * 60 * 1000;
+}
 
 // ── Session state for MCP protocol ──────────────────────────────────────────
 
@@ -1287,6 +1296,23 @@ fn handleBundle(
     }
 }
 
+
+/// Fires one curl GET (no -f, with -w "\n%{http_code}") and returns the
+/// HTTP status and stdout. Caller owns stdout (alloc.free).
+/// Returns status=0 on connection failure.
+fn remoteGet(alloc: std.mem.Allocator, argv: []const []const u8) struct { status: u16, stdout: []u8 } {
+    const r = cio.runCapture(.{ .allocator = alloc, .argv = argv }) catch
+        return .{ .status = 0, .stdout = alloc.dupe(u8, "") catch &.{} };
+    alloc.free(r.stderr);
+    const so = r.stdout;
+    // curl -w "\n%{http_code}" appends \n + 3-digit code at end of stdout.
+    const has_marker = so.len >= 4 and so[so.len - 4] == '\n';
+    const status: u16 = if (has_marker)
+        std.fmt.parseInt(u16, so[so.len - 3 ..], 10) catch 0
+    else 0;
+    return .{ .status = status, .stdout = so };
+}
+
 fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8)) void {
     const repo = getStr(args, "repo") orelse {
         out.appendSlice(alloc, "error: missing 'repo' (e.g. justrach/merjs)") catch {};
@@ -1296,21 +1322,15 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         out.appendSlice(alloc, "error: missing 'action' (tree, outline, search, meta)") catch {};
         return;
     };
-    // Validate action against whitelist to prevent SSRF/path injection
     const valid_actions = [_][]const u8{ "tree", "outline", "search", "meta" };
     var action_valid = false;
     for (valid_actions) |va| {
-        if (std.mem.eql(u8, action, va)) {
-            action_valid = true;
-            break;
-        }
+        if (std.mem.eql(u8, action, va)) { action_valid = true; break; }
     }
     if (!action_valid) {
         out.appendSlice(alloc, "error: invalid action, must be one of: tree, outline, search, meta") catch {};
         return;
     }
-
-    // Validate repo format: must be "owner/name" with no path traversal
     if (std.mem.indexOf(u8, repo, "..") != null or
         std.mem.indexOf(u8, repo, "//") != null or
         repo[0] == '/' or
@@ -1319,75 +1339,104 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         out.appendSlice(alloc, "error: invalid repo format, use owner/repo (e.g. justrach/merjs)") catch {};
         return;
     }
-    // Ensure exactly one slash (owner/repo, not owner/repo/extra/path)
     const slash_pos = std.mem.indexOfScalar(u8, repo, '/').?;
     if (std.mem.indexOfScalarPos(u8, repo, slash_pos + 1, '/') != null) {
         out.appendSlice(alloc, "error: invalid repo format, use owner/repo (e.g. justrach/merjs)") catch {};
         return;
     }
 
-    // Build URL and curl args
-    var url_buf: [512]u8 = undefined;
     const query = getStr(args, "query");
+    const is_search = std.mem.eql(u8, action, "search");
 
-    if (std.mem.eql(u8, action, "search")) {
-        const base_url = std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/search", .{repo}) catch {
+    var url_buf: [512]u8 = undefined;
+    var meta_url_buf: [512]u8 = undefined;
+    var q_buf: [256]u8 = undefined;
+
+    const action_url = if (is_search)
+        std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/search", .{repo}) catch {
+            out.appendSlice(alloc, "error: URL too long") catch {};
+            return;
+        }
+    else
+        std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/{s}", .{ repo, action }) catch {
             out.appendSlice(alloc, "error: URL too long") catch {};
             return;
         };
-        var q_buf: [256]u8 = undefined;
-        const q_param = std.fmt.bufPrint(&q_buf, "q={s}", .{query orelse ""}) catch {
-            out.appendSlice(alloc, "error: query too long") catch {};
-            return;
-        };
-        // -G + --data-urlencode lets curl handle encoding spaces etc.
-        const result = cio.runCapture(.{
-            .allocator = alloc,
-            .argv = &.{ "curl", "-sf", "--max-time", "30", "-G", "--data-urlencode", q_param, base_url },
-        }) catch {
-            out.appendSlice(alloc, "error: failed to fetch from codedb.codegraff.com") catch {};
-            return;
-        };
-        defer alloc.free(result.stdout);
-        defer alloc.free(result.stderr);
-        if (result.term.Exited != 0) {
-            out.appendSlice(alloc, "error: codedb.codegraff.com returned error for ") catch {};
-            out.appendSlice(alloc, repo) catch {};
-            out.appendSlice(alloc, "/search") catch {};
-            return;
-        }
-        out.appendSlice(alloc, result.stdout) catch {};
-        return;
-    }
 
-    const url = std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/{s}", .{ repo, action }) catch {
+    const meta_url = std.fmt.bufPrint(&meta_url_buf, "https://codedb.codegraff.com/{s}/meta", .{repo}) catch {
         out.appendSlice(alloc, "error: URL too long") catch {};
         return;
     };
 
-    const result = cio.runCapture(.{
-        .allocator = alloc,
-        .argv = &.{ "curl", "-sf", "--max-time", "30", url },
-    }) catch {
-        out.appendSlice(alloc, "error: failed to fetch from codedb.codegraff.com") catch {};
-        return;
-    };
-    defer alloc.free(result.stdout);
-    defer alloc.free(result.stderr);
-
-    if (result.term.Exited != 0) {
-        out.appendSlice(alloc, "error: codedb.codegraff.com returned error for ") catch {};
-        out.appendSlice(alloc, repo) catch {};
-        out.appendSlice(alloc, "/") catch {};
-        out.appendSlice(alloc, action) catch {};
-        if (result.stderr.len > 0) {
-            out.appendSlice(alloc, " — ") catch {};
-            out.appendSlice(alloc, result.stderr[0..@min(result.stderr.len, 200)]) catch {};
+    // Strips the trailing "\nNNN" marker and appends body to out.
+    const emit = struct {
+        fn call(a: std.mem.Allocator, o: *std.ArrayList(u8), so: []const u8) void {
+            const n = if (so.len >= 4 and so[so.len - 4] == '\n') so.len - 4 else so.len;
+            o.appendSlice(a, so[0..n]) catch {};
         }
+    }.call;
+
+    // First request — also triggers a cloud build if repo isn't indexed yet.
+    const r = remoteGet(alloc, if (is_search) blk: {
+        const q = std.fmt.bufPrint(&q_buf, "q={s}", .{query orelse ""}) catch {
+            out.appendSlice(alloc, "error: query too long") catch {};
+            return;
+        };
+        break :blk &.{ "curl", "-s", "--max-time", "60", "-G", "--data-urlencode", q, "-w", "\n%{http_code}", action_url };
+    } else &.{ "curl", "-s", "--max-time", "60", "-w", "\n%{http_code}", action_url });
+    defer alloc.free(r.stdout);
+
+    if (r.status == 200) { emit(alloc, out, r.stdout); return; }
+
+    // Cloud is building (202) or body contains "building" — auto-poll /meta.
+    const building = r.status == 202 or
+        std.mem.indexOf(u8, r.stdout, "\"building\"") != null;
+
+    if (building) {
+        out.appendSlice(alloc, "Repo not yet indexed — build triggered for ") catch {};
+        out.appendSlice(alloc, repo) catch {};
+        out.appendSlice(alloc, ". Polling for up to ~3 min...\n") catch {};
+
+        var ready = false;
+        for (0..12) |_| {
+            cio.sleepMs(15_000);
+            const pm = remoteGet(alloc, &.{ "curl", "-s", "--max-time", "30", "-w", "\n%{http_code}", meta_url });
+            defer alloc.free(pm.stdout);
+            if (pm.status == 200) { ready = true; break; }
+        }
+
+        if (!ready) {
+            out.appendSlice(alloc, "Build still in progress after ~3 min. Try again shortly.") catch {};
+            return;
+        }
+
+        // Re-fetch the originally requested action.
+        const r2 = remoteGet(alloc, if (is_search) blk: {
+            const q = std.fmt.bufPrint(&q_buf, "q={s}", .{query orelse ""}) catch {
+                out.appendSlice(alloc, "error: query too long") catch {};
+                return;
+            };
+            break :blk &.{ "curl", "-s", "--max-time", "60", "-G", "--data-urlencode", q, "-w", "\n%{http_code}", action_url };
+        } else &.{ "curl", "-s", "--max-time", "60", "-w", "\n%{http_code}", action_url });
+        defer alloc.free(r2.stdout);
+        emit(alloc, out, r2.stdout);
         return;
     }
 
-    out.appendSlice(alloc, result.stdout) catch {};
+    // Non-building error: surface the cloud's response body + status code.
+    var sb: [8]u8 = undefined;
+    const ss = std.fmt.bufPrint(&sb, "{d}", .{r.status}) catch "?";
+    out.appendSlice(alloc, "error: HTTP ") catch {};
+    out.appendSlice(alloc, ss) catch {};
+    out.appendSlice(alloc, " from codedb.codegraff.com for ") catch {};
+    out.appendSlice(alloc, repo) catch {};
+    out.appendSlice(alloc, "/") catch {};
+    out.appendSlice(alloc, action) catch {};
+    const body_n = if (r.stdout.len >= 4 and r.stdout[r.stdout.len - 4] == '\n') r.stdout.len - 4 else r.stdout.len;
+    if (body_n > 0) {
+        out.appendSlice(alloc, ": ") catch {};
+        out.appendSlice(alloc, r.stdout[0..@min(body_n, 500)]) catch {};
+    }
 }
 
 // ── Local project tools ─────────────────────────────────────────────────────

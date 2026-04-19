@@ -593,12 +593,27 @@ fn mainImpl() !void {
             break :blk snapshot_mod.loadSnapshot(io, "codedb.snapshot", &explorer, &store, allocator);
         };
         var telemetry_disabled = false;
-        for (args[cmd_args_start..]) |arg| {
+        var timeout_minutes: ?u32 = null;
+        mcp_server.resetIdleTimeout();
+        var arg_idx = cmd_args_start;
+        while (arg_idx < args.len) : (arg_idx += 1) {
+            const arg = args[arg_idx];
             if (std.mem.eql(u8, arg, "--no-telemetry")) {
                 telemetry_disabled = true;
-                break;
+            } else if (std.mem.eql(u8, arg, "--timeout")) {
+                arg_idx += 1;
+                if (arg_idx >= args.len) {
+                    out.p("{s}\xe2\x9c\x97{s} missing value for {s}--timeout{s}\n", .{
+                        s.red, s.reset, s.bold, s.reset,
+                    });
+                    std.process.exit(1);
+                }
+                timeout_minutes = parseTimeoutMinutes(out, s, args[arg_idx]);
+            } else if (std.mem.startsWith(u8, arg, "--timeout=")) {
+                timeout_minutes = parseTimeoutMinutes(out, s, arg["--timeout=".len..]);
             }
         }
+        if (timeout_minutes) |minutes| mcp_server.setIdleTimeout(minutes);
 
         var telem = telemetry.Telemetry.init(io, data_dir, allocator, telemetry_disabled);
         defer telem.deinit();
@@ -744,6 +759,22 @@ fn saveProjectInfo(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u
     try file.writeStreamingAll(io, abs_root);
 }
 
+fn parseTimeoutMinutes(out: Out, s: sty.Style, value: []const u8) u32 {
+    const minutes = std.fmt.parseInt(u32, value, 10) catch {
+        out.p("{s}\xe2\x9c\x97{s} invalid value for {s}--timeout{s}: {s}\n", .{
+            s.red, s.reset, s.bold, s.reset, value,
+        });
+        std.process.exit(1);
+    };
+    if (minutes == 0) {
+        out.p("{s}\xe2\x9c\x97{s} {s}--timeout{s} must be at least 1 minute\n", .{
+            s.red, s.reset, s.bold, s.reset,
+        });
+        std.process.exit(1);
+    }
+    return minutes;
+}
+
 fn printUsage(out: Out, s: sty.Style) void {
     out.p(
         \\
@@ -789,6 +820,7 @@ fn printUsage(out: Out, s: sty.Style) void {
     out.p(
         \\  {s}options:{s}
         \\    {s}--no-telemetry{s}             disable usage telemetry (or set CODEDB_NO_TELEMETRY)
+        \\    {s}--timeout=N{s}              set MCP idle timeout in minutes (default: 10)
         \\
         \\  If root is omitted, uses current working directory.
         \\  Data stored in {s}~/.codedb/projects/<hash>/{s}
@@ -796,6 +828,7 @@ fn printUsage(out: Out, s: sty.Style) void {
         \\
     , .{
         s.dim,  s.reset,
+        s.cyan, s.reset,
         s.cyan, s.reset,
         s.dim,  s.reset,
     });

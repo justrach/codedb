@@ -924,6 +924,44 @@ pub const TrigramIndex = struct {
         try self.file_trigrams.put(path, tri_list);
     }
 
+    /// Like indexFile but reads the file in 4 KB pages so the content buffer
+    /// never exceeds 4 KB regardless of file size — use this during cold
+    /// index builds to cap peak RSS.
+    pub fn indexFileStreaming(self: *TrigramIndex, io: std.Io, path: []const u8) !void {
+        const id_count_before = self.id_to_path.items.len;
+        self.removeFile(path);
+        const doc_id = try self.getOrCreateDocId(path);
+        const is_new_doc = self.id_to_path.items.len > id_count_before;
+
+        var local = try extractTrigramsStreaming(io, path, self.allocator);
+        defer local.deinit();
+
+        var tri_list: std.ArrayList(Trigram) = .empty;
+        errdefer tri_list.deinit(self.allocator);
+        var local_iter = local.iterator();
+        while (local_iter.next()) |entry| {
+            const tri = entry.key_ptr.*;
+            const mask = entry.value_ptr.*;
+            const idx_gop = try self.index.getOrPut(tri);
+            if (!idx_gop.found_existing) {
+                idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
+            }
+            if (is_new_doc) {
+                try idx_gop.value_ptr.items.append(self.allocator, .{
+                    .doc_id = doc_id, .next_mask = mask.next_mask, .loc_mask = mask.loc_mask,
+                });
+            } else {
+                const posting = try idx_gop.value_ptr.getOrAddPosting(self.allocator, doc_id);
+                posting.next_mask = mask.next_mask;
+                posting.loc_mask = mask.loc_mask;
+            }
+            try tri_list.append(self.allocator, tri);
+        }
+        const stable_path = self.id_to_path.items[doc_id];
+        try self.file_trigrams.put(stable_path, tri_list);
+    }
+
+
     /// Extract trigrams from content — thread-safe, no shared state.
     pub fn extractTrigrams(content: []const u8, alloc: std.mem.Allocator) std.AutoHashMap(Trigram, PostingMask) {
         var local = std.AutoHashMap(Trigram, PostingMask).init(alloc);
@@ -948,6 +986,64 @@ pub const TrigramIndex = struct {
         }
         return local;
     }
+
+    /// Stream trigrams from a file in 4 KB pages — never holds more than 4 KB
+    /// per file in memory for trigram extraction.  Produces identical PostingMask
+    /// values to extractTrigrams(readFileAll()) because each page is read with a
+    /// 3-byte lookahead so boundary trigrams still get accurate next_mask bits.
+    pub fn extractTrigramsStreaming(io: std.Io, path: []const u8, alloc: std.mem.Allocator) !std.AutoHashMap(Trigram, PostingMask) {
+        var local = std.AutoHashMap(Trigram, PostingMask).init(alloc);
+        errdefer local.deinit();
+
+        const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| return err;
+        defer file.close(io);
+
+        local.ensureTotalCapacity(4096) catch {};
+
+        const CHUNK: usize = 4096;
+        // Each read fetches CHUNK + 3 bytes: the extra 3 are a lookahead so the
+        // last three trigram-start positions of the page have their next_mask byte
+        // available.  The next read starts at offset + CHUNK (not offset + CHUNK+3),
+        // so those 3 lookahead bytes are re-read as the first three start positions
+        // of the next page — each global byte is processed as a trigram start
+        // exactly once.
+        var buf: [CHUNK + 3]u8 = undefined;
+        var offset: u64 = 0;
+
+        while (true) {
+            const n = file.readPositionalAll(io, &buf, offset) catch break;
+            if (n < 3) break;
+
+            // max_start: number of valid trigram-start positions in this page.
+            // Capped at CHUNK so we never re-process the lookahead bytes here.
+            const max_start: usize = @min(n - 2, CHUNK);
+
+            for (0..max_start) |i| {
+                const c0 = buf[i];
+                const c1 = buf[i + 1];
+                const c2 = buf[i + 2];
+                if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
+                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
+                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
+
+                const tri = packTrigram(normalizeChar(c0), normalizeChar(c1), normalizeChar(c2));
+                const gop = try local.getOrPut(tri);
+                if (!gop.found_existing) gop.value_ptr.* = PostingMask{};
+                gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast((offset + i) % 8);
+                if (i + 3 < n) {
+                    gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(normalizeChar(buf[i + 3]) % 8);
+                }
+            }
+
+            // A partial read (n <= CHUNK) means we've reached EOF; all trigrams
+            // that start in this page have been processed above.
+            if (n <= CHUNK) break;
+            offset += CHUNK;
+        }
+
+        return local;
+    }
+
 
     /// Insert pre-extracted trigrams. NOT thread-safe.
     pub fn insertExtracted(self: *TrigramIndex, path: []const u8, local: *std.AutoHashMap(Trigram, PostingMask)) !void {

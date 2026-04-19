@@ -5,7 +5,7 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .mcp_zig = .{
-            .url = "https://github.com/justrach/mcp-zig/archive/refs/heads/feature/7-zig-0-16-0-migration.tar.gz",
+            .url = "https://github.com/justrach/mcp-zig/archive/refs/heads/main.tar.gz",
             .hash = "mcp_zig-0.2.0-_PilzNJkAQADzH2t3vqpd_nl_W0ta-gDaumXKttuPyBy",
         },
     },

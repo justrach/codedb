@@ -195,11 +195,11 @@ pub const Telemetry = struct {
     fn formatEvent(self: *Telemetry, ev: *const Event) !usize {
         var stream = std.Io.Writer.fixed(&self.buf);
         const w = &stream;
-        try w.print("{{\"timestamp_ms\":{d}", .{cio.milliTimestamp()});
+        try w.print("{{\"ts\":{d}", .{@divTrunc(cio.milliTimestamp(), 1000)});
         switch (ev.kind) {
             .tool_call => |tc| {
                 const name = tc.tool[0..tc.tool_len];
-                try w.print(",\"event_type\":\"tool_call\",\"tool\":\"{s}\",\"latency_ns\":{d},\"error\":{s},\"response_bytes\":{d}", .{
+                try w.print(",\"ev\":\"tool\",\"tool\":\"{s}\",\"ns\":{d},\"err\":{s},\"bytes\":{d}", .{
                     name,
                     @as(i64, @intCast(@min(tc.latency_ns, std.math.maxInt(i64)))),
                     if (tc.err) "true" else "false",
@@ -207,18 +207,17 @@ pub const Telemetry = struct {
                 });
             },
             .session_start => {
-                try w.print(",\"event_type\":\"session_start\",\"version\":\"{s}\",\"platform\":\"{s}\"", .{ VERSION, PLATFORM });
+                try w.print(",\"ev\":\"start\",\"version\":\"{s}\",\"platform\":\"{s}\"", .{ VERSION, PLATFORM });
             },
             .codebase_stats => |stats| {
-                try w.print(",\"event_type\":\"codebase_stats\",\"file_count\":{d},\"total_lines\":{d},\"languages\":[", .{
+                try w.print(",\"ev\":\"stats\",\"files\":{d},\"lines\":{d},\"index_bytes\":{d},\"startup_ms\":{d},\"languages\":[", .{
                     stats.file_count,
                     stats.total_lines,
-                });
-                try writeLanguages(w, stats.language_mask);
-                try w.print("],\"index_size_bytes\":{d},\"startup_time_ms\":{d}", .{
                     stats.index_size_bytes,
                     stats.startup_time_ms,
                 });
+                try writeLanguages(w, stats.language_mask);
+                try w.writeAll("]");
             },
         }
         try w.writeAll("}\n");

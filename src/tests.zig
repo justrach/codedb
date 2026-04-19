@@ -3772,11 +3772,11 @@ test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
     const contents = try std.Io.Dir.cwd().readFileAlloc(io, ndjson_path, testing.allocator, .limited(64 * 1024));
     defer testing.allocator.free(contents);
 
-    try testing.expect(std.mem.indexOf(u8, contents, "\"event_type\":\"session_start\"") != null);
-    try testing.expect(std.mem.indexOf(u8, contents, "\"event_type\":\"tool_call\"") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"ev\":\"start\"") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"ev\":\"tool\"") != null);
     try testing.expect(std.mem.indexOf(u8, contents, "\"tool\":\"codedb_status\"") != null);
-    try testing.expect(std.mem.indexOf(u8, contents, "\"event_type\":\"codebase_stats\"") != null);
-    try testing.expect(std.mem.indexOf(u8, contents, "\"startup_time_ms\":42") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"ev\":\"stats\"") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"startup_ms\":42") != null);
     try testing.expect(std.mem.indexOf(u8, contents, "\"languages\":[\"zig\",\"python\"]") != null);
 }
 
@@ -6790,4 +6790,44 @@ test "search: BM25 ranks higher-frequency line first" {
     // Line 2 has "token" twice; line 1 has it once — line 2 should come first
     try testing.expect(results[0].score >= results[1].score);
     try testing.expectEqual(@as(u32, 2), results[0].line_num);
+}
+
+test "issue-209: streaming trigram extraction matches full-load results" {
+    const alloc = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &dir_buf);
+    const dir_path = dir_buf[0..dir_path_len];
+
+    // Content spans 3 full 4096-byte chunks plus a partial tail.
+    const page = 4096;
+    const content_buf = try alloc.alloc(u8, page * 3 + 137);
+    defer alloc.free(content_buf);
+    for (content_buf, 0..) |*b, i| b.* = @truncate(i);
+
+    const abs_path = try std.fmt.allocPrint(alloc, "{s}/trigram_test.bin", .{dir_path});
+    defer alloc.free(abs_path);
+
+    {
+        var file = try tmp.dir.createFile(io, "trigram_test.bin", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, content_buf);
+    }
+
+    var expected = TrigramIndex.extractTrigrams(content_buf, alloc);
+    defer expected.deinit();
+
+    var got = try TrigramIndex.extractTrigramsStreaming(io, abs_path, alloc);
+    defer got.deinit();
+
+    var it = expected.iterator();
+    while (it.next()) |kv| {
+        const found = got.get(kv.key_ptr.*);
+        try testing.expect(found != null);
+        try testing.expectEqual(kv.value_ptr.loc_mask, found.?.loc_mask);
+        try testing.expectEqual(kv.value_ptr.next_mask, found.?.next_mask);
+    }
+    try testing.expectEqual(expected.count(), got.count());
 }
