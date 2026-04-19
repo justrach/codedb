@@ -3775,6 +3775,8 @@ test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
     try testing.expect(std.mem.indexOf(u8, contents, "\"ev\":\"start\"") != null);
     try testing.expect(std.mem.indexOf(u8, contents, "\"ev\":\"tool\"") != null);
     try testing.expect(std.mem.indexOf(u8, contents, "\"tool\":\"codedb_status\"") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"ver\":\"") != null);
+    try testing.expect(std.mem.indexOf(u8, contents, "\"ram_kb\":") != null);
     try testing.expect(std.mem.indexOf(u8, contents, "\"ev\":\"stats\"") != null);
     try testing.expect(std.mem.indexOf(u8, contents, "\"startup_ms\":42") != null);
     try testing.expect(std.mem.indexOf(u8, contents, "\"languages\":[\"zig\",\"python\"]") != null);

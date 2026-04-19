@@ -3,10 +3,11 @@ const cio = @import("cio.zig");
 const builtin = @import("builtin");
 const explore = @import("explore.zig");
 const index = @import("index.zig");
+const release_info = @import("release_info.zig");
 
 const RING_SIZE = 256;
 const CLOUD_URL = "https://codedb.codegraff.com/telemetry/ingest";
-const VERSION = "0.2.53";
+const VERSION = release_info.semver;
 const PLATFORM = std.fmt.comptimePrint("{s}-{s}", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
 
 pub const Event = struct {
@@ -19,6 +20,7 @@ pub const Event = struct {
             latency_ns: i128,
             err: bool,
             response_bytes: u32,
+            ram_kb: u32,
         },
         session_start: void,
         codebase_stats: struct {
@@ -27,6 +29,7 @@ pub const Event = struct {
             language_mask: u16,
             index_size_bytes: u64,
             startup_time_ms: u64,
+            ram_kb: u32,
         },
     };
 };
@@ -107,6 +110,7 @@ pub const Telemetry = struct {
             .latency_ns = latency_ns,
             .err = is_error,
             .response_bytes = @intCast(@min(response_bytes, std.math.maxInt(u32))),
+            .ram_kb = getRssKb(),
         } };
         const len: u8 = @intCast(@min(tool_name.len, 32));
         @memcpy(tc.tool_call.tool[0..len], tool_name[0..len]);
@@ -131,13 +135,13 @@ pub const Telemetry = struct {
             const bit_index: u4 = @intCast(@intFromEnum(entry.value_ptr.language));
             language_mask |= @as(u16, 1) << bit_index;
         }
-
         self.record(.{ .codebase_stats = .{
             .file_count = file_count,
             .total_lines = total_lines,
             .language_mask = language_mask,
             .index_size_bytes = approxIndexSizeBytes(explorer),
             .startup_time_ms = startup_time_ms,
+            .ram_kb = getRssKb(),
         } });
     }
 
@@ -199,22 +203,25 @@ pub const Telemetry = struct {
         switch (ev.kind) {
             .tool_call => |tc| {
                 const name = tc.tool[0..tc.tool_len];
-                try w.print(",\"ev\":\"tool\",\"tool\":\"{s}\",\"ns\":{d},\"err\":{s},\"bytes\":{d}", .{
+                try w.print(",\"ev\":\"tool\",\"tool\":\"{s}\",\"ns\":{d},\"err\":{s},\"bytes\":{d},\"ver\":\"{s}\",\"ram_kb\":{d}", .{
                     name,
                     @as(i64, @intCast(@min(tc.latency_ns, std.math.maxInt(i64)))),
                     if (tc.err) "true" else "false",
                     tc.response_bytes,
+                    VERSION,
+                    tc.ram_kb,
                 });
             },
             .session_start => {
-                try w.print(",\"ev\":\"start\",\"version\":\"{s}\",\"platform\":\"{s}\"", .{ VERSION, PLATFORM });
+                try w.print(",\"ev\":\"start\",\"ver\":\"{s}\",\"platform\":\"{s}\"", .{ VERSION, PLATFORM });
             },
             .codebase_stats => |stats| {
-                try w.print(",\"ev\":\"stats\",\"files\":{d},\"lines\":{d},\"index_bytes\":{d},\"startup_ms\":{d},\"languages\":[", .{
+                try w.print(",\"ev\":\"stats\",\"files\":{d},\"lines\":{d},\"index_bytes\":{d},\"startup_ms\":{d},\"ram_kb\":{d},\"languages\":[", .{
                     stats.file_count,
                     stats.total_lines,
                     stats.index_size_bytes,
                     stats.startup_time_ms,
+                    stats.ram_kb,
                 });
                 try writeLanguages(w, stats.language_mask);
                 try w.writeAll("]");
@@ -224,6 +231,15 @@ pub const Telemetry = struct {
         return w.end;
     }
 };
+fn getRssKb() u32 {
+    var ru: std.c.rusage = undefined;
+    _ = std.c.getrusage(0, &ru); // 0 = RUSAGE_SELF
+    if (ru.maxrss <= 0) return 0;
+    const raw: u64 = @intCast(ru.maxrss);
+    // macOS reports bytes; Linux reports kilobytes
+    const kb = if (builtin.os.tag == .macos) raw / 1024 else raw;
+    return @intCast(@min(kb, std.math.maxInt(u32)));
+}
 
 fn writeLanguages(writer: anytype, language_mask: u16) !void {
     const names = [_][]const u8{
