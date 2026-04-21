@@ -209,10 +209,20 @@ pub fn writeSnapshot(
 
                 if (sym.detail) |detail| {
                     try writer.writeByte(1);
+                    // Snapshot format length-prefixes `detail` with u16, so any
+                    // detail >64KB can't be round-tripped. Minified JS / bundled
+                    // monorepos (e.g. nodejs/node, vercel/next.js) produce
+                    // "symbols" whose detail holds a multi-kilobyte inline body
+                    // and overflows u16. Truncate rather than crash the snapshot.
+                    const max_detail: usize = std.math.maxInt(u16);
+                    const clipped = if (detail.len > max_detail) detail[0..max_detail] else detail;
+                    if (detail.len > max_detail) {
+                        std.log.warn("snapshot: truncating symbol detail from {d}B to {d}B (u16 length-prefix limit)", .{ detail.len, max_detail });
+                    }
                     var detail_len_buf: [2]u8 = undefined;
-                    std.mem.writeInt(u16, &detail_len_buf, @intCast(detail.len), .little);
+                    std.mem.writeInt(u16, &detail_len_buf, @intCast(clipped.len), .little);
                     try writer.writeAll(&detail_len_buf);
-                    try writer.writeAll(detail);
+                    try writer.writeAll(clipped);
                 } else {
                     try writer.writeByte(0);
                 }
