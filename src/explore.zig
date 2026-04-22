@@ -1256,7 +1256,33 @@ pub const Explorer = struct {
         var result_list: std.ArrayList(SymbolResult) = .empty;
         errdefer result_list.deinit(allocator);
 
-        // Scan outlines for all symbols by name (catches all kinds including imports).
+        // O(1) lookup via symbol_index (all kinds are indexed).
+        if (self.symbol_index.get(name)) |locs| {
+            for (locs.items) |loc| {
+                var detail: ?[]const u8 = null;
+                if (self.outlines.getPtr(loc.path)) |outline| {
+                    for (outline.symbols.items) |sym| {
+                        if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, name)) {
+                            detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
+                            break;
+                        }
+                    }
+                }
+                try result_list.append(allocator, .{
+                    .path = try allocator.dupe(u8, loc.path),
+                    .symbol = .{
+                        .name = try allocator.dupe(u8, name),
+                        .kind = loc.kind,
+                        .line_start = loc.line_start,
+                        .line_end = loc.line_end,
+                        .detail = detail,
+                    },
+                });
+            }
+            return result_list.toOwnedSlice(allocator);
+        }
+
+        // Fallback: scan outlines (kept for safety; with complete indexing above this is rare).
         var iter = self.outlines.iterator();
         while (iter.next()) |entry| {
             for (entry.value_ptr.symbols.items) |sym| {
@@ -2684,7 +2710,6 @@ pub const Explorer = struct {
     fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOutline) void {
         self.removeSymbolIndexFor(path);
         for (outline.symbols.items) |sym| {
-            if (sym.kind == .import or sym.kind == .comment_block) continue;
             const gop = self.symbol_index.getOrPut(sym.name) catch continue;
             if (!gop.found_existing) {
                 gop.value_ptr.* = std.ArrayList(SymbolLocation).empty;
