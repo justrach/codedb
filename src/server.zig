@@ -696,6 +696,11 @@ fn readSome(io: std.Io, stream: std.Io.net.Stream, dest: []u8) !usize {
 fn isPathSafe(path: []const u8) bool {
     if (path.len == 0) return false;
     if (path[0] == '/') return false;
+    // Block null bytes (path truncation attack).
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return false;
+    // Block backslash separators so Windows-style `..\..\x` can't bypass the
+    // forward-slash `..` check below. Matches mcp.isPathSafe.
+    if (std.mem.indexOfScalar(u8, path, '\\') != null) return false;
     var it = std.mem.splitScalar(u8, path, '/');
     while (it.next()) |component| {
         if (std.mem.eql(u8, component, "..")) return false;
