@@ -557,13 +557,9 @@ fn mainImpl() !void {
             s.reset,
         });
     } else if (std.mem.eql(u8, cmd, "serve")) {
-        const raw_port = cio.posixGetenv("CODEDB_PORT") orelse {
-            std.log.err("codedb serve: HTTP server is off by default. Set CODEDB_PORT=<port> to enable (suggested: 47719 — 7719 and 8080 collide often).", .{});
-            std.process.exit(1);
-        };
-        const port: u16 = std.fmt.parseInt(u16, raw_port, 10) catch {
-            std.log.err("codedb serve: CODEDB_PORT={s} is not a valid u16 port.", .{raw_port});
-            std.process.exit(1);
+        const port: u16 = blk: {
+            const raw = cio.posixGetenv("CODEDB_PORT") orelse break :blk 6767;
+            break :blk std.fmt.parseInt(u16, raw, 10) catch 6767;
         };
         var agents = AgentRegistry.init(allocator);
         defer agents.deinit();
