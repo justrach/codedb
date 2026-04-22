@@ -1256,22 +1256,63 @@ pub const Explorer = struct {
         var result_list: std.ArrayList(SymbolResult) = .empty;
         errdefer result_list.deinit(allocator);
 
-        // Scan outlines for all symbols by name (catches all kinds including imports).
+        // Track (path, line_start) pairs already appended. symbol_index can be
+        // incomplete after fast-snapshot restore (outlines are populated before
+        // rebuildSymbolIndexFor runs on every file), so we must still fall
+        // through to the outline scan — and dedupe against what the index
+        // already supplied. Keys are "<path>:<line>" allocated from the caller
+        // allocator, freed at end of call.
+        var seen = std.StringHashMap(void).init(allocator);
+        defer {
+            var sit = seen.keyIterator();
+            while (sit.next()) |k| allocator.free(k.*);
+            seen.deinit();
+        }
+
+        if (self.symbol_index.get(name)) |locs| {
+            for (locs.items) |loc| {
+                var detail: ?[]const u8 = null;
+                if (self.outlines.getPtr(loc.path)) |outline| {
+                    for (outline.symbols.items) |sym| {
+                        if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, name)) {
+                            detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
+                            break;
+                        }
+                    }
+                }
+                try result_list.append(allocator, .{
+                    .path = try allocator.dupe(u8, loc.path),
+                    .symbol = .{
+                        .name = try allocator.dupe(u8, name),
+                        .kind = loc.kind,
+                        .line_start = loc.line_start,
+                        .line_end = loc.line_end,
+                        .detail = detail,
+                    },
+                });
+                const key = try std.fmt.allocPrint(allocator, "{s}:{d}", .{ loc.path, loc.line_start });
+                seen.put(key, {}) catch allocator.free(key);
+            }
+        }
+
+        // Safety scan: append any outline symbols the index missed.
         var iter = self.outlines.iterator();
         while (iter.next()) |entry| {
             for (entry.value_ptr.symbols.items) |sym| {
-                if (std.mem.eql(u8, sym.name, name)) {
-                    try result_list.append(allocator, .{
-                        .path = try allocator.dupe(u8, entry.key_ptr.*),
-                        .symbol = .{
-                            .name = try allocator.dupe(u8, sym.name),
-                            .kind = sym.kind,
-                            .line_start = sym.line_start,
-                            .line_end = sym.line_end,
-                            .detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null,
-                        },
-                    });
-                }
+                if (!std.mem.eql(u8, sym.name, name)) continue;
+                var key_buf: [std.fs.max_path_bytes + 32]u8 = undefined;
+                const key = std.fmt.bufPrint(&key_buf, "{s}:{d}", .{ entry.key_ptr.*, sym.line_start }) catch continue;
+                if (seen.contains(key)) continue;
+                try result_list.append(allocator, .{
+                    .path = try allocator.dupe(u8, entry.key_ptr.*),
+                    .symbol = .{
+                        .name = try allocator.dupe(u8, sym.name),
+                        .kind = sym.kind,
+                        .line_start = sym.line_start,
+                        .line_end = sym.line_end,
+                        .detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null,
+                    },
+                });
             }
         }
         return result_list.toOwnedSlice(allocator);
@@ -2684,7 +2725,6 @@ pub const Explorer = struct {
     fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOutline) void {
         self.removeSymbolIndexFor(path);
         for (outline.symbols.items) |sym| {
-            if (sym.kind == .import or sym.kind == .comment_block) continue;
             const gop = self.symbol_index.getOrPut(sym.name) catch continue;
             if (!gop.found_existing) {
                 gop.value_ptr.* = std.ArrayList(SymbolLocation).empty;
