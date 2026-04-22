@@ -557,7 +557,10 @@ fn mainImpl() !void {
             s.reset,
         });
     } else if (std.mem.eql(u8, cmd, "serve")) {
-        const port: u16 = 7719;
+        const port: u16 = blk: {
+            const raw = cio.posixGetenv("CODEDB_PORT") orelse break :blk 7719;
+            break :blk std.fmt.parseInt(u16, raw, 10) catch 7719;
+        };
         var agents = AgentRegistry.init(allocator);
         defer agents.deinit();
         _ = try agents.register("__filesystem__");
