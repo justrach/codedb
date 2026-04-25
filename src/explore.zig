@@ -105,7 +105,10 @@ pub const Language = enum(u8) {
 pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".zig")) return .zig;
     if (std.mem.endsWith(u8, path, ".c") or std.mem.endsWith(u8, path, ".h")) return .c;
-    if (std.mem.endsWith(u8, path, ".cpp") or std.mem.endsWith(u8, path, ".hpp")) return .cpp;
+    if (std.mem.endsWith(u8, path, ".cpp") or std.mem.endsWith(u8, path, ".hpp") or
+        std.mem.endsWith(u8, path, ".cc") or std.mem.endsWith(u8, path, ".hh") or
+        std.mem.endsWith(u8, path, ".cxx") or std.mem.endsWith(u8, path, ".hxx"))
+        return .cpp;
     if (std.mem.endsWith(u8, path, ".py")) return .python;
     if (std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".jsx")) return .javascript;
     if (std.mem.endsWith(u8, path, ".ts") or std.mem.endsWith(u8, path, ".tsx")) return .typescript;
@@ -862,6 +865,8 @@ pub const Explorer = struct {
                 try parser.parsePythonLine(trimmed, line_num, &outline);
             } else if (outline.language == .typescript or outline.language == .javascript) {
                 try parser.parseTsLine(trimmed, line_num, &outline);
+            } else if (outline.language == .c or outline.language == .cpp) {
+                try parser.parseCLine(trimmed, line_num, &outline);
             } else if (outline.language == .rust) {
                 try parser.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
             } else if (outline.language == .php) {
@@ -1869,6 +1874,39 @@ pub const Explorer = struct {
                 errdefer a.free(import_copy);
                 try outline.imports.append(a, import_copy);
             }
+        }
+    }
+
+    fn parseCLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = stripLineComment(raw_line);
+        if (line.len == 0) return;
+
+        if (startsWith(line, "#include")) {
+            if (extractCIncludePath(line)) |path| {
+                const import_copy = try a.dupe(u8, path);
+                errdefer a.free(import_copy);
+                try outline.imports.append(a, import_copy);
+            }
+            try appendOutlineSymbol(a, outline, line, .import, line_num, line);
+            return;
+        }
+
+        if (startsWith(line, "#define")) {
+            const rest = std.mem.trimStart(u8, line["#define".len..], " \t");
+            if (extractIdent(rest)) |name| {
+                try appendOutlineSymbol(a, outline, name, .macro_def, line_num, line);
+            }
+            return;
+        }
+
+        if (parseCNamedType(line)) |type_sym| {
+            try appendOutlineSymbol(a, outline, type_sym.name, type_sym.kind, line_num, line);
+            return;
+        }
+
+        if (extractCFunctionName(line)) |name| {
+            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
         }
     }
 
@@ -3535,6 +3573,27 @@ fn startsWith(haystack: []const u8, needle: []const u8) bool {
     return std.mem.startsWith(u8, haystack, needle);
 }
 
+fn appendOutlineSymbol(
+    allocator: std.mem.Allocator,
+    outline: *FileOutline,
+    name: []const u8,
+    kind: SymbolKind,
+    line_num: u32,
+    detail: []const u8,
+) !void {
+    const name_copy = try allocator.dupe(u8, name);
+    errdefer allocator.free(name_copy);
+    const detail_copy = try allocator.dupe(u8, detail);
+    errdefer allocator.free(detail_copy);
+    try outline.symbols.append(allocator, .{
+        .name = name_copy,
+        .kind = kind,
+        .line_start = line_num,
+        .line_end = line_num,
+        .detail = detail_copy,
+    });
+}
+
 fn extractIdent(s: []const u8) ?[]const u8 {
     const max_ident_len: usize = 256;
     var end: usize = 0;
@@ -3547,7 +3606,13 @@ fn extractIdent(s: []const u8) ?[]const u8 {
     return if (end > 0) s[0..end] else null;
 }
 
-fn extractLastIdent(s: []const u8) ?[]const u8 {
+const IdentSpan = struct {
+    text: []const u8,
+    start: usize,
+    end: usize,
+};
+
+fn extractLastIdentSpan(s: []const u8) ?IdentSpan {
     if (s.len == 0) return null;
 
     var end = s.len;
@@ -3564,7 +3629,148 @@ fn extractLastIdent(s: []const u8) ?[]const u8 {
         if (!(std.ascii.isAlphanumeric(ch) or ch == '_')) break;
         start -= 1;
     }
-    return s[start..end];
+    return .{ .text = s[start..end], .start = start, .end = end };
+}
+
+fn extractLastIdent(s: []const u8) ?[]const u8 {
+    return if (extractLastIdentSpan(s)) |span| span.text else null;
+}
+
+fn stripLineComment(raw_line: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, raw_line, " \t");
+    if (startsWith(trimmed, "//")) return "";
+    if (std.mem.indexOf(u8, trimmed, "//")) |pos| {
+        return std.mem.trimEnd(u8, trimmed[0..pos], " \t");
+    }
+    return trimmed;
+}
+
+fn extractCIncludePath(line: []const u8) ?[]const u8 {
+    const rest = std.mem.trimStart(u8, line["#include".len..], " \t");
+    if (rest.len >= 2 and rest[0] == '<') {
+        if (std.mem.indexOfScalar(u8, rest[1..], '>')) |end| {
+            if (end == 0) return null;
+            return rest[1 .. end + 1];
+        }
+    }
+    return extractStringLiteral(rest);
+}
+
+const CTypeSymbol = struct {
+    name: []const u8,
+    kind: SymbolKind,
+};
+
+fn parseCNamedType(line: []const u8) ?CTypeSymbol {
+    const stripped = stripCAttributesPrefix(line);
+    if (startsWith(stripped, "typedef ")) {
+        const rest = std.mem.trimStart(u8, stripped["typedef ".len..], " \t");
+        if (parseCBraceType(rest)) |sym| return sym;
+        if (std.mem.indexOf(u8, rest, "(*") != null) return null;
+        if (std.mem.indexOfScalar(u8, rest, ';')) |semi| {
+            const before_semi = rest[0..semi];
+            if (extractLastIdent(before_semi)) |name| {
+                if (!isCKeyword(name)) return .{ .name = name, .kind = .type_alias };
+            }
+        }
+        return null;
+    }
+    return parseCBraceType(stripped);
+}
+
+fn parseCBraceType(line: []const u8) ?CTypeSymbol {
+    if (std.mem.indexOfScalar(u8, line, '{') == null) return null;
+    if (startsWith(line, "struct ")) {
+        return parseCTypeAfterKeyword(line["struct ".len..], .struct_def);
+    }
+    if (startsWith(line, "enum ")) {
+        return parseCTypeAfterKeyword(line["enum ".len..], .enum_def);
+    }
+    if (startsWith(line, "union ")) {
+        return parseCTypeAfterKeyword(line["union ".len..], .union_def);
+    }
+    return null;
+}
+
+fn parseCTypeAfterKeyword(rest: []const u8, kind: SymbolKind) ?CTypeSymbol {
+    const trimmed = std.mem.trimStart(u8, rest, " \t");
+    if (trimmed.len == 0 or trimmed[0] == '{') return null;
+    if (extractIdent(trimmed)) |name| {
+        if (!isCKeyword(name)) return .{ .name = name, .kind = kind };
+    }
+    return null;
+}
+
+fn extractCFunctionName(line: []const u8) ?[]const u8 {
+    const stripped = stripCAttributesPrefix(line);
+    if (stripped.len == 0 or stripped[0] == '#') return null;
+    if (startsWith(stripped, "typedef ")) return null;
+    if (std.mem.indexOfScalar(u8, stripped, ';') != null) return null;
+
+    const search_end = std.mem.indexOfScalar(u8, stripped, '{') orelse stripped.len;
+    if (search_end == 0) return null;
+    const signature = std.mem.trimEnd(u8, stripped[0..search_end], " \t");
+    const open_paren = std.mem.lastIndexOfScalar(u8, signature, '(') orelse return null;
+    if (std.mem.indexOfScalar(u8, signature[open_paren..], ')') == null) return null;
+    if (std.mem.indexOf(u8, signature, "(*") != null) return null;
+
+    const before_paren = std.mem.trimEnd(u8, signature[0..open_paren], " \t");
+    const span = extractLastIdentSpan(before_paren) orelse return null;
+    const name = span.text;
+    if (isCKeyword(name)) return null;
+
+    const before_name = std.mem.trim(u8, before_paren[0..span.start], " \t*(&");
+    if (before_name.len == 0) return null;
+    if (hasCAssignmentBeforeName(before_name)) return null;
+    if (isCForbiddenFunctionPrefix(before_name)) return null;
+    if (std.mem.endsWith(u8, before_name, ".") or std.mem.endsWith(u8, before_name, "->")) return null;
+
+    return name;
+}
+
+fn stripCAttributesPrefix(line: []const u8) []const u8 {
+    var rest = std.mem.trimStart(u8, line, " \t");
+    while (startsWith(rest, "__attribute__((")) {
+        if (std.mem.indexOf(u8, rest, "))")) |end| {
+            rest = std.mem.trimStart(u8, rest[end + 2 ..], " \t");
+        } else break;
+    }
+    return rest;
+}
+
+fn hasCAssignmentBeforeName(prefix: []const u8) bool {
+    for (prefix, 0..) |ch, i| {
+        if (ch != '=') continue;
+        const prev = if (i > 0) prefix[i - 1] else 0;
+        const next = if (i + 1 < prefix.len) prefix[i + 1] else 0;
+        if (prev == '=' or prev == '!' or prev == '<' or prev == '>' or next == '=') continue;
+        return true;
+    }
+    return false;
+}
+
+fn isCForbiddenFunctionPrefix(prefix: []const u8) bool {
+    const first = extractIdent(std.mem.trimStart(u8, prefix, " \t*(&")) orelse return false;
+    return std.mem.eql(u8, first, "return") or
+        std.mem.eql(u8, first, "case") or
+        std.mem.eql(u8, first, "sizeof") or
+        std.mem.eql(u8, first, "if") or
+        std.mem.eql(u8, first, "for") or
+        std.mem.eql(u8, first, "while") or
+        std.mem.eql(u8, first, "switch");
+}
+
+fn isCKeyword(s: []const u8) bool {
+    const keywords = [_][]const u8{
+        "if",       "for",      "while",  "switch", "return",   "sizeof",
+        "case",     "do",       "else",   "struct", "enum",     "union",
+        "typedef",  "static",   "extern", "inline", "const",    "volatile",
+        "register", "restrict", "auto",   "break",  "continue",
+    };
+    for (keywords) |kw| {
+        if (std.mem.eql(u8, s, kw)) return true;
+    }
+    return false;
 }
 
 fn firstIndexOfAny(s: []const u8, chars: []const u8) ?usize {
