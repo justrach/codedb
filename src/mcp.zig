@@ -1390,6 +1390,23 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
     var url_buf: [512]u8 = undefined;
     const query = getStr(args, "query");
 
+    // Require a non-empty 'query' for actions that actually consume it.
+    // Silently sending `q=` to the remote turned real user mistakes into
+    // empty/garbage responses — fail fast with a pointer at the right field.
+    const needs_query = std.mem.eql(u8, action, "search") or
+        (is_wiki and (std.mem.eql(u8, action, "symbol") or std.mem.eql(u8, action, "outline")));
+    if (needs_query and (query == null or query.?.len == 0)) {
+        out.appendSlice(alloc, "error: action '") catch {};
+        out.appendSlice(alloc, action) catch {};
+        if (std.mem.eql(u8, action, "search")) {
+            out.appendSlice(alloc, "' requires a non-empty 'query' (the search text)") catch {};
+        } else if (std.mem.eql(u8, action, "symbol")) {
+            out.appendSlice(alloc, "' requires a non-empty 'query' (the identifier name to look up)") catch {};
+        } else {
+            out.appendSlice(alloc, "' requires a non-empty 'query' (the file path to outline)") catch {};
+        }
+        return;
+    }
     if (is_wiki) {
         // wiki.codes uses flat slugs: owner/repo → owner-repo. The Vercel
         // /api/query proxy takes slug+endpoint+q and server-side-auths to
