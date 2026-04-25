@@ -1270,6 +1270,12 @@ fn handleBundle(
     }
 
     const w = cio.listWriter(out, alloc);
+    // Refresh the idle clock as we start the bundle — long bundles (slow
+    // sub-ops, many ops, remote fetches) would otherwise leave
+    // `last_activity` frozen at message-arrival time, and the watchdog
+    // would close stdin mid-processing. Repeated inside the loop so each
+    // completed sub-op keeps us marked active. See #278.
+    last_activity.store(cio.milliTimestamp(), .release);
     for (ops, 0..) |op, i| {
         if (op != .object) {
             w.print("--- [{d}] error ---\nop must be an object\n", .{i}) catch {};
@@ -1319,6 +1325,9 @@ fn handleBundle(
         w.print("--- [{d}] {s} ---\n", .{ i, tool_name }) catch {};
         out.appendSlice(alloc, sub_out.items) catch {};
         w.writeAll("\n") catch {};
+
+        // Per-op activity refresh — see top of this fn.
+        last_activity.store(cio.milliTimestamp(), .release);
     }
 }
 
