@@ -2142,6 +2142,10 @@ test "detectLanguage: all supported extensions" {
     try testing.expect(explore.detectLanguage("util.h") == .c);
     try testing.expect(explore.detectLanguage("app.cpp") == .cpp);
     try testing.expect(explore.detectLanguage("app.hpp") == .cpp);
+    try testing.expect(explore.detectLanguage("app.cc") == .cpp);
+    try testing.expect(explore.detectLanguage("app.hh") == .cpp);
+    try testing.expect(explore.detectLanguage("app.cxx") == .cpp);
+    try testing.expect(explore.detectLanguage("app.hxx") == .cpp);
     try testing.expect(explore.detectLanguage("script.py") == .python);
     try testing.expect(explore.detectLanguage("app.js") == .javascript);
     try testing.expect(explore.detectLanguage("comp.jsx") == .javascript);
@@ -6179,6 +6183,129 @@ test "issue-215: R setClass parsed" {
 test "issue-215: detectLanguage handles .r and .R" {
     try testing.expectEqual(Language.r, explore.detectLanguage("script.r"));
     try testing.expectEqual(Language.r, explore.detectLanguage("analysis.R"));
+}
+
+test "issue-319: C parser extracts includes macros types and functions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("src/core.c",
+        \\#include <stdio.h>
+        \\#include "local.h"
+        \\#define MAX_SIZE 64
+        \\#define SQUARE(x) ((x) * (x))
+        \\struct Worker {
+        \\    int id;
+        \\};
+        \\enum Mode {
+        \\    MODE_A,
+        \\};
+        \\union Value {
+        \\    int i;
+        \\};
+        \\typedef unsigned long size_alias_t;
+        \\static inline const char *worker_name(const struct Worker *worker) {
+        \\    return "worker";
+        \\}
+        \\void *alloc_item(size_t size)
+        \\{
+        \\    return malloc(size);
+        \\}
+    );
+
+    const outline = try explorer.getOutline("src/core.c", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.c, outline.language);
+    try testing.expectEqual(@as(usize, 2), outline.imports.items.len);
+    try testing.expectEqualStrings("stdio.h", outline.imports.items[0]);
+    try testing.expectEqualStrings("local.h", outline.imports.items[1]);
+
+    const max_size = try explorer.findAllSymbols("MAX_SIZE", alloc);
+    defer alloc.free(max_size);
+    try testing.expectEqual(@as(usize, 1), max_size.len);
+    try testing.expectEqual(SymbolKind.macro_def, max_size[0].symbol.kind);
+
+    const square = try explorer.findAllSymbols("SQUARE", alloc);
+    defer alloc.free(square);
+    try testing.expectEqual(@as(usize, 1), square.len);
+    try testing.expectEqual(SymbolKind.macro_def, square[0].symbol.kind);
+
+    const worker = try explorer.findAllSymbols("Worker", alloc);
+    defer alloc.free(worker);
+    try testing.expectEqual(@as(usize, 1), worker.len);
+    try testing.expectEqual(SymbolKind.struct_def, worker[0].symbol.kind);
+
+    const mode = try explorer.findAllSymbols("Mode", alloc);
+    defer alloc.free(mode);
+    try testing.expectEqual(@as(usize, 1), mode.len);
+    try testing.expectEqual(SymbolKind.enum_def, mode[0].symbol.kind);
+
+    const value = try explorer.findAllSymbols("Value", alloc);
+    defer alloc.free(value);
+    try testing.expectEqual(@as(usize, 1), value.len);
+    try testing.expectEqual(SymbolKind.union_def, value[0].symbol.kind);
+
+    const alias = try explorer.findAllSymbols("size_alias_t", alloc);
+    defer alloc.free(alias);
+    try testing.expectEqual(@as(usize, 1), alias.len);
+    try testing.expectEqual(SymbolKind.type_alias, alias[0].symbol.kind);
+
+    const worker_name = try explorer.findAllSymbols("worker_name", alloc);
+    defer alloc.free(worker_name);
+    try testing.expectEqual(@as(usize, 1), worker_name.len);
+    try testing.expectEqual(SymbolKind.function, worker_name[0].symbol.kind);
+
+    const alloc_item = try explorer.findAllSymbols("alloc_item", alloc);
+    defer alloc.free(alloc_item);
+    try testing.expectEqual(@as(usize, 1), alloc_item.len);
+    try testing.expectEqual(SymbolKind.function, alloc_item[0].symbol.kind);
+}
+
+test "issue-319: C parser avoids comments strings prototypes and macro calls" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("src/noise.c",
+        \\// int fake_comment(void) {
+        \\/* int fake_block(void) { */
+        \\const char *s = "int fake_string(void) {";
+        \\typedef int (*handler_fn)(int);
+        \\int prototype_only(void);
+        \\EXPORT_SYMBOL(real_function);
+        \\if (real_function()) {
+        \\}
+        \\int real_function(void) {
+        \\    return 1;
+        \\}
+    );
+
+    const real = try explorer.findAllSymbols("real_function", alloc);
+    defer alloc.free(real);
+    try testing.expectEqual(@as(usize, 1), real.len);
+    try testing.expectEqual(SymbolKind.function, real[0].symbol.kind);
+
+    const fake_comment = try explorer.findAllSymbols("fake_comment", alloc);
+    defer alloc.free(fake_comment);
+    try testing.expectEqual(@as(usize, 0), fake_comment.len);
+
+    const fake_block = try explorer.findAllSymbols("fake_block", alloc);
+    defer alloc.free(fake_block);
+    try testing.expectEqual(@as(usize, 0), fake_block.len);
+
+    const fake_string = try explorer.findAllSymbols("fake_string", alloc);
+    defer alloc.free(fake_string);
+    try testing.expectEqual(@as(usize, 0), fake_string.len);
+
+    const prototype = try explorer.findAllSymbols("prototype_only", alloc);
+    defer alloc.free(prototype);
+    try testing.expectEqual(@as(usize, 0), prototype.len);
+
+    const handler = try explorer.findAllSymbols("handler_fn", alloc);
+    defer alloc.free(handler);
+    try testing.expectEqual(@as(usize, 0), handler.len);
 }
 
 test "issue-179: Python inline docstring does not leak symbols" {
