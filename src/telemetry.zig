@@ -246,6 +246,20 @@ fn writeLanguages(writer: anytype, language_mask: u32) !void {
         "yaml",
         "unknown",
         "dart",
+        "java",
+        "kotlin",
+        "svelte",
+        "vue",
+        "astro",
+        "shell",
+        "css",
+        "scss",
+        "sql",
+        "protobuf",
+        "fortran",
+        "llvm_ir",
+        "mlir",
+        "tablegen",
     };
     var first = true;
     for (names, 0..) |name, idx| {

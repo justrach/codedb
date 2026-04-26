@@ -65,7 +65,7 @@ fn mainImpl() !void {
     const stdout = cio.File.stdout();
     const use_color = stdout.isTty();
     const s = sty.style(use_color);
-    const out = Out{ .file = stdout, .alloc = allocator };
+    var out = Out{ .file = stdout, .alloc = allocator };
 
     const args = try cio.argsAlloc(allocator);
     defer cio.argsFree(allocator, args);
@@ -104,6 +104,13 @@ fn mainImpl() !void {
     } else {
         printUsage(out, s);
         std.process.exit(1);
+    }
+
+    // MCP stdio reserves stdout for JSON-RPC — route status/error output to
+    // stderr so startup/failure paths don't corrupt the protocol stream.
+    // See #304.
+    if (std.mem.eql(u8, cmd, "mcp")) {
+        out.file = cio.File.stderr();
     }
 
     // Handle --version early (no root needed)
@@ -550,7 +557,10 @@ fn mainImpl() !void {
             s.reset,
         });
     } else if (std.mem.eql(u8, cmd, "serve")) {
-        const port: u16 = 7719;
+        const port: u16 = blk: {
+            const raw = cio.posixGetenv("CODEDB_PORT") orelse break :blk 6767;
+            break :blk std.fmt.parseInt(u16, raw, 10) catch 6767;
+        };
         var agents = AgentRegistry.init(allocator);
         defer agents.deinit();
         _ = try agents.register("__filesystem__");
@@ -935,15 +945,11 @@ fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allo
 }
 fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
     const mcp = @import("mcp.zig");
+    const stdin = cio.File.stdin();
     while (!shutdown.load(.acquire)) {
-        // Sleep in 1s increments for responsive shutdown
-        for (0..10) |_| {
-            if (shutdown.load(.acquire)) return;
-            cio.sleepMs(1000);
-        }
-
-        // Quick liveness check: poll stdin for POLLHUP (client disconnected)
-        const stdin = cio.File.stdin();
+        // Quick liveness check: poll stdin for POLLHUP (client disconnected).
+        // This stays independent from the longer idle timeout so dead MCP
+        // clients are reaped promptly.
         var poll_fds = [_]std.posix.pollfd{.{
             .fd = stdin.handle,
             .events = std.posix.POLL.IN | std.posix.POLL.HUP,
@@ -967,5 +973,7 @@ fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
             shutdown.store(true, .release);
             return;
         }
+
+        cio.sleepMs(mcp.dead_client_poll_ms);
     }
 }

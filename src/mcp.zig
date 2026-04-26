@@ -24,9 +24,65 @@ const root_policy = @import("root_policy.zig");
 const release_info = @import("release_info.zig");
 // ── Project cache ────────────────────────────────────────────────────────────
 
+const SnapshotCache = struct {
+    const MAX_CACHED_BYTES = 16 * 1024 * 1024;
+
+    seq: u64 = std.math.maxInt(u64),
+    bytes: ?[]u8 = null,
+    mu: cio.Mutex = .{},
+
+    fn deinit(self: *SnapshotCache, alloc: std.mem.Allocator) void {
+        if (self.bytes) |bytes| {
+            alloc.free(bytes);
+            self.bytes = null;
+        }
+    }
+
+    fn appendIfFresh(self: *SnapshotCache, alloc: std.mem.Allocator, out: *std.ArrayList(u8), seq: u64) bool {
+        self.mu.lock();
+        defer self.mu.unlock();
+        const bytes = self.bytes orelse return false;
+        if (self.seq != seq) return false;
+        out.appendSlice(alloc, bytes) catch return false;
+        return true;
+    }
+
+    /// Takes ownership of `fresh` if it becomes the cache entry. If another
+    /// caller filled the same seq first, frees `fresh` and appends the winner.
+    fn putAndAppend(self: *SnapshotCache, alloc: std.mem.Allocator, out: *std.ArrayList(u8), seq: u64, fresh: []u8) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+
+        if (fresh.len > MAX_CACHED_BYTES) {
+            if (self.bytes) |bytes| {
+                alloc.free(bytes);
+                self.bytes = null;
+            }
+            self.seq = std.math.maxInt(u64);
+            out.appendSlice(alloc, fresh) catch {};
+            alloc.free(fresh);
+            return;
+        }
+
+        if (self.bytes) |bytes| {
+            if (self.seq == seq) {
+                alloc.free(fresh);
+                out.appendSlice(alloc, bytes) catch {};
+                return;
+            }
+            alloc.free(bytes);
+        }
+
+        self.seq = seq;
+        self.bytes = fresh;
+        out.appendSlice(alloc, fresh) catch {};
+    }
+};
+
 const ProjectCtx = struct {
     explorer: *Explorer,
     store: *Store,
+    snapshot_cache: *SnapshotCache,
 };
 
 fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
@@ -107,6 +163,7 @@ const ProjectCache = struct {
         path: []u8,
         explorer: Explorer,
         store: Store,
+        snapshot_cache: SnapshotCache,
         last_used: i64,
     };
 
@@ -114,6 +171,7 @@ const ProjectCache = struct {
     alloc: std.mem.Allocator,
     entries: [MAX_CACHED]?*Entry,
     default_path: []const u8,
+    default_snapshot_cache: SnapshotCache,
 
     fn init(alloc_: std.mem.Allocator, default_path_: []const u8) ProjectCache {
         return .{
@@ -121,12 +179,15 @@ const ProjectCache = struct {
             .alloc = alloc_,
             .entries = [_]?*Entry{null} ** MAX_CACHED,
             .default_path = default_path_,
+            .default_snapshot_cache = .{},
         };
     }
 
     fn deinit(self: *ProjectCache) void {
+        self.default_snapshot_cache.deinit(self.alloc);
         for (&self.entries) |*slot| {
             if (slot.*) |entry| {
+                entry.snapshot_cache.deinit(self.alloc);
                 entry.explorer.deinit();
                 entry.store.deinit();
                 self.alloc.free(entry.path);
@@ -143,9 +204,9 @@ const ProjectCache = struct {
         default_exp: *Explorer,
         default_store: *Store,
     ) !ProjectCtx {
-        const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store };
+        const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache };
         if (std.mem.eql(u8, p, self.default_path))
-            return ProjectCtx{ .explorer = default_exp, .store = default_store };
+            return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache };
         if (!root_policy.isIndexableRoot(p))
             return error.PathNotAllowed;
 
@@ -157,7 +218,7 @@ const ProjectCache = struct {
             if (slot.*) |entry| {
                 if (std.mem.eql(u8, entry.path, p)) {
                     entry.last_used = now;
-                    return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store };
+                    return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store, .snapshot_cache = &entry.snapshot_cache };
                 }
             }
         }
@@ -171,6 +232,7 @@ const ProjectCache = struct {
         new_entry.explorer = Explorer.init(self.alloc);
         new_entry.explorer.setRoot(io, p);
         new_entry.store = Store.init(self.alloc);
+        new_entry.snapshot_cache = .{};
         new_entry.last_used = now;
 
         var snap_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -230,6 +292,7 @@ const ProjectCache = struct {
                 }
             }
             const evict = self.entries[oldest_i].?;
+            evict.snapshot_cache.deinit(self.alloc);
             evict.explorer.deinit();
             evict.store.deinit();
             self.alloc.free(evict.path);
@@ -238,7 +301,7 @@ const ProjectCache = struct {
         }
 
         self.entries[target_slot] = new_entry;
-        return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store };
+        return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store, .snapshot_cache = &new_entry.snapshot_cache };
     }
 };
 
@@ -368,7 +431,7 @@ const tools_list =
     \\{"name":"codedb_status","description":"Get current codedb status: number of indexed files and current sequence number.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_snapshot","description":"Get the full pre-rendered snapshot of the codebase as a single JSON blob. Contains tree, all outlines, symbol index, and dependency graph. Ideal for caching or deploying to edge workers.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_bundle","description":"Batch multiple queries in one call. Max 20 ops. WARNING: Avoid bundling multiple codedb_read calls on large files — use codedb_outline + codedb_symbol instead. Bundle outline+symbol+search, not full file reads. Total response is not size-capped, so large bundles can exceed token limits.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string","description":"Tool name (e.g. codedb_outline, codedb_symbol, codedb_read)"},"arguments":{"type":"object","description":"Tool arguments"}},"required":["tool"]},"description":"Array of tool calls to execute"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
-    \\{"name":"codedb_remote","description":"Query any GitHub repo via codedb.codegraff.com cloud intelligence. Gets file tree, symbol outlines, or searches code in external repos without cloning. Use when you need to understand a dependency, check an external API, or explore a repo you don't have locally.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. justrach/merjs)"},"action":{"type":"string","enum":["tree","outline","search","meta"],"description":"What to query: tree (file list), outline (symbols), search (text search), meta (repo info)"},"query":{"type":"string","description":"Search query (required when action=search)"}},"required":["repo","action"]}},
+    \\{"name":"codedb_remote","description":"Query any GitHub repo via cloud intelligence. Default backend 'codegraff' (codedb.codegraff.com) gets file tree, symbol outlines, searches, repo meta. Backend 'wiki' (api.wiki.codes) fronts the Hetzner parquet router and adds exact-identifier lookup, hot-pin policy, dependency/CVE scoring artifacts, and commit metadata. Use when you need to understand a dependency, check an external API, or explore a repo you don't have locally.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. justrach/merjs). With backend=wiki, raw wiki slugs such as chromium are also accepted."},"action":{"type":"string","enum":["tree","outline","search","meta","symbol","policy","deps","score","cves","commits","branches","dep-history"],"description":"What to query. codegraff backend: tree, outline, search, meta. wiki backend: tree, outline, search, symbol, policy, deps, score, cves, commits, branches, dep-history."},"query":{"type":"string","description":"Action-specific argument. search: text query. symbol: identifier name. outline: file path. tree/meta/policy/deps/commits/branches/dep-history: unused. score/cves: optional scope fallback."},"scope":{"type":"string","enum":["runtime","all"],"description":"For wiki score/cves only. Defaults to runtime; use all to include dev/tooling dependencies."},"backend":{"type":"string","enum":["codegraff","wiki"],"description":"Which remote indexer to query. Default: codegraff. Use 'wiki' for api.wiki.codes symbol, policy, dependency, CVE, and history actions."}},"required":["repo","action"]}},
     \\{"name":"codedb_projects","description":"List all locally indexed projects on this machine. Shows project paths, data directory hashes, and whether a snapshot exists. Use to discover what codebases are available.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"codedb_index","description":"Index a local folder on this machine. Scans all source files, builds outlines/trigrams/word indexes, and creates a codedb.snapshot in the target directory. After indexing, the folder is queryable via the project param on any tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the folder to index (e.g. /Users/you/myproject)"}},"required":["path"]}},
     \\{"name":"codedb_find","description":"Fuzzy file search — finds files by approximate name. Typo-tolerant subsequence matching with word-boundary and filename bonuses. Use when you know roughly what file you're looking for but not the exact path. Much faster than codedb_tree + manual scan.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy search query (e.g. 'authmidlware', 'test_auth', 'main.zig')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
@@ -383,7 +446,10 @@ pub var last_activity: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
 
 /// How long (ms) the server may sit idle before auto-exiting.
 /// Claude Code restarts MCP servers on demand, so this is safe.
-pub const idle_timeout_ms: i64 = 10 * 60 * 1000; // 10 minutes — allows long debugging sessions; stdin EOF is detected by the watchdog poll
+pub const idle_timeout_ms: i64 = 60 * 60 * 1000; // 1 hour — allows long debugging sessions; stdin EOF is still detected separately.
+
+/// How often the watchdog checks whether the MCP client disconnected.
+pub const dead_client_poll_ms: u64 = 1000;
 
 // ── Serve-first scan state (issue #207) ─────────────────────────────────────
 //
@@ -762,7 +828,7 @@ fn dispatch(
         .codedb_edit => handleEdit(io, alloc, args, out, default_store, default_explorer, agents),
         .codedb_changes => handleChanges(alloc, args, out, default_store),
         .codedb_status => handleStatus(alloc, out, ctx.store, ctx.explorer),
-        .codedb_snapshot => handleSnapshot(alloc, out, ctx.explorer, ctx.store),
+        .codedb_snapshot => handleSnapshot(alloc, out, ctx.explorer, ctx.store, ctx.snapshot_cache),
         .codedb_bundle => handleBundle(io, alloc, args, out, ctx.store, ctx.explorer, agents, cache),
         .codedb_remote => handleRemote(alloc, args, out),
         .codedb_projects => handleProjects(io, alloc, out),
@@ -1230,13 +1296,15 @@ fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store
     }) catch {};
 }
 
-fn handleSnapshot(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer, store: *Store) void {
+fn handleSnapshot(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer, store: *Store, cache: *SnapshotCache) void {
+    const seq = store.currentSeq();
+    if (cache.appendIfFresh(alloc, out, seq)) return;
+
     const snap = snapshot_json.buildSnapshot(explorer, store, alloc) catch {
         out.appendSlice(alloc, "error: snapshot build failed") catch {};
         return;
     };
-    defer alloc.free(snap);
-    out.appendSlice(alloc, snap) catch {};
+    cache.putAndAppend(alloc, out, seq, snap);
 }
 
 fn handleBundle(
@@ -1270,6 +1338,12 @@ fn handleBundle(
     }
 
     const w = cio.listWriter(out, alloc);
+    // Refresh the idle clock as we start the bundle — long bundles (slow
+    // sub-ops, many ops, remote fetches) would otherwise leave
+    // `last_activity` frozen at message-arrival time, and the watchdog
+    // would close stdin mid-processing. Repeated inside the loop so each
+    // completed sub-op keeps us marked active. See #278.
+    last_activity.store(cio.milliTimestamp(), .release);
     for (ops, 0..) |op, i| {
         if (op != .object) {
             w.print("--- [{d}] error ---\nop must be an object\n", .{i}) catch {};
@@ -1319,7 +1393,80 @@ fn handleBundle(
         w.print("--- [{d}] {s} ---\n", .{ i, tool_name }) catch {};
         out.appendSlice(alloc, sub_out.items) catch {};
         w.writeAll("\n") catch {};
+
+        // Per-op activity refresh — see top of this fn.
+        last_activity.store(cio.milliTimestamp(), .release);
     }
+}
+
+fn isRemoteRepoChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == '.';
+}
+
+fn isRemoteRepoPart(part: []const u8) bool {
+    if (part.len == 0) return false;
+    if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
+    for (part) |c| {
+        if (!isRemoteRepoChar(c)) return false;
+    }
+    return true;
+}
+
+fn isCodegraffRepo(repo: []const u8) bool {
+    if (repo.len == 0 or repo[0] == '/') return false;
+    if (std.mem.indexOf(u8, repo, "..") != null or
+        std.mem.indexOf(u8, repo, "//") != null)
+    {
+        return false;
+    }
+    const slash_pos = std.mem.indexOfScalar(u8, repo, '/') orelse return false;
+    if (std.mem.indexOfScalarPos(u8, repo, slash_pos + 1, '/') != null) return false;
+    return isRemoteRepoPart(repo[0..slash_pos]) and isRemoteRepoPart(repo[slash_pos + 1 ..]);
+}
+
+fn wikiSlugForRepo(repo: []const u8, buf: []u8) ?[]const u8 {
+    if (repo.len == 0 or repo.len >= buf.len or repo[0] == '/') return null;
+    if (std.mem.indexOf(u8, repo, "..") != null or
+        std.mem.indexOf(u8, repo, "//") != null)
+    {
+        return null;
+    }
+
+    if (std.mem.indexOfScalar(u8, repo, '/')) |slash_pos| {
+        if (std.mem.indexOfScalarPos(u8, repo, slash_pos + 1, '/') != null) return null;
+        if (!isRemoteRepoPart(repo[0..slash_pos]) or !isRemoteRepoPart(repo[slash_pos + 1 ..])) return null;
+
+        @memcpy(buf[0..repo.len], repo);
+        buf[slash_pos] = '-';
+        return buf[0..repo.len];
+    }
+
+    if (!isRemoteRepoPart(repo)) return null;
+    @memcpy(buf[0..repo.len], repo);
+    return buf[0..repo.len];
+}
+
+test "wikiSlugForRepo normalizes owner repo and raw slugs" {
+    var buf: [256]u8 = undefined;
+
+    try testing.expectEqualStrings("justrach-codedb", wikiSlugForRepo("justrach/codedb", buf[0..]).?);
+    try testing.expectEqualStrings("vercel-next.js", wikiSlugForRepo("vercel/next.js", buf[0..]).?);
+    try testing.expectEqualStrings("chromium", wikiSlugForRepo("chromium", buf[0..]).?);
+}
+
+test "remote repo validation rejects traversal and malformed paths" {
+    var buf: [256]u8 = undefined;
+
+    try testing.expect(isCodegraffRepo("justrach/codedb"));
+    try testing.expect(!isCodegraffRepo("chromium"));
+    try testing.expect(!isCodegraffRepo("../codedb"));
+    try testing.expect(!isCodegraffRepo("justrach//codedb"));
+    try testing.expect(!isCodegraffRepo("justrach/codedb/extra"));
+
+    try testing.expect(wikiSlugForRepo("chromium", buf[0..]) != null);
+    try testing.expect(wikiSlugForRepo("../codedb", buf[0..]) == null);
+    try testing.expect(wikiSlugForRepo("justrach//codedb", buf[0..]) == null);
+    try testing.expect(wikiSlugForRepo("justrach/codedb/extra", buf[0..]) == null);
 }
 
 fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8)) void {
@@ -1328,43 +1475,160 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         return;
     };
     const action = getStr(args, "action") orelse {
-        out.appendSlice(alloc, "error: missing 'action' (tree, outline, search, meta)") catch {};
+        out.appendSlice(alloc, "error: missing 'action' (tree, outline, search, meta, symbol, policy)") catch {};
         return;
     };
-    // Validate action against whitelist to prevent SSRF/path injection
-    const valid_actions = [_][]const u8{ "tree", "outline", "search", "meta" };
+
+    // Backend selection: default preserves existing behavior. "wiki" routes
+    // directly to api.wiki.codes, which fronts the Hetzner parquet router and
+    // exposes code intelligence plus compact dependency/security artifacts.
+    const backend = getStr(args, "backend") orelse "codegraff";
+    const is_wiki = std.mem.eql(u8, backend, "wiki");
+    const is_codegraff = std.mem.eql(u8, backend, "codegraff");
+    if (!is_wiki and !is_codegraff) {
+        out.appendSlice(alloc, "error: invalid backend, must be one of: codegraff, wiki") catch {};
+        return;
+    }
+
+    // Per-backend action allowlists. Wiki adds symbol/security/history
+    // artifacts, drops meta; codegraff stays as shipped.
+    const codegraff_actions = [_][]const u8{ "tree", "outline", "search", "meta" };
+    const wiki_actions = [_][]const u8{
+        "tree",
+        "outline",
+        "search",
+        "symbol",
+        "policy",
+        "deps",
+        "score",
+        "cves",
+        "commits",
+        "branches",
+        "dep-history",
+    };
+    const allowed: []const []const u8 = if (is_wiki) &wiki_actions else &codegraff_actions;
     var action_valid = false;
-    for (valid_actions) |va| {
+    for (allowed) |va| {
         if (std.mem.eql(u8, action, va)) {
             action_valid = true;
             break;
         }
     }
     if (!action_valid) {
-        out.appendSlice(alloc, "error: invalid action, must be one of: tree, outline, search, meta") catch {};
+        out.appendSlice(alloc, "error: action '") catch {};
+        out.appendSlice(alloc, action) catch {};
+        out.appendSlice(alloc, "' not supported on backend '") catch {};
+        out.appendSlice(alloc, backend) catch {};
+        out.appendSlice(alloc, "' (") catch {};
+        if (is_wiki) {
+            out.appendSlice(alloc, "wiki supports: tree, outline, search, symbol, policy, deps, score, cves, commits, branches, dep-history)") catch {};
+        } else {
+            out.appendSlice(alloc, "codegraff supports: tree, outline, search, meta)") catch {};
+        }
         return;
     }
 
-    // Validate repo format: must be "owner/name" with no path traversal
-    if (std.mem.indexOf(u8, repo, "..") != null or
-        std.mem.indexOf(u8, repo, "//") != null or
-        repo[0] == '/' or
-        std.mem.indexOfScalar(u8, repo, '/') == null)
-    {
-        out.appendSlice(alloc, "error: invalid repo format, use owner/repo (e.g. justrach/merjs)") catch {};
-        return;
-    }
-    // Ensure exactly one slash (owner/repo, not owner/repo/extra/path)
-    const slash_pos = std.mem.indexOfScalar(u8, repo, '/').?;
-    if (std.mem.indexOfScalarPos(u8, repo, slash_pos + 1, '/') != null) {
+    var wiki_slug_buf: [256]u8 = undefined;
+    var wiki_slug: []const u8 = "";
+    if (is_wiki) {
+        wiki_slug = wikiSlugForRepo(repo, wiki_slug_buf[0..]) orelse {
+            out.appendSlice(alloc, "error: invalid wiki repo, use owner/repo or raw wiki slug (e.g. justrach/codedb or chromium)") catch {};
+            return;
+        };
+    } else if (!isCodegraffRepo(repo)) {
         out.appendSlice(alloc, "error: invalid repo format, use owner/repo (e.g. justrach/merjs)") catch {};
         return;
     }
 
-    // Build URL and curl args
     var url_buf: [512]u8 = undefined;
     const query = getStr(args, "query");
 
+    // Require a non-empty 'query' for actions that actually consume it.
+    // Silently sending `q=` to the remote turned real user mistakes into
+    // empty/garbage responses — fail fast with a pointer at the right field.
+    const needs_query = std.mem.eql(u8, action, "search") or
+        (is_wiki and (std.mem.eql(u8, action, "symbol") or std.mem.eql(u8, action, "outline")));
+    if (needs_query and (query == null or query.?.len == 0)) {
+        out.appendSlice(alloc, "error: action '") catch {};
+        out.appendSlice(alloc, action) catch {};
+        if (std.mem.eql(u8, action, "search")) {
+            out.appendSlice(alloc, "' requires a non-empty 'query' (the search text)") catch {};
+        } else if (std.mem.eql(u8, action, "symbol")) {
+            out.appendSlice(alloc, "' requires a non-empty 'query' (the identifier name to look up)") catch {};
+        } else {
+            out.appendSlice(alloc, "' requires a non-empty 'query' (the file path to outline)") catch {};
+        }
+        return;
+    }
+    if (is_wiki) {
+        // api.wiki.codes serves the router directly:
+        // /api/<slug>/<endpoint>, where owner/repo also normalizes to
+        // owner-repo for slugs that were indexed that way.
+        const url = std.fmt.bufPrint(&url_buf, "https://api.wiki.codes/api/{s}/{s}", .{ wiki_slug, action }) catch {
+            out.appendSlice(alloc, "error: URL too long") catch {};
+            return;
+        };
+
+        var param_buf: [1024]u8 = undefined;
+        const result = if (std.mem.eql(u8, action, "search") or
+            std.mem.eql(u8, action, "symbol") or
+            std.mem.eql(u8, action, "outline"))
+        blk: {
+            const param_name: []const u8 = if (std.mem.eql(u8, action, "search"))
+                "q"
+            else if (std.mem.eql(u8, action, "symbol"))
+                "name"
+            else
+                "path";
+            const param = std.fmt.bufPrint(&param_buf, "{s}={s}", .{ param_name, query.? }) catch {
+                out.appendSlice(alloc, "error: query too long") catch {};
+                return;
+            };
+            break :blk cio.runCapture(.{
+                .allocator = alloc,
+                .argv = &.{ "curl", "-sf", "--max-time", "30", "-G", "--data-urlencode", param, url },
+            });
+        } else if (std.mem.eql(u8, action, "score") or std.mem.eql(u8, action, "cves")) blk: {
+            const scope = getStr(args, "scope") orelse query orelse "runtime";
+            if (!std.mem.eql(u8, scope, "runtime") and !std.mem.eql(u8, scope, "all")) {
+                out.appendSlice(alloc, "error: scope must be 'runtime' or 'all'") catch {};
+                return;
+            }
+            const param = std.fmt.bufPrint(&param_buf, "scope={s}", .{scope}) catch {
+                out.appendSlice(alloc, "error: scope too long") catch {};
+                return;
+            };
+            break :blk cio.runCapture(.{
+                .allocator = alloc,
+                .argv = &.{ "curl", "-sf", "--max-time", "30", "-G", "--data-urlencode", param, url },
+            });
+        } else cio.runCapture(.{
+            .allocator = alloc,
+            .argv = &.{ "curl", "-sf", "--max-time", "30", url },
+        });
+
+        const captured = result catch {
+            out.appendSlice(alloc, "error: failed to fetch from api.wiki.codes") catch {};
+            return;
+        };
+        defer alloc.free(captured.stdout);
+        defer alloc.free(captured.stderr);
+        if (captured.term.Exited != 0) {
+            out.appendSlice(alloc, "error: api.wiki.codes returned error for ") catch {};
+            out.appendSlice(alloc, wiki_slug) catch {};
+            out.appendSlice(alloc, "/") catch {};
+            out.appendSlice(alloc, action) catch {};
+            if (captured.stderr.len > 0) {
+                out.appendSlice(alloc, " — ") catch {};
+                out.appendSlice(alloc, captured.stderr[0..@min(captured.stderr.len, 200)]) catch {};
+            }
+            return;
+        }
+        out.appendSlice(alloc, captured.stdout) catch {};
+        return;
+    }
+
+    // codegraff backend — unchanged from the shipping behavior.
     if (std.mem.eql(u8, action, "search")) {
         const base_url = std.fmt.bufPrint(&url_buf, "https://codedb.codegraff.com/{s}/search", .{repo}) catch {
             out.appendSlice(alloc, "error: URL too long") catch {};
@@ -1375,7 +1639,6 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             out.appendSlice(alloc, "error: query too long") catch {};
             return;
         };
-        // -G + --data-urlencode lets curl handle encoding spaces etc.
         const result = cio.runCapture(.{
             .allocator = alloc,
             .argv = &.{ "curl", "-sf", "--max-time", "30", "-G", "--data-urlencode", q_param, base_url },
@@ -2496,4 +2759,46 @@ test "issue-258: cached project reads use the project root after contents are re
     handleRead(io, testing.allocator, &parsed.value.object, &out, ctx.explorer);
 
     try testing.expect(std.mem.indexOf(u8, out.items, "const project = \"secondary\";") != null);
+}
+
+test "codedb_snapshot cache reuses output until store seq changes" {
+    const io = testing.io;
+    const alloc = testing.allocator;
+
+    var explorer = Explorer.init(alloc);
+    defer explorer.deinit();
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+
+    var store = Store.init(alloc);
+    defer store.deinit();
+    _ = try store.recordSnapshot("src/main.zig", "pub fn main() void {}\n".len, 0xabc);
+
+    var agents = AgentRegistry.init(alloc);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = BenchContext.init(alloc, ".");
+    defer bench_ctx.deinit();
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, "{}", .{});
+    defer parsed.deinit();
+    const args = &parsed.value.object;
+
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(alloc);
+    bench_ctx.runDispatch(io, alloc, .codedb_snapshot, args, &first, &store, &explorer, &agents);
+
+    var second: std.ArrayList(u8) = .empty;
+    defer second.deinit(alloc);
+    bench_ctx.runDispatch(io, alloc, .codedb_snapshot, args, &second, &store, &explorer, &agents);
+    try testing.expectEqualStrings(first.items, second.items);
+
+    try explorer.indexFile("src/main.zig", "pub fn changed() void {}\n");
+    _ = try store.recordSnapshot("src/main.zig", "pub fn changed() void {}\n".len, 0xdef);
+
+    var third: std.ArrayList(u8) = .empty;
+    defer third.deinit(alloc);
+    bench_ctx.runDispatch(io, alloc, .codedb_snapshot, args, &third, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, third.items, "changed") != null);
+    try testing.expect(!std.mem.eql(u8, first.items, third.items));
 }

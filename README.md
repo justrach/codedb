@@ -36,7 +36,8 @@
 > **Alpha software — API is stabilizing but may change**
 >
 > codedb works and is used daily in production AI workflows, but:
-> - **Language support** — Zig, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, Dart/Flutter
+> - **Parser support** — Zig, C/C++, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, Dart/Flutter
+> - **Lightweight outline support** — Java, Kotlin, Svelte, Vue, Astro, shell, CSS/SCSS, SQL, protobuf, Fortran, LLVM IR, MLIR, and TableGen
 > - **No auth** — HTTP server binds to localhost only
 > - **Snapshot format** may change between versions
 > - **MCP protocol** is JSON-RPC 2.0 over stdio (stable)
@@ -53,7 +54,7 @@
 | Auto-registration in Claude, Codex, Gemini, Cursor     |                                          |
 | Polling file watcher with filtered directory walker    |                                          |
 | Portable snapshot for instant MCP startup              |                                          |
-| Singleton MCP with PID lock + 10min idle timeout       |                                          |
+| Singleton MCP with PID lock + 1h idle timeout          |                                          |
 | Sensitive file blocking (.env, credentials, keys)      |                                          |
 | Codesigned + notarized macOS binaries                  |                                          |
 | SHA256 checksum verification in installer              |                                          |
@@ -137,25 +138,30 @@ codedb hot                            # recently modified files
 
 ### `codedb_remote` — Cloud Intelligence
 
-Query any public GitHub repo without cloning it. Powered by `codedb.codegraff.com`.
+Query any public GitHub repo without cloning it. The default backend uses `codedb.codegraff.com`; `backend="wiki"` uses `api.wiki.codes` for code intelligence plus dependency/security artifacts.
 
 ```
-# Get the file tree of an external repo
+# Get the file tree of an external repo via the default backend
 codedb_remote repo="vercel/next.js" action="tree"
 
 # Search for code in a dependency
 codedb_remote repo="justrach/merjs" action="search" query="handleRequest"
 
-# Get symbol outlines
-codedb_remote repo="justrach/merjs" action="outline"
+# Exact symbol lookup through api.wiki.codes
+codedb_remote repo="justrach/codedb" backend="wiki" action="symbol" query="buildSnapshot"
 
-# Get repo metadata
-codedb_remote repo="justrach/merjs" action="meta"
+# Check dependency CVE evidence; scope can be runtime or all
+codedb_remote repo="axios/axios" backend="wiki" action="cves" scope="runtime"
+
+# Raw wiki slugs are accepted for repos that are indexed that way
+codedb_remote repo="chromium" backend="wiki" action="policy"
 ```
 
-**Actions:** `tree`, `outline`, `search`, `meta`
+**Default actions:** `tree`, `outline`, `search`, `meta`
 
-**Note:** This tool calls `codedb.codegraff.com` via HTTPS. No API key required. The service must be available for this tool to work.
+**Wiki actions:** `tree`, `outline`, `search`, `symbol`, `policy`, `deps`, `score`, `cves`, `commits`, `branches`, `dep-history`
+
+**Note:** This tool calls remote HTTPS services. No API key required. The selected service must be available for this tool to work.
 
 ### CLI Commands
 

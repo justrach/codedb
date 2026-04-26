@@ -1647,6 +1647,14 @@ test "snapshot_json: snapshot builds and is valid JSON" {
     try testing.expect(parsed.value.object.contains("outlines"));
     try testing.expect(parsed.value.object.contains("symbol_index"));
     try testing.expect(parsed.value.object.contains("dep_graph"));
+
+    const tree = parsed.value.object.get("tree").?.string;
+    try testing.expect(std.mem.indexOf(u8, tree, "src/") != null);
+    try testing.expect(std.mem.indexOf(u8, tree, "main.zig") != null);
+
+    const symbol_index = parsed.value.object.get("symbol_index").?.object;
+    try testing.expect(symbol_index.contains("main"));
+    try testing.expect(symbol_index.contains("version"));
 }
 
 // ── Deep copy correctness tests ─────────────────────────────
@@ -1896,7 +1904,7 @@ test "detectLanguage: public access and correct detection" {
     try testing.expect(explore.detectLanguage("src/main.zig") == .zig);
     try testing.expect(explore.detectLanguage("app.py") == .python);
     try testing.expect(explore.detectLanguage("index.ts") == .typescript);
-    try testing.expect(explore.detectLanguage("style.css") == .unknown);
+    try testing.expect(explore.detectLanguage("style.css") == .css);
 }
 
 test "extractLines: without line numbers" {
@@ -1991,6 +1999,24 @@ test "isCommentOrBlank: cpp block and line comments" {
     try testing.expect(isCommentOrBlank("  /* cpp block comment */", .cpp));
     try testing.expect(isCommentOrBlank("  * continued block comment", .cpp));
     try testing.expect(!isCommentOrBlank("  int x = 0;", .cpp));
+}
+
+test "isCommentOrBlank: detected extension language comments" {
+    try testing.expect(isCommentOrBlank("  // java line comment", .java));
+    try testing.expect(isCommentOrBlank("  // kotlin line comment", .kotlin));
+    try testing.expect(isCommentOrBlank("  <!-- component comment -->", .svelte));
+    try testing.expect(isCommentOrBlank("  <!-- component comment -->", .vue));
+    try testing.expect(isCommentOrBlank("  <!-- component comment -->", .astro));
+    try testing.expect(isCommentOrBlank("  # shell comment", .shell));
+    try testing.expect(isCommentOrBlank("  /* css block comment */", .css));
+    try testing.expect(isCommentOrBlank("  // scss line comment", .scss));
+    try testing.expect(isCommentOrBlank("  -- sql comment", .sql));
+    try testing.expect(isCommentOrBlank("  // proto comment", .protobuf));
+    try testing.expect(isCommentOrBlank("  ! fortran comment", .fortran));
+    try testing.expect(isCommentOrBlank("  ; llvm ir comment", .llvm_ir));
+    try testing.expect(isCommentOrBlank("  // mlir comment", .mlir));
+    try testing.expect(isCommentOrBlank("  // tablegen comment", .tablegen));
+    try testing.expect(!isCommentOrBlank("  SELECT * FROM users;", .sql));
 }
 
 test "isCommentOrBlank: tabs and mixed whitespace" {
@@ -2142,6 +2168,11 @@ test "detectLanguage: all supported extensions" {
     try testing.expect(explore.detectLanguage("util.h") == .c);
     try testing.expect(explore.detectLanguage("app.cpp") == .cpp);
     try testing.expect(explore.detectLanguage("app.hpp") == .cpp);
+    try testing.expect(explore.detectLanguage("app.cc") == .cpp);
+    try testing.expect(explore.detectLanguage("app.hh") == .cpp);
+    try testing.expect(explore.detectLanguage("app.cxx") == .cpp);
+    try testing.expect(explore.detectLanguage("app.hxx") == .cpp);
+    try testing.expect(explore.detectLanguage("bridge.mm") == .cpp);
     try testing.expect(explore.detectLanguage("script.py") == .python);
     try testing.expect(explore.detectLanguage("app.js") == .javascript);
     try testing.expect(explore.detectLanguage("comp.jsx") == .javascript);
@@ -2154,6 +2185,20 @@ test "detectLanguage: all supported extensions" {
     try testing.expect(explore.detectLanguage("pkg.json") == .json);
     try testing.expect(explore.detectLanguage("config.yaml") == .yaml);
     try testing.expect(explore.detectLanguage("config.yml") == .yaml);
+    try testing.expect(explore.detectLanguage("Main.java") == .java);
+    try testing.expect(explore.detectLanguage("App.kt") == .kotlin);
+    try testing.expect(explore.detectLanguage("Widget.svelte") == .svelte);
+    try testing.expect(explore.detectLanguage("Widget.vue") == .vue);
+    try testing.expect(explore.detectLanguage("Page.astro") == .astro);
+    try testing.expect(explore.detectLanguage("bootstrap.sh") == .shell);
+    try testing.expect(explore.detectLanguage("styles.css") == .css);
+    try testing.expect(explore.detectLanguage("styles.scss") == .scss);
+    try testing.expect(explore.detectLanguage("schema.sql") == .sql);
+    try testing.expect(explore.detectLanguage("service.proto") == .protobuf);
+    try testing.expect(explore.detectLanguage("solver.f90") == .fortran);
+    try testing.expect(explore.detectLanguage("module.ll") == .llvm_ir);
+    try testing.expect(explore.detectLanguage("dialect.mlir") == .mlir);
+    try testing.expect(explore.detectLanguage("records.td") == .tablegen);
     try testing.expect(explore.detectLanguage("Makefile") == .unknown);
     try testing.expect(explore.detectLanguage("no_ext") == .unknown);
 }
@@ -5091,9 +5136,14 @@ test "issue-116: getGitHead returns valid SHA for git repos" {
     }
 }
 
-test "issue-148: idle timeout is 10 minutes" {
+test "issue-148: idle timeout is 1 hour" {
     const mcp = @import("mcp.zig");
-    try testing.expectEqual(@as(i64, 10 * 60 * 1000), mcp.idle_timeout_ms);
+    try testing.expectEqual(@as(i64, 60 * 60 * 1000), mcp.idle_timeout_ms);
+}
+
+test "issue-148: dead MCP clients are polled every second" {
+    const mcp = @import("mcp.zig");
+    try testing.expectEqual(@as(u64, 1000), mcp.dead_client_poll_ms);
 }
 
 test "issue-148: POLLHUP detects closed pipe" {
@@ -5159,31 +5209,31 @@ test "issue-148: idle watchdog respects activity timestamp" {
     // Set activity to "just now"
     mcp.last_activity.store(cio.milliTimestamp(), .release);
 
-    // With 10-minute timeout, checking now should NOT trigger exit
+    // With 1-hour timeout, checking now should NOT trigger exit
     const last = mcp.last_activity.load(.acquire);
     const now = cio.milliTimestamp();
     try testing.expect(now - last < mcp.idle_timeout_ms);
 }
 
-test "issue-148: MCP session survives 2-minute idle" {
+test "issue-148: MCP session survives 30-minute idle" {
     const mcp = @import("mcp.zig");
-    // With the old 2-min timeout, an activity 3 minutes ago would trigger exit.
-    // With the new 10-min timeout, it should be fine.
-    const three_min_ago = cio.milliTimestamp() - (3 * 60 * 1000);
+    // With the old 10-min timeout, an activity 30 minutes ago would trigger exit.
+    // With the new 1-hour timeout, it should be fine.
+    const thirty_min_ago = cio.milliTimestamp() - (30 * 60 * 1000);
 
     // Save and restore
     const saved = mcp.last_activity.load(.acquire);
     defer mcp.last_activity.store(saved, .release);
 
-    mcp.last_activity.store(three_min_ago, .release);
+    mcp.last_activity.store(thirty_min_ago, .release);
     const last = mcp.last_activity.load(.acquire);
     const now = cio.milliTimestamp();
 
-    // Should NOT exceed 10-minute timeout
+    // Should NOT exceed 1-hour timeout
     try testing.expect(now - last < mcp.idle_timeout_ms);
 
-    // Should have exceeded old 2-minute timeout
-    try testing.expect(now - last > 2 * 60 * 1000);
+    // Should have exceeded old 10-minute timeout
+    try testing.expect(now - last > 10 * 60 * 1000);
 }
 
 test "issue-148: open pipe does not trigger HUP" {
@@ -5225,8 +5275,8 @@ test "issue-148: codedb mcp exits when stdin is closed" {
         child.stdin = null;
     }
 
-    // Wait up to 15 seconds for the process to exit
-    // (watchdog polls every 10s, so it should detect POLLHUP within ~10s)
+    // Wait for the process to exit. The main read loop exits on stdin EOF;
+    // the watchdog also polls dead clients every second as a backup.
     const start = cio.milliTimestamp();
     const term = child.wait(io) catch {
         // If wait fails, the process is stuck — test fails
@@ -5242,8 +5292,8 @@ test "issue-148: codedb mcp exits when stdin is closed" {
         else => {},
     }
 
-    // Should exit within 15 seconds (10s poll interval + margin)
-    try testing.expect(elapsed < 15_000);
+    // Should exit promptly after stdin closes.
+    try testing.expect(elapsed < 5_000);
 }
 
 const MmapTrigramIndex = @import("index.zig").MmapTrigramIndex;
@@ -6179,6 +6229,458 @@ test "issue-215: R setClass parsed" {
 test "issue-215: detectLanguage handles .r and .R" {
     try testing.expectEqual(Language.r, explore.detectLanguage("script.r"));
     try testing.expectEqual(Language.r, explore.detectLanguage("analysis.R"));
+}
+
+test "issue-319: C parser extracts includes macros types and functions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("src/core.c",
+        \\#include <stdio.h>
+        \\#include "local.h"
+        \\#define MAX_SIZE 64
+        \\#define SQUARE(x) ((x) * (x))
+        \\struct Worker {
+        \\    int id;
+        \\};
+        \\enum Mode {
+        \\    MODE_A,
+        \\};
+        \\union Value {
+        \\    int i;
+        \\};
+        \\typedef unsigned long size_alias_t;
+        \\static inline const char *worker_name(const struct Worker *worker) {
+        \\    return "worker";
+        \\}
+        \\void *alloc_item(size_t size)
+        \\{
+        \\    return malloc(size);
+        \\}
+    );
+
+    const outline = try explorer.getOutline("src/core.c", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.c, outline.language);
+    try testing.expectEqual(@as(usize, 2), outline.imports.items.len);
+    try testing.expectEqualStrings("stdio.h", outline.imports.items[0]);
+    try testing.expectEqualStrings("local.h", outline.imports.items[1]);
+
+    const max_size = try explorer.findAllSymbols("MAX_SIZE", alloc);
+    defer alloc.free(max_size);
+    try testing.expectEqual(@as(usize, 1), max_size.len);
+    try testing.expectEqual(SymbolKind.macro_def, max_size[0].symbol.kind);
+
+    const square = try explorer.findAllSymbols("SQUARE", alloc);
+    defer alloc.free(square);
+    try testing.expectEqual(@as(usize, 1), square.len);
+    try testing.expectEqual(SymbolKind.macro_def, square[0].symbol.kind);
+
+    const worker = try explorer.findAllSymbols("Worker", alloc);
+    defer alloc.free(worker);
+    try testing.expectEqual(@as(usize, 1), worker.len);
+    try testing.expectEqual(SymbolKind.struct_def, worker[0].symbol.kind);
+
+    const mode = try explorer.findAllSymbols("Mode", alloc);
+    defer alloc.free(mode);
+    try testing.expectEqual(@as(usize, 1), mode.len);
+    try testing.expectEqual(SymbolKind.enum_def, mode[0].symbol.kind);
+
+    const value = try explorer.findAllSymbols("Value", alloc);
+    defer alloc.free(value);
+    try testing.expectEqual(@as(usize, 1), value.len);
+    try testing.expectEqual(SymbolKind.union_def, value[0].symbol.kind);
+
+    const alias = try explorer.findAllSymbols("size_alias_t", alloc);
+    defer alloc.free(alias);
+    try testing.expectEqual(@as(usize, 1), alias.len);
+    try testing.expectEqual(SymbolKind.type_alias, alias[0].symbol.kind);
+
+    const worker_name = try explorer.findAllSymbols("worker_name", alloc);
+    defer alloc.free(worker_name);
+    try testing.expectEqual(@as(usize, 1), worker_name.len);
+    try testing.expectEqual(SymbolKind.function, worker_name[0].symbol.kind);
+
+    const alloc_item = try explorer.findAllSymbols("alloc_item", alloc);
+    defer alloc.free(alloc_item);
+    try testing.expectEqual(@as(usize, 1), alloc_item.len);
+    try testing.expectEqual(SymbolKind.function, alloc_item[0].symbol.kind);
+}
+
+test "issue-319: C parser avoids comments strings prototypes and macro calls" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("src/noise.c",
+        \\// int fake_comment(void) {
+        \\/* int fake_block(void) { */
+        \\const char *s = "int fake_string(void) {";
+        \\typedef int (*handler_fn)(int);
+        \\int prototype_only(void);
+        \\EXPORT_SYMBOL(real_function);
+        \\if (real_function()) {
+        \\}
+        \\int real_function(void) {
+        \\    return 1;
+        \\}
+    );
+
+    const real = try explorer.findAllSymbols("real_function", alloc);
+    defer alloc.free(real);
+    try testing.expectEqual(@as(usize, 1), real.len);
+    try testing.expectEqual(SymbolKind.function, real[0].symbol.kind);
+
+    const fake_comment = try explorer.findAllSymbols("fake_comment", alloc);
+    defer alloc.free(fake_comment);
+    try testing.expectEqual(@as(usize, 0), fake_comment.len);
+
+    const fake_block = try explorer.findAllSymbols("fake_block", alloc);
+    defer alloc.free(fake_block);
+    try testing.expectEqual(@as(usize, 0), fake_block.len);
+
+    const fake_string = try explorer.findAllSymbols("fake_string", alloc);
+    defer alloc.free(fake_string);
+    try testing.expectEqual(@as(usize, 0), fake_string.len);
+
+    const prototype = try explorer.findAllSymbols("prototype_only", alloc);
+    defer alloc.free(prototype);
+    try testing.expectEqual(@as(usize, 0), prototype.len);
+
+    const handler = try explorer.findAllSymbols("handler_fn", alloc);
+    defer alloc.free(handler);
+    try testing.expectEqual(@as(usize, 0), handler.len);
+}
+
+test "issue-321: common detected extensions produce outlines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc);
+
+    try explorer.indexFile("src/math.cc",
+        \\#include <vector>
+        \\class Calculator {
+        \\public:
+        \\    int add(int a, int b) {
+        \\        return a + b;
+        \\    }
+        \\};
+        \\int free_add(int a, int b) {
+        \\    return a + b;
+        \\}
+    );
+    try explorer.indexFile("src/Bridge.mm",
+        \\#import "Bridge.h"
+        \\@interface BrowserController
+        \\- (void)loadPage:(NSString *)url;
+        \\@end
+        \\@implementation BrowserController
+        \\- (void)loadPage:(NSString *)url { }
+        \\@end
+        \\class BrowserBridge {
+        \\};
+        \\int bridge_main(void) {
+        \\    return 0;
+        \\}
+    );
+    try explorer.indexFile("src/App.java",
+        \\package demo;
+        \\import java.util.List;
+        \\public class Worker {
+        \\    public void run() {}
+        \\}
+        \\interface RunnableThing {}
+        \\enum Mode { A }
+        \\record Pair(int left, int right) {}
+    );
+    try explorer.indexFile("src/App.kt",
+        \\package demo
+        \\import kotlinx.coroutines.runBlocking
+        \\data class User(val name: String)
+        \\interface Repo
+        \\enum class KotlinMode { A }
+        \\fun loadUser(): User = User("a")
+        \\val answer = 42
+    );
+    try explorer.indexFile("src/Widget.svelte",
+        \\<script>
+        \\import Thing from './Thing.svelte';
+        \\export let title;
+        \\function renderTitle() {}
+        \\</script>
+        \\.card { color: red; }
+    );
+    try explorer.indexFile("src/View.vue",
+        \\<script setup>
+        \\import Child from './Child.vue'
+        \\const count = 0
+        \\function inc() {}
+        \\</script>
+    );
+    try explorer.indexFile("src/Page.astro",
+        \\---
+        \\import Layout from '../layouts/Layout.astro';
+        \\const title = 'Home';
+        \\---
+    );
+    try explorer.indexFile("scripts/build.sh",
+        \\source ./env.sh
+        \\function build_app() {
+        \\}
+        \\deploy_app() {
+        \\}
+        \\BUILD_MODE=release
+    );
+    try explorer.indexFile("styles/app.css",
+        \\:root {
+        \\  --brand: red;
+        \\}
+        \\.button {
+        \\  color: var(--brand);
+        \\}
+        \\@keyframes fade {}
+    );
+    try explorer.indexFile("styles/app.scss",
+        \\$gap: 8px;
+        \\@mixin center {}
+        \\.panel {}
+    );
+    try explorer.indexFile("db/schema.sql",
+        \\CREATE TABLE users (id integer);
+        \\CREATE OR REPLACE FUNCTION do_thing() RETURNS void AS $$ SELECT 1; $$ LANGUAGE sql;
+        \\CREATE INDEX idx_users_id ON users(id);
+    );
+    try explorer.indexFile("api/service.proto",
+        \\syntax = "proto3";
+        \\import "google/protobuf/timestamp.proto";
+        \\message User {}
+        \\enum Status { STATUS_OK = 0; }
+        \\service UserService {
+        \\  rpc GetUser (User) returns (User);
+        \\}
+    );
+    try explorer.indexFile("math/solver.f90",
+        \\module solver
+        \\use mathlib
+        \\type :: Particle
+        \\end type
+        \\subroutine step()
+        \\end subroutine
+        \\function energy()
+        \\end function
+    );
+    try explorer.indexFile("ir/module.ll",
+        \\%Pair = type { i32, i32 }
+        \\@global_value = global i32 0
+        \\define i32 @main() {
+        \\  ret i32 0
+        \\}
+    );
+    try explorer.indexFile("ir/dialect.mlir",
+        \\module @kernel_mod {
+        \\  func.func @kernel() {
+        \\    return
+        \\  }
+        \\}
+    );
+    try explorer.indexFile("llvm/records.td",
+        \\include "Base.td"
+        \\class Register<string name>;
+        \\multiclass Pat<string op>;
+        \\def R0 : Register<"r0">;
+        \\defm ADD : Pat<"add">;
+        \\let Namespace = "Toy";
+    );
+
+    const cc_outline = try explorer.getOutline("src/math.cc", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.cpp, cc_outline.language);
+    try expectOutlineImport(&cc_outline, "vector");
+    try expectOutlineSymbol(&cc_outline, "Calculator", .class_def);
+    try expectOutlineSymbol(&cc_outline, "add", .function);
+    try expectOutlineSymbol(&cc_outline, "free_add", .function);
+
+    const mm_outline = try explorer.getOutline("src/Bridge.mm", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.cpp, mm_outline.language);
+    try expectOutlineImport(&mm_outline, "Bridge.h");
+    try expectOutlineSymbol(&mm_outline, "BrowserController", .class_def);
+    try expectOutlineSymbol(&mm_outline, "loadPage", .method);
+    try expectOutlineSymbol(&mm_outline, "BrowserBridge", .class_def);
+    try expectOutlineSymbol(&mm_outline, "bridge_main", .function);
+
+    const java_outline = try explorer.getOutline("src/App.java", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.java, java_outline.language);
+    try expectOutlineImport(&java_outline, "java.util.List");
+    try expectOutlineSymbol(&java_outline, "Worker", .class_def);
+    try expectOutlineSymbol(&java_outline, "run", .method);
+    try expectOutlineSymbol(&java_outline, "RunnableThing", .interface_def);
+    try expectOutlineSymbol(&java_outline, "Mode", .enum_def);
+    try expectOutlineSymbol(&java_outline, "Pair", .class_def);
+
+    const kt_outline = try explorer.getOutline("src/App.kt", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.kotlin, kt_outline.language);
+    try expectOutlineImport(&kt_outline, "kotlinx.coroutines.runBlocking");
+    try expectOutlineSymbol(&kt_outline, "User", .class_def);
+    try expectOutlineSymbol(&kt_outline, "Repo", .interface_def);
+    try expectOutlineSymbol(&kt_outline, "KotlinMode", .enum_def);
+    try expectOutlineSymbol(&kt_outline, "loadUser", .function);
+    try expectOutlineSymbol(&kt_outline, "answer", .constant);
+
+    const svelte_outline = try explorer.getOutline("src/Widget.svelte", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.svelte, svelte_outline.language);
+    try expectOutlineImport(&svelte_outline, "./Thing.svelte");
+    try expectOutlineSymbol(&svelte_outline, "title", .constant);
+    try expectOutlineSymbol(&svelte_outline, "renderTitle", .function);
+    try expectOutlineSymbol(&svelte_outline, ".card", .class_def);
+
+    const vue_outline = try explorer.getOutline("src/View.vue", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.vue, vue_outline.language);
+    try expectOutlineImport(&vue_outline, "./Child.vue");
+    try expectOutlineSymbol(&vue_outline, "count", .constant);
+    try expectOutlineSymbol(&vue_outline, "inc", .function);
+
+    const astro_outline = try explorer.getOutline("src/Page.astro", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.astro, astro_outline.language);
+    try expectOutlineImport(&astro_outline, "../layouts/Layout.astro");
+    try expectOutlineSymbol(&astro_outline, "title", .constant);
+
+    const shell_outline = try explorer.getOutline("scripts/build.sh", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.shell, shell_outline.language);
+    try expectOutlineImport(&shell_outline, "./env.sh");
+    try expectOutlineSymbol(&shell_outline, "build_app", .function);
+    try expectOutlineSymbol(&shell_outline, "deploy_app", .function);
+    try expectOutlineSymbol(&shell_outline, "BUILD_MODE", .variable);
+
+    const css_outline = try explorer.getOutline("styles/app.css", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.css, css_outline.language);
+    try expectOutlineSymbol(&css_outline, "--brand", .constant);
+    try expectOutlineSymbol(&css_outline, ".button", .class_def);
+    try expectOutlineSymbol(&css_outline, "fade", .function);
+
+    const scss_outline = try explorer.getOutline("styles/app.scss", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.scss, scss_outline.language);
+    try expectOutlineSymbol(&scss_outline, "$gap", .constant);
+    try expectOutlineSymbol(&scss_outline, "center", .function);
+    try expectOutlineSymbol(&scss_outline, ".panel", .class_def);
+
+    const sql_outline = try explorer.getOutline("db/schema.sql", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.sql, sql_outline.language);
+    try expectOutlineSymbol(&sql_outline, "users", .struct_def);
+    try expectOutlineSymbol(&sql_outline, "do_thing", .function);
+    try expectOutlineSymbol(&sql_outline, "idx_users_id", .constant);
+
+    const proto_outline = try explorer.getOutline("api/service.proto", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.protobuf, proto_outline.language);
+    try expectOutlineImport(&proto_outline, "google/protobuf/timestamp.proto");
+    try expectOutlineSymbol(&proto_outline, "User", .struct_def);
+    try expectOutlineSymbol(&proto_outline, "Status", .enum_def);
+    try expectOutlineSymbol(&proto_outline, "UserService", .interface_def);
+    try expectOutlineSymbol(&proto_outline, "GetUser", .method);
+
+    const fortran_outline = try explorer.getOutline("math/solver.f90", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.fortran, fortran_outline.language);
+    try expectOutlineImport(&fortran_outline, "mathlib");
+    try expectOutlineSymbol(&fortran_outline, "solver", .class_def);
+    try expectOutlineSymbol(&fortran_outline, "Particle", .struct_def);
+    try expectOutlineSymbol(&fortran_outline, "step", .function);
+    try expectOutlineSymbol(&fortran_outline, "energy", .function);
+
+    const llvm_outline = try explorer.getOutline("ir/module.ll", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.llvm_ir, llvm_outline.language);
+    try expectOutlineSymbol(&llvm_outline, "Pair", .type_alias);
+    try expectOutlineSymbol(&llvm_outline, "global_value", .variable);
+    try expectOutlineSymbol(&llvm_outline, "main", .function);
+
+    const mlir_outline = try explorer.getOutline("ir/dialect.mlir", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.mlir, mlir_outline.language);
+    try expectOutlineSymbol(&mlir_outline, "kernel_mod", .class_def);
+    try expectOutlineSymbol(&mlir_outline, "kernel", .function);
+
+    const td_outline = try explorer.getOutline("llvm/records.td", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.tablegen, td_outline.language);
+    try expectOutlineImport(&td_outline, "Base.td");
+    try expectOutlineSymbol(&td_outline, "Register", .class_def);
+    try expectOutlineSymbol(&td_outline, "Pat", .class_def);
+    try expectOutlineSymbol(&td_outline, "R0", .constant);
+    try expectOutlineSymbol(&td_outline, "ADD", .constant);
+    try expectOutlineSymbol(&td_outline, "Namespace", .variable);
+
+    const worker = try explorer.findAllSymbols("Worker", alloc);
+    defer alloc.free(worker);
+    try testing.expectEqual(@as(usize, 1), worker.len);
+    try testing.expectEqual(SymbolKind.class_def, worker[0].symbol.kind);
+
+    const run = try explorer.findAllSymbols("run", alloc);
+    defer alloc.free(run);
+    try testing.expectEqual(@as(usize, 1), run.len);
+    try testing.expectEqual(SymbolKind.method, run[0].symbol.kind);
+
+    const user = try explorer.findAllSymbols("User", alloc);
+    defer alloc.free(user);
+    try testing.expect(user.len >= 2);
+
+    const load_user = try explorer.findAllSymbols("loadUser", alloc);
+    defer alloc.free(load_user);
+    try testing.expectEqual(@as(usize, 1), load_user.len);
+    try testing.expectEqual(SymbolKind.function, load_user[0].symbol.kind);
+
+    const title = try explorer.findAllSymbols("title", alloc);
+    defer alloc.free(title);
+    try testing.expect(title.len >= 2);
+
+    const build_app = try explorer.findAllSymbols("build_app", alloc);
+    defer alloc.free(build_app);
+    try testing.expectEqual(@as(usize, 1), build_app.len);
+    try testing.expectEqual(SymbolKind.function, build_app[0].symbol.kind);
+
+    const button = try explorer.findAllSymbols(".button", alloc);
+    defer alloc.free(button);
+    try testing.expectEqual(@as(usize, 1), button.len);
+
+    const users = try explorer.findAllSymbols("users", alloc);
+    defer alloc.free(users);
+    try testing.expectEqual(@as(usize, 1), users.len);
+    try testing.expectEqual(SymbolKind.struct_def, users[0].symbol.kind);
+
+    const user_service = try explorer.findAllSymbols("UserService", alloc);
+    defer alloc.free(user_service);
+    try testing.expectEqual(@as(usize, 1), user_service.len);
+    try testing.expectEqual(SymbolKind.interface_def, user_service[0].symbol.kind);
+
+    const particle = try explorer.findAllSymbols("Particle", alloc);
+    defer alloc.free(particle);
+    try testing.expectEqual(@as(usize, 1), particle.len);
+    try testing.expectEqual(SymbolKind.struct_def, particle[0].symbol.kind);
+
+    const main_sym = try explorer.findAllSymbols("main", alloc);
+    defer alloc.free(main_sym);
+    try testing.expectEqual(@as(usize, 1), main_sym.len);
+    try testing.expectEqual(SymbolKind.function, main_sym[0].symbol.kind);
+
+    const kernel = try explorer.findAllSymbols("kernel", alloc);
+    defer alloc.free(kernel);
+    try testing.expectEqual(@as(usize, 1), kernel.len);
+    try testing.expectEqual(SymbolKind.function, kernel[0].symbol.kind);
+
+    const r0 = try explorer.findAllSymbols("R0", alloc);
+    defer alloc.free(r0);
+    try testing.expectEqual(@as(usize, 1), r0.len);
+}
+
+fn expectOutlineSymbol(outline: *const explore.FileOutline, name: []const u8, kind: SymbolKind) !void {
+    for (outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, name) and sym.kind == kind) return;
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn expectOutlineImport(outline: *const explore.FileOutline, import_path: []const u8) !void {
+    for (outline.imports.items) |imp| {
+        if (std.mem.eql(u8, imp, import_path)) return;
+    }
+    return error.TestUnexpectedResult;
 }
 
 test "issue-179: Python inline docstring does not leak symbols" {

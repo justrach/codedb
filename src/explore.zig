@@ -100,12 +100,30 @@ pub const Language = enum(u8) {
     yaml,
     unknown,
     dart,
+    java,
+    kotlin,
+    svelte,
+    vue,
+    astro,
+    shell,
+    css,
+    scss,
+    sql,
+    protobuf,
+    fortran,
+    llvm_ir,
+    mlir,
+    tablegen,
 };
 
 pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".zig")) return .zig;
     if (std.mem.endsWith(u8, path, ".c") or std.mem.endsWith(u8, path, ".h")) return .c;
-    if (std.mem.endsWith(u8, path, ".cpp") or std.mem.endsWith(u8, path, ".hpp")) return .cpp;
+    if (std.mem.endsWith(u8, path, ".cpp") or std.mem.endsWith(u8, path, ".hpp") or
+        std.mem.endsWith(u8, path, ".cc") or std.mem.endsWith(u8, path, ".hh") or
+        std.mem.endsWith(u8, path, ".cxx") or std.mem.endsWith(u8, path, ".hxx") or
+        std.mem.endsWith(u8, path, ".mm"))
+        return .cpp;
     if (std.mem.endsWith(u8, path, ".py")) return .python;
     if (std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".jsx")) return .javascript;
     if (std.mem.endsWith(u8, path, ".ts") or std.mem.endsWith(u8, path, ".tsx")) return .typescript;
@@ -119,6 +137,20 @@ pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".json")) return .json;
     if (std.mem.endsWith(u8, path, ".yaml") or std.mem.endsWith(u8, path, ".yml")) return .yaml;
     if (std.mem.endsWith(u8, path, ".dart")) return .dart;
+    if (std.mem.endsWith(u8, path, ".java")) return .java;
+    if (std.mem.endsWith(u8, path, ".kt")) return .kotlin;
+    if (std.mem.endsWith(u8, path, ".svelte")) return .svelte;
+    if (std.mem.endsWith(u8, path, ".vue")) return .vue;
+    if (std.mem.endsWith(u8, path, ".astro")) return .astro;
+    if (std.mem.endsWith(u8, path, ".sh")) return .shell;
+    if (std.mem.endsWith(u8, path, ".css")) return .css;
+    if (std.mem.endsWith(u8, path, ".scss")) return .scss;
+    if (std.mem.endsWith(u8, path, ".sql")) return .sql;
+    if (std.mem.endsWith(u8, path, ".proto")) return .protobuf;
+    if (std.mem.endsWith(u8, path, ".f90")) return .fortran;
+    if (std.mem.endsWith(u8, path, ".ll")) return .llvm_ir;
+    if (std.mem.endsWith(u8, path, ".mlir")) return .mlir;
+    if (std.mem.endsWith(u8, path, ".td")) return .tablegen;
     return .unknown;
 }
 
@@ -609,7 +641,12 @@ pub const Explorer = struct {
             outline.language == .cpp or outline.language == .typescript or
             outline.language == .javascript or outline.language == .rust or
             outline.language == .go_lang or outline.language == .php or
-            outline.language == .dart;
+            outline.language == .dart or outline.language == .java or
+            outline.language == .kotlin or outline.language == .svelte or
+            outline.language == .vue or outline.language == .astro or
+            outline.language == .css or outline.language == .scss or
+            outline.language == .protobuf or outline.language == .mlir or
+            outline.language == .tablegen;
 
         for (outline.symbols.items) |*sym| {
             // Skip single-line kinds
@@ -834,7 +871,12 @@ pub const Explorer = struct {
                 outline.language == .go_lang or outline.language == .c or
                 outline.language == .cpp or outline.language == .rust or
                 outline.language == .zig or outline.language == .hcl or
-                outline.language == .dart)
+                outline.language == .dart or outline.language == .java or
+                outline.language == .kotlin or outline.language == .svelte or
+                outline.language == .vue or outline.language == .astro or
+                outline.language == .css or outline.language == .scss or
+                outline.language == .protobuf or outline.language == .mlir or
+                outline.language == .tablegen)
             {
                 if (in_block_comment) {
                     if (std.mem.indexOf(u8, trimmed, "*/")) |close_pos| {
@@ -862,6 +904,8 @@ pub const Explorer = struct {
                 try parser.parsePythonLine(trimmed, line_num, &outline);
             } else if (outline.language == .typescript or outline.language == .javascript) {
                 try parser.parseTsLine(trimmed, line_num, &outline);
+            } else if (outline.language == .c or outline.language == .cpp) {
+                try parser.parseCLine(trimmed, line_num, &outline);
             } else if (outline.language == .rust) {
                 try parser.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
             } else if (outline.language == .php) {
@@ -896,6 +940,28 @@ pub const Explorer = struct {
                 try parser.parseHclLine(trimmed, line_num, &outline);
             } else if (outline.language == .r) {
                 try parser.parseRLine(trimmed, line_num, &outline);
+            } else if (outline.language == .java) {
+                try parser.parseJavaLine(trimmed, line_num, &outline);
+            } else if (outline.language == .kotlin) {
+                try parser.parseKotlinLine(trimmed, line_num, &outline);
+            } else if (outline.language == .svelte or outline.language == .vue or outline.language == .astro) {
+                try parser.parseComponentLine(trimmed, line_num, &outline);
+            } else if (outline.language == .shell) {
+                try parser.parseShellLine(trimmed, line_num, &outline);
+            } else if (outline.language == .css or outline.language == .scss) {
+                try parser.parseStyleLine(trimmed, line_num, &outline);
+            } else if (outline.language == .sql) {
+                try parser.parseSqlLine(trimmed, line_num, &outline);
+            } else if (outline.language == .protobuf) {
+                try parser.parseProtoLine(trimmed, line_num, &outline);
+            } else if (outline.language == .fortran) {
+                try parser.parseFortranLine(trimmed, line_num, &outline);
+            } else if (outline.language == .llvm_ir) {
+                try parser.parseLlvmIrLine(trimmed, line_num, &outline);
+            } else if (outline.language == .mlir) {
+                try parser.parseMlirLine(trimmed, line_num, &outline);
+            } else if (outline.language == .tablegen) {
+                try parser.parseTableGenLine(trimmed, line_num, &outline);
             }
 
             prev_line_trimmed = trimmed;
@@ -1256,22 +1322,63 @@ pub const Explorer = struct {
         var result_list: std.ArrayList(SymbolResult) = .empty;
         errdefer result_list.deinit(allocator);
 
-        // Scan outlines for all symbols by name (catches all kinds including imports).
+        // Track (path, line_start) pairs already appended. symbol_index can be
+        // incomplete after fast-snapshot restore (outlines are populated before
+        // rebuildSymbolIndexFor runs on every file), so we must still fall
+        // through to the outline scan — and dedupe against what the index
+        // already supplied. Keys are "<path>:<line>" allocated from the caller
+        // allocator, freed at end of call.
+        var seen = std.StringHashMap(void).init(allocator);
+        defer {
+            var sit = seen.keyIterator();
+            while (sit.next()) |k| allocator.free(k.*);
+            seen.deinit();
+        }
+
+        if (self.symbol_index.get(name)) |locs| {
+            for (locs.items) |loc| {
+                var detail: ?[]const u8 = null;
+                if (self.outlines.getPtr(loc.path)) |outline| {
+                    for (outline.symbols.items) |sym| {
+                        if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, name)) {
+                            detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
+                            break;
+                        }
+                    }
+                }
+                try result_list.append(allocator, .{
+                    .path = try allocator.dupe(u8, loc.path),
+                    .symbol = .{
+                        .name = try allocator.dupe(u8, name),
+                        .kind = loc.kind,
+                        .line_start = loc.line_start,
+                        .line_end = loc.line_end,
+                        .detail = detail,
+                    },
+                });
+                const key = try std.fmt.allocPrint(allocator, "{s}:{d}", .{ loc.path, loc.line_start });
+                seen.put(key, {}) catch allocator.free(key);
+            }
+        }
+
+        // Safety scan: append any outline symbols the index missed.
         var iter = self.outlines.iterator();
         while (iter.next()) |entry| {
             for (entry.value_ptr.symbols.items) |sym| {
-                if (std.mem.eql(u8, sym.name, name)) {
-                    try result_list.append(allocator, .{
-                        .path = try allocator.dupe(u8, entry.key_ptr.*),
-                        .symbol = .{
-                            .name = try allocator.dupe(u8, sym.name),
-                            .kind = sym.kind,
-                            .line_start = sym.line_start,
-                            .line_end = sym.line_end,
-                            .detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null,
-                        },
-                    });
-                }
+                if (!std.mem.eql(u8, sym.name, name)) continue;
+                var key_buf: [std.fs.max_path_bytes + 32]u8 = undefined;
+                const key = std.fmt.bufPrint(&key_buf, "{s}:{d}", .{ entry.key_ptr.*, sym.line_start }) catch continue;
+                if (seen.contains(key)) continue;
+                try result_list.append(allocator, .{
+                    .path = try allocator.dupe(u8, entry.key_ptr.*),
+                    .symbol = .{
+                        .name = try allocator.dupe(u8, sym.name),
+                        .kind = sym.kind,
+                        .line_start = sym.line_start,
+                        .line_end = sym.line_end,
+                        .detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null,
+                    },
+                });
             }
         }
         return result_list.toOwnedSlice(allocator);
@@ -1797,8 +1904,19 @@ pub const Explorer = struct {
     }
     fn parseTsLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
         const a = self.allocator;
-        if (containsAny(line, &.{ "function ", "const ", "export function ", "export const " })) {
-            const kind: SymbolKind = if (std.mem.indexOf(u8, line, "function") != null) .function else .constant;
+        if (containsAny(line, &.{ "function ", "const ", "let ", "var ", "class ", "interface ", "enum ", "type " })) {
+            const kind: SymbolKind = if (std.mem.indexOf(u8, line, "function") != null)
+                .function
+            else if (std.mem.indexOf(u8, line, "class ") != null)
+                .class_def
+            else if (std.mem.indexOf(u8, line, "interface ") != null)
+                .interface_def
+            else if (std.mem.indexOf(u8, line, "enum ") != null)
+                .enum_def
+            else if (std.mem.indexOf(u8, line, "type ") != null)
+                .type_alias
+            else
+                .constant;
             const trimmed = skipKeywords(line);
             if (extractIdent(trimmed)) |name| {
                 const name_copy = try a.dupe(u8, name);
@@ -1828,6 +1946,254 @@ pub const Explorer = struct {
                 errdefer a.free(import_copy);
                 try outline.imports.append(a, import_copy);
             }
+        }
+    }
+
+    fn parseJavaLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = stripLineComment(raw_line);
+        if (line.len == 0 or startsWith(line, "@")) return;
+
+        if (parseDelimitedImport(line, "import ", ";")) |imp| {
+            try appendImportSymbol(a, outline, imp, line_num, line);
+            return;
+        }
+
+        if (extractIdentAfterKeyword(line, "record ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "class ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "interface ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .interface_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "enum ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+        } else if (extractJvmMethodName(line)) |name| {
+            try appendOutlineSymbol(a, outline, name, .method, line_num, line);
+        }
+    }
+
+    fn parseKotlinLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = stripLineComment(raw_line);
+        if (line.len == 0 or startsWith(line, "@")) return;
+
+        if (parseDelimitedImport(line, "import ", "")) |imp| {
+            try appendImportSymbol(a, outline, imp, line_num, line);
+            return;
+        }
+
+        if (extractIdentAfterKeyword(line, "enum class ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "interface ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .interface_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "class ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "object ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "fun ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "val ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .constant, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "var ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .variable, line_num, line);
+        }
+    }
+
+    fn parseComponentLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const line = std.mem.trim(u8, raw_line, " \t");
+        if (line.len == 0 or startsWith(line, "<!--") or startsWith(line, "<script") or startsWith(line, "</script") or
+            startsWith(line, "<style") or startsWith(line, "</style"))
+            return;
+        if (startsWith(line, ".") or startsWith(line, "#") or startsWith(line, "@keyframes") or startsWith(line, "$") or startsWith(line, "--")) {
+            try self.parseStyleLine(line, line_num, outline);
+            return;
+        }
+        try self.parseTsLine(line, line_num, outline);
+    }
+
+    fn parseShellLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = std.mem.trim(u8, raw_line, " \t");
+        if (line.len == 0 or startsWith(line, "#")) return;
+
+        if (startsWith(line, "source ")) {
+            const imp = firstShellWord(line["source ".len..]) orelse return;
+            try appendImportSymbol(a, outline, imp, line_num, line);
+            return;
+        }
+        if (startsWith(line, ". ")) {
+            const imp = firstShellWord(line[2..]) orelse return;
+            try appendImportSymbol(a, outline, imp, line_num, line);
+            return;
+        }
+        if (extractIdentAfterKeyword(line, "function ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+            return;
+        }
+        if (std.mem.indexOf(u8, line, "()")) |pos| {
+            const before = std.mem.trim(u8, line[0..pos], " \t");
+            if (extractIdent(before)) |name| {
+                if (name.len == before.len) try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+            }
+            return;
+        }
+        if (parseShellAssignment(line)) |name| {
+            try appendOutlineSymbol(a, outline, name, .variable, line_num, line);
+        }
+    }
+
+    fn parseStyleLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = std.mem.trim(u8, raw_line, " \t");
+        if (line.len == 0 or startsWith(line, "/*") or startsWith(line, "*")) return;
+
+        if (extractIdentAfterKeyword(line, "@keyframes ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "@mixin ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "@function ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+        } else if (parseCssVariable(line)) |name| {
+            try appendOutlineSymbol(a, outline, name, .constant, line_num, line);
+        } else if (parseCssSelector(line)) |name| {
+            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+        }
+    }
+
+    fn parseSqlLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = stripSqlLineComment(raw_line);
+        if (line.len == 0) return;
+
+        if (parseSqlCreate(line)) |sym| {
+            try appendOutlineSymbol(a, outline, sym.name, sym.kind, line_num, line);
+        }
+    }
+
+    fn parseProtoLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = stripLineComment(raw_line);
+        if (line.len == 0) return;
+
+        if (startsWith(line, "import ")) {
+            if (extractStringLiteral(line)) |imp| try appendImportSymbol(a, outline, imp, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "message ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .struct_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "enum ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "service ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .interface_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "rpc ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .method, line_num, line);
+        }
+    }
+
+    fn parseFortranLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = stripFortranComment(raw_line);
+        if (line.len == 0) return;
+
+        if (parseFortranUse(line)) |imp| {
+            try appendImportSymbol(a, outline, imp, line_num, line);
+        } else if (extractIdentAfterKeywordIgnoreCase(line, "module ")) |name| {
+            if (!startsWithIgnoreCase(line, "module procedure ")) try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+        } else if (extractIdentAfterKeywordIgnoreCase(line, "program ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+        } else if (extractIdentAfterKeywordIgnoreCase(line, "subroutine ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+        } else if (extractIdentAfterKeywordIgnoreCase(line, "function ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+        } else if (parseFortranTypeName(line)) |name| {
+            try appendOutlineSymbol(a, outline, name, .struct_def, line_num, line);
+        }
+    }
+
+    fn parseLlvmIrLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = std.mem.trim(u8, raw_line, " \t");
+        if (line.len == 0 or startsWith(line, ";")) return;
+
+        if (startsWith(line, "define ") or startsWith(line, "declare ")) {
+            if (extractAtName(line)) |name| try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+        } else if (line[0] == '@') {
+            if (extractLlvmGlobalName(line)) |name| try appendOutlineSymbol(a, outline, name, .variable, line_num, line);
+        } else if (line[0] == '%' and std.mem.indexOf(u8, line, " = type") != null) {
+            if (extractLlvmGlobalName(line)) |name| try appendOutlineSymbol(a, outline, name, .type_alias, line_num, line);
+        }
+    }
+
+    fn parseMlirLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = stripLineComment(raw_line);
+        if (line.len == 0) return;
+
+        if (std.mem.indexOf(u8, line, "module @") != null) {
+            if (extractAtName(line)) |name| try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+        } else if (std.mem.indexOf(u8, line, "func") != null and std.mem.indexOfScalar(u8, line, '@') != null) {
+            if (extractAtName(line)) |name| try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+        }
+    }
+
+    fn parseTableGenLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = stripLineComment(raw_line);
+        if (line.len == 0) return;
+
+        if (startsWith(line, "include ")) {
+            if (extractStringLiteral(line)) |imp| try appendImportSymbol(a, outline, imp, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "defm ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .constant, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "def ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .constant, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "multiclass ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "class ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "let ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .variable, line_num, line);
+        }
+    }
+
+    fn parseCLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = stripLineComment(raw_line);
+        if (line.len == 0) return;
+
+        if (startsWith(line, "#include") or startsWith(line, "#import")) {
+            if (extractCIncludePath(line)) |path| {
+                const import_copy = try a.dupe(u8, path);
+                errdefer a.free(import_copy);
+                try outline.imports.append(a, import_copy);
+            }
+            try appendOutlineSymbol(a, outline, line, .import, line_num, line);
+            return;
+        }
+
+        if (startsWith(line, "#define")) {
+            const rest = std.mem.trimStart(u8, line["#define".len..], " \t");
+            if (extractIdent(rest)) |name| {
+                try appendOutlineSymbol(a, outline, name, .macro_def, line_num, line);
+            }
+            return;
+        }
+
+        if (parseObjCType(line)) |type_sym| {
+            try appendOutlineSymbol(a, outline, type_sym.name, type_sym.kind, line_num, line);
+            return;
+        }
+
+        if (extractObjCMethodName(line)) |name| {
+            try appendOutlineSymbol(a, outline, name, .method, line_num, line);
+            return;
+        }
+
+        if (parseCNamedType(line)) |type_sym| {
+            try appendOutlineSymbol(a, outline, type_sym.name, type_sym.kind, line_num, line);
+            return;
+        }
+
+        if (extractCFunctionName(line)) |name| {
+            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
         }
     }
 
@@ -2684,7 +3050,6 @@ pub const Explorer = struct {
     fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOutline) void {
         self.removeSymbolIndexFor(path);
         for (outline.symbols.items) |sym| {
-            if (sym.kind == .import or sym.kind == .comment_block) continue;
             const gop = self.symbol_index.getOrPut(sym.name) catch continue;
             if (!gop.found_existing) {
                 gop.value_ptr.* = std.ArrayList(SymbolLocation).empty;
@@ -2953,9 +3318,15 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
     if (trimmed.len == 0) return true;
     return switch (language) {
         .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
-        .python, .ruby, .r => std.mem.startsWith(u8, trimmed, "#"),
+        .python, .ruby, .r, .shell => std.mem.startsWith(u8, trimmed, "#"),
         .hcl => std.mem.startsWith(u8, trimmed, "#") or std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
-        .javascript, .typescript, .c, .cpp, .dart => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .protobuf, .mlir, .tablegen => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .svelte, .vue, .astro => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*") or std.mem.startsWith(u8, trimmed, "<!--"),
+        .css => std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .scss => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .sql => std.mem.startsWith(u8, trimmed, "--") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .fortran => std.mem.startsWith(u8, trimmed, "!"),
+        .llvm_ir => std.mem.startsWith(u8, trimmed, ";"),
         else => false,
     };
 }
@@ -3495,6 +3866,40 @@ fn startsWith(haystack: []const u8, needle: []const u8) bool {
     return std.mem.startsWith(u8, haystack, needle);
 }
 
+fn appendOutlineSymbol(
+    allocator: std.mem.Allocator,
+    outline: *FileOutline,
+    name: []const u8,
+    kind: SymbolKind,
+    line_num: u32,
+    detail: []const u8,
+) !void {
+    const name_copy = try allocator.dupe(u8, name);
+    errdefer allocator.free(name_copy);
+    const detail_copy = try allocator.dupe(u8, detail);
+    errdefer allocator.free(detail_copy);
+    try outline.symbols.append(allocator, .{
+        .name = name_copy,
+        .kind = kind,
+        .line_start = line_num,
+        .line_end = line_num,
+        .detail = detail_copy,
+    });
+}
+
+fn appendImportSymbol(
+    allocator: std.mem.Allocator,
+    outline: *FileOutline,
+    import_path: []const u8,
+    line_num: u32,
+    detail: []const u8,
+) !void {
+    try appendOutlineSymbol(allocator, outline, import_path, .import, line_num, detail);
+    const import_copy = try allocator.dupe(u8, import_path);
+    errdefer allocator.free(import_copy);
+    try outline.imports.append(allocator, import_copy);
+}
+
 fn extractIdent(s: []const u8) ?[]const u8 {
     const max_ident_len: usize = 256;
     var end: usize = 0;
@@ -3507,7 +3912,215 @@ fn extractIdent(s: []const u8) ?[]const u8 {
     return if (end > 0) s[0..end] else null;
 }
 
-fn extractLastIdent(s: []const u8) ?[]const u8 {
+fn isIdentChar(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
+}
+
+fn extractIdentAfterKeyword(line: []const u8, keyword: []const u8) ?[]const u8 {
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, line, start, keyword)) |pos| {
+        if (pos > 0 and isIdentChar(line[pos - 1])) {
+            start = pos + 1;
+            continue;
+        }
+        return extractIdent(std.mem.trimStart(u8, line[pos + keyword.len ..], " \t"));
+    }
+    return null;
+}
+
+fn extractIdentAfterKeywordIgnoreCase(line: []const u8, keyword: []const u8) ?[]const u8 {
+    if (indexOfCaseInsensitive(line, keyword)) |pos| {
+        if (pos > 0 and isIdentChar(line[pos - 1])) return null;
+        return extractIdent(std.mem.trimStart(u8, line[pos + keyword.len ..], " \t"));
+    }
+    return null;
+}
+
+fn startsWithIgnoreCase(s: []const u8, prefix: []const u8) bool {
+    if (s.len < prefix.len) return false;
+    for (prefix, 0..) |p, i| {
+        if (std.ascii.toLower(s[i]) != std.ascii.toLower(p)) return false;
+    }
+    return true;
+}
+
+fn parseDelimitedImport(line: []const u8, prefix: []const u8, delimiter: []const u8) ?[]const u8 {
+    if (!startsWith(line, prefix)) return null;
+    var body = std.mem.trim(u8, line[prefix.len..], " \t;");
+    if (startsWith(body, "static ")) body = std.mem.trimStart(u8, body["static ".len..], " \t");
+    if (delimiter.len > 0) {
+        if (std.mem.indexOf(u8, body, delimiter)) |end| body = body[0..end];
+    }
+    body = std.mem.trim(u8, body, " \t;");
+    return if (body.len > 0) body else null;
+}
+
+fn extractJvmMethodName(line: []const u8) ?[]const u8 {
+    if (startsWith(line, "import ") or startsWith(line, "package ") or startsWith(line, "return ") or
+        startsWith(line, "throw ") or startsWith(line, "new "))
+        return null;
+    if (std.mem.indexOf(u8, line, " class ") != null or std.mem.indexOf(u8, line, " interface ") != null or
+        std.mem.indexOf(u8, line, " enum ") != null or std.mem.indexOf(u8, line, " record ") != null)
+        return null;
+    const open = std.mem.lastIndexOfScalar(u8, line, '(') orelse return null;
+    if (std.mem.indexOfScalar(u8, line[open..], ')') == null) return null;
+    const before = std.mem.trimEnd(u8, line[0..open], " \t");
+    const span = extractLastIdentSpan(before) orelse return null;
+    const name = span.text;
+    if (isControlKeyword(name)) return null;
+    const before_name = std.mem.trim(u8, before[0..span.start], " \t");
+    if (before_name.len == 0) return null;
+    if (std.mem.endsWith(u8, before_name, ".") or std.mem.endsWith(u8, before_name, "->") or
+        std.mem.endsWith(u8, before_name, "="))
+        return null;
+    return name;
+}
+
+fn isControlKeyword(name: []const u8) bool {
+    const keywords = [_][]const u8{ "if", "for", "while", "switch", "catch", "return", "throw", "new", "when" };
+    for (keywords) |kw| {
+        if (std.mem.eql(u8, name, kw)) return true;
+    }
+    return false;
+}
+
+fn firstShellWord(s: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trimStart(u8, s, " \t");
+    if (trimmed.len == 0) return null;
+    var end: usize = 0;
+    while (end < trimmed.len and trimmed[end] != ' ' and trimmed[end] != '\t' and trimmed[end] != ';') : (end += 1) {}
+    return if (end > 0) trimmed[0..end] else null;
+}
+
+fn parseShellAssignment(line: []const u8) ?[]const u8 {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    if (eq == 0 or std.mem.indexOfAny(u8, line[0..eq], " \t$") != null) return null;
+    return extractIdent(line[0..eq]);
+}
+
+fn parseCssVariable(line: []const u8) ?[]const u8 {
+    if (startsWith(line, "$")) {
+        if (std.mem.indexOfScalar(u8, line, ':')) |colon| return line[0..colon];
+    }
+    if (startsWith(line, "--")) {
+        if (std.mem.indexOfScalar(u8, line, ':')) |colon| return line[0..colon];
+    }
+    return null;
+}
+
+fn parseCssSelector(line: []const u8) ?[]const u8 {
+    if (std.mem.indexOfScalar(u8, line, '{') == null) return null;
+    if (line.len < 2 or (line[0] != '.' and line[0] != '#')) return null;
+    var end: usize = 1;
+    while (end < line.len) : (end += 1) {
+        const ch = line[end];
+        if (!(std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '-')) break;
+    }
+    return if (end > 1) line[0..end] else null;
+}
+
+fn stripSqlLineComment(raw_line: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, raw_line, " \t");
+    if (startsWith(trimmed, "--")) return "";
+    if (std.mem.indexOf(u8, trimmed, "--")) |pos| return std.mem.trimEnd(u8, trimmed[0..pos], " \t");
+    return trimmed;
+}
+
+const SqlSymbol = struct {
+    name: []const u8,
+    kind: SymbolKind,
+};
+
+fn parseSqlCreate(line: []const u8) ?SqlSymbol {
+    if (!startsWithIgnoreCase(line, "create ")) return null;
+    var rest = std.mem.trimStart(u8, line["create ".len..], " \t");
+    if (startsWithIgnoreCase(rest, "or replace ")) rest = std.mem.trimStart(u8, rest["or replace ".len..], " \t");
+    if (parseSqlCreateKind(rest, "table ", .struct_def)) |sym| return sym;
+    if (parseSqlCreateKind(rest, "view ", .struct_def)) |sym| return sym;
+    if (parseSqlCreateKind(rest, "index ", .constant)) |sym| return sym;
+    if (parseSqlCreateKind(rest, "function ", .function)) |sym| return sym;
+    if (parseSqlCreateKind(rest, "procedure ", .function)) |sym| return sym;
+    if (parseSqlCreateKind(rest, "trigger ", .method)) |sym| return sym;
+    if (parseSqlCreateKind(rest, "type ", .type_alias)) |sym| return sym;
+    return null;
+}
+
+fn parseSqlCreateKind(rest: []const u8, keyword: []const u8, kind: SymbolKind) ?SqlSymbol {
+    if (!startsWithIgnoreCase(rest, keyword)) return null;
+    var body = std.mem.trimStart(u8, rest[keyword.len..], " \t");
+    if (startsWithIgnoreCase(body, "if not exists ")) body = std.mem.trimStart(u8, body["if not exists ".len..], " \t");
+    const name = firstSqlIdent(body) orelse return null;
+    return .{ .name = name, .kind = kind };
+}
+
+fn firstSqlIdent(s: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trimStart(u8, s, " \t\"`[");
+    if (trimmed.len == 0) return null;
+    var end: usize = 0;
+    while (end < trimmed.len and trimmed[end] != ' ' and trimmed[end] != '\t' and
+        trimmed[end] != '(' and trimmed[end] != ';' and trimmed[end] != '"' and
+        trimmed[end] != '`' and trimmed[end] != ']') : (end += 1)
+    {}
+    if (end == 0) return null;
+    const raw = trimmed[0..end];
+    if (std.mem.lastIndexOfScalar(u8, raw, '.')) |dot| {
+        if (dot + 1 < raw.len) return raw[dot + 1 ..];
+    }
+    return raw;
+}
+
+fn stripFortranComment(raw_line: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, raw_line, " \t");
+    if (startsWith(trimmed, "!")) return "";
+    if (std.mem.indexOfScalar(u8, trimmed, '!')) |pos| return std.mem.trimEnd(u8, trimmed[0..pos], " \t");
+    return trimmed;
+}
+
+fn parseFortranUse(line: []const u8) ?[]const u8 {
+    if (!startsWithIgnoreCase(line, "use ")) return null;
+    var rest = std.mem.trimStart(u8, line[4..], " \t");
+    if (startsWithIgnoreCase(rest, "intrinsic")) return null;
+    if (std.mem.indexOf(u8, rest, "::")) |pos| rest = std.mem.trimStart(u8, rest[pos + 2 ..], " \t");
+    return extractIdent(rest);
+}
+
+fn parseFortranTypeName(line: []const u8) ?[]const u8 {
+    if (!startsWithIgnoreCase(line, "type")) return null;
+    const sep = std.mem.indexOf(u8, line, "::") orelse return null;
+    return extractIdent(std.mem.trimStart(u8, line[sep + 2 ..], " \t"));
+}
+
+fn extractAtName(line: []const u8) ?[]const u8 {
+    const at = std.mem.indexOfScalar(u8, line, '@') orelse return null;
+    return extractLlvmLikeName(line[at + 1 ..]);
+}
+
+fn extractLlvmGlobalName(line: []const u8) ?[]const u8 {
+    if (line.len == 0 or (line[0] != '@' and line[0] != '%')) return null;
+    return extractLlvmLikeName(line[1..]);
+}
+
+fn extractLlvmLikeName(s: []const u8) ?[]const u8 {
+    if (s.len == 0) return null;
+    if (s[0] == '"') {
+        if (std.mem.indexOfScalar(u8, s[1..], '"')) |end| return s[1 .. end + 1];
+        return null;
+    }
+    var end: usize = 0;
+    while (end < s.len) : (end += 1) {
+        const ch = s[end];
+        if (!(std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '-' or ch == '.' or ch == '$')) break;
+    }
+    return if (end > 0) s[0..end] else null;
+}
+
+const IdentSpan = struct {
+    text: []const u8,
+    start: usize,
+    end: usize,
+};
+
+fn extractLastIdentSpan(s: []const u8) ?IdentSpan {
     if (s.len == 0) return null;
 
     var end = s.len;
@@ -3524,7 +4137,177 @@ fn extractLastIdent(s: []const u8) ?[]const u8 {
         if (!(std.ascii.isAlphanumeric(ch) or ch == '_')) break;
         start -= 1;
     }
-    return s[start..end];
+    return .{ .text = s[start..end], .start = start, .end = end };
+}
+
+fn extractLastIdent(s: []const u8) ?[]const u8 {
+    return if (extractLastIdentSpan(s)) |span| span.text else null;
+}
+
+fn stripLineComment(raw_line: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, raw_line, " \t");
+    if (startsWith(trimmed, "//")) return "";
+    if (std.mem.indexOf(u8, trimmed, "//")) |pos| {
+        return std.mem.trimEnd(u8, trimmed[0..pos], " \t");
+    }
+    return trimmed;
+}
+
+fn extractCIncludePath(line: []const u8) ?[]const u8 {
+    const keyword = if (startsWith(line, "#include"))
+        "#include"
+    else if (startsWith(line, "#import"))
+        "#import"
+    else
+        return null;
+    const rest = std.mem.trimStart(u8, line[keyword.len..], " \t");
+    if (rest.len >= 2 and rest[0] == '<') {
+        if (std.mem.indexOfScalar(u8, rest[1..], '>')) |end| {
+            if (end == 0) return null;
+            return rest[1 .. end + 1];
+        }
+    }
+    return extractStringLiteral(rest);
+}
+
+const CTypeSymbol = struct {
+    name: []const u8,
+    kind: SymbolKind,
+};
+
+fn parseCNamedType(line: []const u8) ?CTypeSymbol {
+    const stripped = stripCAttributesPrefix(line);
+    if (startsWith(stripped, "typedef ")) {
+        const rest = std.mem.trimStart(u8, stripped["typedef ".len..], " \t");
+        if (parseCBraceType(rest)) |sym| return sym;
+        if (std.mem.indexOf(u8, rest, "(*") != null) return null;
+        if (std.mem.indexOfScalar(u8, rest, ';')) |semi| {
+            const before_semi = rest[0..semi];
+            if (extractLastIdent(before_semi)) |name| {
+                if (!isCKeyword(name)) return .{ .name = name, .kind = .type_alias };
+            }
+        }
+        return null;
+    }
+    return parseCBraceType(stripped);
+}
+
+fn parseCBraceType(line: []const u8) ?CTypeSymbol {
+    if (std.mem.indexOfScalar(u8, line, '{') == null) return null;
+    if (startsWith(line, "class ")) {
+        return parseCTypeAfterKeyword(line["class ".len..], .class_def);
+    }
+    if (startsWith(line, "struct ")) {
+        return parseCTypeAfterKeyword(line["struct ".len..], .struct_def);
+    }
+    if (startsWith(line, "enum ")) {
+        return parseCTypeAfterKeyword(line["enum ".len..], .enum_def);
+    }
+    if (startsWith(line, "union ")) {
+        return parseCTypeAfterKeyword(line["union ".len..], .union_def);
+    }
+    return null;
+}
+
+fn parseCTypeAfterKeyword(rest: []const u8, kind: SymbolKind) ?CTypeSymbol {
+    const trimmed = std.mem.trimStart(u8, rest, " \t");
+    if (trimmed.len == 0 or trimmed[0] == '{') return null;
+    if (extractIdent(trimmed)) |name| {
+        if (!isCKeyword(name)) return .{ .name = name, .kind = kind };
+    }
+    return null;
+}
+
+fn parseObjCType(line: []const u8) ?CTypeSymbol {
+    if (startsWith(line, "@interface ")) {
+        return parseCTypeAfterKeyword(line["@interface ".len..], .class_def);
+    }
+    if (startsWith(line, "@implementation ")) {
+        return parseCTypeAfterKeyword(line["@implementation ".len..], .class_def);
+    }
+    if (startsWith(line, "@protocol ")) {
+        return parseCTypeAfterKeyword(line["@protocol ".len..], .interface_def);
+    }
+    return null;
+}
+
+fn extractObjCMethodName(line: []const u8) ?[]const u8 {
+    if (!startsWith(line, "- (") and !startsWith(line, "+ (")) return null;
+    const close = std.mem.indexOfScalar(u8, line, ')') orelse return null;
+    const rest = std.mem.trimStart(u8, line[close + 1 ..], " \t*");
+    return extractIdent(rest);
+}
+
+fn extractCFunctionName(line: []const u8) ?[]const u8 {
+    const stripped = stripCAttributesPrefix(line);
+    if (stripped.len == 0 or stripped[0] == '#') return null;
+    if (startsWith(stripped, "typedef ")) return null;
+    if (std.mem.indexOfScalar(u8, stripped, ';') != null) return null;
+
+    const search_end = std.mem.indexOfScalar(u8, stripped, '{') orelse stripped.len;
+    if (search_end == 0) return null;
+    const signature = std.mem.trimEnd(u8, stripped[0..search_end], " \t");
+    const open_paren = std.mem.lastIndexOfScalar(u8, signature, '(') orelse return null;
+    if (std.mem.indexOfScalar(u8, signature[open_paren..], ')') == null) return null;
+    if (std.mem.indexOf(u8, signature, "(*") != null) return null;
+
+    const before_paren = std.mem.trimEnd(u8, signature[0..open_paren], " \t");
+    const span = extractLastIdentSpan(before_paren) orelse return null;
+    const name = span.text;
+    if (isCKeyword(name)) return null;
+
+    const before_name = std.mem.trim(u8, before_paren[0..span.start], " \t*(&");
+    if (before_name.len == 0) return null;
+    if (hasCAssignmentBeforeName(before_name)) return null;
+    if (isCForbiddenFunctionPrefix(before_name)) return null;
+    if (std.mem.endsWith(u8, before_name, ".") or std.mem.endsWith(u8, before_name, "->")) return null;
+
+    return name;
+}
+
+fn stripCAttributesPrefix(line: []const u8) []const u8 {
+    var rest = std.mem.trimStart(u8, line, " \t");
+    while (startsWith(rest, "__attribute__((")) {
+        if (std.mem.indexOf(u8, rest, "))")) |end| {
+            rest = std.mem.trimStart(u8, rest[end + 2 ..], " \t");
+        } else break;
+    }
+    return rest;
+}
+
+fn hasCAssignmentBeforeName(prefix: []const u8) bool {
+    for (prefix, 0..) |ch, i| {
+        if (ch != '=') continue;
+        const prev = if (i > 0) prefix[i - 1] else 0;
+        const next = if (i + 1 < prefix.len) prefix[i + 1] else 0;
+        if (prev == '=' or prev == '!' or prev == '<' or prev == '>' or next == '=') continue;
+        return true;
+    }
+    return false;
+}
+
+fn isCForbiddenFunctionPrefix(prefix: []const u8) bool {
+    const first = extractIdent(std.mem.trimStart(u8, prefix, " \t*(&")) orelse return false;
+    return std.mem.eql(u8, first, "return") or
+        std.mem.eql(u8, first, "case") or
+        std.mem.eql(u8, first, "sizeof") or
+        std.mem.eql(u8, first, "if") or
+        std.mem.eql(u8, first, "for") or
+        std.mem.eql(u8, first, "while") or
+        std.mem.eql(u8, first, "switch");
+}
+
+fn isCKeyword(s: []const u8) bool {
+    const keywords = [_][]const u8{
+        "if",       "for",      "while",  "switch", "return",   "sizeof",
+        "case",     "do",       "else",   "struct", "enum",     "union",
+        "typedef",  "static",   "extern", "inline", "const",    "volatile",
+        "register", "restrict", "auto",   "break",  "continue",
+    };
+    for (keywords) |kw| {
+        if (std.mem.eql(u8, s, kw)) return true;
+    }
+    return false;
 }
 
 fn firstIndexOfAny(s: []const u8, chars: []const u8) ?usize {
@@ -3601,7 +4384,7 @@ fn containsAny(s: []const u8, needles: []const []const u8) bool {
 }
 
 fn skipKeywords(s: []const u8) []const u8 {
-    const keywords = [_][]const u8{ "export ", "async ", "function ", "const ", "let ", "var " };
+    const keywords = [_][]const u8{ "export ", "default ", "async ", "abstract ", "function ", "class ", "interface ", "enum ", "type ", "const ", "let ", "var " };
     var result = s;
     for (keywords) |kw| {
         if (std.mem.startsWith(u8, result, kw)) {

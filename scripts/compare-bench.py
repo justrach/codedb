@@ -28,18 +28,28 @@ def pct_change(base_ns: int, head_ns: int) -> float:
     return ((head_ns - base_ns) / base_ns) * 100.0
 
 
-def render_markdown(rows: list[tuple[str, int, int, float]], threshold_pct: float) -> str:
+def status_for(delta_pct: float, abs_delta_ns: int, threshold_pct: float, min_abs_ns: int) -> str:
+    if delta_pct <= threshold_pct:
+        return "OK"
+    if abs_delta_ns <= min_abs_ns:
+        return "NOISE"
+    return "FAIL"
+
+
+def render_markdown(rows: list[tuple[str, int, int, float, int]], threshold_pct: float, min_abs_ns: int) -> str:
     lines = [
         "## Benchmark Regression Report",
         "",
-        f"Threshold: {threshold_pct:.2f}%",
+        f"Thresholds: {threshold_pct:.2f}% and {min_abs_ns:,} ns absolute delta",
         "",
-        "| Tool | Base (ns) | Head (ns) | Delta | Status |",
-        "| --- | ---: | ---: | ---: | --- |",
+        "`NOISE` means the percentage threshold was exceeded, but the absolute delta was too small to fail CI.",
+        "",
+        "| Tool | Base (ns) | Head (ns) | Delta | Abs Delta (ns) | Status |",
+        "| --- | ---: | ---: | ---: | ---: | --- |",
     ]
-    for tool, base_ns, head_ns, delta in rows:
-        status = "FAIL" if delta > threshold_pct else "OK"
-        lines.append(f"| `{tool}` | {base_ns} | {head_ns} | {delta:+.2f}% | {status} |")
+    for tool, base_ns, head_ns, delta, abs_delta in rows:
+        status = status_for(delta, abs_delta, threshold_pct, min_abs_ns)
+        lines.append(f"| `{tool}` | {base_ns} | {head_ns} | {delta:+.2f}% | {abs_delta:+d} | {status} |")
     return "\n".join(lines) + "\n"
 
 
@@ -57,7 +67,7 @@ def main() -> int:
         return 1
     common = sorted(set(base) & set(head))
 
-    rows: list[tuple[str, int, int, float]] = []
+    rows: list[tuple[str, int, int, float, int]] = []
     failures: list[str] = []
 
     for tool in common:
@@ -65,13 +75,13 @@ def main() -> int:
         head_ns = int(head[tool]["avg_latency_ns"])
         delta = pct_change(base_ns, head_ns)
         abs_delta = head_ns - base_ns
-        rows.append((tool, base_ns, head_ns, delta))
+        rows.append((tool, base_ns, head_ns, delta, abs_delta))
         # Only flag as regression if BOTH percentage AND absolute delta exceed thresholds
         # This prevents false positives on fast tools where CI noise dominates
         if delta > args.threshold_pct and abs_delta > args.min_abs_ns:
-            failures.append(f"{tool} regressed by {delta:.2f}%")
+            failures.append(f"{tool} regressed by {delta:.2f}% ({abs_delta:+d} ns)")
 
-    report = render_markdown(rows, args.threshold_pct)
+    report = render_markdown(rows, args.threshold_pct, args.min_abs_ns)
     sys.stdout.write(report)
 
     if args.markdown_out:
