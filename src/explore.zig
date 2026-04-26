@@ -2159,7 +2159,7 @@ pub const Explorer = struct {
         const line = stripLineComment(raw_line);
         if (line.len == 0) return;
 
-        if (startsWith(line, "#include")) {
+        if (startsWith(line, "#include") or startsWith(line, "#import")) {
             if (extractCIncludePath(line)) |path| {
                 const import_copy = try a.dupe(u8, path);
                 errdefer a.free(import_copy);
@@ -2174,6 +2174,16 @@ pub const Explorer = struct {
             if (extractIdent(rest)) |name| {
                 try appendOutlineSymbol(a, outline, name, .macro_def, line_num, line);
             }
+            return;
+        }
+
+        if (parseObjCType(line)) |type_sym| {
+            try appendOutlineSymbol(a, outline, type_sym.name, type_sym.kind, line_num, line);
+            return;
+        }
+
+        if (extractObjCMethodName(line)) |name| {
+            try appendOutlineSymbol(a, outline, name, .method, line_num, line);
             return;
         }
 
@@ -4144,7 +4154,13 @@ fn stripLineComment(raw_line: []const u8) []const u8 {
 }
 
 fn extractCIncludePath(line: []const u8) ?[]const u8 {
-    const rest = std.mem.trimStart(u8, line["#include".len..], " \t");
+    const keyword = if (startsWith(line, "#include"))
+        "#include"
+    else if (startsWith(line, "#import"))
+        "#import"
+    else
+        return null;
+    const rest = std.mem.trimStart(u8, line[keyword.len..], " \t");
     if (rest.len >= 2 and rest[0] == '<') {
         if (std.mem.indexOfScalar(u8, rest[1..], '>')) |end| {
             if (end == 0) return null;
@@ -4178,6 +4194,9 @@ fn parseCNamedType(line: []const u8) ?CTypeSymbol {
 
 fn parseCBraceType(line: []const u8) ?CTypeSymbol {
     if (std.mem.indexOfScalar(u8, line, '{') == null) return null;
+    if (startsWith(line, "class ")) {
+        return parseCTypeAfterKeyword(line["class ".len..], .class_def);
+    }
     if (startsWith(line, "struct ")) {
         return parseCTypeAfterKeyword(line["struct ".len..], .struct_def);
     }
@@ -4197,6 +4216,26 @@ fn parseCTypeAfterKeyword(rest: []const u8, kind: SymbolKind) ?CTypeSymbol {
         if (!isCKeyword(name)) return .{ .name = name, .kind = kind };
     }
     return null;
+}
+
+fn parseObjCType(line: []const u8) ?CTypeSymbol {
+    if (startsWith(line, "@interface ")) {
+        return parseCTypeAfterKeyword(line["@interface ".len..], .class_def);
+    }
+    if (startsWith(line, "@implementation ")) {
+        return parseCTypeAfterKeyword(line["@implementation ".len..], .class_def);
+    }
+    if (startsWith(line, "@protocol ")) {
+        return parseCTypeAfterKeyword(line["@protocol ".len..], .interface_def);
+    }
+    return null;
+}
+
+fn extractObjCMethodName(line: []const u8) ?[]const u8 {
+    if (!startsWith(line, "- (") and !startsWith(line, "+ (")) return null;
+    const close = std.mem.indexOfScalar(u8, line, ')') orelse return null;
+    const rest = std.mem.trimStart(u8, line[close + 1 ..], " \t*");
+    return extractIdent(rest);
 }
 
 fn extractCFunctionName(line: []const u8) ?[]const u8 {

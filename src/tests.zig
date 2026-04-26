@@ -6347,6 +6347,32 @@ test "issue-321: common detected extensions produce outlines" {
     const alloc = arena.allocator();
     var explorer = Explorer.init(alloc);
 
+    try explorer.indexFile("src/math.cc",
+        \\#include <vector>
+        \\class Calculator {
+        \\public:
+        \\    int add(int a, int b) {
+        \\        return a + b;
+        \\    }
+        \\};
+        \\int free_add(int a, int b) {
+        \\    return a + b;
+        \\}
+    );
+    try explorer.indexFile("src/Bridge.mm",
+        \\#import "Bridge.h"
+        \\@interface BrowserController
+        \\- (void)loadPage:(NSString *)url;
+        \\@end
+        \\@implementation BrowserController
+        \\- (void)loadPage:(NSString *)url { }
+        \\@end
+        \\class BrowserBridge {
+        \\};
+        \\int bridge_main(void) {
+        \\    return 0;
+        \\}
+    );
     try explorer.indexFile("src/App.java",
         \\package demo;
         \\import java.util.List;
@@ -6456,9 +6482,117 @@ test "issue-321: common detected extensions produce outlines" {
         \\let Namespace = "Toy";
     );
 
+    const cc_outline = try explorer.getOutline("src/math.cc", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.cpp, cc_outline.language);
+    try expectOutlineImport(&cc_outline, "vector");
+    try expectOutlineSymbol(&cc_outline, "Calculator", .class_def);
+    try expectOutlineSymbol(&cc_outline, "add", .function);
+    try expectOutlineSymbol(&cc_outline, "free_add", .function);
+
+    const mm_outline = try explorer.getOutline("src/Bridge.mm", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.cpp, mm_outline.language);
+    try expectOutlineImport(&mm_outline, "Bridge.h");
+    try expectOutlineSymbol(&mm_outline, "BrowserController", .class_def);
+    try expectOutlineSymbol(&mm_outline, "loadPage", .method);
+    try expectOutlineSymbol(&mm_outline, "BrowserBridge", .class_def);
+    try expectOutlineSymbol(&mm_outline, "bridge_main", .function);
+
     const java_outline = try explorer.getOutline("src/App.java", alloc) orelse return error.TestUnexpectedResult;
     try testing.expectEqual(Language.java, java_outline.language);
-    try testing.expectEqualStrings("java.util.List", java_outline.imports.items[0]);
+    try expectOutlineImport(&java_outline, "java.util.List");
+    try expectOutlineSymbol(&java_outline, "Worker", .class_def);
+    try expectOutlineSymbol(&java_outline, "run", .method);
+    try expectOutlineSymbol(&java_outline, "RunnableThing", .interface_def);
+    try expectOutlineSymbol(&java_outline, "Mode", .enum_def);
+    try expectOutlineSymbol(&java_outline, "Pair", .class_def);
+
+    const kt_outline = try explorer.getOutline("src/App.kt", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.kotlin, kt_outline.language);
+    try expectOutlineImport(&kt_outline, "kotlinx.coroutines.runBlocking");
+    try expectOutlineSymbol(&kt_outline, "User", .class_def);
+    try expectOutlineSymbol(&kt_outline, "Repo", .interface_def);
+    try expectOutlineSymbol(&kt_outline, "KotlinMode", .enum_def);
+    try expectOutlineSymbol(&kt_outline, "loadUser", .function);
+    try expectOutlineSymbol(&kt_outline, "answer", .constant);
+
+    const svelte_outline = try explorer.getOutline("src/Widget.svelte", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.svelte, svelte_outline.language);
+    try expectOutlineImport(&svelte_outline, "./Thing.svelte");
+    try expectOutlineSymbol(&svelte_outline, "title", .constant);
+    try expectOutlineSymbol(&svelte_outline, "renderTitle", .function);
+    try expectOutlineSymbol(&svelte_outline, ".card", .class_def);
+
+    const vue_outline = try explorer.getOutline("src/View.vue", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.vue, vue_outline.language);
+    try expectOutlineImport(&vue_outline, "./Child.vue");
+    try expectOutlineSymbol(&vue_outline, "count", .constant);
+    try expectOutlineSymbol(&vue_outline, "inc", .function);
+
+    const astro_outline = try explorer.getOutline("src/Page.astro", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.astro, astro_outline.language);
+    try expectOutlineImport(&astro_outline, "../layouts/Layout.astro");
+    try expectOutlineSymbol(&astro_outline, "title", .constant);
+
+    const shell_outline = try explorer.getOutline("scripts/build.sh", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.shell, shell_outline.language);
+    try expectOutlineImport(&shell_outline, "./env.sh");
+    try expectOutlineSymbol(&shell_outline, "build_app", .function);
+    try expectOutlineSymbol(&shell_outline, "deploy_app", .function);
+    try expectOutlineSymbol(&shell_outline, "BUILD_MODE", .variable);
+
+    const css_outline = try explorer.getOutline("styles/app.css", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.css, css_outline.language);
+    try expectOutlineSymbol(&css_outline, "--brand", .constant);
+    try expectOutlineSymbol(&css_outline, ".button", .class_def);
+    try expectOutlineSymbol(&css_outline, "fade", .function);
+
+    const scss_outline = try explorer.getOutline("styles/app.scss", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.scss, scss_outline.language);
+    try expectOutlineSymbol(&scss_outline, "$gap", .constant);
+    try expectOutlineSymbol(&scss_outline, "center", .function);
+    try expectOutlineSymbol(&scss_outline, ".panel", .class_def);
+
+    const sql_outline = try explorer.getOutline("db/schema.sql", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.sql, sql_outline.language);
+    try expectOutlineSymbol(&sql_outline, "users", .struct_def);
+    try expectOutlineSymbol(&sql_outline, "do_thing", .function);
+    try expectOutlineSymbol(&sql_outline, "idx_users_id", .constant);
+
+    const proto_outline = try explorer.getOutline("api/service.proto", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.protobuf, proto_outline.language);
+    try expectOutlineImport(&proto_outline, "google/protobuf/timestamp.proto");
+    try expectOutlineSymbol(&proto_outline, "User", .struct_def);
+    try expectOutlineSymbol(&proto_outline, "Status", .enum_def);
+    try expectOutlineSymbol(&proto_outline, "UserService", .interface_def);
+    try expectOutlineSymbol(&proto_outline, "GetUser", .method);
+
+    const fortran_outline = try explorer.getOutline("math/solver.f90", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.fortran, fortran_outline.language);
+    try expectOutlineImport(&fortran_outline, "mathlib");
+    try expectOutlineSymbol(&fortran_outline, "solver", .class_def);
+    try expectOutlineSymbol(&fortran_outline, "Particle", .struct_def);
+    try expectOutlineSymbol(&fortran_outline, "step", .function);
+    try expectOutlineSymbol(&fortran_outline, "energy", .function);
+
+    const llvm_outline = try explorer.getOutline("ir/module.ll", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.llvm_ir, llvm_outline.language);
+    try expectOutlineSymbol(&llvm_outline, "Pair", .type_alias);
+    try expectOutlineSymbol(&llvm_outline, "global_value", .variable);
+    try expectOutlineSymbol(&llvm_outline, "main", .function);
+
+    const mlir_outline = try explorer.getOutline("ir/dialect.mlir", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.mlir, mlir_outline.language);
+    try expectOutlineSymbol(&mlir_outline, "kernel_mod", .class_def);
+    try expectOutlineSymbol(&mlir_outline, "kernel", .function);
+
+    const td_outline = try explorer.getOutline("llvm/records.td", alloc) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Language.tablegen, td_outline.language);
+    try expectOutlineImport(&td_outline, "Base.td");
+    try expectOutlineSymbol(&td_outline, "Register", .class_def);
+    try expectOutlineSymbol(&td_outline, "Pat", .class_def);
+    try expectOutlineSymbol(&td_outline, "R0", .constant);
+    try expectOutlineSymbol(&td_outline, "ADD", .constant);
+    try expectOutlineSymbol(&td_outline, "Namespace", .variable);
 
     const worker = try explorer.findAllSymbols("Worker", alloc);
     defer alloc.free(worker);
@@ -6520,6 +6654,20 @@ test "issue-321: common detected extensions produce outlines" {
     const r0 = try explorer.findAllSymbols("R0", alloc);
     defer alloc.free(r0);
     try testing.expectEqual(@as(usize, 1), r0.len);
+}
+
+fn expectOutlineSymbol(outline: *const explore.FileOutline, name: []const u8, kind: SymbolKind) !void {
+    for (outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, name) and sym.kind == kind) return;
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn expectOutlineImport(outline: *const explore.FileOutline, import_path: []const u8) !void {
+    for (outline.imports.items) |imp| {
+        if (std.mem.eql(u8, imp, import_path)) return;
+    }
+    return error.TestUnexpectedResult;
 }
 
 test "issue-179: Python inline docstring does not leak symbols" {
