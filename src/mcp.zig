@@ -24,9 +24,65 @@ const root_policy = @import("root_policy.zig");
 const release_info = @import("release_info.zig");
 // ── Project cache ────────────────────────────────────────────────────────────
 
+const SnapshotCache = struct {
+    const MAX_CACHED_BYTES = 16 * 1024 * 1024;
+
+    seq: u64 = std.math.maxInt(u64),
+    bytes: ?[]u8 = null,
+    mu: cio.Mutex = .{},
+
+    fn deinit(self: *SnapshotCache, alloc: std.mem.Allocator) void {
+        if (self.bytes) |bytes| {
+            alloc.free(bytes);
+            self.bytes = null;
+        }
+    }
+
+    fn appendIfFresh(self: *SnapshotCache, alloc: std.mem.Allocator, out: *std.ArrayList(u8), seq: u64) bool {
+        self.mu.lock();
+        defer self.mu.unlock();
+        const bytes = self.bytes orelse return false;
+        if (self.seq != seq) return false;
+        out.appendSlice(alloc, bytes) catch return false;
+        return true;
+    }
+
+    /// Takes ownership of `fresh` if it becomes the cache entry. If another
+    /// caller filled the same seq first, frees `fresh` and appends the winner.
+    fn putAndAppend(self: *SnapshotCache, alloc: std.mem.Allocator, out: *std.ArrayList(u8), seq: u64, fresh: []u8) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+
+        if (fresh.len > MAX_CACHED_BYTES) {
+            if (self.bytes) |bytes| {
+                alloc.free(bytes);
+                self.bytes = null;
+            }
+            self.seq = std.math.maxInt(u64);
+            out.appendSlice(alloc, fresh) catch {};
+            alloc.free(fresh);
+            return;
+        }
+
+        if (self.bytes) |bytes| {
+            if (self.seq == seq) {
+                alloc.free(fresh);
+                out.appendSlice(alloc, bytes) catch {};
+                return;
+            }
+            alloc.free(bytes);
+        }
+
+        self.seq = seq;
+        self.bytes = fresh;
+        out.appendSlice(alloc, fresh) catch {};
+    }
+};
+
 const ProjectCtx = struct {
     explorer: *Explorer,
     store: *Store,
+    snapshot_cache: *SnapshotCache,
 };
 
 fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
@@ -107,6 +163,7 @@ const ProjectCache = struct {
         path: []u8,
         explorer: Explorer,
         store: Store,
+        snapshot_cache: SnapshotCache,
         last_used: i64,
     };
 
@@ -114,6 +171,7 @@ const ProjectCache = struct {
     alloc: std.mem.Allocator,
     entries: [MAX_CACHED]?*Entry,
     default_path: []const u8,
+    default_snapshot_cache: SnapshotCache,
 
     fn init(alloc_: std.mem.Allocator, default_path_: []const u8) ProjectCache {
         return .{
@@ -121,12 +179,15 @@ const ProjectCache = struct {
             .alloc = alloc_,
             .entries = [_]?*Entry{null} ** MAX_CACHED,
             .default_path = default_path_,
+            .default_snapshot_cache = .{},
         };
     }
 
     fn deinit(self: *ProjectCache) void {
+        self.default_snapshot_cache.deinit(self.alloc);
         for (&self.entries) |*slot| {
             if (slot.*) |entry| {
+                entry.snapshot_cache.deinit(self.alloc);
                 entry.explorer.deinit();
                 entry.store.deinit();
                 self.alloc.free(entry.path);
@@ -143,9 +204,9 @@ const ProjectCache = struct {
         default_exp: *Explorer,
         default_store: *Store,
     ) !ProjectCtx {
-        const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store };
+        const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache };
         if (std.mem.eql(u8, p, self.default_path))
-            return ProjectCtx{ .explorer = default_exp, .store = default_store };
+            return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache };
         if (!root_policy.isIndexableRoot(p))
             return error.PathNotAllowed;
 
@@ -157,7 +218,7 @@ const ProjectCache = struct {
             if (slot.*) |entry| {
                 if (std.mem.eql(u8, entry.path, p)) {
                     entry.last_used = now;
-                    return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store };
+                    return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store, .snapshot_cache = &entry.snapshot_cache };
                 }
             }
         }
@@ -171,6 +232,7 @@ const ProjectCache = struct {
         new_entry.explorer = Explorer.init(self.alloc);
         new_entry.explorer.setRoot(io, p);
         new_entry.store = Store.init(self.alloc);
+        new_entry.snapshot_cache = .{};
         new_entry.last_used = now;
 
         var snap_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -230,6 +292,7 @@ const ProjectCache = struct {
                 }
             }
             const evict = self.entries[oldest_i].?;
+            evict.snapshot_cache.deinit(self.alloc);
             evict.explorer.deinit();
             evict.store.deinit();
             self.alloc.free(evict.path);
@@ -238,7 +301,7 @@ const ProjectCache = struct {
         }
 
         self.entries[target_slot] = new_entry;
-        return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store };
+        return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store, .snapshot_cache = &new_entry.snapshot_cache };
     }
 };
 
@@ -762,7 +825,7 @@ fn dispatch(
         .codedb_edit => handleEdit(io, alloc, args, out, default_store, default_explorer, agents),
         .codedb_changes => handleChanges(alloc, args, out, default_store),
         .codedb_status => handleStatus(alloc, out, ctx.store, ctx.explorer),
-        .codedb_snapshot => handleSnapshot(alloc, out, ctx.explorer, ctx.store),
+        .codedb_snapshot => handleSnapshot(alloc, out, ctx.explorer, ctx.store, ctx.snapshot_cache),
         .codedb_bundle => handleBundle(io, alloc, args, out, ctx.store, ctx.explorer, agents, cache),
         .codedb_remote => handleRemote(alloc, args, out),
         .codedb_projects => handleProjects(io, alloc, out),
@@ -1230,13 +1293,15 @@ fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store
     }) catch {};
 }
 
-fn handleSnapshot(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer, store: *Store) void {
+fn handleSnapshot(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer, store: *Store, cache: *SnapshotCache) void {
+    const seq = store.currentSeq();
+    if (cache.appendIfFresh(alloc, out, seq)) return;
+
     const snap = snapshot_json.buildSnapshot(explorer, store, alloc) catch {
         out.appendSlice(alloc, "error: snapshot build failed") catch {};
         return;
     };
-    defer alloc.free(snap);
-    out.appendSlice(alloc, snap) catch {};
+    cache.putAndAppend(alloc, out, seq, snap);
 }
 
 fn handleBundle(
@@ -2614,4 +2679,46 @@ test "issue-258: cached project reads use the project root after contents are re
     handleRead(io, testing.allocator, &parsed.value.object, &out, ctx.explorer);
 
     try testing.expect(std.mem.indexOf(u8, out.items, "const project = \"secondary\";") != null);
+}
+
+test "codedb_snapshot cache reuses output until store seq changes" {
+    const io = testing.io;
+    const alloc = testing.allocator;
+
+    var explorer = Explorer.init(alloc);
+    defer explorer.deinit();
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+
+    var store = Store.init(alloc);
+    defer store.deinit();
+    _ = try store.recordSnapshot("src/main.zig", "pub fn main() void {}\n".len, 0xabc);
+
+    var agents = AgentRegistry.init(alloc);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = BenchContext.init(alloc, ".");
+    defer bench_ctx.deinit();
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, "{}", .{});
+    defer parsed.deinit();
+    const args = &parsed.value.object;
+
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(alloc);
+    bench_ctx.runDispatch(io, alloc, .codedb_snapshot, args, &first, &store, &explorer, &agents);
+
+    var second: std.ArrayList(u8) = .empty;
+    defer second.deinit(alloc);
+    bench_ctx.runDispatch(io, alloc, .codedb_snapshot, args, &second, &store, &explorer, &agents);
+    try testing.expectEqualStrings(first.items, second.items);
+
+    try explorer.indexFile("src/main.zig", "pub fn changed() void {}\n");
+    _ = try store.recordSnapshot("src/main.zig", "pub fn changed() void {}\n".len, 0xdef);
+
+    var third: std.ArrayList(u8) = .empty;
+    defer third.deinit(alloc);
+    bench_ctx.runDispatch(io, alloc, .codedb_snapshot, args, &third, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, third.items, "changed") != null);
+    try testing.expect(!std.mem.eql(u8, first.items, third.items));
 }
