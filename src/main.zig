@@ -945,15 +945,11 @@ fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allo
 }
 fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
     const mcp = @import("mcp.zig");
+    const stdin = cio.File.stdin();
     while (!shutdown.load(.acquire)) {
-        // Sleep in 1s increments for responsive shutdown
-        for (0..10) |_| {
-            if (shutdown.load(.acquire)) return;
-            cio.sleepMs(1000);
-        }
-
-        // Quick liveness check: poll stdin for POLLHUP (client disconnected)
-        const stdin = cio.File.stdin();
+        // Quick liveness check: poll stdin for POLLHUP (client disconnected).
+        // This stays independent from the longer idle timeout so dead MCP
+        // clients are reaped promptly.
         var poll_fds = [_]std.posix.pollfd{.{
             .fd = stdin.handle,
             .events = std.posix.POLL.IN | std.posix.POLL.HUP,
@@ -977,5 +973,7 @@ fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
             shutdown.store(true, .release);
             return;
         }
+
+        cio.sleepMs(mcp.dead_client_poll_ms);
     }
 }

@@ -5136,9 +5136,14 @@ test "issue-116: getGitHead returns valid SHA for git repos" {
     }
 }
 
-test "issue-148: idle timeout is 10 minutes" {
+test "issue-148: idle timeout is 1 hour" {
     const mcp = @import("mcp.zig");
-    try testing.expectEqual(@as(i64, 10 * 60 * 1000), mcp.idle_timeout_ms);
+    try testing.expectEqual(@as(i64, 60 * 60 * 1000), mcp.idle_timeout_ms);
+}
+
+test "issue-148: dead MCP clients are polled every second" {
+    const mcp = @import("mcp.zig");
+    try testing.expectEqual(@as(u64, 1000), mcp.dead_client_poll_ms);
 }
 
 test "issue-148: POLLHUP detects closed pipe" {
@@ -5204,31 +5209,31 @@ test "issue-148: idle watchdog respects activity timestamp" {
     // Set activity to "just now"
     mcp.last_activity.store(cio.milliTimestamp(), .release);
 
-    // With 10-minute timeout, checking now should NOT trigger exit
+    // With 1-hour timeout, checking now should NOT trigger exit
     const last = mcp.last_activity.load(.acquire);
     const now = cio.milliTimestamp();
     try testing.expect(now - last < mcp.idle_timeout_ms);
 }
 
-test "issue-148: MCP session survives 2-minute idle" {
+test "issue-148: MCP session survives 30-minute idle" {
     const mcp = @import("mcp.zig");
-    // With the old 2-min timeout, an activity 3 minutes ago would trigger exit.
-    // With the new 10-min timeout, it should be fine.
-    const three_min_ago = cio.milliTimestamp() - (3 * 60 * 1000);
+    // With the old 10-min timeout, an activity 30 minutes ago would trigger exit.
+    // With the new 1-hour timeout, it should be fine.
+    const thirty_min_ago = cio.milliTimestamp() - (30 * 60 * 1000);
 
     // Save and restore
     const saved = mcp.last_activity.load(.acquire);
     defer mcp.last_activity.store(saved, .release);
 
-    mcp.last_activity.store(three_min_ago, .release);
+    mcp.last_activity.store(thirty_min_ago, .release);
     const last = mcp.last_activity.load(.acquire);
     const now = cio.milliTimestamp();
 
-    // Should NOT exceed 10-minute timeout
+    // Should NOT exceed 1-hour timeout
     try testing.expect(now - last < mcp.idle_timeout_ms);
 
-    // Should have exceeded old 2-minute timeout
-    try testing.expect(now - last > 2 * 60 * 1000);
+    // Should have exceeded old 10-minute timeout
+    try testing.expect(now - last > 10 * 60 * 1000);
 }
 
 test "issue-148: open pipe does not trigger HUP" {
@@ -5270,8 +5275,8 @@ test "issue-148: codedb mcp exits when stdin is closed" {
         child.stdin = null;
     }
 
-    // Wait up to 15 seconds for the process to exit
-    // (watchdog polls every 10s, so it should detect POLLHUP within ~10s)
+    // Wait for the process to exit. The main read loop exits on stdin EOF;
+    // the watchdog also polls dead clients every second as a backup.
     const start = cio.milliTimestamp();
     const term = child.wait(io) catch {
         // If wait fails, the process is stuck — test fails
@@ -5287,8 +5292,8 @@ test "issue-148: codedb mcp exits when stdin is closed" {
         else => {},
     }
 
-    // Should exit within 15 seconds (10s poll interval + margin)
-    try testing.expect(elapsed < 15_000);
+    // Should exit promptly after stdin closes.
+    try testing.expect(elapsed < 5_000);
 }
 
 const MmapTrigramIndex = @import("index.zig").MmapTrigramIndex;
