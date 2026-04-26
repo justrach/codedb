@@ -1490,18 +1490,34 @@ test "remote repo validation rejects traversal and malformed paths" {
 const RemoteParam = struct { name: []const u8, value: []const u8 };
 
 /// Run `curl -G` against URL with optional query params. Caller frees result.stdout/stderr.
+const RemoteResponse = struct {
+    captured: cio.CaptureResult,
+    /// HTTP status code (0 = curl failed before -w fired / sentinel not found).
+    status: u16,
+    /// Length of the response body within `captured.stdout`. The body is
+    /// `captured.stdout[0..body_len]`; the suffix is the curl status sentinel.
+    body_len: usize,
+};
+
+const STATUS_SENTINEL = "[CODEDB-STATUS]";
+
+/// Run `curl -G` against URL with optional query params. Captures HTTP status
+/// via `-w` and lets non-2xx responses through (no `-f`) so callers can format
+/// detailed errors. Caller frees response.captured.stdout/stderr.
 fn fetchRemote(
     alloc: std.mem.Allocator,
     url: []const u8,
     params: []const RemoteParam,
-) !cio.CaptureResult {
+) !RemoteResponse {
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(alloc);
 
     try argv.append(alloc, "curl");
-    try argv.append(alloc, "-sf");
+    try argv.append(alloc, "-s");
     try argv.append(alloc, "--max-time");
     try argv.append(alloc, "30");
+    try argv.append(alloc, "-w");
+    try argv.append(alloc, "\n" ++ STATUS_SENTINEL ++ "%{http_code}");
 
     var pair_bufs: std.ArrayList([]u8) = .empty;
     defer {
@@ -1521,7 +1537,20 @@ fn fetchRemote(
     }
     try argv.append(alloc, url);
 
-    return cio.runCapture(.{ .allocator = alloc, .argv = argv.items });
+    const captured = try cio.runCapture(.{ .allocator = alloc, .argv = argv.items });
+
+    var status: u16 = 0;
+    var body_len: usize = captured.stdout.len;
+    if (std.mem.lastIndexOf(u8, captured.stdout, STATUS_SENTINEL)) |sentinel_idx| {
+        const status_str = std.mem.trim(u8, captured.stdout[sentinel_idx + STATUS_SENTINEL.len ..], " \r\n\t");
+        status = std.fmt.parseInt(u16, status_str, 10) catch 0;
+        // Strip the trailing "\n[CODEDB-STATUS]NNN" from the body view.
+        var end = sentinel_idx;
+        while (end > 0 and captured.stdout[end - 1] == '\n') end -= 1;
+        body_len = end;
+    }
+
+    return .{ .captured = captured, .status = status, .body_len = body_len };
 }
 
 fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8)) void {
@@ -1695,7 +1724,7 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         }
     }
 
-    const captured = fetchRemote(alloc, url, params.items) catch {
+    const remote = fetchRemote(alloc, url, params.items) catch {
         if (is_wiki) {
             out.appendSlice(alloc, "error: failed to fetch from api.wiki.codes") catch {};
         } else {
@@ -1703,26 +1732,41 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         }
         return;
     };
-    defer alloc.free(captured.stdout);
-    defer alloc.free(captured.stderr);
+    defer alloc.free(remote.captured.stdout);
+    defer alloc.free(remote.captured.stderr);
 
-    if (captured.term != .Exited or captured.term.Exited != 0) {
-        const host_label: []const u8 = if (is_wiki) "api.wiki.codes" else "codedb.codegraff.com";
-        const path_slug: []const u8 = if (is_wiki) wiki_slug else repo;
-        out.appendSlice(alloc, "error: ") catch {};
-        out.appendSlice(alloc, host_label) catch {};
-        out.appendSlice(alloc, " returned error for ") catch {};
-        out.appendSlice(alloc, path_slug) catch {};
-        out.appendSlice(alloc, "/") catch {};
-        out.appendSlice(alloc, action) catch {};
-        if (captured.stderr.len > 0) {
-            out.appendSlice(alloc, " — ") catch {};
-            out.appendSlice(alloc, captured.stderr[0..@min(captured.stderr.len, 200)]) catch {};
-        }
+    const body = remote.captured.stdout[0..remote.body_len];
+
+    // 2xx = success, anything else gets a status-tagged error so callers can
+    // tell 404 (slug missing this artifact) from 5xx (real server bug).
+    if (remote.status >= 200 and remote.status < 300) {
+        out.appendSlice(alloc, body) catch {};
         return;
     }
 
-    out.appendSlice(alloc, captured.stdout) catch {};
+    const host_label: []const u8 = if (is_wiki) "api.wiki.codes" else "codedb.codegraff.com";
+    const path_slug: []const u8 = if (is_wiki) wiki_slug else repo;
+    out.appendSlice(alloc, "error: ") catch {};
+    out.appendSlice(alloc, host_label) catch {};
+    if (remote.status == 0) {
+        out.appendSlice(alloc, " transport error for ") catch {};
+    } else {
+        var status_buf: [8]u8 = undefined;
+        const s = std.fmt.bufPrint(&status_buf, "{d}", .{remote.status}) catch "0";
+        out.appendSlice(alloc, " HTTP ") catch {};
+        out.appendSlice(alloc, s) catch {};
+        out.appendSlice(alloc, " for ") catch {};
+    }
+    out.appendSlice(alloc, path_slug) catch {};
+    out.appendSlice(alloc, "/") catch {};
+    out.appendSlice(alloc, action) catch {};
+    if (body.len > 0) {
+        out.appendSlice(alloc, " — ") catch {};
+        out.appendSlice(alloc, body[0..@min(body.len, 200)]) catch {};
+    } else if (remote.captured.stderr.len > 0) {
+        out.appendSlice(alloc, " — ") catch {};
+        out.appendSlice(alloc, remote.captured.stderr[0..@min(remote.captured.stderr.len, 200)]) catch {};
+    }
 }
 
 // ── Local project tools ─────────────────────────────────────────────────────
