@@ -3657,7 +3657,18 @@ test "snapshot: writer streams uncached file contents for large repos" {
     defer testing.allocator.free(snap_path);
     try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
 
+    var loaded_without_root = Explorer.init(testing.allocator);
+    defer loaded_without_root.deinit();
+    var store_without_root = Store.init(testing.allocator);
+    defer store_without_root.deinit();
+
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &loaded_without_root, &store_without_root, testing.allocator));
+    try testing.expectEqual(@as(usize, 1002), loaded_without_root.outlines.count());
+    try testing.expect(loaded_without_root.contents.count() < loaded_without_root.outlines.count());
+    try testing.expectError(error.WordIndexIncomplete, loaded_without_root.searchWord("func_1001", testing.allocator));
+
     var loaded = Explorer.init(testing.allocator);
+    loaded.setRoot(io, dir_path);
     defer loaded.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();
@@ -3665,6 +3676,12 @@ test "snapshot: writer streams uncached file contents for large repos" {
     try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &loaded, &store, testing.allocator));
     try testing.expectEqual(@as(usize, 1002), loaded.outlines.count());
     try testing.expect(loaded.contents.count() < loaded.outlines.count());
+
+    const hits = try loaded.searchWord("func_1001", testing.allocator);
+    defer testing.allocator.free(hits);
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("src/file_1001.zig", loaded.word_index.hitPath(hits[0]));
+    try testing.expect(loaded.wordIndexIsComplete());
 }
 
 test "issue-220: partial word index state rebuilds before search" {
