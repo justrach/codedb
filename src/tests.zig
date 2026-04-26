@@ -3089,6 +3089,38 @@ test "disk word index: round-trip write and read preserves hits" {
     try testing.expect(found_store);
 }
 
+test "disk word index: skip_file_words still writes file table" {
+    const alloc = testing.allocator;
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+    wi.skip_file_words = true;
+
+    try wi.indexFile("src/a.zig", "pub fn alphaToken() void {}\n");
+    try wi.indexFile("src/b.zig", "pub fn betaToken() void {}\n");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    try wi.writeToDisk(io, dir_path, null);
+
+    const header = try WordIndex.readDiskHeader(io, dir_path, alloc);
+    try testing.expect(header != null);
+    try testing.expectEqual(@as(u32, 2), header.?.file_count);
+
+    const loaded = WordIndex.readFromDisk(io, dir_path, alloc);
+    try testing.expect(loaded != null);
+    var loaded_wi = loaded.?;
+    defer loaded_wi.deinit();
+
+    const hits = try loaded_wi.searchDeduped("alphaToken", alloc);
+    defer alloc.free(hits);
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("src/a.zig", loaded_wi.hitPath(hits[0]));
+}
+
 test "disk index: round-trip write and read preserves candidates" {
     const alloc = testing.allocator;
     var ti = TrigramIndex.init(alloc);
@@ -3595,6 +3627,44 @@ test "issue-220: snapshot fast load restores outlines and lazily rebuilds word i
     try testing.expect(exp2.word_index.index.count() > 0);
     try testing.expect(exp2.wordIndexIsComplete());
     try testing.expect(exp2.wordIndexNeedsPersist());
+}
+
+test "snapshot: writer streams uncached file contents for large repos" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "src");
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    var exp = Explorer.init(testing.allocator);
+    defer exp.deinit();
+
+    var rel_buf: [64]u8 = undefined;
+    var content_buf: [128]u8 = undefined;
+    for (0..1002) |i| {
+        const rel = try std.fmt.bufPrint(&rel_buf, "src/file_{d}.zig", .{i});
+        const content = try std.fmt.bufPrint(&content_buf, "pub fn func_{d}() usize {{ return {d}; }}\n", .{ i, i });
+        try tmp.dir.writeFile(io, .{ .sub_path = rel, .data = content });
+        try exp.indexFileOutlineOnly(rel, content);
+    }
+
+    try testing.expectEqual(@as(usize, 1002), exp.outlines.count());
+    try testing.expect(exp.contents.count() < exp.outlines.count());
+
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/large.codedb", .{dir_path});
+    defer testing.allocator.free(snap_path);
+    try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
+
+    var loaded = Explorer.init(testing.allocator);
+    defer loaded.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &loaded, &store, testing.allocator));
+    try testing.expectEqual(@as(usize, 1002), loaded.outlines.count());
+    try testing.expect(loaded.contents.count() < loaded.outlines.count());
 }
 
 test "issue-220: partial word index state rebuilds before search" {

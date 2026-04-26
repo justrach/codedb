@@ -1401,8 +1401,9 @@ pub const Explorer = struct {
             for (word_hits) |hit| {
                 const hit_path = self.word_index.hitPath(hit);
                 if (hit_path.len == 0) continue;
-                const cached = self.contents.get(hit_path) orelse continue;
-                const line_text = extractLineByNumber(cached, hit.line_num) orelse continue;
+                const ref = self.readContentForSearch(hit_path, allocator) orelse continue;
+                defer ref.deinit();
+                const line_text = extractLineByNumber(ref.data, hit.line_num) orelse continue;
                 if (indexOfCaseInsensitive(line_text, query) == null) continue;
                 const duped_text = try allocator.dupe(u8, line_text);
                 errdefer allocator.free(duped_text);
@@ -1429,8 +1430,9 @@ pub const Explorer = struct {
             for (prefix_hits) |hit| {
                 const hit_path = self.word_index.hitPath(hit);
                 if (hit_path.len == 0) continue;
-                const cached = self.contents.get(hit_path) orelse continue;
-                const line_text = extractLineByNumber(cached, hit.line_num) orelse continue;
+                const ref = self.readContentForSearch(hit_path, allocator) orelse continue;
+                defer ref.deinit();
+                const line_text = extractLineByNumber(ref.data, hit.line_num) orelse continue;
                 if (indexOfCaseInsensitive(line_text, query) == null) continue;
                 const duped_text = try allocator.dupe(u8, line_text);
                 errdefer allocator.free(duped_text);

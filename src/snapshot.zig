@@ -88,8 +88,10 @@ pub fn writeSnapshot(
         defer buf.deinit(allocator);
         const writer = cio.listWriter(&buf, allocator);
         var total_bytes: u64 = 0;
-        var ct_iter = explorer.contents.valueIterator();
-        while (ct_iter.next()) |v| total_bytes += v.*.len;
+        var outline_size_iter = explorer.outlines.valueIterator();
+        while (outline_size_iter.next()) |outline| {
+            total_bytes += outline.byte_size;
+        }
         var file_count_meta: u32 = 0;
         var fc_iter = explorer.outlines.keyIterator();
         while (fc_iter.next()) |k| {
@@ -227,20 +229,38 @@ pub fn writeSnapshot(
     // ── Section: CONTENT ──
     {
         const offset = file_writer.logicalPos();
-        var ct_iter = explorer.contents.iterator();
-        while (ct_iter.next()) |entry| {
-            const path = entry.key_ptr.*;
+        var root_dir = std.Io.Dir.cwd().openDir(io, root_path, .{}) catch null;
+        defer if (root_dir) |*dir| dir.close(io);
+
+        var path_iter = explorer.outlines.keyIterator();
+        while (path_iter.next()) |path_ptr| {
+            const path = path_ptr.*;
             // Skip sensitive files that may contain secrets
             if (isSensitivePath(path)) continue;
-            const content = entry.value_ptr.*;
-            var pl_buf: [2]u8 = undefined;
-            std.mem.writeInt(u16, &pl_buf, @intCast(path.len), .little);
-            try fw.writeAll(&pl_buf);
-            try fw.writeAll(path);
-            var cl_buf: [4]u8 = undefined;
-            std.mem.writeInt(u32, &cl_buf, @intCast(content.len), .little);
-            try fw.writeAll(&cl_buf);
-            try fw.writeAll(content);
+            const cached_content = explorer.contents.get(path);
+            if (cached_content) |content| {
+                var pl_buf: [2]u8 = undefined;
+                std.mem.writeInt(u16, &pl_buf, @intCast(path.len), .little);
+                try fw.writeAll(&pl_buf);
+                try fw.writeAll(path);
+                var cl_buf: [4]u8 = undefined;
+                std.mem.writeInt(u32, &cl_buf, @intCast(content.len), .little);
+                try fw.writeAll(&cl_buf);
+                try fw.writeAll(content);
+            } else if (root_dir) |*dir| {
+                const disk_content = dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
+                errdefer allocator.free(disk_content);
+
+                var pl_buf: [2]u8 = undefined;
+                std.mem.writeInt(u16, &pl_buf, @intCast(path.len), .little);
+                try fw.writeAll(&pl_buf);
+                try fw.writeAll(path);
+                var cl_buf: [4]u8 = undefined;
+                std.mem.writeInt(u32, &cl_buf, @intCast(disk_content.len), .little);
+                try fw.writeAll(&cl_buf);
+                try fw.writeAll(disk_content);
+                allocator.free(disk_content);
+            }
         }
         const end = file_writer.logicalPos();
         try sections.append(allocator, .{ .id = @intFromEnum(SectionId.content), .offset = offset, .length = end - offset });
@@ -303,7 +323,6 @@ pub fn writeSnapshot(
         return err;
     };
 }
-
 
 /// Read section table from a `.codedb` file.
 fn readSectionsFromFile(io: std.Io, file: std.Io.File, allocator: std.mem.Allocator) !?std.AutoHashMap(u32, SectionEntry) {
@@ -680,7 +699,7 @@ fn insertRestoredFile(
     content: []const u8,
     outline: FileOutline,
     allocator: std.mem.Allocator,
-) !void {
+) !bool {
     var restored_outline = outline;
     restored_outline.path = path;
 
@@ -689,12 +708,17 @@ fn insertRestoredFile(
     outline_gop.key_ptr.* = path;
     outline_gop.value_ptr.* = restored_outline;
 
-    const content_gop = try explorer.contents.getOrPut(path);
-    if (content_gop.found_existing) return error.InvalidData;
-    content_gop.key_ptr.* = path;
-    content_gop.value_ptr.* = content;
+    const content_cache_limit: u32 = 1000;
+    const should_cache = explorer.outlines.count() <= content_cache_limit;
+    if (should_cache) {
+        const content_gop = try explorer.contents.getOrPut(path);
+        if (content_gop.found_existing) return error.InvalidData;
+        content_gop.key_ptr.* = path;
+        content_gop.value_ptr.* = content;
+    }
 
     try rebuildDepsFromOutline(explorer, path, &restored_outline, allocator);
+    return should_cache;
 }
 
 fn loadSnapshotFast(
@@ -795,7 +819,7 @@ fn loadSnapshotFast(
             allocator.free(content);
         } else if (outline_states.fetchRemove(path_buf)) |removed| {
             allocator.free(path_buf);
-            insertRestoredFile(explorer, removed.key, content, removed.value, allocator) catch {
+            const content_cached = insertRestoredFile(explorer, removed.key, content, removed.value, allocator) catch {
                 allocator.free(removed.key);
                 var bad_outline = removed.value;
                 bad_outline.deinit();
@@ -804,6 +828,7 @@ fn loadSnapshotFast(
             };
             const hash = std.hash.Wyhash.hash(0, content);
             _ = store.recordSnapshot(removed.key, content.len, hash) catch {};
+            if (!content_cached) allocator.free(content);
         } else {
             word_index_can_load_from_disk = false;
             explorer.indexFileOutlineOnly(path_buf, content) catch {

@@ -538,13 +538,14 @@ fn mainImpl() !void {
         };
         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
         loadWordIndexFromDiskIfPresent(io, &explorer, data_dir, git_head, allocator);
-        if (!explorer.wordIndexIsComplete()) {
-            explorer.rebuildWordIndex() catch |err| {
-                out.p("{s}\xe2\x9c\x97{s} word index rebuild failed: {}\n", .{ s.red, s.reset, err });
+        if (!wordIndexMatchesOutlines(&explorer)) {
+            persistWordIndexFromSource(io, &explorer, abs_root, data_dir, git_head, allocator) catch |err| {
+                out.p("{s}\xe2\x9c\x97{s} word index persist failed: {}\n", .{ s.red, s.reset, err });
                 std.process.exit(1);
             };
+        } else {
+            persistWordIndexToDisk(io, &explorer, data_dir, git_head);
         }
-        persistWordIndexToDisk(io, &explorer, data_dir, git_head);
         const elapsed = cio.nanoTimestamp() - t0;
         var dur_buf: [64]u8 = undefined;
         out.p("{s}\xe2\x9c\x93{s} {s}snapshot{s}  {s}{s}{s}  {s}{d} files{s}  {s}{s}{s}\n", .{
@@ -629,6 +630,7 @@ fn mainImpl() !void {
             const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - startup_t0, 0));
             loadTrigramFromDiskIfPresent(io, &explorer, data_dir, allocator);
             telem.recordCodebaseStats(&explorer, startup_time_ms);
+            compactMcpReadyMemory(io, &explorer, data_dir, git_head, allocator);
             mcp_server.setScanState(.ready);
         }
 
@@ -736,6 +738,52 @@ fn loadWordIndexFromDiskIfPresent(
     }
 }
 
+fn wordIndexDiskMatches(
+    io: std.Io,
+    explorer: *Explorer,
+    data_dir: []const u8,
+    current_git_head: ?[40]u8,
+    allocator: std.mem.Allocator,
+) bool {
+    const header = WordIndex.readDiskHeader(io, data_dir, allocator) catch null orelse return false;
+
+    explorer.mu.lockShared();
+    const current_count = @as(u32, @intCast(explorer.outlines.count()));
+    explorer.mu.unlockShared();
+    if (header.file_count != current_count) return false;
+
+    if (current_git_head == null and header.git_head == null) return true;
+    if (current_git_head == null or header.git_head == null) return false;
+    return std.mem.eql(u8, &current_git_head.?, &header.git_head.?);
+}
+
+fn compactMcpReadyMemory(
+    io: std.Io,
+    explorer: *Explorer,
+    data_dir: []const u8,
+    current_git_head: ?[40]u8,
+    allocator: std.mem.Allocator,
+) void {
+    explorer.mu.lockShared();
+    const file_count = explorer.outlines.count();
+    explorer.mu.unlockShared();
+
+    if (file_count <= 1000 and cio.posixGetenv("CODEDB_LOW_MEMORY") == null) return;
+
+    const can_release_contents =
+        explorer.wordIndexIsComplete() or
+        (explorer.wordIndexCanLoadFromDisk() and wordIndexDiskMatches(io, explorer, data_dir, current_git_head, allocator));
+
+    if (can_release_contents) {
+        explorer.releaseContents();
+    }
+    explorer.releaseSecondaryIndexes();
+
+    // Shrink index allocations to reclaim ArrayList over-allocation.
+    if (explorer.trigram_index.asHeap()) |heap| heap.shrinkPostingLists();
+    explorer.word_index.shrinkAllocations();
+}
+
 fn persistWordIndexToDisk(io: std.Io, explorer: *Explorer, data_dir: []const u8, git_head: ?[40]u8) void {
     const generation = explorer.wordIndexGenerationToPersist() orelse return;
 
@@ -747,6 +795,52 @@ fn persistWordIndexToDisk(io: std.Io, explorer: *Explorer, data_dir: []const u8,
     };
     explorer.mu.unlockShared();
     explorer.markWordIndexPersisted(generation);
+}
+
+fn wordIndexMatchesOutlines(explorer: *Explorer) bool {
+    explorer.mu.lockShared();
+    defer explorer.mu.unlockShared();
+    return explorer.word_index_complete and
+        explorer.word_index.id_to_path.items.len == explorer.outlines.count();
+}
+
+fn persistWordIndexFromSource(
+    io: std.Io,
+    explorer: *Explorer,
+    root_path: []const u8,
+    data_dir: []const u8,
+    git_head: ?[40]u8,
+    allocator: std.mem.Allocator,
+) !void {
+    var paths: std.ArrayList([]const u8) = .empty;
+    defer paths.deinit(allocator);
+
+    {
+        explorer.mu.lockShared();
+        defer explorer.mu.unlockShared();
+        try paths.ensureTotalCapacity(allocator, explorer.outlines.count());
+        var path_iter = explorer.outlines.keyIterator();
+        while (path_iter.next()) |path_ptr| {
+            paths.appendAssumeCapacity(path_ptr.*);
+        }
+    }
+
+    var root_dir = try std.Io.Dir.cwd().openDir(io, root_path, .{});
+    defer root_dir.close(io);
+
+    var word_index = WordIndex.init(allocator);
+    defer word_index.deinit();
+    word_index.skip_file_words = true;
+
+    for (paths.items) |path| {
+        const content = root_dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
+        errdefer allocator.free(content);
+        try word_index.indexFile(path, content);
+        allocator.free(content);
+    }
+
+    if (word_index.id_to_path.items.len == 0 and paths.items.len != 0) return error.NoWordIndexData;
+    try word_index.writeToDisk(io, data_dir, git_head);
 }
 
 fn saveProjectInfo(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8, abs_root: []const u8) !void {
