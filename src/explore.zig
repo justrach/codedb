@@ -1010,19 +1010,59 @@ pub const Explorer = struct {
         }
     }
 
-    /// Rebuild the inverted word index from stored contents.
-    /// Used after fast snapshot restore, which intentionally avoids per-file tokenization.
+    /// Rebuild the inverted word index from cached contents when complete, or
+    /// by streaming source files from the project root when the content cache
+    /// was capped during fast snapshot restore.
     pub fn rebuildWordIndex(self: *Explorer) !void {
+        const source_paths = blk: {
+            self.mu.lockShared();
+            defer self.mu.unlockShared();
+
+            if (self.contents.count() == self.outlines.count()) break :blk null;
+            if (self.io == null or self.root_dir == null) return error.WordIndexIncomplete;
+
+            var paths: std.ArrayList([]u8) = .empty;
+            errdefer {
+                for (paths.items) |path| self.allocator.free(path);
+                paths.deinit(self.allocator);
+            }
+            try paths.ensureTotalCapacity(self.allocator, self.outlines.count());
+            var iter = self.outlines.keyIterator();
+            while (iter.next()) |path_ptr| {
+                paths.appendAssumeCapacity(try self.allocator.dupe(u8, path_ptr.*));
+            }
+            break :blk try paths.toOwnedSlice(self.allocator);
+        };
+        defer if (source_paths) |paths| {
+            for (paths) |path| self.allocator.free(path);
+            self.allocator.free(paths);
+        };
+
+        var rebuilt = WordIndex.init(self.allocator);
+        errdefer rebuilt.deinit();
+
+        if (source_paths) |paths| {
+            const io = self.io orelse return error.WordIndexIncomplete;
+            const dir = self.root_dir orelse return error.WordIndexIncomplete;
+            for (paths) |path| {
+                const content = try dir.readFileAlloc(io, path, self.allocator, .limited(64 * 1024 * 1024));
+                errdefer self.allocator.free(content);
+                try rebuilt.indexFile(path, content);
+                self.allocator.free(content);
+            }
+        } else {
+            self.mu.lockShared();
+            defer self.mu.unlockShared();
+            var iter = self.contents.iterator();
+            while (iter.next()) |entry| {
+                try rebuilt.indexFile(entry.key_ptr.*, entry.value_ptr.*);
+            }
+        }
+
         self.mu.lock();
         defer self.mu.unlock();
-
         self.word_index.deinit();
-        self.word_index = WordIndex.init(self.allocator);
-
-        var iter = self.contents.iterator();
-        while (iter.next()) |entry| {
-            try self.word_index.indexFile(entry.key_ptr.*, entry.value_ptr.*);
-        }
+        self.word_index = rebuilt;
         self.word_index_generation +%= 1;
         self.word_index_complete = true;
         self.word_index_can_load_from_disk = false;
@@ -1623,7 +1663,8 @@ pub const Explorer = struct {
     /// Search for a word using the inverted word index. O(1) lookup.
     pub fn searchWord(self: *Explorer, word: []const u8, allocator: std.mem.Allocator) ![]const idx.WordHit {
         self.mu.lockShared();
-        const needs_rebuild = !self.word_index_complete and self.contents.count() > 0;
+        const needs_rebuild = !self.word_index_complete and
+            (self.contents.count() > 0 or (self.io != null and self.root_dir != null));
         self.mu.unlockShared();
         if (needs_rebuild) {
             try self.rebuildWordIndex();
