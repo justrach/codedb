@@ -156,6 +156,24 @@ fn loadProjectWordIndexFromDiskIfPresent(io: std.Io, explorer: *Explorer, projec
     }
 }
 
+fn shouldLoadWordIndexForSearch(args: *const std.json.ObjectMap) bool {
+    if (getBool(args, "regex")) return false;
+    const query = getStr(args, "query") orelse return false;
+    if (query.len < 2 or query.len > 256) return false;
+
+    var saw_word_char = false;
+    for (query) |c| {
+        const is_word_char =
+            (c >= 'a' and c <= 'z') or
+            (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or
+            c == '_';
+        if (!is_word_char) return false;
+        if (c != '_') saw_word_char = true;
+    }
+    return saw_word_char;
+}
+
 const ProjectCache = struct {
     const MAX_CACHED = 5;
 
@@ -811,7 +829,7 @@ fn dispatch(
         return;
     };
 
-    if (tool == .codedb_word) {
+    if (tool == .codedb_word or (tool == .codedb_search and shouldLoadWordIndexForSearch(args))) {
         const effective_project = project_path orelse cache.default_path;
         loadProjectWordIndexFromDiskIfPresent(io, ctx.explorer, effective_project, alloc);
     }

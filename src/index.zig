@@ -61,6 +61,12 @@ pub const WordIndex = struct {
         }
         self.file_words.deinit();
 
+        if (self.skip_file_words) {
+            for (self.id_to_path.items) |path| {
+                if (path.len > 0) self.allocator.free(path);
+            }
+        }
+
         self.path_to_id.deinit();
         self.id_to_path.deinit(self.allocator);
     }
@@ -362,7 +368,11 @@ pub const WordIndex = struct {
             }
         }.lt);
 
-        const rand_suffix = @as(u64, blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk @as(u64, @intCast(ts.nsec)) ^ (@as(u64, @intCast(ts.sec)) << 1); });
+        const rand_suffix = @as(u64, blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk @as(u64, @intCast(ts.nsec)) ^ (@as(u64, @intCast(ts.sec)) << 1);
+        });
         const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}/word.index.{x}.tmp", .{ dir_path, rand_suffix });
         defer self.allocator.free(tmp_path);
         const final_path = try std.fmt.allocPrint(self.allocator, "{s}/word.index", .{dir_path});
@@ -917,7 +927,9 @@ pub const TrigramIndex = struct {
             }
             if (is_new_doc) {
                 try idx_gop.value_ptr.items.append(self.allocator, .{
-                    .doc_id = doc_id, .next_mask = mask.next_mask, .loc_mask = mask.loc_mask,
+                    .doc_id = doc_id,
+                    .next_mask = mask.next_mask,
+                    .loc_mask = mask.loc_mask,
                 });
             } else {
                 const posting = try idx_gop.value_ptr.getOrAddPosting(self.allocator, doc_id);
@@ -969,7 +981,9 @@ pub const TrigramIndex = struct {
                 idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
             }
             try idx_gop.value_ptr.items.append(self.allocator, .{
-                .doc_id = doc_id, .next_mask = mask.next_mask, .loc_mask = mask.loc_mask,
+                .doc_id = doc_id,
+                .next_mask = mask.next_mask,
+                .loc_mask = mask.loc_mask,
             });
             try tri_list.append(self.allocator, tri);
         }
@@ -988,7 +1002,9 @@ pub const TrigramIndex = struct {
                 idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
             }
             try idx_gop.value_ptr.items.append(self.allocator, .{
-                .doc_id = doc_id, .next_mask = te.mask.next_mask, .loc_mask = te.mask.loc_mask,
+                .doc_id = doc_id,
+                .next_mask = te.mask.next_mask,
+                .loc_mask = te.mask.loc_mask,
             });
         }
     }
@@ -1981,7 +1997,6 @@ pub const MmapTrigramIndex = struct {
         };
     }
 };
-
 
 pub const AnyTrigramIndex = union(enum) {
     heap: TrigramIndex,
