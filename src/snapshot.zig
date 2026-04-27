@@ -995,7 +995,15 @@ pub fn writeSnapshotDual(
     allocator: std.mem.Allocator,
 ) !void {
     try writeSnapshot(io, explorer, root_path, output_path, allocator);
+    writeProjectCacheSnapshot(io, explorer, root_path, allocator) catch {};
+}
 
+pub fn writeProjectCacheSnapshot(
+    io: std.Io,
+    explorer: *Explorer,
+    root_path: []const u8,
+    allocator: std.mem.Allocator,
+) !void {
     const hash = std.hash.Wyhash.hash(0, root_path);
     const home_raw = cio.posixGetenv("HOME") orelse return;
     const home = allocator.dupe(u8, home_raw) catch return;
@@ -1009,12 +1017,11 @@ pub fn writeSnapshotDual(
 
     const proj_txt = std.fmt.allocPrint(allocator, "{s}/project.txt", .{dir_path}) catch return;
     defer allocator.free(proj_txt);
-    if (std.Io.Dir.cwd().createFile(io, proj_txt, .{})) |f| {
-        f.writeStreamingAll(io, root_path) catch {};
-        f.close(io);
-    } else |_| {}
+    var f = try std.Io.Dir.cwd().createFile(io, proj_txt, .{ .truncate = true });
+    f.writeStreamingAll(io, root_path) catch {};
+    f.close(io);
 
-    writeSnapshot(io, explorer, root_path, secondary, allocator) catch {};
+    try writeSnapshot(io, explorer, root_path, secondary, allocator);
 }
 
 fn writeJsonEscaped(writer: anytype, s: []const u8) !void {

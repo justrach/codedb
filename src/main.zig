@@ -265,6 +265,7 @@ fn mainImpl() !void {
                 s.reset,
             });
 
+            var release_contents_after_cache = false;
             if (heads_match) {
                 // Verify file count then load trigram from disk via mmap
                 const current_count = @as(u32, @intCast(explorer.outlines.count()));
@@ -319,7 +320,7 @@ fn mainImpl() !void {
                     explorer.trigram_index = .{ .mmap = loaded };
                     explorer.mu.unlock();
                 }
-                explorer.releaseContents();
+                release_contents_after_cache = true;
             }
 
             // If no freq table was loaded, build one from indexed content and
@@ -331,6 +332,15 @@ fn mainImpl() !void {
                         std.log.warn("could not persist frequency table: {}", .{err});
                     };
                 }
+            }
+
+            if (!std.mem.eql(u8, cmd, "snapshot")) {
+                snapshot_mod.writeProjectCacheSnapshot(io, &explorer, abs_root, allocator) catch |err| {
+                    std.log.warn("could not persist project-cache snapshot: {}", .{err});
+                };
+            }
+            if (release_contents_after_cache) {
+                explorer.releaseContents();
             }
         } // end else (no snapshot)
     }

@@ -2828,6 +2828,61 @@ test "issue-258: cached project reads use the project root after contents are re
     try testing.expect(std.mem.indexOf(u8, out.items, "const project = \"secondary\";") != null);
 }
 
+test "ProjectCache loads project from central snapshot cache" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "src");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/main.zig",
+        .data = "pub fn cachedProject() void {}\n",
+    });
+
+    var project_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_path_len = try tmp.dir.realPathFile(io, ".", &project_path_buf);
+    const project_path = project_path_buf[0..project_path_len];
+
+    const data_dir = getProjectDataDir(testing.allocator, project_path) orelse return error.OutOfMemory;
+    defer testing.allocator.free(data_dir);
+    const central_snapshot = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{data_dir});
+    defer testing.allocator.free(central_snapshot);
+    const project_txt = try std.fmt.allocPrint(testing.allocator, "{s}/project.txt", .{data_dir});
+    defer testing.allocator.free(project_txt);
+    defer {
+        std.Io.Dir.cwd().deleteFile(io, central_snapshot) catch {};
+        std.Io.Dir.cwd().deleteFile(io, project_txt) catch {};
+        std.Io.Dir.cwd().deleteDir(io, data_dir) catch {};
+    }
+
+    var snapshot_src = Explorer.init(testing.allocator);
+    defer snapshot_src.deinit();
+    snapshot_src.setRoot(io, project_path);
+    try snapshot_src.indexFile("src/main.zig", "pub fn cachedProject() void {}\n");
+    try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
+
+    const root_snapshot = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{project_path});
+    defer testing.allocator.free(root_snapshot);
+    if (std.Io.Dir.cwd().access(io, root_snapshot, .{})) |_| {
+        return error.UnexpectedRootSnapshot;
+    } else |_| {}
+
+    var default_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const default_path_len = try std.Io.Dir.cwd().realPathFile(io, ".", &default_path_buf);
+    const default_path = default_path_buf[0..default_path_len];
+
+    var default_explorer = Explorer.init(testing.allocator);
+    defer default_explorer.deinit();
+    var default_store = Store.init(testing.allocator);
+    defer default_store.deinit();
+
+    var cache = ProjectCache.init(testing.allocator, default_path);
+    defer cache.deinit();
+
+    const ctx = try cache.get(io, project_path, &default_explorer, &default_store);
+    try testing.expect(ctx.explorer.outlines.contains("src/main.zig"));
+}
+
 test "codedb_snapshot cache reuses output until store seq changes" {
     const io = testing.io;
     const alloc = testing.allocator;
