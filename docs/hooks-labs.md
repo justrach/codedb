@@ -198,6 +198,8 @@ Start with:
 codedb_remote repo="openai/codex" action="actions"
 codedb_remote repo="openai/codex" action="tree" expand=false
 codedb_remote repo="openai/codex" action="tree" prefix="codex-rs/" limit=100
+codedb_remote repo="openai/codex" action="search" query="AuthMode" limit=10
+codedb_remote repo="openai/codex" action="branches" limit=20
 codedb_remote repo="openai/codex" action="read" path="codex-rs/core/src/codex.rs" lines="1-80"
 ```
 
