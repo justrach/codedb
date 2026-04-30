@@ -7587,6 +7587,77 @@ test "issue-207: ScanState.name covers all states" {
     try testing.expectEqualStrings("ready", mcp_mod.ScanState.ready.name());
 }
 
+test "issue-331: C parser does not index indented call sites as functions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var explorer = Explorer.init(a);
+
+    try explorer.indexFile("test.c",
+        \\void real_func(int x) {
+        \\    fprintf(stderr, "curl_easy_perform() failed: %s\n",
+        \\            curl_easy_strerror(res));
+        \\    curl_easy_perform(curl);
+        \\    if (SSL_get_options(ctx))
+        \\        return;
+        \\}
+    );
+
+    const syms = explorer.outlines.get("test.c").?.symbols.items;
+    var found_false = false;
+    for (syms) |sym| {
+        if (sym.kind == .function) {
+            if (std.mem.eql(u8, sym.name, "fprintf") or
+                std.mem.eql(u8, sym.name, "curl_easy_perform") or
+                std.mem.eql(u8, sym.name, "curl_easy_strerror") or
+                std.mem.eql(u8, sym.name, "SSL_get_options"))
+            {
+                found_false = true;
+            }
+        }
+    }
+    try testing.expect(!found_false);
+    var found_real = false;
+    for (syms) |sym| {
+        if (sym.kind == .function and std.mem.eql(u8, sym.name, "real_func"))
+            found_real = true;
+    }
+    try testing.expect(found_real);
+}
+
+test "issue-331: C parser finds nginx-style split-line definitions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var explorer = Explorer.init(a);
+
+    try explorer.indexFile("ngx_http_request.c",
+        \\ngx_int_t
+        \\ngx_http_init_connection(ngx_connection_t *c)
+        \\{
+        \\    ngx_http_connection_t  *hc;
+        \\}
+        \\
+        \\static ngx_int_t
+        \\ngx_http_create_request(ngx_http_request_t *r)
+        \\{
+        \\    return NGX_OK;
+        \\}
+    );
+
+    const syms = explorer.outlines.get("ngx_http_request.c").?.symbols.items;
+    var found_init = false;
+    var found_create = false;
+    for (syms) |sym| {
+        if (sym.kind == .function) {
+            if (std.mem.eql(u8, sym.name, "ngx_http_init_connection")) found_init = true;
+            if (std.mem.eql(u8, sym.name, "ngx_http_create_request")) found_create = true;
+        }
+    }
+    try testing.expect(found_init);
+    try testing.expect(found_create);
+}
+
 test "issue-346: root_policy rejects dangerous ambient cwd roots" {
     const root_policy = @import("root_policy.zig");
     try testing.expect(!root_policy.isIndexableRoot("/"));

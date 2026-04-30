@@ -830,6 +830,7 @@ pub const Explorer = struct {
         var in_py_docstring = false;
         var in_block_comment = false;
         var in_go_import_block = false;
+        var c_brace_depth: u32 = 0;
         var lines = std.mem.splitScalar(u8, content, '\n');
         while (lines.next()) |line| {
             line_num += 1;
@@ -905,7 +906,7 @@ pub const Explorer = struct {
             } else if (outline.language == .typescript or outline.language == .javascript) {
                 try parser.parseTsLine(trimmed, line_num, &outline);
             } else if (outline.language == .c or outline.language == .cpp) {
-                try parser.parseCLine(trimmed, line_num, &outline);
+                try parser.parseCLine(line, trimmed, line_num, &outline, prev_line_trimmed, &c_brace_depth);
             } else if (outline.language == .rust) {
                 try parser.parseRustLine(trimmed, line_num, &outline, prev_line_trimmed);
             } else if (outline.language == .php) {
@@ -2197,9 +2198,9 @@ pub const Explorer = struct {
         }
     }
 
-    fn parseCLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+    fn parseCLine(self: *Explorer, raw_line: []const u8, trimmed: []const u8, line_num: u32, outline: *FileOutline, prev_trimmed: []const u8, brace_depth: *u32) !void {
         const a = self.allocator;
-        const line = stripLineComment(raw_line);
+        const line = stripLineComment(trimmed);
         if (line.len == 0) return;
 
         if (startsWith(line, "#include") or startsWith(line, "#import")) {
@@ -2222,22 +2223,28 @@ pub const Explorer = struct {
 
         if (parseObjCType(line)) |type_sym| {
             try appendOutlineSymbol(a, outline, type_sym.name, type_sym.kind, line_num, line);
+            applyBraceDelta(brace_depth, countBracesDelta(line));
             return;
         }
 
         if (extractObjCMethodName(line)) |name| {
             try appendOutlineSymbol(a, outline, name, .method, line_num, line);
+            applyBraceDelta(brace_depth, countBracesDelta(line));
             return;
         }
 
         if (parseCNamedType(line)) |type_sym| {
             try appendOutlineSymbol(a, outline, type_sym.name, type_sym.kind, line_num, line);
+            applyBraceDelta(brace_depth, countBracesDelta(line));
             return;
         }
 
-        if (extractCFunctionName(line)) |name| {
+        const at_col0 = raw_line.len > 0 and raw_line[0] != ' ' and raw_line[0] != '\t';
+        if (extractCFunctionName(line, at_col0, prev_trimmed, brace_depth.*, outline.language == .cpp)) |name| {
             try appendOutlineSymbol(a, outline, name, .function, line_num, line);
         }
+
+        applyBraceDelta(brace_depth, countBracesDelta(line));
     }
 
     fn parseRustLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline, prev_line: []const u8) !void {
@@ -4281,7 +4288,14 @@ fn extractObjCMethodName(line: []const u8) ?[]const u8 {
     return extractIdent(rest);
 }
 
-fn extractCFunctionName(line: []const u8) ?[]const u8 {
+fn extractCFunctionName(line: []const u8, at_col0: bool, prev_trimmed: []const u8, brace_depth: u32, is_cpp: bool) ?[]const u8 {
+    // Anything inside a function body is a call site, not a definition.
+    // C: depth 0 = file scope. Any depth >= 1 means inside a function body.
+    // C++: depth 0 = file scope, depth 1 = class/struct body (methods allowed).
+    //      Depth >= 2 means inside a function body.
+    const max_depth: u32 = if (is_cpp) 1 else 0;
+    if (brace_depth > max_depth) return null;
+
     const stripped = stripCAttributesPrefix(line);
     if (stripped.len == 0 or stripped[0] == '#') return null;
     if (startsWith(stripped, "typedef ")) return null;
@@ -4300,12 +4314,71 @@ fn extractCFunctionName(line: []const u8) ?[]const u8 {
     if (isCKeyword(name)) return null;
 
     const before_name = std.mem.trim(u8, before_paren[0..span.start], " \t*(&");
-    if (before_name.len == 0) return null;
+    if (before_name.len == 0) {
+        // nginx-style: return type on previous line, function name starts this line.
+        // Accept only if at column 0 and prev line looks like a type (identifier,
+        // optionally preceded by storage qualifiers), not a statement or brace.
+        if (!at_col0) return null;
+        if (prev_trimmed.len == 0) return null;
+        if (prev_trimmed[0] == '{' or prev_trimmed[0] == '}' or
+            prev_trimmed[0] == '(' or prev_trimmed[0] == ')')
+            return null;
+        if (std.mem.indexOfScalar(u8, prev_trimmed, ';') != null) return null;
+        if (std.mem.indexOfScalar(u8, prev_trimmed, '(') != null) return null;
+        if (isCForbiddenFunctionPrefix(prev_trimmed)) return null;
+        // prev line must start with an identifier (a type name or qualifier)
+        if (extractIdent(std.mem.trimStart(u8, prev_trimmed, " \t*")) == null) return null;
+        return name;
+    }
+    if (!at_col0 and !looksLikeCMethodDef(before_name)) return null;
     if (hasCAssignmentBeforeName(before_name)) return null;
     if (isCForbiddenFunctionPrefix(before_name)) return null;
     if (std.mem.endsWith(u8, before_name, ".") or std.mem.endsWith(u8, before_name, "->")) return null;
 
     return name;
+}
+
+fn countChar(s: []const u8, ch: u8) u32 {
+    var n: u32 = 0;
+    for (s) |c| if (c == ch) { n += 1; };
+    return n;
+}
+
+fn applyBraceDelta(depth: *u32, delta: i32) void {
+    if (delta >= 0) {
+        depth.* +|= @intCast(delta);
+    } else {
+        const sub: u32 = @intCast(-delta);
+        depth.* -|= sub;
+    }
+}
+
+fn countBracesDelta(line: []const u8) i32 {
+    var delta: i32 = 0;
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const ch = line[i];
+        if (ch == '"' or ch == '\'') {
+            const q = ch;
+            i += 1;
+            while (i < line.len) : (i += 1) {
+                if (line[i] == '\\') { i += 1; continue; }
+                if (line[i] == q) break;
+            }
+        } else if (ch == '{') {
+            delta += 1;
+        } else if (ch == '}') {
+            delta -= 1;
+        }
+    }
+    return delta;
+}
+
+fn looksLikeCMethodDef(before_name: []const u8) bool {
+    const trimmed = std.mem.trimStart(u8, before_name, " \t*(&");
+    const first = extractIdent(trimmed) orelse return false;
+    return !isCKeyword(first) and !std.mem.eql(u8, first, "return") and
+        !std.mem.eql(u8, first, "case");
 }
 
 fn stripCAttributesPrefix(line: []const u8) []const u8 {
