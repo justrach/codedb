@@ -73,6 +73,7 @@ fn mainImpl() !void {
     var root: []const u8 = undefined;
     var cmd: []const u8 = undefined;
     var cmd_args_start: usize = undefined;
+    var root_is_explicit: bool = false;
 
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--mcp")) {
         root = ".";
@@ -101,6 +102,7 @@ fn mainImpl() !void {
         root = args[1];
         cmd = args[2];
         cmd_args_start = 3;
+        root_is_explicit = true;
     } else {
         printUsage(out, s);
         std.process.exit(1);
@@ -148,7 +150,7 @@ fn mainImpl() !void {
         });
         std.process.exit(1);
     };
-    const mcp_deferred_root = std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".");
+    const mcp_deferred_root = std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit;
     if (!mcp_deferred_root and !root_policy.isIndexableRoot(abs_root)) {
         out.p("{s}\xe2\x9c\x97{s} refusing to index temporary root: {s}{s}{s}\n", .{
             s.red, s.reset, s.bold, abs_root, s.reset,
@@ -646,7 +648,7 @@ fn mainImpl() !void {
             deferred.scan_done.* = std.atomic.Value(bool).init(false);
             maybe_deferred = &deferred;
             mcp_server.setScanState(.loading_snapshot);
-            watch_thread = try std.Thread.spawn(.{}, watcherDeferredLoop, .{ &shutdown, deferred.scan_done });
+            watch_thread = try std.Thread.spawn(.{}, watcherDeferredLoop, .{&deferred});
         } else {
             const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
             mcp_server.setScanState(.loading_snapshot);
@@ -681,6 +683,7 @@ fn mainImpl() !void {
 
         shutdown.store(true, .release);
         if (scan_thread) |st| st.join();
+        if (maybe_deferred) |d| { if (d.scan_thread) |st| st.join(); }
         watch_thread.join();
         idle_thread.join();
     } else {
@@ -1076,7 +1079,10 @@ fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allo
     }
 }
 fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8) void {
-    const data_dir = getDataDir(ctx.io, ctx.allocator, abs_root) catch return;
+    const data_dir = getDataDir(ctx.io, ctx.allocator, abs_root) catch {
+        ctx.triggered.store(false, .release);
+        return;
+    };
     defer ctx.allocator.free(data_dir);
     const git_head = git_mod.getGitHead(abs_root, ctx.allocator) catch null;
     const snap_path = std.fmt.allocPrint(ctx.allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
@@ -1092,12 +1098,13 @@ fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8) voi
         if (!std.mem.eql(u8, &snap_head, &cur_head)) break :blk false;
         break :blk snapshot_mod.loadSnapshot(ctx.io, snap_path_owned, ctx.explorer, ctx.store, ctx.allocator);
     };
+    ctx.resolved_root = abs_root;
     ctx.explorer.setRoot(ctx.io, abs_root);
     ctx.scan_done.store(snapshot_loaded, .release);
     if (!snapshot_loaded) {
         mcp_server.setScanState(.walking);
         const scan_thread = std.Thread.spawn(.{}, scanBg, .{ ctx.io, ctx.store, ctx.explorer, abs_root, ctx.allocator, ctx.scan_done, ctx.shutdown, data_dir, abs_root, ctx.telem, ctx.startup_t0 }) catch return;
-        scan_thread.detach();
+        ctx.scan_thread = scan_thread;
     } else {
         const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - ctx.startup_t0, 0));
         loadTrigramFromDiskIfPresent(ctx.io, ctx.explorer, data_dir, ctx.allocator);
@@ -1105,13 +1112,14 @@ fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8) voi
         compactMcpReadyMemory(ctx.io, ctx.explorer, data_dir, git_head, ctx.allocator);
         mcp_server.setScanState(.ready);
     }
-    _ = std.Thread.spawn(.{}, watcher.incrementalLoop, .{ ctx.io, ctx.store, ctx.explorer, ctx.queue, abs_root, ctx.shutdown, ctx.scan_done }) catch {};
 }
 
-fn watcherDeferredLoop(shutdown: *std.atomic.Value(bool), scan_done: *std.atomic.Value(bool)) void {
-    while (!scan_done.load(.acquire) and !shutdown.load(.acquire)) {
+fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
+    while (!ctx.scan_done.load(.acquire) and !ctx.shutdown.load(.acquire)) {
         cio.sleepMs(50);
     }
+    if (ctx.shutdown.load(.acquire)) return;
+    watcher.incrementalLoop(ctx.io, ctx.store, ctx.explorer, ctx.queue, ctx.resolved_root, ctx.shutdown, ctx.scan_done);
 }
 
 fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {

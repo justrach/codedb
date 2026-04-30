@@ -33,6 +33,8 @@ pub const DeferredScan = struct {
     queue: *watcher.EventQueue,
     startup_t0: i64,
     triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    scan_thread: ?std.Thread = null,
+    resolved_root: []const u8 = "",
     triggerFn: *const fn (ctx: *DeferredScan, abs_root: []const u8) void,
 };
 
