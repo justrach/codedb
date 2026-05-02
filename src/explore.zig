@@ -3285,12 +3285,105 @@ pub const Explorer = struct {
         return result_list.toOwnedSlice(allocator);
     }
 
+    /// Scoped regex search: same as searchContentWithScope but uses regex matching
+    /// against each line instead of literal substring. Trigram-accelerated.
+    pub fn searchContentRegexWithScope(self: *Explorer, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const ScopedSearchResult {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        var result_list: std.ArrayList(ScopedSearchResult) = .empty;
+        errdefer {
+            for (result_list.items) |r| {
+                allocator.free(r.line_text);
+                allocator.free(r.path);
+                if (r.scope_name) |n| allocator.free(n);
+            }
+            result_list.deinit(allocator);
+        }
+
+        var query = idx.decomposeRegex(pattern, self.allocator) catch {
+            var iter = self.outlines.keyIterator();
+            while (iter.next()) |key_ptr| {
+                const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
+                defer ref.deinit();
+                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                if (result_list.items.len >= max_results) break;
+            }
+            return result_list.toOwnedSlice(allocator);
+        };
+        defer query.deinit();
+
+        const candidate_paths = self.trigram_index.candidatesRegex(&query, allocator);
+        defer if (candidate_paths) |cp| allocator.free(cp);
+        const use_trigram = candidate_paths != null and candidate_paths.?.len > 0;
+
+        if (use_trigram) {
+            for (candidate_paths.?) |path| {
+                const ref = self.readContentForSearch(path, allocator) orelse continue;
+                defer ref.deinit();
+                try self.searchInContentRegexWithScope(path, ref.data, pattern, allocator, max_results, &result_list);
+                if (result_list.items.len >= max_results) break;
+            }
+        } else {
+            var iter = self.outlines.keyIterator();
+            while (iter.next()) |key_ptr| {
+                const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
+                defer ref.deinit();
+                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                if (result_list.items.len >= max_results) break;
+            }
+            return result_list.toOwnedSlice(allocator);
+        }
+
+        if (result_list.items.len < max_results) {
+            var iter = self.outlines.keyIterator();
+            while (iter.next()) |key_ptr| {
+                if (self.trigram_index.containsFile(key_ptr.*)) continue;
+                const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
+                defer ref.deinit();
+                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                if (result_list.items.len >= max_results) break;
+            }
+        }
+
+        return result_list.toOwnedSlice(allocator);
+    }
+
     fn searchInContentWithScope(self: *Explorer, path: []const u8, content: []const u8, query: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(ScopedSearchResult)) !void {
         var line_num: u32 = 0;
         var lines = std.mem.splitScalar(u8, content, '\n');
         while (lines.next()) |line| {
             line_num += 1;
             if (indexOfCaseInsensitive(line, query) != null) {
+                const line_text = try allocator.dupe(u8, line);
+                errdefer allocator.free(line_text);
+                const path_copy = try allocator.dupe(u8, path);
+                errdefer allocator.free(path_copy);
+
+                const scope = self.findEnclosingSymbolLocked(path, line_num);
+                const scope_name = if (scope) |s| try allocator.dupe(u8, s.name) else null;
+                errdefer if (scope_name) |n| allocator.free(n);
+
+                try result_list.append(allocator, .{
+                    .path = path_copy,
+                    .line_num = line_num,
+                    .line_text = line_text,
+                    .scope_name = scope_name,
+                    .scope_kind = if (scope) |s| s.kind else null,
+                    .scope_start = if (scope) |s| s.line_start else 0,
+                    .scope_end = if (scope) |s| s.line_end else 0,
+                });
+                if (result_list.items.len >= max_results) return;
+            }
+        }
+    }
+
+    fn searchInContentRegexWithScope(self: *Explorer, path: []const u8, content: []const u8, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(ScopedSearchResult)) !void {
+        var line_num: u32 = 0;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            line_num += 1;
+            if (regexMatch(line, pattern)) {
                 const line_text = try allocator.dupe(u8, line);
                 errdefer allocator.free(line_text);
                 const path_copy = try allocator.dupe(u8, path);
