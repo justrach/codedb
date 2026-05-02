@@ -2169,7 +2169,12 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
             return;
         }
         const step = &step_val.object;
-        const op = getStr(step, "op") orelse {
+        const op = getStr(step, "op") orelse blk: {
+            // Auto-detect op when 'op' key is missing.
+            // query → search, word → word, name → symbol
+            if (getStr(step, "query") != null) break :blk "search";
+            if (getStr(step, "word") != null)   break :blk "word";
+            if (getStr(step, "name") != null)   break :blk "symbol";
             w.print("error: step {d} missing 'op'\n", .{step_i}) catch {};
             return;
         };
