@@ -4115,6 +4115,41 @@ test "issue-60: telemetry disabled path is a no-op" {
     try testing.expect(telem.head.load(.monotonic) == 0);
 }
 
+test "issue-382: telemetry timestamp_ms reflects record time, not flush time" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    var telem = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
+    defer telem.deinit();
+
+    const t_record = cio.milliTimestamp();
+    telem.recordToolCall("codedb_status", 1234, false, 56);
+
+    while (cio.milliTimestamp() - t_record < 80) {}
+    telem.flush();
+    const t_flush = cio.milliTimestamp();
+
+    const ndjson_path = try std.fmt.allocPrint(testing.allocator, "{s}/telemetry.ndjson", .{dir_path});
+    defer testing.allocator.free(ndjson_path);
+
+    const contents = try std.Io.Dir.cwd().readFileAlloc(io, ndjson_path, testing.allocator, .limited(64 * 1024));
+    defer testing.allocator.free(contents);
+
+    const needle = "\"timestamp_ms\":";
+    const idx = std.mem.indexOf(u8, contents, needle) orelse return error.TimestampFieldMissing;
+    const after = contents[idx + needle.len ..];
+    const end = std.mem.indexOfAny(u8, after, ",}") orelse return error.TimestampFieldMalformed;
+    const ts = try std.fmt.parseInt(i64, after[0..end], 10);
+
+    try testing.expect(ts >= t_record - 5);
+    try testing.expect(ts <= t_record + 20);
+    try testing.expect(t_flush - ts >= 50);
+}
+
 test "issue-77: mcp index accepts temporary-directory roots that cause pathological cache growth" {
     var tmp_name_buf: [128]u8 = undefined;
     const tmp_name = try std.fmt.bufPrint(&tmp_name_buf, "codedb-issue-77-{d}", .{@as(i64, @intCast(@divTrunc(cio.nanoTimestamp(), 1000)))});
