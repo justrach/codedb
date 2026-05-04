@@ -10,6 +10,7 @@ const VERSION = @import("release_info.zig").semver;
 const PLATFORM = std.fmt.comptimePrint("{s}-{s}", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
 
 pub const Event = struct {
+    timestamp_ms: i64,
     kind: Kind,
 
     pub const Kind = union(enum) {
@@ -81,6 +82,7 @@ pub const Telemetry = struct {
         const next = self.head.fetchAdd(1, .monotonic);
         const slot = next % RING_SIZE;
         self.ring[slot] = .{
+            .timestamp_ms = cio.milliTimestamp(),
             .kind = kind,
         };
         const tail = self.tail.load(.monotonic);
@@ -196,7 +198,7 @@ pub const Telemetry = struct {
     fn formatEvent(self: *Telemetry, ev: *const Event) !usize {
         var stream = std.Io.Writer.fixed(&self.buf);
         const w = &stream;
-        try w.print("{{\"timestamp_ms\":{d}", .{cio.milliTimestamp()});
+        try w.print("{{\"timestamp_ms\":{d}", .{ev.timestamp_ms});
         switch (ev.kind) {
             .tool_call => |tc| {
                 const name = tc.tool[0..tc.tool_len];
