@@ -5185,6 +5185,27 @@ test "issue-301: Dart block comments skipped" {
     try testing.expectEqual(@as(usize, 0), func_count);
 }
 
+test "auto-update: shouldRunAutoUpdate gates correctly" {
+    const day_ms: i64 = 24 * 60 * 60 * 1000;
+
+    // Disabled by env: never runs
+    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, true));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, null, true));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, 0, true));
+
+    // First run (no stamp): always runs when not disabled
+    try testing.expect(update_mod.shouldRunAutoUpdate(0, null, false));
+
+    // Throttled: <24h since last check → skip
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms - 1, 0, false));
+
+    // Exactly 24h since last check → run
+    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms, 0, false));
+
+    // Long after last check → run
+    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false));
+}
+
 test "issue-150: --help prints usage" {
     try buildCliForHelpTests();
 

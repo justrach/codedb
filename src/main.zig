@@ -605,6 +605,11 @@ fn mainImpl() !void {
         std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
         try server.serve(io, allocator, &store, &agents, &explorer, queue, port);
     } else if (std.mem.eql(u8, cmd, "mcp")) {
+        // Background auto-update check (no-op when CODEDB_NO_AUTO_UPDATE is set
+        // or when the last check was within the last 24h). Detached thread, so
+        // this doesn't block server startup.
+        update_mod.maybeAutoUpdate(io, allocator);
+
         var agents = AgentRegistry.init(allocator);
         defer agents.deinit();
         _ = try agents.register("__filesystem__");
