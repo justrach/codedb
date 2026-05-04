@@ -639,6 +639,13 @@ pub fn run(
         } else if (mcpj.eql(method, "notifications/initialized")) {
             if (session.client_supports_roots) {
                 requestRoots(&session);
+            } else if (session.deferred_scan) |ds| {
+                // Client won't be sending workspace roots — fire the deferred
+                // scan now with the cwd fallback so we don't sit in
+                // loading_snapshot waiting for a roots/list reply that never
+                // comes.
+                const empty_roots: []const Root = &.{};
+                _ = triggerDeferredScanWithFallback(ds, empty_roots, ds.fallback_cwd);
             }
         } else if (mcpj.eql(method, "notifications/roots/list_changed")) {
             if (session.client_supports_roots) {

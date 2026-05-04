@@ -164,6 +164,13 @@ fn mainImpl() !void {
         });
         std.process.exit(1);
     };
+    // For `codedb mcp` from cwd, always go through deferred mode: we need the
+    // initialize handshake first to know whether the client is going to send
+    // workspace roots. If we eager-load here we'd race the client's roots/list
+    // reply and silently ignore an editor's actual workspace path. The trigger
+    // path is fast (snapshot load happens in-process when the trigger fires),
+    // and clients that don't advertise the roots capability fire the trigger
+    // immediately on notifications/initialized — see handleSession.
     const mcp_deferred_root = std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit;
     if (!mcp_deferred_root and !root_policy.isIndexableRoot(abs_root)) {
         out.p("{s}\xe2\x9c\x97{s} refusing to index temporary root: {s}{s}{s}\n", .{
