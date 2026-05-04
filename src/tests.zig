@@ -3678,10 +3678,8 @@ test "issue-46: empty-repo snapshot rejected on load" {
     const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/test.codedb", .{dir_path});
     defer testing.allocator.free(snap_path);
 
-    // Write snapshot of empty repo (no files indexed)
     try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
 
-    // Load into fresh explorer + store
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
     var exp2 = Explorer.init(arena2.allocator());
@@ -3689,8 +3687,8 @@ test "issue-46: empty-repo snapshot rejected on load" {
     defer store.deinit();
 
     const loaded = snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, testing.allocator);
-    // Valid empty-repo snapshot should be accepted; currently returns false (bug: file_count == 0)
-    try testing.expect(loaded);
+    try testing.expect(!loaded);
+    try testing.expect(exp2.outlines.count() == 0);
 }
 
 test "issue-220: snapshot fast load restores outlines and lazily rebuilds word index" {

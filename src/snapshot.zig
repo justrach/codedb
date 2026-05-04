@@ -549,11 +549,9 @@ pub fn loadSnapshotValidated(
     }
 
     // Validate file_count matches META expectation (issue-40)
+    if (file_count == 0) return false;
     if (expected_file_count) |expected| {
         if (file_count != expected) return false;
-    } else if (file_count == 0) {
-        // No META and no files loaded — corrupt or empty snapshot
-        return false;
     }
 
     // Load frequency table if present
@@ -845,10 +843,9 @@ fn loadSnapshotFast(
         file_count += 1;
     }
 
+    if (file_count == 0) return false;
     if (expected_file_count) |expected| {
         if (file_count != expected) return false;
-    } else if (file_count == 0) {
-        return false;
     }
 
     if (outline_states.count() != 0) return false;
