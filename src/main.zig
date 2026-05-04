@@ -658,6 +658,7 @@ fn mainImpl() !void {
                 .telem = &telem,
                 .queue = queue,
                 .startup_t0 = startup_t0,
+                .fallback_cwd = abs_root,
                 .triggerFn = triggerScanFromRoots,
             };
             deferred.scan_done.* = std.atomic.Value(bool).init(false);
@@ -1153,8 +1154,18 @@ fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8) voi
 }
 
 fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
+    const t0 = cio.milliTimestamp();
+    const fallback_after_ms: i64 = 3000;
+    var fallback_attempted = false;
     while (!ctx.scan_done.load(.acquire) and !ctx.shutdown.load(.acquire)) {
         cio.sleepMs(50);
+        if (!fallback_attempted and cio.milliTimestamp() - t0 >= fallback_after_ms) {
+            fallback_attempted = true;
+            // Client never sent indexable roots — fall back to cwd so the
+            // server doesn't sit in loading_snapshot forever.
+            const empty_roots: []const mcp_server.Root = &.{};
+            _ = mcp_server.triggerDeferredScanWithFallback(ctx, empty_roots, ctx.fallback_cwd);
+        }
     }
     if (ctx.shutdown.load(.acquire)) return;
     watcher.incrementalLoop(ctx.io, ctx.store, ctx.explorer, ctx.queue, ctx.resolved_root, ctx.shutdown, ctx.scan_done);
