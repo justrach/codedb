@@ -4150,6 +4150,40 @@ test "issue-382: telemetry timestamp_ms reflects record time, not flush time" {
     try testing.expect(t_flush - ts >= 50);
 }
 
+test "issue-385: synced offset persists across sessions so events are not re-posted" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    const expected_synced: u64 = blk: {
+        var telem = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
+        telem.recordToolCall("codedb_status", 1234, false, 56);
+        telem.flush();
+        try testing.expect(telem.write_offset > 0);
+        // Simulate the post-POST bookkeeping: mark all flushed bytes as synced.
+        telem.markFlushedBytesSynced();
+        try testing.expectEqual(telem.write_offset, telem.synced_offset);
+        const synced = telem.synced_offset;
+        // Disable so deinit doesn't run another sync/truncate that would alter
+        // the on-disk state we want to observe from session 2.
+        telem.enabled = false;
+        telem.deinit();
+        break :blk synced;
+    };
+
+    // A new session must reload the same synced offset so that re-syncing this
+    // file is a no-op rather than re-POSTing the entire backlog.
+    var telem2 = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
+    telem2.enabled = false;
+    defer telem2.deinit();
+    try testing.expectEqual(expected_synced, telem2.synced_offset);
+    try testing.expectEqual(telem2.write_offset, telem2.synced_offset);
+    try testing.expect(telem2.unsyncedBytes() == 0);
+}
+
 test "issue-77: mcp index accepts temporary-directory roots that cause pathological cache growth" {
     var tmp_name_buf: [128]u8 = undefined;
     const tmp_name = try std.fmt.bufPrint(&tmp_name_buf, "codedb-issue-77-{d}", .{@as(i64, @intCast(@divTrunc(cio.nanoTimestamp(), 1000)))});

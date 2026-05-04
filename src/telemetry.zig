@@ -39,10 +39,13 @@ pub const Telemetry = struct {
     file: ?std.Io.File = null,
     io: std.Io = undefined,
     write_offset: u64 = 0,
+    synced_offset: u64 = 0,
     enabled: bool = true,
     buf: [4096]u8 = undefined,
     path_buf: [std.fs.max_path_bytes]u8 = undefined,
     path_len: usize = 0,
+    synced_path_buf: [std.fs.max_path_bytes]u8 = undefined,
+    synced_path_len: usize = 0,
     call_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     write_lock: cio.Mutex = .{},
 
@@ -61,10 +64,18 @@ pub const Telemetry = struct {
             @memcpy(self.path_buf[0..path.len], path);
             self.path_len = path.len;
         }
+        const synced_path = std.fmt.allocPrint(allocator, "{s}/telemetry.synced", .{data_dir}) catch return self;
+        defer allocator.free(synced_path);
+        if (synced_path.len <= self.synced_path_buf.len) {
+            @memcpy(self.synced_path_buf[0..synced_path.len], synced_path);
+            self.synced_path_len = synced_path.len;
+        }
         self.file = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = false }) catch return self;
         if (self.file) |f| {
             self.write_offset = f.length(io) catch 0;
         }
+        self.synced_offset = readSyncedOffset(self.io, synced_path) orelse 0;
+        if (self.synced_offset > self.write_offset) self.synced_offset = 0;
         return self;
     }
 
@@ -169,25 +180,62 @@ pub const Telemetry = struct {
         const path = self.path_buf[0..self.path_len];
 
         const stat = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch return;
-        if (stat.size == 0) return;
+        if (stat.size == 0) {
+            // File was reset externally — clear any stale watermark.
+            if (self.synced_offset != 0) self.resetSyncedOffset();
+            return;
+        }
+
+        if (self.synced_offset > stat.size) self.resetSyncedOffset();
+        if (self.synced_offset == stat.size) return; // nothing new to ship
+
+        // Stage only the unsynced byte range to a temp file and POST that, so a
+        // retry never re-delivers events that the cloud already accepted.
+        const temp_path_buf_size = std.fs.max_path_bytes;
+        var temp_path_buf: [temp_path_buf_size]u8 = undefined;
+        const temp_path = std.fmt.bufPrint(&temp_path_buf, "{s}.send-{d}", .{ path, cio.nanoTimestamp() }) catch return;
+        const range_end = stat.size;
+        if (!stageUnsyncedRange(self.io, path, temp_path, self.synced_offset, range_end)) return;
+        defer std.Io.Dir.cwd().deleteFile(self.io, temp_path) catch {};
 
         // Use argv-based exec (no shell interpolation) to avoid injection
         var data_arg_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-        const data_arg = std.fmt.bufPrint(&data_arg_buf, "@{s}", .{path}) catch return;
+        const data_arg = std.fmt.bufPrint(&data_arg_buf, "@{s}", .{temp_path}) catch return;
+
+        const cloud_url = cio.posixGetenv("CODEDB_TELEMETRY_URL") orelse CLOUD_URL;
 
         const result = cio.runCapture(.{
             .allocator = std.heap.page_allocator,
-            .argv = &.{ "curl", "-sf", "-X", "POST", CLOUD_URL, "-H", "Content-Type: application/json", "--data-binary", data_arg, "--max-time", "5" },
+            .argv = &.{ "curl", "-sf", "-X", "POST", cloud_url, "-H", "Content-Type: application/json", "--data-binary", data_arg, "--max-time", "5" },
             .max_output_bytes = 4096,
         }) catch return;
         std.heap.page_allocator.free(result.stdout);
         std.heap.page_allocator.free(result.stderr);
 
-        // Truncate the file after successful sync
-        if (std.Io.Dir.cwd().createFile(self.io, path, .{ .truncate = true })) |f| {
-            f.close(self.io);
-            self.write_offset = 0;
-        } else |_| {}
+        const sync_ok = switch (result.term) {
+            .Exited => |code| code == 0,
+            else => false,
+        };
+        if (!sync_ok) return;
+
+        // Advance the high-water mark and persist it so the next session won't
+        // re-POST these bytes even if the local truncate below fails.
+        self.synced_offset = range_end;
+        if (self.synced_path_len > 0) {
+            const synced_path = self.synced_path_buf[0..self.synced_path_len];
+            writeSyncedOffset(self.io, synced_path, self.synced_offset);
+        }
+
+        // Once we've shipped enough bytes, truncate the main file so it doesn't
+        // grow without bound. Reset the watermark to match the empty file.
+        const truncate_threshold: u64 = 64 * 1024;
+        if (self.synced_offset >= truncate_threshold) {
+            if (std.Io.Dir.cwd().createFile(self.io, path, .{ .truncate = true })) |f| {
+                f.close(self.io);
+                self.write_offset = 0;
+                self.resetSyncedOffset();
+            } else |_| {}
+        }
     }
 
     pub fn syncWalToCloud(self: *Telemetry, wal_path: ?[]const u8) void {
@@ -227,7 +275,43 @@ pub const Telemetry = struct {
         try w.writeAll("}\n");
         return w.end;
     }
+
+    pub fn unsyncedBytes(self: *const Telemetry) u64 {
+        if (self.write_offset <= self.synced_offset) return 0;
+        return self.write_offset - self.synced_offset;
+    }
+
+    pub fn markFlushedBytesSynced(self: *Telemetry) void {
+        if (!self.enabled) return;
+        self.synced_offset = self.write_offset;
+        if (self.synced_path_len == 0) return;
+        const synced_path = self.synced_path_buf[0..self.synced_path_len];
+        writeSyncedOffset(self.io, synced_path, self.synced_offset);
+    }
+
+    fn resetSyncedOffset(self: *Telemetry) void {
+        self.synced_offset = 0;
+        if (self.synced_path_len == 0) return;
+        const synced_path = self.synced_path_buf[0..self.synced_path_len];
+        writeSyncedOffset(self.io, synced_path, 0);
+    }
 };
+
+fn readSyncedOffset(io: std.Io, path: []const u8) ?u64 {
+    var buf: [8]u8 = undefined;
+    var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+    defer f.close(io);
+    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+    if (n < 8) return null;
+    return std.mem.readInt(u64, buf[0..8], .little);
+}
+fn writeSyncedOffset(io: std.Io, path: []const u8, offset: u64) void {
+    var buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buf, offset, .little);
+    const f = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true }) catch return;
+    defer f.close(io);
+    f.writePositionalAll(io, &buf, 0) catch {};
+}
 
 fn writeLanguages(writer: anytype, language_mask: u32) !void {
     const names = [_][]const u8{
@@ -314,4 +398,25 @@ pub fn approxIndexSizeBytes(explorer: *const explore.Explorer) u64 {
     }
 
     return total;
+}
+
+fn stageUnsyncedRange(io: std.Io, src_path: []const u8, dst_path: []const u8, start: u64, end: u64) bool {
+    if (end <= start) return false;
+    var src = std.Io.Dir.cwd().openFile(io, src_path, .{}) catch return false;
+    defer src.close(io);
+    const dst = std.Io.Dir.cwd().createFile(io, dst_path, .{ .truncate = true }) catch return false;
+    defer dst.close(io);
+
+    var copy_buf: [4096]u8 = undefined;
+    var src_offset: u64 = start;
+    var dst_offset: u64 = 0;
+    while (src_offset < end) {
+        const want = @min(@as(u64, copy_buf.len), end - src_offset);
+        const n = src.readPositionalAll(io, copy_buf[0..@intCast(want)], src_offset) catch return false;
+        if (n == 0) break;
+        dst.writePositionalAll(io, copy_buf[0..n], dst_offset) catch return false;
+        src_offset += n;
+        dst_offset += n;
+    }
+    return dst_offset > 0;
 }
