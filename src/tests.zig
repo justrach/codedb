@@ -8828,6 +8828,57 @@ test "issue-379: snapshot loader returns true with zero outlines for empty-explo
     }
 }
 
+test "issue-384: deferred scan falls back to cwd when client returns no indexable roots" {
+    const Recorder = struct {
+        var calls: usize = 0;
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var path_len: usize = 0;
+
+        fn cb(ctx: *mcp_mod.DeferredScan, abs_root: []const u8) void {
+            _ = ctx;
+            calls += 1;
+            const n = @min(abs_root.len, path_buf.len);
+            @memcpy(path_buf[0..n], abs_root[0..n]);
+            path_len = n;
+        }
+    };
+    Recorder.calls = 0;
+    Recorder.path_len = 0;
+
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var scan_done = std.atomic.Value(bool).init(false);
+    var shutdown = std.atomic.Value(bool).init(false);
+    var telem = telemetry_mod.Telemetry.init(io, "/tmp", testing.allocator, true);
+    defer telem.deinit();
+    var queue: watcher.EventQueue = .{};
+
+    var ds: mcp_mod.DeferredScan = .{
+        .io = io,
+        .allocator = testing.allocator,
+        .store = &store,
+        .explorer = &explorer,
+        .scan_done = &scan_done,
+        .shutdown = &shutdown,
+        .telem = &telem,
+        .queue = &queue,
+        .startup_t0 = 0,
+        .triggerFn = Recorder.cb,
+    };
+
+    const empty_roots: []const mcp_mod.Root = &.{};
+    const fired = mcp_mod.triggerDeferredScanWithFallback(&ds, empty_roots, "/Users/me/proj");
+    try testing.expect(fired);
+    try testing.expectEqual(@as(usize, 1), Recorder.calls);
+    try testing.expectEqualStrings("/Users/me/proj", Recorder.path_buf[0..Recorder.path_len]);
+
+    const fired_again = mcp_mod.triggerDeferredScanWithFallback(&ds, empty_roots, "/elsewhere");
+    try testing.expect(!fired_again);
+    try testing.expectEqual(@as(usize, 1), Recorder.calls);
+}
+
 test "issue-bug5: codedb_read returns binary stub instead of dumping bytes" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
