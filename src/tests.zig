@@ -8762,6 +8762,46 @@ test "issue-bug2: tool calls during scan-in-progress hint at scan state" {
     try testing.expect(std.mem.indexOf(u8, out.items, "scan still in progress") != null);
 }
 
+test "issue-378: search waits briefly for scan to reach ready instead of returning empty" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const prev_state = mcp_mod.getScanState();
+    defer mcp_mod.setScanState(prev_state);
+    mcp_mod.setScanState(.walking);
+
+    const Flipper = struct {
+        fn run(exp: *Explorer) void {
+            cio.sleepMs(100);
+            exp.indexFile("src/late.zig", "fn waitsForScanMarker() void {}\n") catch return;
+            mcp_mod.setScanState(.ready);
+        }
+    };
+    const t = try std.Thread.spawn(.{}, Flipper.run, .{&explorer});
+    defer t.join();
+
+    const args_json =
+        \\{"query":"waitsForScanMarker"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/late.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "scan still in progress") == null);
+}
+
 test "issue-bug5: codedb_read returns binary stub instead of dumping bytes" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
