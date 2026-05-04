@@ -5116,7 +5116,7 @@ test "issue-301: Dart block comments skipped" {
     try testing.expectEqual(@as(usize, 0), func_count);
 }
 
-test "dart: import resolution resolves package and relative paths" {
+test "dart: import resolution resolves relative paths, stores package: as-is" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var explorer = Explorer.init(arena.allocator());
@@ -5132,9 +5132,26 @@ test "dart: import resolution resolves package and relative paths" {
     defer outline.deinit();
 
     try testing.expectEqual(@as(usize, 3), outline.imports.items.len);
-    try testing.expectEqualStrings("lib/models/user.dart", outline.imports.items[0]);
+    try testing.expectEqualStrings("package:myapp/models/user.dart", outline.imports.items[0]);
     try testing.expectEqualStrings("lib/services/api.dart", outline.imports.items[1]);
     try testing.expectEqualStrings("lib/screens/widgets/button.dart", outline.imports.items[2]);
+}
+
+test "dart: root-level file resolves imports correctly" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("main.dart",
+        \\import 'src/app.dart';
+        \\import 'dart:io';
+    );
+
+    var outline = (try explorer.getOutline("main.dart", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try testing.expectEqual(@as(usize, 1), outline.imports.items.len);
+    try testing.expectEqualStrings("src/app.dart", outline.imports.items[0]);
 }
 
 test "dart: getter and setter extraction" {
@@ -5179,7 +5196,7 @@ test "dart: dep-graph resolves imports to indexed files" {
         \\}
     );
     try explorer.indexFile("lib/services/api.dart",
-        \\import 'package:myapp/models/user.dart';
+        \\import '../models/user.dart';
         \\class ApiService {
         \\  Future<User> fetchUser() async {}
         \\}

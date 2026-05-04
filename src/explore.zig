@@ -4853,17 +4853,17 @@ fn resolveDartImport(raw: []const u8, file_path: []const u8, allocator: std.mem.
     if (std.mem.startsWith(u8, raw, "dart:")) return null;
 
     if (std.mem.startsWith(u8, raw, "package:")) {
-        const after = raw["package:".len..];
-        const slash = std.mem.indexOfScalar(u8, after, '/') orelse return null;
-        const rel = after[slash + 1 ..];
-        const joined = std.fmt.allocPrint(allocator, "lib/{s}", .{rel}) catch return null;
-        return normalizePath(joined, allocator);
+        return allocator.dupe(u8, raw) catch null;
     }
 
-    const dir_end = std.mem.lastIndexOfScalar(u8, file_path, '/') orelse return null;
-    const dir = file_path[0..dir_end];
+    const dir = if (std.mem.lastIndexOfScalar(u8, file_path, '/')) |sep|
+        file_path[0..sep]
+    else
+        ".";
     const joined = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, raw }) catch return null;
-    return normalizePath(joined, allocator);
+    const result = normalizePath(joined, allocator);
+    allocator.free(joined);
+    return result;
 }
 
 fn containsAny(s: []const u8, needles: []const []const u8) bool {
