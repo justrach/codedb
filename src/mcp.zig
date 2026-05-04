@@ -8,7 +8,7 @@ const std = @import("std");
 const testing = std.testing;
 const mcp_lib = @import("mcp");
 const mcpj = mcp_lib.json;
-const Root = mcp_lib.mcp.Root;
+pub const Root = mcp_lib.mcp.Root;
 const Store = @import("store.zig").Store;
 const explore_mod = @import("explore.zig");
 const Explorer = explore_mod.Explorer;
@@ -35,8 +35,33 @@ pub const DeferredScan = struct {
     triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     scan_thread: ?std.Thread = null,
     resolved_root: []const u8 = "",
+    fallback_cwd: []const u8 = "",
     triggerFn: *const fn (ctx: *DeferredScan, abs_root: []const u8) void,
 };
+
+/// Resolve which path to scan from (first indexable root, or cwd fallback) and
+/// fire the deferred scan exactly once. Returns true when this call actually
+/// fired the trigger; false if it had already fired or no usable path is
+/// available. Callers must filter denied paths out of `indexable_roots` first;
+/// the `fallback_cwd` path is policy-checked here.
+pub fn triggerDeferredScanWithFallback(
+    ds: *DeferredScan,
+    indexable_roots: []const Root,
+    fallback_cwd: []const u8,
+) bool {
+    var path: []const u8 = "";
+    if (indexable_roots.len > 0) {
+        const uri_raw = indexable_roots[0].uri;
+        path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+    }
+    if (path.len == 0 and fallback_cwd.len > 0 and root_policy.isIndexableRoot(fallback_cwd)) {
+        path = fallback_cwd;
+    }
+    if (path.len == 0) return false;
+    if (ds.triggered.swap(true, .acq_rel)) return false;
+    ds.triggerFn(ds, path);
+    return true;
+}
 
 // ── Project cache ────────────────────────────────────────────────────────────
 
@@ -733,11 +758,7 @@ fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
         };
     }
     if (s.deferred_scan) |ds| {
-        if (s.roots.items.len > 0 and !ds.triggered.swap(true, .acq_rel)) {
-            const uri_raw = s.roots.items[0].uri;
-            const abs_path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
-            ds.triggerFn(ds, abs_path);
-        }
+        _ = triggerDeferredScanWithFallback(ds, s.roots.items, ds.fallback_cwd);
     }
 }
 
