@@ -4125,19 +4125,24 @@ test "issue-385: synced offset persists across sessions so events are not re-pos
 
     const expected_synced: u64 = blk: {
         var telem = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
-        defer telem.deinit();
         telem.recordToolCall("codedb_status", 1234, false, 56);
         telem.flush();
         try testing.expect(telem.write_offset > 0);
         // Simulate the post-POST bookkeeping: mark all flushed bytes as synced.
         telem.markFlushedBytesSynced();
         try testing.expectEqual(telem.write_offset, telem.synced_offset);
-        break :blk telem.synced_offset;
+        const synced = telem.synced_offset;
+        // Disable so deinit doesn't run another sync/truncate that would alter
+        // the on-disk state we want to observe from session 2.
+        telem.enabled = false;
+        telem.deinit();
+        break :blk synced;
     };
 
     // A new session must reload the same synced offset so that re-syncing this
     // file is a no-op rather than re-POSTing the entire backlog.
     var telem2 = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
+    telem2.enabled = false;
     defer telem2.deinit();
     try testing.expectEqual(expected_synced, telem2.synced_offset);
     try testing.expectEqual(telem2.write_offset, telem2.synced_offset);
