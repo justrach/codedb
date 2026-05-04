@@ -8802,6 +8802,34 @@ test "issue-378: search waits briefly for scan to reach ready instead of returni
     try testing.expect(std.mem.indexOf(u8, out.items, "scan still in progress") == null);
 }
 
+test "issue-379: snapshot loader returns true with zero outlines for empty-explorer snapshot" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var exp = Explorer.init(aa);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/empty.codedb", .{dir_path});
+    defer testing.allocator.free(snap_path);
+
+    try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
+
+    var exp2 = Explorer.init(testing.allocator);
+    defer exp2.deinit();
+    var store2 = Store.init(testing.allocator);
+    defer store2.deinit();
+
+    const loaded = snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store2, testing.allocator);
+    if (loaded) {
+        try testing.expect(exp2.outlines.count() > 0);
+    }
+}
+
 test "issue-bug5: codedb_read returns binary stub instead of dumping bytes" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
