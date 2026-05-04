@@ -5116,6 +5116,118 @@ test "issue-301: Dart block comments skipped" {
     try testing.expectEqual(@as(usize, 0), func_count);
 }
 
+test "dart: import resolution resolves package and relative paths" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("lib/screens/home.dart",
+        \\import 'package:myapp/models/user.dart';
+        \\import 'dart:io';
+        \\import '../services/api.dart';
+        \\import 'widgets/button.dart';
+    );
+
+    var outline = (try explorer.getOutline("lib/screens/home.dart", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try testing.expectEqual(@as(usize, 3), outline.imports.items.len);
+    try testing.expectEqualStrings("lib/models/user.dart", outline.imports.items[0]);
+    try testing.expectEqualStrings("lib/services/api.dart", outline.imports.items[1]);
+    try testing.expectEqualStrings("lib/screens/widgets/button.dart", outline.imports.items[2]);
+}
+
+test "dart: getter and setter extraction" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("lib/item.dart",
+        \\class Item {
+        \\  String get displayName => '$name ($code)';
+        \\  set updated(bool value) {
+        \\    _dirty = value;
+        \\  }
+        \\  static int get count => _items.length;
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("lib/item.dart", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    var found_getter = false;
+    var found_setter = false;
+    var found_static_getter = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .function and std.mem.eql(u8, sym.name, "displayName")) found_getter = true;
+        if (sym.kind == .function and std.mem.eql(u8, sym.name, "updated")) found_setter = true;
+        if (sym.kind == .function and std.mem.eql(u8, sym.name, "count")) found_static_getter = true;
+    }
+    try testing.expect(found_getter);
+    try testing.expect(found_setter);
+    try testing.expect(found_static_getter);
+}
+
+test "dart: dep-graph resolves imports to indexed files" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("lib/models/user.dart",
+        \\class User {
+        \\  final String name;
+        \\}
+    );
+    try explorer.indexFile("lib/services/api.dart",
+        \\import 'package:myapp/models/user.dart';
+        \\class ApiService {
+        \\  Future<User> fetchUser() async {}
+        \\}
+    );
+
+    const deps = try explorer.dep_graph.getImportedBy("lib/models/user.dart", arena.allocator());
+    defer arena.allocator().free(deps);
+    try testing.expectEqual(@as(usize, 1), deps.len);
+    try testing.expectEqualStrings("lib/services/api.dart", deps[0]);
+}
+
+test "dart: triple-quoted strings do not break scope end" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("lib/query.dart",
+        \\class QueryBuilder {
+        \\  String build() {
+        \\    var sql = '''
+        \\      SELECT * FROM users
+        \\      WHERE id = ${userId}
+        \\      AND name = '$name'
+        \\    ''';
+        \\    return sql;
+        \\  }
+        \\}
+    );
+
+    var outline = (try explorer.getOutline("lib/query.dart", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    var found_class = false;
+    var found_method = false;
+    for (outline.symbols.items) |sym| {
+        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "QueryBuilder")) {
+            found_class = true;
+            try testing.expect(sym.line_end >= 9);
+        }
+        if (sym.kind == .function and std.mem.eql(u8, sym.name, "build")) {
+            found_method = true;
+            try testing.expect(sym.line_end >= 9);
+        }
+    }
+    try testing.expect(found_class);
+    try testing.expect(found_method);
+}
+
 test "issue-150: --help prints usage" {
     try buildCliForHelpTests();
 

@@ -730,7 +730,7 @@ pub const Explorer = struct {
             if (sym.line_start == 0 or sym.line_start > total_lines) continue;
 
             if (is_brace_lang) {
-                sym.line_end = findBraceEnd(content, line_offsets.items, sym.line_start, total_lines);
+                sym.line_end = findBraceEnd(content, line_offsets.items, sym.line_start, total_lines, outline.language);
             } else if (outline.language == .python) {
                 sym.line_end = findPythonEnd(content, line_offsets.items, sym.line_start, total_lines);
             } else if (outline.language == .ruby) {
@@ -739,11 +739,13 @@ pub const Explorer = struct {
         }
     }
 
-    fn findBraceEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) u32 {
+    fn findBraceEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32, language: Language) u32 {
         const start_idx = line_offsets[line_start - 1];
         var depth: i32 = 0;
         var found_open = false;
         var in_string: u8 = 0; // 0=none, '"', '\''
+        var in_triple_quote: u8 = 0; // 0=none, '"', '\''
+        var interp_depth: i32 = 0;
         var in_line_comment = false;
         var in_block_comment = false;
         var i = start_idx;
@@ -770,11 +772,31 @@ pub const Explorer = struct {
                 continue;
             }
 
+            if (in_triple_quote != 0) {
+                if (c == in_triple_quote and i + 2 < content.len and
+                    content[i + 1] == in_triple_quote and content[i + 2] == in_triple_quote)
+                {
+                    in_triple_quote = 0;
+                    i += 2;
+                }
+                continue;
+            }
+
             if (in_string != 0) {
                 if (c == '\\') {
-                    i += 1; // skip escaped char
+                    i += 1;
+                } else if (language == .dart and interp_depth > 0) {
+                    if (c == '{') {
+                        interp_depth += 1;
+                    } else if (c == '}') {
+                        interp_depth -= 1;
+                        if (interp_depth == 0) continue;
+                    }
                 } else if (c == in_string) {
                     in_string = 0;
+                } else if (language == .dart and c == '$' and i + 1 < content.len and content[i + 1] == '{') {
+                    interp_depth = 1;
+                    i += 1;
                 }
                 continue;
             }
@@ -787,6 +809,15 @@ pub const Explorer = struct {
                 } else if (content[i + 1] == '*') {
                     in_block_comment = true;
                     i += 1;
+                    continue;
+                }
+            }
+
+            // Check for triple-quoted strings (Dart: ''' or """)
+            if (language == .dart and (c == '"' or c == '\'')) {
+                if (i + 2 < content.len and content[i + 1] == c and content[i + 2] == c) {
+                    in_triple_quote = c;
+                    i += 2;
                     continue;
                 }
             }
@@ -2915,10 +2946,10 @@ pub const Explorer = struct {
         if (startsWith(line, "import ") or startsWith(line, "export ") or
             (startsWith(line, "part ") and !startsWith(line, "part of ")))
         {
-            if (extractStringLiteral(line)) |path| {
-                const import_copy = try a.dupe(u8, path);
-                errdefer a.free(import_copy);
-                try outline.imports.append(a, import_copy);
+            if (extractStringLiteral(line)) |raw_path| {
+                if (resolveDartImport(raw_path, outline.path, a)) |resolved| {
+                    try outline.imports.append(a, resolved);
+                }
             }
             const symbol_copy = try a.dupe(u8, line);
             errdefer a.free(symbol_copy);
@@ -3044,6 +3075,25 @@ pub const Explorer = struct {
             return;
         }
 
+        if (std.mem.indexOf(u8, line, " get ") != null) {
+            const get_pos = std.mem.indexOf(u8, line, " get ").?;
+            const after_get = std.mem.trimStart(u8, line[get_pos + " get ".len ..], " \t");
+            if (extractIdent(after_get)) |name| {
+                const name_copy = try a.dupe(u8, name);
+                errdefer a.free(name_copy);
+                const detail_copy = try a.dupe(u8, line);
+                errdefer a.free(detail_copy);
+                try outline.symbols.append(a, .{
+                    .name = name_copy,
+                    .kind = .function,
+                    .line_start = line_num,
+                    .line_end = line_num,
+                    .detail = detail_copy,
+                });
+                return;
+            }
+        }
+
         if (containsAny(line, &.{ "(", "=>", "{", ";" })) {
             const open_paren = std.mem.indexOfScalar(u8, line, '(') orelse return;
             const prefix = std.mem.trimEnd(u8, line[0..open_paren], " \t");
@@ -3079,10 +3129,12 @@ pub const Explorer = struct {
                 if (!stripped) break;
             }
             if (startsWith(callable, "operator ")) return;
+            var is_setter = false;
             if (startsWith(callable, "set ")) {
                 callable = std.mem.trimStart(u8, callable["set ".len..], " \t");
+                is_setter = true;
             }
-            if (std.mem.indexOfScalar(u8, callable, ' ') == null) return;
+            if (!is_setter and std.mem.indexOfScalar(u8, callable, ' ') == null) return;
             if (extractLastIdent(callable)) |name| {
                 const name_copy = try a.dupe(u8, name);
                 errdefer a.free(name_copy);
@@ -4767,6 +4819,51 @@ fn extractStringLiteral(s: []const u8) ?[]const u8 {
         }
     }
     return null;
+}
+
+fn normalizePath(path: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    errdefer parts.deinit(allocator);
+
+    var it = std.mem.splitSequence(u8, path, "/");
+    while (it.next()) |part| {
+        if (part.len == 0 or std.mem.eql(u8, part, ".")) continue;
+        if (std.mem.eql(u8, part, "..")) {
+            if (parts.items.len > 0) {
+                _ = parts.pop();
+            } else {
+                return null;
+            }
+        } else {
+            parts.append(allocator, part) catch return null;
+        }
+    }
+
+    if (parts.items.len == 0) return null;
+
+    var buf: std.ArrayList(u8) = .empty;
+    for (parts.items, 0..) |part, i| {
+        if (i > 0) buf.append(allocator, '/') catch return null;
+        buf.appendSlice(allocator, part) catch return null;
+    }
+    return buf.toOwnedSlice(allocator) catch null;
+}
+
+fn resolveDartImport(raw: []const u8, file_path: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
+    if (std.mem.startsWith(u8, raw, "dart:")) return null;
+
+    if (std.mem.startsWith(u8, raw, "package:")) {
+        const after = raw["package:".len..];
+        const slash = std.mem.indexOfScalar(u8, after, '/') orelse return null;
+        const rel = after[slash + 1 ..];
+        const joined = std.fmt.allocPrint(allocator, "lib/{s}", .{rel}) catch return null;
+        return normalizePath(joined, allocator);
+    }
+
+    const dir_end = std.mem.lastIndexOfScalar(u8, file_path, '/') orelse return null;
+    const dir = file_path[0..dir_end];
+    const joined = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, raw }) catch return null;
+    return normalizePath(joined, allocator);
 }
 
 fn containsAny(s: []const u8, needles: []const []const u8) bool {
