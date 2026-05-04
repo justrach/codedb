@@ -164,8 +164,15 @@ fn mainImpl() !void {
         });
         std.process.exit(1);
     };
-    const mcp_deferred_root = std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit;
-    if (!mcp_deferred_root and !root_policy.isIndexableRoot(abs_root)) {
+    // mcp from cwd only needs deferred mode when the cwd itself is denied by
+    // policy — in that case we have to wait for the client to tell us a real
+    // root. When cwd is already an indexable project, take the eager path so
+    // any existing snapshot is loaded immediately and the server reports
+    // state=ready right away instead of sitting in loading_snapshot.
+    const mcp_from_cwd = std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit;
+    const cwd_indexable = root_policy.isIndexableRoot(abs_root);
+    const mcp_deferred_root = mcp_from_cwd and !cwd_indexable;
+    if (!mcp_from_cwd and !cwd_indexable) {
         out.p("{s}\xe2\x9c\x97{s} refusing to index temporary root: {s}{s}{s}\n", .{
             s.red, s.reset, s.bold, abs_root, s.reset,
         });
