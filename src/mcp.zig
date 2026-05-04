@@ -534,6 +534,17 @@ pub fn getScanState() ScanState {
     return @enumFromInt(scan_state_atomic.load(.acquire));
 }
 
+pub var scan_wait_timeout_ms: u64 = 2000;
+
+fn waitForScanReady(timeout_ms: u64) void {
+    if (getScanState() == .ready) return;
+    const deadline = cio.milliTimestamp() + @as(i64, @intCast(timeout_ms));
+    while (getScanState() != .ready) {
+        if (cio.milliTimestamp() >= deadline) return;
+        cio.sleepMs(25);
+    }
+}
+
 // ── Session state for MCP protocol ──────────────────────────────────────────
 
 const Session = struct {
@@ -873,6 +884,10 @@ fn dispatch(
         return;
     };
 
+    if (toolDependsOnScannedIndex(tool) and project_path == null) {
+        waitForScanReady(scan_wait_timeout_ms);
+    }
+
     if (tool == .codedb_word or (tool == .codedb_search and shouldLoadWordIndexForSearch(args))) {
         const effective_project = project_path orelse cache.default_path;
         loadProjectWordIndexFromDiskIfPresent(io, ctx.explorer, effective_project, alloc);
@@ -910,11 +925,7 @@ fn dispatch(
 fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), tool: Tool) void {
     const state = getScanState();
     if (state == .ready) return;
-    // Only inject for tools whose output depends on the scanned index.
-    switch (tool) {
-        .codedb_search, .codedb_word, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => {},
-        else => return,
-    }
+    if (!toolDependsOnScannedIndex(tool)) return;
     const looks_empty =
         std.mem.indexOf(u8, out.items, "0 results for ") != null or
         std.mem.indexOf(u8, out.items, "0 hits for ") != null or
@@ -924,6 +935,13 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
     out.appendSlice(alloc, "\nnote: scan still in progress (state=") catch return;
     out.appendSlice(alloc, state.name()) catch return;
     out.appendSlice(alloc, "); results may be incomplete — retry shortly") catch return;
+}
+
+fn toolDependsOnScannedIndex(tool: Tool) bool {
+    return switch (tool) {
+        .codedb_search, .codedb_word, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => true,
+        else => false,
+    };
 }
 
 // ── Tool handlers ───────────────────────────────────────────────────────────
