@@ -9221,3 +9221,15 @@ test "issue-390: codedb_search scope=true caps matches per file" {
     try testing.expect(std.mem.indexOf(u8, out.items, "src/b.zig:") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "src/c.zig:") != null);
 }
+
+test "issue-391: codedb_callers tool exists" {
+    // codedb_callers is the proposed reverse-callgraph tool: given a symbol
+    // name, return the call sites across the index. It fuses the existing
+    // word index with outline scopes, replacing the multi-step
+    // "codedb_word → eyeball → codedb_outline per file" workflow.
+    //
+    // The minimum surface contract: the Tool enum exposes a codedb_callers
+    // variant so dispatch can route to it. Today it does not, so the
+    // workflow has to be assembled by hand on the client side.
+    try testing.expect(@hasField(mcp_mod.Tool, "codedb_callers"));
+}
