@@ -9443,3 +9443,39 @@ test "issue-409: snapshot .env prefix filter wrongly excludes .envoy/.environmen
     try testing.expect(exp2.outlines.contains("a.zig"));
     try testing.expect(exp2.outlines.contains(".envoy.json"));
 }
+
+test "issue-401: insert with after=null is a no-op but consumes seq and writes file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/edit-401.txt", .{tmp.sub_path});
+    defer testing.allocator.free(rel_path);
+
+    const original = "line 1\nline 2\nline 3\n";
+    var file = try tmp.dir.createFile(io, "edit-401.txt", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, original);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    const agent_id = try agents.register("issue-401-agent");
+
+    // insert without after must not silently succeed and must not consume a seq.
+    const res = edit_mod.applyEdit(io, testing.allocator, &store, &agents, null, .{
+        .path = rel_path,
+        .agent_id = agent_id,
+        .op = .insert,
+        .after = null,
+        .content = "INJECT\n",
+    });
+    // Either explicit error, or — at minimum — must not increment the store seq
+    // for an operation that did nothing.
+    if (res) |ok| {
+        _ = ok;
+        try testing.expectEqual(@as(u64, 0), store.currentSeq());
+    } else |_| {
+        try testing.expectEqual(@as(u64, 0), store.currentSeq());
+    }
+}
