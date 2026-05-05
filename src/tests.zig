@@ -9631,3 +9631,47 @@ test "issue-409: replacing whole file with empty content leaves a stray newline"
     try testing.expectEqual(@as(usize, 0), after.len);
     try testing.expectEqual(@as(u64, 0), result.new_size);
 }
+
+test "issue-413: bundle truncation drops subsequent ops without telling the caller" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    // Index a single large file (~120KB) so two reads exceed the 200KB
+    // bundle cap. Bundle truncates and breaks out of the loop after op[1],
+    // emitting a TRUNCATED note — but op[2] is silently dropped.
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(testing.allocator);
+    while (big.items.len < 120 * 1024) {
+        try big.appendSlice(testing.allocator, "pub fn placeholder() void { _ = 0; }\n");
+    }
+    try explorer.indexFile("big.zig", big.items);
+    try explorer.indexFile("small.zig", "pub fn small() void {}\n");
+
+    // Three reads: first two exceed 200KB → truncate. op[2] is small.zig
+    // and should still surface — at minimum, the bundle output must
+    // mention it (e.g. as another truncated entry) so the caller knows
+    // their request had three ops, not one.
+    const bundle_json =
+        \\{"ops":[
+        \\  {"tool":"codedb_read","arguments":{"path":"big.zig"}},
+        \\  {"tool":"codedb_read","arguments":{"path":"big.zig"}},
+        \\  {"tool":"codedb_outline","arguments":{"path":"small.zig"}}
+        \\]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // op[2] (index 2) was sent — caller deserves to see something for it.
+    // Either its result, or an explicit "[2]" entry noting it was dropped.
+    try testing.expect(std.mem.indexOf(u8, out.items, "[2]") != null);
+}
