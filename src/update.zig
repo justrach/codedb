@@ -318,7 +318,9 @@ const auto_update_stamp_filename = "last_auto_update_check";
 pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
     if (env_disabled) return false;
     const last = last_check_ms orelse return true;
-    return (now_ms - last) >= auto_update_throttle_ms;
+    if (last > now_ms) return true;
+    const delta: i128 = @as(i128, now_ms) - @as(i128, last);
+    return delta >= auto_update_throttle_ms;
 }
 
 pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
