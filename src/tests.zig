@@ -9137,3 +9137,35 @@ test "issue-392: Swift parser" {
     try testing.expect(found_top_fn);
     try testing.expect(found_method);
 }
+
+test "issue-387: appendId preserves JSON-RPC numeric and number_string ids" {
+    // JSON-RPC ids are typed as String|Number|Null. The MCP server must echo
+    // the id verbatim so the client can correlate the reply with its request.
+    // appendId currently only handles .integer and .string — .float and
+    // .number_string fall through to "null", breaking correlation for any
+    // client that uses a fractional id (some test runners) or that the JSON
+    // parser materializes as number_string.
+
+    // Float id round-trips: parsing "3.5" yields .float, which must serialize
+    // back to "3.5" (or any representation a JSON parser accepts as the same
+    // number) — NOT "null".
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "3.5", .{});
+        defer parsed.deinit();
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(testing.allocator);
+        mcp_mod.appendId(testing.allocator, &buf, parsed.value);
+        try testing.expect(!std.mem.eql(u8, buf.items, "null"));
+    }
+
+    // number_string round-trips: a request with `"id": 12345678901234567890`
+    // (>i64) is parsed as .number_string. The reply must echo the digits, not
+    // the literal "null".
+    {
+        const v = std.json.Value{ .number_string = "12345678901234567890" };
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(testing.allocator);
+        mcp_mod.appendId(testing.allocator, &buf, v);
+        try testing.expectEqualStrings("12345678901234567890", buf.items);
+    }
+}
