@@ -9869,3 +9869,30 @@ test "issue-400: BM25 ranks both-terms file above single-term files" {
     try testing.expectEqualStrings("both.zig", results[0].path);
     try testing.expect(results[0].score > 0.0);
 }
+
+test "issue-400-bug1: searchContentRanked returns ranked results when skip_file_words=true" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    explorer.word_index.skip_file_words = true;
+    try explorer.indexFile("a.zig", "apple banana\n");
+    try explorer.indexFile("b.zig", "apple\n");
+    const results = try explorer.searchContentRanked("apple", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len > 0);
+}
+
+test "issue-400-bug2: total_tokens stays consistent across re-index when skip_file_words=true" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    explorer.word_index.skip_file_words = true;
+    try explorer.indexFile("a.zig", "one two three four\n");
+    try explorer.indexFile("a.zig", "five six seven\n");
+    try explorer.indexFile("a.zig", "eight\n");
+    try testing.expectEqual(@as(u64, 1), explorer.word_index.total_tokens);
+}

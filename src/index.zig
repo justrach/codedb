@@ -158,8 +158,14 @@ pub const WordIndex = struct {
         // Clean up old entries first
         self.removeFile(path);
 
-        const stable_path = try self.allocator.dupe(u8, path);
-        errdefer self.allocator.free(stable_path);
+        // If the path is already tracked (e.g. skip_file_words=true and removeFile
+        // early-exited), reuse the existing stable copy rather than leaking a new dup.
+        const stable_path = if (self.path_to_id.contains(path))
+            path
+        else
+            try self.allocator.dupe(u8, path);
+        const owned_path = stable_path.ptr != path.ptr;
+        errdefer if (owned_path) self.allocator.free(stable_path);
 
         const doc_id = try self.getOrCreateDocId(stable_path);
 
@@ -239,6 +245,9 @@ pub const WordIndex = struct {
         }
         words_set.deinit();
 
+        if (self.doc_lengths.get(doc_id)) |old_len| {
+            self.total_tokens -%= old_len;
+        }
         try self.doc_lengths.put(doc_id, doc_token_count);
         self.total_tokens += doc_token_count;
     }
@@ -324,6 +333,11 @@ pub const WordIndex = struct {
 
     pub fn fileCount(self: *WordIndex) u32 {
         return @intCast(self.file_words.count());
+    }
+
+    /// BM25 helper: number of docs the ranker can see (source of truth regardless of skip_file_words).
+    pub fn rankedDocCount(self: *const WordIndex) u32 {
+        return @intCast(self.doc_lengths.count());
     }
 
     /// BM25 helper: number of indexed tokens in a doc, or 0 if unknown.

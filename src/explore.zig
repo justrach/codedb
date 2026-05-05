@@ -1740,7 +1740,7 @@ pub const Explorer = struct {
         // BM25 constants.
         const k1: f32 = 1.2;
         const b: f32 = 0.75;
-        const N = self.word_index.fileCount();
+        const N = self.word_index.rankedDocCount();
         if (N == 0) return try allocator.alloc(SearchResult, 0);
         const avgdl = self.word_index.avgDocLength();
 
