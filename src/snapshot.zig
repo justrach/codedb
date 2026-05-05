@@ -938,8 +938,9 @@ fn isSensitivePath(path: []const u8) bool {
         if (std.mem.eql(u8, basename, name)) return true;
     }
 
-    // Check if basename starts with .env (catches .env.anything)
-    if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env")) return true;
+    // Catch .env, .env.anything; do NOT match .envoy, .envrc, .environment, etc.
+    if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env") and
+        (basename.len == 4 or basename[4] == '.')) return true;
 
     // Check extensions
     if (endsWith(basename, ".pem")) return true;
@@ -970,6 +971,9 @@ fn cleanupStaleTmpFiles(io: std.Io, output_path: []const u8) void {
     var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
     defer dir.close(io);
 
+    const now_ns: i128 = cio.nanoTimestamp();
+    const min_age_ns: i128 = @as(i128, std.time.s_per_min) * std.time.ns_per_s;
+
     var iter = dir.iterate();
     while (iter.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
@@ -979,6 +983,11 @@ fn cleanupStaleTmpFiles(io: std.Io, output_path: []const u8) void {
             std.mem.startsWith(u8, name, basename) and
             endsWith(name, ".tmp"))
         {
+            // Age guard: skip in-flight tmps from concurrent writers.
+            // Only delete leftovers crashed processes left behind (>60s old).
+            const st = dir.statFile(io, name, .{}) catch continue;
+            const m_ns: i128 = @intCast(st.mtime.nanoseconds);
+            if (now_ns - m_ns < min_age_ns) continue;
             dir.deleteFile(io, name) catch {};
         }
     }
