@@ -1110,9 +1110,22 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
 
         const w = cio.listWriter(out, alloc);
         w.print("{d} results for '{s}':\n", .{ results.len, query }) catch {};
+        var file_counts = std.StringHashMap(u8).init(alloc);
+        defer file_counts.deinit();
+        const max_per_file: u8 = 5;
+        var shown: usize = 0;
         for (results) |r| {
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            const gop = file_counts.getOrPut(r.path) catch continue;
+            if (!gop.found_existing) gop.value_ptr.* = 0;
+            gop.value_ptr.* += 1;
+            if (gop.value_ptr.* > max_per_file) {
+                if (gop.value_ptr.* == max_per_file + 1) {
+                    w.print("  {s} ... (more matches truncated)\n", .{r.path}) catch {};
+                }
+                continue;
+            }
             if (r.scope_name) |sn| {
                 w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
                     r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
@@ -1120,6 +1133,10 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             } else {
                 w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
             }
+            shown += 1;
+        }
+        if (shown < results.len) {
+            w.print("({d} shown, {d} truncated)\n", .{ shown, results.len - shown }) catch {};
         }
     } else if (is_regex) {
         const results = explorer.searchContentRegex(query, alloc, max_results) catch {
