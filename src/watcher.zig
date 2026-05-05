@@ -316,6 +316,9 @@ const FilteredWalker = struct {
                         if (self.isIgnored(entry.name, check_path)) continue;
                     }
                     const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
+                    errdefer sub.close(self.io);
+                    const saved_len = self.name_buffer.items.len;
+                    errdefer self.name_buffer.shrinkRetainingCapacity(saved_len);
 
                     // Extend the directory prefix in name_buffer
                     if (self.name_buffer.items.len > 0)
@@ -357,6 +360,9 @@ const FilteredWalker = struct {
                         };
                         gop.key_ptr.* = dup;
                         const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
+                        errdefer sub.close(self.io);
+                        const saved_len_sym = self.name_buffer.items.len;
+                        errdefer self.name_buffer.shrinkRetainingCapacity(saved_len_sym);
                         if (self.name_buffer.items.len > 0)
                             try self.name_buffer.append(self.allocator, '/');
                         try self.name_buffer.appendSlice(self.allocator, entry.name);
