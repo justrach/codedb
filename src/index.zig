@@ -796,19 +796,22 @@ pub const TrigramIndex = struct {
         _ = self.path_to_id.remove(path);
         // Free the doc_id slot for reuse on next indexFile call.
         self.free_ids.append(self.allocator, doc_id) catch {};
-        self.id_to_path.items[doc_id] = "";
-        const trigrams = self.file_trigrams.getPtr(path) orelse return;
-        for (trigrams.items) |tri| {
-            if (self.index.getPtr(tri)) |posting_list| {
-                posting_list.removeDocId(doc_id);
-                if (posting_list.items.items.len == 0) {
-                    posting_list.deinit(self.allocator);
-                    _ = self.index.remove(tri);
+        if (self.file_trigrams.getPtr(path)) |trigrams| {
+            for (trigrams.items) |tri| {
+                if (self.index.getPtr(tri)) |posting_list| {
+                    posting_list.removeDocId(doc_id);
+                    if (posting_list.items.items.len == 0) {
+                        posting_list.deinit(self.allocator);
+                        _ = self.index.remove(tri);
+                    }
                 }
             }
+            trigrams.deinit(self.allocator);
+            _ = self.file_trigrams.remove(path);
         }
-        trigrams.deinit(self.allocator);
-        _ = self.file_trigrams.remove(path);
+        const old_path = self.id_to_path.items[doc_id];
+        if (self.owns_paths and old_path.len > 0) self.allocator.free(old_path);
+        self.id_to_path.items[doc_id] = "";
     }
 
     pub fn indexFile(self: *TrigramIndex, path: []const u8, content: []const u8) !void {
