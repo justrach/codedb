@@ -9020,3 +9020,21 @@ test "issue-386: telemetry recordToolCall preserves UTF-8 codepoint boundaries" 
     // produces invalid bytes — std.unicode.utf8ValidateSlice rejects them.
     try testing.expect(std.unicode.utf8ValidateSlice(recorded));
 }
+
+test "issue-388: TrigramIndex.removeFile frees owned path on tombstone" {
+    // owns_paths=true means getOrCreateDocId duped the path so callers can
+    // free their copy. removeFile must release that dup before tombstoning
+    // the slot — otherwise every snapshot-loaded session leaks one path
+    // allocation per file removed/re-indexed.
+    var idx = TrigramIndex.init(testing.allocator);
+    defer idx.deinit();
+    idx.owns_paths = true;
+
+    const path = "src/leaky.zig";
+    try idx.indexFile(path, "pub fn leaky() void {}\n");
+    idx.removeFile(path);
+
+    // testing.allocator reports any unfreed bytes when this scope exits via
+    // deinit. The bug leaks the dup on the tombstoned id_to_path slot
+    // (cleared to ""), so deinit's `if (p.len > 0) free(p)` misses it.
+}
