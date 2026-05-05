@@ -9479,3 +9479,49 @@ test "issue-401: insert with after=null is a no-op but consumes seq and writes f
         try testing.expectEqual(@as(u64, 0), store.currentSeq());
     }
 }
+
+test "issue-404: applyEdit corrupts CRLF line endings into mixed LF/CRLF" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/edit-404.txt", .{tmp.sub_path});
+    defer testing.allocator.free(rel_path);
+
+    // Windows-style CRLF original
+    const original = "alpha\r\nbeta\r\ngamma\r\n";
+    var file = try tmp.dir.createFile(io, "edit-404.txt", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, original);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    const agent_id = try agents.register("issue-404-agent");
+
+    // Replace line 1 with new content (no trailing newline in replacement).
+    _ = try edit_mod.applyEdit(io, testing.allocator, &store, &agents, null, .{
+        .path = rel_path,
+        .agent_id = agent_id,
+        .op = .replace,
+        .range = .{ 1, 1 },
+        .content = "ALPHA",
+    });
+
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, rel_path, testing.allocator, .limited(10 * 1024));
+    defer testing.allocator.free(after);
+
+    // The original file used CRLF line endings. After a single-line replace
+    // the file must still be a valid CRLF file: every '\n' must be preceded
+    // by '\r'. Currently splitScalar on '\n' leaves the '\r' attached to the
+    // *unchanged* lines (e.g. "beta\r"), and the rejoin uses bare "\n", so
+    // the new line 1 lacks its CR while the surviving line 2 still has it —
+    // mixed line endings.
+    var i: usize = 0;
+    while (i < after.len) : (i += 1) {
+        if (after[i] == '\n') {
+            try testing.expect(i > 0);
+            try testing.expectEqual(@as(u8, '\r'), after[i - 1]);
+        }
+    }
+}
