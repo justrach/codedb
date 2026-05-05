@@ -9337,3 +9337,60 @@ test "issue-407: root_policy blocks /var and its non-folders subtree" {
     try testing.expect(!root_policy.isIndexableRoot("/private/var"));
     try testing.expect(!root_policy.isIndexableRoot("/private/var/log"));
 }
+
+test "issue-405: cleanupStaleTmpFiles deletes in-flight sibling tmp files" {
+    // BUG: snapshot.zig:cleanupStaleTmpFiles deletes ANY file matching
+    // `<basename>*.tmp` in the snapshot directory with no age guard.
+    // If a sibling writer (another process / parallel scan) is mid-write
+    // — i.e. it has just created `<output>.<rand>.tmp` and is still
+    // streaming bytes into it before the final rename(tmp, dest) — then a
+    // concurrent loadSnapshotValidated() will unlink the sibling's
+    // in-flight tmp file. The sibling's subsequent rename then fails with
+    // ENOENT and the snapshot write silently aborts.
+    //
+    // Reproduces deterministically by simulating the in-flight tmp file
+    // and observing that loadSnapshotValidated removes it.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    // Step 1: write a real, valid snapshot at <dir>/snap.codedb so
+    // loadSnapshotValidated has something legitimate to read.
+    var exp = Explorer.init(aa);
+    try exp.indexFile("a.zig", "pub fn alpha() void {}\n");
+    const snap_path = try std.fs.path.join(aa, &.{ dir_path, "snap.codedb" });
+    try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, aa);
+
+    // Step 2: simulate a SIBLING writer that has just created its tmp file
+    // but has NOT yet renamed. This file matches the cleanup pattern
+    // (starts with basename, ends with ".tmp").
+    const sibling_tmp = try std.fs.path.join(aa, &.{ dir_path, "snap.codedb.deadbeef.tmp" });
+    {
+        var f = try std.Io.Dir.cwd().createFile(io, sibling_tmp, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, "in-flight write");
+    }
+
+    // Sanity: the sibling tmp exists.
+    std.Io.Dir.cwd().access(io, sibling_tmp, .{}) catch return error.TestUnexpectedResult;
+
+    // Step 3: run loadSnapshotValidated. cleanupStaleTmpFiles is the
+    // first thing it does. After this, the sibling's in-flight tmp
+    // file MUST still exist — otherwise the sibling's rename will fail.
+    var exp2 = Explorer.init(aa);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    _ = snapshot_mod.loadSnapshotValidated(io, snap_path, null, &exp2, &store, aa);
+
+    // Expected: the in-flight sibling tmp is preserved.
+    // Current (bug): cleanupStaleTmpFiles unconditionally deletes it.
+    std.Io.Dir.cwd().access(io, sibling_tmp, .{}) catch {
+        return error.TestExpectedSiblingTmpPreserved;
+    };
+}
