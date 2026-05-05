@@ -10451,3 +10451,46 @@ test "issue-424-A: bundle envelope errors carry the 'error:' prefix consistently
     bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed2.value.object, &out2, &store, &explorer, &agents);
     try testing.expect(std.mem.indexOf(u8, out2.items, "error: missing 'tool'") != null);
 }
+
+test "issue-425: codedb_callers excludes substring matches in unrelated identifiers" {
+    // handleCallers (mcp.zig:1339) currently calls searchContentWithScope(name)
+    // which is a *substring* full-text search. The only de-dup it performs is
+    // dropping lines that match the canonical definition of `name` itself.
+    // That means a search for "fooBar" returns lines mentioning the unrelated
+    // identifier "fooBarExtended" — both its definition site and any reference
+    // — as if they were call sites. The fix is a whole-word check on the hit
+    // line so substring matches in longer identifiers are excluded.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
+    // A different symbol whose name contains "fooBar" as a substring.
+    try explorer.indexFile("other.zig", "pub fn fooBarExtended() void {}\n");
+    // A genuine call site.
+    try explorer.indexFile("a.zig", "pub fn callerA() void {\n    fooBar();\n}\n");
+
+    const args_json =
+        \\{"name":"fooBar"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Real call site must still appear.
+    try testing.expect(std.mem.indexOf(u8, out.items, "a.zig:2") != null);
+    // Substring-only matches in unrelated identifiers must NOT.
+    try testing.expect(std.mem.indexOf(u8, out.items, "other.zig") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "fooBarExtended") == null);
+    // Header reports the real count (1), not the inflated count (2).
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'fooBar'") != null);
+}
