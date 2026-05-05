@@ -3118,6 +3118,14 @@ pub fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json
             mcpj.writeEscaped(alloc, buf, s);
             buf.append(alloc, '"') catch return;
         },
+        .float => |f| {
+            var tmp: [32]u8 = undefined;
+            const s = std.fmt.bufPrint(&tmp, "{d}", .{f}) catch return;
+            buf.appendSlice(alloc, s) catch return;
+        },
+        .number_string => |s| {
+            buf.appendSlice(alloc, s) catch return;
+        },
         else => buf.appendSlice(alloc, "null") catch return,
     } else {
         buf.appendSlice(alloc, "null") catch return;
