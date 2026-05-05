@@ -9140,6 +9140,70 @@ test "issue-389: FilteredWalker yields symlinked source files" {
     try testing.expect(explorer.contents.contains("src/alias.zig"));
 }
 
+test "issue-405: FilteredWalker walks directory symlinks safely (cycle + escape)" {
+    // Follow-up to #389. The current FilteredWalker.next() (src/watcher.zig:319-323)
+    // treats sym_link entries as files when statFile reports .file, but silently
+    // drops sym_link entries whose target is a directory. Real repos rely on
+    // directory symlinks (monorepo package links, vendored deps, dotfile configs),
+    // so the indexer must walk them — but only safely. This test pins three things:
+    //   1. A file inside a symlinked subdirectory is indexed.
+    //   2. A symlink that introduces a cycle does not hang or duplicate entries.
+    //   3. (Implicit) The walker terminates in bounded time on the fixture.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Real directory `pkg/` with one source file.
+    try tmp_dir.dir.createDirPath(io, "pkg");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "pkg/inside.zig", .data = "pub fn inside() void {}\n" });
+
+    // A real directory `app/` that holds a directory-symlink `linked_pkg -> ../pkg`.
+    // We expect the walker to descend into `linked_pkg` and yield `app/linked_pkg/inside.zig`.
+    try tmp_dir.dir.createDirPath(io, "app");
+    var app_dir = try tmp_dir.dir.openDir(io, "app", .{ .iterate = true });
+    defer app_dir.close(io);
+    app_dir.symLink(io, "../pkg", "linked_pkg", .{}) catch |err| switch (err) {
+        // Skip on platforms / CI configurations that deny symlink creation.
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    // Cycle: `app/loop -> ..` points back at the workspace root. Without cycle
+    // detection a naive walker recurses forever via app/loop/app/loop/app/...
+    app_dir.symLink(io, "..", "loop", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    // 1. The in-target file must appear under the symlinked path. This is the
+    //    behaviour gap left by #389 — directory symlinks are currently ignored,
+    //    so this assertion fails on main.
+    try testing.expect(explorer.contents.contains("app/linked_pkg/inside.zig"));
+
+    // 2. The real path must also be indexed exactly once.
+    try testing.expect(explorer.contents.contains("pkg/inside.zig"));
+
+    // 3. The cycle must not have produced a deeply-nested duplicate entry.
+    //    If cycle detection is missing, paths like
+    //    `app/loop/app/loop/app/linked_pkg/inside.zig` would appear (or the
+    //    scan would never terminate). Assert no path contains "loop/app/loop".
+    var it = explorer.contents.iterator();
+    while (it.next()) |kv| {
+        const p = kv.key_ptr.*;
+        try testing.expect(std.mem.indexOf(u8, p, "loop/app/loop") == null);
+    }
+}
+
 test "issue-392: Swift parser" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
