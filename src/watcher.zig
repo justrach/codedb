@@ -316,7 +316,11 @@ const FilteredWalker = struct {
                     continue;
                 }
 
-                if (entry.kind != .file) continue;
+                if (entry.kind != .file) {
+                    if (entry.kind != .sym_link) continue;
+                    const target_stat = top.dir_handle.statFile(self.io, entry.name, .{}) catch continue;
+                    if (target_stat.kind != .file) continue;
+                }
 
                 // Build full relative path by appending filename
                 if (self.dir_prefix_len > 0)
