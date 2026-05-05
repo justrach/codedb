@@ -9073,3 +9073,67 @@ test "issue-389: FilteredWalker yields symlinked source files" {
     try testing.expect(explorer.contents.contains("src/target.zig"));
     try testing.expect(explorer.contents.contains("src/alias.zig"));
 }
+
+test "issue-392: Swift parser" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("Sources/App/Greeter.swift",
+        \\import Foundation
+        \\import UIKit
+        \\
+        \\public struct Greeter {
+        \\    let name: String
+        \\
+        \\    public func greet() -> String {
+        \\        return "Hello, \(name)"
+        \\    }
+        \\}
+        \\
+        \\public class HomeViewController: UIViewController {
+        \\    public override func viewDidLoad() {
+        \\        super.viewDidLoad()
+        \\    }
+        \\}
+        \\
+        \\public protocol Reloadable {
+        \\    func reload()
+        \\}
+        \\
+        \\public enum LoadState {
+        \\    case idle
+        \\    case loading
+        \\}
+        \\
+        \\public func topLevel() -> Int { return 42 }
+    );
+
+    var outline = (try explorer.getOutline("Sources/App/Greeter.swift", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    // Detected language must surface as "swift" — main has no Language.swift,
+    // so the file falls into .unknown and no parser runs.
+    try testing.expectEqualStrings("swift", @tagName(outline.language));
+
+    var found_struct = false;
+    var found_class = false;
+    var found_protocol = false;
+    var found_enum = false;
+    var found_top_fn = false;
+    var found_method = false;
+    for (outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "Greeter")) found_struct = true;
+        if (std.mem.eql(u8, sym.name, "HomeViewController")) found_class = true;
+        if (std.mem.eql(u8, sym.name, "Reloadable")) found_protocol = true;
+        if (std.mem.eql(u8, sym.name, "LoadState")) found_enum = true;
+        if (std.mem.eql(u8, sym.name, "topLevel")) found_top_fn = true;
+        if (std.mem.eql(u8, sym.name, "greet")) found_method = true;
+    }
+    try testing.expect(found_struct);
+    try testing.expect(found_class);
+    try testing.expect(found_protocol);
+    try testing.expect(found_enum);
+    try testing.expect(found_top_fn);
+    try testing.expect(found_method);
+}
