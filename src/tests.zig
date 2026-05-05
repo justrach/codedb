@@ -9525,3 +9525,43 @@ test "issue-404: applyEdit corrupts CRLF line endings into mixed LF/CRLF" {
         }
     }
 }
+
+test "issue-409: replacing whole file with empty content leaves a stray newline" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/edit-409.txt", .{tmp.sub_path});
+    defer testing.allocator.free(rel_path);
+
+    // Single-line file with trailing newline.
+    const original = "abc\n";
+    var file = try tmp.dir.createFile(io, "edit-409.txt", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, original);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    const agent_id = try agents.register("issue-409-agent");
+
+    // Replace the only line with empty content. The caller's intent is "make
+    // this file empty" — content has zero bytes.
+    const result = try edit_mod.applyEdit(io, testing.allocator, &store, &agents, null, .{
+        .path = rel_path,
+        .agent_id = agent_id,
+        .op = .replace,
+        .range = .{ 1, 1 },
+        .content = "",
+    });
+
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, rel_path, testing.allocator, .limited(10 * 1024));
+    defer testing.allocator.free(after);
+
+    // Expectation: the file is empty. Currently the file ends up as "\n"
+    // because applyEdit unconditionally restores the trailing newline that
+    // existed in the source, even after the replacement reduced the file
+    // to a single empty line.
+    try testing.expectEqual(@as(usize, 0), after.len);
+    try testing.expectEqual(@as(u64, 0), result.new_size);
+}
