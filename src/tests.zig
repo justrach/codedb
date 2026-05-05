@@ -9038,3 +9038,38 @@ test "issue-388: TrigramIndex.removeFile frees owned path on tombstone" {
     // deinit. The bug leaks the dup on the tombstoned id_to_path slot
     // (cleared to ""), so deinit's `if (p.len > 0) free(p)` misses it.
 }
+
+test "issue-389: FilteredWalker yields symlinked source files" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "src");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "src/target.zig", .data = "pub fn linked() void {}\n// MARKER_LINE\n" });
+
+    // Create an in-workspace symlink: src/alias.zig -> target.zig (relative).
+    var src_dir = try tmp_dir.dir.openDir(io, "src", .{ .iterate = true });
+    defer src_dir.close(io);
+    src_dir.symLink(io, "target.zig", "alias.zig", .{}) catch |err| switch (err) {
+        // If the OS denies symlinks (e.g. CI without privilege on Windows),
+        // skip the test rather than report a false negative.
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    // Both the real file and the symlinked alias must be indexed. The bug at
+    // src/watcher.zig:319 drops every entry whose kind != .file, silently
+    // skipping symlinks even when they point at in-workspace source files.
+    try testing.expect(explorer.contents.contains("src/target.zig"));
+    try testing.expect(explorer.contents.contains("src/alias.zig"));
+}
