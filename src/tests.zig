@@ -9169,3 +9169,55 @@ test "issue-387: appendId preserves JSON-RPC numeric and number_string ids" {
         try testing.expectEqualStrings("12345678901234567890", buf.items);
     }
 }
+
+test "issue-390: codedb_search scope=true caps matches per file" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    // Build a "dominant" file with 20 matches plus several files with 1 match
+    // each. Without a per-file cap on the scope=true path, the dominant file
+    // alone drowns the response. The plain/regex branches already enforce
+    // max_per_file=5 (mcp.zig:1141, 1198), but the scope=true branch does not.
+    var dominant_buf: std.ArrayList(u8) = .empty;
+    defer dominant_buf.deinit(testing.allocator);
+    try dominant_buf.appendSlice(testing.allocator, "pub fn dominant() void {\n");
+    for (0..20) |_| try dominant_buf.appendSlice(testing.allocator, "    // FROBNICATE token\n");
+    try dominant_buf.appendSlice(testing.allocator, "}\n");
+    try explorer.indexFile("src/dominant.zig", dominant_buf.items);
+    try explorer.indexFile("src/a.zig", "// FROBNICATE here\npub fn a() void {}\n");
+    try explorer.indexFile("src/b.zig", "// FROBNICATE here\npub fn b() void {}\n");
+    try explorer.indexFile("src/c.zig", "// FROBNICATE here\npub fn c() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{"query":"FROBNICATE","scope":true,"max_results":100}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Count "src/dominant.zig:" occurrences (one per emitted match line).
+    var dominant_lines: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, out.items, i, "src/dominant.zig:")) |pos| {
+        dominant_lines += 1;
+        i = pos + 1;
+    }
+    // The plain-search per-file cap is 5; scope=true should match. Without
+    // any cap, all 20 matches surface and starve the smaller files.
+    try testing.expect(dominant_lines <= 5);
+    // The other files still surface — the cap shouldn't tank recall, just
+    // bound the dominant file's share.
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/a.zig:") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/b.zig:") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/c.zig:") != null);
+}
