@@ -9762,3 +9762,75 @@ test "issue-413: bundle truncation drops subsequent ops without telling the call
     // Either its result, or an explicit "[2]" entry noting it was dropped.
     try testing.expect(std.mem.indexOf(u8, out.items, "[2]") != null);
 }
+
+test "issue-393: BM25 ranking surfaces high-density file before single-mention file" {
+    // Multi-term content queries today return matches in scan order with only
+    // a per-line occurrence count tiebreaker (explore.zig:1674-1688). On a
+    // large repo this dumps every match with no notion of which *file* is the
+    // most relevant — a file that mentions every query term many times ranks
+    // identically to one that mentions a single term once.
+    //
+    // BM25 over the existing trigram + word index would score documents by
+    // (per-term tf * idf) with length normalization, so the file densely
+    // covering both terms surfaces above the noise file.
+    //
+    // Minimum surface contract: Explorer exposes `searchContentRanked` which
+    // takes a multi-term query and returns results ordered by descending
+    // BM25 score across files (highest-scoring document's match comes first).
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // dense.zig: hits both query terms many times across many lines.
+    try explorer.indexFile("src/dense.zig",
+        \\pub fn parseTokenStream() void {
+        \\    const token = nextToken();
+        \\    parseToken(token);
+        \\    parseToken(token);
+        \\    parseToken(token);
+        \\    const stream = parseTokenStream();
+        \\    parseTokenStream();
+        \\    _ = token;
+        \\    _ = stream;
+        \\}
+    );
+    // sparse.zig: mentions one term once, in passing.
+    try explorer.indexFile("src/sparse.zig",
+        \\pub fn unrelated() void {
+        \\    // a passing mention of parse here
+        \\    return;
+        \\}
+    );
+    // Noise files dilute df-based scoring; BM25 must still rank dense first.
+    try explorer.indexFile("src/noise_a.zig", "pub fn a() void {}\n");
+    try explorer.indexFile("src/noise_b.zig", "pub fn b() void {}\n");
+    try explorer.indexFile("src/noise_c.zig", "pub fn c() void {}\n");
+
+    try testing.expect(@hasDecl(Explorer, "searchContentRanked"));
+
+    const results = try explorer.searchContentRanked("parse Token", testing.allocator, 16);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len > 0);
+    // Top-ranked result must come from the dense file.
+    try testing.expectEqualStrings("src/dense.zig", results[0].path);
+    // Score must be populated and strictly positive when ranking is on.
+    try testing.expect(results[0].score > 0.0);
+    // Results must be sorted by score descending across distinct documents:
+    // the first dense.zig score must exceed the first sparse.zig score.
+    var dense_score: f32 = -1.0;
+    var sparse_score: f32 = -1.0;
+    for (results) |r| {
+        if (dense_score < 0 and std.mem.eql(u8, r.path, "src/dense.zig")) dense_score = r.score;
+        if (sparse_score < 0 and std.mem.eql(u8, r.path, "src/sparse.zig")) sparse_score = r.score;
+    }
+    if (sparse_score >= 0) {
+        try testing.expect(dense_score > sparse_score);
+    }
+}
