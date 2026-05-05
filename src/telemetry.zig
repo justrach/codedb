@@ -109,7 +109,8 @@ pub const Telemetry = struct {
             .err = is_error,
             .response_bytes = @intCast(@min(response_bytes, std.math.maxInt(u32))),
         } };
-        const len: u8 = @intCast(@min(tool_name.len, 32));
+        var len: u8 = @intCast(@min(tool_name.len, 32));
+        while (len > 0 and !std.unicode.utf8ValidateSlice(tool_name[0..len])) : (len -= 1) {}
         @memcpy(tc.tool_call.tool[0..len], tool_name[0..len]);
         tc.tool_call.tool_len = len;
         self.record(tc);
