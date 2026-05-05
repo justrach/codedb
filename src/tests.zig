@@ -9310,3 +9310,15 @@ test "issue-411: tryLock grants new locks to a crashed agent" {
     const got = try agents.tryLock(id, "post-crash.zig", 60_000);
     try testing.expect(got == false);
 }
+
+test "issue-406: root_policy blocks /private/etc (macOS realpath of /etc)" {
+    const root_policy = @import("root_policy.zig");
+    // /etc is in the system_prefixes deny list, but on macOS /etc is a symlink
+    // to /private/etc. Callers feed isIndexableRoot a path resolved by
+    // realPathFile (see handleIndex in src/mcp.zig), which turns "/etc" into
+    // "/private/etc" — and then this textual prefix check accepts it. The
+    // canonical form must be blocked too, otherwise the deny list is bypassed
+    // by the very normalization step the callers depend on.
+    try testing.expect(!root_policy.isIndexableRoot("/private/etc"));
+    try testing.expect(!root_policy.isIndexableRoot("/private/etc/ssh"));
+}
