@@ -5157,6 +5157,31 @@ test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp sta
     try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, future_last_ms, false));
 }
 
+test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corrupt" {
+    // Reproduces a panic when ~/.codedb/last_auto_update_check is corrupt
+    // and decodes to a very negative i64. readAutoUpdateStamp does no
+    // sanity check — it reads 8 bytes, calls std.mem.readInt(i64, ...),
+    // and feeds that straight into shouldRunAutoUpdate, which evaluates
+    // `now_ms - last` with checked subtraction. For last = minInt(i64)
+    // and any positive now_ms, the subtraction overflows and triggers an
+    // integer-overflow panic in Debug / ReleaseSafe builds (which is what
+    // `zig build test` and the shipped MCP binary use).
+    //
+    // Result: every `codedb mcp` startup crashes during the auto-update
+    // gate for any user whose stamp file got corrupted to a value with
+    // the high bit set (e.g. truncated write, partial flush, or any byte
+    // sequence starting with 0x80..0xFF in the stamp).
+    //
+    // Expected fix: clamp the delta with a saturating/wrapping subtraction
+    // or treat any last_ms <= 0 (or in the distant past) as invalid and
+    // run the update.
+
+    const now_ms: i64 = 1_700_000_000_000;
+    const last_ms: i64 = std.math.minInt(i64);
+
+    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, last_ms, false));
+}
+
 test "issue-150: --help prints usage" {
     try buildCliForHelpTests();
 
