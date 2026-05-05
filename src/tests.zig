@@ -9322,3 +9322,18 @@ test "issue-406: root_policy blocks /private/etc (macOS realpath of /etc)" {
     try testing.expect(!root_policy.isIndexableRoot("/private/etc"));
     try testing.expect(!root_policy.isIndexableRoot("/private/etc/ssh"));
 }
+
+test "issue-407: root_policy blocks /var and its non-folders subtree" {
+    const root_policy = @import("root_policy.zig");
+    // The system_prefixes list explicitly blocks /var/folders and /var/tmp,
+    // but not /var itself or /var/log, /var/lib, /var/db, /var/spool, etc.
+    // On Linux those hold logs, mail, and package state; on macOS realPathFile
+    // turns /var into /private/var (also unblocked). Accidentally pointing
+    // the indexer at /var/log on a server pulls in GBs of secrets and is
+    // never a valid "project root".
+    try testing.expect(!root_policy.isIndexableRoot("/var"));
+    try testing.expect(!root_policy.isIndexableRoot("/var/log"));
+    try testing.expect(!root_policy.isIndexableRoot("/var/lib"));
+    try testing.expect(!root_policy.isIndexableRoot("/private/var"));
+    try testing.expect(!root_policy.isIndexableRoot("/private/var/log"));
+}
