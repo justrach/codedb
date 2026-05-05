@@ -1811,7 +1811,11 @@ fn handleBundle(
         }
         const op_obj = &op.object;
         const tool_name = getStr(op_obj, "tool") orelse {
-            w.print("--- [{d}] error ---\nmissing 'tool' field\n", .{i}) catch {};
+            if (op_obj.get("tool")) |_| {
+                w.print("--- [{d}] error ---\nerror: 'tool' must be a string\n", .{i}) catch {};
+            } else {
+                w.print("--- [{d}] error ---\nmissing 'tool' field\n", .{i}) catch {};
+            }
             fail_count += 1;
             continue;
         };
@@ -1862,6 +1866,14 @@ fn handleBundle(
         if (out.items.len + sub_out.items.len > 200 * 1024) {
             w.print("--- [{d}] {s} ---\nTRUNCATED: adding this result would exceed 200KB. Use codedb_outline + targeted reads instead of full file reads.\n", .{ i, tool_name }) catch {};
             fail_count += 1;
+            // Issue #413: surface a per-index marker for every op the bundle
+            // dropped after truncation, so callers can correlate by index
+            // instead of silently losing ops > i.
+            var dropped_idx: usize = i + 1;
+            while (dropped_idx < ops.len) : (dropped_idx += 1) {
+                w.print("--- [{d}] dropped ---\nOPS_DROPPED: response cap reached; this op was not executed.\n", .{dropped_idx}) catch {};
+                fail_count += 1;
+            }
             break;
         }
 
