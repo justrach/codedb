@@ -9290,3 +9290,23 @@ test "issue-391: codedb_callers rejects missing name" {
     try testing.expect(std.mem.startsWith(u8, out.items, "error:"));
     try testing.expect(std.mem.indexOf(u8, out.items, "name") != null);
 }
+
+test "issue-411: tryLock grants new locks to a crashed agent" {
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+
+    const id = try agents.register("zombie");
+
+    // Force the agent into the crashed state via reapStale.
+    const a = agents.agents.getPtr(id) orelse return error.TestUnexpectedResult;
+    a.last_seen = 0;
+    agents.reapStale(0);
+    try testing.expectEqual(@as(@TypeOf(a.state), .crashed), a.state);
+
+    // A crashed agent should not be allowed to acquire new advisory locks
+    // until it heartbeats back to .active. Today tryLock ignores .state and
+    // happily grants the lock — leaving the registry inconsistent (a
+    // .crashed agent suddenly holds fresh locks again).
+    const got = try agents.tryLock(id, "post-crash.zig", 60_000);
+    try testing.expect(got == false);
+}
