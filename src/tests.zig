@@ -9233,3 +9233,60 @@ test "issue-391: codedb_callers tool exists" {
     // workflow has to be assembled by hand on the client side.
     try testing.expect(@hasField(mcp_mod.Tool, "codedb_callers"));
 }
+
+test "issue-391: codedb_callers returns call sites with scope" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
+    try explorer.indexFile("a.zig", "pub fn callerA() void {\n    fooBar();\n}\n");
+    try explorer.indexFile("b.zig", "pub fn callerB() void {\n    fooBar();\n}\n");
+
+    const args_json =
+        \\{"name":"fooBar"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'fooBar'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "a.zig:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "b.zig:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "callerA") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "callerB") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "def.zig:1") == null);
+}
+
+test "issue-391: codedb_callers rejects missing name" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.startsWith(u8, out.items, "error:"));
+    try testing.expect(std.mem.indexOf(u8, out.items, "name") != null);
+}

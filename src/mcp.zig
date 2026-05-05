@@ -451,6 +451,7 @@ pub const Tool = enum {
     codedb_symbol,
     codedb_search,
     codedb_word,
+    codedb_callers,
     codedb_hot,
     codedb_deps,
     codedb_read,
@@ -475,6 +476,7 @@ const tools_list =
     \\{"name":"codedb_symbol","description":"Find where a named symbol is defined across the index. Returns file, line, and kind. Pass body=true for source. Pick this over codedb_search when you have an exact identifier.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name to search for (exact match)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
     \\{"name":"codedb_search","description":"Substring full-text search across the index (regex if regex=true). For one identifier prefer codedb_word; for a definition prefer codedb_symbol. Scope with path_glob to filter by language.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Maximum results to return (default: 50, start with 10 for broad queries)"},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig' or 'src/**/*.zig'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
     \\{"name":"codedb_word","description":"Exact-identifier lookup via inverted index — every occurrence of one word, O(1). Use for single identifiers; use codedb_search for substrings or phrases.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
+    \\{"name":"codedb_callers","description":"Find every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 50)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
     \\{"name":"codedb_hot","description":"Most recently modified files in the project, newest first.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_deps","description":"Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set transitive=true for the full BFS blast radius.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Run codedb_outline first to pick the range — large files burn tokens fast. Pass if_hash to skip re-reads when the file is unchanged.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
@@ -899,6 +901,7 @@ fn dispatch(
         .codedb_symbol => handleSymbol(alloc, args, out, ctx.explorer),
         .codedb_search => handleSearch(alloc, args, out, ctx.explorer),
         .codedb_word => handleWord(alloc, args, out, ctx.explorer),
+        .codedb_callers => handleCallers(alloc, args, out, ctx.explorer),
         .codedb_hot => handleHot(alloc, args, out, ctx.store, ctx.explorer),
         .codedb_deps => handleDeps(alloc, args, out, ctx.explorer),
         .codedb_read => handleRead(io, alloc, args, out, ctx.explorer),
@@ -939,7 +942,7 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
 
 fn toolDependsOnScannedIndex(tool: Tool) bool {
     return switch (tool) {
-        .codedb_search, .codedb_word, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => true,
+        .codedb_search, .codedb_word, .codedb_callers, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => true,
         else => false,
     };
 }
@@ -1233,6 +1236,84 @@ fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     defer explorer.mu.unlockShared();
     for (hits) |h| {
         w.print("  {s}:{d}\n", .{ explorer.word_index.hitPath(h), h.line_num }) catch {};
+    }
+}
+
+fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    const name = getStr(args, "name") orelse {
+        out.appendSlice(alloc, "error: missing 'name' argument") catch {};
+        appendBundleArgKeysDiagnostic(alloc, out, args);
+        return;
+    };
+    if (name.len == 0) {
+        out.appendSlice(alloc, "error: empty name — pass a non-empty 'name' string") catch {};
+        return;
+    }
+    if (getInt(args, "max_results")) |n| {
+        if (n <= 0) {
+            const w_err = cio.listWriter(out, alloc);
+            w_err.print("error: max_results ({d}) must be >= 1", .{n}) catch {};
+            return;
+        }
+    }
+    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 50;
+
+    const defs = explorer.findAllSymbols(name, alloc) catch {
+        out.appendSlice(alloc, "error: symbol lookup failed") catch {};
+        return;
+    };
+    defer {
+        for (defs) |d| {
+            alloc.free(d.path);
+            alloc.free(d.symbol.name);
+            if (d.symbol.detail) |dd| alloc.free(dd);
+        }
+        alloc.free(defs);
+    }
+
+    const results = explorer.searchContentWithScope(name, alloc, max_results) catch {
+        out.appendSlice(alloc, "error: search failed") catch {};
+        return;
+    };
+    defer {
+        for (results) |r| {
+            alloc.free(r.line_text);
+            alloc.free(r.path);
+            if (r.scope_name) |n2| alloc.free(n2);
+        }
+        alloc.free(results);
+    }
+
+    var shown: usize = 0;
+    for (results) |r| {
+        var is_def = false;
+        for (defs) |d| {
+            if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
+                is_def = true;
+                break;
+            }
+        }
+        if (!is_def) shown += 1;
+    }
+
+    const w = cio.listWriter(out, alloc);
+    w.print("{d} call sites for '{s}':\n", .{ shown, name }) catch {};
+    for (results) |r| {
+        var is_def = false;
+        for (defs) |d| {
+            if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
+                is_def = true;
+                break;
+            }
+        }
+        if (is_def) continue;
+        if (r.scope_name) |sn| {
+            w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
+                r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
+            }) catch {};
+        } else {
+            w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+        }
     }
 }
 
