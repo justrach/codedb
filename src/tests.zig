@@ -9896,3 +9896,280 @@ test "issue-400-bug2: total_tokens stays consistent across re-index when skip_fi
     try explorer.indexFile("a.zig", "eight\n");
     try testing.expectEqual(@as(u64, 1), explorer.word_index.total_tokens);
 }
+
+// ---------------------------------------------------------------------------
+// BM25 stress / recall regression tests (#421 stress-421 branch)
+// ---------------------------------------------------------------------------
+
+test "bm25-recall-a: single-term tf ordering" {
+    // 3 docs with identical length but "apple" on different numbers of lines.
+    // The index deduplicates per (doc, line), so tf = number of lines with the term.
+    // Equal doc lengths mean length normalization is constant; higher tf must rank higher.
+    // Each doc has exactly 10 tokens (5 lines x 2 tokens each).
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // doc1: apple on 1 of 5 lines
+    try explorer.indexFile("doc1.txt", "apple filler\nfiller filler\nfiller filler\nfiller filler\nfiller filler");
+    // doc2: apple on 5 of 5 lines (max tf)
+    try explorer.indexFile("doc2.txt", "apple filler\napple filler\napple filler\napple filler\napple filler");
+    // doc3: apple on 2 of 5 lines
+    try explorer.indexFile("doc3.txt", "apple filler\napple filler\nfiller filler\nfiller filler\nfiller filler");
+
+    const results = try explorer.searchContentRanked("apple", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expectEqual(@as(usize, 3), results.len);
+    try testing.expectEqualStrings("doc2.txt", results[0].path);
+    try testing.expectEqualStrings("doc3.txt", results[1].path);
+    try testing.expectEqualStrings("doc1.txt", results[2].path);
+    try testing.expect(results[0].score > results[1].score);
+    try testing.expect(results[1].score > results[2].score);
+}
+
+test "bm25-recall-b: both-terms doc beats high-tf single-term doc" {
+    // doc1 has apple+banana (both query terms, one occurrence each).
+    // doc2 has only apple, but repeated 3x (high tf).
+    // doc3 has only banana, once.
+    // BM25 sums idf*tf_norm per term: doc1 accumulates two idf contributions
+    // while doc2 only gets one -- doc1 must rank first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("doc1.txt", "apple banana cherry");
+    try explorer.indexFile("doc2.txt", "apple apple apple");
+    try explorer.indexFile("doc3.txt", "banana date elderberry");
+
+    const results = try explorer.searchContentRanked("apple banana", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("doc1.txt", results[0].path);
+    try testing.expect(results[0].score > 0.0);
+    var doc2_score: f32 = -1.0;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "doc2.txt")) {
+            doc2_score = r.score;
+            break;
+        }
+    }
+    if (doc2_score >= 0.0) {
+        try testing.expect(results[0].score > doc2_score);
+    }
+}
+
+test "bm25-recall-c: df-saturation -- ubiquitous term has near-zero idf" {
+    // "the" appears in all 11 docs -> idf near zero, barely contributes.
+    // "unique_marker" appears only in special.txt -> high idf, special.txt ranks first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("d1.txt", "the quick brown fox");
+    try explorer.indexFile("d2.txt", "the lazy dog jumps");
+    try explorer.indexFile("d3.txt", "the sun rises east");
+    try explorer.indexFile("d4.txt", "the moon shines bright");
+    try explorer.indexFile("d5.txt", "the rain in spain");
+    try explorer.indexFile("d6.txt", "the cat sat mat");
+    try explorer.indexFile("d7.txt", "the wind blows cold");
+    try explorer.indexFile("d8.txt", "the tide comes in");
+    try explorer.indexFile("d9.txt", "the stars align now");
+    try explorer.indexFile("d10.txt", "the clock ticks forward");
+    try explorer.indexFile("special.txt", "the unique_marker is here");
+
+    const results = try explorer.searchContentRanked("the unique_marker", testing.allocator, 20);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len > 0);
+    try testing.expectEqualStrings("special.txt", results[0].path);
+    if (results.len > 1) {
+        try testing.expect(results[0].score > results[1].score);
+    }
+}
+
+test "bm25-recall-d: length normalization favors shorter doc" {
+    // short.txt: 5 tokens, one "needle".
+    // long.txt: ~50 tokens, one "needle".
+    // BM25 with b=0.75 penalizes longer docs; short.txt must rank higher.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("short.txt", "needle alpha beta gamma delta");
+    try explorer.indexFile("long.txt",
+        "aa bb cc dd ee ff gg hh ii jj kk ll mm nn oo pp qq rr ss tt uu vv ww xx yy zz " ++
+        "aa bb cc dd ee ff gg hh ii jj kk ll mm nn oo pp qq rr ss tt uu vv ww xx needle yy zz"
+    );
+
+    const results = try explorer.searchContentRanked("needle", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("short.txt", results[0].path);
+    try testing.expect(results[0].score > results[1].score);
+}
+
+test "bm25-recall-e: empty and pathological queries return empty without crash" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("file.txt", "some content here");
+
+    {
+        const r = try explorer.searchContentRanked("", testing.allocator, 10);
+        defer testing.allocator.free(r);
+        try testing.expectEqual(@as(usize, 0), r.len);
+    }
+    {
+        const r = try explorer.searchContentRanked("   ", testing.allocator, 10);
+        defer testing.allocator.free(r);
+        try testing.expectEqual(@as(usize, 0), r.len);
+    }
+    {
+        const r = try explorer.searchContentRanked("nonexistent_xyz_term_99", testing.allocator, 10);
+        defer testing.allocator.free(r);
+        try testing.expectEqual(@as(usize, 0), r.len);
+    }
+}
+
+test "bm25-stress: 1000-doc index, common token, max_results cap honored" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    var path_buf: [64]u8 = undefined;
+    var content_buf: [256]u8 = undefined;
+    for (0..1000) |i| {
+        const path = std.fmt.bufPrint(&path_buf, "stress/doc{d}.txt", .{i}) catch unreachable;
+        const content = std.fmt.bufPrint(&content_buf,
+            "common token alpha beta gamma doc{d} extra filler words here now", .{i}
+        ) catch unreachable;
+        try explorer.indexFile(path, content);
+    }
+
+    const cap = 25;
+    const results = try explorer.searchContentRanked("common", testing.allocator, cap);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len <= cap);
+    try testing.expect(results.len > 0);
+    for (results) |r| {
+        try testing.expect(r.score > 0.0);
+    }
+    for (1..results.len) |i| {
+        try testing.expect(results[i - 1].score >= results[i].score);
+    }
+}
+
+test "bm25-state-sync: re-index and remove update total_tokens correctly" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("sync.txt", "alpha beta gamma delta epsilon");
+    try testing.expectEqual(@as(u64, 5), explorer.word_index.total_tokens);
+
+    try explorer.indexFile("sync.txt", "alpha beta");
+    try testing.expectEqual(@as(u64, 2), explorer.word_index.total_tokens);
+
+    explorer.removeFile("sync.txt");
+    try testing.expectEqual(@as(u64, 0), explorer.word_index.total_tokens);
+}
+
+test "bm25-persistence: writeToDisk/readFromDisk preserves total_tokens and doc_lengths" {
+    const alloc = testing.allocator;
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+
+    try wi.indexFile("low.txt", "needle filler filler filler filler filler filler filler filler filler");
+    try wi.indexFile("high.txt", "needle needle needle filler");
+    try wi.indexFile("none.txt", "filler filler filler filler");
+
+    const pre_total = wi.total_tokens;
+    const pre_low_len = wi.docLength(wi.path_to_id.get("low.txt") orelse 0);
+    const pre_high_len = wi.docLength(wi.path_to_id.get("high.txt") orelse 0);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    try wi.writeToDisk(io, dir_path, null);
+
+    const maybe_loaded = WordIndex.readFromDisk(io, dir_path, alloc);
+    try testing.expect(maybe_loaded != null);
+    var loaded = maybe_loaded.?;
+    defer loaded.deinit();
+
+    try testing.expectEqual(pre_total, loaded.total_tokens);
+
+    const post_low_id = loaded.path_to_id.get("low.txt") orelse {
+        try testing.expect(false);
+        return;
+    };
+    const post_high_id = loaded.path_to_id.get("high.txt") orelse {
+        try testing.expect(false);
+        return;
+    };
+    try testing.expectEqual(pre_low_len, loaded.docLength(post_low_id));
+    try testing.expectEqual(pre_high_len, loaded.docLength(post_high_id));
+
+    const hits = try loaded.searchDeduped("needle", alloc);
+    defer alloc.free(hits);
+    try testing.expect(hits.len >= 2);
+
+    var saw_high = false;
+    var saw_low = false;
+    for (hits) |h| {
+        const p = loaded.hitPath(h);
+        if (std.mem.eql(u8, p, "high.txt")) saw_high = true;
+        if (std.mem.eql(u8, p, "low.txt")) saw_low = true;
+    }
+    try testing.expect(saw_high);
+    try testing.expect(saw_low);
+
+    // Post-roundtrip ranked search must still work and return hits for "needle".
+    var wi2 = WordIndex.init(alloc);
+    defer wi2.deinit();
+    try wi2.indexFile("low.txt", "needle filler filler filler filler filler filler filler filler filler");
+    try wi2.indexFile("high.txt", "needle needle needle filler");
+    try wi2.indexFile("none.txt", "filler filler filler filler");
+
+    const low_id_orig = wi2.path_to_id.get("low.txt") orelse 0;
+    const high_id_orig = wi2.path_to_id.get("high.txt") orelse 0;
+    try testing.expectEqual(pre_low_len, wi2.docLength(low_id_orig));
+    try testing.expectEqual(pre_high_len, wi2.docLength(high_id_orig));
+    try testing.expectEqual(pre_total, wi2.total_tokens);
+}
