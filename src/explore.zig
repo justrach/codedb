@@ -102,6 +102,7 @@ pub const Language = enum(u8) {
     dart,
     java,
     kotlin,
+    swift,
     svelte,
     vue,
     astro,
@@ -139,6 +140,7 @@ pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".dart")) return .dart;
     if (std.mem.endsWith(u8, path, ".java")) return .java;
     if (std.mem.endsWith(u8, path, ".kt")) return .kotlin;
+    if (std.mem.endsWith(u8, path, ".swift")) return .swift;
     if (std.mem.endsWith(u8, path, ".svelte")) return .svelte;
     if (std.mem.endsWith(u8, path, ".vue")) return .vue;
     if (std.mem.endsWith(u8, path, ".astro")) return .astro;
@@ -1017,6 +1019,8 @@ pub const Explorer = struct {
                 try parser.parseJavaLine(trimmed, line_num, &outline);
             } else if (outline.language == .kotlin) {
                 try parser.parseKotlinLine(trimmed, line_num, &outline);
+            } else if (outline.language == .swift) {
+                try parser.parseSwiftLine(trimmed, line_num, &outline);
             } else if (outline.language == .svelte or outline.language == .vue or outline.language == .astro) {
                 try parser.parseComponentLine(trimmed, line_num, &outline);
             } else if (outline.language == .shell) {
@@ -2224,6 +2228,29 @@ pub const Explorer = struct {
             try appendOutlineSymbol(a, outline, name, .constant, line_num, line);
         } else if (extractIdentAfterKeyword(line, "var ")) |name| {
             try appendOutlineSymbol(a, outline, name, .variable, line_num, line);
+        }
+    }
+
+    fn parseSwiftLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const line = stripLineComment(raw_line);
+        if (line.len == 0 or startsWith(line, "@") or startsWith(line, "/*") or startsWith(line, "*")) return;
+
+        if (parseDelimitedImport(line, "import ", "")) |imp| {
+            try appendImportSymbol(a, outline, imp, line_num, line);
+            return;
+        }
+
+        if (extractIdentAfterKeyword(line, "struct ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .struct_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "protocol ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .interface_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "class ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "enum ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+        } else if (extractIdentAfterKeyword(line, "func ")) |name| {
+            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
         }
     }
 
