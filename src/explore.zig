@@ -1690,6 +1690,187 @@ pub const Explorer = struct {
         return result_list.toOwnedSlice(allocator);
     }
 
+    /// BM25-ranked content search. Tokenizes the query the same way the word
+    /// index tokenizes documents, scores each candidate doc with BM25
+    /// (k1=1.2, b=0.75), and emits one SearchResult per top-N document with
+    /// the best-tf line for any query term in that doc. Existing scan-order
+    /// `searchContent` is unaffected.
+    pub fn searchContentRanked(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const SearchResult {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        if (max_results == 0) return try allocator.alloc(SearchResult, 0);
+
+        // Tokenize the query the same way WordIndex tokenizes documents:
+        // lowercase + identifier-split. Dedupe terms so repeated query words
+        // don't double-count.
+        var term_arena = std.heap.ArenaAllocator.init(allocator);
+        defer term_arena.deinit();
+        const ta = term_arena.allocator();
+
+        var terms_set = std.StringHashMap(void).init(ta);
+        var raw_tok = idx.WordTokenizer{ .buf = query };
+        while (raw_tok.next()) |word| {
+            if (word.len < 2) continue;
+            const lower = try ta.alloc(u8, word.len);
+            for (word, 0..) |c, j| lower[j] = idx.normalizeChar(c);
+            _ = try terms_set.getOrPut(lower);
+
+            var needs_split: bool = false;
+            if (word.len >= 4) {
+                for (word) |c| {
+                    if (c == '_' or (c >= 'A' and c <= 'Z')) {
+                        needs_split = true;
+                        break;
+                    }
+                }
+            }
+            if (needs_split) {
+                var sub_toks: std.ArrayList([]const u8) = .empty;
+                defer sub_toks.deinit(ta);
+                idx.splitIdentifier(word, &sub_toks, ta) catch continue;
+                for (sub_toks.items) |sub| {
+                    if (sub.len < 2) continue;
+                    _ = try terms_set.getOrPut(sub);
+                }
+            }
+        }
+        if (terms_set.count() == 0) return try allocator.alloc(SearchResult, 0);
+
+        // BM25 constants.
+        const k1: f32 = 1.2;
+        const b: f32 = 0.75;
+        const N = self.word_index.fileCount();
+        if (N == 0) return try allocator.alloc(SearchResult, 0);
+        const avgdl = self.word_index.avgDocLength();
+
+        // Aggregate scores per doc and remember the best line (max term hits)
+        // for each candidate.
+        const DocAgg = struct {
+            score: f32,
+            best_line: u32,
+            best_line_hits: u32,
+        };
+        var per_doc = std.AutoHashMap(u32, DocAgg).init(ta);
+
+        // For each unique query term, look up its posting list once,
+        // compute df and per-doc tf in a single pass.
+        var term_iter = terms_set.keyIterator();
+        while (term_iter.next()) |term_ptr| {
+            const term = term_ptr.*;
+            const hits = self.word_index.search(term);
+            if (hits.len == 0) continue;
+
+            // df: distinct doc_ids in this posting list. tf: count of (term,doc)
+            // entries (each entry is a distinct line per indexFile dedup).
+            // line_hits: per-doc map of line_num → count for best-line picking.
+            var doc_tf = std.AutoHashMap(u32, u32).init(ta);
+            var doc_best_line = std.AutoHashMap(u32, struct { line: u32, count: u32 }).init(ta);
+            for (hits) |h| {
+                const tf_gop = try doc_tf.getOrPut(h.doc_id);
+                if (!tf_gop.found_existing) tf_gop.value_ptr.* = 0;
+                tf_gop.value_ptr.* += 1;
+
+                const ln_gop = try doc_best_line.getOrPut(h.doc_id);
+                if (!ln_gop.found_existing) {
+                    ln_gop.value_ptr.* = .{ .line = h.line_num, .count = 1 };
+                } else {
+                    // Each posting is a distinct line; still, prefer the
+                    // smallest line_num as a deterministic representative.
+                    if (h.line_num < ln_gop.value_ptr.line) {
+                        ln_gop.value_ptr.line = h.line_num;
+                    }
+                    ln_gop.value_ptr.count += 1;
+                }
+            }
+            const df: u32 = @intCast(doc_tf.count());
+            // BM25 idf with the +1 smoothing variant: log(1 + (N - df + 0.5)/(df + 0.5))
+            const num: f32 = @as(f32, @floatFromInt(N)) - @as(f32, @floatFromInt(df)) + 0.5;
+            const den: f32 = @as(f32, @floatFromInt(df)) + 0.5;
+            const idf: f32 = @log(1.0 + num / den);
+
+            var tf_iter = doc_tf.iterator();
+            while (tf_iter.next()) |entry| {
+                const doc_id = entry.key_ptr.*;
+                const tf: f32 = @floatFromInt(entry.value_ptr.*);
+                const dl_raw = self.word_index.docLength(doc_id);
+                const dl: f32 = if (dl_raw == 0) 1.0 else @floatFromInt(dl_raw);
+                const norm = 1.0 - b + b * (dl / avgdl);
+                const term_score = idf * (tf * (k1 + 1.0)) / (tf + k1 * norm);
+
+                const ln_info = doc_best_line.get(doc_id) orelse continue;
+                const agg_gop = try per_doc.getOrPut(doc_id);
+                if (!agg_gop.found_existing) {
+                    agg_gop.value_ptr.* = .{
+                        .score = term_score,
+                        .best_line = ln_info.line,
+                        .best_line_hits = ln_info.count,
+                    };
+                } else {
+                    agg_gop.value_ptr.score += term_score;
+                    if (ln_info.count > agg_gop.value_ptr.best_line_hits or
+                        (ln_info.count == agg_gop.value_ptr.best_line_hits and ln_info.line < agg_gop.value_ptr.best_line))
+                    {
+                        agg_gop.value_ptr.best_line = ln_info.line;
+                        agg_gop.value_ptr.best_line_hits = ln_info.count;
+                    }
+                }
+            }
+        }
+        if (per_doc.count() == 0) return try allocator.alloc(SearchResult, 0);
+
+        const Cand = struct { doc_id: u32, score: f32, best_line: u32 };
+        var cands: std.ArrayList(Cand) = .empty;
+        defer cands.deinit(ta);
+        try cands.ensureTotalCapacity(ta, per_doc.count());
+        var pd_iter = per_doc.iterator();
+        while (pd_iter.next()) |entry| {
+            cands.appendAssumeCapacity(.{
+                .doc_id = entry.key_ptr.*,
+                .score = entry.value_ptr.score,
+                .best_line = entry.value_ptr.best_line,
+            });
+        }
+        std.sort.block(Cand, cands.items, {}, struct {
+            pub fn lt(_: void, a: Cand, b_: Cand) bool {
+                if (a.score != b_.score) return a.score > b_.score;
+                return a.doc_id < b_.doc_id;
+            }
+        }.lt);
+
+        var result_list: std.ArrayList(SearchResult) = .empty;
+        errdefer {
+            for (result_list.items) |r| {
+                allocator.free(r.line_text);
+                allocator.free(r.path);
+            }
+            result_list.deinit(allocator);
+        }
+        try result_list.ensureTotalCapacity(allocator, @min(max_results, cands.items.len));
+
+        for (cands.items) |c| {
+            if (result_list.items.len >= max_results) break;
+            const path = self.word_index.id_to_path.items[c.doc_id];
+            if (path.len == 0) continue;
+            const ref = self.readContentForSearch(path, allocator) orelse continue;
+            defer ref.deinit();
+            const line_text = extractLineByNumber(ref.data, c.best_line) orelse continue;
+            const duped_text = try allocator.dupe(u8, line_text);
+            errdefer allocator.free(duped_text);
+            const duped_path = try allocator.dupe(u8, path);
+            errdefer allocator.free(duped_path);
+            try result_list.append(allocator, .{
+                .path = duped_path,
+                .line_num = c.best_line,
+                .line_text = duped_text,
+                .score = c.score,
+            });
+        }
+
+        return result_list.toOwnedSlice(allocator);
+    }
+
+
     /// Search file contents using a regex pattern with trigram acceleration.
     /// Decomposes the regex to extract literal trigrams for candidate filtering,
     /// then does actual regex matching on candidates.

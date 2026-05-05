@@ -9834,3 +9834,38 @@ test "issue-393: BM25 ranking surfaces high-density file before single-mention f
         try testing.expect(dense_score > sparse_score);
     }
 }
+
+test "issue-400: BM25 ranks both-terms file above single-term files" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("both.zig",
+        \\pub fn parseToken() void {
+        \\    parseToken();
+        \\    parseToken();
+        \\}
+    );
+    try explorer.indexFile("only_parse.zig",
+        \\pub fn parseFoo() void {
+        \\    parse();
+        \\}
+    );
+    try explorer.indexFile("only_token.zig",
+        \\pub fn tokenStream() void {
+        \\    token();
+        \\}
+    );
+
+    const results = try explorer.searchContentRanked("parse Token", testing.allocator, 8);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len > 0);
+    try testing.expectEqualStrings("both.zig", results[0].path);
+    try testing.expect(results[0].score > 0.0);
+}

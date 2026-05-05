@@ -20,6 +20,10 @@ pub const WordIndex = struct {
     enabled: bool = true,
     path_to_id: std.StringHashMap(u32),
     id_to_path: std.ArrayList([]const u8),
+    /// doc_id → number of tokens indexed for that doc (BM25 length normalization).
+    doc_lengths: std.AutoHashMap(u32, u32),
+    /// Sum of all values in doc_lengths.
+    total_tokens: u64 = 0,
 
     pub fn hitPath(self: *const WordIndex, hit: WordHit) []const u8 {
         if (hit.doc_id < self.id_to_path.items.len) return self.id_to_path.items[hit.doc_id];
@@ -41,6 +45,8 @@ pub const WordIndex = struct {
             .allocator = allocator,
             .path_to_id = std.StringHashMap(u32).init(allocator),
             .id_to_path = .empty,
+            .doc_lengths = std.AutoHashMap(u32, u32).init(allocator),
+            .total_tokens = 0,
         };
     }
 
@@ -69,6 +75,7 @@ pub const WordIndex = struct {
 
         self.path_to_id.deinit();
         self.id_to_path.deinit(self.allocator);
+        self.doc_lengths.deinit();
     }
 
     /// Remove all index entries for a file (call before re-indexing).
@@ -85,6 +92,9 @@ pub const WordIndex = struct {
         _ = self.path_to_id.remove(stable_path);
         if (doc_id < self.id_to_path.items.len) {
             self.id_to_path.items[doc_id] = "";
+        }
+        if (self.doc_lengths.fetchRemove(doc_id)) |kv| {
+            self.total_tokens -= kv.value;
         }
         defer {
             self.allocator.free(words_slice);
@@ -162,12 +172,14 @@ pub const WordIndex = struct {
         var words_set = std.StringHashMap(void).init(words_arena.allocator());
         var line_num: u32 = 0;
         var lines = std.mem.splitScalar(u8, content, '\n');
+        var doc_token_count: u32 = 0;
 
         while (lines.next()) |line| {
             line_num += 1;
             var tok = WordTokenizer{ .buf = line };
             while (tok.next()) |word| {
                 if (word.len < 2) continue;
+                doc_token_count +|= 1;
 
                 const aa = words_arena.allocator();
 
@@ -226,6 +238,9 @@ pub const WordIndex = struct {
             try self.file_words.put(stable_path, compact);
         }
         words_set.deinit();
+
+        try self.doc_lengths.put(doc_id, doc_token_count);
+        self.total_tokens += doc_token_count;
     }
 
     /// Look up all hits for a word. O(1) lookup + O(hits) iteration.
@@ -311,6 +326,19 @@ pub const WordIndex = struct {
         return @intCast(self.file_words.count());
     }
 
+    /// BM25 helper: number of indexed tokens in a doc, or 0 if unknown.
+    pub fn docLength(self: *const WordIndex, doc_id: u32) u32 {
+        return self.doc_lengths.get(doc_id) orelse 0;
+    }
+
+    /// BM25 helper: average doc length over docs that have a recorded length.
+    /// Returns 1.0 when no docs are tracked, so callers can divide safely.
+    pub fn avgDocLength(self: *const WordIndex) f32 {
+        const n = self.doc_lengths.count();
+        if (n == 0) return 1.0;
+        return @as(f32, @floatFromInt(self.total_tokens)) / @as(f32, @floatFromInt(n));
+    }
+
     /// Shrink all hit lists and per-file word sets to release excess capacity.
     pub fn shrinkAllocations(self: *WordIndex) void {
         var iter = self.index.iterator();
@@ -327,7 +355,7 @@ pub const WordIndex = struct {
     };
 
     const DISK_MAGIC = [4]u8{ 'C', 'D', 'B', 'W' };
-    const DISK_FORMAT_VERSION: u16 = 2;
+    const DISK_FORMAT_VERSION: u16 = 3;
 
     pub fn writeToDisk(self: *WordIndex, io: std.Io, dir_path: []const u8, git_head: ?[40]u8) !void {
         var file_table: std.ArrayList([]const u8) = .empty;
@@ -424,6 +452,27 @@ pub const WordIndex = struct {
                 try writer.interface.writeAll(&hit_buf);
             }
         }
+
+        // v3 trailer: per-doc length table for BM25.
+        // file_id (u32 disk-id) → length (u32). Total tokens follows as u64.
+        var dl_count_buf: [4]u8 = undefined;
+        std.mem.writeInt(u32, &dl_count_buf, @intCast(file_table.items.len), .little);
+        try writer.interface.writeAll(&dl_count_buf);
+        for (file_table.items) |path| {
+            const in_mem_id = self.path_to_id.get(path) orelse {
+                var z: [4]u8 = .{ 0, 0, 0, 0 };
+                try writer.interface.writeAll(&z);
+                continue;
+            };
+            const len = self.doc_lengths.get(in_mem_id) orelse 0;
+            var lb: [4]u8 = undefined;
+            std.mem.writeInt(u32, &lb, len, .little);
+            try writer.interface.writeAll(&lb);
+        }
+        var tt_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &tt_buf, self.total_tokens, .little);
+        try writer.interface.writeAll(&tt_buf);
+
         try writer.interface.flush();
 
         try std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), final_path, io);
@@ -535,6 +584,21 @@ pub const WordIndex = struct {
             gop.value_ptr.* = hits;
         }
 
+        // v3 trailer: per-doc length table.
+        if (pos + 4 > data.len) return null;
+        const dl_count = std.mem.readInt(u32, data[pos..][0..4], .little);
+        pos += 4;
+        if (dl_count != file_count) return null;
+        if (pos + dl_count * 4 + 8 > data.len) return null;
+        var dl_values = try allocator.alloc(u32, dl_count);
+        defer allocator.free(dl_values);
+        for (0..dl_count) |i| {
+            dl_values[i] = std.mem.readInt(u32, data[pos..][0..4], .little);
+            pos += 4;
+        }
+        const total_tokens_loaded = std.mem.readInt(u64, data[pos..][0..8], .little);
+        pos += 8;
+
         if (pos != data.len) return null;
 
         // Populate path_to_id and id_to_path from file_paths
@@ -542,7 +606,11 @@ pub const WordIndex = struct {
         for (0..file_count) |i| {
             result.id_to_path.appendAssumeCapacity(file_paths[i]);
             try result.path_to_id.put(file_paths[i], @intCast(i));
+            if (dl_values[i] > 0) {
+                try result.doc_lengths.put(@intCast(i), dl_values[i]);
+            }
         }
+        result.total_tokens = total_tokens_loaded;
 
         // Compact tmp_file_words HashMaps into slices for result.file_words
         var tfw_iter = tmp_file_words.iterator();
