@@ -8985,3 +8985,38 @@ test "issue-bug11: codedb_bundle marks isError when all ops fail" {
 
     try testing.expect(std.mem.startsWith(u8, out.items, "error:"));
 }
+
+test "issue-386: telemetry recordToolCall preserves UTF-8 codepoint boundaries" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    var telem = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
+    defer telem.deinit();
+
+    // 30 ASCII bytes + a 3-byte UTF-8 codepoint (✓ = 0xE2 0x9C 0x93) lands the
+    // codepoint boundary at byte 33. The 32-byte cap currently truncates inside
+    // the codepoint, leaving 0xE2 0x9C as the trailing bytes — invalid UTF-8.
+    const tool_name = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\xe2\x9c\x93_tail";
+    telem.recordToolCall(tool_name, 1234, false, 56);
+    telem.flush();
+
+    const ndjson_path = try std.fmt.allocPrint(testing.allocator, "{s}/telemetry.ndjson", .{dir_path});
+    defer testing.allocator.free(ndjson_path);
+
+    const contents = try std.Io.Dir.cwd().readFileAlloc(io, ndjson_path, testing.allocator, .limited(64 * 1024));
+    defer testing.allocator.free(contents);
+
+    const tool_field = "\"tool\":\"";
+    const idx = std.mem.indexOf(u8, contents, tool_field) orelse return error.ToolFieldMissing;
+    const after = contents[idx + tool_field.len ..];
+    const end = std.mem.indexOfScalar(u8, after, '"') orelse return error.ToolFieldUnterminated;
+    const recorded = after[0..end];
+
+    // The recorded tool slice must be valid UTF-8. A mid-codepoint truncation
+    // produces invalid bytes — std.unicode.utf8ValidateSlice rejects them.
+    try testing.expect(std.unicode.utf8ValidateSlice(recorded));
+}
