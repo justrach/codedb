@@ -5137,6 +5137,26 @@ test "auto-update: shouldRunAutoUpdate gates correctly" {
     try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false));
 }
 
+test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp stamp file" {
+    // Reproduces the case where the stamp file contains a timestamp in the
+    // future relative to the wall clock — for example, after an NTP clock
+    // correction that rolls the clock back, or after a stamp written by a
+    // host with a fast clock. The current implementation computes
+    // (now - last) and only fires when that delta >= 24h, so a future
+    // `last` produces a negative delta and the check is silently skipped
+    // for as long as the stamp stays in the future — potentially many days.
+    //
+    // Expected: a wildly future stamp should NOT prevent the next check
+    // from firing. The simplest correct behavior is: if last > now, treat
+    // the stamp as invalid and allow the update check to run.
+
+    const day_ms: i64 = 24 * 60 * 60 * 1000;
+    const now_ms: i64 = 1_700_000_000_000;
+    const future_last_ms: i64 = now_ms + day_ms * 30; // 30 days in the future
+
+    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, future_last_ms, false));
+}
+
 test "issue-150: --help prints usage" {
     try buildCliForHelpTests();
 
