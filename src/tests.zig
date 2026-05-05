@@ -9394,3 +9394,52 @@ test "issue-405: cleanupStaleTmpFiles deletes in-flight sibling tmp files" {
         return error.TestExpectedSiblingTmpPreserved;
     };
 }
+
+test "issue-409: snapshot .env prefix filter wrongly excludes .envoy/.environment files" {
+    // BUG: snapshot.zig:isSensitivePath uses
+    //     if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env")) return true;
+    // to catch .env, .env.local, .env.production, etc. The check is a raw
+    // 4-byte prefix match — so any basename whose first 4 bytes are ".env"
+    // is rejected, including legitimate, non-secret files such as:
+    //
+    //   .envoy.json     — Envoy proxy config
+    //   .environment    — generic config name
+    //   .envconfig.yaml — anything starting with ".env"
+    //
+    // These files end up silently dropped from the snapshot's CONTENT,
+    // TREE, and OUTLINE_STATE sections, so a save/load round-trip loses
+    // them entirely. The watcher.zig copy of isSensitivePath has the same
+    // bug, so they are also excluded from live indexing.
+    //
+    // Reproducer: index a non-secret .envoy.json alongside a normal file,
+    // snapshot, load, and observe that .envoy.json is missing.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    var exp = Explorer.init(aa);
+    try exp.indexFile("a.zig", "pub fn alpha() void {}\n");
+    // .envoy.json is the canonical Envoy proxy config name — not a secret.
+    try exp.indexFile(".envoy.json", "{\"listeners\":[]}\n");
+    try testing.expectEqual(@as(usize, 2), exp.outlines.count());
+
+    const snap_path = try std.fs.path.join(aa, &.{ dir_path, "snap.codedb" });
+    try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, aa);
+
+    var exp2 = Explorer.init(aa);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, aa));
+
+    // Expected: both files round-trip through the snapshot.
+    // Current (bug): only "a.zig" survives — ".envoy.json" was excluded by
+    // the .env prefix check at write time.
+    try testing.expect(exp2.outlines.contains("a.zig"));
+    try testing.expect(exp2.outlines.contains(".envoy.json"));
+}
