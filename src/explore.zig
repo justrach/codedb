@@ -1778,6 +1778,15 @@ pub const Explorer = struct {
         if (pathHasSegment(r.path, "examples") or pathHasSegment(r.path, "example")) score *= 0.6;
         if (pathHasSegment(r.path, "vendor") or pathHasSegment(r.path, "node_modules") or
             pathHasSegment(r.path, "third_party")) score *= 0.4;
+        // Doc-language penalty: markdown / data files (CHANGELOG.md, design
+        // docs, benchmark logs) often mention an identifier many times in a
+        // single line, which lets per-line frequency dwarf code call sites.
+        // For doc files, more mentions don't reflect more code-relevance —
+        // they reflect prose density. Cap at 1.0 then halve so any code hit
+        // (score >= 1) outranks any doc hit. Symmetric with path-prior.
+        if (isDocLanguage(detectLanguage(r.path))) {
+            score = @min(score, 1.0) * 0.5;
+        }
 
         return score;
     }

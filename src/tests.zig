@@ -10789,3 +10789,36 @@ test "issue-429-d: searchContent rerank boosts path-segment match" {
     try testing.expect(results.len >= 2);
     try testing.expectEqualStrings("src/parser/foo.zig", results[0].path);
 }
+
+test "issue-429-e: searchContent rerank penalises doc-language files so code beats markdown noise" {
+    // CHANGELOG.md and benchmark docs often mention an identifier many times
+    // in a single line, which under per-line frequency outscores any single
+    // code call site. The reranker now halves doc-language scores so a code
+    // call site with one occurrence still wins.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // Doc file with the identifier mentioned four times on one line —
+    // pre-fix this scores 4 on per-line frequency.
+    try explorer.indexFile(
+        "CHANGELOG.md",
+        "# Changelog\n\nfooBar — fooBar fooBar fooBar in the changelog.\n",
+    );
+    // Code call site with the identifier mentioned once.
+    try explorer.indexFile(
+        "src/caller.zig",
+        "pub fn caller() void {\n    fooBar();\n}\n",
+    );
+
+    const results = try explorer.searchContent("fooBar", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("src/caller.zig", results[0].path);
+}
