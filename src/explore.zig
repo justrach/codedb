@@ -1695,11 +1695,14 @@ pub const Explorer = struct {
             }
         }
 
-        // Frequency scoring: count query occurrences per line, then stable-sort by
-        // (score desc, path asc, line_num asc) so high-density hits surface first.
+        // Multi-signal rerank (issue #429): per-line occurrence count is the
+        // base, augmented with a symbol-definition boost (the line is the
+        // canonical definition of a symbol named after the query), a
+        // basename-match boost (file stem matches the query — strong intent
+        // signal), and a path-prior penalty for example/test/vendor paths.
         if (result_list.items.len > 1) {
             for (result_list.items) |*r| {
-                r.score = countOccurrences(r.line_text, query);
+                r.score = self.rerankSignalScore(r.*, query);
             }
             std.sort.block(SearchResult, result_list.items, {}, struct {
                 pub fn lessThan(_: void, a: SearchResult, b: SearchResult) bool {
@@ -1712,6 +1715,36 @@ pub const Explorer = struct {
         }
 
         return result_list.toOwnedSlice(allocator);
+    }
+
+    /// Compose the rerank signals for one search hit (issue #429).
+    fn rerankSignalScore(self: *const Explorer, r: SearchResult, query: []const u8) f32 {
+        var score: f32 = countOccurrences(r.line_text, query);
+
+        if (self.outlines.get(r.path)) |outline| {
+            for (outline.symbols.items) |sym| {
+                if (sym.line_start == r.line_num and std.mem.eql(u8, sym.name, query)) {
+                    score += 5.0;
+                    break;
+                }
+            }
+        }
+
+        const basename = std.fs.path.basename(r.path);
+        const stem_end = std.mem.indexOfScalar(u8, basename, '.') orelse basename.len;
+        const stem = basename[0..stem_end];
+        if (asciiEqlIgnoreCase(stem, query)) {
+            score += 15.0;
+        } else if (asciiContainsIgnoreCase(stem, query)) {
+            score += 8.0;
+        }
+
+        if (pathHasSegment(r.path, "tests") or pathHasSegment(r.path, "test")) score *= 0.6;
+        if (pathHasSegment(r.path, "examples") or pathHasSegment(r.path, "example")) score *= 0.6;
+        if (pathHasSegment(r.path, "vendor") or pathHasSegment(r.path, "node_modules") or
+            pathHasSegment(r.path, "third_party")) score *= 0.4;
+
+        return score;
     }
 
     /// BM25-ranked content search. Tokenizes the query the same way the word
@@ -4420,6 +4453,34 @@ fn countOccurrences(text: []const u8, needle: []const u8) f32 {
         } else break;
     }
     return count;
+}
+
+fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        if (std.ascii.toLower(x) != std.ascii.toLower(y)) return false;
+    }
+    return true;
+}
+
+fn asciiContainsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or haystack.len < needle.len) return false;
+    var i: usize = 0;
+    outer: while (i + needle.len <= haystack.len) : (i += 1) {
+        for (needle, 0..) |nc, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(nc)) continue :outer;
+        }
+        return true;
+    }
+    return false;
+}
+
+fn pathHasSegment(path: []const u8, segment: []const u8) bool {
+    var iter = std.mem.tokenizeAny(u8, path, "/\\");
+    while (iter.next()) |seg| {
+        if (std.mem.eql(u8, seg, segment)) return true;
+    }
+    return false;
 }
 fn startsWith(haystack: []const u8, needle: []const u8) bool {
     return std.mem.startsWith(u8, haystack, needle);
