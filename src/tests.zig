@@ -10494,3 +10494,274 @@ test "issue-425: codedb_callers excludes substring matches in unrelated identifi
     // Header reports the real count (1), not the inflated count (2).
     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'fooBar'") != null);
 }
+
+test "issue-426: codedb_callers excludes non-code files (markdown, docs)" {
+    // handleCallers (mcp.zig:1339) feeds searchContentWithScope across every
+    // indexed file regardless of language. Markdown and other documentation
+    // files that mention the symbol in prose surface as if they were call
+    // sites. The fix is a language gate: skip results from non-code files.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
+    try explorer.indexFile("a.zig", "pub fn callerA() void {\n    fooBar();\n}\n");
+    // Prose mention in a docs file — the identifier appears as a whole
+    // word, so this is independent of the substring-match bug (#425):
+    // even a perfect whole-word match on a markdown file is still not a
+    // call site.
+    try explorer.indexFile(
+        "docs/notes.md",
+        "# Notes\n\nThe fooBar helper is documented here for posterity.\n",
+    );
+
+    const args_json =
+        \\{"name":"fooBar"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Real call site present.
+    try testing.expect(std.mem.indexOf(u8, out.items, "a.zig:2") != null);
+    // Markdown mention must NOT appear as a call site.
+    try testing.expect(std.mem.indexOf(u8, out.items, "docs/notes.md") == null);
+    // Header reflects the real count.
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'fooBar'") != null);
+}
+
+test "issue-427: searchContent Tier 1 sort starves the definition-dense file" {
+    // searchContent's Tier 1 (explore.zig:1590-1598) sorts trigram candidates
+    // by file content length ASCENDING and then applies a per-file cap of
+    // max(1, max_results / estimated_total). When several small unrelated
+    // files match the query, they each contribute one hit and saturate the
+    // result quota before the canonical (large, definition-dense) file is
+    // ever scanned — so the file with the most occurrences of the term is
+    // missing from the output.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // 8 small files. Each contains one occurrence of the term as a whole
+    // word. They sort first under the length-ascending Tier 1 order.
+    const small_count: usize = 8;
+    var i: usize = 0;
+    while (i < small_count) : (i += 1) {
+        var path_buf: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "small_{d}.zig", .{i});
+        try explorer.indexFile(path, "fn s() void { _ = widgetX; }\n");
+    }
+
+    // Canonical file: many lines mentioning widgetX, padded so its content
+    // length is larger than every small file (sort key: content length).
+    const canonical_content =
+        "fn canonical() void {\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    // padding line for content length, to push this file to the\n" ++
+        "    // tail of the length-ascending sort. The reranker should still\n" ++
+        "    // surface it because it has the most occurrences of the term.\n" ++
+        "    _ = 0;\n" ++
+        "}\n";
+    try explorer.indexFile("canonical.zig", canonical_content);
+
+    // max_results small enough that 8 small files can saturate the quota.
+    // word_hits.len = small_count (8) + canonical occurrences (4) = 12.
+    // max_results * 2 = 10. 12 > 10 → Tier 0 gate fails → Tier 1 fires.
+    const results = try explorer.searchContent("widgetX", testing.allocator, 5);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    // The canonical file MUST appear in the result set. Pre-fix it does not:
+    // small files fill all 5 slots first under length-asc order, and the
+    // early-return at result_list.len >= max_results returns before the
+    // canonical file is ever read.
+    var found_canonical = false;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "canonical.zig")) {
+            found_canonical = true;
+            break;
+        }
+    }
+    try testing.expect(found_canonical);
+}
+
+test "issue-429-a: searchContent rerank boosts files whose basename matches the query" {
+    // Two files, same hit count, same content length. The current rerank
+    // (explore.zig:1700-1712) sorts ties by path-asc, so a file named
+    // "unrelated.zig" outranks "widgetX.zig" even though the latter's
+    // basename matches the query exactly. The basename match is a strong
+    // intent signal — the developer is asking about that file's subject.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/unrelated.zig", "pub fn process() void { _ = widgetX; }\n");
+    try explorer.indexFile("src/widgetX.zig", "pub fn process() void { _ = widgetX; }\n");
+
+    const results = try explorer.searchContent("widgetX", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("src/widgetX.zig", results[0].path);
+}
+
+test "issue-429-b: searchContent rerank penalizes test/vendor/examples paths" {
+    // Two files, same hit count, same content. Pre-fix the path-asc
+    // tiebreaker promotes "examples/sample.zig" (e < s) above
+    // "src/sample.zig". Post-fix path priors push code roots above
+    // example/test/vendor directories so the source-of-truth lands first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("examples/sample.zig", "pub fn x() void { _ = someTerm; }\n");
+    try explorer.indexFile("src/sample.zig", "pub fn x() void { _ = someTerm; }\n");
+
+    const results = try explorer.searchContent("someTerm", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("src/sample.zig", results[0].path);
+}
+
+test "issue-429-c: searchContent rerank boosts lines that are symbol definitions" {
+    // Two files. "aaa.zig" has a passing comment mention of `fooSym`. The
+    // alphabetically-later "zzz_def.zig" has the actual definition. Both
+    // tie on per-line occurrence count. Pre-fix the path-asc tiebreaker
+    // promotes the comment mention ("aaa" < "zzz"). Post-fix the rerank
+    // recognises that the line in zzz_def.zig is a symbol definition and
+    // ranks it first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("aaa.zig", "// fooSym is referenced here in a comment\n");
+    try explorer.indexFile("zzz_def.zig", "pub fn fooSym() void {}\n");
+
+    const results = try explorer.searchContent("fooSym", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("zzz_def.zig", results[0].path);
+}
+
+test "issue-430: Tier 0 markdown dominance starves canonical source file" {
+    // Tier 0 of searchContent (explore.zig:1525-1554) iterates the word
+    // index posting list in insertion order with a per-file cap of
+    // max(1, max_results/5). When a handful of markdown documents
+    // (CHANGELOG.md, benchmarks/*.md, design docs) each mention the query
+    // many times AND happen to appear earlier in the posting list than the
+    // canonical source file, they saturate result_list before the source
+    // file is reached. The existing #363a fix asserted *presence* with a
+    // small corpus; this is the high-density regime where presence still
+    // fails because Tier 0 hits max_results before the source file's
+    // posting-list entries are processed.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // 5 markdown files each with 10 mentions of fooBar — indexed FIRST so
+    // they land at the head of the posting list. With max_results=50 and
+    // per-file cap=10, these 5 files alone fill all 50 slots.
+    const md_block = "fooBar mentioned here.\nfooBar mentioned here.\n" ++
+        "fooBar mentioned here.\nfooBar mentioned here.\n" ++
+        "fooBar mentioned here.\nfooBar mentioned here.\n" ++
+        "fooBar mentioned here.\nfooBar mentioned here.\n" ++
+        "fooBar mentioned here.\nfooBar mentioned here.\n";
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        var path_buf: [64]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "docs/notes_{d}.md", .{i});
+        try explorer.indexFile(path, md_block);
+    }
+
+    // Source file with the canonical definition + several real call sites,
+    // indexed LAST so its posting-list entries come after the markdown noise.
+    try explorer.indexFile("src/foo.zig",
+        "pub fn fooBar() void {}\n" ++
+            "pub fn caller1() void { fooBar(); }\n" ++
+            "pub fn caller2() void { fooBar(); }\n" ++
+            "pub fn caller3() void { fooBar(); }\n");
+
+    const results = try explorer.searchContent("fooBar", testing.allocator, 50);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    var found_source = false;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "src/foo.zig")) {
+            found_source = true;
+            break;
+        }
+    }
+    // The canonical source file MUST appear in the results. Pre-fix it does
+    // not: 5 markdown files × 10 hits = 50 entries fill result_list before
+    // the source file is reached, then Tier 0 returns at max_results.
+    try testing.expect(found_source);
+}
+
+test "issue-431: searchContent does not crash when query is longer than content" {
+    // searchInContent (explore.zig:3881) computes
+    //   const end = content.len - query.len + 1;
+    // without checking that query.len <= content.len. When the query is
+    // longer than the file content, the subtraction underflows in usize
+    // and the binary panics with integer overflow (or aborts with SIGBUS
+    // in ReleaseFast). Reproducer: index a tiny file, search for a query
+    // longer than the file's content.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("a.zig", "fn x() void {}\n");
+
+    var q_buf: [256]u8 = undefined;
+    @memset(&q_buf, 'a');
+    const q = q_buf[0..256];
+
+    const results = try explorer.searchContent(q, testing.allocator, 5);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len == 0);
+}
