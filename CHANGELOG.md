@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.5808 - 2026-05-06
+
+`0.2.5808` is a tool-schema fix for `codedb_bundle` plus an opt-in rerank-trace logger for offline ranking experiments. Three PRs ship together: [#435](https://github.com/justrach/codedb/pull/435) (Stage 1 of [#434](https://github.com/justrach/codedb/issues/434)), [#438](https://github.com/justrach/codedb/pull/438) (Stage 2 of [#437](https://github.com/justrach/codedb/issues/437)), and [#436](https://github.com/justrach/codedb/pull/436) (rerank-trace logger).
+
+### MCP ([#434](https://github.com/justrach/codedb/issues/434), [#437](https://github.com/justrach/codedb/issues/437))
+
+Function-calling LLMs were emitting `{tool: "codedb_outline", arguments: {}}` and similar payloads that then failed each sub-op with `received keys: [tool, arguments]`. The schema permitted the empty payload and the model picked the minimum-valid one. Fixed in two stages, both shipping here.
+
+- **Stage 1: `arguments` is now required on bundle ops items.** Pre-fix the items schema was `required: ["tool"]` with `arguments` as a bare `{type: "object"}`, so `arguments: {}` and outright omission were both valid input. Schema-greedy function-calling models read this as authoritative and emitted the empty form, which then misrouted through the inline-args fallback at `mcp.zig:1948` and surfaced as `received keys: [tool, arguments]` from each sub-tool. Adding `"arguments"` to `items.required` forces the model to populate the wrapper. The `#424` runtime inline-args fallback stays as a backstop for non-conformant clients.
+- **Stage 2: discriminated `oneOf` over `tool`.** Stage 1 forces presence but not contents — a schema-greedy model could still satisfy `required: ["tool", "arguments"]` by emitting `{tool: "...", arguments: {}}`. Stage 2 binds the *contents* of `arguments` to each sub-tool's actual `inputSchema` via a discriminated `oneOf` with one branch per dispatchable codedb_* sub-tool. Each branch pins `tool` to a `const` (e.g. `"codedb_outline"`) and `arguments` to that sub-tool's schema (with its own `required` array preserved), so once a model picks a sub-tool the only matching branch tells it exactly which keys to populate. `codedb_bundle` (recursive) and `codedb_edit` (write op) are excluded since `handleBundle` rejects them at runtime. The augmented schema is built once at server startup from the per-sub-tool schemas already advertised in `tools_list` — no hand-maintained duplication. Falls back to the raw `tools_list` if augmentation fails.
+
+### Search ([#436](https://github.com/justrach/codedb/pull/436))
+
+- **Opt-in rerank-trace logger for offline tuning.** A v0 JSONL trace logger is added behind `rerank_trace = true` in `.codedbrc`. When enabled, each `searchContent` invocation appends one line — `{ts, query, results:[{path, line, score}]}` — so the data can be analyzed offline before deciding whether online learning-to-rank from agent traces is worth building. Pure observation, disabled by default, no ranking-behavior change. Query is capped at 256 bytes, results at 50 entries, and the file rotates by truncate-clobber at 10 MB. All I/O errors are swallowed — logging never breaks a search.
+- **`rerankAndFinalize`: score-then-sort, even at len 1.** A pre-existing micro-optimization skipped multi-signal scoring when the result list had fewer than two entries. With the trace logger landed, single-result entries logged `score=0.0`, indistinguishable from genuinely zero-confidence matches. Scoring now always runs; only the sort is guarded behind `len > 1`. Cost is a few µs per single-result search.
+
+### Validation
+
+- Two failing tests in `src/tests.zig` (`issue-434`, `issue-437`), each one fails on `main` without its respective stage and passes with it. End-to-end Sonnet 4.6 test against the new bundle schema: prior bug (empty `arguments` payloads under no fix; wrong-keyname payloads under Stage 1 only) does not reproduce. Same task that previously emitted `codedb_word` with `{"query": "..."}` (failing) now emits `{"word": "..."}` (succeeding) — the discriminated branch's `required: ["word"]` constraint flows through to model output.
+- Bundle schema payload size doubled (~12KB → ~24KB) due to inlining 19 sub-tool schemas as `oneOf` branches. Acceptable cost for the constraint.
+- 513/513 tests pass on the merged release branch.
+
 ## 0.2.5807 - 2026-05-06
 
 `0.2.5807` is a search-quality + crash-fix release covering six issues. The headline is a multi-signal reranker for `searchContent` plus a P0 crash fix in `searchInContent`. All six fixes ship in a single bundle ([#425](https://github.com/justrach/codedb/issues/425), [#426](https://github.com/justrach/codedb/issues/426), [#427](https://github.com/justrach/codedb/issues/427), [#429](https://github.com/justrach/codedb/issues/429), [#430](https://github.com/justrach/codedb/issues/430), [#431](https://github.com/justrach/codedb/issues/431)).
