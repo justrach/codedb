@@ -1732,10 +1732,10 @@ pub const Explorer = struct {
         query: []const u8,
         allocator: std.mem.Allocator,
     ) ![]const SearchResult {
+        for (result_list.items) |*r| {
+            r.score = self.rerankSignalScore(r.*, query);
+        }
         if (result_list.items.len > 1) {
-            for (result_list.items) |*r| {
-                r.score = self.rerankSignalScore(r.*, query);
-            }
             std.sort.block(SearchResult, result_list.items, {}, struct {
                 pub fn lessThan(_: void, a: SearchResult, b: SearchResult) bool {
                     if (a.score != b.score) return a.score > b.score;

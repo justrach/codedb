@@ -10958,3 +10958,53 @@ test "rerank-trace: clobbers when file exceeds size limit" {
     try testing.expect(new_size > 0);
     try testing.expect(new_size < 16 * 1024);
 }
+
+test "rerank-trace: single-result query records non-zero rerank score" {
+    // Pre-fix: rerankAndFinalize only scored when items.len > 1, so a
+    // single-result trace logged score=0.0 — misleading for offline analysis
+    // because it looked identical to a zero-confidence match. The fix runs
+    // scoring unconditionally and only sorts when there's more than one item.
+    const tmp_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path_len = try tmp.dir.realPathFile(tmp_io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
+
+    const trace_path = try std.fmt.allocPrint(testing.allocator, "{s}/single.jsonl", .{tmp_path});
+    defer testing.allocator.free(trace_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    explorer.io = tmp_io;
+    explorer.rerank_trace_path = trace_path;
+
+    // Only one file mentions the query — guarantees results.len == 1.
+    try explorer.indexFile("src/loneSym.zig", "pub fn loneSym() void {}\n");
+    try explorer.indexFile("src/other.zig", "pub fn unrelated() void {}\n");
+
+    const results = try explorer.searchContent("loneSym", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expectEqual(@as(usize, 1), results.len);
+    // Symbol-def boost (+5) + basename-substring boost (+8) + per-line freq
+    // means score is well above zero — verifies scoring actually ran.
+    try testing.expect(results[0].score > 1.0);
+
+    const f = try std.Io.Dir.cwd().openFile(tmp_io, trace_path, .{});
+    defer f.close(tmp_io);
+    const size = try f.length(tmp_io);
+    const data = try testing.allocator.alloc(u8, @intCast(size));
+    defer testing.allocator.free(data);
+    _ = try f.readPositionalAll(tmp_io, data, 0);
+
+    try testing.expect(std.mem.indexOf(u8, data, "\"score\":0.0000") == null);
+    try testing.expect(std.mem.indexOf(u8, data, "src/loneSym.zig") != null);
+}
