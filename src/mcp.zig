@@ -1351,6 +1351,7 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
 
     var shown: usize = 0;
     for (results) |r| {
+        if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
         var is_def = false;
         for (defs) |d| {
             if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
@@ -1366,6 +1367,7 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     const w = cio.listWriter(out, alloc);
     w.print("{d} call sites for '{s}':\n", .{ shown, name }) catch {};
     for (results) |r| {
+        if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
         var is_def = false;
         for (defs) |d| {
             if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
@@ -1406,6 +1408,17 @@ fn hasWholeWordMatch(haystack: []const u8, needle: []const u8) bool {
         search_from = pos + 1;
     }
     return false;
+}
+
+/// Languages where the concept of a "call site" is meaningful. Excludes
+/// data formats (json, yaml), markup/styling (markdown, css, scss),
+/// declarative schemas (protobuf), and unknown files — callers found
+/// inside these are mentions in prose or config, not real invocations.
+fn langHasCallSites(lang: explore_mod.Language) bool {
+    return switch (lang) {
+        .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
+        else => true,
+    };
 }
 
 fn handleHot(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer) void {
