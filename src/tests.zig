@@ -2118,6 +2118,46 @@ test "explorer: searchContentWithScope respects max_results" {
     try testing.expect(results.len == 2);
 }
 
+test "explorer: searchContentWithScope includes skip-trigram files before cap" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("noisy.zig",
+        \\pub fn noisy() void {
+        \\    scoped_search_marker_1();
+        \\    scoped_search_marker_2();
+        \\    scoped_search_marker_3();
+        \\    scoped_search_marker_4();
+        \\    scoped_search_marker_5();
+        \\}
+    );
+    try explorer.indexFileSkipTrigram("large.zig",
+        \\pub fn important() void {
+        \\    scoped_search_marker();
+        \\}
+    );
+
+    const results = try explorer.searchContentWithScope("scoped_search_marker", testing.allocator, 3);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+            if (r.scope_name) |n| testing.allocator.free(n);
+        }
+        testing.allocator.free(results);
+    }
+
+    var found_large = false;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "large.zig")) {
+            found_large = true;
+            try testing.expect(r.scope_name != null);
+            try testing.expectEqualStrings("important", r.scope_name.?);
+        }
+    }
+    try testing.expect(found_large);
+}
+
 test "explorer: searchContentWithScope no results for missing query" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

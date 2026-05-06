@@ -3198,8 +3198,14 @@ pub const Explorer = struct {
 
     /// Search content and annotate results with the enclosing symbol scope.
     pub fn searchContentWithScope(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const ScopedSearchResult {
-        self.mu.lockShared();
-        defer self.mu.unlockShared();
+        const base_results = try self.searchContent(query, allocator, max_results);
+        defer {
+            for (base_results) |r| {
+                allocator.free(r.path);
+                allocator.free(r.line_text);
+            }
+            allocator.free(base_results);
+        }
 
         var result_list: std.ArrayList(ScopedSearchResult) = .empty;
         errdefer {
@@ -3210,69 +3216,28 @@ pub const Explorer = struct {
             }
             result_list.deinit(allocator);
         }
+        try result_list.ensureTotalCapacity(allocator, base_results.len);
 
-        const sparse_paths = self.sparse_ngram_index.candidates(query, allocator);
-        defer if (sparse_paths) |sp| allocator.free(sp);
-        const candidate_paths = self.trigram_index.candidates(query, allocator);
-        defer if (candidate_paths) |cp| allocator.free(cp);
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        for (base_results) |r| {
+            const line_text = try allocator.dupe(u8, r.line_text);
+            errdefer allocator.free(line_text);
+            const path_copy = try allocator.dupe(u8, r.path);
+            errdefer allocator.free(path_copy);
 
-        var searched = std.StringHashMap(void).init(allocator);
-        defer searched.deinit();
-
-        if (sparse_paths != null and sparse_paths.?.len > 0) {
-            if (candidate_paths != null and candidate_paths.?.len > 0) {
-                var sparse_set = std.StringHashMap(void).init(allocator);
-                defer sparse_set.deinit();
-                for (sparse_paths.?) |p| try sparse_set.put(p, {});
-                for (candidate_paths.?) |path| {
-                    if (!sparse_set.contains(path)) continue;
-                    const ref = self.readContentForSearch(path, allocator) orelse continue;
-                    defer ref.deinit();
-                    try searched.put(path, {});
-                    try self.searchInContentWithScope(path, ref.data, query, allocator, max_results, &result_list);
-                    if (result_list.items.len >= max_results) break;
-                }
-            } else {
-                for (sparse_paths.?) |path| {
-                    const ref = self.readContentForSearch(path, allocator) orelse continue;
-                    defer ref.deinit();
-                    try searched.put(path, {});
-                    try self.searchInContentWithScope(path, ref.data, query, allocator, max_results, &result_list);
-                    if (result_list.items.len >= max_results) break;
-                }
+            var scoped = ScopedSearchResult{
+                .path = path_copy,
+                .line_num = r.line_num,
+                .line_text = line_text,
+            };
+            if (self.findEnclosingSymbolLocked(r.path, r.line_num)) |scope| {
+                scoped.scope_name = try allocator.dupe(u8, scope.name);
+                scoped.scope_kind = scope.kind;
+                scoped.scope_start = scope.line_start;
+                scoped.scope_end = scope.line_end;
             }
-        } else {
-            const use_trigram = candidate_paths != null and candidate_paths.?.len > 0;
-            if (use_trigram) {
-                for (candidate_paths.?) |path| {
-                    const ref = self.readContentForSearch(path, allocator) orelse continue;
-                    defer ref.deinit();
-                    try searched.put(path, {});
-                    try self.searchInContentWithScope(path, ref.data, query, allocator, max_results, &result_list);
-                    if (result_list.items.len >= max_results) break;
-                }
-            } else {
-                var iter = self.outlines.keyIterator();
-                while (iter.next()) |key_ptr| {
-                    const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
-                    defer ref.deinit();
-                    try self.searchInContentWithScope(key_ptr.*, ref.data, query, allocator, max_results, &result_list);
-                    if (result_list.items.len >= max_results) break;
-                }
-                return result_list.toOwnedSlice(allocator);
-            }
-        }
-
-        if (result_list.items.len < max_results) {
-            var iter = self.outlines.keyIterator();
-            while (iter.next()) |key_ptr| {
-                if (searched.contains(key_ptr.*)) continue;
-                if (self.trigram_index.containsFile(key_ptr.*)) continue;
-                const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
-                defer ref.deinit();
-                try self.searchInContentWithScope(key_ptr.*, ref.data, query, allocator, max_results, &result_list);
-                if (result_list.items.len >= max_results) break;
-            }
+            result_list.appendAssumeCapacity(scoped);
         }
 
         return result_list.toOwnedSlice(allocator);
