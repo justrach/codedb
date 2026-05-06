@@ -10452,6 +10452,116 @@ test "issue-424-A: bundle envelope errors carry the 'error:' prefix consistently
     try testing.expect(std.mem.indexOf(u8, out2.items, "error: missing 'tool'") != null);
 }
 
+test "issue-434: codedb_bundle ops items schema requires arguments field" {
+    // The codedb_bundle inputSchema in tools_list advertises ops items as
+    // {required: ["tool"]} with arguments as a bare {type: "object"} that
+    // permits {}. Function-calling LLMs read the schema as authoritative and
+    // emit the minimum-valid payload — {tool: "...", arguments: {}} — which
+    // misroutes through the inline-args fallback and surfaces as
+    // "received keys: [tool, arguments]" from each sub-tool. Stage 1 fix:
+    // add "arguments" to the items.required array so models are forced to
+    // populate it. (Stage 2 — discriminated oneOf over tool — is a follow-up.)
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, mcp_mod.tools_list, .{});
+    defer parsed.deinit();
+
+    const tools = parsed.value.object.get("tools").?.array;
+    var bundle_schema: ?std.json.Value = null;
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_bundle")) {
+            bundle_schema = t.object.get("inputSchema").?;
+            break;
+        }
+    }
+    try testing.expect(bundle_schema != null);
+
+    const ops = bundle_schema.?.object.get("properties").?.object.get("ops").?;
+    const items = ops.object.get("items").?;
+    const required = items.object.get("required").?.array;
+
+    var has_tool = false;
+    var has_arguments = false;
+    for (required.items) |r| {
+        if (std.mem.eql(u8, r.string, "tool")) has_tool = true;
+        if (std.mem.eql(u8, r.string, "arguments")) has_arguments = true;
+    }
+    try testing.expect(has_tool);
+    try testing.expect(has_arguments);
+}
+
+test "issue-437: codedb_bundle ops items schema has discriminated oneOf per sub-tool" {
+    // Stage 2 of the bundle-schema fix. Stage 1 (#434) made `arguments`
+    // required but left it as a bare {type: "object"} — so a schema-greedy
+    // model can still emit `arguments: {}` to satisfy the required check
+    // without populating real keys. Stage 2 binds the *contents* of
+    // arguments to each sub-tool's actual inputSchema via a discriminated
+    // oneOf on `tool` (const) → `arguments` (sub-tool inputSchema).
+    //
+    // The augmented schema is built at runtime from the per-sub-tool
+    // schemas already advertised in tools_list, so there is no
+    // hand-maintained duplication.
+    const augmented = try mcp_mod.buildAugmentedToolsList(testing.allocator);
+    defer testing.allocator.free(augmented);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, augmented, .{});
+    defer parsed.deinit();
+
+    const tools = parsed.value.object.get("tools").?.array;
+    var bundle_items: ?std.json.Value = null;
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_bundle")) {
+            bundle_items = t.object.get("inputSchema").?.object.get("properties").?.object.get("ops").?.object.get("items").?;
+            break;
+        }
+    }
+    try testing.expect(bundle_items != null);
+
+    // `oneOf` array must exist on items.
+    const one_of_val = bundle_items.?.object.get("oneOf");
+    try testing.expect(one_of_val != null);
+    const one_of = one_of_val.?.array;
+
+    // Must have at least one branch per dispatchable codedb_* sub-tool.
+    // codedb_bundle (recursive) and codedb_edit (write op) are explicitly
+    // rejected by handleBundle, so they are excluded.
+    try testing.expect(one_of.items.len >= 10);
+
+    // Find the codedb_outline branch and verify it pins tool to a const
+    // and binds arguments to a populated schema (with `path` property).
+    var found_outline = false;
+    for (one_of.items) |branch| {
+        const props = branch.object.get("properties").?.object;
+        const tool_v = props.get("tool").?;
+        const tool_const = tool_v.object.get("const");
+        if (tool_const == null) continue;
+        if (!std.mem.eql(u8, tool_const.?.string, "codedb_outline")) continue;
+        found_outline = true;
+
+        const args_schema = props.get("arguments").?;
+        const args_props = args_schema.object.get("properties").?.object;
+        try testing.expect(args_props.get("path") != null);
+        // codedb_outline requires `path` — preserved by the augmentation.
+        const args_required = args_schema.object.get("required").?.array;
+        var path_required = false;
+        for (args_required.items) |r| {
+            if (std.mem.eql(u8, r.string, "path")) path_required = true;
+        }
+        try testing.expect(path_required);
+        break;
+    }
+    try testing.expect(found_outline);
+
+    // No branch should be for the recursive codedb_bundle or the write-op codedb_edit.
+    for (one_of.items) |branch| {
+        const props = branch.object.get("properties").?.object;
+        const tool_v = props.get("tool").?;
+        const tool_const = tool_v.object.get("const") orelse continue;
+        try testing.expect(!std.mem.eql(u8, tool_const.string, "codedb_bundle"));
+        try testing.expect(!std.mem.eql(u8, tool_const.string, "codedb_edit"));
+    }
+}
+
 test "issue-425: codedb_callers excludes substring matches in unrelated identifiers" {
     // handleCallers (mcp.zig:1339) currently calls searchContentWithScope(name)
     // which is a *substring* full-text search. The only de-dup it performs is

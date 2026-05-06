@@ -494,7 +494,7 @@ pub const Tool = enum {
     codedb_ls,
 };
 
-const tools_list =
+pub const tools_list =
     \\{"tools":[
     \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_outline","description":"Symbol outline of one file: functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
@@ -509,7 +509,7 @@ const tools_list =
     \\{"name":"codedb_changes","description":"Files changed since a given sequence number. Pair with codedb_status to poll for updates.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
     \\{"name":"codedb_status","description":"Current indexed-file count, sequence number, and scan phase.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_snapshot","description":"Pre-rendered JSON snapshot of the entire index — tree, outlines, symbols, deps. For caching or shipping to edge workers.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_bundle","description":"Run up to 20 codedb_* calls in one round-trip. Each op is either MCP-style {\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}} or inline {\"tool\":\"codedb_search\",\"query\":\"Agent\"} — both are accepted. Example: {\"ops\":[{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}},{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}}]}. Best for parallel outline/symbol/search; avoid bundling large codedb_read calls — responses are not size-capped. If a sub-op reports `received keys: []`, the wrapper field is misnamed: use `arguments` (MCP spec), not `args`.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","description":"Sub-tool calls to dispatch (max 20). Each item must have `tool`; pass per-op args either nested under `arguments` (MCP shape) or inline alongside `tool`.","items":{"type":"object","properties":{"tool":{"type":"string","description":"codedb_* tool name to invoke (e.g. codedb_outline, codedb_symbol, codedb_search, codedb_word, codedb_callers, codedb_read, codedb_deps, codedb_tree, codedb_hot, codedb_status, codedb_changes). Required."},"arguments":{"type":"object","description":"Per-call args matching that tool's inputSchema. The field MUST be named `arguments` (MCP `tools/call` convention) — `args` is silently ignored. May be omitted if you supply args inline at the op level instead."}},"required":["tool"]}},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
+    \\{"name":"codedb_bundle","description":"Run up to 20 codedb_* calls in one round-trip. Each op is either MCP-style {\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}} or inline {\"tool\":\"codedb_search\",\"query\":\"Agent\"} — both are accepted. Example: {\"ops\":[{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}},{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}}]}. Best for parallel outline/symbol/search; avoid bundling large codedb_read calls — responses are not size-capped. If a sub-op reports `received keys: []`, the wrapper field is misnamed: use `arguments` (MCP spec), not `args`.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","description":"Sub-tool calls to dispatch (max 20). Each item must have `tool` AND `arguments` (pass `{}` if the sub-tool takes none). Inline args alongside `tool` are still accepted as a fallback.","items":{"type":"object","properties":{"tool":{"type":"string","description":"codedb_* tool name to invoke (e.g. codedb_outline, codedb_symbol, codedb_search, codedb_word, codedb_callers, codedb_read, codedb_deps, codedb_tree, codedb_hot, codedb_status, codedb_changes). Required."},"arguments":{"type":"object","description":"Per-call args matching that tool's inputSchema. Field MUST be named `arguments` (MCP `tools/call` convention) — `args` is silently ignored. Pass `{}` only if the sub-tool takes no arguments. Required."}},"required":["tool","arguments"]}},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
     \\{"name":"codedb_remote","description":"Query indexed public repos via api.wiki.codes. Pass action= one of: tree, outline, search, read, symbol, deps, score, cves, commits, branches, dep-history, policy, actions. Use action=actions first if unsure what a repo supports.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. vercel/next.js) or a raw wiki slug such as chromium."},"action":{"type":"string","enum":["tree","outline","search","read","actions","symbol","policy","deps","score","cves","commits","branches","dep-history"],"description":"What to query from api.wiki.codes: actions, tree, search, outline, read, symbol, policy, deps, score, cves, commits, branches, dep-history."},"query":{"type":"string","description":"Action-specific argument. search: text query. symbol: identifier name. outline: file path."},"path":{"type":"string","description":"For action=read: the file path to fetch."},"lines":{"type":"string","description":"For action=read: line range like '10-60' (1-indexed, inclusive). Omit for full file."},"limit":{"type":"integer","description":"For search/tree/deps/commits/branches/dep-history: cap the number of items returned (server may enforce its own ceiling)."},"offset":{"type":"integer","description":"For tree/deps/commits/branches/dep-history: skip the first N items (pagination)."},"prefix":{"type":"string","description":"For tree: only return paths starting with this prefix (e.g. 'src/')."},"expand":{"type":"boolean","description":"For tree: when true, return the full file list. When false returns a compact directory summary when supported."},"since":{"type":"string","description":"For commits/dep-history: ISO timestamp or commit SHA to start from."},"scope":{"type":"string","enum":["runtime","all"],"description":"For score/cves only. Defaults to runtime; use all to include dev/tooling dependencies."},"backend":{"type":"string","enum":["wiki"],"description":"Deprecated compatibility field. Only 'wiki' is accepted; requests always use api.wiki.codes."}},"required":["repo","action"]}},
     \\{"name":"codedb_projects","description":"List every locally indexed project on this machine: path, data-dir hash, snapshot presence.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"codedb_index","description":"Index a local FOLDER (not a file). Builds outlines, trigrams, word index, and writes codedb.snapshot. After indexing, query it via the project= param on any other tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the FOLDER (not a file) to index, e.g. /Users/you/myproject"}},"required":["path"]}},
@@ -519,6 +519,82 @@ const tools_list =
     \\{"name":"codedb_ls","description":"List immediate children of a directory: dirs first (alphabetical), then files with language and line/symbol counts. Drill down level-by-level when codedb_tree is too verbose.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
     \\]}
 ;
+
+/// Build the augmented `tools/list` payload with a discriminated `oneOf` on
+/// the codedb_bundle ops items. Each branch pins `tool` to a const sub-tool
+/// name and `arguments` to that sub-tool's actual `inputSchema`, so a model
+/// emitting a bundle call is forced to populate `arguments` with the right
+/// keys for whichever sub-tool it picked. (Stage 2 of issue #437; Stage 1 in
+/// #434 added `arguments` to items.required.)
+///
+/// codedb_bundle (recursive — rejected at handleBundle) and codedb_edit
+/// (write op — rejected at handleBundle) are excluded from the oneOf.
+///
+/// Caller owns returned slice. The intermediate parse and the slices it
+/// references are freed before return.
+pub fn buildAugmentedToolsList(alloc: std.mem.Allocator) ![]u8 {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, tools_list, .{});
+
+    const root_obj = &parsed.value.object;
+    const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
+    if (tools_val.* != .array) return error.MalformedToolsList;
+    const tools_arr = &tools_val.array;
+
+    // Locate codedb_bundle items, and collect (name, inputSchema) for every
+    // other tool to use as oneOf branches.
+    var bundle_items_ptr: ?*std.json.Value = null;
+    for (tools_arr.items) |*t| {
+        if (t.* != .object) continue;
+        const name_v = t.object.get("name") orelse continue;
+        if (name_v != .string) continue;
+        if (!std.mem.eql(u8, name_v.string, "codedb_bundle")) continue;
+
+        const schema = t.object.getPtr("inputSchema") orelse continue;
+        if (schema.* != .object) continue;
+        const props = schema.object.getPtr("properties") orelse continue;
+        if (props.* != .object) continue;
+        const ops = props.object.getPtr("ops") orelse continue;
+        if (ops.* != .object) continue;
+        bundle_items_ptr = ops.object.getPtr("items") orelse continue;
+        break;
+    }
+    if (bundle_items_ptr == null) return error.BundleNotFound;
+    const bundle_items = bundle_items_ptr.?;
+    if (bundle_items.* != .object) return error.MalformedToolsList;
+
+    var one_of: std.json.Array = .init(a);
+
+    for (tools_arr.items) |t| {
+        if (t != .object) continue;
+        const sub_name_v = t.object.get("name") orelse continue;
+        if (sub_name_v != .string) continue;
+        const sub_name = sub_name_v.string;
+        if (std.mem.eql(u8, sub_name, "codedb_bundle")) continue;
+        if (std.mem.eql(u8, sub_name, "codedb_edit")) continue;
+        const sub_schema = t.object.get("inputSchema") orelse continue;
+
+        var tool_const: std.json.ObjectMap = .{};
+        try tool_const.put(a, "const", .{ .string = sub_name });
+
+        var branch_props: std.json.ObjectMap = .{};
+        try branch_props.put(a, "tool", .{ .object = tool_const });
+        try branch_props.put(a, "arguments", sub_schema);
+
+        var branch: std.json.ObjectMap = .{};
+        try branch.put(a, "properties", .{ .object = branch_props });
+
+        try one_of.append(.{ .object = branch });
+    }
+
+    try bundle_items.object.put(a, "oneOf", .{ .array = one_of });
+    const augmented_in_arena = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
+    return try alloc.dupe(u8, augmented_in_arena);
+}
+
 
 // ── MCP Server ──────────────────────────────────────────────────────────────
 
@@ -616,6 +692,15 @@ pub fn run(
     var cache = ProjectCache.init(alloc, default_path);
     defer cache.deinit();
 
+    // Build the augmented `tools/list` payload once at startup. Falls back
+    // to the raw `tools_list` const if augmentation fails for any reason
+    // (parse error, OOM) — clients still get a valid schema, just without
+    // the discriminated oneOf on the bundle ops.
+    const tools_list_response: []const u8 = blk: {
+        const augmented = buildAugmentedToolsList(alloc) catch break :blk tools_list;
+        break :blk augmented;
+    };
+    defer if (tools_list_response.ptr != tools_list.ptr) alloc.free(tools_list_response);
     var session = Session{
         .alloc = alloc,
         .stdout = stdout,
@@ -677,7 +762,7 @@ pub fn run(
                 requestRoots(&session);
             }
         } else if (mcpj.eql(method, "tools/list")) {
-            if (!is_notification) writeResult(alloc, stdout, id, tools_list);
+            if (!is_notification) writeResult(alloc, stdout, id, tools_list_response);
         } else if (mcpj.eql(method, "tools/call")) {
             handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan);
         } else if (mcpj.eql(method, "ping")) {
