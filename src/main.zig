@@ -228,6 +228,14 @@ fn mainImpl() !void {
 
     var explorer = Explorer.init(allocator);
     explorer.content_cache_limit = cfg.max_cached;
+
+    const rerank_trace_path: ?[]u8 = if (cfg.rerank_trace)
+        (std.fmt.allocPrint(allocator, "{s}/rerank-traces.jsonl", .{data_dir}) catch null)
+    else
+        null;
+    defer if (rerank_trace_path) |p| allocator.free(p);
+    if (rerank_trace_path) |p| explorer.rerank_trace_path = p;
+
     explorer.setRoot(io, root);
     defer explorer.deinit();
 

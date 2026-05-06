@@ -17,6 +17,10 @@ pub const Config = struct {
     max_versions: usize = 100,
     /// Cap on files kept in the Explorer's in-memory content cache. Default 1000.
     max_cached: u32 = 1000,
+    /// When true, append one JSON line per searchContent invocation to
+    /// <data_dir>/rerank-traces.jsonl. v0 logger for offline rerank-tuning
+    /// experiments. Off by default — opt in via .codedbrc.
+    rerank_trace: bool = false,
 
     pub const default: Config = .{};
 
@@ -37,6 +41,8 @@ pub const Config = struct {
             } else if (std.mem.eql(u8, key, "max_cached")) {
                 cfg.max_cached = std.fmt.parseInt(u32, val, 10) catch return error.InvalidMaxCached;
                 if (cfg.max_cached == 0) return error.InvalidMaxCached;
+            } else if (std.mem.eql(u8, key, "rerank_trace")) {
+                cfg.rerank_trace = parseBool(val) catch return error.InvalidRerankTrace;
             }
         }
         return cfg;
@@ -91,6 +97,12 @@ pub const Config = struct {
     }
 };
 
+fn parseBool(val: []const u8) !bool {
+    if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "1")) return true;
+    if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "0")) return false;
+    return error.InvalidBool;
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 
 const testing = std.testing;
@@ -129,4 +141,17 @@ test "config: malformed value rejected" {
     try testing.expectError(error.InvalidMaxVersions, Config.parse("max_versions = not_a_number\n"));
     try testing.expectError(error.InvalidMaxVersions, Config.parse("max_versions = 0\n"));
     try testing.expectError(error.InvalidMaxCached, Config.parse("max_cached = 0\n"));
+}
+
+test "config: rerank_trace defaults off and parses true/false" {
+    const cfg_default = Config.default;
+    try testing.expect(cfg_default.rerank_trace == false);
+
+    const cfg_on = try Config.parse("rerank_trace = true\n");
+    try testing.expect(cfg_on.rerank_trace == true);
+
+    const cfg_off = try Config.parse("rerank_trace = false\n");
+    try testing.expect(cfg_off.rerank_trace == false);
+
+    try testing.expectError(error.InvalidRerankTrace, Config.parse("rerank_trace = maybe\n"));
 }
