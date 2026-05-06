@@ -1567,11 +1567,11 @@ pub const Explorer = struct {
                     });
                     gop.value_ptr.* += 1;
                     searched.put(hit_path, {}) catch {};
-                    if (result_list.items.len >= max_results) return result_list.toOwnedSlice(allocator);
+                    if (result_list.items.len >= max_results) return self.rerankAndFinalize(&result_list, query, allocator);
                 }
             }
             if (result_list.items.len >= max_results)
-                return result_list.toOwnedSlice(allocator);
+                return self.rerankAndFinalize(&result_list, query, allocator);
         }
 
         // Tier 0.5: prefix expansion — find all indexed keys that begin with the query.
@@ -1644,7 +1644,7 @@ pub const Explorer = struct {
                     defer ref.deinit();
                     try searchInContent(path, ref.data, query, allocator, max_per_file, max_results, &result_list);
                     if (result_list.items.len >= max_results)
-                        return result_list.toOwnedSlice(allocator);
+                        return self.rerankAndFinalize(&result_list, query, allocator);
                 }
             }
         }
@@ -1714,12 +1714,20 @@ pub const Explorer = struct {
                 if (result_list.items.len >= max_results) break;
             }
         }
+        return self.rerankAndFinalize(&result_list, query, allocator);
+    }
 
-        // Multi-signal rerank (issue #429): per-line occurrence count is the
-        // base, augmented with a symbol-definition boost (the line is the
-        // canonical definition of a symbol named after the query), a
-        // basename-match boost (file stem matches the query — strong intent
-        // signal), and a path-prior penalty for example/test/vendor paths.
+    /// Run the multi-signal rerank in place, then transfer ownership of
+    /// result_list to the caller. Centralised so every searchContent return
+    /// path (Tier 0 / Tier 1 early-return on max_results, fall-through to
+    /// final return) gets the same ranking — pre-fix only the fall-through
+    /// path applied multi-signal scoring.
+    fn rerankAndFinalize(
+        self: *const Explorer,
+        result_list: *std.ArrayList(SearchResult),
+        query: []const u8,
+        allocator: std.mem.Allocator,
+    ) ![]const SearchResult {
         if (result_list.items.len > 1) {
             for (result_list.items) |*r| {
                 r.score = self.rerankSignalScore(r.*, query);
@@ -1733,7 +1741,6 @@ pub const Explorer = struct {
                 }
             }.lessThan);
         }
-
         return result_list.toOwnedSlice(allocator);
     }
 
