@@ -10765,3 +10765,27 @@ test "issue-431: searchContent does not crash when query is longer than content"
     }
     try testing.expect(results.len == 0);
 }
+
+test "issue-429-d: searchContent rerank boosts path-segment match" {
+    // Two files, same hit count, same content. The query "parser" appears
+    // as a directory segment of one path. Pre-fix the alphabetic tiebreak
+    // promotes "src/handlers/foo.zig" (h < p). Post-fix the path-segment
+    // match boost surfaces "src/parser/foo.zig" first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/handlers/foo.zig", "// parser is mentioned here\n");
+    try explorer.indexFile("src/parser/foo.zig", "// parser is mentioned here\n");
+
+    const results = try explorer.searchContent("parser", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("src/parser/foo.zig", results[0].path);
+}

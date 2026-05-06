@@ -1765,6 +1765,14 @@ pub const Explorer = struct {
         } else if (asciiContainsIgnoreCase(stem, query)) {
             score += 8.0;
         }
+        // Path-segment match boost: query matches a directory segment in
+        // the path (e.g. query="parser" boosts src/parser/foo.zig). Weaker
+        // than basename match because the file's own name is a stronger
+        // intent signal than the directory it lives in. Skip when basename
+        // already matched to avoid double-counting.
+        if (!asciiContainsIgnoreCase(stem, query) and pathHasSegmentIgnoreCase(r.path, query)) {
+            score += 6.0;
+        }
 
         if (pathHasSegment(r.path, "tests") or pathHasSegment(r.path, "test")) score *= 0.6;
         if (pathHasSegment(r.path, "examples") or pathHasSegment(r.path, "example")) score *= 0.6;
@@ -4510,6 +4518,14 @@ fn pathHasSegment(path: []const u8, segment: []const u8) bool {
     var iter = std.mem.tokenizeAny(u8, path, "/\\");
     while (iter.next()) |seg| {
         if (std.mem.eql(u8, seg, segment)) return true;
+    }
+    return false;
+}
+
+fn pathHasSegmentIgnoreCase(path: []const u8, segment: []const u8) bool {
+    var iter = std.mem.tokenizeAny(u8, path, "/\\");
+    while (iter.next()) |seg| {
+        if (asciiEqlIgnoreCase(seg, segment)) return true;
     }
     return false;
 }
