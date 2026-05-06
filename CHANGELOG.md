@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.5807 - 2026-05-06
+
+`0.2.5807` is a search-quality + crash-fix release covering six issues. The headline is a multi-signal reranker for `searchContent` plus a P0 crash fix in `searchInContent`. All six fixes ship in a single bundle ([#425](https://github.com/justrach/codedb/issues/425), [#426](https://github.com/justrach/codedb/issues/426), [#427](https://github.com/justrach/codedb/issues/427), [#429](https://github.com/justrach/codedb/issues/429), [#430](https://github.com/justrach/codedb/issues/430), [#431](https://github.com/justrach/codedb/issues/431)).
+
+### Reliability ([#431](https://github.com/justrach/codedb/issues/431))
+
+- **`searchInContent`: bounds-check fixes a P0 crash.** When the query was longer than any indexed file's content, `content.len - query.len + 1` underflowed `usize` and the binary aborted with integer-overflow panic (Debug) or SIGBUS (ReleaseFast). One-line guard at the top of `searchInContent` returns early when `query.len > content.len`. Reachable from any user-supplied query that exceeded the smallest indexed file (e.g. a one-byte stub). Fixed.
+
+### Search quality ([#425](https://github.com/justrach/codedb/issues/425), [#426](https://github.com/justrach/codedb/issues/426))
+
+- **`codedb_callers`: whole-word match.** `handleCallers` previously substring-matched the symbol name across the index and only excluded the canonical definition line of the searched name itself. Searching for `fooBar` returned matches inside `fooBarExtended` — both its definition site and any references — as if they were call sites. A new `hasWholeWordMatch` check gates every emitted result on identifier-boundary characters on both sides of the hit.
+- **`codedb_callers`: language gate.** `handleCallers` fed `searchContentWithScope` across every indexed file regardless of language, so markdown design docs and other prose surfaced as call sites whenever the symbol name was mentioned. A new `langHasCallSites` predicate excludes data formats (`json`, `yaml`), markup/styling (`markdown`, `css`, `scss`), declarative schemas (`protobuf`), and unknown files.
+
+### Search ranking ([#427](https://github.com/justrach/codedb/issues/427), [#429](https://github.com/justrach/codedb/issues/429), [#430](https://github.com/justrach/codedb/issues/430))
+
+- **Tier 1 candidate sort by per-file word-hit count.** `searchContent`'s Tier 1 sorted trigram candidates by content length ascending and then capped per-file at `max(1, max_results / estimated_total)`. When small unrelated files dominated the candidate list, they each contributed one hit and saturated the result quota before the larger definition-dense file was scanned. Now Tier 1 ranks candidates by per-file word-index hit count (desc) with content length (asc) as a stable tiebreaker — the file with the most occurrences scans first.
+- **Tier 0 processes code before docs.** With `max_results=50` and the per-file cap of 10, five markdown files mentioning the query 10+ times each could collectively saturate the quota before the canonical source file was reached, leaving the source file completely absent from results. A new `isDocLanguage(Language)` predicate gates a two-pass loop: code-language hits first, doc-language hits second. Same per-file cap, same dedup, same early-return — only iteration order changes. Source files now win the recall race.
+- **Multi-signal rerank.** The post-pass rerank counted per-line query occurrences only and broke ties on path-asc + line-asc, which buried symbol-definition lines under alphabetically-earlier comment mentions, ranked `examples/foo.zig` above `src/foo.zig`, and lost basename-match intent entirely. New `rerankSignalScore` composes per-line occurrence count, a symbol-definition boost (+5 when the hit line is a defined symbol whose name matches the query, looked up via outlines), a basename-match boost (+15 exact stem, +8 substring, case-insensitive), a path-segment match boost (+6 for queries like `parser` matching `src/parser/foo.zig`), and a path-prior penalty (×0.6 for `tests/`, `examples/`; ×0.4 for `vendor/`, `node_modules/`, `third_party/`). Constants are tuned so a 5x-higher per-line frequency still wins on its own, while each signal individually flips alphabetic ties.
+- **Rerank applies on every return path.** Pre-fix the multi-signal rerank only ran on fall-through to the final return; Tier 0 and Tier 1 early-returns at `max_results` bypassed it entirely. Lifting the rerank into a `rerankAndFinalize` helper called from every searchContent return point gives the symbol-def / basename / path-prior signals consistent coverage regardless of which tier filled the quota.
+
+### Validation
+
+- 271 lines of regression tests in `src/tests.zig` — one or more per issue, all failing on `main` without the fix and passing with it. Bundle-level Sonnet 4.6 validation (real codebase, side-by-side comparison vs. the 0.2.5806 baseline) shows definition sites promoted to #1 for `handleCallers`, `pathHasSegment`, `BenchContext`, `Explorer`; `src/explore.zig` now ranks #1 for the `searchContent` query (was completely absent from baseline top-5); `src/watcher.zig` at #1 for `watcher`; no quality regressions on innocent queries; RSS delta under 1%.
+
 ## 0.2.5795 - 2026-05-04
 
 `0.2.5795` closes out [#356](https://github.com/justrach/codedb/issues/356) with phase 3 — three small ergonomics polishes that complete the rewritten reliability scope — plus a privacy/disk-leak fix for [#367](https://github.com/justrach/codedb/issues/367).
