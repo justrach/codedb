@@ -38,6 +38,11 @@ const mcp_mod = @import("mcp.zig");
 const main_mod = @import("main.zig");
 const nuke_mod = @import("nuke.zig");
 const update_mod = @import("update.zig");
+const Config = @import("config.zig").Config;
+// Pull in config.zig's own unit tests (parse/load) under the main runner.
+comptime {
+    _ = @import("config.zig");
+}
 const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
 const release_info = @import("release_info.zig");
@@ -5116,133 +5121,70 @@ test "issue-301: Dart block comments skipped" {
     try testing.expectEqual(@as(usize, 0), func_count);
 }
 
-test "dart: import resolution resolves relative paths, stores package: as-is" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+test "auto-update: shouldRunAutoUpdate gates correctly" {
+    const day_ms: i64 = 24 * 60 * 60 * 1000;
 
-    try explorer.indexFile("lib/screens/home.dart",
-        \\import 'package:myapp/models/user.dart';
-        \\import 'dart:io';
-        \\import '../services/api.dart';
-        \\import 'widgets/button.dart';
-    );
+    // Disabled by env: never runs
+    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, true));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, null, true));
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, 0, true));
 
-    var outline = (try explorer.getOutline("lib/screens/home.dart", testing.allocator)) orelse return error.TestUnexpectedResult;
-    defer outline.deinit();
+    // First run (no stamp): always runs when not disabled
+    try testing.expect(update_mod.shouldRunAutoUpdate(0, null, false));
 
-    try testing.expectEqual(@as(usize, 3), outline.imports.items.len);
-    try testing.expectEqualStrings("package:myapp/models/user.dart", outline.imports.items[0]);
-    try testing.expectEqualStrings("lib/services/api.dart", outline.imports.items[1]);
-    try testing.expectEqualStrings("lib/screens/widgets/button.dart", outline.imports.items[2]);
+    // Throttled: <24h since last check → skip
+    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms - 1, 0, false));
+
+    // Exactly 24h since last check → run
+    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms, 0, false));
+
+    // Long after last check → run
+    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false));
 }
 
-test "dart: root-level file resolves imports correctly" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp stamp file" {
+    // Reproduces the case where the stamp file contains a timestamp in the
+    // future relative to the wall clock — for example, after an NTP clock
+    // correction that rolls the clock back, or after a stamp written by a
+    // host with a fast clock. The current implementation computes
+    // (now - last) and only fires when that delta >= 24h, so a future
+    // `last` produces a negative delta and the check is silently skipped
+    // for as long as the stamp stays in the future — potentially many days.
+    //
+    // Expected: a wildly future stamp should NOT prevent the next check
+    // from firing. The simplest correct behavior is: if last > now, treat
+    // the stamp as invalid and allow the update check to run.
 
-    try explorer.indexFile("main.dart",
-        \\import 'src/app.dart';
-        \\import 'dart:io';
-    );
+    const day_ms: i64 = 24 * 60 * 60 * 1000;
+    const now_ms: i64 = 1_700_000_000_000;
+    const future_last_ms: i64 = now_ms + day_ms * 30; // 30 days in the future
 
-    var outline = (try explorer.getOutline("main.dart", testing.allocator)) orelse return error.TestUnexpectedResult;
-    defer outline.deinit();
-
-    try testing.expectEqual(@as(usize, 1), outline.imports.items.len);
-    try testing.expectEqualStrings("src/app.dart", outline.imports.items[0]);
+    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, future_last_ms, false));
 }
 
-test "dart: getter and setter extraction" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corrupt" {
+    // Reproduces a panic when ~/.codedb/last_auto_update_check is corrupt
+    // and decodes to a very negative i64. readAutoUpdateStamp does no
+    // sanity check — it reads 8 bytes, calls std.mem.readInt(i64, ...),
+    // and feeds that straight into shouldRunAutoUpdate, which evaluates
+    // `now_ms - last` with checked subtraction. For last = minInt(i64)
+    // and any positive now_ms, the subtraction overflows and triggers an
+    // integer-overflow panic in Debug / ReleaseSafe builds (which is what
+    // `zig build test` and the shipped MCP binary use).
+    //
+    // Result: every `codedb mcp` startup crashes during the auto-update
+    // gate for any user whose stamp file got corrupted to a value with
+    // the high bit set (e.g. truncated write, partial flush, or any byte
+    // sequence starting with 0x80..0xFF in the stamp).
+    //
+    // Expected fix: clamp the delta with a saturating/wrapping subtraction
+    // or treat any last_ms <= 0 (or in the distant past) as invalid and
+    // run the update.
 
-    try explorer.indexFile("lib/item.dart",
-        \\class Item {
-        \\  String get displayName => '$name ($code)';
-        \\  set updated(bool value) {
-        \\    _dirty = value;
-        \\  }
-        \\  static int get count => _items.length;
-        \\}
-    );
+    const now_ms: i64 = 1_700_000_000_000;
+    const last_ms: i64 = std.math.minInt(i64);
 
-    var outline = (try explorer.getOutline("lib/item.dart", testing.allocator)) orelse return error.TestUnexpectedResult;
-    defer outline.deinit();
-
-    var found_getter = false;
-    var found_setter = false;
-    var found_static_getter = false;
-    for (outline.symbols.items) |sym| {
-        if (sym.kind == .function and std.mem.eql(u8, sym.name, "displayName")) found_getter = true;
-        if (sym.kind == .function and std.mem.eql(u8, sym.name, "updated")) found_setter = true;
-        if (sym.kind == .function and std.mem.eql(u8, sym.name, "count")) found_static_getter = true;
-    }
-    try testing.expect(found_getter);
-    try testing.expect(found_setter);
-    try testing.expect(found_static_getter);
-}
-
-test "dart: dep-graph resolves imports to indexed files" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
-
-    try explorer.indexFile("lib/models/user.dart",
-        \\class User {
-        \\  final String name;
-        \\}
-    );
-    try explorer.indexFile("lib/services/api.dart",
-        \\import '../models/user.dart';
-        \\class ApiService {
-        \\  Future<User> fetchUser() async {}
-        \\}
-    );
-
-    const deps = try explorer.dep_graph.getImportedBy("lib/models/user.dart", arena.allocator());
-    defer arena.allocator().free(deps);
-    try testing.expectEqual(@as(usize, 1), deps.len);
-    try testing.expectEqualStrings("lib/services/api.dart", deps[0]);
-}
-
-test "dart: triple-quoted strings do not break scope end" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
-
-    try explorer.indexFile("lib/query.dart",
-        \\class QueryBuilder {
-        \\  String build() {
-        \\    var sql = '''
-        \\      SELECT * FROM users
-        \\      WHERE id = ${userId}
-        \\      AND name = '$name'
-        \\    ''';
-        \\    return sql;
-        \\  }
-        \\}
-    );
-
-    var outline = (try explorer.getOutline("lib/query.dart", testing.allocator)) orelse return error.TestUnexpectedResult;
-    defer outline.deinit();
-
-    var found_class = false;
-    var found_method = false;
-    for (outline.symbols.items) |sym| {
-        if (sym.kind == .class_def and std.mem.eql(u8, sym.name, "QueryBuilder")) {
-            found_class = true;
-            try testing.expect(sym.line_end >= 9);
-        }
-        if (sym.kind == .function and std.mem.eql(u8, sym.name, "build")) {
-            found_method = true;
-            try testing.expect(sym.line_end >= 9);
-        }
-    }
-    try testing.expect(found_class);
-    try testing.expect(found_method);
+    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, last_ms, false));
 }
 
 test "issue-150: --help prints usage" {
@@ -8285,6 +8227,43 @@ test "issue-357: bundle surfaces received keys when an op is missing required pa
     try testing.expect(std.mem.indexOf(u8, out.items, "file_path") != null);
 }
 
+test "issue-423: bundle emits 'received keys' exactly once per failing op" {
+    // Regression: handler (handleSearch etc) appends the diagnostic, AND the
+    // bundle dispatch loop also appends it — caller saw the line twice in a
+    // row. Must appear exactly once per failing op.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const bundle_json =
+        \\{"ops":[{"tool":"codedb_search","arguments":{}}]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    var count: usize = 0;
+    var idx: usize = 0;
+    while (std.mem.indexOfPos(u8, out.items, idx, "received keys:")) |pos| {
+        count += 1;
+        idx = pos + 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
 test "issue-363b: fuzzyFindFiles ranks exact basename match above unrelated lib.rs" {
     var explorer = Explorer.init(testing.allocator);
     defer explorer.deinit();
@@ -8859,6 +8838,67 @@ test "issue-recall: codedb_search supports path_glob filter" {
     try testing.expect(std.mem.indexOf(u8, out.items, "CHANGELOG.md") == null);
 }
 
+test "issue-422: search header count must reflect post-filter visible results" {
+    // From the issue: a query whose ONLY match would be displayed instead
+    // shows `1 results` then `(0 shown, 1 truncated)` — every match hidden
+    // behind a misleading header. Root cause: the header reports the
+    // unfiltered `results.len` from the explorer, but path_glob/compact
+    // filters can drop items before they reach the renderer, so a "result"
+    // that was filtered is mis-labeled as "truncated".
+    //
+    // Repro shape mirrors the reporter's call: scope=true, compact=true,
+    // path_glob limited to a subtree. The match ITSELF is in-glob and not a
+    // comment — the bug is purely in the bookkeeping.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    // Two files: one in the path_glob subtree (the real match), one outside
+    // it (a decoy that the explorer would also return for the substring).
+    // Without the fix the header counts both, then the renderer drops the
+    // out-of-glob one and (because of unrelated bookkeeping) reports the
+    // in-glob one as "truncated" too.
+    try explorer.indexFile(
+        "crates/forge_api/src/forge_api.rs",
+        "// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\n// header\npub struct ForgeAPI<S, F> {\n",
+    );
+    // Decoy match outside the glob — explorer will return it, the renderer
+    // must NOT count it toward "truncated".
+    try explorer.indexFile("docs/forge_api.md", "struct ForgeAPI is documented here\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{"query":"struct ForgeAPI","max_results":20,"scope":true,"compact":true,"regex":false,"path_glob":"crates/**/*.rs"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // The actionable hit must be visible (path + line number).
+    try testing.expect(std.mem.indexOf(u8, out.items, "crates/forge_api/src/forge_api.rs") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, ":24:") != null);
+    // Out-of-glob decoy must be excluded from the rendered output.
+    try testing.expect(std.mem.indexOf(u8, out.items, "docs/forge_api.md") == null);
+    // The misleading "(N shown, M truncated)" footer must NOT fire when M
+    // is just the count of glob-filtered or compact-filtered items. Those
+    // weren't truncated — they were filtered out, and saying "truncated"
+    // implies the user could recover them by raising max_results.
+    try testing.expect(std.mem.indexOf(u8, out.items, " truncated)") == null);
+    // Header count must reflect post-filter visible matches (1), not the
+    // raw explorer count (2). Otherwise users see a misleading "2 results"
+    // when only 1 matched their glob.
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 results for 'struct ForgeAPI'") != null);
+}
+
 test "issue-bug2: tool calls during scan-in-progress hint at scan state" {
     var explorer = Explorer.init(testing.allocator);
     defer explorer.deinit();
@@ -9113,4 +9153,1672 @@ test "issue-bug11: codedb_bundle marks isError when all ops fail" {
     bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed.value.object, &out, &store, &explorer, &agents);
 
     try testing.expect(std.mem.startsWith(u8, out.items, "error:"));
+}
+
+test "issue-386: telemetry recordToolCall preserves UTF-8 codepoint boundaries" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    var telem = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
+    defer telem.deinit();
+
+    // 30 ASCII bytes + a 3-byte UTF-8 codepoint (✓ = 0xE2 0x9C 0x93) lands the
+    // codepoint boundary at byte 33. The 32-byte cap currently truncates inside
+    // the codepoint, leaving 0xE2 0x9C as the trailing bytes — invalid UTF-8.
+    const tool_name = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\xe2\x9c\x93_tail";
+    telem.recordToolCall(tool_name, 1234, false, 56);
+    telem.flush();
+
+    const ndjson_path = try std.fmt.allocPrint(testing.allocator, "{s}/telemetry.ndjson", .{dir_path});
+    defer testing.allocator.free(ndjson_path);
+
+    const contents = try std.Io.Dir.cwd().readFileAlloc(io, ndjson_path, testing.allocator, .limited(64 * 1024));
+    defer testing.allocator.free(contents);
+
+    const tool_field = "\"tool\":\"";
+    const idx = std.mem.indexOf(u8, contents, tool_field) orelse return error.ToolFieldMissing;
+    const after = contents[idx + tool_field.len ..];
+    const end = std.mem.indexOfScalar(u8, after, '"') orelse return error.ToolFieldUnterminated;
+    const recorded = after[0..end];
+
+    // The recorded tool slice must be valid UTF-8. A mid-codepoint truncation
+    // produces invalid bytes — std.unicode.utf8ValidateSlice rejects them.
+    try testing.expect(std.unicode.utf8ValidateSlice(recorded));
+}
+
+test "issue-388: TrigramIndex.removeFile frees owned path on tombstone" {
+    // owns_paths=true means getOrCreateDocId duped the path so callers can
+    // free their copy. removeFile must release that dup before tombstoning
+    // the slot — otherwise every snapshot-loaded session leaks one path
+    // allocation per file removed/re-indexed.
+    var idx = TrigramIndex.init(testing.allocator);
+    defer idx.deinit();
+    idx.owns_paths = true;
+
+    const path = "src/leaky.zig";
+    try idx.indexFile(path, "pub fn leaky() void {}\n");
+    idx.removeFile(path);
+
+    // testing.allocator reports any unfreed bytes when this scope exits via
+    // deinit. The bug leaks the dup on the tombstoned id_to_path slot
+    // (cleared to ""), so deinit's `if (p.len > 0) free(p)` misses it.
+}
+
+test "issue-389: FilteredWalker yields symlinked source files" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "src");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "src/target.zig", .data = "pub fn linked() void {}\n// MARKER_LINE\n" });
+
+    // Create an in-workspace symlink: src/alias.zig -> target.zig (relative).
+    var src_dir = try tmp_dir.dir.openDir(io, "src", .{ .iterate = true });
+    defer src_dir.close(io);
+    src_dir.symLink(io, "target.zig", "alias.zig", .{}) catch |err| switch (err) {
+        // If the OS denies symlinks (e.g. CI without privilege on Windows),
+        // skip the test rather than report a false negative.
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    // Both the real file and the symlinked alias must be indexed. The bug at
+    // src/watcher.zig:319 drops every entry whose kind != .file, silently
+    // skipping symlinks even when they point at in-workspace source files.
+    try testing.expect(explorer.contents.contains("src/target.zig"));
+    try testing.expect(explorer.contents.contains("src/alias.zig"));
+}
+
+test "issue-405: FilteredWalker walks directory symlinks safely (cycle + escape)" {
+    // Follow-up to #389. The current FilteredWalker.next() (src/watcher.zig:319-323)
+    // treats sym_link entries as files when statFile reports .file, but silently
+    // drops sym_link entries whose target is a directory. Real repos rely on
+    // directory symlinks (monorepo package links, vendored deps, dotfile configs),
+    // so the indexer must walk them — but only safely. This test pins three things:
+    //   1. A file inside a symlinked subdirectory is indexed.
+    //   2. A symlink that introduces a cycle does not hang or duplicate entries.
+    //   3. (Implicit) The walker terminates in bounded time on the fixture.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Real directory `pkg/` with one source file.
+    try tmp_dir.dir.createDirPath(io, "pkg");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "pkg/inside.zig", .data = "pub fn inside() void {}\n" });
+
+    // A real directory `app/` that holds a directory-symlink `linked_pkg -> ../pkg`.
+    // We expect the walker to descend into `linked_pkg` and yield `app/linked_pkg/inside.zig`.
+    try tmp_dir.dir.createDirPath(io, "app");
+    var app_dir = try tmp_dir.dir.openDir(io, "app", .{ .iterate = true });
+    defer app_dir.close(io);
+    app_dir.symLink(io, "../pkg", "linked_pkg", .{}) catch |err| switch (err) {
+        // Skip on platforms / CI configurations that deny symlink creation.
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    // Cycle: `app/loop -> ..` points back at the workspace root. Without cycle
+    // detection a naive walker recurses forever via app/loop/app/loop/app/...
+    app_dir.symLink(io, "..", "loop", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    // 1. The in-target file must appear under the symlinked path. This is the
+    //    behaviour gap left by #389 — directory symlinks are currently ignored,
+    //    so this assertion fails on main.
+    try testing.expect(explorer.contents.contains("app/linked_pkg/inside.zig"));
+
+    // 2. The real path must also be indexed exactly once.
+    try testing.expect(explorer.contents.contains("pkg/inside.zig"));
+
+    // 3. The cycle must not have produced a deeply-nested duplicate entry.
+    //    If cycle detection is missing, paths like
+    //    `app/loop/app/loop/app/linked_pkg/inside.zig` would appear (or the
+    //    scan would never terminate). Assert no path contains "loop/app/loop".
+    var it = explorer.contents.iterator();
+    while (it.next()) |kv| {
+        const p = kv.key_ptr.*;
+        try testing.expect(std.mem.indexOf(u8, p, "loop/app/loop") == null);
+    }
+}
+
+test "issue-392: Swift parser" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("Sources/App/Greeter.swift",
+        \\import Foundation
+        \\import UIKit
+        \\
+        \\public struct Greeter {
+        \\    let name: String
+        \\
+        \\    public func greet() -> String {
+        \\        return "Hello, \(name)"
+        \\    }
+        \\}
+        \\
+        \\public class HomeViewController: UIViewController {
+        \\    public override func viewDidLoad() {
+        \\        super.viewDidLoad()
+        \\    }
+        \\}
+        \\
+        \\public protocol Reloadable {
+        \\    func reload()
+        \\}
+        \\
+        \\public enum LoadState {
+        \\    case idle
+        \\    case loading
+        \\}
+        \\
+        \\public func topLevel() -> Int { return 42 }
+    );
+
+    var outline = (try explorer.getOutline("Sources/App/Greeter.swift", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    // Detected language must surface as "swift" — main has no Language.swift,
+    // so the file falls into .unknown and no parser runs.
+    try testing.expectEqualStrings("swift", @tagName(outline.language));
+
+    var found_struct = false;
+    var found_class = false;
+    var found_protocol = false;
+    var found_enum = false;
+    var found_top_fn = false;
+    var found_method = false;
+    for (outline.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "Greeter")) found_struct = true;
+        if (std.mem.eql(u8, sym.name, "HomeViewController")) found_class = true;
+        if (std.mem.eql(u8, sym.name, "Reloadable")) found_protocol = true;
+        if (std.mem.eql(u8, sym.name, "LoadState")) found_enum = true;
+        if (std.mem.eql(u8, sym.name, "topLevel")) found_top_fn = true;
+        if (std.mem.eql(u8, sym.name, "greet")) found_method = true;
+    }
+    try testing.expect(found_struct);
+    try testing.expect(found_class);
+    try testing.expect(found_protocol);
+    try testing.expect(found_enum);
+    try testing.expect(found_top_fn);
+    try testing.expect(found_method);
+}
+
+test "issue-387: appendId preserves JSON-RPC numeric and number_string ids" {
+    // JSON-RPC ids are typed as String|Number|Null. The MCP server must echo
+    // the id verbatim so the client can correlate the reply with its request.
+    // appendId currently only handles .integer and .string — .float and
+    // .number_string fall through to "null", breaking correlation for any
+    // client that uses a fractional id (some test runners) or that the JSON
+    // parser materializes as number_string.
+
+    // Float id round-trips: parsing "3.5" yields .float, which must serialize
+    // back to "3.5" (or any representation a JSON parser accepts as the same
+    // number) — NOT "null".
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "3.5", .{});
+        defer parsed.deinit();
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(testing.allocator);
+        mcp_mod.appendId(testing.allocator, &buf, parsed.value);
+        try testing.expect(!std.mem.eql(u8, buf.items, "null"));
+    }
+
+    // number_string round-trips: a request with `"id": 12345678901234567890`
+    // (>i64) is parsed as .number_string. The reply must echo the digits, not
+    // the literal "null".
+    {
+        const v = std.json.Value{ .number_string = "12345678901234567890" };
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(testing.allocator);
+        mcp_mod.appendId(testing.allocator, &buf, v);
+        try testing.expectEqualStrings("12345678901234567890", buf.items);
+    }
+}
+
+test "issue-390: codedb_search scope=true caps matches per file" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    // Build a "dominant" file with 20 matches plus several files with 1 match
+    // each. Without a per-file cap on the scope=true path, the dominant file
+    // alone drowns the response. The plain/regex branches already enforce
+    // max_per_file=5 (mcp.zig:1141, 1198), but the scope=true branch does not.
+    var dominant_buf: std.ArrayList(u8) = .empty;
+    defer dominant_buf.deinit(testing.allocator);
+    try dominant_buf.appendSlice(testing.allocator, "pub fn dominant() void {\n");
+    for (0..20) |_| try dominant_buf.appendSlice(testing.allocator, "    // FROBNICATE token\n");
+    try dominant_buf.appendSlice(testing.allocator, "}\n");
+    try explorer.indexFile("src/dominant.zig", dominant_buf.items);
+    try explorer.indexFile("src/a.zig", "// FROBNICATE here\npub fn a() void {}\n");
+    try explorer.indexFile("src/b.zig", "// FROBNICATE here\npub fn b() void {}\n");
+    try explorer.indexFile("src/c.zig", "// FROBNICATE here\npub fn c() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{"query":"FROBNICATE","scope":true,"max_results":100}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Count "src/dominant.zig:" occurrences (one per emitted match line).
+    var dominant_lines: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, out.items, i, "src/dominant.zig:")) |pos| {
+        dominant_lines += 1;
+        i = pos + 1;
+    }
+    // The plain-search per-file cap is 5; scope=true should match. Without
+    // any cap, all 20 matches surface and starve the smaller files.
+    try testing.expect(dominant_lines <= 5);
+    // The other files still surface — the cap shouldn't tank recall, just
+    // bound the dominant file's share.
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/a.zig:") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/b.zig:") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/c.zig:") != null);
+}
+
+test "issue-391: codedb_callers tool exists" {
+    // codedb_callers is the proposed reverse-callgraph tool: given a symbol
+    // name, return the call sites across the index. It fuses the existing
+    // word index with outline scopes, replacing the multi-step
+    // "codedb_word → eyeball → codedb_outline per file" workflow.
+    //
+    // The minimum surface contract: the Tool enum exposes a codedb_callers
+    // variant so dispatch can route to it. Today it does not, so the
+    // workflow has to be assembled by hand on the client side.
+    try testing.expect(@hasField(mcp_mod.Tool, "codedb_callers"));
+}
+
+test "issue-391: codedb_callers returns call sites with scope" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
+    try explorer.indexFile("a.zig", "pub fn callerA() void {\n    fooBar();\n}\n");
+    try explorer.indexFile("b.zig", "pub fn callerB() void {\n    fooBar();\n}\n");
+
+    const args_json =
+        \\{"name":"fooBar"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'fooBar'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "a.zig:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "b.zig:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "callerA") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "callerB") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "def.zig:1") == null);
+}
+
+test "issue-391: codedb_callers rejects missing name" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.startsWith(u8, out.items, "error:"));
+    try testing.expect(std.mem.indexOf(u8, out.items, "name") != null);
+}
+
+test "issue-411: tryLock grants new locks to a crashed agent" {
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+
+    const id = try agents.register("zombie");
+
+    // Force the agent into the crashed state via reapStale.
+    const a = agents.agents.getPtr(id) orelse return error.TestUnexpectedResult;
+    a.last_seen = 0;
+    agents.reapStale(0);
+    try testing.expectEqual(@as(@TypeOf(a.state), .crashed), a.state);
+
+    // A crashed agent should not be allowed to acquire new advisory locks
+    // until it heartbeats back to .active. Today tryLock ignores .state and
+    // happily grants the lock — leaving the registry inconsistent (a
+    // .crashed agent suddenly holds fresh locks again).
+    const got = try agents.tryLock(id, "post-crash.zig", 60_000);
+    try testing.expect(got == false);
+}
+
+test "issue-406: root_policy blocks /private/etc (macOS realpath of /etc)" {
+    const root_policy = @import("root_policy.zig");
+    // /etc is in the system_prefixes deny list, but on macOS /etc is a symlink
+    // to /private/etc. Callers feed isIndexableRoot a path resolved by
+    // realPathFile (see handleIndex in src/mcp.zig), which turns "/etc" into
+    // "/private/etc" — and then this textual prefix check accepts it. The
+    // canonical form must be blocked too, otherwise the deny list is bypassed
+    // by the very normalization step the callers depend on.
+    try testing.expect(!root_policy.isIndexableRoot("/private/etc"));
+    try testing.expect(!root_policy.isIndexableRoot("/private/etc/ssh"));
+}
+
+test "issue-407: root_policy blocks /var and its non-folders subtree" {
+    const root_policy = @import("root_policy.zig");
+    // The system_prefixes list explicitly blocks /var/folders and /var/tmp,
+    // but not /var itself or /var/log, /var/lib, /var/db, /var/spool, etc.
+    // On Linux those hold logs, mail, and package state; on macOS realPathFile
+    // turns /var into /private/var (also unblocked). Accidentally pointing
+    // the indexer at /var/log on a server pulls in GBs of secrets and is
+    // never a valid "project root".
+    try testing.expect(!root_policy.isIndexableRoot("/var"));
+    try testing.expect(!root_policy.isIndexableRoot("/var/log"));
+    try testing.expect(!root_policy.isIndexableRoot("/var/lib"));
+    try testing.expect(!root_policy.isIndexableRoot("/private/var"));
+    try testing.expect(!root_policy.isIndexableRoot("/private/var/log"));
+}
+
+test "issue-405: cleanupStaleTmpFiles deletes in-flight sibling tmp files" {
+    // BUG: snapshot.zig:cleanupStaleTmpFiles deletes ANY file matching
+    // `<basename>*.tmp` in the snapshot directory with no age guard.
+    // If a sibling writer (another process / parallel scan) is mid-write
+    // — i.e. it has just created `<output>.<rand>.tmp` and is still
+    // streaming bytes into it before the final rename(tmp, dest) — then a
+    // concurrent loadSnapshotValidated() will unlink the sibling's
+    // in-flight tmp file. The sibling's subsequent rename then fails with
+    // ENOENT and the snapshot write silently aborts.
+    //
+    // Reproduces deterministically by simulating the in-flight tmp file
+    // and observing that loadSnapshotValidated removes it.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    // Step 1: write a real, valid snapshot at <dir>/snap.codedb so
+    // loadSnapshotValidated has something legitimate to read.
+    var exp = Explorer.init(aa);
+    try exp.indexFile("a.zig", "pub fn alpha() void {}\n");
+    const snap_path = try std.fs.path.join(aa, &.{ dir_path, "snap.codedb" });
+    try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, aa);
+
+    // Step 2: simulate a SIBLING writer that has just created its tmp file
+    // but has NOT yet renamed. This file matches the cleanup pattern
+    // (starts with basename, ends with ".tmp").
+    const sibling_tmp = try std.fs.path.join(aa, &.{ dir_path, "snap.codedb.deadbeef.tmp" });
+    {
+        var f = try std.Io.Dir.cwd().createFile(io, sibling_tmp, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, "in-flight write");
+    }
+
+    // Sanity: the sibling tmp exists.
+    std.Io.Dir.cwd().access(io, sibling_tmp, .{}) catch return error.TestUnexpectedResult;
+
+    // Step 3: run loadSnapshotValidated. cleanupStaleTmpFiles is the
+    // first thing it does. After this, the sibling's in-flight tmp
+    // file MUST still exist — otherwise the sibling's rename will fail.
+    var exp2 = Explorer.init(aa);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    _ = snapshot_mod.loadSnapshotValidated(io, snap_path, null, &exp2, &store, aa);
+
+    // Expected: the in-flight sibling tmp is preserved.
+    // Current (bug): cleanupStaleTmpFiles unconditionally deletes it.
+    std.Io.Dir.cwd().access(io, sibling_tmp, .{}) catch {
+        return error.TestExpectedSiblingTmpPreserved;
+    };
+}
+
+test "issue-409: snapshot .env prefix filter wrongly excludes .envoy/.environment files" {
+    // BUG: snapshot.zig:isSensitivePath uses
+    //     if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env")) return true;
+    // to catch .env, .env.local, .env.production, etc. The check is a raw
+    // 4-byte prefix match — so any basename whose first 4 bytes are ".env"
+    // is rejected, including legitimate, non-secret files such as:
+    //
+    //   .envoy.json     — Envoy proxy config
+    //   .environment    — generic config name
+    //   .envconfig.yaml — anything starting with ".env"
+    //
+    // These files end up silently dropped from the snapshot's CONTENT,
+    // TREE, and OUTLINE_STATE sections, so a save/load round-trip loses
+    // them entirely. The watcher.zig copy of isSensitivePath has the same
+    // bug, so they are also excluded from live indexing.
+    //
+    // Reproducer: index a non-secret .envoy.json alongside a normal file,
+    // snapshot, load, and observe that .envoy.json is missing.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    var exp = Explorer.init(aa);
+    try exp.indexFile("a.zig", "pub fn alpha() void {}\n");
+    // .envoy.json is the canonical Envoy proxy config name — not a secret.
+    try exp.indexFile(".envoy.json", "{\"listeners\":[]}\n");
+    try testing.expectEqual(@as(usize, 2), exp.outlines.count());
+
+    const snap_path = try std.fs.path.join(aa, &.{ dir_path, "snap.codedb" });
+    try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, aa);
+
+    var exp2 = Explorer.init(aa);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, aa));
+
+    // Expected: both files round-trip through the snapshot.
+    // Current (bug): only "a.zig" survives — ".envoy.json" was excluded by
+    // the .env prefix check at write time.
+    try testing.expect(exp2.outlines.contains("a.zig"));
+    try testing.expect(exp2.outlines.contains(".envoy.json"));
+}
+
+test "issue-401: insert with after=null is a no-op but consumes seq and writes file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/edit-401.txt", .{tmp.sub_path});
+    defer testing.allocator.free(rel_path);
+
+    const original = "line 1\nline 2\nline 3\n";
+    var file = try tmp.dir.createFile(io, "edit-401.txt", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, original);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    const agent_id = try agents.register("issue-401-agent");
+
+    // insert without after must not silently succeed and must not consume a seq.
+    const res = edit_mod.applyEdit(io, testing.allocator, &store, &agents, null, .{
+        .path = rel_path,
+        .agent_id = agent_id,
+        .op = .insert,
+        .after = null,
+        .content = "INJECT\n",
+    });
+    // Either explicit error, or — at minimum — must not increment the store seq
+    // for an operation that did nothing.
+    if (res) |ok| {
+        _ = ok;
+        try testing.expectEqual(@as(u64, 0), store.currentSeq());
+    } else |_| {
+        try testing.expectEqual(@as(u64, 0), store.currentSeq());
+    }
+}
+
+test "issue-404: applyEdit corrupts CRLF line endings into mixed LF/CRLF" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/edit-404.txt", .{tmp.sub_path});
+    defer testing.allocator.free(rel_path);
+
+    // Windows-style CRLF original
+    const original = "alpha\r\nbeta\r\ngamma\r\n";
+    var file = try tmp.dir.createFile(io, "edit-404.txt", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, original);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    const agent_id = try agents.register("issue-404-agent");
+
+    // Replace line 1 with new content (no trailing newline in replacement).
+    _ = try edit_mod.applyEdit(io, testing.allocator, &store, &agents, null, .{
+        .path = rel_path,
+        .agent_id = agent_id,
+        .op = .replace,
+        .range = .{ 1, 1 },
+        .content = "ALPHA",
+    });
+
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, rel_path, testing.allocator, .limited(10 * 1024));
+    defer testing.allocator.free(after);
+
+    // The original file used CRLF line endings. After a single-line replace
+    // the file must still be a valid CRLF file: every '\n' must be preceded
+    // by '\r'. Currently splitScalar on '\n' leaves the '\r' attached to the
+    // *unchanged* lines (e.g. "beta\r"), and the rejoin uses bare "\n", so
+    // the new line 1 lacks its CR while the surviving line 2 still has it —
+    // mixed line endings.
+    var i: usize = 0;
+    while (i < after.len) : (i += 1) {
+        if (after[i] == '\n') {
+            try testing.expect(i > 0);
+            try testing.expectEqual(@as(u8, '\r'), after[i - 1]);
+        }
+    }
+}
+
+test "issue-409: replacing whole file with empty content leaves a stray newline" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/edit-409.txt", .{tmp.sub_path});
+    defer testing.allocator.free(rel_path);
+
+    // Single-line file with trailing newline.
+    const original = "abc\n";
+    var file = try tmp.dir.createFile(io, "edit-409.txt", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, original);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    const agent_id = try agents.register("issue-409-agent");
+
+    // Replace the only line with empty content. The caller's intent is "make
+    // this file empty" — content has zero bytes.
+    const result = try edit_mod.applyEdit(io, testing.allocator, &store, &agents, null, .{
+        .path = rel_path,
+        .agent_id = agent_id,
+        .op = .replace,
+        .range = .{ 1, 1 },
+        .content = "",
+    });
+
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, rel_path, testing.allocator, .limited(10 * 1024));
+    defer testing.allocator.free(after);
+
+    // Expectation: the file is empty. Currently the file ends up as "\n"
+    // because applyEdit unconditionally restores the trailing newline that
+    // existed in the source, even after the replacement reduced the file
+    // to a single empty line.
+    try testing.expectEqual(@as(usize, 0), after.len);
+    try testing.expectEqual(@as(u64, 0), result.new_size);
+}
+
+test "issue-412: bundle reports 'missing tool' for tool field of wrong type" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const bundle_json =
+        \\{"ops":[{"tool":123,"arguments":{"path":"x.zig"}}]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "missing 'tool' field") == null);
+}
+
+test "issue-413: bundle truncation drops subsequent ops without telling the caller" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    // Index a single large file (~120KB) so two reads exceed the 200KB
+    // bundle cap. Bundle truncates and breaks out of the loop after op[1],
+    // emitting a TRUNCATED note — but op[2] is silently dropped.
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(testing.allocator);
+    while (big.items.len < 120 * 1024) {
+        try big.appendSlice(testing.allocator, "pub fn placeholder() void { _ = 0; }\n");
+    }
+    try explorer.indexFile("big.zig", big.items);
+    try explorer.indexFile("small.zig", "pub fn small() void {}\n");
+
+    // Three reads: first two exceed 200KB → truncate. op[2] is small.zig
+    // and should still surface — at minimum, the bundle output must
+    // mention it (e.g. as another truncated entry) so the caller knows
+    // their request had three ops, not one.
+    const bundle_json =
+        \\{"ops":[
+        \\  {"tool":"codedb_read","arguments":{"path":"big.zig"}},
+        \\  {"tool":"codedb_read","arguments":{"path":"big.zig"}},
+        \\  {"tool":"codedb_outline","arguments":{"path":"small.zig"}}
+        \\]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // op[2] (index 2) was sent — caller deserves to see something for it.
+    // Either its result, or an explicit "[2]" entry noting it was dropped.
+    try testing.expect(std.mem.indexOf(u8, out.items, "[2]") != null);
+}
+
+test "issue-393: BM25 ranking surfaces high-density file before single-mention file" {
+    // Multi-term content queries today return matches in scan order with only
+    // a per-line occurrence count tiebreaker (explore.zig:1674-1688). On a
+    // large repo this dumps every match with no notion of which *file* is the
+    // most relevant — a file that mentions every query term many times ranks
+    // identically to one that mentions a single term once.
+    //
+    // BM25 over the existing trigram + word index would score documents by
+    // (per-term tf * idf) with length normalization, so the file densely
+    // covering both terms surfaces above the noise file.
+    //
+    // Minimum surface contract: Explorer exposes `searchContentRanked` which
+    // takes a multi-term query and returns results ordered by descending
+    // BM25 score across files (highest-scoring document's match comes first).
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // dense.zig: hits both query terms many times across many lines.
+    try explorer.indexFile("src/dense.zig",
+        \\pub fn parseTokenStream() void {
+        \\    const token = nextToken();
+        \\    parseToken(token);
+        \\    parseToken(token);
+        \\    parseToken(token);
+        \\    const stream = parseTokenStream();
+        \\    parseTokenStream();
+        \\    _ = token;
+        \\    _ = stream;
+        \\}
+    );
+    // sparse.zig: mentions one term once, in passing.
+    try explorer.indexFile("src/sparse.zig",
+        \\pub fn unrelated() void {
+        \\    // a passing mention of parse here
+        \\    return;
+        \\}
+    );
+    // Noise files dilute df-based scoring; BM25 must still rank dense first.
+    try explorer.indexFile("src/noise_a.zig", "pub fn a() void {}\n");
+    try explorer.indexFile("src/noise_b.zig", "pub fn b() void {}\n");
+    try explorer.indexFile("src/noise_c.zig", "pub fn c() void {}\n");
+
+    try testing.expect(@hasDecl(Explorer, "searchContentRanked"));
+
+    const results = try explorer.searchContentRanked("parse Token", testing.allocator, 16);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len > 0);
+    // Top-ranked result must come from the dense file.
+    try testing.expectEqualStrings("src/dense.zig", results[0].path);
+    // Score must be populated and strictly positive when ranking is on.
+    try testing.expect(results[0].score > 0.0);
+    // Results must be sorted by score descending across distinct documents:
+    // the first dense.zig score must exceed the first sparse.zig score.
+    var dense_score: f32 = -1.0;
+    var sparse_score: f32 = -1.0;
+    for (results) |r| {
+        if (dense_score < 0 and std.mem.eql(u8, r.path, "src/dense.zig")) dense_score = r.score;
+        if (sparse_score < 0 and std.mem.eql(u8, r.path, "src/sparse.zig")) sparse_score = r.score;
+    }
+    if (sparse_score >= 0) {
+        try testing.expect(dense_score > sparse_score);
+    }
+}
+
+test "issue-400: BM25 ranks both-terms file above single-term files" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("both.zig",
+        \\pub fn parseToken() void {
+        \\    parseToken();
+        \\    parseToken();
+        \\}
+    );
+    try explorer.indexFile("only_parse.zig",
+        \\pub fn parseFoo() void {
+        \\    parse();
+        \\}
+    );
+    try explorer.indexFile("only_token.zig",
+        \\pub fn tokenStream() void {
+        \\    token();
+        \\}
+    );
+
+    const results = try explorer.searchContentRanked("parse Token", testing.allocator, 8);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len > 0);
+    try testing.expectEqualStrings("both.zig", results[0].path);
+    try testing.expect(results[0].score > 0.0);
+}
+
+test "issue-400-bug1: searchContentRanked returns ranked results when skip_file_words=true" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    explorer.word_index.skip_file_words = true;
+    try explorer.indexFile("a.zig", "apple banana\n");
+    try explorer.indexFile("b.zig", "apple\n");
+    const results = try explorer.searchContentRanked("apple", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len > 0);
+}
+
+test "issue-400-bug2: total_tokens stays consistent across re-index when skip_file_words=true" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    explorer.word_index.skip_file_words = true;
+    try explorer.indexFile("a.zig", "one two three four\n");
+    try explorer.indexFile("a.zig", "five six seven\n");
+    try explorer.indexFile("a.zig", "eight\n");
+    try testing.expectEqual(@as(u64, 1), explorer.word_index.total_tokens);
+}
+
+// ---------------------------------------------------------------------------
+// BM25 stress / recall regression tests (#421 stress-421 branch)
+// ---------------------------------------------------------------------------
+
+test "bm25-recall-a: single-term tf ordering" {
+    // 3 docs with identical length but "apple" on different numbers of lines.
+    // The index deduplicates per (doc, line), so tf = number of lines with the term.
+    // Equal doc lengths mean length normalization is constant; higher tf must rank higher.
+    // Each doc has exactly 10 tokens (5 lines x 2 tokens each).
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // doc1: apple on 1 of 5 lines
+    try explorer.indexFile("doc1.txt", "apple filler\nfiller filler\nfiller filler\nfiller filler\nfiller filler");
+    // doc2: apple on 5 of 5 lines (max tf)
+    try explorer.indexFile("doc2.txt", "apple filler\napple filler\napple filler\napple filler\napple filler");
+    // doc3: apple on 2 of 5 lines
+    try explorer.indexFile("doc3.txt", "apple filler\napple filler\nfiller filler\nfiller filler\nfiller filler");
+
+    const results = try explorer.searchContentRanked("apple", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expectEqual(@as(usize, 3), results.len);
+    try testing.expectEqualStrings("doc2.txt", results[0].path);
+    try testing.expectEqualStrings("doc3.txt", results[1].path);
+    try testing.expectEqualStrings("doc1.txt", results[2].path);
+    try testing.expect(results[0].score > results[1].score);
+    try testing.expect(results[1].score > results[2].score);
+}
+
+test "bm25-recall-b: both-terms doc beats high-tf single-term doc" {
+    // doc1 has apple+banana (both query terms, one occurrence each).
+    // doc2 has only apple, but repeated 3x (high tf).
+    // doc3 has only banana, once.
+    // BM25 sums idf*tf_norm per term: doc1 accumulates two idf contributions
+    // while doc2 only gets one -- doc1 must rank first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("doc1.txt", "apple banana cherry");
+    try explorer.indexFile("doc2.txt", "apple apple apple");
+    try explorer.indexFile("doc3.txt", "banana date elderberry");
+
+    const results = try explorer.searchContentRanked("apple banana", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("doc1.txt", results[0].path);
+    try testing.expect(results[0].score > 0.0);
+    var doc2_score: f32 = -1.0;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "doc2.txt")) {
+            doc2_score = r.score;
+            break;
+        }
+    }
+    if (doc2_score >= 0.0) {
+        try testing.expect(results[0].score > doc2_score);
+    }
+}
+
+test "bm25-recall-c: df-saturation -- ubiquitous term has near-zero idf" {
+    // "the" appears in all 11 docs -> idf near zero, barely contributes.
+    // "unique_marker" appears only in special.txt -> high idf, special.txt ranks first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("d1.txt", "the quick brown fox");
+    try explorer.indexFile("d2.txt", "the lazy dog jumps");
+    try explorer.indexFile("d3.txt", "the sun rises east");
+    try explorer.indexFile("d4.txt", "the moon shines bright");
+    try explorer.indexFile("d5.txt", "the rain in spain");
+    try explorer.indexFile("d6.txt", "the cat sat mat");
+    try explorer.indexFile("d7.txt", "the wind blows cold");
+    try explorer.indexFile("d8.txt", "the tide comes in");
+    try explorer.indexFile("d9.txt", "the stars align now");
+    try explorer.indexFile("d10.txt", "the clock ticks forward");
+    try explorer.indexFile("special.txt", "the unique_marker is here");
+
+    const results = try explorer.searchContentRanked("the unique_marker", testing.allocator, 20);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len > 0);
+    try testing.expectEqualStrings("special.txt", results[0].path);
+    if (results.len > 1) {
+        try testing.expect(results[0].score > results[1].score);
+    }
+}
+
+test "bm25-recall-d: length normalization favors shorter doc" {
+    // short.txt: 5 tokens, one "needle".
+    // long.txt: ~50 tokens, one "needle".
+    // BM25 with b=0.75 penalizes longer docs; short.txt must rank higher.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("short.txt", "needle alpha beta gamma delta");
+    try explorer.indexFile("long.txt",
+        "aa bb cc dd ee ff gg hh ii jj kk ll mm nn oo pp qq rr ss tt uu vv ww xx yy zz " ++
+        "aa bb cc dd ee ff gg hh ii jj kk ll mm nn oo pp qq rr ss tt uu vv ww xx needle yy zz"
+    );
+
+    const results = try explorer.searchContentRanked("needle", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("short.txt", results[0].path);
+    try testing.expect(results[0].score > results[1].score);
+}
+
+test "bm25-recall-e: empty and pathological queries return empty without crash" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("file.txt", "some content here");
+
+    {
+        const r = try explorer.searchContentRanked("", testing.allocator, 10);
+        defer testing.allocator.free(r);
+        try testing.expectEqual(@as(usize, 0), r.len);
+    }
+    {
+        const r = try explorer.searchContentRanked("   ", testing.allocator, 10);
+        defer testing.allocator.free(r);
+        try testing.expectEqual(@as(usize, 0), r.len);
+    }
+    {
+        const r = try explorer.searchContentRanked("nonexistent_xyz_term_99", testing.allocator, 10);
+        defer testing.allocator.free(r);
+        try testing.expectEqual(@as(usize, 0), r.len);
+    }
+}
+
+test "bm25-stress: 1000-doc index, common token, max_results cap honored" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    var path_buf: [64]u8 = undefined;
+    var content_buf: [256]u8 = undefined;
+    for (0..1000) |i| {
+        const path = std.fmt.bufPrint(&path_buf, "stress/doc{d}.txt", .{i}) catch unreachable;
+        const content = std.fmt.bufPrint(&content_buf,
+            "common token alpha beta gamma doc{d} extra filler words here now", .{i}
+        ) catch unreachable;
+        try explorer.indexFile(path, content);
+    }
+
+    const cap = 25;
+    const results = try explorer.searchContentRanked("common", testing.allocator, cap);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len <= cap);
+    try testing.expect(results.len > 0);
+    for (results) |r| {
+        try testing.expect(r.score > 0.0);
+    }
+    for (1..results.len) |i| {
+        try testing.expect(results[i - 1].score >= results[i].score);
+    }
+}
+
+test "bm25-state-sync: re-index and remove update total_tokens correctly" {
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    try explorer.indexFile("sync.txt", "alpha beta gamma delta epsilon");
+    try testing.expectEqual(@as(u64, 5), explorer.word_index.total_tokens);
+
+    try explorer.indexFile("sync.txt", "alpha beta");
+    try testing.expectEqual(@as(u64, 2), explorer.word_index.total_tokens);
+
+    explorer.removeFile("sync.txt");
+    try testing.expectEqual(@as(u64, 0), explorer.word_index.total_tokens);
+}
+
+test "bm25-persistence: writeToDisk/readFromDisk preserves total_tokens and doc_lengths" {
+    const alloc = testing.allocator;
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+
+    try wi.indexFile("low.txt", "needle filler filler filler filler filler filler filler filler filler");
+    try wi.indexFile("high.txt", "needle needle needle filler");
+    try wi.indexFile("none.txt", "filler filler filler filler");
+
+    const pre_total = wi.total_tokens;
+    const pre_low_len = wi.docLength(wi.path_to_id.get("low.txt") orelse 0);
+    const pre_high_len = wi.docLength(wi.path_to_id.get("high.txt") orelse 0);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    try wi.writeToDisk(io, dir_path, null);
+
+    const maybe_loaded = WordIndex.readFromDisk(io, dir_path, alloc);
+    try testing.expect(maybe_loaded != null);
+    var loaded = maybe_loaded.?;
+    defer loaded.deinit();
+
+    try testing.expectEqual(pre_total, loaded.total_tokens);
+
+    const post_low_id = loaded.path_to_id.get("low.txt") orelse {
+        try testing.expect(false);
+        return;
+    };
+    const post_high_id = loaded.path_to_id.get("high.txt") orelse {
+        try testing.expect(false);
+        return;
+    };
+    try testing.expectEqual(pre_low_len, loaded.docLength(post_low_id));
+    try testing.expectEqual(pre_high_len, loaded.docLength(post_high_id));
+
+    const hits = try loaded.searchDeduped("needle", alloc);
+    defer alloc.free(hits);
+    try testing.expect(hits.len >= 2);
+
+    var saw_high = false;
+    var saw_low = false;
+    for (hits) |h| {
+        const p = loaded.hitPath(h);
+        if (std.mem.eql(u8, p, "high.txt")) saw_high = true;
+        if (std.mem.eql(u8, p, "low.txt")) saw_low = true;
+    }
+    try testing.expect(saw_high);
+    try testing.expect(saw_low);
+
+    // Post-roundtrip ranked search must still work and return hits for "needle".
+    var wi2 = WordIndex.init(alloc);
+    defer wi2.deinit();
+    try wi2.indexFile("low.txt", "needle filler filler filler filler filler filler filler filler filler");
+    try wi2.indexFile("high.txt", "needle needle needle filler");
+    try wi2.indexFile("none.txt", "filler filler filler filler");
+
+    const low_id_orig = wi2.path_to_id.get("low.txt") orelse 0;
+    const high_id_orig = wi2.path_to_id.get("high.txt") orelse 0;
+    try testing.expectEqual(pre_low_len, wi2.docLength(low_id_orig));
+    try testing.expectEqual(pre_high_len, wi2.docLength(high_id_orig));
+    try testing.expectEqual(pre_total, wi2.total_tokens);
+}
+
+test "issue-101: Store.max_versions is configurable (caps per-file history)" {
+    // Default cap is 100. After setting max_versions = 3, writing 5 versions
+    // of the same file must leave exactly 3 in-memory.
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    store.max_versions = 3;
+
+    _ = try store.recordSnapshot("foo.zig", 10, 0x111);
+    _ = try store.recordSnapshot("foo.zig", 20, 0x222);
+    _ = try store.recordSnapshot("foo.zig", 30, 0x333);
+    _ = try store.recordSnapshot("foo.zig", 40, 0x444);
+    _ = try store.recordSnapshot("foo.zig", 50, 0x555);
+
+    const entry = store.files.get("foo.zig") orelse return error.MissingFile;
+    try testing.expectEqual(@as(usize, 3), entry.versions.items.len);
+    // Oldest two dropped — newest survives.
+    try testing.expectEqual(@as(u64, 0x555), entry.versions.items[2].hash);
+}
+
+test "issue-102: Explorer.content_cache_limit is configurable (caps cached files)" {
+    // Default limit is 1000. After setting content_cache_limit = 2, indexing
+    // 5 files must leave at most 2 in the content cache.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    explorer.content_cache_limit = 2;
+
+    try explorer.indexFile("a.zig", "pub fn a() void {}\n");
+    try explorer.indexFile("b.zig", "pub fn b() void {}\n");
+    try explorer.indexFile("c.zig", "pub fn c() void {}\n");
+    try explorer.indexFile("d.zig", "pub fn d() void {}\n");
+    try explorer.indexFile("e.zig", "pub fn e() void {}\n");
+
+    // All 5 outlines are indexed...
+    try testing.expectEqual(@as(usize, 5), explorer.outlines.count());
+    // ...but the content cache is capped at the configured limit. The
+    // implementation stops caching once outlines.count() > limit.
+    try testing.expect(explorer.contents.count() <= 2);
+}
+
+test "issue-101+102: Config.parse wires into Store.max_versions and Explorer.content_cache_limit" {
+    // End-to-end: parse a .codedbrc body, apply to Store + Explorer,
+    // verify both fields pick up the configured values.
+    const body =
+        \\# test config
+        \\max_versions = 7
+        \\max_cached = 42
+        \\
+    ;
+    const cfg = try Config.parse(body);
+    try testing.expectEqual(@as(usize, 7), cfg.max_versions);
+    try testing.expectEqual(@as(u32, 42), cfg.max_cached);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    store.max_versions = cfg.max_versions;
+
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    explorer.content_cache_limit = cfg.max_cached;
+
+    try testing.expectEqual(@as(usize, 7), store.max_versions);
+    try testing.expectEqual(@as(u32, 42), explorer.content_cache_limit);
+}
+
+test "issue-424-B: bundle falls through to inline args when arguments is empty object" {
+    // Forge-style buggy clients sometimes send `arguments: {}` AND put the
+    // real args inline at the op level. The dispatcher currently sees the
+    // empty `arguments` and stops looking — resulting in a misleading
+    // "missing 'path'" with `received keys: []` even though `path` is
+    // sitting right there in the op.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const bundle_json =
+        \\{"ops":[{"tool":"codedb_outline","arguments":{},"path":"src/main.zig"}]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Should succeed: path was discoverable inline even though `arguments` was empty.
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/main.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "missing 'path'") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "received keys: []") == null);
+}
+
+test "issue-424-D: received-keys diagnostic hints at inline-args workaround when empty" {
+    // When a sub-op fails with truly-empty args, the diagnostic should
+    // point users at the inline-args fallback so a broken client wrapper
+    // can be routed around without a server change.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const bundle_json =
+        \\{"ops":[{"tool":"codedb_outline","arguments":{}}]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Original error stays.
+    try testing.expect(std.mem.indexOf(u8, out.items, "missing 'path'") != null);
+    // The diagnostic should fire (received-keys line present) and surface
+    // the inline-shape hint, since no real sub-op args were observed.
+    try testing.expect(std.mem.indexOf(u8, out.items, "received keys:") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "inline shape") != null);
+}
+
+test "issue-424-A: bundle envelope errors carry the 'error:' prefix consistently" {
+    // Pre-fix the bundle dispatcher emits 'op must be an object' and
+    // 'missing 'tool' field' WITHOUT the 'error:' prefix that per-tool
+    // handlers and TTY-summary parsing both expect. Normalize.
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    // Op is a string, not an object.
+    const bad_shape =
+        \\{"ops":["not-an-object"]}
+    ;
+    const parsed1 = try std.json.parseFromSlice(std.json.Value, testing.allocator, bad_shape, .{});
+    defer parsed1.deinit();
+    var out1: std.ArrayList(u8) = .empty;
+    defer out1.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed1.value.object, &out1, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, out1.items, "error: op must be an object") != null);
+
+    // Op missing 'tool' field.
+    const no_tool =
+        \\{"ops":[{"arguments":{}}]}
+    ;
+    const parsed2 = try std.json.parseFromSlice(std.json.Value, testing.allocator, no_tool, .{});
+    defer parsed2.deinit();
+    var out2: std.ArrayList(u8) = .empty;
+    defer out2.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed2.value.object, &out2, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, out2.items, "error: missing 'tool'") != null);
+}
+
+test "issue-425: codedb_callers excludes substring matches in unrelated identifiers" {
+    // handleCallers (mcp.zig:1339) currently calls searchContentWithScope(name)
+    // which is a *substring* full-text search. The only de-dup it performs is
+    // dropping lines that match the canonical definition of `name` itself.
+    // That means a search for "fooBar" returns lines mentioning the unrelated
+    // identifier "fooBarExtended" — both its definition site and any reference
+    // — as if they were call sites. The fix is a whole-word check on the hit
+    // line so substring matches in longer identifiers are excluded.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
+    // A different symbol whose name contains "fooBar" as a substring.
+    try explorer.indexFile("other.zig", "pub fn fooBarExtended() void {}\n");
+    // A genuine call site.
+    try explorer.indexFile("a.zig", "pub fn callerA() void {\n    fooBar();\n}\n");
+
+    const args_json =
+        \\{"name":"fooBar"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Real call site must still appear.
+    try testing.expect(std.mem.indexOf(u8, out.items, "a.zig:2") != null);
+    // Substring-only matches in unrelated identifiers must NOT.
+    try testing.expect(std.mem.indexOf(u8, out.items, "other.zig") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "fooBarExtended") == null);
+    // Header reports the real count (1), not the inflated count (2).
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'fooBar'") != null);
+}
+
+test "issue-426: codedb_callers excludes non-code files (markdown, docs)" {
+    // handleCallers (mcp.zig:1339) feeds searchContentWithScope across every
+    // indexed file regardless of language. Markdown and other documentation
+    // files that mention the symbol in prose surface as if they were call
+    // sites. The fix is a language gate: skip results from non-code files.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
+    try explorer.indexFile("a.zig", "pub fn callerA() void {\n    fooBar();\n}\n");
+    // Prose mention in a docs file — the identifier appears as a whole
+    // word, so this is independent of the substring-match bug (#425):
+    // even a perfect whole-word match on a markdown file is still not a
+    // call site.
+    try explorer.indexFile(
+        "docs/notes.md",
+        "# Notes\n\nThe fooBar helper is documented here for posterity.\n",
+    );
+
+    const args_json =
+        \\{"name":"fooBar"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Real call site present.
+    try testing.expect(std.mem.indexOf(u8, out.items, "a.zig:2") != null);
+    // Markdown mention must NOT appear as a call site.
+    try testing.expect(std.mem.indexOf(u8, out.items, "docs/notes.md") == null);
+    // Header reflects the real count.
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'fooBar'") != null);
+}
+
+test "issue-427: searchContent Tier 1 sort starves the definition-dense file" {
+    // searchContent's Tier 1 (explore.zig:1590-1598) sorts trigram candidates
+    // by file content length ASCENDING and then applies a per-file cap of
+    // max(1, max_results / estimated_total). When several small unrelated
+    // files match the query, they each contribute one hit and saturate the
+    // result quota before the canonical (large, definition-dense) file is
+    // ever scanned — so the file with the most occurrences of the term is
+    // missing from the output.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // 8 small files. Each contains one occurrence of the term as a whole
+    // word. They sort first under the length-ascending Tier 1 order.
+    const small_count: usize = 8;
+    var i: usize = 0;
+    while (i < small_count) : (i += 1) {
+        var path_buf: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "small_{d}.zig", .{i});
+        try explorer.indexFile(path, "fn s() void { _ = widgetX; }\n");
+    }
+
+    // Canonical file: many lines mentioning widgetX, padded so its content
+    // length is larger than every small file (sort key: content length).
+    const canonical_content =
+        "fn canonical() void {\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    // padding line for content length, to push this file to the\n" ++
+        "    // tail of the length-ascending sort. The reranker should still\n" ++
+        "    // surface it because it has the most occurrences of the term.\n" ++
+        "    _ = 0;\n" ++
+        "}\n";
+    try explorer.indexFile("canonical.zig", canonical_content);
+
+    // max_results small enough that 8 small files can saturate the quota.
+    // word_hits.len = small_count (8) + canonical occurrences (4) = 12.
+    // max_results * 2 = 10. 12 > 10 → Tier 0 gate fails → Tier 1 fires.
+    const results = try explorer.searchContent("widgetX", testing.allocator, 5);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    // The canonical file MUST appear in the result set. Pre-fix it does not:
+    // small files fill all 5 slots first under length-asc order, and the
+    // early-return at result_list.len >= max_results returns before the
+    // canonical file is ever read.
+    var found_canonical = false;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "canonical.zig")) {
+            found_canonical = true;
+            break;
+        }
+    }
+    try testing.expect(found_canonical);
+}
+
+test "issue-429-a: searchContent rerank boosts files whose basename matches the query" {
+    // Two files, same hit count, same content length. The current rerank
+    // (explore.zig:1700-1712) sorts ties by path-asc, so a file named
+    // "unrelated.zig" outranks "widgetX.zig" even though the latter's
+    // basename matches the query exactly. The basename match is a strong
+    // intent signal — the developer is asking about that file's subject.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/unrelated.zig", "pub fn process() void { _ = widgetX; }\n");
+    try explorer.indexFile("src/widgetX.zig", "pub fn process() void { _ = widgetX; }\n");
+
+    const results = try explorer.searchContent("widgetX", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("src/widgetX.zig", results[0].path);
+}
+
+test "issue-429-b: searchContent rerank penalizes test/vendor/examples paths" {
+    // Two files, same hit count, same content. Pre-fix the path-asc
+    // tiebreaker promotes "examples/sample.zig" (e < s) above
+    // "src/sample.zig". Post-fix path priors push code roots above
+    // example/test/vendor directories so the source-of-truth lands first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("examples/sample.zig", "pub fn x() void { _ = someTerm; }\n");
+    try explorer.indexFile("src/sample.zig", "pub fn x() void { _ = someTerm; }\n");
+
+    const results = try explorer.searchContent("someTerm", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("src/sample.zig", results[0].path);
+}
+
+test "issue-429-c: searchContent rerank boosts lines that are symbol definitions" {
+    // Two files. "aaa.zig" has a passing comment mention of `fooSym`. The
+    // alphabetically-later "zzz_def.zig" has the actual definition. Both
+    // tie on per-line occurrence count. Pre-fix the path-asc tiebreaker
+    // promotes the comment mention ("aaa" < "zzz"). Post-fix the rerank
+    // recognises that the line in zzz_def.zig is a symbol definition and
+    // ranks it first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("aaa.zig", "// fooSym is referenced here in a comment\n");
+    try explorer.indexFile("zzz_def.zig", "pub fn fooSym() void {}\n");
+
+    const results = try explorer.searchContent("fooSym", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("zzz_def.zig", results[0].path);
+}
+
+test "issue-430: Tier 0 markdown dominance starves canonical source file" {
+    // Tier 0 of searchContent (explore.zig:1525-1554) iterates the word
+    // index posting list in insertion order with a per-file cap of
+    // max(1, max_results/5). When a handful of markdown documents
+    // (CHANGELOG.md, benchmarks/*.md, design docs) each mention the query
+    // many times AND happen to appear earlier in the posting list than the
+    // canonical source file, they saturate result_list before the source
+    // file is reached. The existing #363a fix asserted *presence* with a
+    // small corpus; this is the high-density regime where presence still
+    // fails because Tier 0 hits max_results before the source file's
+    // posting-list entries are processed.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // 5 markdown files each with 10 mentions of fooBar — indexed FIRST so
+    // they land at the head of the posting list. With max_results=50 and
+    // per-file cap=10, these 5 files alone fill all 50 slots.
+    const md_block = "fooBar mentioned here.\nfooBar mentioned here.\n" ++
+        "fooBar mentioned here.\nfooBar mentioned here.\n" ++
+        "fooBar mentioned here.\nfooBar mentioned here.\n" ++
+        "fooBar mentioned here.\nfooBar mentioned here.\n" ++
+        "fooBar mentioned here.\nfooBar mentioned here.\n";
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        var path_buf: [64]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "docs/notes_{d}.md", .{i});
+        try explorer.indexFile(path, md_block);
+    }
+
+    // Source file with the canonical definition + several real call sites,
+    // indexed LAST so its posting-list entries come after the markdown noise.
+    try explorer.indexFile("src/foo.zig",
+        "pub fn fooBar() void {}\n" ++
+            "pub fn caller1() void { fooBar(); }\n" ++
+            "pub fn caller2() void { fooBar(); }\n" ++
+            "pub fn caller3() void { fooBar(); }\n");
+
+    const results = try explorer.searchContent("fooBar", testing.allocator, 50);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    var found_source = false;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "src/foo.zig")) {
+            found_source = true;
+            break;
+        }
+    }
+    // The canonical source file MUST appear in the results. Pre-fix it does
+    // not: 5 markdown files × 10 hits = 50 entries fill result_list before
+    // the source file is reached, then Tier 0 returns at max_results.
+    try testing.expect(found_source);
+}
+
+test "issue-431: searchContent does not crash when query is longer than content" {
+    // searchInContent (explore.zig:3881) computes
+    //   const end = content.len - query.len + 1;
+    // without checking that query.len <= content.len. When the query is
+    // longer than the file content, the subtraction underflows in usize
+    // and the binary panics with integer overflow (or aborts with SIGBUS
+    // in ReleaseFast). Reproducer: index a tiny file, search for a query
+    // longer than the file's content.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("a.zig", "fn x() void {}\n");
+
+    var q_buf: [256]u8 = undefined;
+    @memset(&q_buf, 'a');
+    const q = q_buf[0..256];
+
+    const results = try explorer.searchContent(q, testing.allocator, 5);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len == 0);
+}
+
+test "issue-429-d: searchContent rerank boosts path-segment match" {
+    // Two files, same hit count, same content. The query "parser" appears
+    // as a directory segment of one path. Pre-fix the alphabetic tiebreak
+    // promotes "src/handlers/foo.zig" (h < p). Post-fix the path-segment
+    // match boost surfaces "src/parser/foo.zig" first.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/handlers/foo.zig", "// parser is mentioned here\n");
+    try explorer.indexFile("src/parser/foo.zig", "// parser is mentioned here\n");
+
+    const results = try explorer.searchContent("parser", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("src/parser/foo.zig", results[0].path);
+}
+
+test "issue-429-e: searchContent rerank penalises doc-language files so code beats markdown noise" {
+    // CHANGELOG.md and benchmark docs often mention an identifier many times
+    // in a single line, which under per-line frequency outscores any single
+    // code call site. The reranker now halves doc-language scores so a code
+    // call site with one occurrence still wins.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // Doc file with the identifier mentioned four times on one line —
+    // pre-fix this scores 4 on per-line frequency.
+    try explorer.indexFile(
+        "CHANGELOG.md",
+        "# Changelog\n\nfooBar — fooBar fooBar fooBar in the changelog.\n",
+    );
+    // Code call site with the identifier mentioned once.
+    try explorer.indexFile(
+        "src/caller.zig",
+        "pub fn caller() void {\n    fooBar();\n}\n",
+    );
+
+    const results = try explorer.searchContent("fooBar", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("src/caller.zig", results[0].path);
 }

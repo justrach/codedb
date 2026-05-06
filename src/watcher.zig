@@ -197,6 +197,8 @@ const FilteredWalker = struct {
     io: std.Io,
     dir_prefix_len: usize = 0,
     ignore_patterns: std.ArrayList([]const u8) = .empty,
+    real_root: []const u8 = &.{},
+    visited_real_paths: std.StringHashMapUnmanaged(void) = .empty,
 
     pub const Entry = struct {
         path: []const u8, // relative path — valid until next call to next()
@@ -213,6 +215,14 @@ const FilteredWalker = struct {
             .dir_handle = root,
             .iter = root.iterate(),
         });
+
+        var rr_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (root.realPathFile(io, ".", &rr_buf)) |rr_len| {
+            const dup = try allocator.dupe(u8, rr_buf[0..rr_len]);
+            self.real_root = dup;
+            const seed = try allocator.dupe(u8, rr_buf[0..rr_len]);
+            try self.visited_real_paths.put(allocator, seed, {});
+        } else |_| {}
 
         // Load .codedbignore if it exists
         if (root.readFileAlloc(io, ".codedbignore", allocator, .limited(64 * 1024))) |content| {
@@ -251,6 +261,10 @@ const FilteredWalker = struct {
         self.name_buffer.deinit(self.allocator);
         for (self.ignore_patterns.items) |p| self.allocator.free(p);
         self.ignore_patterns.deinit(self.allocator);
+        var it = self.visited_real_paths.keyIterator();
+        while (it.next()) |k| self.allocator.free(k.*);
+        self.visited_real_paths.deinit(self.allocator);
+        if (self.real_root.len > 0) self.allocator.free(self.real_root);
     }
 
     fn isIgnored(self: *FilteredWalker, name: []const u8, full_path: []const u8) bool {
@@ -302,6 +316,9 @@ const FilteredWalker = struct {
                         if (self.isIgnored(entry.name, check_path)) continue;
                     }
                     const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
+                    errdefer sub.close(self.io);
+                    const saved_len = self.name_buffer.items.len;
+                    errdefer self.name_buffer.shrinkRetainingCapacity(saved_len);
 
                     // Extend the directory prefix in name_buffer
                     if (self.name_buffer.items.len > 0)
@@ -316,7 +333,48 @@ const FilteredWalker = struct {
                     continue;
                 }
 
-                if (entry.kind != .file) continue;
+                if (entry.kind != .file) {
+                    if (entry.kind != .sym_link) continue;
+                    const target_stat = top.dir_handle.statFile(self.io, entry.name, .{}) catch continue;
+                    if (target_stat.kind == .directory) {
+                        if (shouldSkipDir(entry.name)) continue;
+                        if (self.ignore_patterns.items.len > 0) {
+                            var check_buf: [std.fs.max_path_bytes]u8 = undefined;
+                            const check_path = if (self.dir_prefix_len > 0)
+                                std.fmt.bufPrint(&check_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch entry.name
+                            else
+                                entry.name;
+                            if (self.isIgnored(entry.name, check_path)) continue;
+                        }
+                        var rt_buf: [std.fs.max_path_bytes]u8 = undefined;
+                        const rt_len = top.dir_handle.realPathFile(self.io, entry.name, &rt_buf) catch continue;
+                        const real_target = rt_buf[0..rt_len];
+                        if (self.real_root.len == 0) continue;
+                        if (!std.mem.startsWith(u8, real_target, self.real_root)) continue;
+                        if (real_target.len != self.real_root.len and real_target[self.real_root.len] != '/') continue;
+                        const gop = self.visited_real_paths.getOrPut(self.allocator, real_target) catch continue;
+                        if (gop.found_existing) continue;
+                        const dup = self.allocator.dupe(u8, real_target) catch {
+                            _ = self.visited_real_paths.remove(real_target);
+                            continue;
+                        };
+                        gop.key_ptr.* = dup;
+                        const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
+                        errdefer sub.close(self.io);
+                        const saved_len_sym = self.name_buffer.items.len;
+                        errdefer self.name_buffer.shrinkRetainingCapacity(saved_len_sym);
+                        if (self.name_buffer.items.len > 0)
+                            try self.name_buffer.append(self.allocator, '/');
+                        try self.name_buffer.appendSlice(self.allocator, entry.name);
+                        self.dir_prefix_len = self.name_buffer.items.len;
+                        try self.stack.append(self.allocator, .{
+                            .dir_handle = sub,
+                            .iter = sub.iterate(),
+                        });
+                        continue;
+                    }
+                    if (target_stat.kind != .file) continue;
+                }
 
                 // Build full relative path by appending filename
                 if (self.dir_prefix_len > 0)
@@ -1079,8 +1137,9 @@ pub fn isSensitivePath(path: []const u8) bool {
             std.mem.indexOf(u8, path, ".aws/") != null) return true;
         return false;
     }
-    // .env* wildcard (catches .env, .env.local, .env.production, etc.)
-    if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env")) return true;
+    // .env, .env.<token>; do NOT match .envoy, .envrc, .environment, etc.
+    if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env") and
+        (basename.len == 4 or basename[4] == '.')) return true;
     // Exact matches
     const sensitive_names = [_][]const u8{
         ".dev.vars",        ".npmrc",               ".pypirc",      ".netrc",

@@ -296,3 +296,83 @@ fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
     const digest_hex = std.fmt.bytesToHex(digest, .lower);
     return allocator.dupe(u8, &digest_hex);
 }
+
+// ── Auto-update ──────────────────────────────────────────────────────────────
+//
+// On startup we kick off a detached check that shells out to the public
+// install.sh. The check is:
+//   • disabled when CODEDB_NO_AUTO_UPDATE is set in the environment
+//   • throttled to at most once every 24 hours, tracked in
+//     ~/.codedb/last_auto_update_check (a u64 little-endian unix-ms timestamp)
+// The update itself runs in a background thread so it never blocks server
+// startup. If the binary on disk gets replaced mid-session, the kernel keeps
+// the old inode mapped for the running process; subsequent invocations get the
+// new binary.
+
+const auto_update_install_url = "https://codedb.codegraff.com/install.sh";
+const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
+const auto_update_stamp_filename = "last_auto_update_check";
+
+/// Pure decision function — useful for tests. Returns true when the next
+/// auto-update attempt should fire.
+pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
+    if (env_disabled) return false;
+    const last = last_check_ms orelse return true;
+    if (last > now_ms) return true;
+    const delta: i128 = @as(i128, now_ms) - @as(i128, last);
+    return delta >= auto_update_throttle_ms;
+}
+
+pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+    const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+    const home = cio.posixGetenv("HOME") orelse return;
+    if (home.len == 0) return;
+
+    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
+    defer allocator.free(dir_path);
+    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+
+    const stamp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, auto_update_stamp_filename }) catch return;
+    defer allocator.free(stamp_path);
+
+    const last_ms = readAutoUpdateStamp(io, stamp_path);
+    const now_ms = cio.milliTimestamp();
+    if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+
+    // Persist the new timestamp before launching so concurrent invocations
+    // don't all race the same check.
+    writeAutoUpdateStamp(io, stamp_path, now_ms);
+
+    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{}) catch return;
+    thread.detach();
+}
+
+fn autoUpdateWorker() void {
+    // sh -c handles the curl-into-bash pipeline. We keep stdout/stderr captured
+    // and immediately discard so the install script's progress output doesn't
+    // leak into the parent's stdio (which is the MCP transport).
+    const result = cio.runCapture(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &.{ "sh", "-c", "curl -fsSL " ++ auto_update_install_url ++ " | bash" },
+        .max_output_bytes = 64 * 1024,
+    }) catch return;
+    std.heap.page_allocator.free(result.stdout);
+    std.heap.page_allocator.free(result.stderr);
+}
+
+fn readAutoUpdateStamp(io: std.Io, path: []const u8) ?i64 {
+    var buf: [8]u8 = undefined;
+    var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+    defer f.close(io);
+    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+    if (n < 8) return null;
+    return std.mem.readInt(i64, buf[0..8], .little);
+}
+
+fn writeAutoUpdateStamp(io: std.Io, path: []const u8, ms: i64) void {
+    var buf: [8]u8 = undefined;
+    std.mem.writeInt(i64, &buf, ms, .little);
+    const f = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true }) catch return;
+    defer f.close(io);
+    f.writePositionalAll(io, &buf, 0) catch {};
+}

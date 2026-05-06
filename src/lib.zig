@@ -12,6 +12,8 @@
 pub const Store = @import("store.zig").Store;
 pub const ChangeEntry = @import("store.zig").ChangeEntry;
 
+pub const Config = @import("config.zig").Config;
+
 pub const Explorer = @import("explore.zig").Explorer;
 pub const FileOutline = @import("explore.zig").FileOutline;
 pub const Symbol = @import("explore.zig").Symbol;

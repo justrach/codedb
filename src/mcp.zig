@@ -8,7 +8,7 @@ const std = @import("std");
 const testing = std.testing;
 const mcp_lib = @import("mcp");
 const mcpj = mcp_lib.json;
-const Root = mcp_lib.mcp.Root;
+pub const Root = mcp_lib.mcp.Root;
 const Store = @import("store.zig").Store;
 const explore_mod = @import("explore.zig");
 const Explorer = explore_mod.Explorer;
@@ -35,8 +35,33 @@ pub const DeferredScan = struct {
     triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     scan_thread: ?std.Thread = null,
     resolved_root: []const u8 = "",
+    fallback_cwd: []const u8 = "",
     triggerFn: *const fn (ctx: *DeferredScan, abs_root: []const u8) void,
 };
+
+/// Resolve which path to scan from (first indexable root, or cwd fallback) and
+/// fire the deferred scan exactly once. Returns true when this call actually
+/// fired the trigger; false if it had already fired or no usable path is
+/// available. Callers must filter denied paths out of `indexable_roots` first;
+/// the `fallback_cwd` path is policy-checked here.
+pub fn triggerDeferredScanWithFallback(
+    ds: *DeferredScan,
+    indexable_roots: []const Root,
+    fallback_cwd: []const u8,
+) bool {
+    var path: []const u8 = "";
+    if (indexable_roots.len > 0) {
+        const uri_raw = indexable_roots[0].uri;
+        path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+    }
+    if (path.len == 0 and fallback_cwd.len > 0 and root_policy.isIndexableRoot(fallback_cwd)) {
+        path = fallback_cwd;
+    }
+    if (path.len == 0) return false;
+    if (ds.triggered.swap(true, .acq_rel)) return false;
+    ds.triggerFn(ds, path);
+    return true;
+}
 
 // ── Project cache ────────────────────────────────────────────────────────────
 
@@ -451,6 +476,7 @@ pub const Tool = enum {
     codedb_symbol,
     codedb_search,
     codedb_word,
+    codedb_callers,
     codedb_hot,
     codedb_deps,
     codedb_read,
@@ -470,26 +496,27 @@ pub const Tool = enum {
 
 const tools_list =
     \\{"tools":[
-    \\{"name":"codedb_tree","description":"Get the full file tree of the indexed codebase with language detection, line counts, and symbol counts per file. Use this first to understand the project structure.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_outline","description":"START HERE. Get the structural outline of a file: all functions, structs, enums, imports, constants with line numbers. Returns 4-15x fewer tokens than reading the raw file. Always use this before codedb_read to understand file structure first.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_symbol","description":"Find where a symbol is defined across the codebase. Returns file, line, and kind (function/struct/import). Use body=true to include source code. Much more precise than search — finds definitions, not just text matches.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name to search for (exact match)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
-    \\{"name":"codedb_search","description":"Full-text search across all indexed files. Returns matching lines with file paths and line numbers. Start with max_results=10 for broad queries. Use scope=true to see the enclosing function/struct for each match. Use path_glob='*.zig' to scope to one language and avoid markdown-dominated results. For single identifiers, prefer codedb_word (O(1) lookup) or codedb_symbol (definitions only).","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Maximum results to return (default: 50, start with 10 for broad queries)"},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig' or 'src/**/*.zig'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
-    \\{"name":"codedb_word","description":"O(1) word lookup using inverted index. Finds all occurrences of an exact word (identifier) across the codebase. Much faster than search for single-word queries.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
-    \\{"name":"codedb_hot","description":"Get the most recently modified files in the codebase, ordered by recency. Useful to see what's been actively worked on.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_deps","description":"Dependency graph queries. Default: which files import the given file (reverse deps). Use direction=depends_on for forward deps. Use transitive=true for full blast radius via BFS traversal. O(1) lookups via bidirectional graph index.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_read","description":"Read file contents. IMPORTANT: Use codedb_outline first to find the line numbers you need, then read only that range with line_start/line_end. Avoid reading entire large files — use compact=true to skip comments and blanks. For understanding file structure, codedb_outline is 4-15x more token-efficient.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_edit","description":"Apply a line-based edit to a file. Supports replace (range), insert (after line), and delete (range) operations. Pass if_hash from the most recent codedb_read response to guard against stale-line-number edits — the edit is rejected if the file has changed since you read it. Set dry_run=true to receive a unified-diff-style preview without touching disk.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to edit"},"op":{"type":"string","enum":["replace","insert","delete"],"description":"Edit operation type"},"content":{"type":"string","description":"New content (for replace/insert)"},"range_start":{"type":"integer","description":"Start line number (for replace/delete, 1-indexed)"},"range_end":{"type":"integer","description":"End line number (for replace/delete, 1-indexed)"},"after":{"type":"integer","description":"Insert after this line number (for insert)"},"if_hash":{"type":"string","description":"Hex hash from codedb_read's 'hash:' line. Edit is rejected with HashMismatch if the file has changed since."},"dry_run":{"type":"boolean","description":"If true, return a diff preview without writing. Disk and store are untouched. Default: false."}},"required":["path","op"]}},
-    \\{"name":"codedb_changes","description":"Get files that changed since a sequence number. Use with codedb_status to poll for changes.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
-    \\{"name":"codedb_status","description":"Get current codedb status: number of indexed files and current sequence number.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_snapshot","description":"Get the full pre-rendered snapshot of the codebase as a single JSON blob. Contains tree, all outlines, symbol index, and dependency graph. Ideal for caching or deploying to edge workers.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_bundle","description":"Batch multiple queries in one call. Max 20 ops. WARNING: Avoid bundling multiple codedb_read calls on large files — use codedb_outline + codedb_symbol instead. Bundle outline+symbol+search, not full file reads. Total response is not size-capped, so large bundles can exceed token limits.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"tool":{"type":"string","description":"Tool name (e.g. codedb_outline, codedb_symbol, codedb_read)"},"arguments":{"type":"object","description":"Tool arguments"}},"required":["tool"]},"description":"Array of tool calls to execute"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
-    \\{"name":"codedb_remote","description":"Query indexed public repos through api.wiki.codes, the only remote backend. Use action=actions first when unsure what a slug supports. Use tree with expand=false for a compact directory summary, or expand=true with limit/offset/prefix for paged file lists. Use read with path and optional lines='10-60' for file slices. Search, symbol, outline, deps, score, cves, commits, branches, and dep-history expose code and artifact metadata without cloning.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. vercel/next.js) or a raw wiki slug such as chromium."},"action":{"type":"string","enum":["tree","outline","search","read","actions","symbol","policy","deps","score","cves","commits","branches","dep-history"],"description":"What to query from api.wiki.codes: actions, tree, search, outline, read, symbol, policy, deps, score, cves, commits, branches, dep-history."},"query":{"type":"string","description":"Action-specific argument. search: text query. symbol: identifier name. outline: file path."},"path":{"type":"string","description":"For action=read: the file path to fetch."},"lines":{"type":"string","description":"For action=read: line range like '10-60' (1-indexed, inclusive). Omit for full file."},"limit":{"type":"integer","description":"For search/tree/deps/commits/branches/dep-history: cap the number of items returned (server may enforce its own ceiling)."},"offset":{"type":"integer","description":"For tree/deps/commits/branches/dep-history: skip the first N items (pagination)."},"prefix":{"type":"string","description":"For tree: only return paths starting with this prefix (e.g. 'src/')."},"expand":{"type":"boolean","description":"For tree: when true, return the full file list. When false returns a compact directory summary when supported."},"since":{"type":"string","description":"For commits/dep-history: ISO timestamp or commit SHA to start from."},"scope":{"type":"string","enum":["runtime","all"],"description":"For score/cves only. Defaults to runtime; use all to include dev/tooling dependencies."},"backend":{"type":"string","enum":["wiki"],"description":"Deprecated compatibility field. Only 'wiki' is accepted; requests always use api.wiki.codes."}},"required":["repo","action"]}},
-    \\{"name":"codedb_projects","description":"List all locally indexed projects on this machine. Shows project paths, data directory hashes, and whether a snapshot exists. Use to discover what codebases are available.","inputSchema":{"type":"object","properties":{},"required":[]}},
-    \\{"name":"codedb_index","description":"Index a local folder on this machine. Scans all source files, builds outlines/trigrams/word indexes, and creates a codedb.snapshot in the target directory. Path must be a directory, not a file. After indexing, the folder is queryable via the project param on any tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the FOLDER (not a file) to index, e.g. /Users/you/myproject"}},"required":["path"]}},
-    \\{"name":"codedb_find","description":"Fuzzy file search — finds files by approximate name. Typo-tolerant subsequence matching with word-boundary and filename bonuses. Use when you know roughly what file you're looking for but not the exact path. Much faster than codedb_tree + manual scan.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy search query (e.g. 'authmidlware', 'test_auth', 'main.zig')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
-    \\{"name":"codedb_query","description":"Composable search pipeline — chain multiple operations where each step feeds the next. Replaces multi-tool workflows with a single call. Pipeline ops: find (fuzzy file search), search (content grep), filter (by extension/path glob), deps (expand via dependency graph), outline (get symbols), read (file contents), sort (by score/path), limit (truncate). Each step operates on the file set from the previous step.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
-    \\{"name":"codedb_glob","description":"Match indexed file paths against a glob pattern. Supports * (does not cross /), ** (matches across /), and ? (single char, not /). Sorted lexicographically. Use this when you know the path shape (e.g. 'src/**/*.zig', 'tests/test_*.py') instead of guessing with codedb_find.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '*.md', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
-    \\{"name":"codedb_ls","description":"List immediate children of a directory in the indexed tree. Returns directories first (alphabetically) then files with language and line/symbol counts. Use this to drill down a level at a time when codedb_tree is too verbose.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
+    \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_outline","description":"Symbol outline of one file: functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_symbol","description":"Find where a named symbol is defined across the index. Returns file, line, and kind. Pass body=true for source. Pick this over codedb_search when you have an exact identifier.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name to search for (exact match)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+    \\{"name":"codedb_search","description":"Substring full-text search across the index (regex if regex=true). For one identifier prefer codedb_word; for a definition prefer codedb_symbol. Scope with path_glob to filter by language.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Maximum results to return (default: 50, start with 10 for broad queries)"},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig' or 'src/**/*.zig'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+    \\{"name":"codedb_word","description":"Exact-identifier lookup via inverted index — every occurrence of one word, O(1). Use for single identifiers; use codedb_search for substrings or phrases.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
+    \\{"name":"codedb_callers","description":"Find every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 50)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+    \\{"name":"codedb_hot","description":"Most recently modified files in the project, newest first.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_deps","description":"Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set transitive=true for the full BFS blast radius.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Run codedb_outline first to pick the range — large files burn tokens fast. Pass if_hash to skip re-reads when the file is unchanged.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_edit","description":"Line-based file edit: replace (range), insert (after line), or delete (range). Pass if_hash from the latest codedb_read to reject stale-line edits. Set dry_run=true for a diff preview.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to edit"},"op":{"type":"string","enum":["replace","insert","delete"],"description":"Edit operation type"},"content":{"type":"string","description":"New content (for replace/insert)"},"range_start":{"type":"integer","description":"Start line number (for replace/delete, 1-indexed)"},"range_end":{"type":"integer","description":"End line number (for replace/delete, 1-indexed)"},"after":{"type":"integer","description":"Insert after this line number (for insert)"},"if_hash":{"type":"string","description":"Hex hash from codedb_read's 'hash:' line. Edit is rejected with HashMismatch if the file has changed since."},"dry_run":{"type":"boolean","description":"If true, return a diff preview without writing. Disk and store are untouched. Default: false."}},"required":["path","op"]}},
+    \\{"name":"codedb_changes","description":"Files changed since a given sequence number. Pair with codedb_status to poll for updates.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
+    \\{"name":"codedb_status","description":"Current indexed-file count, sequence number, and scan phase.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_snapshot","description":"Pre-rendered JSON snapshot of the entire index — tree, outlines, symbols, deps. For caching or shipping to edge workers.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_bundle","description":"Run up to 20 codedb_* calls in one round-trip. Each op is either MCP-style {\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}} or inline {\"tool\":\"codedb_search\",\"query\":\"Agent\"} — both are accepted. Example: {\"ops\":[{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}},{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}}]}. Best for parallel outline/symbol/search; avoid bundling large codedb_read calls — responses are not size-capped. If a sub-op reports `received keys: []`, the wrapper field is misnamed: use `arguments` (MCP spec), not `args`.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","description":"Sub-tool calls to dispatch (max 20). Each item must have `tool`; pass per-op args either nested under `arguments` (MCP shape) or inline alongside `tool`.","items":{"type":"object","properties":{"tool":{"type":"string","description":"codedb_* tool name to invoke (e.g. codedb_outline, codedb_symbol, codedb_search, codedb_word, codedb_callers, codedb_read, codedb_deps, codedb_tree, codedb_hot, codedb_status, codedb_changes). Required."},"arguments":{"type":"object","description":"Per-call args matching that tool's inputSchema. The field MUST be named `arguments` (MCP `tools/call` convention) — `args` is silently ignored. May be omitted if you supply args inline at the op level instead."}},"required":["tool"]}},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
+    \\{"name":"codedb_remote","description":"Query indexed public repos via api.wiki.codes. Pass action= one of: tree, outline, search, read, symbol, deps, score, cves, commits, branches, dep-history, policy, actions. Use action=actions first if unsure what a repo supports.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. vercel/next.js) or a raw wiki slug such as chromium."},"action":{"type":"string","enum":["tree","outline","search","read","actions","symbol","policy","deps","score","cves","commits","branches","dep-history"],"description":"What to query from api.wiki.codes: actions, tree, search, outline, read, symbol, policy, deps, score, cves, commits, branches, dep-history."},"query":{"type":"string","description":"Action-specific argument. search: text query. symbol: identifier name. outline: file path."},"path":{"type":"string","description":"For action=read: the file path to fetch."},"lines":{"type":"string","description":"For action=read: line range like '10-60' (1-indexed, inclusive). Omit for full file."},"limit":{"type":"integer","description":"For search/tree/deps/commits/branches/dep-history: cap the number of items returned (server may enforce its own ceiling)."},"offset":{"type":"integer","description":"For tree/deps/commits/branches/dep-history: skip the first N items (pagination)."},"prefix":{"type":"string","description":"For tree: only return paths starting with this prefix (e.g. 'src/')."},"expand":{"type":"boolean","description":"For tree: when true, return the full file list. When false returns a compact directory summary when supported."},"since":{"type":"string","description":"For commits/dep-history: ISO timestamp or commit SHA to start from."},"scope":{"type":"string","enum":["runtime","all"],"description":"For score/cves only. Defaults to runtime; use all to include dev/tooling dependencies."},"backend":{"type":"string","enum":["wiki"],"description":"Deprecated compatibility field. Only 'wiki' is accepted; requests always use api.wiki.codes."}},"required":["repo","action"]}},
+    \\{"name":"codedb_projects","description":"List every locally indexed project on this machine: path, data-dir hash, snapshot presence.","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"codedb_index","description":"Index a local FOLDER (not a file). Builds outlines, trigrams, word index, and writes codedb.snapshot. After indexing, query it via the project= param on any other tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the FOLDER (not a file) to index, e.g. /Users/you/myproject"}},"required":["path"]}},
+    \\{"name":"codedb_find","description":"Fuzzy file-name search — typo-tolerant subsequence match. Use when you remember roughly what a file is called; use codedb_glob when you know the path shape.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy search query (e.g. 'authmidlware', 'test_auth', 'main.zig')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+    \\{"name":"codedb_query","description":"Composable pipeline — chain ops where each step feeds the next. Ops: find, search, filter, deps, outline, read, sort, limit. Replaces multi-call workflows with one request.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
+    \\{"name":"codedb_glob","description":"Match indexed paths against a glob: * (no /), ** (across /), ? (one char). Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '*.md', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
+    \\{"name":"codedb_ls","description":"List immediate children of a directory: dirs first (alphabetical), then files with language and line/symbol counts. Drill down level-by-level when codedb_tree is too verbose.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
     \\]}
 ;
 
@@ -637,6 +664,13 @@ pub fn run(
         } else if (mcpj.eql(method, "notifications/initialized")) {
             if (session.client_supports_roots) {
                 requestRoots(&session);
+            } else if (session.deferred_scan) |ds| {
+                // Client won't be sending workspace roots — fire the deferred
+                // scan now with the cwd fallback so we don't sit in
+                // loading_snapshot waiting for a roots/list reply that never
+                // comes.
+                const empty_roots: []const Root = &.{};
+                _ = triggerDeferredScanWithFallback(ds, empty_roots, ds.fallback_cwd);
             }
         } else if (mcpj.eql(method, "notifications/roots/list_changed")) {
             if (session.client_supports_roots) {
@@ -733,11 +767,7 @@ fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
         };
     }
     if (s.deferred_scan) |ds| {
-        if (s.roots.items.len > 0 and !ds.triggered.swap(true, .acq_rel)) {
-            const uri_raw = s.roots.items[0].uri;
-            const abs_path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
-            ds.triggerFn(ds, abs_path);
-        }
+        _ = triggerDeferredScanWithFallback(ds, s.roots.items, ds.fallback_cwd);
     }
 }
 
@@ -899,6 +929,7 @@ fn dispatch(
         .codedb_symbol => handleSymbol(alloc, args, out, ctx.explorer),
         .codedb_search => handleSearch(alloc, args, out, ctx.explorer),
         .codedb_word => handleWord(alloc, args, out, ctx.explorer),
+        .codedb_callers => handleCallers(alloc, args, out, ctx.explorer),
         .codedb_hot => handleHot(alloc, args, out, ctx.store, ctx.explorer),
         .codedb_deps => handleDeps(alloc, args, out, ctx.explorer),
         .codedb_read => handleRead(io, alloc, args, out, ctx.explorer),
@@ -939,7 +970,7 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
 
 fn toolDependsOnScannedIndex(tool: Tool) bool {
     return switch (tool) {
-        .codedb_search, .codedb_word, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => true,
+        .codedb_search, .codedb_word, .codedb_callers, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => true,
         else => false,
     };
 }
@@ -1081,8 +1112,17 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             alloc.free(results);
         }
 
+        // Issue #422: count post-filter results so the header reflects what
+        // the user actually sees, not the pre-filter explorer count.
+        var visible_total: usize = 0;
+        for (results) |r| {
+            if (path_glob) |g| if (!globMatch(g, r.path)) continue;
+            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            visible_total += 1;
+        }
+
         const w = cio.listWriter(out, alloc);
-        w.print("{d} results for '{s}':\n", .{ results.len, query }) catch {};
+        w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
         for (results) |r| {
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
@@ -1108,11 +1148,34 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             alloc.free(results);
         }
 
-        const w = cio.listWriter(out, alloc);
-        w.print("{d} results for '{s}':\n", .{ results.len, query }) catch {};
+        // Issue #422: count post-filter results so the header reflects what
+        // the user actually sees, and so the "truncated" footer only fires
+        // for per-file-cap truncation — not for glob/compact filtering.
+        var visible_total: usize = 0;
         for (results) |r| {
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            visible_total += 1;
+        }
+
+        const w = cio.listWriter(out, alloc);
+        w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
+        var file_counts = std.StringHashMap(u8).init(alloc);
+        defer file_counts.deinit();
+        const max_per_file: u8 = 5;
+        var shown: usize = 0;
+        for (results) |r| {
+            if (path_glob) |g| if (!globMatch(g, r.path)) continue;
+            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            const gop = file_counts.getOrPut(r.path) catch continue;
+            if (!gop.found_existing) gop.value_ptr.* = 0;
+            gop.value_ptr.* += 1;
+            if (gop.value_ptr.* > max_per_file) {
+                if (gop.value_ptr.* == max_per_file + 1) {
+                    w.print("  {s} ... (more matches truncated)\n", .{r.path}) catch {};
+                }
+                continue;
+            }
             if (r.scope_name) |sn| {
                 w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
                     r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
@@ -1120,6 +1183,10 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             } else {
                 w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
             }
+            shown += 1;
+        }
+        if (shown < visible_total) {
+            w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
         }
     } else if (is_regex) {
         const results = explorer.searchContentRegex(query, alloc, max_results) catch {
@@ -1134,8 +1201,17 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             alloc.free(results);
         }
 
+        // Issue #422: header reflects post-filter count; "truncated" footer
+        // only fires for per-file-cap, not for glob/compact filtering.
+        var visible_total: usize = 0;
+        for (results) |r| {
+            if (path_glob) |g| if (!globMatch(g, r.path)) continue;
+            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            visible_total += 1;
+        }
+
         const w = cio.listWriter(out, alloc);
-        w.print("{d} results for '{s}':\n", .{ results.len, query }) catch {};
+        w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
         var file_counts = std.StringHashMap(u8).init(alloc);
         defer file_counts.deinit();
         const max_per_file: u8 = 5;
@@ -1155,8 +1231,8 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
             shown += 1;
         }
-        if (shown < results.len) {
-            w.print("({d} shown, {d} truncated)\n", .{ shown, results.len - shown }) catch {};
+        if (shown < visible_total) {
+            w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
         }
     } else {
         const results = explorer.searchContent(query, alloc, max_results) catch {
@@ -1171,8 +1247,17 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             alloc.free(results);
         }
 
+        // Issue #422: header reflects post-filter count; "truncated" footer
+        // only fires for per-file-cap, not for glob/compact filtering.
+        var visible_total: usize = 0;
+        for (results) |r| {
+            if (path_glob) |g| if (!globMatch(g, r.path)) continue;
+            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            visible_total += 1;
+        }
+
         const w = cio.listWriter(out, alloc);
-        w.print("{d} results for '{s}':\n", .{ results.len, query }) catch {};
+        w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
         var file_counts = std.StringHashMap(u8).init(alloc);
         defer file_counts.deinit();
         const max_per_file: u8 = 5;
@@ -1192,8 +1277,8 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
             shown += 1;
         }
-        if (shown < results.len) {
-            w.print("({d} shown, {d} truncated)\n", .{ shown, results.len - shown }) catch {};
+        if (shown < visible_total) {
+            w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
         }
     }
 }
@@ -1217,6 +1302,123 @@ fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     for (hits) |h| {
         w.print("  {s}:{d}\n", .{ explorer.word_index.hitPath(h), h.line_num }) catch {};
     }
+}
+
+fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    const name = getStr(args, "name") orelse {
+        out.appendSlice(alloc, "error: missing 'name' argument") catch {};
+        appendBundleArgKeysDiagnostic(alloc, out, args);
+        return;
+    };
+    if (name.len == 0) {
+        out.appendSlice(alloc, "error: empty name — pass a non-empty 'name' string") catch {};
+        return;
+    }
+    if (getInt(args, "max_results")) |n| {
+        if (n <= 0) {
+            const w_err = cio.listWriter(out, alloc);
+            w_err.print("error: max_results ({d}) must be >= 1", .{n}) catch {};
+            return;
+        }
+    }
+    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 50;
+
+    const defs = explorer.findAllSymbols(name, alloc) catch {
+        out.appendSlice(alloc, "error: symbol lookup failed") catch {};
+        return;
+    };
+    defer {
+        for (defs) |d| {
+            alloc.free(d.path);
+            alloc.free(d.symbol.name);
+            if (d.symbol.detail) |dd| alloc.free(dd);
+        }
+        alloc.free(defs);
+    }
+
+    const results = explorer.searchContentWithScope(name, alloc, max_results) catch {
+        out.appendSlice(alloc, "error: search failed") catch {};
+        return;
+    };
+    defer {
+        for (results) |r| {
+            alloc.free(r.line_text);
+            alloc.free(r.path);
+            if (r.scope_name) |n2| alloc.free(n2);
+        }
+        alloc.free(results);
+    }
+
+    var shown: usize = 0;
+    for (results) |r| {
+        if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
+        var is_def = false;
+        for (defs) |d| {
+            if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
+                is_def = true;
+                break;
+            }
+        }
+        if (is_def) continue;
+        if (!hasWholeWordMatch(r.line_text, name)) continue;
+        shown += 1;
+    }
+
+    const w = cio.listWriter(out, alloc);
+    w.print("{d} call sites for '{s}':\n", .{ shown, name }) catch {};
+    for (results) |r| {
+        if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
+        var is_def = false;
+        for (defs) |d| {
+            if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
+                is_def = true;
+                break;
+            }
+        }
+        if (is_def) continue;
+        if (!hasWholeWordMatch(r.line_text, name)) continue;
+        if (r.scope_name) |sn| {
+            w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
+                r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
+            }) catch {};
+        } else {
+            w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+        }
+    }
+}
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or
+        c == '_';
+}
+
+/// Returns true iff `needle` appears in `haystack` with non-identifier
+/// characters (or string boundary) on both sides — i.e. as a whole-word
+/// identifier match, not as a substring inside a longer identifier.
+fn hasWholeWordMatch(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or haystack.len < needle.len) return false;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, search_from, needle)) |pos| {
+        const before_ok = pos == 0 or !isIdentChar(haystack[pos - 1]);
+        const after_idx = pos + needle.len;
+        const after_ok = after_idx >= haystack.len or !isIdentChar(haystack[after_idx]);
+        if (before_ok and after_ok) return true;
+        search_from = pos + 1;
+    }
+    return false;
+}
+
+/// Languages where the concept of a "call site" is meaningful. Excludes
+/// data formats (json, yaml), markup/styling (markdown, css, scss),
+/// declarative schemas (protobuf), and unknown files — callers found
+/// inside these are mentions in prose or config, not real invocations.
+fn langHasCallSites(lang: explore_mod.Language) bool {
+    return switch (lang) {
+        .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
+        else => true,
+    };
 }
 
 fn handleHot(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer) void {
@@ -1595,6 +1797,22 @@ fn appendBundleArgKeysDiagnostic(
         out.appendSlice(alloc, entry.key_ptr.*) catch return;
     }
     out.appendSlice(alloc, "]") catch return;
+    // Issue #424: if the args we saw contain ONLY administrative keys
+    // (`tool`, `arguments`) — or are empty entirely — there were no real
+    // sub-op fields at all. That's almost always a client wrapper bug.
+    // Suggest the inline shape so the caller can route around it.
+    var has_real_arg = false;
+    var it2 = args.iterator();
+    while (it2.next()) |entry| {
+        const k = entry.key_ptr.*;
+        if (!std.mem.eql(u8, k, "tool") and !std.mem.eql(u8, k, "arguments")) {
+            has_real_arg = true;
+            break;
+        }
+    }
+    if (!has_real_arg) {
+        out.appendSlice(alloc, "\nhint: no sub-op args reached the handler — your client may be stripping fields. Try inline shape: {\"tool\":\"...\",\"path\":\"...\"} (no `arguments` wrapper)") catch return;
+    }
 }
 
 /// Append up to 3 fuzzy-matched indexed paths so callers can recover from a
@@ -1679,13 +1897,17 @@ fn handleBundle(
     var fail_count: usize = 0;
     for (ops, 0..) |op, i| {
         if (op != .object) {
-            w.print("--- [{d}] error ---\nop must be an object\n", .{i}) catch {};
+            w.print("--- [{d}] error ---\nerror: op must be an object\n", .{i}) catch {};
             fail_count += 1;
             continue;
         }
         const op_obj = &op.object;
         const tool_name = getStr(op_obj, "tool") orelse {
-            w.print("--- [{d}] error ---\nmissing 'tool' field\n", .{i}) catch {};
+            if (op_obj.get("tool")) |_| {
+                w.print("--- [{d}] error ---\nerror: 'tool' must be a string\n", .{i}) catch {};
+            } else {
+                w.print("--- [{d}] error ---\nerror: missing 'tool' field\n", .{i}) catch {};
+            }
             fail_count += 1;
             continue;
         };
@@ -1711,6 +1933,10 @@ fn handleBundle(
         // Extract arguments. Two supported formats:
         //   1) {"tool":"outline", "arguments":{"path":"..."}}  — MCP tools/call style
         //   2) {"tool":"outline", "path":"..."}                 — inline args
+        // Issue #424: if `arguments` is present but empty (`{}`), fall
+        // through to inline-args mode. Some buggy client wrappers emit
+        // empty `arguments` alongside inline args; treating the empty
+        // object as authoritative would silently drop the real args.
         var sub_args_val: std.json.Value = undefined;
         var sub_args_ptr: ?*const std.json.ObjectMap = null;
         if (op_obj.get("arguments")) |arguments_val| {
@@ -1719,8 +1945,13 @@ fn handleBundle(
                 fail_count += 1;
                 continue;
             }
-            sub_args_val = arguments_val;
-            sub_args_ptr = &sub_args_val.object;
+            if (arguments_val.object.count() == 0) {
+                // Empty `arguments` — try inline args at the op level.
+                sub_args_ptr = op_obj;
+            } else {
+                sub_args_val = arguments_val;
+                sub_args_ptr = &sub_args_val.object;
+            }
         } else {
             // No "arguments" key — use op_obj directly (inline arg format)
             sub_args_ptr = op_obj;
@@ -1736,17 +1967,22 @@ fn handleBundle(
         if (out.items.len + sub_out.items.len > 200 * 1024) {
             w.print("--- [{d}] {s} ---\nTRUNCATED: adding this result would exceed 200KB. Use codedb_outline + targeted reads instead of full file reads.\n", .{ i, tool_name }) catch {};
             fail_count += 1;
+            // Issue #413: surface a per-index marker for every op the bundle
+            // dropped after truncation, so callers can correlate by index
+            // instead of silently losing ops > i.
+            var dropped_idx: usize = i + 1;
+            while (dropped_idx < ops.len) : (dropped_idx += 1) {
+                w.print("--- [{d}] dropped ---\nOPS_DROPPED: response cap reached; this op was not executed.\n", .{dropped_idx}) catch {};
+                fail_count += 1;
+            }
             break;
         }
 
         w.print("--- [{d}] {s} ---\n", .{ i, tool_name }) catch {};
         out.appendSlice(alloc, sub_out.items) catch {};
-        // Issue #357: when a bundled op fails with a missing-arg error, surface
-        // the keys it actually received so callers can tell whether codedb
-        // dropped the arg or the client sent it under the wrong name.
-        if (std.mem.startsWith(u8, sub_out.items, "error: missing")) {
-            appendBundleArgKeysDiagnostic(alloc, out, sub_args);
-        }
+        // Issue #357 / #423: per-tool handlers already append the
+        // `received keys` diagnostic on missing-arg errors, so the bundle
+        // wrapper does NOT re-append it. Doing so emits the line twice.
         if (std.mem.startsWith(u8, sub_out.items, "error:")) {
             fail_count += 1;
         } else {
@@ -3106,7 +3342,7 @@ const getInt = mcpj.getInt;
 pub const getBool = mcpj.getBool;
 const eql = mcpj.eql;
 
-fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Value) void {
+pub fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Value) void {
     if (id) |v| switch (v) {
         .integer => |n| {
             var tmp: [20]u8 = undefined;
@@ -3117,6 +3353,14 @@ fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Val
             buf.append(alloc, '"') catch return;
             mcpj.writeEscaped(alloc, buf, s);
             buf.append(alloc, '"') catch return;
+        },
+        .float => |f| {
+            var tmp: [32]u8 = undefined;
+            const s = std.fmt.bufPrint(&tmp, "{d}", .{f}) catch return;
+            buf.appendSlice(alloc, s) catch return;
+        },
+        .number_string => |s| {
+            buf.appendSlice(alloc, s) catch return;
         },
         else => buf.appendSlice(alloc, "null") catch return,
     } else {

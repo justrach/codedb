@@ -37,6 +37,14 @@ pub fn applyEdit(
     if (!has_lock) return error.FileLocked;
     errdefer agents.releaseLock(req.agent_id, req.path);
 
+    // Validate required op-specific args BEFORE doing any work that
+    // mutates Store.seq or rewrites the file (#401).
+    switch (req.op) {
+        .replace, .delete => if (req.range == null) return error.InvalidRange,
+        .insert => if (req.after == null) return error.InvalidRange,
+        else => {},
+    }
+
     const source = try std.Io.Dir.cwd().readFileAlloc(io, req.path, allocator, .limited(10 * 1024 * 1024));
     defer allocator.free(source);
 
@@ -47,10 +55,19 @@ pub fn applyEdit(
         if (!std.mem.eql(u8, expected_hex, actual_hex)) return error.HashMismatch;
     }
 
+    // Detect line-ending style: if the file has any "\r\n", treat it as
+    // CRLF and rejoin with CRLF (#404). Strip the trailing '\r' from
+    // each split chunk so the in-memory representation is uniform.
+    const is_crlf = std.mem.indexOf(u8, source, "\r\n") != null;
+    const sep: []const u8 = if (is_crlf) "\r\n" else "\n";
+
     var lines: std.ArrayList([]const u8) = .empty;
     defer lines.deinit(allocator);
     var iter = std.mem.splitScalar(u8, source, '\n');
-    while (iter.next()) |line| try lines.append(allocator, line);
+    while (iter.next()) |line| {
+        const trimmed = if (is_crlf and line.len > 0 and line[line.len - 1] == '\r') line[0 .. line.len - 1] else line;
+        try lines.append(allocator, trimmed);
+    }
 
     // A trailing newline produces an empty final element; don't count it as a line
     const had_trailing_newline = lines.items.len > 0 and lines.items[lines.items.len - 1].len == 0;
@@ -60,43 +77,48 @@ pub fn applyEdit(
 
     switch (req.op) {
         .replace => {
-            if (req.range) |range| {
-                if (range[0] == 0 or range[1] < range[0] or range[0] > lines.items.len) return error.InvalidRange;
-                const start = range[0] - 1;
-                const end = @min(range[1], lines.items.len);
-                const new_content = req.content orelse return error.MissingContent;
-                var new_lines: std.ArrayList([]const u8) = .empty;
-                defer new_lines.deinit(allocator);
-                var ni = std.mem.splitScalar(u8, new_content, '\n');
-                while (ni.next()) |nl| try new_lines.append(allocator, nl);
-                try lines.replaceRange(allocator, start, end - start, new_lines.items);
+            const range = req.range.?;
+            if (range[0] == 0 or range[1] < range[0] or range[0] > lines.items.len) return error.InvalidRange;
+            const start = range[0] - 1;
+            const end = @min(range[1], lines.items.len);
+            const new_content = req.content orelse return error.MissingContent;
+            var new_lines: std.ArrayList([]const u8) = .empty;
+            defer new_lines.deinit(allocator);
+            var ni = std.mem.splitScalar(u8, new_content, '\n');
+            while (ni.next()) |nl| {
+                const trimmed = if (is_crlf and nl.len > 0 and nl[nl.len - 1] == '\r') nl[0 .. nl.len - 1] else nl;
+                try new_lines.append(allocator, trimmed);
             }
+            try lines.replaceRange(allocator, start, end - start, new_lines.items);
         },
         .insert => {
-            if (req.after) |after_line| {
-                const pos = @min(after_line, lines.items.len);
-                const content = req.content orelse return error.MissingContent;
-                try lines.insert(allocator, pos, content);
-            }
+            const after_line = req.after.?;
+            const pos = @min(after_line, lines.items.len);
+            const content = req.content orelse return error.MissingContent;
+            try lines.insert(allocator, pos, content);
         },
         .delete => {
-            if (req.range) |range| {
-                if (range[0] == 0 or range[1] < range[0] or range[0] > lines.items.len) return error.InvalidRange;
-                const start = range[0] - 1;
-                const end = @min(range[1], lines.items.len);
-                // Remove lines [start..end) by replacing with nothing
-                try lines.replaceRange(allocator, start, end - start, &.{});
-            }
+            const range = req.range.?;
+            if (range[0] == 0 or range[1] < range[0] or range[0] > lines.items.len) return error.InvalidRange;
+            const start = range[0] - 1;
+            const end = @min(range[1], lines.items.len);
+            // Remove lines [start..end) by replacing with nothing
+            try lines.replaceRange(allocator, start, end - start, &.{});
         },
         else => {},
     }
 
-    // Restore trailing newline if the original file had one
-    if (had_trailing_newline) {
+    // Restore trailing newline if the original file had one — but not when
+    // the operation reduced the buffer to truly empty content (#409).
+    const result_is_empty = lines.items.len == 0 or (lines.items.len == 1 and lines.items[0].len == 0);
+    if (had_trailing_newline and !result_is_empty) {
         try lines.append(allocator, "");
     }
 
-    const result = try std.mem.join(allocator, "\n", lines.items);
+    const result = if (result_is_empty)
+        try allocator.dupe(u8, "")
+    else
+        try std.mem.join(allocator, sep, lines.items);
     defer allocator.free(result);
 
     const hash: u64 = std.hash.Wyhash.hash(0, result);

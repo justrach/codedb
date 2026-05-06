@@ -134,6 +134,7 @@ pub const AgentRegistry = struct {
 
         // Grant the lock.
         if (self.agents.getPtr(agent_id)) |a| {
+            if (a.state == .crashed) return false;
             if (a.locked_paths.getPtr(path)) |expiry| {
                 expiry.* = now + ttl_ms;
                 return true;

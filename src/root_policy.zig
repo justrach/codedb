@@ -11,7 +11,6 @@ pub fn isIndexableRoot(path: []const u8) bool {
     if (std.mem.eql(u8, path, "/")) return false;
     if (isExactOrChild(path, "/private/tmp")) return false;
     if (isExactOrChild(path, "/tmp")) return false;
-    if (isExactOrChild(path, "/var/tmp")) return false;
 
     const system_prefixes = [_][]const u8{
         "/Applications",
@@ -22,13 +21,14 @@ pub fn isIndexableRoot(path: []const u8) bool {
         "/bin",
         "/sbin",
         "/etc",
+        "/private/etc",
         "/dev",
         "/proc",
         "/sys",
         "/snap",
         "/nix",
-        "/var/folders",
-        "/private/var/folders",
+        "/var",
+        "/private/var",
     };
     for (system_prefixes) |pfx| {
         if (isExactOrChild(path, pfx)) return false;

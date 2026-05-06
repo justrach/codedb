@@ -48,6 +48,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // ── Tests ──
+    const test_filter = b.option([]const u8, "test-filter", "Only run tests whose name contains this substring");
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/tests.zig"),
@@ -57,9 +58,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tests.root_module.addImport("mcp", mcp_dep.module("mcp"));
+    if (test_filter) |f| {
+        const filters = b.allocator.alloc([]const u8, 1) catch @panic("oom");
+        filters[0] = f;
+        tests.filters = filters;
+    }
 
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&b.addRunArtifact(tests).step);
+    const tests_run = b.addRunArtifact(tests);
+    test_step.dependOn(&tests_run.step);
 
     // ── Library tests (verify the module root compiles) ──
     const lib_tests = b.addTest(.{

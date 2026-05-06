@@ -20,6 +20,7 @@ const root_policy = @import("root_policy.zig");
 const nuke_mod = @import("nuke.zig");
 const update_mod = @import("update.zig");
 const release_info = @import("release_info.zig");
+const Config = @import("config.zig").Config;
 
 /// Thin wrapper: format + write to a File via allocator.
 const Out = struct {
@@ -67,8 +68,33 @@ fn mainImpl() !void {
     const s = sty.style(use_color);
     var out = Out{ .file = stdout, .alloc = allocator };
 
-    const args = try cio.argsAlloc(allocator);
-    defer cio.argsFree(allocator, args);
+    const raw_args = try cio.argsAlloc(allocator);
+    defer cio.argsFree(allocator, raw_args);
+
+    // Extract --config-file=<path> / --config-file <path> before positional
+    // arg parsing so a leading `--config-file=X` isn't misread as the root.
+    // See #101, #102.
+    var explicit_config: ?[]const u8 = null;
+    const args = blk: {
+        var filtered: std.ArrayList([]const u8) = .empty;
+        errdefer filtered.deinit(allocator);
+        try filtered.append(allocator, raw_args[0]);
+        var i: usize = 1;
+        while (i < raw_args.len) : (i += 1) {
+            const a = raw_args[i];
+            if (std.mem.startsWith(u8, a, "--config-file=")) {
+                explicit_config = a["--config-file=".len..];
+                continue;
+            } else if (std.mem.eql(u8, a, "--config-file") and i + 1 < raw_args.len) {
+                explicit_config = raw_args[i + 1];
+                i += 1;
+                continue;
+            }
+            try filtered.append(allocator, a);
+        }
+        break :blk try filtered.toOwnedSlice(allocator);
+    };
+    defer allocator.free(args);
 
     var root: []const u8 = undefined;
     var cmd: []const u8 = undefined;
@@ -164,6 +190,13 @@ fn mainImpl() !void {
         });
         std.process.exit(1);
     };
+    // For `codedb mcp` from cwd, always go through deferred mode: we need the
+    // initialize handshake first to know whether the client is going to send
+    // workspace roots. If we eager-load here we'd race the client's roots/list
+    // reply and silently ignore an editor's actual workspace path. The trigger
+    // path is fast (snapshot load happens in-process when the trigger fires),
+    // and clients that don't advertise the roots capability fire the trigger
+    // immediately on notifications/initialized — see handleSession.
     const mcp_deferred_root = std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit;
     if (!mcp_deferred_root and !root_policy.isIndexableRoot(abs_root)) {
         out.p("{s}\xe2\x9c\x97{s} refusing to index temporary root: {s}{s}{s}\n", .{
@@ -175,7 +208,16 @@ fn mainImpl() !void {
     const data_dir = try getDataDir(io, allocator, abs_root);
     defer allocator.free(data_dir);
 
+    // Load user config (.codedbrc). Resolution: --config-file=<path>, then
+    // $CWD/.codedbrc, then <binary_dir>/.codedbrc. Silently falls back to
+    // defaults if nothing is found. See #101, #102.
+    const cfg = loadUserConfig(io, allocator, explicit_config) catch |err| blk: {
+        std.log.warn("config load failed ({s}) — using defaults", .{@errorName(err)});
+        break :blk Config.default;
+    };
+
     var store = Store.init(allocator);
+    store.max_versions = cfg.max_versions;
     defer store.deinit();
 
     const data_log_path = try std.fmt.allocPrint(allocator, "{s}/data.log", .{data_dir});
@@ -185,6 +227,7 @@ fn mainImpl() !void {
     };
 
     var explorer = Explorer.init(allocator);
+    explorer.content_cache_limit = cfg.max_cached;
     explorer.setRoot(io, root);
     defer explorer.deinit();
 
@@ -598,6 +641,11 @@ fn mainImpl() !void {
         std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
         try server.serve(io, allocator, &store, &agents, &explorer, queue, port);
     } else if (std.mem.eql(u8, cmd, "mcp")) {
+        // Background auto-update check (no-op when CODEDB_NO_AUTO_UPDATE is set
+        // or when the last check was within the last 24h). Detached thread, so
+        // this doesn't block server startup.
+        update_mod.maybeAutoUpdate(io, allocator);
+
         var agents = AgentRegistry.init(allocator);
         defer agents.deinit();
         _ = try agents.register("__filesystem__");
@@ -646,6 +694,7 @@ fn mainImpl() !void {
                 .telem = &telem,
                 .queue = queue,
                 .startup_t0 = startup_t0,
+                .fallback_cwd = abs_root,
                 .triggerFn = triggerScanFromRoots,
             };
             deferred.scan_done.* = std.atomic.Value(bool).init(false);
@@ -702,6 +751,20 @@ fn resolveRoot(io: std.Io, root: []const u8, buf: *[std.fs.max_path_bytes]u8) ![
     const sub = if (std.mem.eql(u8, root, ".")) "." else root;
     const n = std.Io.Dir.cwd().realPathFile(io, sub, buf) catch return error.ResolveFailed;
     return buf[0..n];
+}
+
+/// Resolve config from the (already-extracted) --config-file path, falling
+/// back to $CWD/.codedbrc and then <binary_dir>/.codedbrc. Returns the
+/// default Config if nothing is found. Addresses #101, #102.
+fn loadUserConfig(io: std.Io, alloc: std.mem.Allocator, explicit: ?[]const u8) !Config {
+    const self_exe: ?[:0]u8 = std.process.executablePathAlloc(io, alloc) catch null;
+    defer if (self_exe) |p| alloc.free(p);
+    const bin_dir: ?[]const u8 = if (self_exe) |p| blk: {
+        const last_slash = std.mem.lastIndexOfScalar(u8, p, '/') orelse break :blk null;
+        break :blk p[0..last_slash];
+    } else null;
+
+    return try Config.loadDefault(io, alloc, explicit, bin_dir);
 }
 
 fn loadSnapshotIfHeadMatches(
@@ -974,6 +1037,7 @@ fn printUsage(out: Out, s: sty.Style) void {
     out.p(
         \\  {s}options:{s}
         \\    {s}--no-telemetry{s}             disable usage telemetry (or set CODEDB_NO_TELEMETRY)
+        \\    {s}--config-file <path>{s}       load config overrides from <path> (default: ./.codedbrc)
         \\
         \\  If root is omitted, uses current working directory.
         \\  Data stored in {s}~/.codedb/projects/<hash>/{s}
@@ -981,6 +1045,7 @@ fn printUsage(out: Out, s: sty.Style) void {
         \\
     , .{
         s.dim,  s.reset,
+        s.cyan, s.reset,
         s.cyan, s.reset,
         s.dim,  s.reset,
     });
@@ -1141,8 +1206,18 @@ fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8) voi
 }
 
 fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
+    const t0 = cio.milliTimestamp();
+    const fallback_after_ms: i64 = 3000;
+    var fallback_attempted = false;
     while (!ctx.scan_done.load(.acquire) and !ctx.shutdown.load(.acquire)) {
         cio.sleepMs(50);
+        if (!fallback_attempted and cio.milliTimestamp() - t0 >= fallback_after_ms) {
+            fallback_attempted = true;
+            // Client never sent indexable roots — fall back to cwd so the
+            // server doesn't sit in loading_snapshot forever.
+            const empty_roots: []const mcp_server.Root = &.{};
+            _ = mcp_server.triggerDeferredScanWithFallback(ctx, empty_roots, ctx.fallback_cwd);
+        }
     }
     if (ctx.shutdown.load(.acquire)) return;
     watcher.incrementalLoop(ctx.io, ctx.store, ctx.explorer, ctx.queue, ctx.resolved_root, ctx.shutdown, ctx.scan_done);
