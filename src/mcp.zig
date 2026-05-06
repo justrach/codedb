@@ -520,6 +520,21 @@ pub const tools_list =
     \\]}
 ;
 
+/// Build the augmented `tools/list` payload with a discriminated `oneOf` on
+/// the codedb_bundle ops items. Each branch pins `tool` to a const sub-tool
+/// name and `arguments` to that sub-tool's actual `inputSchema`, so a model
+/// emitting a bundle call is forced to populate `arguments` with the right
+/// keys for whichever sub-tool it picked. (Stage 2 of issue #437; Stage 1 in
+/// #434 added `arguments` to items.required.)
+///
+/// Stub for now — returns the raw `tools_list` unchanged. The real builder
+/// lands in the fix commit; this preserves the failing-test-first workflow.
+/// Caller owns returned slice.
+pub fn buildAugmentedToolsList(alloc: std.mem.Allocator) ![]u8 {
+    return try alloc.dupe(u8, tools_list);
+}
+
+
 // ── MCP Server ──────────────────────────────────────────────────────────────
 
 /// Monotonic timestamp of last MCP request, used for activity accounting.
