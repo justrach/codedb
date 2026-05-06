@@ -515,6 +515,10 @@ pub const Explorer = struct {
     /// .codedbrc (#102). Beyond this threshold, readContentForSearch falls
     /// back to disk reads.
     content_cache_limit: u32 = 1000,
+    /// When non-null, append one JSON line per searchContent invocation
+    /// to this path (v0 rerank-trace experiment). Borrowed; caller owns
+    /// the slice for the Explorer's lifetime.
+    rerank_trace_path: ?[]const u8 = null,
 
     pub fn setRoot(self: *Explorer, io: std.Io, root_path: []const u8) void {
         self.io = io;
@@ -1728,10 +1732,10 @@ pub const Explorer = struct {
         query: []const u8,
         allocator: std.mem.Allocator,
     ) ![]const SearchResult {
+        for (result_list.items) |*r| {
+            r.score = self.rerankSignalScore(r.*, query);
+        }
         if (result_list.items.len > 1) {
-            for (result_list.items) |*r| {
-                r.score = self.rerankSignalScore(r.*, query);
-            }
             std.sort.block(SearchResult, result_list.items, {}, struct {
                 pub fn lessThan(_: void, a: SearchResult, b: SearchResult) bool {
                     if (a.score != b.score) return a.score > b.score;
@@ -1741,6 +1745,7 @@ pub const Explorer = struct {
                 }
             }.lessThan);
         }
+        self.appendRerankTrace(query, result_list.items);
         return result_list.toOwnedSlice(allocator);
     }
 
@@ -1789,6 +1794,91 @@ pub const Explorer = struct {
         }
 
         return score;
+    }
+
+    /// Append one JSON line per searchContent invocation. v0 logger for the
+    /// rerank-tuning experiment — pure observation, never affects ranking.
+    /// Silent no-op when path is unset, io is unset, or any I/O step fails.
+    /// Caps query at 256 bytes, results at 50 entries, file at 10 MB
+    /// (rotates by truncate-clobber).
+    fn appendRerankTrace(self: *const Explorer, query: []const u8, results: []const SearchResult) void {
+        const path = self.rerank_trace_path orelse return;
+        const io_inst = self.io orelse return;
+
+        const max_query: usize = 256;
+        const max_results_logged: usize = 50;
+        const size_limit: u64 = 10 * 1024 * 1024;
+
+        var buf: [16 * 1024]u8 = undefined;
+        var pos: usize = 0;
+
+        const ts = cio.milliTimestamp();
+        const head = std.fmt.bufPrint(buf[pos..], "{{\"ts\":{d},\"query\":\"", .{ts}) catch return;
+        pos += head.len;
+
+        const q_clamped = query[0..@min(query.len, max_query)];
+        pos += writeJsonEscaped(buf[pos..], q_clamped);
+
+        const sep = "\",\"results\":[";
+        if (pos + sep.len > buf.len) return;
+        @memcpy(buf[pos..][0..sep.len], sep);
+        pos += sep.len;
+
+        var any_emitted = false;
+        const n = @min(results.len, max_results_logged);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const r = results[i];
+            const sep_len: usize = if (any_emitted) 1 else 0;
+            const tail_reserve: usize = 3; // "]}\n"
+            const escaped_path_budget: usize = 2 * r.path.len;
+            const fixed_overhead: usize = "{\"path\":\"".len + "\",\"line\":,\"score\":}".len + 32;
+            if (pos + sep_len + escaped_path_budget + fixed_overhead + tail_reserve > buf.len) break;
+
+            if (any_emitted) {
+                buf[pos] = ',';
+                pos += 1;
+            }
+            const open = "{\"path\":\"";
+            @memcpy(buf[pos..][0..open.len], open);
+            pos += open.len;
+            pos += writeJsonEscaped(buf[pos..], r.path);
+            const obj_tail = std.fmt.bufPrint(buf[pos..], "\",\"line\":{d},\"score\":{d:.4}}}", .{ r.line_num, r.score }) catch break;
+            pos += obj_tail.len;
+            any_emitted = true;
+        }
+
+        const close = "]}\n";
+        if (pos + close.len > buf.len) return;
+        @memcpy(buf[pos..][0..close.len], close);
+        pos += close.len;
+
+        var file = std.Io.Dir.cwd().openFile(io_inst, path, .{ .mode = .write_only }) catch blk: {
+            break :blk std.Io.Dir.cwd().createFile(io_inst, path, .{ .truncate = false }) catch return;
+        };
+        var current_size = file.length(io_inst) catch {
+            file.close(io_inst);
+            return;
+        };
+        if (current_size >= size_limit) {
+            file.close(io_inst);
+            file = std.Io.Dir.cwd().createFile(io_inst, path, .{ .truncate = true }) catch return;
+            current_size = 0;
+        }
+        defer file.close(io_inst);
+
+        const locked = blk: {
+            file.lock(io_inst, .exclusive) catch break :blk false;
+            break :blk true;
+        };
+        defer if (locked) file.unlock(io_inst);
+
+        if (locked) {
+            current_size = file.length(io_inst) catch current_size;
+            if (current_size >= size_limit) current_size = 0;
+        }
+
+        file.writePositionalAll(io_inst, buf[0..pos], current_size) catch {};
     }
 
     /// BM25-ranked content search. Tokenizes the query the same way the word
@@ -4501,6 +4591,39 @@ fn countOccurrences(text: []const u8, needle: []const u8) f32 {
         } else break;
     }
     return count;
+}
+
+/// Minimal JSON string escaper for the rerank-trace logger. Writes escaped
+/// bytes into `out`, returns bytes written. Stops cleanly when `out` is full.
+fn writeJsonEscaped(out: []u8, input: []const u8) usize {
+    var w: usize = 0;
+    for (input) |c| {
+        if (w >= out.len) break;
+        switch (c) {
+            '"' => {
+                if (w + 2 > out.len) break;
+                out[w] = '\\';
+                out[w + 1] = '"';
+                w += 2;
+            },
+            '\\' => {
+                if (w + 2 > out.len) break;
+                out[w] = '\\';
+                out[w + 1] = '\\';
+                w += 2;
+            },
+            '\n', '\r', '\t' => {
+                out[w] = ' ';
+                w += 1;
+            },
+            else => {
+                if (c < 0x20) continue;
+                out[w] = c;
+                w += 1;
+            },
+        }
+    }
+    return w;
 }
 
 fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {

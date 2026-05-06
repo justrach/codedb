@@ -10932,3 +10932,189 @@ test "issue-429-e: searchContent rerank penalises doc-language files so code bea
     try testing.expect(results.len >= 2);
     try testing.expectEqualStrings("src/caller.zig", results[0].path);
 }
+
+test "rerank-trace: appends one JSON line per searchContent when enabled" {
+    const tmp_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path_len = try tmp.dir.realPathFile(tmp_io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
+
+    const trace_path = try std.fmt.allocPrint(testing.allocator, "{s}/rerank-traces.jsonl", .{tmp_path});
+    defer testing.allocator.free(trace_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    explorer.io = tmp_io;
+    explorer.rerank_trace_path = trace_path;
+
+    try explorer.indexFile("src/widgetX.zig", "pub fn process() void { _ = widgetX; }\n");
+    try explorer.indexFile("src/unrelated.zig", "pub fn process() void { _ = widgetX; }\n");
+
+    const results = try explorer.searchContent("widgetX", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 2);
+
+    const f = try std.Io.Dir.cwd().openFile(tmp_io, trace_path, .{});
+    defer f.close(tmp_io);
+    const size = try f.length(tmp_io);
+    try testing.expect(size > 0);
+
+    const data = try testing.allocator.alloc(u8, @intCast(size));
+    defer testing.allocator.free(data);
+    _ = try f.readPositionalAll(tmp_io, data, 0);
+
+    try testing.expectEqual(@as(u8, '\n'), data[data.len - 1]);
+    var nl_count: usize = 0;
+    for (data) |c| if (c == '\n') {
+        nl_count += 1;
+    };
+    try testing.expectEqual(@as(usize, 1), nl_count);
+
+    try testing.expect(std.mem.indexOf(u8, data, "\"query\":\"widgetX\"") != null);
+    try testing.expect(std.mem.indexOf(u8, data, "src/widgetX.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, data, "\"results\":[") != null);
+}
+
+test "rerank-trace: disabled by default — no file is created" {
+    const tmp_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path_len = try tmp.dir.realPathFile(tmp_io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
+
+    const probe_path = try std.fmt.allocPrint(testing.allocator, "{s}/should-not-exist.jsonl", .{tmp_path});
+    defer testing.allocator.free(probe_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    explorer.io = tmp_io;
+    // rerank_trace_path stays null — opt-in only.
+
+    try explorer.indexFile("a.zig", "pub fn t() void { _ = sym; }\n");
+    try explorer.indexFile("b.zig", "pub fn t() void { _ = sym; }\n");
+
+    const results = try explorer.searchContent("sym", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 1);
+
+    const open_err = std.Io.Dir.cwd().openFile(tmp_io, probe_path, .{});
+    try testing.expectError(error.FileNotFound, open_err);
+}
+
+test "rerank-trace: clobbers when file exceeds size limit" {
+    const tmp_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path_len = try tmp.dir.realPathFile(tmp_io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
+
+    const trace_path = try std.fmt.allocPrint(testing.allocator, "{s}/big.jsonl", .{tmp_path});
+    defer testing.allocator.free(trace_path);
+
+    {
+        const f = try std.Io.Dir.cwd().createFile(tmp_io, trace_path, .{ .truncate = true });
+        defer f.close(tmp_io);
+        const target_size: u64 = 11 * 1024 * 1024;
+        var chunk: [4096]u8 = undefined;
+        @memset(&chunk, 'x');
+        var written: u64 = 0;
+        while (written < target_size) : (written += chunk.len) {
+            try f.writePositionalAll(tmp_io, &chunk, written);
+        }
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    explorer.io = tmp_io;
+    explorer.rerank_trace_path = trace_path;
+
+    try explorer.indexFile("a.zig", "pub fn t() void { _ = sym; }\n");
+    try explorer.indexFile("b.zig", "pub fn t() void { _ = sym; }\n");
+
+    const results = try explorer.searchContent("sym", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    const f = try std.Io.Dir.cwd().openFile(tmp_io, trace_path, .{});
+    defer f.close(tmp_io);
+    const new_size = try f.length(tmp_io);
+    try testing.expect(new_size > 0);
+    try testing.expect(new_size < 16 * 1024);
+}
+
+test "rerank-trace: single-result query records non-zero rerank score" {
+    // Pre-fix: rerankAndFinalize only scored when items.len > 1, so a
+    // single-result trace logged score=0.0 — misleading for offline analysis
+    // because it looked identical to a zero-confidence match. The fix runs
+    // scoring unconditionally and only sorts when there's more than one item.
+    const tmp_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path_len = try tmp.dir.realPathFile(tmp_io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
+
+    const trace_path = try std.fmt.allocPrint(testing.allocator, "{s}/single.jsonl", .{tmp_path});
+    defer testing.allocator.free(trace_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+    explorer.io = tmp_io;
+    explorer.rerank_trace_path = trace_path;
+
+    // Only one file mentions the query — guarantees results.len == 1.
+    try explorer.indexFile("src/loneSym.zig", "pub fn loneSym() void {}\n");
+    try explorer.indexFile("src/other.zig", "pub fn unrelated() void {}\n");
+
+    const results = try explorer.searchContent("loneSym", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expectEqual(@as(usize, 1), results.len);
+    // Symbol-def boost (+5) + basename-substring boost (+8) + per-line freq
+    // means score is well above zero — verifies scoring actually ran.
+    try testing.expect(results[0].score > 1.0);
+
+    const f = try std.Io.Dir.cwd().openFile(tmp_io, trace_path, .{});
+    defer f.close(tmp_io);
+    const size = try f.length(tmp_io);
+    const data = try testing.allocator.alloc(u8, @intCast(size));
+    defer testing.allocator.free(data);
+    _ = try f.readPositionalAll(tmp_io, data, 0);
+
+    try testing.expect(std.mem.indexOf(u8, data, "\"score\":0.0000") == null);
+    try testing.expect(std.mem.indexOf(u8, data, "src/loneSym.zig") != null);
+}
