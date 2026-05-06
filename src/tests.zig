@@ -10452,6 +10452,68 @@ test "issue-424-A: bundle envelope errors carry the 'error:' prefix consistently
     try testing.expect(std.mem.indexOf(u8, out2.items, "error: missing 'tool'") != null);
 }
 
+test "issue-441: bundle rejects codedb_projects sub-op" {
+    // codedb_projects lists every indexed project on the machine, which is a
+    // global directory enumeration unrelated to whatever repo the agent is
+    // working on. When a planner sees a previous bundle that called
+    // codedb_projects, it tends to replay the same shape — re-emitting 5x
+    // codedb_projects ops as if that were the canonical "what do I do here"
+    // call. Block it at the dispatcher, mirroring the existing rejections of
+    // codedb_bundle (recursive) and codedb_edit (write op).
+    var explorer = Explorer.init(testing.allocator);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    defer bench_ctx.deinit();
+
+    const bundle_json =
+        \\{"ops":[{"tool":"codedb_projects","arguments":{}}]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // The op must be rejected with an explicit error, not silently dispatched.
+    try testing.expect(std.mem.indexOf(u8, out.items, "error: codedb_projects not allowed in bundle") != null);
+}
+
+test "issue-441: codedb_projects branch is excluded from augmented oneOf" {
+    // Mirror of the dispatcher rejection at the schema level — when the
+    // discriminated oneOf is opted into via CODEDB_DISCRIMINATED_SCHEMA=1,
+    // there must not be a oneOf branch advertising codedb_projects as a
+    // valid sub-tool, since the bundle dispatcher rejects it at runtime.
+    const augmented = try mcp_mod.buildAugmentedToolsList(testing.allocator);
+    defer testing.allocator.free(augmented);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, augmented, .{});
+    defer parsed.deinit();
+
+    const tools = parsed.value.object.get("tools").?.array;
+    var bundle_items: ?std.json.Value = null;
+    for (tools.items) |t| {
+        if (std.mem.eql(u8, t.object.get("name").?.string, "codedb_bundle")) {
+            bundle_items = t.object.get("inputSchema").?.object.get("properties").?.object.get("ops").?.object.get("items").?;
+            break;
+        }
+    }
+    const one_of = bundle_items.?.object.get("oneOf").?.array;
+
+    for (one_of.items) |branch| {
+        const props = branch.object.get("properties").?.object;
+        const tool_v = props.get("tool").?;
+        const tool_const = tool_v.object.get("const") orelse continue;
+        try testing.expect(!std.mem.eql(u8, tool_const.string, "codedb_projects"));
+    }
+}
+
 test "issue-434: codedb_bundle ops items schema requires arguments field" {
     // The codedb_bundle inputSchema in tools_list advertises ops items as
     // {required: ["tool"]} with arguments as a bare {type: "object"} that
