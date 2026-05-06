@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.5809 - 2026-05-07
+
+`0.2.5809` is a hotfix for a v0.2.5808 regression: the discriminated `oneOf` on `codedb_bundle` ops items (Stage 2 of [#437](https://github.com/justrach/codedb/issues/437)) breaks every MCP client backed by the OpenAI Responses API (codex, forgecode, etc.). OpenAI's strict-mode tool-schema validator rejects `oneOf` outright with `Invalid schema for function 'mcp_codedb_tool_codedb_bundle': 'oneOf' is not permitted`, which makes the entire `codedb_bundle` tool unusable on those clients.
+
+### MCP
+
+- **`oneOf` is now opt-in via `CODEDB_DISCRIMINATED_SCHEMA=1`.** By default, `tools/list` serves the raw schema with only Stage 1's `required: ["tool", "arguments"]` (from [#434](https://github.com/justrach/codedb/issues/434)) — works on every MCP client. Anthropic-backed clients that benefit from the discriminated `oneOf` can re-enable it by setting the env var on the codedb process. The `buildAugmentedToolsList` builder is unchanged; only the call site in `mcp.zig` is gated on the env var. The `#424` runtime inline-args fallback continues to handle non-conformant clients.
+
+### Compatibility
+
+- v0.2.5808 set the bundle schema to a structure OpenAI's validator rejects. If you upgraded yesterday and saw `tools[N].parameters` errors from codex/forgecode, this is the fix — no opt-in needed.
+- Anthropic-backed clients (Claude Code, etc.) that want the stronger constraint: `export CODEDB_DISCRIMINATED_SCHEMA=1` before launching the MCP server.
+
 ## 0.2.5808 - 2026-05-06
 
 `0.2.5808` is a tool-schema fix for `codedb_bundle` plus an opt-in rerank-trace logger for offline ranking experiments. Three PRs ship together: [#435](https://github.com/justrach/codedb/pull/435) (Stage 1 of [#434](https://github.com/justrach/codedb/issues/434)), [#438](https://github.com/justrach/codedb/pull/438) (Stage 2 of [#437](https://github.com/justrach/codedb/issues/437)), and [#436](https://github.com/justrach/codedb/pull/436) (rerank-trace logger).

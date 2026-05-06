@@ -692,11 +692,20 @@ pub fn run(
     var cache = ProjectCache.init(alloc, default_path);
     defer cache.deinit();
 
-    // Build the augmented `tools/list` payload once at startup. Falls back
-    // to the raw `tools_list` const if augmentation fails for any reason
-    // (parse error, OOM) — clients still get a valid schema, just without
-    // the discriminated oneOf on the bundle ops.
+    // Build the `tools/list` payload. The discriminated `oneOf` on the
+    // codedb_bundle ops items (issue #437) is incompatible with OpenAI's
+    // strict-mode tool-schema validator, which rejects `oneOf` outright with
+    // "'oneOf' is not permitted" — breaking codex/forgecode and any other
+    // OpenAI-Responses-API-backed MCP client. Default to the raw schema (which
+    // still has Stage 1's required: ["tool", "arguments"] from #434). Set
+    // CODEDB_DISCRIMINATED_SCHEMA=1 to opt back into the augmented oneOf for
+    // Anthropic-backed clients that benefit from it.
+    const discriminated_opt_in = blk_opt: {
+        const v = cio.posixGetenv("CODEDB_DISCRIMINATED_SCHEMA") orelse break :blk_opt false;
+        break :blk_opt std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
+    };
     const tools_list_response: []const u8 = blk: {
+        if (!discriminated_opt_in) break :blk tools_list;
         const augmented = buildAugmentedToolsList(alloc) catch break :blk tools_list;
         break :blk augmented;
     };
