@@ -10514,6 +10514,69 @@ test "issue-441: codedb_projects branch is excluded from augmented oneOf" {
     }
 }
 
+test "issue-443: codedb_bundle is omitted from default tools/list response" {
+    // The codedb_bundle tool has been a footgun across multiple stages:
+    //   #434 — schema permitted empty arguments (Stage 1 fix: required arguments)
+    //   #437 — Stage 2 oneOf augmentation broke OpenAI strict-mode (#440 hotfix)
+    //   #441 — codedb_projects sub-op replay loop in planners
+    // Even with all of the above, OpenAI clients still emit
+    // {"tool":"codedb_*","arguments":{}} because the default schema's
+    // arguments field is a bare {type:"object"} with no inner shape, and
+    // the discriminated oneOf is opt-in only.
+    //
+    // Disable codedb_bundle entirely until the schema can be reworked to
+    // bind sub-tool arguments inline (no `arguments` wrapper), removing
+    // the empty-args footgun structurally. The dispatcher-side handler
+    // stays so clients with cached schemas don't crash, but the runtime
+    // tools/list response no longer advertises it. CODEDB_BUNDLE_ENABLED=1
+    // re-enables advertisement for callers that want to re-engage it.
+    const response = try mcp_mod.buildToolsListResponse(testing.allocator, .{
+        .bundle_enabled = false,
+        .discriminated_opt_in = false,
+    });
+    defer testing.allocator.free(response);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+    defer parsed.deinit();
+
+    const tools = parsed.value.object.get("tools").?.array;
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        try testing.expect(!std.mem.eql(u8, name, "codedb_bundle"));
+    }
+
+    // Sanity: legitimate tools still advertised.
+    var saw_search = false;
+    var saw_outline = false;
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_search")) saw_search = true;
+        if (std.mem.eql(u8, name, "codedb_outline")) saw_outline = true;
+    }
+    try testing.expect(saw_search);
+    try testing.expect(saw_outline);
+}
+
+test "issue-443: codedb_bundle is advertised when CODEDB_BUNDLE_ENABLED=1" {
+    // Re-enable path. When bundle_enabled is true the runtime response
+    // includes codedb_bundle, exactly as it did before this gate.
+    const response = try mcp_mod.buildToolsListResponse(testing.allocator, .{
+        .bundle_enabled = true,
+        .discriminated_opt_in = false,
+    });
+    defer testing.allocator.free(response);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+    defer parsed.deinit();
+
+    const tools = parsed.value.object.get("tools").?.array;
+    var saw_bundle = false;
+    for (tools.items) |t| {
+        if (std.mem.eql(u8, t.object.get("name").?.string, "codedb_bundle")) saw_bundle = true;
+    }
+    try testing.expect(saw_bundle);
+}
+
 test "issue-434: codedb_bundle ops items schema requires arguments field" {
     // The codedb_bundle inputSchema in tools_list advertises ops items as
     // {required: ["tool"]} with arguments as a bare {type: "object"} that
