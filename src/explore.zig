@@ -1587,15 +1587,34 @@ pub const Explorer = struct {
         // Tier 1: trigram candidates — fast path, skips files already found by Tier 0.
         if (candidate_paths) |cp| {
             if (cp.len > 0) {
+                // Issue #427: rank candidates by per-file word-index hit count
+                // (desc) so the definition-dense file scans first; fall back to
+                // file content length (asc) so small files still come before
+                // unrelated large files at the same hit count. Pre-fix the
+                // sort key was content length alone, which buried the canonical
+                // file behind unrelated short files when max_per_file was 1.
+                var hits_per_file = std.StringHashMap(u32).init(allocator);
+                defer hits_per_file.deinit();
+                for (word_hits) |hit| {
+                    const hp = self.word_index.hitPath(hit);
+                    if (hp.len == 0) continue;
+                    const gop_h = try hits_per_file.getOrPut(hp);
+                    if (!gop_h.found_existing) gop_h.value_ptr.* = 0;
+                    gop_h.value_ptr.* += 1;
+                }
                 const SortCtx = struct {
                     contents: *const std.StringHashMap([]const u8),
+                    counts: *const std.StringHashMap(u32),
                     pub fn lessThan(ctx: @This(), a: []const u8, b: []const u8) bool {
+                        const a_count = ctx.counts.get(a) orelse 0;
+                        const b_count = ctx.counts.get(b) orelse 0;
+                        if (a_count != b_count) return a_count > b_count;
                         const a_len = if (ctx.contents.get(a)) |c| c.len else std.math.maxInt(usize);
                         const b_len = if (ctx.contents.get(b)) |c| c.len else std.math.maxInt(usize);
                         return a_len < b_len;
                     }
                 };
-                std.mem.sort([]const u8, @constCast(cp), SortCtx{ .contents = &self.contents }, SortCtx.lessThan);
+                std.mem.sort([]const u8, @constCast(cp), SortCtx{ .contents = &self.contents, .counts = &hits_per_file }, SortCtx.lessThan);
 
                 const estimated_total = cp.len + self.skip_trigram_files.count();
                 const max_per_file = @max(@as(usize, 1), max_results / @max(@as(usize, 1), estimated_total));
