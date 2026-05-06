@@ -1358,7 +1358,9 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
                 break;
             }
         }
-        if (!is_def) shown += 1;
+        if (is_def) continue;
+        if (!hasWholeWordMatch(r.line_text, name)) continue;
+        shown += 1;
     }
 
     const w = cio.listWriter(out, alloc);
@@ -1372,6 +1374,7 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
             }
         }
         if (is_def) continue;
+        if (!hasWholeWordMatch(r.line_text, name)) continue;
         if (r.scope_name) |sn| {
             w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
                 r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
@@ -1380,6 +1383,29 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
             w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
         }
     }
+}
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or
+        c == '_';
+}
+
+/// Returns true iff `needle` appears in `haystack` with non-identifier
+/// characters (or string boundary) on both sides — i.e. as a whole-word
+/// identifier match, not as a substring inside a longer identifier.
+fn hasWholeWordMatch(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or haystack.len < needle.len) return false;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, search_from, needle)) |pos| {
+        const before_ok = pos == 0 or !isIdentChar(haystack[pos - 1]);
+        const after_idx = pos + needle.len;
+        const after_ok = after_idx >= haystack.len or !isIdentChar(haystack[after_idx]);
+        if (before_ok and after_ok) return true;
+        search_from = pos + 1;
+    }
+    return false;
 }
 
 fn handleHot(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer) void {
