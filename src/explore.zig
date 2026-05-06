@@ -3945,6 +3945,10 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
 
 fn searchInContent(path: []const u8, content: []const u8, query: []const u8, allocator: std.mem.Allocator, max_per_file: usize, max_results: usize, result_list: *std.ArrayList(SearchResult)) !void {
     if (query.len == 0 or content.len == 0) return;
+    // Issue #431: bail when the query is longer than the file. Without this
+    // guard, `content.len - query.len + 1` below underflows usize → integer
+    // overflow panic in Debug, SIGBUS in ReleaseFast.
+    if (query.len > content.len) return;
     result_list.ensureTotalCapacity(allocator, result_list.items.len + @min(max_per_file, 16)) catch {};
     const first_lower: u8 = if (query[0] >= 'A' and query[0] <= 'Z') query[0] + 32 else query[0];
     const first_upper: u8 = if (query[0] >= 'a' and query[0] <= 'z') query[0] - 32 else query[0];
