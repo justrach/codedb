@@ -575,6 +575,8 @@ pub fn buildAugmentedToolsList(alloc: std.mem.Allocator) ![]u8 {
         const sub_name = sub_name_v.string;
         if (std.mem.eql(u8, sub_name, "codedb_bundle")) continue;
         if (std.mem.eql(u8, sub_name, "codedb_edit")) continue;
+        // issue #441: codedb_projects is dispatcher-rejected in bundle; don't advertise it.
+        if (std.mem.eql(u8, sub_name, "codedb_projects")) continue;
         const sub_schema = t.object.get("inputSchema") orelse continue;
 
         var tool_const: std.json.ObjectMap = .{};
@@ -2020,6 +2022,17 @@ fn handleBundle(
         }
         if (tool == .codedb_edit) {
             w.print("--- [{d}] {s} ---\nerror: write operations not allowed in bundle\n", .{ i, tool_name }) catch {};
+            fail_count += 1;
+            continue;
+        }
+        if (tool == .codedb_projects) {
+            // codedb_projects lists every indexed project machine-wide — a
+            // global directory enumeration unrelated to the current repo.
+            // Planners that see one such call tend to replay the shape (5x
+            // codedb_projects in one bundle), so block it at the dispatcher.
+            // It is still callable as a standalone tool for cases where a
+            // global listing genuinely is what's wanted.
+            w.print("--- [{d}] {s} ---\nerror: codedb_projects not allowed in bundle\n", .{ i, tool_name }) catch {};
             fail_count += 1;
             continue;
         }

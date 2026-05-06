@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.5810 - 2026-05-07
+
+`0.2.5810` blocks `codedb_projects` from being a valid `codedb_bundle` sub-op ([#441](https://github.com/justrach/codedb/issues/441)).
+
+### MCP ([#441](https://github.com/justrach/codedb/issues/441))
+
+- **`codedb_bundle` rejects `codedb_projects` sub-ops.** `codedb_projects` lists every indexed project on the machine — a global directory enumeration unrelated to whatever repo the agent is actually working on. When a planner sees a previous bundle that called `codedb_projects`, it tends to replay the same shape (e.g. 5x `codedb_projects` in one batch), and recent-message attention bias amplifies it on continuation: graff and similar resumable clients ship the delta + `previous_response_id`, so the previous assistant message dominates the planner's context. Block it at the dispatcher, mirroring the existing rejections of `codedb_bundle` (recursive) and `codedb_edit` (write op). The `oneOf` discriminated schema (opt-in via `CODEDB_DISCRIMINATED_SCHEMA=1`) also drops the `codedb_projects` branch, so model output can't suggest it. Standalone calls to `codedb_projects` outside a bundle are unchanged.
+
 ## 0.2.5809 - 2026-05-07
 
 `0.2.5809` is a hotfix for a v0.2.5808 regression: the discriminated `oneOf` on `codedb_bundle` ops items (Stage 2 of [#437](https://github.com/justrach/codedb/issues/437)) breaks every MCP client backed by the OpenAI Responses API (codex, forgecode, etc.). OpenAI's strict-mode tool-schema validator rejects `oneOf` outright with `Invalid schema for function 'mcp_codedb_tool_codedb_bundle': 'oneOf' is not permitted`, which makes the entire `codedb_bundle` tool unusable on those clients.
