@@ -10452,6 +10452,43 @@ test "issue-424-A: bundle envelope errors carry the 'error:' prefix consistently
     try testing.expect(std.mem.indexOf(u8, out2.items, "error: missing 'tool'") != null);
 }
 
+test "issue-434: codedb_bundle ops items schema requires arguments field" {
+    // The codedb_bundle inputSchema in tools_list advertises ops items as
+    // {required: ["tool"]} with arguments as a bare {type: "object"} that
+    // permits {}. Function-calling LLMs read the schema as authoritative and
+    // emit the minimum-valid payload — {tool: "...", arguments: {}} — which
+    // misroutes through the inline-args fallback and surfaces as
+    // "received keys: [tool, arguments]" from each sub-tool. Stage 1 fix:
+    // add "arguments" to the items.required array so models are forced to
+    // populate it. (Stage 2 — discriminated oneOf over tool — is a follow-up.)
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, mcp_mod.tools_list, .{});
+    defer parsed.deinit();
+
+    const tools = parsed.value.object.get("tools").?.array;
+    var bundle_schema: ?std.json.Value = null;
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_bundle")) {
+            bundle_schema = t.object.get("inputSchema").?;
+            break;
+        }
+    }
+    try testing.expect(bundle_schema != null);
+
+    const ops = bundle_schema.?.object.get("properties").?.object.get("ops").?;
+    const items = ops.object.get("items").?;
+    const required = items.object.get("required").?.array;
+
+    var has_tool = false;
+    var has_arguments = false;
+    for (required.items) |r| {
+        if (std.mem.eql(u8, r.string, "tool")) has_tool = true;
+        if (std.mem.eql(u8, r.string, "arguments")) has_arguments = true;
+    }
+    try testing.expect(has_tool);
+    try testing.expect(has_arguments);
+}
+
 test "issue-425: codedb_callers excludes substring matches in unrelated identifiers" {
     // handleCallers (mcp.zig:1339) currently calls searchContentWithScope(name)
     // which is a *substring* full-text search. The only de-dup it performs is
