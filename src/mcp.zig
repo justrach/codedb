@@ -527,11 +527,72 @@ pub const tools_list =
 /// keys for whichever sub-tool it picked. (Stage 2 of issue #437; Stage 1 in
 /// #434 added `arguments` to items.required.)
 ///
-/// Stub for now — returns the raw `tools_list` unchanged. The real builder
-/// lands in the fix commit; this preserves the failing-test-first workflow.
-/// Caller owns returned slice.
+/// codedb_bundle (recursive — rejected at handleBundle) and codedb_edit
+/// (write op — rejected at handleBundle) are excluded from the oneOf.
+///
+/// Caller owns returned slice. The intermediate parse and the slices it
+/// references are freed before return.
 pub fn buildAugmentedToolsList(alloc: std.mem.Allocator) ![]u8 {
-    return try alloc.dupe(u8, tools_list);
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, tools_list, .{});
+
+    const root_obj = &parsed.value.object;
+    const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
+    if (tools_val.* != .array) return error.MalformedToolsList;
+    const tools_arr = &tools_val.array;
+
+    // Locate codedb_bundle items, and collect (name, inputSchema) for every
+    // other tool to use as oneOf branches.
+    var bundle_items_ptr: ?*std.json.Value = null;
+    for (tools_arr.items) |*t| {
+        if (t.* != .object) continue;
+        const name_v = t.object.get("name") orelse continue;
+        if (name_v != .string) continue;
+        if (!std.mem.eql(u8, name_v.string, "codedb_bundle")) continue;
+
+        const schema = t.object.getPtr("inputSchema") orelse continue;
+        if (schema.* != .object) continue;
+        const props = schema.object.getPtr("properties") orelse continue;
+        if (props.* != .object) continue;
+        const ops = props.object.getPtr("ops") orelse continue;
+        if (ops.* != .object) continue;
+        bundle_items_ptr = ops.object.getPtr("items") orelse continue;
+        break;
+    }
+    if (bundle_items_ptr == null) return error.BundleNotFound;
+    const bundle_items = bundle_items_ptr.?;
+    if (bundle_items.* != .object) return error.MalformedToolsList;
+
+    var one_of: std.json.Array = .init(a);
+
+    for (tools_arr.items) |t| {
+        if (t != .object) continue;
+        const sub_name_v = t.object.get("name") orelse continue;
+        if (sub_name_v != .string) continue;
+        const sub_name = sub_name_v.string;
+        if (std.mem.eql(u8, sub_name, "codedb_bundle")) continue;
+        if (std.mem.eql(u8, sub_name, "codedb_edit")) continue;
+        const sub_schema = t.object.get("inputSchema") orelse continue;
+
+        var tool_const: std.json.ObjectMap = .{};
+        try tool_const.put(a, "const", .{ .string = sub_name });
+
+        var branch_props: std.json.ObjectMap = .{};
+        try branch_props.put(a, "tool", .{ .object = tool_const });
+        try branch_props.put(a, "arguments", sub_schema);
+
+        var branch: std.json.ObjectMap = .{};
+        try branch.put(a, "properties", .{ .object = branch_props });
+
+        try one_of.append(.{ .object = branch });
+    }
+
+    try bundle_items.object.put(a, "oneOf", .{ .array = one_of });
+    const augmented_in_arena = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
+    return try alloc.dupe(u8, augmented_in_arena);
 }
 
 
@@ -631,6 +692,15 @@ pub fn run(
     var cache = ProjectCache.init(alloc, default_path);
     defer cache.deinit();
 
+    // Build the augmented `tools/list` payload once at startup. Falls back
+    // to the raw `tools_list` const if augmentation fails for any reason
+    // (parse error, OOM) — clients still get a valid schema, just without
+    // the discriminated oneOf on the bundle ops.
+    const tools_list_response: []const u8 = blk: {
+        const augmented = buildAugmentedToolsList(alloc) catch break :blk tools_list;
+        break :blk augmented;
+    };
+    defer if (tools_list_response.ptr != tools_list.ptr) alloc.free(tools_list_response);
     var session = Session{
         .alloc = alloc,
         .stdout = stdout,
@@ -692,7 +762,7 @@ pub fn run(
                 requestRoots(&session);
             }
         } else if (mcpj.eql(method, "tools/list")) {
-            if (!is_notification) writeResult(alloc, stdout, id, tools_list);
+            if (!is_notification) writeResult(alloc, stdout, id, tools_list_response);
         } else if (mcpj.eql(method, "tools/call")) {
             handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan);
         } else if (mcpj.eql(method, "ping")) {
