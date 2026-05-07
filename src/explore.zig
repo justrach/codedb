@@ -3724,8 +3724,17 @@ pub const Explorer = struct {
         var deps: std.ArrayList([]const u8) = .empty;
         errdefer deps.deinit(self.allocator);
 
+        // Issue #445: outline.imports.items contains one entry per `@import`
+        // site, so a file aliasing the same dep multiple times emits dupes.
+        // Dedup by path before storing — the reverse index already dedupes
+        // naturally via StringHashMap, only forward edges need this.
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+
         for (outline.imports.items) |imp| {
             if (std.mem.indexOf(u8, imp, "..") != null) continue;
+            const gop = try seen.getOrPut(imp);
+            if (gop.found_existing) continue;
             try deps.append(self.allocator, imp);
         }
 

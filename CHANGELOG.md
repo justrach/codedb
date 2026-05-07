@@ -1,6 +1,19 @@
 # Changelog
 
 
+## 0.2.5812 - 2026-05-07
+
+`0.2.5812` cleans up two papercuts surfaced during a v0.2.5811 verification run ([#445](https://github.com/justrach/codedb/issues/445)).
+
+### Explore ([#445](https://github.com/justrach/codedb/issues/445))
+
+- **`codedb_deps depends_on` no longer dupes multi-aliased imports.** A file aliasing the same dep across multiple `@import` sites (e.g. `const idx = @import("index.zig"); const Index = @import("index.zig").Foo;`) previously appeared once per `@import` in the forward edges — `src/main.zig` in this very repo showed `index.zig` 5x and `mcp.zig` 2x. `rebuildDepsFor` now dedupes via a `StringHashMap(void)` before calling `setDeps`. The reverse index (`getImportedBy`) was already correct.
+
+### MCP
+
+- **`codedb_find` description tightened.** The previous wording ("fuzzy file-name search") didn't make it explicit that it's filename-only — agents kept reaching for it on symbol-name lookups (e.g. `find rerank` expecting `src/explore.zig`). The new description says explicitly it is NOT content/symbol search and routes callers to `codedb_word`/`codedb_symbol`/`codedb_search` instead.
+
+
 ## 0.2.5811 - 2026-05-07
 
 `0.2.5811` disables `codedb_bundle` advertisement by default ([#443](https://github.com/justrach/codedb/issues/443)).
