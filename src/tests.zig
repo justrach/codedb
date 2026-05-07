@@ -11090,6 +11090,71 @@ test "issue-429-e: searchContent rerank penalises doc-language files so code bea
     try testing.expectEqualStrings("src/caller.zig", results[0].path);
 }
 
+test "issue-447: searchContent surfaces large (>64KB) skip-trigram files for common identifiers" {
+    // watcher.zig:446 forces skip_trigram=true for files >64KB. Such files
+    // are NOT in self.trigram_index — they live in self.skip_trigram_files
+    // and are only reached via Tier 3 of searchContent, which runs after
+    // Tier 1 (trigram candidates).
+    //
+    // For a common identifier with a wide spread of incidental mentions
+    // across small files plus a canonical definition site in a large
+    // (>64KB) source file, Tier 1 fills the result quota with small-file
+    // hits and Tier 3 never runs — so the canonical large file is
+    // completely invisible from search results.
+    //
+    // Real-world repro on this very repo: `codedb search Explorer` returns
+    // 27 hits, ZERO from src/explore.zig (where `pub const Explorer = struct`
+    // lives at line 495 and there are 85 word-index hits for the term).
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    // 12 small files, each with one occurrence of widgetX. They go into the
+    // trigram index normally and form the Tier 1 candidate pool.
+    var i: usize = 0;
+    while (i < 12) : (i += 1) {
+        var path_buf: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "small_{d}.zig", .{i});
+        try explorer.indexFile(path, "fn s() void { _ = widgetX; }\n");
+    }
+
+    // Canonical file: indexFileSkipTrigram simulates the >64KB skip-trigram
+    // path. The file mentions widgetX many times (this is where the
+    // definition lives in real codebases — it's the canonical answer).
+    const canonical_content =
+        "fn canonical() void {\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "}\n";
+    try explorer.indexFileSkipTrigram("canonical.zig", canonical_content);
+
+    // max_results=5 so the 12 small files can saturate. Expected behaviour:
+    // canonical.zig appears in the result set (it has more occurrences than
+    // any small file). Pre-fix: small files fill all 5 slots via Tier 1 and
+    // canonical.zig never gets read.
+    const results = try explorer.searchContent("widgetX", testing.allocator, 5);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    var found_canonical = false;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "canonical.zig")) {
+            found_canonical = true;
+            break;
+        }
+    }
+    try testing.expect(found_canonical);
+}
+
+
 test "rerank-trace: appends one JSON line per searchContent when enabled" {
     const tmp_io = testing.io;
     var tmp = testing.tmpDir(.{});
