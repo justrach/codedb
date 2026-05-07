@@ -7338,6 +7338,38 @@ test "dep-graph: Explorer transitive dependents" {
     try testing.expectEqual(@as(usize, 2), blast.len);
 }
 
+test "issue-445: dep-graph dedupes multi-aliased forward imports" {
+    // A file that imports the same dep under multiple aliases
+    //   const idx = @import("index.zig");
+    //   const Index = @import("index.zig").Foo;
+    //   const reset = @import("index.zig").resetFrequencyTable;
+    // produces multiple "index.zig" entries in outline.imports, which
+    // rebuildDepsFor previously appended verbatim — so getForwardDeps
+    // returned "index.zig" 5 times for src/main.zig in this very repo.
+    // The depends_on list should be unique by path.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("index.zig", "pub fn build() void {}");
+    try explorer.indexFile("main.zig",
+        \\const idx = @import("index.zig");
+        \\const Index = @import("index.zig").Foo;
+        \\const reset = @import("index.zig").resetFrequencyTable;
+        \\pub fn main() void {}
+    );
+
+    explorer.mu.lockShared();
+    const fwd_opt = explorer.dep_graph.getForwardDeps("main.zig");
+    explorer.mu.unlockShared();
+
+    try testing.expect(fwd_opt != null);
+    const fwd = fwd_opt.?;
+    try testing.expectEqual(@as(usize, 1), fwd.len);
+    try testing.expectEqualStrings("index.zig", fwd[0]);
+}
+
+
 // ── Symbol index tests ─────────────────────────────────────
 
 test "symbol-index: O(1) findSymbol via symbol_index" {
