@@ -1,5 +1,15 @@
 # Changelog
 
+
+## 0.2.5811 - 2026-05-07
+
+`0.2.5811` disables `codedb_bundle` advertisement by default ([#443](https://github.com/justrach/codedb/issues/443)).
+
+### MCP ([#443](https://github.com/justrach/codedb/issues/443))
+
+- **`codedb_bundle` is no longer advertised in `tools/list` by default.** Across multiple stages — empty-args schema (#434), `oneOf` augmentation (#437), OpenAI strict-mode regression (#440), and `codedb_projects` replay-loop (#441) — the bundle has remained a footgun for OpenAI clients (codex, forgecode, etc.) because the default schema can't bind sub-tool argument shape without `oneOf`, and `oneOf` is OpenAI-strict-incompatible. Disable the advertisement entirely until the schema can be reworked to bind args inline (no `arguments` wrapper). The dispatcher-side handler stays so any client with a cached schema doesn't crash on call. Set `CODEDB_BUNDLE_ENABLED=1` to re-advertise.
+- **New helper `buildToolsListResponse(alloc, opts)`** centralizes the env-var-gated `tools/list` builder previously inlined in `run()`. `opts` are `{ bundle_enabled, discriminated_opt_in }`. Always returns an allocator-owned slice.
+
 ## 0.2.5810 - 2026-05-07
 
 `0.2.5810` blocks `codedb_projects` from being a valid `codedb_bundle` sub-op ([#441](https://github.com/justrach/codedb/issues/441)).

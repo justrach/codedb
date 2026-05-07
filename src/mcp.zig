@@ -532,6 +532,46 @@ pub const tools_list =
 ///
 /// Caller owns returned slice. The intermediate parse and the slices it
 /// references are freed before return.
+pub const ToolsListOpts = struct {
+    bundle_enabled: bool = false,
+    discriminated_opt_in: bool = false,
+};
+
+/// Build the runtime `tools/list` response. Honors the bundle and
+/// discriminated-schema env-var gates that run() reads. Always returns an
+/// allocator-owned slice the caller must free.
+pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]u8 {
+    if (opts.bundle_enabled and opts.discriminated_opt_in) {
+        return buildAugmentedToolsList(alloc);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, tools_list, .{});
+
+    const root_obj = &parsed.value.object;
+    const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
+    if (tools_val.* != .array) return error.MalformedToolsList;
+
+    if (!opts.bundle_enabled) {
+        var filtered: std.json.Array = .init(a);
+        for (tools_val.array.items) |t| {
+            if (t == .object) {
+                if (t.object.get("name")) |n| {
+                    if (n == .string and std.mem.eql(u8, n.string, "codedb_bundle")) continue;
+                }
+            }
+            try filtered.append(t);
+        }
+        tools_val.* = .{ .array = filtered };
+    }
+
+    const out_in_arena = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
+    return try alloc.dupe(u8, out_in_arena);
+}
+
 pub fn buildAugmentedToolsList(alloc: std.mem.Allocator) ![]u8 {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
@@ -702,15 +742,25 @@ pub fn run(
     // still has Stage 1's required: ["tool", "arguments"] from #434). Set
     // CODEDB_DISCRIMINATED_SCHEMA=1 to opt back into the augmented oneOf for
     // Anthropic-backed clients that benefit from it.
+    //
+    // Issue #443: even with all the above, OpenAI clients still emit empty
+    // `arguments: {}` for bundle sub-ops because the schema can't bind
+    // sub-tool argument shape without `oneOf`. Disable the bundle entirely
+    // by default — the dispatcher handler stays so cached-schema clients
+    // don't crash, but tools/list no longer advertises it. Set
+    // CODEDB_BUNDLE_ENABLED=1 to re-advertise.
     const discriminated_opt_in = blk_opt: {
         const v = cio.posixGetenv("CODEDB_DISCRIMINATED_SCHEMA") orelse break :blk_opt false;
         break :blk_opt std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
     };
-    const tools_list_response: []const u8 = blk: {
-        if (!discriminated_opt_in) break :blk tools_list;
-        const augmented = buildAugmentedToolsList(alloc) catch break :blk tools_list;
-        break :blk augmented;
+    const bundle_enabled = blk_be: {
+        const v = cio.posixGetenv("CODEDB_BUNDLE_ENABLED") orelse break :blk_be false;
+        break :blk_be std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
     };
+    const tools_list_response: []const u8 = buildToolsListResponse(alloc, .{
+        .bundle_enabled = bundle_enabled,
+        .discriminated_opt_in = discriminated_opt_in,
+    }) catch tools_list;
     defer if (tools_list_response.ptr != tools_list.ptr) alloc.free(tools_list_response);
     var session = Session{
         .alloc = alloc,
