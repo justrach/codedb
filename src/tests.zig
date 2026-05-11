@@ -11275,3 +11275,44 @@ test "rerank-trace: single-result query records non-zero rerank score" {
     try testing.expect(std.mem.indexOf(u8, data, "\"score\":0.0000") == null);
     try testing.expect(std.mem.indexOf(u8, data, "src/loneSym.zig") != null);
 }
+
+test "issue-449: popular markdown should not disable Tier 0 code-first behavior" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    const md_block =
+        "fooBar mentioned here.\n" ++
+        "fooBar mentioned here.\n" ++
+        "fooBar mentioned here.\n" ++
+        "fooBar mentioned here.\n" ++
+        "fooBar mentioned here.\n";
+
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        var path_buf: [64]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "docs/notes_{d}.md", .{i});
+        try explorer.indexFile(path, md_block);
+    }
+
+    try explorer.indexFile("src/foo.zig",
+        "pub fn fooBar() void {}\n" ++
+            "pub fn caller1() void { fooBar(); }\n" ++
+            "pub fn caller2() void { fooBar(); }\n" ++
+            "pub fn caller3() void { fooBar(); }\n");
+
+    const results = try explorer.searchContent("fooBar", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    var found_source = false;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "src/foo.zig")) found_source = true;
+    }
+    try testing.expect(found_source);
+}
