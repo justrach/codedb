@@ -1573,40 +1573,47 @@ pub const Explorer = struct {
         // files with 10+ mentions each can fill result_list before the
         // canonical source file's posting-list entries are reached.
         const word_hits = self.word_index.search(query);
-        if (word_hits.len > 0 and word_hits.len <= max_results * 2) {
-            const tier0_per_file_cap: usize = @max(1, max_results / 5);
-            var tier0_per_file = std.StringHashMap(usize).init(allocator);
-            defer tier0_per_file.deinit();
-            const passes = [_]bool{ false, true }; // pass 0 = code, pass 1 = doc
-            for (passes) |is_doc_pass| {
-                if (result_list.items.len >= max_results) break;
-                for (word_hits) |hit| {
-                    const hit_path = self.word_index.hitPath(hit);
-                    if (hit_path.len == 0) continue;
-                    if (isDocLanguage(detectLanguage(hit_path)) != is_doc_pass) continue;
-                    const gop = tier0_per_file.getOrPut(hit_path) catch continue;
-                    if (!gop.found_existing) gop.value_ptr.* = 0;
-                    if (gop.value_ptr.* >= tier0_per_file_cap) continue;
-                    const ref = self.readContentForSearch(hit_path, allocator) orelse continue;
-                    defer ref.deinit();
-                    const line_text = extractLineByNumber(ref.data, hit.line_num) orelse continue;
-                    if (indexOfCaseInsensitive(line_text, query) == null) continue;
-                    const duped_text = try allocator.dupe(u8, line_text);
-                    errdefer allocator.free(duped_text);
-                    const duped_path = try allocator.dupe(u8, hit_path);
-                    errdefer allocator.free(duped_path);
-                    try result_list.append(allocator, .{
-                        .path = duped_path,
-                        .line_num = hit.line_num,
-                        .line_text = duped_text,
-                    });
-                    gop.value_ptr.* += 1;
-                    searched.put(hit_path, {}) catch {};
-                    if (result_list.items.len >= max_results) return self.rerankAndFinalize(&result_list, query, allocator);
-                }
+        if (word_hits.len > 0) {
+            var code_hit_count: usize = 0;
+            for (word_hits) |hit| {
+                const hp = self.word_index.hitPath(hit);
+                if (hp.len > 0 and !isDocLanguage(detectLanguage(hp))) code_hit_count += 1;
             }
-            if (result_list.items.len >= max_results)
-                return self.rerankAndFinalize(&result_list, query, allocator);
+            if (code_hit_count <= max_results * 2) {
+                const tier0_per_file_cap: usize = @max(1, max_results / 5);
+                var tier0_per_file = std.StringHashMap(usize).init(allocator);
+                defer tier0_per_file.deinit();
+                const passes = [_]bool{ false, true }; // pass 0 = code, pass 1 = doc
+                for (passes) |is_doc_pass| {
+                    if (result_list.items.len >= max_results) break;
+                    for (word_hits) |hit| {
+                        const hit_path = self.word_index.hitPath(hit);
+                        if (hit_path.len == 0) continue;
+                        if (isDocLanguage(detectLanguage(hit_path)) != is_doc_pass) continue;
+                        const gop = tier0_per_file.getOrPut(hit_path) catch continue;
+                        if (!gop.found_existing) gop.value_ptr.* = 0;
+                        if (gop.value_ptr.* >= tier0_per_file_cap) continue;
+                        const ref = self.readContentForSearch(hit_path, allocator) orelse continue;
+                        defer ref.deinit();
+                        const line_text = extractLineByNumber(ref.data, hit.line_num) orelse continue;
+                        if (indexOfCaseInsensitive(line_text, query) == null) continue;
+                        const duped_text = try allocator.dupe(u8, line_text);
+                        errdefer allocator.free(duped_text);
+                        const duped_path = try allocator.dupe(u8, hit_path);
+                        errdefer allocator.free(duped_path);
+                        try result_list.append(allocator, .{
+                            .path = duped_path,
+                            .line_num = hit.line_num,
+                            .line_text = duped_text,
+                        });
+                        gop.value_ptr.* += 1;
+                        searched.put(hit_path, {}) catch {};
+                        if (result_list.items.len >= max_results) return self.rerankAndFinalize(&result_list, query, allocator);
+                    }
+                }
+                if (result_list.items.len >= max_results)
+                    return self.rerankAndFinalize(&result_list, query, allocator);
+            }
         }
 
         // Tier 0.5: prefix expansion — find all indexed keys that begin with the query.
