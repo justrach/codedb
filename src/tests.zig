@@ -2634,6 +2634,66 @@ test "regexMatch: dot-star" {
     try testing.expect(regexMatch("helloworld", "hello.*world"));
 }
 
+test "issue-450: searchContent prefix tier respects max_results" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("a.zig", "const abcx = 1;\n");
+    try explorer.indexFile("b.zig", "const abcy = 1;\n");
+    try explorer.indexFile("c.zig", "const zzabczz = 1;\n");
+
+    const results = try explorer.searchContent("abc", testing.allocator, 2);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len <= 2);
+}
+
+test "issue-448: rerank boosts basename when query contains stem" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("src/aaa.zig", "// Explorer is mentioned here\n");
+    try explorer.indexFile("src/explore.zig", "// Explorer is mentioned here\n");
+
+    const results = try explorer.searchContent("Explorer", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 1);
+    try testing.expectEqualStrings("src/explore.zig", results[0].path);
+}
+
+test "issue-448: rerank symbol-definition boost is case-insensitive" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    try explorer.indexFile("aaa.zig", "// store is mentioned here\n");
+    try explorer.indexFile("zzz.zig", "pub const Store = struct {};\n");
+
+    const results = try explorer.searchContent("store", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 1);
+    try testing.expectEqualStrings("zzz.zig", results[0].path);
+}
+
 test "explorer: searchContentRegex end-to-end" {
     var explorer_inst = Explorer.init(testing.allocator);
     defer explorer_inst.deinit();
