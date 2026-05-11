@@ -1639,54 +1639,62 @@ pub const Explorer = struct {
         const candidate_paths = self.trigram_index.candidates(query, allocator);
         defer if (candidate_paths) |cp| allocator.free(cp);
 
-        // Tier 1: trigram candidates — fast path, skips files already found by Tier 0.
-        if (candidate_paths) |cp| {
-            if (cp.len > 0) {
-                // Issue #427: rank candidates by per-file word-index hit count
-                // (desc) so the definition-dense file scans first; fall back to
-                // file content length (asc) so small files still come before
-                // unrelated large files at the same hit count. Pre-fix the
-                // sort key was content length alone, which buried the canonical
-                // file behind unrelated short files when max_per_file was 1.
-                var hits_per_file = std.StringHashMap(u32).init(allocator);
-                defer hits_per_file.deinit();
-                for (word_hits) |hit| {
-                    const hp = self.word_index.hitPath(hit);
-                    if (hp.len == 0) continue;
-                    const gop_h = try hits_per_file.getOrPut(hp);
-                    if (!gop_h.found_existing) gop_h.value_ptr.* = 0;
-                    gop_h.value_ptr.* += 1;
-                }
-                const SortCtx = struct {
-                    contents: *const std.StringHashMap([]const u8),
-                    counts: *const std.StringHashMap(u32),
-                    pub fn lessThan(ctx: @This(), a: []const u8, b: []const u8) bool {
-                        const a_count = ctx.counts.get(a) orelse 0;
-                        const b_count = ctx.counts.get(b) orelse 0;
-                        if (a_count != b_count) return a_count > b_count;
-                        const a_len = if (ctx.contents.get(a)) |c| c.len else std.math.maxInt(usize);
-                        const b_len = if (ctx.contents.get(b)) |c| c.len else std.math.maxInt(usize);
-                        return a_len < b_len;
-                    }
-                };
-                std.mem.sort([]const u8, @constCast(cp), SortCtx{ .contents = &self.contents, .counts = &hits_per_file }, SortCtx.lessThan);
+        // Tier 1: trigram candidates merged with skip_trigram_files that have
+        // word-index hits — all sorted by per-file word-hit count desc so the
+        // definition-dense file scans first. Pre-fix: skip_trigram_files were
+        // deferred to Tier 3 which never ran when Tier 1 filled max_results.
+        {
+            var hits_per_file = std.StringHashMap(u32).init(allocator);
+            defer hits_per_file.deinit();
+            for (word_hits) |hit| {
+                const hp = self.word_index.hitPath(hit);
+                if (hp.len == 0) continue;
+                const gop_h = try hits_per_file.getOrPut(hp);
+                if (!gop_h.found_existing) gop_h.value_ptr.* = 0;
+                gop_h.value_ptr.* += 1;
+            }
 
-                const estimated_total = cp.len + self.skip_trigram_files.count();
+            // Build a combined list: trigram candidates + skip_trigram_files
+            // paths that the word index knows about for this query.
+            var combined: std.ArrayList([]const u8) = .empty;
+            defer combined.deinit(allocator);
+            if (candidate_paths) |cp| {
+                for (cp) |p| try combined.append(allocator, p);
+            }
+            var skip_iter_t1 = self.skip_trigram_files.keyIterator();
+            while (skip_iter_t1.next()) |key_ptr| {
+                if (hits_per_file.contains(key_ptr.*)) {
+                    try combined.append(allocator, key_ptr.*);
+                }
+            }
+
+            const SortCtx = struct {
+                contents: *const std.StringHashMap([]const u8),
+                counts: *const std.StringHashMap(u32),
+                pub fn lessThan(ctx: @This(), a: []const u8, b: []const u8) bool {
+                    const a_count = ctx.counts.get(a) orelse 0;
+                    const b_count = ctx.counts.get(b) orelse 0;
+                    if (a_count != b_count) return a_count > b_count;
+                    const a_len = if (ctx.contents.get(a)) |c| c.len else std.math.maxInt(usize);
+                    const b_len = if (ctx.contents.get(b)) |c| c.len else std.math.maxInt(usize);
+                    return a_len < b_len;
+                }
+            };
+            std.mem.sort([]const u8, combined.items, SortCtx{ .contents = &self.contents, .counts = &hits_per_file }, SortCtx.lessThan);
+
+            if (combined.items.len > 0) {
+                const estimated_total = combined.items.len + self.skip_trigram_files.count();
                 const max_per_file = @max(@as(usize, 1), max_results / @max(@as(usize, 1), estimated_total));
-                for (cp) |path| {
+                for (combined.items) |path| {
                     if (searched.contains(path)) continue;
                     const ref = self.readContentForSearch(path, allocator) orelse continue;
                     defer ref.deinit();
+                    searched.put(path, {}) catch {};
                     try searchInContent(path, ref.data, query, allocator, max_per_file, max_results, &result_list);
                     if (result_list.items.len >= max_results)
                         return self.rerankAndFinalize(&result_list, query, allocator);
                 }
             }
-        }
-
-        // Mark all Tier 1 candidates as searched.
-        if (candidate_paths) |cp| {
-            for (cp) |p| searched.put(p, {}) catch {};
         }
 
         // Tier 2: sparse candidates — LAZY, only computed when Tier 1 found nothing.
@@ -1705,7 +1713,7 @@ pub const Explorer = struct {
             }
         }
 
-        // Tier 3: skip_trigram_files not already searched.
+        // Tier 3: skip_trigram_files not already searched (no word-index hits).
         if (result_list.items.len < max_results) {
             var skip_iter = self.skip_trigram_files.keyIterator();
             while (skip_iter.next()) |key_ptr| {
@@ -1717,6 +1725,7 @@ pub const Explorer = struct {
                 if (result_list.items.len >= max_results) break;
             }
         }
+
 
         // Tier 4: word index scan — for files not yet searched.
         if (result_list.items.len < max_results) {
@@ -3870,13 +3879,47 @@ pub const Explorer = struct {
         var searched = std.StringHashMap(void).init(allocator);
         defer searched.deinit();
 
+        // Build word-hit counts per file so skip_trigram_files with hits can
+        // be merged into the primary candidate loop sorted by relevance,
+        // preventing Tier 1 from filling max_results before canonical.zig is reached.
+        const word_hits_scope = self.word_index.search(query);
+        var hits_per_file_scope = std.StringHashMap(u32).init(allocator);
+        defer hits_per_file_scope.deinit();
+        for (word_hits_scope) |hit| {
+            const hp = self.word_index.hitPath(hit);
+            if (hp.len == 0) continue;
+            const gop_h = try hits_per_file_scope.getOrPut(hp);
+            if (!gop_h.found_existing) gop_h.value_ptr.* = 0;
+            gop_h.value_ptr.* += 1;
+        }
+
+        const SortCtxS = struct {
+            counts: *const std.StringHashMap(u32),
+            pub fn lessThan(ctx: @This(), a: []const u8, b: []const u8) bool {
+                const a_count = ctx.counts.get(a) orelse 0;
+                const b_count = ctx.counts.get(b) orelse 0;
+                return a_count > b_count;
+            }
+        };
+
         if (sparse_paths != null and sparse_paths.?.len > 0) {
             if (candidate_paths != null and candidate_paths.?.len > 0) {
                 var sparse_set = std.StringHashMap(void).init(allocator);
                 defer sparse_set.deinit();
                 for (sparse_paths.?) |p| try sparse_set.put(p, {});
-                for (candidate_paths.?) |path| {
-                    if (!sparse_set.contains(path)) continue;
+
+                var combined_s: std.ArrayList([]const u8) = .empty;
+                defer combined_s.deinit(allocator);
+                for (candidate_paths.?) |p| {
+                    if (sparse_set.contains(p)) try combined_s.append(allocator, p);
+                }
+                var skip_it = self.skip_trigram_files.keyIterator();
+                while (skip_it.next()) |kp| {
+                    if (hits_per_file_scope.contains(kp.*)) try combined_s.append(allocator, kp.*);
+                }
+                std.mem.sort([]const u8, combined_s.items, SortCtxS{ .counts = &hits_per_file_scope }, SortCtxS.lessThan);
+                for (combined_s.items) |path| {
+                    if (searched.contains(path)) continue;
                     const ref = self.readContentForSearch(path, allocator) orelse continue;
                     defer ref.deinit();
                     try searched.put(path, {});
@@ -3884,7 +3927,16 @@ pub const Explorer = struct {
                     if (result_list.items.len >= max_results) break;
                 }
             } else {
-                for (sparse_paths.?) |path| {
+                var combined_s: std.ArrayList([]const u8) = .empty;
+                defer combined_s.deinit(allocator);
+                for (sparse_paths.?) |p| try combined_s.append(allocator, p);
+                var skip_it = self.skip_trigram_files.keyIterator();
+                while (skip_it.next()) |kp| {
+                    if (hits_per_file_scope.contains(kp.*)) try combined_s.append(allocator, kp.*);
+                }
+                std.mem.sort([]const u8, combined_s.items, SortCtxS{ .counts = &hits_per_file_scope }, SortCtxS.lessThan);
+                for (combined_s.items) |path| {
+                    if (searched.contains(path)) continue;
                     const ref = self.readContentForSearch(path, allocator) orelse continue;
                     defer ref.deinit();
                     try searched.put(path, {});
@@ -3895,7 +3947,16 @@ pub const Explorer = struct {
         } else {
             const use_trigram = candidate_paths != null and candidate_paths.?.len > 0;
             if (use_trigram) {
-                for (candidate_paths.?) |path| {
+                var combined_t: std.ArrayList([]const u8) = .empty;
+                defer combined_t.deinit(allocator);
+                for (candidate_paths.?) |p| try combined_t.append(allocator, p);
+                var skip_it = self.skip_trigram_files.keyIterator();
+                while (skip_it.next()) |kp| {
+                    if (hits_per_file_scope.contains(kp.*)) try combined_t.append(allocator, kp.*);
+                }
+                std.mem.sort([]const u8, combined_t.items, SortCtxS{ .counts = &hits_per_file_scope }, SortCtxS.lessThan);
+                for (combined_t.items) |path| {
+                    if (searched.contains(path)) continue;
                     const ref = self.readContentForSearch(path, allocator) orelse continue;
                     defer ref.deinit();
                     try searched.put(path, {});
