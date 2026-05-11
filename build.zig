@@ -31,6 +31,11 @@ pub fn build(b: *std.Build) void {
     // ── mcp-zig dependency ──
     const mcp_dep = b.dependency("mcp_zig", .{});
     exe.root_module.addImport("mcp", mcp_dep.module("mcp"));
+
+    // ── nanoregex dependency ──
+    const nanoregex_dep = b.dependency("nanoregex", .{});
+    exe.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+
     b.installArtifact(exe);
 
     // ── macOS codesign (ad-hoc by default; configurable for release builds) ──
@@ -58,6 +63,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tests.root_module.addImport("mcp", mcp_dep.module("mcp"));
+    tests.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
     if (test_filter) |f| {
         const filters = b.allocator.alloc([]const u8, 1) catch @panic("oom");
         filters[0] = f;
@@ -67,6 +73,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     const tests_run = b.addRunArtifact(tests);
     test_step.dependOn(&tests_run.step);
+
 
     // ── Library tests (verify the module root compiles) ──
     const lib_tests = b.addTest(.{
@@ -88,7 +95,9 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    adversarial_tests.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
     test_step.dependOn(&b.addRunArtifact(adversarial_tests).step);
+
 
     // ── Benchmarks ──
     const bench = b.addExecutable(.{

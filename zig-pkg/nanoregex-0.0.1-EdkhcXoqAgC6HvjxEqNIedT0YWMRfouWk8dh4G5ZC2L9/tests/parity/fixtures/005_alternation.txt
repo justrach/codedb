@@ -1,0 +1,3 @@
+cat|dog|bird
+
+the cat saw a dog and a bird

@@ -8,6 +8,10 @@
             .url = "https://github.com/justrach/mcp-zig/archive/refs/heads/feature/7-zig-0-16-0-migration.tar.gz",
             .hash = "mcp_zig-0.2.0-_PilzNJkAQADzH2t3vqpd_nl_W0ta-gDaumXKttuPyBy",
         },
+        .nanoregex = .{
+            .url = "https://github.com/justrach/nanoregex/archive/refs/heads/main.tar.gz",
+            .hash = "nanoregex-0.0.1-EdkhcXoqAgC6HvjxEqNIedT0YWMRfouWk8dh4G5ZC2L9",
+        },
     },
     .paths = .{
         "src",

@@ -2634,6 +2634,17 @@ test "regexMatch: dot-star" {
     try testing.expect(regexMatch("helloworld", "hello.*world"));
 }
 
+test "issue-454: regex \\b word boundary matches whole-word, not literal 'b'" {
+    // \b is a word-boundary assertion: should match "foo" as a whole word
+    // but not when it appears as a substring inside another word.
+    try testing.expect(regexMatch("foo bar", "\\bfoo\\b"));
+    try testing.expect(!regexMatch("foobar", "\\bfoo\\b"));
+    // Whole-word "bar" at end
+    try testing.expect(regexMatch("foo bar", "\\bbar\\b"));
+    try testing.expect(!regexMatch("foobarbaz", "\\bbar\\b"));
+}
+
+
 test "explorer: searchContentRegex end-to-end" {
     var explorer_inst = Explorer.init(testing.allocator);
     defer explorer_inst.deinit();

@@ -1,0 +1,3 @@
+a.*b
+
+start aXYZb middle a___b end
