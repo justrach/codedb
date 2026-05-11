@@ -38,6 +38,7 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+
     // ── macOS codesign (ad-hoc by default; configurable for release builds) ──
     if (target.result.os.tag == .macos and builtin.os.tag == .macos) {
         const codesign = b.addSystemCommand(&.{ "codesign", "-f", "-s", codesign_identity });
@@ -111,6 +112,7 @@ pub fn build(b: *std.Build) void {
     });
     const bench_run = b.addRunArtifact(bench);
     bench.root_module.addImport("mcp", mcp_dep.module("mcp"));
+    bench.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
     if (b.args) |args| bench_run.addArgs(args);
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&bench_run.step);
@@ -126,6 +128,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     benchmark.root_module.addImport("mcp", mcp_dep.module("mcp"));
+    benchmark.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
     const benchmark_run = b.addRunArtifact(benchmark);
     if (b.args) |args| benchmark_run.addArgs(args);
     const benchmark_step = b.step("benchmark", "Run repo benchmark (use -- --root /path/to/repo)");
@@ -146,6 +149,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseSmall,
         }),
     });
+    wasm.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
     wasm.rdynamic = true;
     wasm.entry = .disabled;
 
