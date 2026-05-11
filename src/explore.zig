@@ -4120,6 +4120,11 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
 
 fn searchInContent(path: []const u8, content: []const u8, query: []const u8, allocator: std.mem.Allocator, max_per_file: usize, max_results: usize, result_list: *std.ArrayList(SearchResult)) !void {
     if (query.len == 0 or content.len == 0) return;
+    // Issue #450: bail when the caller's quota is already met. Without this
+    // entry guard, Tier 0.5 prefix expansion can fill result_list to
+    // max_results, then Tier 1 trigram scans append one more match before
+    // its post-call cap check fires — overshooting the contract by one.
+    if (result_list.items.len >= max_results) return;
     // Issue #431: bail when the query is longer than the file. Without this
     // guard, `content.len - query.len + 1` below underflows usize → integer
     // overflow panic in Debug, SIGBUS in ReleaseFast.
