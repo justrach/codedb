@@ -1786,7 +1786,7 @@ pub const Explorer = struct {
 
         if (self.outlines.get(r.path)) |outline| {
             for (outline.symbols.items) |sym| {
-                if (sym.line_start == r.line_num and std.mem.eql(u8, sym.name, query)) {
+                if (sym.line_start == r.line_num and asciiEqlIgnoreCase(sym.name, query)) {
                     score += 5.0;
                     break;
                 }
@@ -1800,13 +1800,20 @@ pub const Explorer = struct {
             score += 15.0;
         } else if (asciiContainsIgnoreCase(stem, query)) {
             score += 8.0;
+        } else if (stem.len >= 3 and asciiContainsIgnoreCase(query, stem)) {
+            // Issue #448: symmetric stem/query containment. Query "Explorer"
+            // should boost src/explore.zig — the user's intent clearly names
+            // the file even though stem "explore" doesn't contain "Explorer".
+            // Gate on stem.len>=3 so trivial stems (single-letter files,
+            // numeric basenames) don't false-boost long queries.
+            score += 8.0;
         }
         // Path-segment match boost: query matches a directory segment in
         // the path (e.g. query="parser" boosts src/parser/foo.zig). Weaker
         // than basename match because the file's own name is a stronger
         // intent signal than the directory it lives in. Skip when basename
         // already matched to avoid double-counting.
-        if (!asciiContainsIgnoreCase(stem, query) and pathHasSegmentIgnoreCase(r.path, query)) {
+        if (!asciiContainsIgnoreCase(stem, query) and !(stem.len >= 3 and asciiContainsIgnoreCase(query, stem)) and pathHasSegmentIgnoreCase(r.path, query)) {
             score += 6.0;
         }
 
