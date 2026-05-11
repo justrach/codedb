@@ -11275,3 +11275,83 @@ test "rerank-trace: single-result query records non-zero rerank score" {
     try testing.expect(std.mem.indexOf(u8, data, "\"score\":0.0000") == null);
     try testing.expect(std.mem.indexOf(u8, data, "src/loneSym.zig") != null);
 }
+
+test "issue-447: searchContent surfaces large (>64KB) skip-trigram files for common identifiers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    var i: usize = 0;
+    while (i < 12) : (i += 1) {
+        var path_buf: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "small_{d}.zig", .{i});
+        try explorer.indexFile(path, "fn s() void { _ = widgetX; }\n");
+    }
+
+    const canonical_content =
+        "fn canonical() void {\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "}\n";
+    try explorer.indexFileSkipTrigram("canonical.zig", canonical_content);
+
+    const results = try explorer.searchContent("widgetX", testing.allocator, 5);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    var found_canonical = false;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "canonical.zig")) {
+            found_canonical = true;
+            break;
+        }
+    }
+    try testing.expect(found_canonical);
+}
+
+test "issue-451: scope search surfaces skip-trigram canonical file" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator());
+
+    var i: usize = 0;
+    while (i < 12) : (i += 1) {
+        var path_buf: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "small_{d}.zig", .{i});
+        try explorer.indexFile(path, "fn s() void { _ = widgetX; }\n");
+    }
+
+    const canonical_content =
+        "fn canonical() void {\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "    _ = widgetX;\n" ++
+        "}\n";
+    try explorer.indexFileSkipTrigram("canonical.zig", canonical_content);
+
+    const results = try explorer.searchContentWithScope("widgetX", testing.allocator, 5);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+            if (r.scope_name) |s| testing.allocator.free(s);
+        }
+        testing.allocator.free(results);
+    }
+
+    var found_canonical = false;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "canonical.zig")) found_canonical = true;
+    }
+    try testing.expect(found_canonical);
+}
