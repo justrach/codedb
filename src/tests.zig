@@ -611,7 +611,7 @@ test "sparse ngram candidates: sliding window finds file with short n-gram" {
 test "explorer: sparse ngram index integrated into searchContent" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("src/alpha.zig", "pub fn processRequest(req: *Request) void {}");
     try explorer.indexFile("src/beta.zig", "pub fn handleResponse(res: *Response) void {}");
@@ -627,7 +627,7 @@ test "explorer: searchContent finds query embedded in longer identifier" {
     // are both used; the intersection narrows results without false negatives.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     // "alpha.zig" content contains "record"; "beta.zig" does not.
     try explorer.indexFile("alpha.zig", "const record_count: usize = 0;");
@@ -774,7 +774,7 @@ test "setFrequencyTable / resetFrequencyTable: pairWeight output changes" {
 test "explorer: index file and get outline" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("test.zig",
         \\const std = @import("std");
@@ -791,7 +791,7 @@ test "explorer: index file and get outline" {
 test "explorer: findSymbol" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("a.zig", "pub fn alpha() void {}");
     try explorer.indexFile("b.zig", "pub fn beta() void {}");
@@ -804,7 +804,7 @@ test "explorer: findSymbol" {
 test "explorer: findAllSymbols returns multiple" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("a.zig", "const Store = @import(\"store.zig\").Store;");
     try explorer.indexFile("b.zig", "pub const Store = struct {};");
@@ -817,7 +817,7 @@ test "explorer: findAllSymbols returns multiple" {
 test "explorer: searchContent with trigram acceleration" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("store.zig", "pub fn recordSnapshot(self: *Store) void {}\npub fn init() void {}");
     try explorer.indexFile("agent.zig", "pub fn register(self: *Agent) void {}");
@@ -839,7 +839,7 @@ test "explorer: searchContent with trigram acceleration" {
 test "explorer: searchWord via inverted index" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("math.zig", "pub fn add(a: i32, b: i32) i32 { return a + b; }");
 
@@ -852,7 +852,7 @@ test "explorer: searchWord via inverted index" {
 test "explorer: removeFile cleans up everything" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("gone.zig", "pub fn doStuff() void {}");
     var before_remove = (try explorer.getOutline("gone.zig", testing.allocator)) orelse return error.TestUnexpectedResult;
@@ -866,7 +866,7 @@ test "explorer: removeFile cleans up everything" {
 test "explorer: python parser" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app.py",
         \\import os
@@ -883,7 +883,7 @@ test "explorer: python parser" {
 test "explorer: typescript parser" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("index.ts",
         \\import { foo } from './foo';
@@ -899,7 +899,7 @@ test "explorer: typescript parser" {
 test "issue-301: Dart / Flutter parser" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("lib/home_screen.dart",
         \\import 'package:flutter/material.dart';
@@ -1031,7 +1031,7 @@ test "file versions: countSince" {
 test "explorer: reindex OOM keeps prior outline reachable" {
     // Use a real allocator for the explorer so the first indexFile always succeeds.
     // We can't use FailingAllocator for the whole explorer because deinit would crash.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("oom.zig", "pub fn oldName() void {}");
@@ -1071,7 +1071,7 @@ test "explorer: reindex OOM keeps prior outline reachable" {
 }
 
 test "explorer: getOutline clone OOM preserves source outline" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile(
@@ -1107,7 +1107,7 @@ test "explorer: getOutline clone OOM preserves source outline" {
 test "explorer: outline copy survives source removal" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("persist.zig", "pub fn keep() void {}");
     var outline = (try explorer.getOutline("persist.zig", testing.allocator)) orelse return error.TestUnexpectedResult;
@@ -1120,7 +1120,7 @@ test "explorer: outline copy survives source removal" {
 }
 
 test "explorer: removeFile frees owned map key" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     var i: usize = 0;
@@ -1181,14 +1181,14 @@ test "watcher: parallel initial scan matches sequential results" {
 
     var store_seq = Store.init(testing.allocator);
     defer store_seq.deinit();
-    var explorer_seq = Explorer.init(testing.allocator);
+    var explorer_seq = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_seq.deinit();
     explorer_seq.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store_seq, &explorer_seq, root, testing.allocator, false, 1);
 
     var store_par = Store.init(testing.allocator);
     defer store_par.deinit();
-    var explorer_par = Explorer.init(testing.allocator);
+    var explorer_par = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_par.deinit();
     explorer_par.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store_par, &explorer_par, root, testing.allocator, false, 4);
@@ -1386,7 +1386,7 @@ test "issue-35: edits immediately update explorer and snapshot output" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile(rel_path, "pub fn oldName() void {}\n");
 
     var store = Store.init(testing.allocator);
@@ -1439,7 +1439,7 @@ test "issue-35: edits immediately update explorer and snapshot output" {
 test "regression #2: searchContent frees trigram candidate slice" {
     // Verifies that the candidates() return value is freed by searchContent.
     // If the defer is missing, the GPA will detect the leak and fail.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("leak-check.zig", "pub fn recordSnapshot(self: *Store) void {}\npub fn init() void {}");
@@ -1460,7 +1460,7 @@ test "regression #2: searchContent frees trigram candidate slice" {
 test "regression #2: searchContent no leak on zero results" {
     // Even when trigram narrows to candidates but none match full text,
     // the candidate slice must be freed.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("abc.zig", "pub fn abcdef() void {}");
@@ -1479,7 +1479,7 @@ test "regression #2: searchContent no leak on zero results" {
 
 test "regression #2: searchContent short query skips trigrams" {
     // Queries < 3 chars can't use trigram index — ensure no leak from null path.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("short.zig", "fn ab() void {}");
@@ -1500,7 +1500,7 @@ test "regression #5: getHotFiles does not deadlock" {
     // which locks store.mu — a lock ordering violation. The fix collects
     // paths under explorer.mu, releases it, then locks store.mu separately.
     // This test verifies correctness; deadlock would cause a hang.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     var store = Store.init(testing.allocator);
@@ -1527,7 +1527,7 @@ test "regression #5: getHotFiles does not deadlock" {
 }
 
 test "regression #5: getHotFiles with no store entries" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     var store = Store.init(testing.allocator);
@@ -1546,7 +1546,7 @@ test "regression #5: getHotFiles with no store entries" {
 }
 
 test "regression: concurrent hot/read with remove" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     var store = Store.init(testing.allocator);
@@ -1612,7 +1612,7 @@ test "regression #5: store getLatestSeqUnlocked" {
 test "regression #7: tree shows directory nodes" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("src/main.zig", "pub fn main() void {}");
     try explorer.indexFile("src/lib.zig", "pub fn init() void {}");
@@ -1633,7 +1633,7 @@ test "regression #7: tree shows directory nodes" {
 test "regression #7: tree handles nested directories" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("src/utils/hash.zig", "pub fn hash() void {}");
     try explorer.indexFile("src/main.zig", "pub fn main() void {}");
@@ -1651,7 +1651,7 @@ test "regression #7: tree handles nested directories" {
 test "regression #7: tree shows only basenames" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("pkg/foo/bar.zig", "const x = 1;");
 
@@ -1666,7 +1666,7 @@ test "regression #7: tree shows only basenames" {
 test "regression: searchWord empty result is allocator-owned" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("math.zig", "pub fn add(a: i32, b: i32) i32 { return a + b; }");
 
@@ -1678,7 +1678,7 @@ test "regression: searchWord empty result is allocator-owned" {
 test "regression: searchContent frees empty trigram candidate slice" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("f.zig", "hello world");
 
@@ -1745,7 +1745,7 @@ test "snapshot_json: snapshot builds and is valid JSON" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("src/main.zig", "pub fn main() void {}");
     try explorer.indexFile("src/lib.zig", "pub const version = 1;");
 
@@ -1783,7 +1783,7 @@ test "findSymbol: returned data is owned copy" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("a.zig", "pub fn myFunc() void {}");
 
     const result = try explorer.findSymbol("myFunc", alloc);
@@ -1802,7 +1802,7 @@ test "findAllSymbols: returned data survives source removal" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("a.zig", "pub fn foo() void {}");
     try explorer.indexFile("b.zig", "pub fn foo() void {}");
 
@@ -1824,7 +1824,7 @@ test "searchContent: returned paths are owned copies" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("src/hello.zig", "pub fn greetWorld() void {}");
 
     const results = try explorer.searchContent("greetWorld", alloc, 10);
@@ -1940,7 +1940,7 @@ test "isCommentOrBlank: detects language-specific comments" {
 test "explorer: getSymbolBody returns source lines" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try exp.indexFile("test.zig", "const std = @import(\"std\");\npub fn main() !void {}\npub const Store = struct {};");
 
@@ -1956,7 +1956,7 @@ test "explorer: getSymbolBody returns source lines" {
 test "explorer: getSymbolBody returns null for unknown file" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     const body = try exp.getSymbolBody("nonexistent.zig", 1, 5, testing.allocator);
     try testing.expect(body == null);
@@ -1964,7 +1964,7 @@ test "explorer: getSymbolBody returns null for unknown file" {
 test "explorer: searchContentWithScope annotates results" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     // Use content where the search match line has no symbol definition itself
     try exp.indexFile("auth.zig", "pub fn handleAuth() void {\n    validate(token);\n}");
@@ -1990,7 +1990,7 @@ test "explorer: searchContentWithScope annotates results" {
 test "explorer: searchContentWithScope no scope for standalone line" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     // Content with no symbols — scope should be null
     try exp.indexFile("data.txt", "hello world\nfoo bar");
@@ -2155,7 +2155,7 @@ test "isCommentOrBlank: markdown and json never strip" {
 test "explorer: getSymbolBody multi-line range" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     const content = "line1\nline2\nline3\nline4\nline5";
     try exp.indexFile("multi.zig", content);
@@ -2176,7 +2176,7 @@ test "explorer: getSymbolBody multi-line range" {
 test "explorer: getSymbolBody range beyond file length" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try exp.indexFile("short.zig", "only\ntwo");
     const body = try exp.getSymbolBody("short.zig", 1, 100, testing.allocator);
@@ -2194,7 +2194,7 @@ test "explorer: getSymbolBody range beyond file length" {
 test "explorer: searchContentWithScope across multiple files" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try exp.indexFile("a.zig", "pub fn foo() void {\n    doWork();\n}");
     try exp.indexFile("b.zig", "pub fn bar() void {\n    doWork();\n}");
@@ -2219,7 +2219,7 @@ test "explorer: searchContentWithScope across multiple files" {
 test "explorer: searchContentWithScope respects max_results" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try exp.indexFile("many.zig", "pub fn a() void {\n    target();\n    target();\n    target();\n    target();\n}");
 
@@ -2239,7 +2239,7 @@ test "explorer: searchContentWithScope respects max_results" {
 test "explorer: searchContentWithScope no results for missing query" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try exp.indexFile("empty.zig", "pub fn main() void {}");
 
@@ -2386,7 +2386,7 @@ test "Tool enum: invalid names return null" {
 test "explorer: getSymbolBody with line number format" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try exp.indexFile("fmt.zig", "const a = 1;\npub fn format() void {\n    write();\n}\nconst b = 2;");
 
@@ -2646,7 +2646,7 @@ test "issue-454: regex \\b word boundary matches whole-word, not literal 'b'" {
 
 
 test "explorer: searchContentRegex end-to-end" {
-    var explorer_inst = Explorer.init(testing.allocator);
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_inst.deinit();
 
     try explorer_inst.indexFile("test1.zig", "pub fn recordSnapshot() void {}\nconst x = 42;");
@@ -2675,7 +2675,7 @@ test "explorer: searchContentRegex end-to-end" {
 }
 
 test "explorer: searchContentRegex no match" {
-    var explorer_inst = Explorer.init(testing.allocator);
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_inst.deinit();
 
     try explorer_inst.indexFile("only.zig", "const x = 42;");
@@ -3599,7 +3599,7 @@ test "issue-43: trigram_index swap in scanBg races with concurrent MCP queries" 
     // with readers by taking exp.mu.lock() before replacing the index.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try exp.indexFile("a.zig", "pub fn handleAuth(token: []const u8) bool { return token.len > 0; }");
 
     exp.mu.lockShared();
@@ -3641,7 +3641,7 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
     {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
-        var exp = Explorer.init(arena.allocator());
+        var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
         try exp.indexFile(file_abs, "pub fn oldFunc() void {}");
         try snapshot_mod.writeSnapshot(io, &exp, ".", snap_path, arena.allocator());
     }
@@ -3657,7 +3657,7 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
     // the baseline. It will never be re-indexed unless changed a second time.
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
-    var exp2 = Explorer.init(arena2.allocator());
+    var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
 
@@ -3683,7 +3683,7 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
 test "issue-46: empty-repo snapshot rejected on load" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -3698,7 +3698,7 @@ test "issue-46: empty-repo snapshot rejected on load" {
 
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
-    var exp2 = Explorer.init(arena2.allocator());
+    var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
@@ -3712,7 +3712,7 @@ test "issue-220: snapshot fast load restores outlines and lazily rebuilds word i
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var exp = Explorer.init(aa);
+    var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try exp.indexFile("src/store.zig", "pub const Store = struct {};\n");
     try exp.indexFile("src/main.zig", "const Store = @import(\"store.zig\").Store;\npub fn main() void {}\n");
 
@@ -3728,7 +3728,7 @@ test "issue-220: snapshot fast load restores outlines and lazily rebuilds word i
 
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
-    var exp2 = Explorer.init(arena2.allocator());
+    var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
@@ -3766,7 +3766,7 @@ test "snapshot: writer streams uncached file contents for large repos" {
     const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     var rel_buf: [64]u8 = undefined;
@@ -3786,7 +3786,7 @@ test "snapshot: writer streams uncached file contents for large repos" {
     defer testing.allocator.free(snap_path);
     try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
 
-    var loaded_without_root = Explorer.init(testing.allocator);
+    var loaded_without_root = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer loaded_without_root.deinit();
     var store_without_root = Store.init(testing.allocator);
     defer store_without_root.deinit();
@@ -3798,7 +3798,7 @@ test "snapshot: writer streams uncached file contents for large repos" {
     defer testing.allocator.free(hits_no_root);
     try testing.expectEqual(@as(usize, 1), hits_no_root.len);
 
-    var loaded = Explorer.init(testing.allocator);
+    var loaded = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     loaded.setRoot(io, dir_path);
     defer loaded.deinit();
     var store = Store.init(testing.allocator);
@@ -3821,7 +3821,7 @@ test "issue-220: partial word index state rebuilds before search" {
     const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
     try exp.indexFile("src/a.zig", "pub const Alpha = 1;\n");
     try exp.indexFile("src/b.zig", "pub const Beta = 2;\n");
@@ -3830,7 +3830,7 @@ test "issue-220: partial word index state rebuilds before search" {
     defer testing.allocator.free(snap_path);
     try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
 
-    var exp2 = Explorer.init(testing.allocator);
+    var exp2 = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp2.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();
@@ -3857,7 +3857,7 @@ test "issue-220: partial word index state rebuilds before search" {
 }
 
 test "issue-220: word index persistence tracking skips redundant rewrites" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     try exp.indexFile("src/a.zig", "pub const Alpha = 1;\n");
@@ -3893,7 +3893,7 @@ test "issue-45: snapshot written in non-git directory cannot be loaded" {
     const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
-    var exp = Explorer.init(aa);
+    var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try exp.indexFile("dummy.zig", "const x = 1;");
 
     const snap_path = try std.fs.path.join(aa, &.{ dir_path, "test.codedb" });
@@ -3928,9 +3928,9 @@ test "issue-47: concurrent snapshot writes from parallel instances corrupt file"
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
 
-    var exp1 = Explorer.init(arena1.allocator());
+    var exp1 = Explorer.init(arena1.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try exp1.indexFile("a.zig", "pub fn alpha() void {}");
-    var exp2 = Explorer.init(arena2.allocator());
+    var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try exp2.indexFile("b.zig", "pub fn beta() void {}");
 
     var tmp = testing.tmpDir(.{});
@@ -3973,7 +3973,7 @@ test "issue-47: concurrent snapshot writes from parallel instances corrupt file"
     // The final snapshot must be loadable (not corrupt)
     var arena3 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena3.deinit();
-    var exp3 = Explorer.init(arena3.allocator());
+    var exp3 = Explorer.init(arena3.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     var store3 = Store.init(testing.allocator);
     defer store3.deinit();
     const loaded = snapshot_mod.loadSnapshot(io, snap_path, &exp3, &store3, arena3.allocator());
@@ -4018,7 +4018,7 @@ test "issue-42: scan thread is joined before allocator-backed state is freed" {
 test "issue-40: truncated snapshot silently loads partial data" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try exp.indexFile("src/a.zig", "const a = 1;\n");
     try exp.indexFile("src/b.zig", "const b = 2;\n");
@@ -4048,7 +4048,7 @@ test "issue-40: truncated snapshot silently loads partial data" {
 
     var arena2 = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena2.deinit();
-    var exp2 = Explorer.init(arena2.allocator());
+    var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     var store = Store.init(arena2.allocator());
 
     const loaded = snapshot_mod.loadSnapshot(io, trunc_path, &exp2, &store, arena2.allocator());
@@ -4058,7 +4058,7 @@ test "issue-40: truncated snapshot silently loads partial data" {
 test "issue-41: snapshot not validated against repo identity allows cross-project loading" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var exp = Explorer.init(arena.allocator());
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try exp.indexFile("src/projectA.zig", "const project = \"A\";\n");
 
@@ -4075,7 +4075,7 @@ test "issue-41: snapshot not validated against repo identity allows cross-projec
 
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
-    var exp2 = Explorer.init(arena2.allocator());
+    var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
@@ -4097,7 +4097,7 @@ test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
     telem.recordSessionStart();
     telem.recordToolCall("codedb_status", 1234, false, 56);
 
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
     try explorer.indexFile("src/lib.py", "def run():\n    return 1\n");
@@ -4165,7 +4165,7 @@ test "issue-77: mcp index accepts temporary-directory roots that cause pathologi
 }
 
 test "issue-105: large files skip trigram indexing to prevent OOM" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     // Create content just over 64KB — should be indexed for outline/word but NOT trigram
@@ -4193,7 +4193,7 @@ test "issue-105: large files skip trigram indexing to prevent OOM" {
 test "issue-php-1: PHP class definition herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Models/Candidate.php",
         \\<?php
@@ -4220,7 +4220,7 @@ test "issue-php-1: PHP class definition herkend" {
 test "issue-php-2: PHP methode binnen class herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Models/User.php",
         \\<?php
@@ -4249,7 +4249,7 @@ test "issue-php-2: PHP methode binnen class herkend" {
 test "issue-php-3: PHP top-level functie herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("helpers.php",
         \\<?php
@@ -4275,7 +4275,7 @@ test "issue-php-3: PHP top-level functie herkend" {
 test "issue-php-4: PHP interface herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Contracts/Payable.php",
         \\<?php
@@ -4301,7 +4301,7 @@ test "issue-php-4: PHP interface herkend" {
 test "issue-php-5: PHP trait herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Traits/HasSlug.php",
         \\<?php
@@ -4329,7 +4329,7 @@ test "issue-php-5: PHP trait herkend" {
 test "issue-php-6: PHP use-import omgezet naar pad in dep_graph" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Http/Controllers/CandidateController.php",
         \\<?php
@@ -4348,7 +4348,7 @@ test "issue-php-6: PHP use-import omgezet naar pad in dep_graph" {
 test "issue-php-7: PHP commentaarregels worden overgeslagen" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Commented.php",
         \\<?php
@@ -4371,7 +4371,7 @@ test "issue-php-7: PHP commentaarregels worden overgeslagen" {
 test "issue-php-8: PHP function after class is top-level, not method" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/mixed.php",
         \\<?php
@@ -4403,7 +4403,7 @@ test "issue-php-8: PHP function after class is top-level, not method" {
 test "issue-php-9: PHP 8.1 enum herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Enums/Status.php",
         \\<?php
@@ -4431,7 +4431,7 @@ test "issue-php-9: PHP 8.1 enum herkend" {
 test "issue-php-10: PHP grouped use-statement parsed into individual imports" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Http/Controllers/TestController.php",
         \\<?php
@@ -4452,7 +4452,7 @@ test "issue-php-10: PHP grouped use-statement parsed into individual imports" {
 test "issue-php-11: PHP readonly class herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/ValueObjects/Money.php",
         \\<?php
@@ -4477,7 +4477,7 @@ test "issue-php-11: PHP readonly class herkend" {
 test "issue-php-12: PHP class and public constants herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Config.php",
         \\<?php
@@ -4502,7 +4502,7 @@ test "issue-php-12: PHP class and public constants herkend" {
 test "issue-php-13: PHP nested braces in methods do not break class tracking" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Services/Complex.php",
         \\<?php
@@ -4543,7 +4543,7 @@ test "issue-php-13: PHP nested braces in methods do not break class tracking" {
 test "issue-php-14: PHP multi-line block comments do not produce symbols" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Services/Commented.php",
         \\<?php
@@ -4579,7 +4579,7 @@ test "issue-php-14: PHP multi-line block comments do not produce symbols" {
 test "issue-php-15: PHP use-as alias stripped from import path" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Controllers/Test.php",
         \\<?php
@@ -4596,7 +4596,7 @@ test "issue-php-15: PHP use-as alias stripped from import path" {
 test "issue-php-16: PHP escaped quotes do not end string mode" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Services/Escaped.php",
         \\<?php
@@ -4633,7 +4633,7 @@ test "issue-php-16: PHP escaped quotes do not end string mode" {
 test "issue-php-17: PHP code after block comment terminator is parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Services/Inline.php",
         \\<?php
@@ -4658,7 +4658,7 @@ test "issue-php-17: PHP code after block comment terminator is parsed" {
 test "issue-php-18: PHP use-as alias case-insensitive" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app/Controllers/CaseTest.php",
         \\<?php
@@ -4678,7 +4678,7 @@ test "issue-php-18: PHP use-as alias case-insensitive" {
 test "issue-107: codedb_deps returns results for Python files" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("mypackage/utils/helpers.py", "def helper_func():\n    pass\n");
     try explorer.indexFile("consumer.py", "from mypackage.utils.helpers import helper_func\n");
@@ -4726,7 +4726,7 @@ test "issue-93: isPathSafe blocks traversal" {
 test "issue-111: Python triple-quote docstrings not parsed as code" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("docstring.py",
         \\def real_func():
@@ -4750,7 +4750,7 @@ test "issue-111: Python triple-quote docstrings not parsed as code" {
 test "issue-112: Python import-as alias stripped from dep path" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("utils.py", "def helper(): pass\n");
     try explorer.indexFile("consumer.py", "import utils as u\n");
@@ -4766,7 +4766,7 @@ test "issue-112: Python import-as alias stripped from dep path" {
 test "issue-113: TypeScript block comments not parsed as code" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("commented.ts",
         \\export function realFunc() {}
@@ -4787,7 +4787,7 @@ test "issue-113: TypeScript block comments not parsed as code" {
 test "issue-114: TypeScript import-as alias does not affect dep path" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("mod.ts", "export function hello() {}\n");
     try explorer.indexFile("consumer.ts", "import { hello as h } from './mod'\n");
@@ -4803,7 +4803,7 @@ test "issue-114: TypeScript import-as alias does not affect dep path" {
 // Tests correctness invariants that must hold across index implementation changes.
 
 test "regression-142: trigram index finds all matching files" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     try exp.indexFile("src/main.zig", "pub fn handleRequest(ctx: *Context) !void {}");
@@ -4823,7 +4823,7 @@ test "regression-142: trigram index finds all matching files" {
 }
 
 test "regression-142: trigram index returns no false positives" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     try exp.indexFile("a.zig", "pub fn alpha() void {}");
@@ -4836,7 +4836,7 @@ test "regression-142: trigram index returns no false positives" {
 }
 
 test "regression-142: trigram intersection narrows correctly" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     try exp.indexFile("match.zig", "const unique_identifier_xyz = 42;");
@@ -4857,7 +4857,7 @@ test "regression-142: trigram intersection narrows correctly" {
 }
 
 test "regression-142: trigram handles file removal" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     try exp.indexFile("temp.zig", "pub fn removable() void {}");
@@ -4882,7 +4882,7 @@ test "regression-142: trigram handles file removal" {
 }
 
 test "regression-142: trigram handles re-indexing same file" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     try exp.indexFile("mutable.zig", "pub fn oldContent() void {}");
@@ -4930,7 +4930,7 @@ test "regression-142: trigram disk roundtrip preserves results" {
 }
 
 test "regression-142: many files don't corrupt index" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     // Index 500 files
@@ -4957,7 +4957,7 @@ test "regression-142: many files don't corrupt index" {
 }
 
 test "regression-142: short queries fall back gracefully" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     try exp.indexFile("a.zig", "pub fn ab() void {}");
@@ -4975,7 +4975,7 @@ test "regression-142: short queries fall back gracefully" {
 }
 
 test "regression-142: word index still works alongside trigram" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     try exp.indexFile("words.zig", "pub fn mySpecialFunction() void {}");
@@ -4988,7 +4988,7 @@ test "regression-142: word index still works alongside trigram" {
 test "issue-151: Go func and type definitions" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("main.go",
         \\package main
@@ -5028,7 +5028,7 @@ test "issue-151: Go func and type definitions" {
 test "issue-151: Ruby class, module, and def" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("app.rb",
         \\require "json"
@@ -5063,7 +5063,7 @@ test "issue-151: Ruby class, module, and def" {
 test "issue-151: Ruby =begin/=end comments skipped" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("commented.rb",
         \\def real_method
@@ -5088,7 +5088,7 @@ test "issue-151: Ruby =begin/=end comments skipped" {
 test "issue-151: Go block comments skipped" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("commented.go",
         \\package main
@@ -5111,7 +5111,7 @@ test "issue-151: Go block comments skipped" {
 test "issue-301: Dart block comments skipped" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("commented.dart",
         \\class RealWidget {}
@@ -5581,7 +5581,7 @@ test "issue-164: mmap trigram index returns same candidates as heap index" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/auth.zig", "pub fn handleAuth(req: *Request) !void { validate(req); }");
@@ -5622,7 +5622,7 @@ test "issue-164: mmap binary search on sorted lookup table" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("a.zig", "const alpha = 42;");
@@ -5663,7 +5663,7 @@ test "issue-164: AnyTrigramIndex dispatches to mmap variant" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("foo.zig", "pub fn fooBar(x: i32) i32 { return x + 1; }");
@@ -5735,7 +5735,7 @@ test "issue-163: fuzzy no match returns null" {
 }
 
 test "issue-163: fuzzyFindFiles via Explorer" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/auth_middleware.py", "def check_auth(): pass");
@@ -5752,7 +5752,7 @@ test "issue-163: fuzzyFindFiles via Explorer" {
 }
 
 test "issue-163: multi-part query matches both parts" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/auth_middleware.py", "def check(): pass");
@@ -5768,7 +5768,7 @@ test "issue-163: multi-part query matches both parts" {
 }
 
 test "issue-163: extension constraint filters results" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/auth.py", "def check(): pass");
@@ -5805,7 +5805,7 @@ test "issue-163: transpositions handled by Smith-Waterman" {
 // ── codedb_query pipeline tests ─────────────────────────────────
 
 test "issue-168: query pipeline find → limit produces file set" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/auth.py", "def check_auth(): pass");
@@ -5830,7 +5830,7 @@ test "issue-168: query pipeline find → limit produces file set" {
 }
 
 test "issue-168: query pipeline search returns matching lines" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/main.zig", "pub fn main() void {\n    const x = 42;\n}\n");
@@ -5850,7 +5850,7 @@ test "issue-168: query pipeline search returns matching lines" {
 }
 
 test "issue-168: query pipeline filter by extension" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/auth.py", "def check(): pass");
@@ -5868,7 +5868,7 @@ test "issue-168: query pipeline filter by extension" {
 }
 
 test "issue-168: query pipeline outline returns symbols" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\npub fn helper() void {}\n");
@@ -5879,7 +5879,7 @@ test "issue-168: query pipeline outline returns symbols" {
 }
 
 test "issue-168: query pipeline chained find → filter narrows results" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/auth.py", "def check(): pass");
@@ -5899,7 +5899,7 @@ test "issue-168: query pipeline chained find → filter narrows results" {
 }
 
 test "issue-168: query pipeline handles empty results gracefully" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/main.zig", "pub fn main() void {}");
@@ -5915,7 +5915,7 @@ test "issue-168: query pipeline handles empty results gracefully" {
 // the right files survive each step, and irrelevant files are eliminated.
 
 test "issue-168: recall — find + filter preserves only matching extension" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/auth.py", "def check(): pass");
@@ -5936,7 +5936,7 @@ test "issue-168: recall — find + filter preserves only matching extension" {
 }
 
 test "issue-168: recall — search finds content across multiple files" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/a.zig", "pub fn handleRequest() void {}");
@@ -5968,7 +5968,7 @@ test "issue-168: recall — search finds content across multiple files" {
 }
 
 test "issue-168: recall — fuzzy find ranks exact matches highest" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/auth.zig", "fn auth() void {}");
@@ -5988,7 +5988,7 @@ test "issue-168: recall — fuzzy find ranks exact matches highest" {
 }
 
 test "issue-168: recall — multi-part query intersection" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/auth_controller.py", "class AuthController: pass");
@@ -6005,7 +6005,7 @@ test "issue-168: recall — multi-part query intersection" {
 }
 
 test "issue-168: recall — transposition tolerance in pipeline" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/middleware.zig", "fn process() void {}");
@@ -6023,7 +6023,7 @@ test "issue-168: recall — transposition tolerance in pipeline" {
 // ── Search UX tests ─────────────────────────────────────────────
 
 test "auto-retry: delimiter stripping finds results" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/auth_middleware.py", "def check(): pass");
@@ -6036,7 +6036,7 @@ test "auto-retry: delimiter stripping finds results" {
 }
 
 test "per-file truncation: max 5 matches per file in output" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     // Create a file with 10 lines all matching "const"
@@ -6062,7 +6062,7 @@ test "per-file truncation: max 5 matches per file in output" {
 }
 
 test "issue-179: block comment does not produce phantom symbols" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("test.zig", "/* commented out\npub fn fake_func() void {}\n*/\npub fn real_func() void {}\n");
@@ -6083,7 +6083,7 @@ test "issue-179: block comment does not produce phantom symbols" {
 }
 
 test "issue-179: code after single-line /* */ comment is parsed" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("test.zig", "/* skip this */ pub fn visible() void {}\n");
@@ -6101,7 +6101,7 @@ test "issue-179: code after single-line /* */ comment is parsed" {
 }
 
 test "issue-179: Python docstring with text does not leak symbols" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("test.py", "def real():\n    \"\"\"This is a docstring.\n    def fake():\n        pass\n    \"\"\"\n    pass\n");
@@ -6211,7 +6211,7 @@ test "issue-249: nuke.removeJsonMcpServerEntry returns null when key absent" {
 test "issue-250: searchContent finds content in files skipped by trigram index" {
     // Files indexed with skip_trigram=true (e.g. past the 15k cap) must still be
     // reachable via the fallback full-scan path in searchContent.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFileSkipTrigram("large.zig", "fn unique_zzz_sentinel() void {}");
@@ -6247,7 +6247,7 @@ test "snapshot: symbol detail longer than 4096 bytes survives round-trip" {
     }
     try src.appendSlice(testing.allocator, ") void {}\n");
     try testing.expect(src.items.len > 4096); // guard: ensure we actually generated a long line
-    var exp = Explorer.init(aa);
+    var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try exp.indexFile("src/big.zig", src.items);
 
     var tmp = testing.tmpDir(.{});
@@ -6259,7 +6259,7 @@ test "snapshot: symbol detail longer than 4096 bytes survives round-trip" {
     defer testing.allocator.free(snap_path);
     try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
 
-    var exp2 = Explorer.init(testing.allocator);
+    var exp2 = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp2.deinit();
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
@@ -6283,7 +6283,7 @@ test "snapshot: corrupted OUTLINE_STATE section falls back to CONTENT load" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var exp = Explorer.init(aa);
+    var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try exp.indexFile("src/a.zig", "pub fn aFunc() void {}\n");
     try exp.indexFile("src/b.zig", "pub fn bFunc() void {}\n");
 
@@ -6309,7 +6309,7 @@ test "snapshot: corrupted OUTLINE_STATE section falls back to CONTENT load" {
         try f.writePositionalAll(io, &([_]u8{0xFF} ** 16), ols.offset);
     }
 
-    var exp2 = Explorer.init(testing.allocator);
+    var exp2 = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp2.deinit();
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
@@ -6329,7 +6329,7 @@ test "issue-224: codedb_symbol body=true returns full body — line_end populate
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("t.zig",
         \\pub fn foo() u32 {
@@ -6358,7 +6358,7 @@ test "issue-224: Python def line_end covers full body" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("t.py",
         \\def greet(name):
@@ -6379,7 +6379,7 @@ test "issue-108: HCL resource block parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("main.tf",
         \\resource "aws_instance" "web" {
         \\  ami = "abc-123"
@@ -6395,7 +6395,7 @@ test "issue-108: HCL variable and output parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("vars.tf",
         \\variable "region" {
         \\  default = "us-east-1"
@@ -6418,7 +6418,7 @@ test "issue-108: HCL module and provider parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("main.tf",
         \\provider "aws" {
         \\  region = "us-east-1"
@@ -6439,7 +6439,7 @@ test "issue-108: HCL comment lines skipped" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("main.tf",
         \\# This is a comment
         \\// Another comment
@@ -6460,7 +6460,7 @@ test "issue-215: R function assignment parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("analysis.R",
         \\greet <- function(name) {
         \\  paste("Hello", name)
@@ -6476,7 +6476,7 @@ test "issue-215: R library import parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("script.r",
         \\library(dplyr)
         \\require(ggplot2)
@@ -6489,7 +6489,7 @@ test "issue-215: R setClass parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("classes.R",
         \\setClass("Person")
         \\setRefClass("Animal")
@@ -6512,7 +6512,7 @@ test "issue-319: C parser extracts includes macros types and functions" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("src/core.c",
         \\#include <stdio.h>
@@ -6589,7 +6589,7 @@ test "issue-319: C parser avoids comments strings prototypes and macro calls" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("src/noise.c",
         \\// int fake_comment(void) {
@@ -6635,7 +6635,7 @@ test "issue-321: common detected extensions produce outlines" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("src/math.cc",
         \\#include <vector>
@@ -6964,7 +6964,7 @@ test "issue-179: Python inline docstring does not leak symbols" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("mod.py",
         \\def real_func():
@@ -6985,7 +6985,7 @@ test "issue-179: Python multi-line docstring with def inside" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("doc.py",
         \\def outer():
@@ -7010,7 +7010,7 @@ test "issue-262: sparse+trigram intersection drops files only in trigram index" 
     // When both sparse and trigram indices return candidates, searchContent
     // intersects them.  A file present in trigram candidates but absent from
     // sparse candidates is silently dropped — a recall loss.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     // Index two files — both contain the query.
@@ -7038,7 +7038,7 @@ test "issue-263: skip_trigram_files searched before max_results exhausted" {
     // trigram/sparse/word paths are exhausted.  When a single normal file
     // has enough matches to fill max_results, the skip_trigram file is
     // never checked — even though it contains relevant content.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     // Normal file with 6 matches (one per line).
@@ -7076,7 +7076,7 @@ test "issue-264: early exit at max_results misses valid matches in remaining can
     // searchContent stops as soon as result_list.items.len >= max_results.
     // The first-indexed file is iterated first (doc_id order).  If it has
     // many matches it fills the quota alone, and later files are never checked.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     // Index noisy file FIRST — it will be the first trigram candidate.
@@ -7319,7 +7319,7 @@ test "dep-graph: cycle does not cause infinite BFS" {
 test "dep-graph: Explorer integration — getImportedBy uses reverse index" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("store.zig", "pub const Store = struct {};");
     try explorer.indexFile("main.zig", "const store = @import(\"store.zig\");\npub fn main() void {}");
@@ -7336,7 +7336,7 @@ test "dep-graph: Explorer integration — getImportedBy uses reverse index" {
 test "dep-graph: Explorer transitive dependents" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("utils.zig", "pub fn helper() void {}");
     try explorer.indexFile("store.zig", "const utils = @import(\"utils.zig\");\npub const Store = struct {};");
@@ -7362,7 +7362,7 @@ test "issue-445: dep-graph dedupes multi-aliased forward imports" {
     // The depends_on list should be unique by path.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("index.zig", "pub fn build() void {}");
     try explorer.indexFile("main.zig",
@@ -7388,7 +7388,7 @@ test "issue-445: dep-graph dedupes multi-aliased forward imports" {
 test "symbol-index: O(1) findSymbol via symbol_index" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("math.zig", "pub fn add(a: i32, b: i32) i32 { return a + b; }\npub fn subtract(a: i32, b: i32) i32 { return a - b; }\n");
     try explorer.indexFile("utils.zig", "pub fn add(x: f64, y: f64) f64 { return x + y; }\npub fn format() void {}\n");
@@ -7420,7 +7420,7 @@ test "symbol-index: O(1) findSymbol via symbol_index" {
 test "symbol-index: removeFile cleans symbol_index" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("a.zig", "pub fn unique_func() void {}");
     const before = try explorer.findSymbol("unique_func", testing.allocator);
@@ -7438,7 +7438,7 @@ test "symbol-index: removeFile cleans symbol_index" {
 test "symbol-index: re-index updates symbol_index" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("a.zig", "pub fn old_name() void {}");
     const r1 = try explorer.findSymbol("old_name", testing.allocator);
@@ -7464,7 +7464,7 @@ test "symbol-index: re-index updates symbol_index" {
 test "search: line numbers correct with incremental counting" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     // File with target on specific lines
     const content = "line1\nline2\ntarget_here\nline4\nline5\ntarget_here\nline7\n";
@@ -7545,7 +7545,7 @@ test "word-index: splitIdentifier simple word emits itself" {
 test "word-index: sub-token search finds camelCase components" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("a.zig", "fn validateToken(x: u32) void {}");
     try explorer.indexFile("b.zig", "fn processRequest() void {}");
@@ -7578,7 +7578,7 @@ test "word-index: sub-token search finds camelCase components" {
 test "word-index: sub-token search finds snake_case components" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("a.zig", "const http_handler = null;");
 
@@ -7608,7 +7608,7 @@ test "word-index: sub-token search finds snake_case components" {
 test "word-index: case-insensitive lookup finds exact identifiers" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("a.zig", "fn validateToken() void {}");
 
@@ -7683,7 +7683,7 @@ test "word-index: searchPrefix respects max_results cap" {
 test "integration: Tier 0.5 prefix expansion finds partial identifier" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("util.zig", "pub fn validateRequest(r: Request) bool { return true; }");
 
@@ -7705,7 +7705,7 @@ test "integration: Tier 0.5 prefix expansion finds partial identifier" {
 test "search: BM25 ranks higher-frequency line first" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     // Line with two occurrences of "token" should outrank line with one
     const content = "// single token mention\nconst token = token_cache.get();\n";
@@ -7731,7 +7731,7 @@ test "search: BM25 ranks higher-frequency line first" {
 test "issue-290: searchContent with hyphen query does not crash" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("a.zig", "const x = \"test-case\";\n");
     const results = try explorer.searchContent("test-case", testing.allocator, 10);
     defer {
@@ -7746,7 +7746,7 @@ test "issue-290: searchContent with hyphen query does not crash" {
 test "issue-292: searchContent with pipe query does not crash" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("a.zig", "const x = \"timestamp|activity|filter\";\n");
     const results = try explorer.searchContent("timestamp|activity|filter", testing.allocator, 5);
     defer {
@@ -7818,7 +7818,7 @@ test "issue-331: C parser does not index indented call sites as functions" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var explorer = Explorer.init(a);
+    var explorer = Explorer.init(a, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("test.c",
         \\void real_func(int x) {
@@ -7856,7 +7856,7 @@ test "issue-331: C parser finds nginx-style split-line definitions" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var explorer = Explorer.init(a);
+    var explorer = Explorer.init(a, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("ngx_http_request.c",
         \\ngx_int_t
@@ -7897,7 +7897,7 @@ test "issue-346: root_policy rejects dangerous ambient cwd roots" {
 }
 
 test "issue-359: globPaths matches files by glob pattern" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/mcp.zig", "pub fn a() void {}");
@@ -7933,7 +7933,7 @@ test "issue-359: globPaths matches files by glob pattern" {
 }
 
 test "issue-359: lsDir returns immediate children with file metadata" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("src/mcp.zig", "pub fn a() void {}");
@@ -8002,7 +8002,7 @@ test "issue-359: mcp.globMatch backtracks across **/* boundary" {
 }
 
 test "issue-359: globPaths recall — every matching path survives at every depth" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     // Plant files at varying depths under src/, plus a few outside it.
@@ -8060,7 +8060,7 @@ test "issue-359: globPaths recall — every matching path survives at every dept
 // the trigram index, sparse-ngram index, word index, symbol index, and
 // dep graph in one place.
 test "issue-359/360: retrieval recall — search/word/symbol/fuzzy/glob/deps all return ground truth" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     // Flat paths so dep_graph keys (raw import strings) line up with file paths.
@@ -8201,7 +8201,7 @@ test "issue-359/360: retrieval recall — search/word/symbol/fuzzy/glob/deps all
 }
 
 test "issue-357: bundle preserves nested 'arguments' for codedb_outline" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
     try explorer.indexFile("src/lib.zig", "pub fn helper() void {}\n");
@@ -8213,7 +8213,7 @@ test "issue-357: bundle preserves nested 'arguments' for codedb_outline" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const bundle_json =
@@ -8236,7 +8236,7 @@ test "issue-357: bundle preserves nested 'arguments' for codedb_outline" {
 }
 
 test "issue-357: bundle surfaces received keys when an op is missing required path" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -8247,7 +8247,7 @@ test "issue-357: bundle surfaces received keys when an op is missing required pa
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     // Bundle with a wrong key name ('file_path' instead of 'path'). The op must
@@ -8276,7 +8276,7 @@ test "issue-423: bundle emits 'received keys' exactly once per failing op" {
     // Regression: handler (handleSearch etc) appends the diagnostic, AND the
     // bundle dispatch loop also appends it — caller saw the line twice in a
     // row. Must appear exactly once per failing op.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -8287,7 +8287,7 @@ test "issue-423: bundle emits 'received keys' exactly once per failing op" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const bundle_json =
@@ -8310,7 +8310,7 @@ test "issue-423: bundle emits 'received keys' exactly once per failing op" {
 }
 
 test "issue-363b: fuzzyFindFiles ranks exact basename match above unrelated lib.rs" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     // Reproducer from #363: indexing the codegraff workspace, querying 'cli.rs'
@@ -8333,7 +8333,7 @@ test "issue-363b: fuzzyFindFiles ranks exact basename match above unrelated lib.
     try testing.expectEqualStrings("crates/forge_main/src/cli.rs", matches[0].path);
 }
 test "issue-363a: searchContent surfaces source-file matches even when doc files dominate the word index" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     // To hit Tier 0 of searchContent (explore.zig:1511-1535) the gate
@@ -8391,7 +8391,7 @@ test "issue-363a: searchContent surfaces source-file matches even when doc files
 }
 
 test "issue-356-1: codedb_query returns partial results when a step fails" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
     try explorer.indexFile("src/lib.zig", "pub fn helper() void {}\n");
@@ -8402,7 +8402,7 @@ test "issue-356-1: codedb_query returns partial results when a step fails" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     // Pipeline: step 0 (find) succeeds, step 1 (search) is missing 'query'.
@@ -8431,7 +8431,7 @@ test "issue-356-1: codedb_query returns partial results when a step fails" {
 }
 
 test "issue-356-2: codedb_outline suggests fuzzy alternatives for non-indexed paths" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
     try explorer.indexFile("src/mcp.zig", "pub fn mcp() void {}\n");
@@ -8443,7 +8443,7 @@ test "issue-356-2: codedb_outline suggests fuzzy alternatives for non-indexed pa
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     // Outline a path that doesn't index — typo on 'main.zig'.
@@ -8465,7 +8465,7 @@ test "issue-356-2: codedb_outline suggests fuzzy alternatives for non-indexed pa
 }
 
 test "issue-356-3: codedb_query surfaces received keys on missing-arg errors" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -8475,7 +8475,7 @@ test "issue-356-3: codedb_query surfaces received keys on missing-arg errors" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     // Single-step pipeline: search step missing 'query' but provided 'q'
@@ -8499,7 +8499,7 @@ test "issue-356-3: codedb_query surfaces received keys on missing-arg errors" {
 }
 
 test "issue-356-p2: codedb_outline missing path surfaces received keys" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -8509,7 +8509,7 @@ test "issue-356-p2: codedb_outline missing path surfaces received keys" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -8528,7 +8528,7 @@ test "issue-356-p2: codedb_outline missing path surfaces received keys" {
 }
 
 test "issue-356-p2: codedb_symbol missing name surfaces received keys" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -8538,7 +8538,7 @@ test "issue-356-p2: codedb_symbol missing name surfaces received keys" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -8557,7 +8557,7 @@ test "issue-356-p2: codedb_symbol missing name surfaces received keys" {
 }
 
 test "issue-356-p2: codedb_search missing query surfaces received keys" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -8567,7 +8567,7 @@ test "issue-356-p2: codedb_search missing query surfaces received keys" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -8585,7 +8585,7 @@ test "issue-356-p2: codedb_search missing query surfaces received keys" {
 }
 
 test "issue-356-p2: codedb_word missing word surfaces received keys" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -8595,7 +8595,7 @@ test "issue-356-p2: codedb_word missing word surfaces received keys" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -8613,7 +8613,7 @@ test "issue-356-p2: codedb_word missing word surfaces received keys" {
 }
 
 test "issue-356-p2: codedb_read missing path surfaces received keys" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -8623,7 +8623,7 @@ test "issue-356-p2: codedb_read missing path surfaces received keys" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -8641,7 +8641,7 @@ test "issue-356-p2: codedb_read missing path surfaces received keys" {
 }
 
 test "issue-356-p2: codedb_deps missing path surfaces received keys" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -8651,7 +8651,7 @@ test "issue-356-p2: codedb_deps missing path surfaces received keys" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -8669,7 +8669,7 @@ test "issue-356-p2: codedb_deps missing path surfaces received keys" {
 }
 
 test "issue-356-p3: codedb_query emits per-stage summary tail on success" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
     try explorer.indexFile("src/lib.zig", "pub fn helper() void {}\n");
@@ -8680,7 +8680,7 @@ test "issue-356-p3: codedb_query emits per-stage summary tail on success" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     // Two-step pipeline that succeeds. Phase 3 emits a summary tail so
@@ -8707,7 +8707,7 @@ test "issue-356-p3: codedb_query emits per-stage summary tail on success" {
 }
 
 test "issue-356-p3: codedb_outline includes actionable hint when parser fails" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -8717,7 +8717,7 @@ test "issue-356-p3: codedb_outline includes actionable hint when parser fails" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     // Outline a path that's NOT indexed (no setRoot, so disk read won't
@@ -8756,7 +8756,7 @@ test "issue-356-p3: codedb_read appends fuzzy suggestions when path is unreadabl
     const project_path_len = try tmp.dir.realPathFile(tmp_io, ".", &project_path_buf);
     const project_path = project_path_buf[0..project_path_len];
 
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     explorer.setRoot(tmp_io, project_path);
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
@@ -8768,7 +8768,7 @@ test "issue-356-p3: codedb_read appends fuzzy suggestions when path is unreadabl
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, project_path);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, project_path, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     // Read a non-indexed, non-existent path. Pre-fix: bare 'failed to read file'.
@@ -8855,7 +8855,7 @@ test "issue-367-dx: tty summary surfaces received keys on missing-arg error" {
 }
 
 test "issue-recall: codedb_search supports path_glob filter" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "received keys foo\n");
     try explorer.indexFile("CHANGELOG.md", "received keys diagnostic\n");
@@ -8866,7 +8866,7 @@ test "issue-recall: codedb_search supports path_glob filter" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -8894,7 +8894,7 @@ test "issue-422: search header count must reflect post-filter visible results" {
     // Repro shape mirrors the reporter's call: scope=true, compact=true,
     // path_glob limited to a subtree. The match ITSELF is in-glob and not a
     // comment — the bug is purely in the bookkeeping.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     // Two files: one in the path_glob subtree (the real match), one outside
     // it (a decoy that the explorer would also return for the substring).
@@ -8915,7 +8915,7 @@ test "issue-422: search header count must reflect post-filter visible results" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -8945,7 +8945,7 @@ test "issue-422: search header count must reflect post-filter visible results" {
 }
 
 test "issue-bug2: tool calls during scan-in-progress hint at scan state" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();
@@ -8953,7 +8953,7 @@ test "issue-bug2: tool calls during scan-in-progress hint at scan state" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const prev_state = mcp_mod.getScanState();
@@ -8975,7 +8975,7 @@ test "issue-bug2: tool calls during scan-in-progress hint at scan state" {
 }
 
 test "issue-378: search waits briefly for scan to reach ready instead of returning empty" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();
@@ -8983,7 +8983,7 @@ test "issue-378: search waits briefly for scan to reach ready instead of returni
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const prev_state = mcp_mod.getScanState();
@@ -9019,7 +9019,7 @@ test "issue-379: snapshot loader returns true with zero outlines for empty-explo
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var exp = Explorer.init(aa);
+    var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -9031,7 +9031,7 @@ test "issue-379: snapshot loader returns true with zero outlines for empty-explo
 
     try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
 
-    var exp2 = Explorer.init(testing.allocator);
+    var exp2 = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp2.deinit();
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
@@ -9060,7 +9060,7 @@ test "issue-bug5: codedb_read returns binary stub instead of dumping bytes" {
         try f.writePositionalAll(io, &payload, 0);
     }
 
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     explorer.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
@@ -9069,7 +9069,7 @@ test "issue-bug5: codedb_read returns binary stub instead of dumping bytes" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, dir_path);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, dir_path, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json = try std.fmt.allocPrint(testing.allocator,
@@ -9103,7 +9103,7 @@ test "issue-bug6: codedb_read errors when line_start > line_end" {
         try f.writePositionalAll(io, "alpha\nbeta\ngamma\n", 0);
     }
 
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     explorer.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
@@ -9112,7 +9112,7 @@ test "issue-bug6: codedb_read errors when line_start > line_end" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, dir_path);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, dir_path, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json = try std.fmt.allocPrint(testing.allocator,
@@ -9130,14 +9130,14 @@ test "issue-bug6: codedb_read errors when line_start > line_end" {
 }
 
 test "issue-bug7: codedb_search rejects empty query" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -9154,14 +9154,14 @@ test "issue-bug7: codedb_search rejects empty query" {
 }
 
 test "issue-bug7: codedb_search rejects negative max_results" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -9178,14 +9178,14 @@ test "issue-bug7: codedb_search rejects negative max_results" {
 }
 
 test "issue-bug11: codedb_bundle marks isError when all ops fail" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -9276,7 +9276,7 @@ test "issue-389: FilteredWalker yields symlinked source files" {
 
     var store = Store.init(testing.allocator);
     defer store.deinit();
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
@@ -9328,7 +9328,7 @@ test "issue-405: FilteredWalker walks directory symlinks safely (cycle + escape)
 
     var store = Store.init(testing.allocator);
     defer store.deinit();
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
@@ -9355,7 +9355,7 @@ test "issue-405: FilteredWalker walks directory symlinks safely (cycle + escape)
 test "issue-392: Swift parser" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("Sources/App/Greeter.swift",
         \\import Foundation
@@ -9449,7 +9449,7 @@ test "issue-387: appendId preserves JSON-RPC numeric and number_string ids" {
 }
 
 test "issue-390: codedb_search scope=true caps matches per file" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     // Build a "dominant" file with 20 matches plus several files with 1 match
@@ -9471,7 +9471,7 @@ test "issue-390: codedb_search scope=true caps matches per file" {
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -9515,13 +9515,13 @@ test "issue-391: codedb_callers tool exists" {
 test "issue-391: codedb_callers returns call sites with scope" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
@@ -9546,14 +9546,14 @@ test "issue-391: codedb_callers returns call sites with scope" {
 }
 
 test "issue-391: codedb_callers rejects missing name" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -9640,7 +9640,7 @@ test "issue-405: cleanupStaleTmpFiles deletes in-flight sibling tmp files" {
 
     // Step 1: write a real, valid snapshot at <dir>/snap.codedb so
     // loadSnapshotValidated has something legitimate to read.
-    var exp = Explorer.init(aa);
+    var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try exp.indexFile("a.zig", "pub fn alpha() void {}\n");
     const snap_path = try std.fs.path.join(aa, &.{ dir_path, "snap.codedb" });
     try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, aa);
@@ -9661,7 +9661,7 @@ test "issue-405: cleanupStaleTmpFiles deletes in-flight sibling tmp files" {
     // Step 3: run loadSnapshotValidated. cleanupStaleTmpFiles is the
     // first thing it does. After this, the sibling's in-flight tmp
     // file MUST still exist — otherwise the sibling's rename will fail.
-    var exp2 = Explorer.init(aa);
+    var exp2 = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     _ = snapshot_mod.loadSnapshotValidated(io, snap_path, null, &exp2, &store, aa);
@@ -9701,7 +9701,7 @@ test "issue-409: snapshot .env prefix filter wrongly excludes .envoy/.environmen
     const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
     const dir_path = path_buf[0..dir_path_len];
 
-    var exp = Explorer.init(aa);
+    var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try exp.indexFile("a.zig", "pub fn alpha() void {}\n");
     // .envoy.json is the canonical Envoy proxy config name — not a secret.
     try exp.indexFile(".envoy.json", "{\"listeners\":[]}\n");
@@ -9710,7 +9710,7 @@ test "issue-409: snapshot .env prefix filter wrongly excludes .envoy/.environmen
     const snap_path = try std.fs.path.join(aa, &.{ dir_path, "snap.codedb" });
     try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, aa);
 
-    var exp2 = Explorer.init(aa);
+    var exp2 = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, aa));
@@ -9845,14 +9845,14 @@ test "issue-409: replacing whole file with empty content leaves a stray newline"
 }
 
 test "issue-412: bundle reports 'missing tool' for tool field of wrong type" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const bundle_json =
@@ -9868,14 +9868,14 @@ test "issue-412: bundle reports 'missing tool' for tool field of wrong type" {
 }
 
 test "issue-413: bundle truncation drops subsequent ops without telling the caller" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     // Index a single large file (~120KB) so two reads exceed the 200KB
@@ -9927,7 +9927,7 @@ test "issue-393: BM25 ranking surfaces high-density file before single-mention f
     // BM25 score across files (highest-scoring document's match comes first).
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     // dense.zig: hits both query terms many times across many lines.
     try explorer.indexFile("src/dense.zig",
@@ -9986,7 +9986,7 @@ test "issue-393: BM25 ranking surfaces high-density file before single-mention f
 test "issue-400: BM25 ranks both-terms file above single-term files" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("both.zig",
         \\pub fn parseToken() void {
@@ -10019,7 +10019,7 @@ test "issue-400: BM25 ranks both-terms file above single-term files" {
 }
 
 test "issue-400-bug1: searchContentRanked returns ranked results when skip_file_words=true" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     explorer.word_index.skip_file_words = true;
     try explorer.indexFile("a.zig", "apple banana\n");
@@ -10036,7 +10036,7 @@ test "issue-400-bug1: searchContentRanked returns ranked results when skip_file_
 }
 
 test "issue-400-bug2: total_tokens stays consistent across re-index when skip_file_words=true" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     explorer.word_index.skip_file_words = true;
     try explorer.indexFile("a.zig", "one two three four\n");
@@ -10056,7 +10056,7 @@ test "bm25-recall-a: single-term tf ordering" {
     // Each doc has exactly 10 tokens (5 lines x 2 tokens each).
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     // doc1: apple on 1 of 5 lines
     try explorer.indexFile("doc1.txt", "apple filler\nfiller filler\nfiller filler\nfiller filler\nfiller filler");
@@ -10090,7 +10090,7 @@ test "bm25-recall-b: both-terms doc beats high-tf single-term doc" {
     // while doc2 only gets one -- doc1 must rank first.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("doc1.txt", "apple banana cherry");
     try explorer.indexFile("doc2.txt", "apple apple apple");
@@ -10125,7 +10125,7 @@ test "bm25-recall-c: df-saturation -- ubiquitous term has near-zero idf" {
     // "unique_marker" appears only in special.txt -> high idf, special.txt ranks first.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("d1.txt", "the quick brown fox");
     try explorer.indexFile("d2.txt", "the lazy dog jumps");
@@ -10161,7 +10161,7 @@ test "bm25-recall-d: length normalization favors shorter doc" {
     // BM25 with b=0.75 penalizes longer docs; short.txt must rank higher.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("short.txt", "needle alpha beta gamma delta");
     try explorer.indexFile("long.txt",
@@ -10186,7 +10186,7 @@ test "bm25-recall-d: length normalization favors shorter doc" {
 test "bm25-recall-e: empty and pathological queries return empty without crash" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("file.txt", "some content here");
 
@@ -10208,7 +10208,7 @@ test "bm25-recall-e: empty and pathological queries return empty without crash" 
 }
 
 test "bm25-stress: 1000-doc index, common token, max_results cap honored" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     var path_buf: [64]u8 = undefined;
@@ -10242,7 +10242,7 @@ test "bm25-stress: 1000-doc index, common token, max_results cap honored" {
 }
 
 test "bm25-state-sync: re-index and remove update total_tokens correctly" {
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     try explorer.indexFile("sync.txt", "alpha beta gamma delta epsilon");
@@ -10342,50 +10342,37 @@ test "issue-101: Store.max_versions is configurable (caps per-file history)" {
     try testing.expectEqual(@as(u64, 0x555), entry.versions.items[2].hash);
 }
 
-test "issue-102: Explorer.content_cache_limit field is retained" {
-    // The content_cache_limit field is preserved for API compatibility.
-    // With CLOCK eviction (#208) the field no longer gates put() calls —
-    // the ContentCache capacity (16384) is the actual bound.
-    var explorer = Explorer.init(testing.allocator);
+test "issue-102: Explorer.init capacity flows to ContentCache" {
+    // Verifies that the capacity arg to Explorer.init actually sets the
+    // ContentCache capacity — the bug that issue-102 was filed for.
+    var explorer = Explorer.init(testing.allocator, 8);
     defer explorer.deinit();
 
-    explorer.content_cache_limit = 2;
-
-    try explorer.indexFile("a.zig", "pub fn a() void {}\n");
-    try explorer.indexFile("b.zig", "pub fn b() void {}\n");
-    try explorer.indexFile("c.zig", "pub fn c() void {}\n");
-    try explorer.indexFile("d.zig", "pub fn d() void {}\n");
-    try explorer.indexFile("e.zig", "pub fn e() void {}\n");
-
-    // All 5 outlines are indexed and the cache holds all 5 (CLOCK evicts only
-    // when the fixed-capacity slot array is under probe-window pressure).
-    try testing.expectEqual(@as(usize, 5), explorer.outlines.count());
-    try testing.expectEqual(@as(u32, 5), explorer.contents.count());
+    try testing.expectEqual(@as(u32, 8), explorer.contents.capacity);
 }
 
-test "issue-101+102: Config.parse wires into Store.max_versions and Explorer.content_cache_limit" {
-    // End-to-end: parse a .codedbrc body, apply to Store + Explorer,
-    // verify both fields pick up the configured values.
+test "issue-101+102: .codedbrc max_cached threads through to ContentCache capacity" {
+    // End-to-end: parse a .codedbrc body, construct Explorer with the parsed
+    // max_cached, verify the ContentCache capacity matches.
     const body =
         \\# test config
         \\max_versions = 7
-        \\max_cached = 42
+        \\max_cached = 32
         \\
     ;
     const cfg = try Config.parse(body);
     try testing.expectEqual(@as(usize, 7), cfg.max_versions);
-    try testing.expectEqual(@as(u32, 42), cfg.max_cached);
+    try testing.expectEqual(@as(u32, 32), cfg.max_cached);
 
     var store = Store.init(testing.allocator);
     defer store.deinit();
     store.max_versions = cfg.max_versions;
 
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, cfg.max_cached);
     defer explorer.deinit();
-    explorer.content_cache_limit = cfg.max_cached;
 
     try testing.expectEqual(@as(usize, 7), store.max_versions);
-    try testing.expectEqual(@as(u32, 42), explorer.content_cache_limit);
+    try testing.expectEqual(@as(u32, 32), explorer.contents.capacity);
 }
 
 test "issue-424-B: bundle falls through to inline args when arguments is empty object" {
@@ -10394,7 +10381,7 @@ test "issue-424-B: bundle falls through to inline args when arguments is empty o
     // empty `arguments` and stops looking — resulting in a misleading
     // "missing 'path'" with `received keys: []` even though `path` is
     // sitting right there in the op.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -10404,7 +10391,7 @@ test "issue-424-B: bundle falls through to inline args when arguments is empty o
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const bundle_json =
@@ -10427,7 +10414,7 @@ test "issue-424-D: received-keys diagnostic hints at inline-args workaround when
     // When a sub-op fails with truly-empty args, the diagnostic should
     // point users at the inline-args fallback so a broken client wrapper
     // can be routed around without a server change.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -10437,7 +10424,7 @@ test "issue-424-D: received-keys diagnostic hints at inline-args workaround when
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const bundle_json =
@@ -10462,7 +10449,7 @@ test "issue-424-A: bundle envelope errors carry the 'error:' prefix consistently
     // Pre-fix the bundle dispatcher emits 'op must be an object' and
     // 'missing 'tool' field' WITHOUT the 'error:' prefix that per-tool
     // handlers and TTY-summary parsing both expect. Normalize.
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     var store = Store.init(testing.allocator);
@@ -10471,7 +10458,7 @@ test "issue-424-A: bundle envelope errors carry the 'error:' prefix consistently
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     // Op is a string, not an object.
@@ -10505,7 +10492,7 @@ test "issue-441: bundle rejects codedb_projects sub-op" {
     // codedb_projects ops as if that were the canonical "what do I do here"
     // call. Block it at the dispatcher, mirroring the existing rejections of
     // codedb_bundle (recursive) and codedb_edit (write op).
-    var explorer = Explorer.init(testing.allocator);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();
@@ -10513,7 +10500,7 @@ test "issue-441: bundle rejects codedb_projects sub-op" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const bundle_json =
@@ -10742,13 +10729,13 @@ test "issue-425: codedb_callers excludes substring matches in unrelated identifi
     // line so substring matches in longer identifiers are excluded.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
@@ -10782,13 +10769,13 @@ test "issue-426: codedb_callers excludes non-code files (markdown, docs)" {
     // sites. The fix is a language gate: skip results from non-code files.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
@@ -10829,7 +10816,7 @@ test "issue-427: searchContent Tier 1 sort starves the definition-dense file" {
     // missing from the output.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     // 8 small files. Each contains one occurrence of the term as a whole
     // word. They sort first under the length-ascending Tier 1 order.
@@ -10890,7 +10877,7 @@ test "issue-429-a: searchContent rerank boosts files whose basename matches the 
     // intent signal — the developer is asking about that file's subject.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("src/unrelated.zig", "pub fn process() void { _ = widgetX; }\n");
     try explorer.indexFile("src/widgetX.zig", "pub fn process() void { _ = widgetX; }\n");
@@ -10914,7 +10901,7 @@ test "issue-429-b: searchContent rerank penalizes test/vendor/examples paths" {
     // example/test/vendor directories so the source-of-truth lands first.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("examples/sample.zig", "pub fn x() void { _ = someTerm; }\n");
     try explorer.indexFile("src/sample.zig", "pub fn x() void { _ = someTerm; }\n");
@@ -10940,7 +10927,7 @@ test "issue-429-c: searchContent rerank boosts lines that are symbol definitions
     // ranks it first.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("aaa.zig", "// fooSym is referenced here in a comment\n");
     try explorer.indexFile("zzz_def.zig", "pub fn fooSym() void {}\n");
@@ -10970,7 +10957,7 @@ test "issue-430: Tier 0 markdown dominance starves canonical source file" {
     // posting-list entries are processed.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     // 5 markdown files each with 10 mentions of fooBar — indexed FIRST so
     // they land at the head of the posting list. With max_results=50 and
@@ -11027,7 +11014,7 @@ test "issue-431: searchContent does not crash when query is longer than content"
     // longer than the file's content.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("a.zig", "fn x() void {}\n");
 
@@ -11053,7 +11040,7 @@ test "issue-429-d: searchContent rerank boosts path-segment match" {
     // match boost surfaces "src/parser/foo.zig" first.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("src/handlers/foo.zig", "// parser is mentioned here\n");
     try explorer.indexFile("src/parser/foo.zig", "// parser is mentioned here\n");
@@ -11077,7 +11064,7 @@ test "issue-429-e: searchContent rerank penalises doc-language files so code bea
     // call site with one occurrence still wins.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     // Doc file with the identifier mentioned four times on one line —
     // pre-fix this scores 4 on per-line frequency.
@@ -11106,7 +11093,7 @@ test "issue-429-e: searchContent rerank penalises doc-language files so code bea
 test "issue-448-a: rerank boosts basename when query contains stem" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("src/aaa.zig", "// Explorer is mentioned here\n");
     try explorer.indexFile("src/explore.zig", "// Explorer is mentioned here\n");
@@ -11127,7 +11114,7 @@ test "issue-448-a: rerank boosts basename when query contains stem" {
 test "issue-448-b: rerank symbol definition boost is case-insensitive" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("aaa.zig", "// store is mentioned here\n");
     try explorer.indexFile("zzz.zig", "pub const Store = struct {};\n");
@@ -11148,7 +11135,7 @@ test "issue-448-b: rerank symbol definition boost is case-insensitive" {
 test "issue-449: popular markdown should not disable Tier 0 code-first behavior" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     const md_block =
         "fooBar mentioned here.\n" ++
@@ -11189,7 +11176,7 @@ test "issue-449: popular markdown should not disable Tier 0 code-first behavior"
 test "issue-450: prefix tier respects max_results" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     try explorer.indexFile("a.zig", "const abcx = 1;\n");
     try explorer.indexFile("b.zig", "const abcy = 1;\n");
@@ -11210,7 +11197,7 @@ test "issue-450: prefix tier respects max_results" {
 test "issue-451: scope search surfaces skip-trigram canonical file" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     var i: usize = 0;
     while (i < 12) : (i += 1) {
@@ -11249,7 +11236,7 @@ test "issue-451: scope search surfaces skip-trigram canonical file" {
 test "issue-447: searchContent surfaces large (>64KB) skip-trigram files for common identifiers" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
     var i: usize = 0;
     while (i < 12) : (i += 1) {
@@ -11300,7 +11287,7 @@ test "rerank-trace: appends one JSON line per searchContent when enabled" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     explorer.io = tmp_io;
     explorer.rerank_trace_path = trace_path;
 
@@ -11352,7 +11339,7 @@ test "rerank-trace: disabled by default — no file is created" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     explorer.io = tmp_io;
     // rerank_trace_path stays null — opt-in only.
 
@@ -11399,7 +11386,7 @@ test "rerank-trace: clobbers when file exceeds size limit" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     explorer.io = tmp_io;
     explorer.rerank_trace_path = trace_path;
 
@@ -11440,7 +11427,7 @@ test "rerank-trace: single-result query records non-zero rerank score" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator());
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     explorer.io = tmp_io;
     explorer.rerank_trace_path = trace_path;
 

@@ -231,14 +231,16 @@ const ProjectCache = struct {
     entries: [MAX_CACHED]?*Entry,
     default_path: []const u8,
     default_snapshot_cache: SnapshotCache,
+    content_cache_capacity: u32,
 
-    fn init(alloc_: std.mem.Allocator, default_path_: []const u8) ProjectCache {
+    fn init(alloc_: std.mem.Allocator, default_path_: []const u8, content_cache_capacity_: u32) ProjectCache {
         return .{
             .mu = .{},
             .alloc = alloc_,
             .entries = [_]?*Entry{null} ** MAX_CACHED,
             .default_path = default_path_,
             .default_snapshot_cache = .{},
+            .content_cache_capacity = content_cache_capacity_,
         };
     }
 
@@ -305,7 +307,7 @@ const ProjectCache = struct {
             self.alloc.destroy(new_entry);
             return error.OutOfMemory;
         };
-        new_entry.explorer = Explorer.init(self.alloc);
+        new_entry.explorer = Explorer.init(self.alloc, self.content_cache_capacity);
         new_entry.explorer.setRoot(io, p);
         new_entry.store = Store.init(self.alloc);
         new_entry.snapshot_cache = .{};
@@ -383,9 +385,9 @@ const ProjectCache = struct {
 pub const BenchContext = struct {
     cache: ProjectCache,
 
-    pub fn init(alloc: std.mem.Allocator, default_path: []const u8) BenchContext {
+    pub fn init(alloc: std.mem.Allocator, default_path: []const u8, content_cache_capacity: u32) BenchContext {
         return .{
-            .cache = ProjectCache.init(alloc, default_path),
+            .cache = ProjectCache.init(alloc, default_path, content_cache_capacity),
         };
     }
 
@@ -724,6 +726,7 @@ pub fn run(
     explorer: *Explorer,
     agents: *AgentRegistry,
     default_path: []const u8,
+    content_cache_capacity: u32,
     telem: *telemetry_mod.Telemetry,
     deferred_scan: ?*DeferredScan,
 ) void {
@@ -731,7 +734,7 @@ pub fn run(
     const stdin = std.Io.File.stdin();
     last_activity.store(cio.milliTimestamp(), .release);
 
-    var cache = ProjectCache.init(alloc, default_path);
+    var cache = ProjectCache.init(alloc, default_path, content_cache_capacity);
     defer cache.deinit();
 
     // Build the `tools/list` payload. The discriminated `oneOf` on the
@@ -3803,7 +3806,7 @@ test "issue-258: cached project reads use the project root after contents are re
     const project_path_len = try tmp.dir.realPathFile(io, ".", &project_path_buf);
     const project_path = project_path_buf[0..project_path_len];
 
-    var snapshot_src = Explorer.init(testing.allocator);
+    var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
     snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "const project = \"secondary\";\n");
@@ -3816,12 +3819,12 @@ test "issue-258: cached project reads use the project root after contents are re
     const default_path_len = try std.Io.Dir.cwd().realPathFile(io, ".", &default_path_buf);
     const default_path = default_path_buf[0..default_path_len];
 
-    var default_explorer = Explorer.init(testing.allocator);
+    var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer default_explorer.deinit();
     var default_store = Store.init(testing.allocator);
     defer default_store.deinit();
 
-    var cache = ProjectCache.init(testing.allocator, default_path);
+    var cache = ProjectCache.init(testing.allocator, default_path, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer cache.deinit();
 
     const ctx = try cache.get(io, project_path, &default_explorer, &default_store);
@@ -3864,7 +3867,7 @@ test "ProjectCache loads project from central snapshot cache" {
         std.Io.Dir.cwd().deleteDir(io, data_dir) catch {};
     }
 
-    var snapshot_src = Explorer.init(testing.allocator);
+    var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
     snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "pub fn cachedProject() void {}\n");
@@ -3880,12 +3883,12 @@ test "ProjectCache loads project from central snapshot cache" {
     const default_path_len = try std.Io.Dir.cwd().realPathFile(io, ".", &default_path_buf);
     const default_path = default_path_buf[0..default_path_len];
 
-    var default_explorer = Explorer.init(testing.allocator);
+    var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer default_explorer.deinit();
     var default_store = Store.init(testing.allocator);
     defer default_store.deinit();
 
-    var cache = ProjectCache.init(testing.allocator, default_path);
+    var cache = ProjectCache.init(testing.allocator, default_path, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer cache.deinit();
 
     const ctx = try cache.get(io, project_path, &default_explorer, &default_store);
@@ -3919,19 +3922,19 @@ test "issue-353: explicit default project loads snapshot when default explorer i
         std.Io.Dir.cwd().deleteDir(io, data_dir) catch {};
     }
 
-    var snapshot_src = Explorer.init(testing.allocator);
+    var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
     snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "pub fn issue353() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
 
-    var default_explorer = Explorer.init(testing.allocator);
+    var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer default_explorer.deinit();
     default_explorer.setRoot(io, project_path);
     var default_store = Store.init(testing.allocator);
     defer default_store.deinit();
 
-    var cache = ProjectCache.init(testing.allocator, project_path);
+    var cache = ProjectCache.init(testing.allocator, project_path, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer cache.deinit();
 
     const ctx = try cache.get(io, project_path, &default_explorer, &default_store);
@@ -3963,24 +3966,24 @@ test "issue-353: project cache invalidation reloads newly written snapshots" {
         std.Io.Dir.cwd().deleteDir(io, data_dir) catch {};
     }
 
-    var snapshot_src = Explorer.init(testing.allocator);
+    var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
     snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/old.zig", "pub fn oldSymbol() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
 
-    var default_explorer = Explorer.init(testing.allocator);
+    var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer default_explorer.deinit();
     var default_store = Store.init(testing.allocator);
     defer default_store.deinit();
 
-    var cache = ProjectCache.init(testing.allocator, "/Users/example/default");
+    var cache = ProjectCache.init(testing.allocator, "/Users/example/default", explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer cache.deinit();
 
     const old_ctx = try cache.get(io, project_path, &default_explorer, &default_store);
     try testing.expect(old_ctx.explorer.outlines.contains("src/old.zig"));
 
-    var snapshot_next = Explorer.init(testing.allocator);
+    var snapshot_next = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_next.deinit();
     snapshot_next.setRoot(io, project_path);
     try snapshot_next.indexFile("src/new.zig", "pub fn newSymbol() void {}\n");
@@ -3997,7 +4000,7 @@ test "codedb_snapshot cache reuses output until store seq changes" {
     const io = testing.io;
     const alloc = testing.allocator;
 
-    var explorer = Explorer.init(alloc);
+    var explorer = Explorer.init(alloc, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
@@ -4009,7 +4012,7 @@ test "codedb_snapshot cache reuses output until store seq changes" {
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = BenchContext.init(alloc, ".");
+    var bench_ctx = BenchContext.init(alloc, ".", explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, "{}", .{});

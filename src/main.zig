@@ -226,8 +226,7 @@ fn mainImpl() !void {
         std.log.warn("could not open data log at {s}: {}", .{ data_log_path, err });
     };
 
-    var explorer = Explorer.init(allocator);
-    explorer.content_cache_limit = cfg.max_cached;
+    var explorer = Explorer.init(allocator, cfg.max_cached);
 
     const rerank_trace_path: ?[]u8 = if (cfg.rerank_trace)
         (std.fmt.allocPrint(allocator, "{s}/rerank-traces.jsonl", .{data_dir}) catch null)
@@ -731,7 +730,7 @@ fn mainImpl() !void {
 
         std.log.info("codedb mcp: root={s} files={d} data={s} scan={s}", .{ abs_root, store.currentSeq(), data_dir, mcp_server.getScanState().name() });
 
-        mcp_server.run(io, allocator, &store, &explorer, &agents, abs_root, &telem, maybe_deferred);
+        mcp_server.run(io, allocator, &store, &explorer, &agents, abs_root, cfg.max_cached, &telem, maybe_deferred);
 
         shutdown.store(true, .release);
         if (scan_thread) |st| st.join();

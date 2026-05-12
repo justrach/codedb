@@ -89,7 +89,7 @@ test "adversarial: sparse index finds query spanning word boundaries" {
 // ════════════════════════════════════════════════════════════════════════════
 
 test "adversarial: searchContent finds match even when sparse and trigram disagree" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     // Index multiple files containing the same query string
@@ -121,7 +121,7 @@ test "adversarial: searchContent finds match even when sparse and trigram disagr
 }
 
 test "adversarial: searchContent finds all matches across many files" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     // 10 files, all containing the search term in different contexts
@@ -431,7 +431,7 @@ test "adversarial: regexMatch with 50 alternation branches does not crash" {
 // ════════════════════════════════════════════════════════════════════════════
 
 test "adversarial: rebuildTrigrams populates sparse_ngram_index" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     // Index files with skip_trigram=true (simulates cache-hit startup)
@@ -456,7 +456,7 @@ test "adversarial: rebuildTrigrams populates sparse_ngram_index" {
 // ════════════════════════════════════════════════════════════════════════════
 
 test "adversarial: Explorer searchContent finds query embedded in larger code" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     try exp.indexFile("server.go", "package main\n\nfunc handleHTTPRequest(w http.ResponseWriter, r *http.Request) {\n\tlog.Println(\"handling request\")\n}\n");
@@ -475,7 +475,7 @@ test "adversarial: Explorer searchContent finds query embedded in larger code" {
 }
 
 test "adversarial: Explorer searchContent case-insensitive substring" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     try exp.indexFile("readme.md", "# Getting Started\nThis project uses DatabaseManager to handle connections.");
@@ -495,7 +495,7 @@ test "adversarial: Explorer searchContent case-insensitive substring" {
 }
 
 test "adversarial: Explorer searchContentRegex with {n,m} finds correct results" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     try exp.indexFile("data.txt", "aaa bbb abbbbc ccc");
@@ -693,7 +693,7 @@ test "adversarial: setFrequencyTable changes pairWeight output" {
 // ════════════════════════════════════════════════════════════════════════════
 
 test "adversarial: indexed search is sound — never misses a brute-force match" {
-    var exp = Explorer.init(testing.allocator);
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
 
     const files = [_]struct { name: []const u8, content: []const u8 }{

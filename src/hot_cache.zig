@@ -42,6 +42,7 @@ pub const ContentCache = struct {
 
     /// capacity must be >= 1. Panics if the allocator cannot provide the slot array.
     pub fn init(allocator: std.mem.Allocator, capacity: u32) ContentCache {
+        std.debug.assert(capacity >= 1);
         const slots = allocator.alloc(Slot, capacity) catch
             std.debug.panic("ContentCache.init: OOM allocating {d} slots", .{capacity});
         @memset(slots, empty_slot);

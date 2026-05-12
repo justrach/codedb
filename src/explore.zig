@@ -513,24 +513,22 @@ pub const Explorer = struct {
     mu: cio.RwLock = .{},
     root_dir: ?std.Io.Dir = null,
     io: ?std.Io = null,
-    /// Max files kept in the in-memory content cache. Configurable via
-    /// .codedbrc (#102). Beyond this threshold, readContentForSearch falls
-    /// back to disk reads.
-    content_cache_limit: u32 = 1000,
     /// When non-null, append one JSON line per searchContent invocation
     /// to this path (v0 rerank-trace experiment). Borrowed; caller owns
     /// the slice for the Explorer's lifetime.
     rerank_trace_path: ?[]const u8 = null,
 
+    pub const DEFAULT_CONTENT_CACHE_CAPACITY: u32 = 16384;
+
     pub fn setRoot(self: *Explorer, io: std.Io, root_path: []const u8) void {
         self.io = io;
         self.root_dir = std.Io.Dir.cwd().openDir(io, root_path, .{}) catch null;
     }
-    pub fn init(allocator: std.mem.Allocator) Explorer {
+    pub fn init(allocator: std.mem.Allocator, content_cache_capacity: u32) Explorer {
         return .{
             .outlines = std.StringHashMap(FileOutline).init(allocator),
             .dep_graph = DependencyGraph.init(allocator),
-            .contents = ContentCache.init(allocator, 16384),
+            .contents = ContentCache.init(allocator, content_cache_capacity),
             .symbol_index = std.StringHashMap(std.ArrayList(SymbolLocation)).init(allocator),
             .word_index = WordIndex.init(allocator),
             .trigram_index = .{ .heap = TrigramIndex.init(allocator) },
@@ -1062,7 +1060,7 @@ pub const Explorer = struct {
     }
 
     pub fn parseContentForIndexing(allocator: std.mem.Allocator, path: []const u8, content: []const u8) !ParsedFile {
-        var parser = Explorer.init(allocator);
+        var parser = Explorer.init(allocator, DEFAULT_CONTENT_CACHE_CAPACITY);
         defer parser.deinit();
         var parsed_outline = try parseOutlineWithParser(&parser, path, content);
         defer parsed_outline.deinit();

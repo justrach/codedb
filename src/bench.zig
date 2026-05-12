@@ -73,7 +73,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var store = Store.init(allocator);
     defer store.deinit();
 
-    var explorer = Explorer.init(allocator);
+    var explorer = Explorer.init(allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
 
     var agents = AgentRegistry.init(allocator);
@@ -82,7 +82,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     try watcher.initialScan(io, &store, &explorer, tmp_root, allocator, false);
 
-    var bench_ctx = mcp.BenchContext.init(allocator, tmp_root);
+    var bench_ctx = mcp.BenchContext.init(allocator, tmp_root, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     var telem_off = telemetry.Telemetry{ .enabled = false };

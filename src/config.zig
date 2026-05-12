@@ -15,8 +15,8 @@ const std = @import("std");
 pub const Config = struct {
     /// Cap per-file version history in the Store. Default 100.
     max_versions: usize = 100,
-    /// Cap on files kept in the Explorer's in-memory content cache. Default 1000.
-    max_cached: u32 = 1000,
+    /// Cap on files kept in the Explorer's in-memory content cache. Default 16384.
+    max_cached: u32 = 16384,
     /// When true, append one JSON line per searchContent invocation to
     /// <data_dir>/rerank-traces.jsonl. v0 logger for offline rerank-tuning
     /// experiments. Off by default — opt in via .codedbrc.
@@ -110,13 +110,13 @@ const testing = std.testing;
 test "config: defaults" {
     const cfg = Config.default;
     try testing.expectEqual(@as(usize, 100), cfg.max_versions);
-    try testing.expectEqual(@as(u32, 1000), cfg.max_cached);
+    try testing.expectEqual(@as(u32, 16384), cfg.max_cached);
 }
 
 test "config: parse single key" {
     const cfg = try Config.parse("max_versions = 42\n");
     try testing.expectEqual(@as(usize, 42), cfg.max_versions);
-    try testing.expectEqual(@as(u32, 1000), cfg.max_cached);
+    try testing.expectEqual(@as(u32, 16384), cfg.max_cached);
 }
 
 test "config: parse both keys with comments and whitespace" {

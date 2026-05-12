@@ -45,7 +45,7 @@ var explorer: ?Explorer = null;
 
 fn getExplorer() *Explorer {
     if (explorer == null) {
-        explorer = Explorer.init(allocator);
+        explorer = Explorer.init(allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     }
     return &explorer.?;
 }
