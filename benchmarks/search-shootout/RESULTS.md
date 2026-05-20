@@ -602,7 +602,7 @@ Output is a single line of JSON per run, e.g.:
 
 The flag is in the public CLI but is not a stable interface — its
 purpose is for benchmark harnesses (including
-[code-search-shootout](https://github.com/justrach/code-search-shootout))
+code-search-shootout)
 to measure codedb fairly against engines that don't have an MCP layer.
 
 ## 12. Precision rerun + telemetry tail-latency fix (the second-biggest fix this bench surfaced)
