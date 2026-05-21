@@ -12,6 +12,7 @@ pub const Root = mcp_lib.mcp.Root;
 const Store = @import("store.zig").Store;
 const explore_mod = @import("explore.zig");
 const Explorer = explore_mod.Explorer;
+const reader_md = @import("reader_md.zig");
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const snapshot_json = @import("snapshot_json.zig");
 const watcher = @import("watcher.zig");
@@ -1106,7 +1107,7 @@ fn dispatch(
         .codedb_query => handleQuery(alloc, args, out, ctx.explorer, ctx.store),
         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
-        .codedb_context => handleContext(alloc, args, out, ctx.explorer),
+        .codedb_context => handleContext(io, alloc, args, out, ctx.explorer, project_path orelse cache.default_path),
     }
     appendScanProgressHint(alloc, out, tool);
 }
@@ -1694,7 +1695,7 @@ fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *st
     }
 }
 
-fn handleContext(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
     const task = getStr(args, "task") orelse {
         out.appendSlice(alloc, "error: missing 'task' argument") catch {};
         appendBundleArgKeysDiagnostic(alloc, out, args);
@@ -1705,6 +1706,43 @@ fn handleContext(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
         return;
     }
 
+    // reader.md prepend (experimental): if .codedb/reader.md exists and its
+    // declared source_hash matches the current source files, prepend its body
+    // to the response. Gives the agent one-shot orientation without paying
+    // exploratory search calls. See experiments/reader-md/SPEC.md.
+    //
+    // Critical-review I11 + n=2 vs-main eval (RESULTS-VS-MAIN-FINAL.md): on
+    // short narrow tasks like "find before_request" the composer's
+    // symbol_definitions section already pinpoints the answer, and reader.md's
+    // ~5 KB body becomes pure overhead — the T1 flask regression
+    // (+37% calls / +18% tokens) came entirely from this case.
+    //
+    // Gate: only prepend reader.md when the task is long enough to suggest
+    // exploration rather than a narrow lookup. 80 chars is the inflection
+    // point in the eval — T1's "find before_request decorator" is 28 chars,
+    // T2/T3 are 230+ chars.
+    const reader_md_gate = task.len > 80;
+    if (reader_md_gate) {
+        var reader_state = reader_md.load(io, alloc, project_root) catch null;
+        if (reader_state) |*r| {
+            defer r.free(alloc);
+            switch (r.state) {
+                .ready => {
+                    if (r.body) |b| {
+                        out.appendSlice(alloc, "<!-- reader.md (hash-verified): -->\n") catch {};
+                        out.appendSlice(alloc, b) catch {};
+                        out.appendSlice(alloc, "\n<!-- end reader.md -->\n\n") catch {};
+                    }
+                },
+                .stale => {
+                    out.appendSlice(alloc, "<!-- reader.md is stale (source_hash drifted). Regenerate by writing a new .codedb/reader.md with current source_hash. -->\n\n") catch {};
+                },
+                .malformed, .missing => {
+                    // Silent — reader.md is optional.
+                },
+            }
+        }
+    }
     // Arena: every transient string in this handler lives here, no per-result
     // free bookkeeping. Released at function exit.
     var arena = std.heap.ArenaAllocator.init(alloc);
@@ -1804,8 +1842,109 @@ fn handleContext(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
 
     if (sym_refs.items.len > 0) {
         w.print("\n## Symbol definitions\n", .{}) catch {};
+        // Enhancement (closes T1 flask variance gap): when there are ≤3
+        // symbol definitions, inline the first ~6 lines of each so the agent
+        // doesn't need a follow-up `codedb_read` to see the body. For wider
+        // result sets this would bloat the response, so cap at 3.
+        const inline_bodies = sym_refs.items.len <= 3;
         for (sym_refs.items) |sr| {
             w.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
+            if (inline_bodies) {
+                if (explorer.getContent(sr.path, A) catch null) |content| {
+                    var cur_line: u32 = 1;
+                    var i: usize = 0;
+                    var line_start: ?usize = null;
+                    var captured: u32 = 0;
+                    const want_end: u32 = sr.line + 6;
+                    if (cur_line == sr.line) line_start = 0;
+                    while (i < content.len and captured < 6) : (i += 1) {
+                        if (content[i] == '\n') {
+                            if (line_start) |ls| {
+                                const line_end = i;
+                                w.print("       {d:>5} | {s}\n", .{ cur_line, content[ls..line_end] }) catch {};
+                                captured += 1;
+                            }
+                            cur_line += 1;
+                            if (cur_line >= sr.line and cur_line <= want_end) {
+                                line_start = i + 1;
+                            } else {
+                                line_start = null;
+                            }
+                        }
+                    }
+                    if (line_start) |ls| {
+                        if (captured < 6) {
+                            w.print("       {d:>5} | {s}\n", .{ cur_line, content[ls..] }) catch {};
+                        }
+                    }
+                }
+            }
+        }
+
+        // Callers section (closes the T1 flask agent-mean gap):
+        // For each ≤3 symbol_definitions, surface up to 2 non-definition,
+        // non-test call sites with their enclosing scope. The whole point of
+        // this section is to pre-resolve "where is this called from" so the
+        // agent doesn't need codedb_callers / outline / read follow-ups.
+        // Examples this targets directly:
+        //   T1 flask: before_request → preprocess_request in app.py
+        //   T2 regex: Builder::build → meta::Regex::new in regex.rs
+        // Callers section (closes the T1 flask agent-mean gap):
+        // For each ≤3 symbol_definitions, surface up to 2 non-definition,
+        // non-test, non-import call sites with their enclosing scope. The
+        // whole point of this section is to pre-resolve "where is this called
+        // from" so the agent doesn't need codedb_callers / outline / read
+        // follow-ups. Examples this targets directly:
+        //   T1 flask: before_request → preprocess_request in app.py
+        //   T2 regex: Builder::build → meta::Regex::new in regex.rs
+        if (inline_bodies) {
+            var any_callers = false;
+            var seen_caller = std.StringHashMap(void).init(A);
+            var total_shown: u32 = 0;
+            for (sym_refs.items) |sr| {
+                if (total_shown >= 6) break;
+                const scoped = explorer.searchContentWithScope(sr.kw, A, 30) catch continue;
+                var shown_for_sym: u32 = 0;
+                for (scoped) |r| {
+                    if (shown_for_sym >= 2 or total_shown >= 6) break;
+                    if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
+                    // Skip the definition site itself
+                    if (r.line_num == sr.line and std.mem.eql(u8, r.path, sr.path)) continue;
+                    // Skip test/spec/fixture paths
+                    // Skip test/spec/fixture paths
+                    const is_test = std.mem.startsWith(u8, r.path, "tests/") or
+                        std.mem.startsWith(u8, r.path, "test/") or
+                        std.mem.indexOf(u8, r.path, "/test") != null or
+                        std.mem.indexOf(u8, r.path, "_test.") != null or
+                        std.mem.indexOf(u8, r.path, ".test.") != null or
+                        std.mem.indexOf(u8, r.path, "/__tests__/") != null or
+                        std.mem.indexOf(u8, r.path, "/spec/") != null or
+                        std.mem.indexOf(u8, r.path, "/fixtures/") != null;
+                    if (is_test) continue;
+                    // Skip matches inside import statements / module-level type
+                    // declarations — those are signature noise, not real callers
+                    if (r.scope_kind) |sk| {
+                        if (sk == .import or sk == .type_alias or sk == .constant) continue;
+                    }
+                    // Dedupe across sym_refs by path:line
+                    const dedup_key = std.fmt.allocPrint(A, "{s}:{d}", .{ r.path, r.line_num }) catch continue;
+                    if (seen_caller.contains(dedup_key)) continue;
+                    seen_caller.put(dedup_key, {}) catch {};
+                    if (!any_callers) {
+                        w.print("\n## Callers (top non-test, non-import usages of these symbols)\n", .{}) catch {};
+                        any_callers = true;
+                    }
+                    if (r.scope_name) |sn| {
+                        w.print("- {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
+                            r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
+                        }) catch {};
+                    } else {
+                        w.print("- {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+                    }
+                    shown_for_sym += 1;
+                    total_shown += 1;
+                }
+            }
         }
     }
 
@@ -1813,7 +1952,6 @@ fn handleContext(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
         out.appendSlice(alloc, "\n(no content matches — try codedb_search or codedb_word for narrower queries)\n") catch {};
         return;
     }
-
     w.print("\n## Most-relevant files\n", .{}) catch {};
     for (ranked.items[0..top_n]) |f| {
         w.print("- {s}  ({d} matches)\n", .{ f.path, f.hits }) catch {};
