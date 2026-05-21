@@ -1724,15 +1724,19 @@ pub const Explorer = struct {
         // Tier 5: full scan fallback — only when NO results from any tier.
         // Avoids 100ms+ scans on large repos when indices already found matches.
         //
-        // Additional short-circuit: if the trigram index returned a non-null
-        // but EMPTY candidate set with query.len >= 3, every trigram-indexed
-        // file is provably free of the query. The only files that could still
-        // contain a match are skip_trigram_files, which Tier 3 already
-        // scanned. Tier 5 would just re-scan everything to find nothing — a
-        // measurable 100ms+ p50 cost on real corpora (see
-        // benchmarks/search-shootout, xyzzy_react_does_not_exist on react).
-        const trigram_ruled_out = if (candidate_paths) |cp|
-            (cp.len == 0 and query.len >= 3)
+        // Short-circuit Tier 5 whenever the trigram index was consulted with
+        // a query long enough to fully cover it (query.len >= 3). The trigram
+        // filter returns a SUPERSET of files containing the substring (every
+        // file containing the substring necessarily contains all its
+        // trigrams). If Tier 1 scanned that superset and found 0 results, no
+        // other trigram-indexed file can match either; skip_trigram_files
+        // were handled separately by Tier 3. Tier 5 would otherwise re-scan
+        // every indexed file for nothing — a measurable 2–3 ms p50 cost on
+        // queries whose constituent trigrams are common-but-not-co-occurring
+        // syllables (e.g. `Suspense` on a Rust corpus). The cp.len == 0
+        // sub-case of this was already short-circuited before this change.
+        const trigram_ruled_out = if (candidate_paths) |_|
+            (query.len >= 3)
         else
             false;
         if (result_list.items.len == 0 and !trigram_ruled_out) {

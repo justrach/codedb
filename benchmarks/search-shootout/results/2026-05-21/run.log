@@ -1,0 +1,138 @@
+=== run 1/4 react ===
+corpus: /Users/blackfloofie/codedb-bench/react
+  indexable files: 6,620, bytes: 26,477,609
+  iterations per query: 20
+
+[build] fts5_trigram ...
+        2.06s, 6620 docs, 93.5 MB
+[build] fts5_unicode61 ...
+        0.44s, 6620 docs, 36.3 MB
+[build] codedb (cleaning matching snapshot first) ...
+        1.18s, ~69.5 MB (/Users/blackfloofie/.codedb/projects/dab61953ae243e54)
+[build] lean-ctx ...
+        8.25s, ~0.0 MB
+[build] codegraph ...
+        15.12s, ~195.5 MB (/Users/blackfloofie/codedb-bench/react/.codegraph)
+
+[query]
+  query | fts5_tri p50/p99 (hits) | fts5_uni p50/p99 (hits) | codedb p50/p99 (hits) | leanctx p50/p99 (hits) | codegraph p50/p99 (hits)
+  useState                 |    0.88/   1.03ms (  674) |    0.02/   0.02ms (  674) |    1.85/   2.02ms (   20) |  470.90/ 491.82ms (   20) |    2.42/   3.34ms (   65)
+  useEffect                |    0.40/   0.44ms (  434) |    0.01/   0.02ms (  426) |    1.02/   1.19ms (   20) |  464.99/ 485.16ms (   20) |    5.89/   6.72ms (  101)
+  forwardRef               |    0.18/   0.21ms (  129) |    0.01/   0.01ms (  127) |    0.25/   0.32ms (   20) |  468.88/ 486.10ms (   20) |    2.16/   3.11ms (   55)
+  createElement            |    1.02/   1.08ms (  403) |    0.01/   0.02ms (  401) |    0.92/   1.01ms (   20) |  502.85/ 516.09ms (   20) |    1.61/   2.30ms (  189)
+  Fiber                    |    0.13/   0.17ms (  303) |    0.01/   0.01ms (  180) |    0.35/   0.44ms (   20) |  528.84/ 570.11ms (   20) |    3.22/   3.81ms (  151)
+  Lane                     |    0.06/   0.06ms (   72) |    0.01/   0.01ms (   40) |    0.12/   0.20ms (   20) |  561.95/ 569.48ms (   20) |    2.37/   3.87ms (  305)
+  Suspense                 |    0.40/   0.43ms (  314) |    0.01/   0.02ms (  259) |    0.54/   0.68ms (   20) |  473.47/ 492.31ms (   20) |    2.59/   3.13ms (   52)
+  flushPassiveEffects      |    0.20/   0.26ms (    8) |    0.01/   0.01ms (    7) |    0.15/   0.29ms (   11) |  613.06/ 633.25ms (   20) |    1.76/   2.99ms (    4)
+  enableTransitionTracing  |    0.78/   0.86ms (   25) |    0.01/   0.01ms (   25) |    0.19/   0.33ms (   20) |  605.41/ 627.06ms (   20) |    1.48/   2.04ms (  162)
+  scheduleCallback         |    0.43/   0.47ms (   22) |    0.01/   0.01ms (   22) |    0.16/   0.25ms (   20) |  558.79/ 586.04ms (   20) |    1.39/   1.59ms (   38)
+  concurrent               |    0.40/   0.44ms (  127) |    0.01/   0.01ms (   75) |    0.24/   0.32ms (   20) |  553.55/ 575.15ms (   20) |    1.63/   2.25ms (  222)
+  function                 |    1.77/   1.89ms ( 5286) |    0.07/   0.09ms ( 5245) |   16.07/  16.36ms (   20) |  491.60/ 516.44ms (   20) |    8.22/   9.47ms (   69)
+  set                      |    0.04/   0.05ms ( 2039) |    0.02/   0.02ms (  851) |    3.71/   4.00ms (   20) |  486.10/ 506.05ms (   20) |    3.45/   4.23ms (  103)
+  ReactDOMRoot             |    0.13/   0.16ms (    8) |    0.01/   0.01ms (    6) |    0.11/   0.21ms (    8) |  626.39/ 648.94ms (   12) |    1.45/   1.97ms (   26)
+  xyzzy_react_does_not_exi |    0.20/   0.22ms (    0) |    0.03/   0.04ms (    0) |    0.07/   0.11ms (    0) |  630.53/ 657.50ms (    0) |    7.35/   8.38ms (    0)
+
+report: results/2026-05-21/react-run1.md
+=== run 2/4 react ===
+corpus: /Users/blackfloofie/codedb-bench/react
+  indexable files: 6,620, bytes: 26,477,609
+  iterations per query: 20
+
+[build] codedb (cleaning matching snapshot first) ...
+        1.13s, ~69.5 MB (/Users/blackfloofie/.codedb/projects/dab61953ae243e54)
+[build] lean-ctx ...
+        8.31s, ~0.0 MB
+[build] codegraph ...
+        15.05s, ~195.5 MB (/Users/blackfloofie/codedb-bench/react/.codegraph)
+
+[query]
+  query | codedb p50/p99 (hits) | leanctx p50/p99 (hits) | codegraph p50/p99 (hits)
+  useState                 |    2.87/   4.91ms (   20) |  498.69/ 523.87ms (   20) |    2.75/   4.31ms (   65)
+  useEffect                |    1.04/   1.25ms (   20) |  483.85/ 502.82ms (   20) |    5.66/   5.89ms (  101)
+  forwardRef               |    0.24/   0.34ms (   20) |  483.99/ 497.38ms (   20) |    2.26/   2.76ms (   55)
+  createElement            |    0.93/   1.05ms (   20) |  510.25/ 532.48ms (   20) |    2.86/   3.49ms (  189)
+  Fiber                    |    0.39/   0.81ms (   20) |  550.13/ 571.72ms (   20) |    4.50/   5.14ms (  151)
+  Lane                     |    0.11/   0.24ms (   20) |  563.37/ 594.56ms (   20) |    2.13/   2.67ms (  305)
+  Suspense                 |    0.51/   0.61ms (   20) |  487.01/ 501.94ms (   20) |    2.69/   2.99ms (   52)
+  flushPassiveEffects      |    0.14/   0.27ms (   11) |  597.10/ 622.17ms (   20) |    1.32/   1.52ms (    4)
+  enableTransitionTracing  |    0.18/   0.28ms (   20) |  593.63/ 604.01ms (   20) |    1.52/   1.94ms (  162)
+  scheduleCallback         |    0.17/   0.26ms (   20) |  545.70/ 565.42ms (   20) |    1.40/   1.68ms (   38)
+  concurrent               |    0.23/   0.34ms (   20) |  557.32/ 565.11ms (   20) |    1.97/   2.47ms (  222)
+  function                 |   17.88/  29.38ms (   20) |  472.26/ 488.21ms (   20) |    8.84/  10.03ms (   69)
+  set                      |    3.95/   4.13ms (   20) |  468.22/ 505.09ms (   20) |    5.84/   8.15ms (  103)
+  ReactDOMRoot             |    0.25/   0.36ms (    8) |  632.26/ 680.78ms (   12) |    1.84/   2.36ms (   26)
+  xyzzy_react_does_not_exi |    0.04/   0.08ms (    0) |  635.35/ 670.92ms (    0) |    8.36/   9.74ms (    0)
+
+report: results/2026-05-21/react-run2.md
+=== run 3/4 regex ===
+corpus: /Users/blackfloofie/codedb-bench/regex
+  indexable files: 285, bytes: 5,902,759
+  iterations per query: 20
+
+[build] fts5_trigram ...
+        0.54s, 285 docs, 20.3 MB
+[build] fts5_unicode61 ...
+        0.12s, 285 docs, 7.8 MB
+[build] codedb (cleaning matching snapshot first) ...
+        0.15s, ~13.5 MB (/Users/blackfloofie/.codedb/projects/8085066150815f80)
+[build] lean-ctx ...
+        8.17s, ~0.0 MB
+[build] codegraph ...
+        2.56s, ~17.6 MB (/Users/blackfloofie/codedb-bench/regex/.codegraph)
+
+[query]
+  query | fts5_tri p50/p99 (hits) | fts5_uni p50/p99 (hits) | codedb p50/p99 (hits) | leanctx p50/p99 (hits) | codegraph p50/p99 (hits)
+  useState                 |    0.17/   0.23ms (    0) |    0.00/   0.01ms (    0) |    1.87/  16.57ms (    0) |  449.84/ 499.80ms (    1) |    1.78/   2.81ms (    0)
+  useEffect                |    0.04/   0.05ms (    0) |    0.00/   0.01ms (    0) |    0.05/   0.09ms (    0) |  447.89/ 453.75ms (    1) |    1.62/   1.95ms (    0)
+  forwardRef               |    0.05/   0.06ms (    0) |    0.00/   0.01ms (    0) |    0.04/   0.06ms (    0) |  448.38/ 459.98ms (    1) |    1.64/   1.93ms (    0)
+  createElement            |    0.08/   0.09ms (    0) |    0.00/   0.01ms (    0) |    0.04/   0.07ms (    0) |  447.22/ 463.45ms (    1) |    1.74/   2.08ms (    0)
+  Fiber                    |    0.01/   0.01ms (    0) |    0.00/   0.01ms (    0) |    0.04/   0.07ms (    0) |  449.86/ 493.24ms (    1) |    1.96/   2.45ms (   11)
+  Lane                     |    0.01/   0.03ms (    3) |    0.00/   0.01ms (    0) |    0.07/   0.14ms (    4) |  445.58/ 457.24ms (    1) |    1.89/   2.25ms (    2)
+  Suspense                 |    0.04/   0.05ms (    0) |    0.00/   0.01ms (    0) |    2.82/   3.08ms (    0) |  444.82/ 468.38ms (    1) |    1.68/   1.99ms (    0)
+  flushPassiveEffects      |    0.06/   0.07ms (    0) |    0.00/   0.01ms (    0) |    0.04/   0.10ms (    0) |  444.97/ 471.07ms (    1) |    1.59/   1.80ms (    0)
+  enableTransitionTracing  |    0.16/   0.19ms (    0) |    0.00/   0.01ms (    0) |    0.04/   0.10ms (    0) |  441.13/ 456.66ms (    1) |    1.76/   2.00ms (    0)
+  scheduleCallback         |    0.09/   0.10ms (    0) |    0.00/   0.01ms (    0) |    0.05/   0.07ms (    0) |  443.44/ 449.59ms (    1) |    1.85/   2.28ms (    0)
+  concurrent               |    0.05/   0.06ms (    2) |    0.00/   0.01ms (    1) |    0.05/   0.10ms (    4) |  448.29/ 472.74ms (    3) |    0.33/   0.46ms (    1)
+  function                 |    0.07/   0.10ms (   65) |    0.00/   0.01ms (   51) |    0.12/   0.19ms (   20) |  429.55/ 435.06ms (   20) |    2.09/   2.59ms (  185)
+  set                      |    0.01/   0.02ms (  154) |    0.01/   0.01ms (  127) |    0.13/   0.23ms (   20) |  430.41/ 438.46ms (   20) |    2.34/   3.06ms (  115)
+  ReactDOMRoot             |    0.05/   0.07ms (    0) |    0.00/   0.01ms (    0) |    0.06/   0.13ms (    0) |  465.57/ 526.76ms (    1) |    1.71/   1.90ms (    0)
+  xyzzy_react_does_not_exi |    0.13/   0.15ms (    0) |    0.00/   0.01ms (    0) |    0.04/   0.08ms (    0) |  470.83/ 479.19ms (    1) |    1.49/   1.82ms (    0)
+
+report: results/2026-05-21/regex-run1.md
+=== run 4/4 flask ===
+corpus: /Users/blackfloofie/codedb-bench/flask
+  indexable files: 127, bytes: 626,841
+  iterations per query: 20
+
+[build] fts5_trigram ...
+        0.04s, 127 docs, 2.3 MB
+[build] fts5_unicode61 ...
+        0.01s, 127 docs, 0.9 MB
+[build] codedb (cleaning matching snapshot first) ...
+        0.05s, ~3.6 MB (/Users/blackfloofie/.codedb/projects/c056807dc334e7c1)
+[build] lean-ctx ...
+        8.29s, ~0.0 MB
+[build] codegraph ...
+        0.58s, ~3.7 MB (/Users/blackfloofie/codedb-bench/flask/.codegraph)
+
+[query]
+  query | fts5_tri p50/p99 (hits) | fts5_uni p50/p99 (hits) | codedb p50/p99 (hits) | leanctx p50/p99 (hits) | codegraph p50/p99 (hits)
+  useState                 |    0.09/   0.14ms (    0) |    0.01/   0.02ms (    0) |    0.66/   1.39ms (    0) |  449.06/ 465.16ms (    0) |    0.70/   1.60ms (    0)
+  useEffect                |    0.01/   0.01ms (    0) |    0.00/   0.01ms (    0) |    0.05/   0.08ms (    0) |  451.48/ 472.32ms (    0) |    0.62/   0.80ms (    0)
+  forwardRef               |    0.01/   0.02ms (    0) |    0.00/   0.00ms (    0) |    0.04/   0.07ms (    0) |  453.87/ 469.16ms (    0) |    0.58/   0.76ms (    0)
+  createElement            |    0.02/   0.03ms (    0) |    0.00/   0.01ms (    0) |    0.05/   0.08ms (    0) |  453.36/ 466.15ms (    0) |    0.68/   0.83ms (    0)
+  Fiber                    |    0.01/   0.01ms (    0) |    0.00/   0.00ms (    0) |    0.04/   0.09ms (    0) |  451.23/ 467.81ms (    0) |    0.65/   0.78ms (    0)
+  Lane                     |    0.01/   0.01ms (    0) |    0.00/   0.01ms (    0) |    0.05/   0.08ms (    0) |  452.00/ 470.30ms (    0) |    0.64/   0.84ms (    0)
+  Suspense                 |    0.00/   0.01ms (    0) |    0.00/   0.01ms (    0) |    0.06/   0.08ms (    0) |  448.85/ 456.00ms (    0) |    0.66/   0.77ms (    0)
+  flushPassiveEffects      |    0.00/   0.01ms (    0) |    0.00/   0.00ms (    0) |    0.04/   0.10ms (    0) |  450.76/ 475.44ms (    0) |    0.64/   0.75ms (    0)
+  enableTransitionTracing  |    0.05/   0.05ms (    0) |    0.00/   0.01ms (    0) |    0.05/   0.08ms (    0) |  451.71/ 463.39ms (    0) |    0.76/   1.03ms (    0)
+  scheduleCallback         |    0.04/   0.13ms (    0) |    0.00/   0.01ms (    0) |    0.05/   0.10ms (    0) |  448.54/ 467.48ms (    0) |    0.64/   0.79ms (    0)
+  concurrent               |    0.02/   0.03ms (    2) |    0.00/   0.00ms (    1) |    0.07/   0.14ms (   10) |  457.91/ 474.26ms (   11) |    0.15/   0.30ms (    2)
+  function                 |    0.03/   0.04ms (   23) |    0.00/   0.00ms (   20) |    0.10/   0.19ms (   20) |  449.05/ 471.18ms (   20) |    1.38/   1.88ms (  105)
+  set                      |    0.00/   0.01ms (   46) |    0.00/   0.01ms (   29) |    0.10/   0.22ms (   20) |  437.50/ 457.94ms (   20) |    0.35/   0.49ms (   70)
+  ReactDOMRoot             |    0.02/   0.03ms (    0) |    0.00/   0.00ms (    0) |    0.05/   0.17ms (    0) |  440.40/ 455.97ms (    0) |    0.64/   0.82ms (    0)
+  xyzzy_react_does_not_exi |    0.01/   0.01ms (    0) |    0.00/   0.00ms (    0) |    0.06/   0.09ms (    0) |  444.86/ 453.83ms (    0) |    0.57/   0.69ms (    0)
+
+report: results/2026-05-21/flask-run1.md
+=== DONE ===
+Thu 21 May 2026 10:29:41 +08
