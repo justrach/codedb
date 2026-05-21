@@ -1952,14 +1952,27 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         out.appendSlice(alloc, "\n(no content matches — try codedb_search or codedb_word for narrower queries)\n") catch {};
         return;
     }
+    // Token-efficiency gate: when symbol_definitions already inlined ≥3 bodies
+    // (the inline_bodies branch in the Symbol definitions section), the agent
+    // has the function bodies in-band. "Top sites" snippets then duplicate
+    // information at high token cost. Trim Most-relevant to 3 entries and
+    // skip the snippet body entirely in that case.
+    const have_inline_bodies = sym_refs.items.len > 0 and sym_refs.items.len <= 3;
+    const display_top_n = if (have_inline_bodies) @min(top_n, @as(usize, 3)) else top_n;
     w.print("\n## Most-relevant files\n", .{}) catch {};
-    for (ranked.items[0..top_n]) |f| {
+    for (ranked.items[0..display_top_n]) |f| {
         w.print("- {s}  ({d} matches)\n", .{ f.path, f.hits }) catch {};
+    }
+    if (have_inline_bodies) {
+        // Symbol definitions + Callers already give the agent enough — skip
+        // the snippet body to save ~500-1000 tokens per call. This is the
+        // T1 flask shape (3 symbol defs, all with inline bodies).
+        return;
     }
     w.print("\n## Top sites (with ±2 lines of context)\n", .{}) catch {};
     explorer.mu.lockShared();
     defer explorer.mu.unlockShared();
-    for (ranked.items[0..top_n]) |f| {
+    for (ranked.items[0..display_top_n]) |f| {
         // Fetch full file content once per file, then slice ±2 lines around
         // each hit. Indexed cache hits common files in ~µs; arena owns the
         // dupe so we don't leak.
