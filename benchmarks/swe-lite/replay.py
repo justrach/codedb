@@ -65,11 +65,16 @@ def verify(snapshot: dict, recomputed: dict) -> list[str]:
 
 def print_table(snapshot: dict, recomputed: dict) -> None:
     backends = snapshot["backends"]
+    measurement = {
+        b: snapshot["summary"]["by_backend"][b].get("measurement")
+        for b in backends
+    }
     rows = [("backend", "recall", "top-1", "avg calls", "avg wall (s)", "avg tokens")]
     for backend in backends:
         s = recomputed[backend]
+        label = backend + (" *" if measurement.get(backend) == "tool_output_only" else "")
         rows.append((
-            backend,
+            label,
             s["recall"],
             s["top_1"],
             f"{s['avg_tool_calls']:.2f}",
@@ -82,8 +87,11 @@ def print_table(snapshot: dict, recomputed: dict) -> None:
         print("  ".join(cell.ljust(widths[j]) for j, cell in enumerate(row)))
         if i == 0:
             print(sep)
-
-
+    if any(m == "tool_output_only" for m in measurement.values()):
+        print()
+        print("* tool-output-only measurement (subprocess time + stdout bytes/4),")
+        print("  driven by a fixed query plan, NOT an LLM agent loop. Not directly")
+        print("  comparable to rows without an asterisk — see RESULTS.md for details.")
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="emit recomputed summary as JSON")

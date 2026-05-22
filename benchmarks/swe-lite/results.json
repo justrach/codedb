@@ -6,42 +6,56 @@
     "recall": "gold file appears anywhere in agent's `files` list",
     "top_1": "agent's first `files` entry equals the gold file"
   },
+  "measurement_notes": {
+    "default": "tokens reflect the agent's full context consumption (system prompt + tool defs + tool outputs + LLM reasoning); tool_calls and wall_seconds are end-to-end agent loop totals",
+    "tool_output_only": "tokens reflect only the tool's stdout bytes / 4 (no LLM context); tool_calls and wall_seconds reflect subprocess invocations driven by a fixed query plan, not an LLM-decided loop"
+  },
   "tasks": [
     {"id": "pallets__flask-4045",    "repo": "pallets/flask",   "base_commit": "d8c37f43724cd9fb0870f77877b7c4c7e38a19e0", "title": "Raise error when blueprint name contains a dot",      "gold_files": ["src/flask/blueprints.py"]},
     {"id": "psf__requests-2148",     "repo": "psf/requests",    "base_commit": "fe693c492242ae532211e0c173324f09ca8cf227", "title": "socket.error exception not caught/wrapped in a requests exception", "gold_files": ["requests/models.py"]},
     {"id": "psf__requests-2674",     "repo": "psf/requests",    "base_commit": "0be38a0c37c59c4b66ce908731da15b401655113", "title": "urllib3 exceptions passing through requests API",   "gold_files": ["requests/adapters.py"]},
     {"id": "mwaskom__seaborn-2848",  "repo": "mwaskom/seaborn", "base_commit": "94621cef29f80282436d73e8d2c0aa76dab81273", "title": "pairplot fails with hue_order not containing all hue values", "gold_files": ["seaborn/_oldcore.py"]}
   ],
-  "backends": ["codedb", "codedb_CONTEXT", "leanctx", "fts5_trigram"],
+  "backends": ["codedb", "codedb_CONTEXT", "leanctx", "fts5_trigram", "codegraph", "codegraph_CONTEXT"],
   "cells": [
-    {"task": "pallets__flask-4045",   "backend": "codedb",          "files": ["src/flask/blueprints.py"],                                              "tool_calls": 8,  "wall_seconds": 12,  "tokens": 17508, "recall": true, "top_1": true},
-    {"task": "pallets__flask-4045",   "backend": "codedb_CONTEXT",  "files": ["src/flask/blueprints.py"],                                              "tool_calls": 3,  "wall_seconds": 2,   "tokens": 14834, "recall": true, "top_1": true},
-    {"task": "pallets__flask-4045",   "backend": "leanctx",         "files": ["src/flask/blueprints.py"],                                              "tool_calls": 4,  "wall_seconds": 8,   "tokens": 17017, "recall": true, "top_1": true},
-    {"task": "pallets__flask-4045",   "backend": "fts5_trigram",    "files": ["src/flask/blueprints.py"],                                              "tool_calls": 13, "wall_seconds": 18,  "tokens": 16288, "recall": true, "top_1": true},
+    {"task": "pallets__flask-4045",   "backend": "codedb",            "files": ["src/flask/blueprints.py"],                                                                       "tool_calls": 8,  "wall_seconds": 12,    "tokens": 17508, "recall": true, "top_1": true},
+    {"task": "pallets__flask-4045",   "backend": "codedb_CONTEXT",    "files": ["src/flask/blueprints.py"],                                                                       "tool_calls": 3,  "wall_seconds": 2,     "tokens": 14834, "recall": true, "top_1": true},
+    {"task": "pallets__flask-4045",   "backend": "leanctx",           "files": ["src/flask/blueprints.py"],                                                                       "tool_calls": 4,  "wall_seconds": 8,     "tokens": 17017, "recall": true, "top_1": true},
+    {"task": "pallets__flask-4045",   "backend": "fts5_trigram",      "files": ["src/flask/blueprints.py"],                                                                       "tool_calls": 13, "wall_seconds": 18,    "tokens": 16288, "recall": true, "top_1": true},
+    {"task": "pallets__flask-4045",   "backend": "codegraph",         "files": ["src/flask/blueprints.py", "src/flask/json/tag.py", "src/flask/wrappers.py", "src/flask/app.py"],  "tool_calls": 3,  "wall_seconds": 0.16,  "tokens": 2235,  "recall": true, "top_1": true,  "measurement": "tool_output_only"},
+    {"task": "pallets__flask-4045",   "backend": "codegraph_CONTEXT", "files": ["src/flask/blueprints.py", "src/flask/helpers.py", "src/flask/app.py", "src/flask/scaffold.py"],   "tool_calls": 1,  "wall_seconds": 0.11,  "tokens": 3788,  "recall": true, "top_1": true,  "measurement": "tool_output_only"},
 
-    {"task": "psf__requests-2148",    "backend": "codedb",          "files": ["requests/models.py", "requests/adapters.py", "requests/exceptions.py"], "tool_calls": 14, "wall_seconds": 18,  "tokens": 20439, "recall": true, "top_1": true},
-    {"task": "psf__requests-2148",    "backend": "codedb_CONTEXT",  "files": ["requests/models.py", "requests/exceptions.py"],                         "tool_calls": 2,  "wall_seconds": 1,   "tokens": 14516, "recall": true, "top_1": true},
-    {"task": "psf__requests-2148",    "backend": "leanctx",         "files": ["requests/models.py", "requests/adapters.py"],                           "tool_calls": 9,  "wall_seconds": 28,  "tokens": 32319, "recall": true, "top_1": true},
-    {"task": "psf__requests-2148",    "backend": "fts5_trigram",    "files": ["requests/models.py", "requests/adapters.py"],                           "tool_calls": 11, "wall_seconds": 18,  "tokens": 16427, "recall": true, "top_1": true},
+    {"task": "psf__requests-2148",    "backend": "codedb",            "files": ["requests/models.py", "requests/adapters.py", "requests/exceptions.py"],                          "tool_calls": 14, "wall_seconds": 18,    "tokens": 20439, "recall": true,  "top_1": true},
+    {"task": "psf__requests-2148",    "backend": "codedb_CONTEXT",    "files": ["requests/models.py", "requests/exceptions.py"],                                                 "tool_calls": 2,  "wall_seconds": 1,     "tokens": 14516, "recall": true,  "top_1": true},
+    {"task": "psf__requests-2148",    "backend": "leanctx",           "files": ["requests/models.py", "requests/adapters.py"],                                                   "tool_calls": 9,  "wall_seconds": 28,    "tokens": 32319, "recall": true,  "top_1": true},
+    {"task": "psf__requests-2148",    "backend": "fts5_trigram",      "files": ["requests/models.py", "requests/adapters.py"],                                                   "tool_calls": 11, "wall_seconds": 18,    "tokens": 16427, "recall": true,  "top_1": true},
+    {"task": "psf__requests-2148",    "backend": "codegraph",         "files": ["requests/models.py", "requests/adapters.py", "requests/sessions.py", "requests/exceptions.py"], "tool_calls": 3,  "wall_seconds": 0.16,  "tokens": 1501,  "recall": true,  "top_1": true,  "measurement": "tool_output_only"},
+    {"task": "psf__requests-2148",    "backend": "codegraph_CONTEXT", "files": ["requests/packages/urllib3/connection.py", "requests/packages/urllib3/util/ssl_.py"],             "tool_calls": 1,  "wall_seconds": 0.10,  "tokens": 3440,  "recall": false, "top_1": false, "measurement": "tool_output_only"},
 
-    {"task": "psf__requests-2674",    "backend": "codedb",          "files": ["requests/adapters.py", "requests/exceptions.py"],                        "tool_calls": 23, "wall_seconds": 18,  "tokens": 24816, "recall": true, "top_1": true},
-    {"task": "psf__requests-2674",    "backend": "codedb_CONTEXT",  "files": ["requests/adapters.py", "requests/models.py", "requests/exceptions.py"], "tool_calls": 2,  "wall_seconds": 1,   "tokens": 14725, "recall": true, "top_1": true},
-    {"task": "psf__requests-2674",    "backend": "leanctx",         "files": ["requests/adapters.py"],                                                  "tool_calls": 6,  "wall_seconds": 28,  "tokens": 28060, "recall": true, "top_1": true},
-    {"task": "psf__requests-2674",    "backend": "fts5_trigram",    "files": ["requests/adapters.py", "requests/exceptions.py"],                        "tool_calls": 8,  "wall_seconds": 18,  "tokens": 22767, "recall": true, "top_1": true},
+    {"task": "psf__requests-2674",    "backend": "codedb",            "files": ["requests/adapters.py", "requests/exceptions.py"],                                                "tool_calls": 23, "wall_seconds": 18,    "tokens": 24816, "recall": true,  "top_1": true},
+    {"task": "psf__requests-2674",    "backend": "codedb_CONTEXT",    "files": ["requests/adapters.py", "requests/models.py", "requests/exceptions.py"],                         "tool_calls": 2,  "wall_seconds": 1,     "tokens": 14725, "recall": true,  "top_1": true},
+    {"task": "psf__requests-2674",    "backend": "leanctx",           "files": ["requests/adapters.py"],                                                                          "tool_calls": 6,  "wall_seconds": 28,    "tokens": 28060, "recall": true,  "top_1": true},
+    {"task": "psf__requests-2674",    "backend": "fts5_trigram",      "files": ["requests/adapters.py", "requests/exceptions.py"],                                                "tool_calls": 8,  "wall_seconds": 18,    "tokens": 22767, "recall": true,  "top_1": true},
+    {"task": "psf__requests-2674",    "backend": "codegraph",         "files": ["requests/adapters.py", "requests/packages/urllib3/exceptions.py", "requests/sessions.py"],       "tool_calls": 3,  "wall_seconds": 0.16,  "tokens": 1927,  "recall": true,  "top_1": true,  "measurement": "tool_output_only"},
+    {"task": "psf__requests-2674",    "backend": "codegraph_CONTEXT", "files": ["requests/packages/urllib3/exceptions.py", "requests/packages/urllib3/util/timeout.py"],          "tool_calls": 1,  "wall_seconds": 0.10,  "tokens": 3113,  "recall": false, "top_1": false, "measurement": "tool_output_only"},
 
-    {"task": "mwaskom__seaborn-2848", "backend": "codedb",          "files": ["seaborn/axisgrid.py", "seaborn/_oldcore.py"],                            "tool_calls": 62, "wall_seconds": 120, "tokens": 89054, "recall": true, "top_1": false},
-    {"task": "mwaskom__seaborn-2848", "backend": "codedb_CONTEXT",  "files": ["seaborn/axisgrid.py", "seaborn/_oldcore.py"],                            "tool_calls": 2,  "wall_seconds": 1,   "tokens": 14791, "recall": true, "top_1": false},
-    {"task": "mwaskom__seaborn-2848", "backend": "leanctx",         "files": ["seaborn/axisgrid.py", "seaborn/_oldcore.py"],                            "tool_calls": 20, "wall_seconds": 45,  "tokens": 43291, "recall": true, "top_1": false},
-    {"task": "mwaskom__seaborn-2848", "backend": "fts5_trigram",    "files": ["seaborn/_oldcore.py", "seaborn/relational.py"],                          "tool_calls": 23, "wall_seconds": 45,  "tokens": 47720, "recall": true, "top_1": true}
+    {"task": "mwaskom__seaborn-2848", "backend": "codedb",            "files": ["seaborn/axisgrid.py", "seaborn/_oldcore.py"],                                                    "tool_calls": 62, "wall_seconds": 120,   "tokens": 89054, "recall": true,  "top_1": false},
+    {"task": "mwaskom__seaborn-2848", "backend": "codedb_CONTEXT",    "files": ["seaborn/axisgrid.py", "seaborn/_oldcore.py"],                                                    "tool_calls": 2,  "wall_seconds": 1,     "tokens": 14791, "recall": true,  "top_1": false},
+    {"task": "mwaskom__seaborn-2848", "backend": "leanctx",           "files": ["seaborn/axisgrid.py", "seaborn/_oldcore.py"],                                                    "tool_calls": 20, "wall_seconds": 45,    "tokens": 43291, "recall": true,  "top_1": false},
+    {"task": "mwaskom__seaborn-2848", "backend": "fts5_trigram",      "files": ["seaborn/_oldcore.py", "seaborn/relational.py"],                                                  "tool_calls": 23, "wall_seconds": 45,    "tokens": 47720, "recall": true,  "top_1": true},
+    {"task": "mwaskom__seaborn-2848", "backend": "codegraph",         "files": ["seaborn/axisgrid.py", "seaborn/_oldcore.py"],                                                    "tool_calls": 3,  "wall_seconds": 0.18,  "tokens": 2262,  "recall": true,  "top_1": false, "measurement": "tool_output_only"},
+    {"task": "mwaskom__seaborn-2848", "backend": "codegraph_CONTEXT", "files": ["seaborn/_oldcore.py", "seaborn/axisgrid.py", "seaborn/_marks/base.py"],                          "tool_calls": 1,  "wall_seconds": 0.12,  "tokens": 6245,  "recall": true,  "top_1": true,  "measurement": "tool_output_only"}
   ],
   "summary": {
     "by_backend": {
-      "codedb":         {"recall": "4/4", "top_1": "3/4", "avg_tool_calls": 26.75, "avg_wall_seconds": 42.0,  "avg_tokens": 37954.25},
-      "codedb_CONTEXT": {"recall": "4/4", "top_1": "3/4", "avg_tool_calls": 2.25,  "avg_wall_seconds": 1.25,  "avg_tokens": 14716.5},
-      "leanctx":        {"recall": "4/4", "top_1": "3/4", "avg_tool_calls": 9.75,  "avg_wall_seconds": 27.25, "avg_tokens": 30171.75},
-      "fts5_trigram":   {"recall": "4/4", "top_1": "4/4", "avg_tool_calls": 13.75, "avg_wall_seconds": 24.75, "avg_tokens": 25800.5}
+      "codedb":            {"recall": "4/4", "top_1": "3/4", "avg_tool_calls": 26.75, "avg_wall_seconds": 42.0,   "avg_tokens": 37954.25},
+      "codedb_CONTEXT":    {"recall": "4/4", "top_1": "3/4", "avg_tool_calls": 2.25,  "avg_wall_seconds": 1.25,   "avg_tokens": 14716.5},
+      "leanctx":           {"recall": "4/4", "top_1": "3/4", "avg_tool_calls": 9.75,  "avg_wall_seconds": 27.25,  "avg_tokens": 30171.75},
+      "fts5_trigram":      {"recall": "4/4", "top_1": "4/4", "avg_tool_calls": 13.75, "avg_wall_seconds": 24.75,  "avg_tokens": 25800.5},
+      "codegraph":         {"recall": "4/4", "top_1": "3/4", "avg_tool_calls": 3.0,   "avg_wall_seconds": 0.165,  "avg_tokens": 1981.25, "measurement": "tool_output_only"},
+      "codegraph_CONTEXT": {"recall": "2/4", "top_1": "2/4", "avg_tool_calls": 1.0,   "avg_wall_seconds": 0.1075, "avg_tokens": 4146.5,  "measurement": "tool_output_only"}
     },
-    "headline": "All four backends fully recall the gold file (4/4). Top-1 splits: fts5_trigram 4/4; codedb / codedb_CONTEXT / leanctx tie at 3/4 (all flagged seaborn/axisgrid.py before seaborn/_oldcore.py — the symptom site vs the root-cause site). Efficiency: codedb_CONTEXT dominates by a wide margin (2.25 calls / 1.25s / 14.7k tokens) — 4-12x fewer calls than peers, 20-30x faster wall, lowest tokens.",
-    "pareto_optimal": "codedb_CONTEXT is the sole Pareto-optimal point on the (quality, efficiency) frontier: only fts5_trigram exceeds it on quality, and only by 1 cell out of 4, at ~1.5x the wall and ~1.75x the tokens."
+    "headline": "Six backends, four SWE-bench Lite instances. Quality is broadly similar — five of six achieve 4/4 recall (codegraph_CONTEXT is the only outlier at 2/4, missing both `requests` tasks by surfacing urllib3 internals over the requests-layer wrapper). Top-1 splits: fts5_trigram 4/4; codedb / codedb_CONTEXT / leanctx / codegraph tie at 3/4 (the seaborn axisgrid/_oldcore call-trace ordering); codegraph_CONTEXT at 2/4. Efficiency cells for the codegraph rows reflect subprocess-only measurement under a fixed query plan, not a full LLM agent loop — they are not directly comparable to the other rows' agent-loop numbers.",
+    "hypothesis": "If a comparable LLM-driven agent loop were run against codegraph's primitive surface, recall would likely hold (4/4 found on the deterministic file-path oracle is shape-independent), but tool_calls and tokens would rise to LLM-loop levels. The interesting open question is whether codegraph_CONTEXT's `requests`-task miss is fixable by prompt engineering (it surfaces urllib3, the gold file is requests/adapters.py / requests/models.py) or whether it reflects a graph-relevance bias toward leaf libraries over wrapper APIs."
   }
 }
