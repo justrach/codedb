@@ -1,6 +1,10 @@
 {
   "source": "SWE-bench Lite (princeton-nlp/SWE-bench_Lite) — file-localization shape",
   "frozen_at": "2026-05-22T10:05Z",
+  "backend_versions": {
+    "codegraph": "0.9.3 (re-verified against v0.7.10 — file lists byte-identical)",
+    "codegraph_CONTEXT": "0.9.3"
+  },
   "scoring": "deterministic file-path match against gold patch's changed_files (no LLM judge)",
   "metric_definitions": {
     "recall": "gold file appears anywhere in agent's `files` list",

@@ -3,7 +3,9 @@
 Small file-localization snapshot: 4 [SWE-bench Lite](https://github.com/princeton-nlp/SWE-bench)
 instances × 6 retrieval backends, graded by a deterministic oracle
 (does the agent name the file that the merged upstream patch actually
-edits?). Captured 2026-05-22.
+edits?). Captured 2026-05-22. Codegraph rows re-verified at v0.9.3
+(released the same day) — file lists are byte-identical to v0.7.10,
+so the quality picture below isn't a version artifact.
 
 This is published as a **hypothesis snapshot**, not a settled
 dominance claim — n=4 is too small for statistics, and not all rows
