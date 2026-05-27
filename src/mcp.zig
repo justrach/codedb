@@ -887,9 +887,27 @@ fn handleResponse(s: *Session, root: *const std.json.ObjectMap) void {
     if (s.pending_roots_id) |pid| {
         if (resp_id == pid) {
             s.pending_roots_id = null;
-            if (root.get("error") != null) return;
-            const result_val = root.get("result") orelse return;
-            if (result_val != .object) return;
+            if (root.get("error") != null) {
+                if (s.deferred_scan) |ds| {
+                    const empty: []const Root = &.{};
+                    _ = triggerDeferredScanWithFallback(ds, empty, ds.fallback_cwd);
+                }
+                return;
+            }
+            const result_val = root.get("result") orelse {
+                if (s.deferred_scan) |ds| {
+                    const empty: []const Root = &.{};
+                    _ = triggerDeferredScanWithFallback(ds, empty, ds.fallback_cwd);
+                }
+                return;
+            };
+            if (result_val != .object) {
+                if (s.deferred_scan) |ds| {
+                    const empty: []const Root = &.{};
+                    _ = triggerDeferredScanWithFallback(ds, empty, ds.fallback_cwd);
+                }
+                return;
+            }
             parseRoots(s, &result_val.object);
         }
     }
@@ -897,8 +915,20 @@ fn handleResponse(s: *Session, root: *const std.json.ObjectMap) void {
 
 fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
     s.freeRoots();
-    const roots_val = result.get("roots") orelse return;
-    if (roots_val != .array) return;
+    const roots_val = result.get("roots") orelse {
+        if (s.deferred_scan) |ds| {
+            const empty: []const Root = &.{};
+            _ = triggerDeferredScanWithFallback(ds, empty, ds.fallback_cwd);
+        }
+        return;
+    };
+    if (roots_val != .array) {
+        if (s.deferred_scan) |ds| {
+            const empty: []const Root = &.{};
+            _ = triggerDeferredScanWithFallback(ds, empty, ds.fallback_cwd);
+        }
+        return;
+    }
     for (roots_val.array.items) |item| {
         if (item != .object) continue;
         const obj = item.object;

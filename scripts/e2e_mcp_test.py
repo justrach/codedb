@@ -439,6 +439,213 @@ def run_scenario_3_no_roots_client(binary: str) -> list[TestResult]:
     return results
 
 
+def run_scenario_4_mcp_help(binary: str) -> list[TestResult]:
+    """
+    Verify `codedb mcp --help` prints help and exits without starting the server.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S4] {name}")
+        results.append(r)
+        return r
+
+    r = t("codedb mcp --help exits 0 and prints usage")
+    try:
+        result = subprocess.run(
+            [binary, "mcp", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            r.fail(f"exit code {result.returncode}, stderr: {result.stderr[:200]}")
+        elif "usage:" not in result.stdout.lower() and "usage:" not in result.stderr.lower():
+            r.fail(f"no 'usage:' in output. stdout={result.stdout[:200]!r} stderr={result.stderr[:200]!r}")
+        else:
+            r.ok()
+    except subprocess.TimeoutExpired:
+        r.fail("process did not exit within timeout (likely started MCP server)")
+
+    r = t("codedb mcp -h exits 0 and prints usage")
+    try:
+        result = subprocess.run(
+            [binary, "mcp", "-h"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            r.fail(f"exit code {result.returncode}")
+        elif "usage:" not in result.stdout.lower() and "usage:" not in result.stderr.lower():
+            r.fail("no 'usage:' in output")
+        else:
+            r.ok()
+    except subprocess.TimeoutExpired:
+        r.fail("process did not exit within timeout")
+
+    r = t("codedb mcp --snapshot is rejected with error")
+    try:
+        result = subprocess.run(
+            [binary, "mcp", "--snapshot"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            r.fail("exit code 0 — should have been rejected")
+        elif "unknown flag" not in result.stderr.lower() and "unknown flag" not in result.stdout.lower():
+            r.fail(f"no 'unknown flag' error. stderr={result.stderr[:200]!r}")
+        else:
+            r.ok()
+    except subprocess.TimeoutExpired:
+        r.fail("process did not exit within timeout (likely started MCP server)")
+
+    return results
+
+
+def run_scenario_5_explicit_path(binary: str, project: str) -> list[TestResult]:
+    """
+    Verify `codedb mcp <path>` indexes the given path without needing roots handshake.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S5] {name}")
+        results.append(r)
+        return r
+
+    p = MCPProcess(binary, [], cwd="/", command=[binary, "mcp", project])
+
+    try:
+        r = t("initialize succeeds with explicit path arg")
+        ok = do_initialize(p, with_roots=False)
+        if not ok:
+            r.fail("no initialize response")
+            return results
+        r.ok()
+
+        r = t("server does NOT send roots/list (path was explicit)")
+        req = p.recv_method("roots/list", timeout=2.0)
+        if req is not None:
+            r.fail("server sent roots/list even though path was explicit via arg")
+        else:
+            r.ok("no roots/list request (correct)")
+
+        r = t("scan completes without roots handshake")
+        scan_ok = wait_for_scan(p, timeout=90.0)
+        if not scan_ok:
+            r.fail("timed out waiting for scan")
+        else:
+            r.ok()
+
+        r = t("codedb_search works with explicit path arg")
+        resp = p.call_tool("codedb_search", {"query": "isIndexableRoot", "max_results": 3})
+        text = tool_text(resp)
+        if "isIndexableRoot" not in text:
+            r.fail(f"search result: {text[:200]!r}")
+        else:
+            r.ok()
+
+    finally:
+        p.close()
+
+    return results
+
+
+def run_scenario_6_empty_roots_fallback(binary: str, project: str) -> list[TestResult]:
+    """
+    Verify that when client advertises roots but returns empty roots list,
+    the server falls back to cwd and eventually reaches ready state.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S6] {name}")
+        results.append(r)
+        return r
+
+    p = MCPProcess(binary, [], cwd=project)
+
+    try:
+        r = t("initialize succeeds with roots capability")
+        ok = do_initialize(p, with_roots=True)
+        if not ok:
+            r.fail("no initialize response")
+            return results
+        r.ok()
+
+        r = t("server sends roots/list request")
+        req = p.recv_method("roots/list", timeout=5.0)
+        if req is None:
+            r.fail("server never sent roots/list")
+        else:
+            r.ok()
+
+            r = t("empty roots list triggers cwd fallback")
+            p.send({
+                "jsonrpc": "2.0",
+                "id": req["id"],
+                "result": {"roots": []},
+            })
+
+            scan_ok = wait_for_scan(p, timeout=30.0)
+            if not scan_ok:
+                r.fail("scan did not complete after empty roots (cwd fallback failed)")
+            else:
+                r.ok("scan completed via cwd fallback")
+
+    finally:
+        p.close()
+
+    return results
+
+
+def run_scenario_7_stdout_clean(binary: str, project: str) -> list[TestResult]:
+    """
+    Verify MCP startup does not write human-readable logs to stdout.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S7] {name}")
+        results.append(r)
+        return r
+
+    p = MCPProcess(binary, [], cwd=project)
+
+    try:
+        ok = do_initialize(p, with_roots=False)
+        if not ok:
+            t("initialize succeeds").fail("no response")
+            return results
+        t("initialize succeeds").ok()
+
+        time.sleep(2)
+
+        r = t("stdout contains only JSON-RPC, no human-readable logs")
+        with p._lock:
+            stdout_lines = list(p._lines)
+        has_info_log = any("info:" in line and not line.startswith("{") for line in stdout_lines)
+        if has_info_log:
+            r.fail(f"found non-JSON-RPC output on stdout: {stdout_lines[:3]}")
+        else:
+            r.ok()
+
+        r = t("stderr contains startup info logs")
+        stderr = p.stderr_lines()
+        has_startup = any("codedb mcp" in line or "info" in line.lower() for line in stderr)
+        if not has_startup:
+            r.fail(f"no startup logs on stderr: {stderr[:5]}")
+        else:
+            r.ok()
+
+    finally:
+        p.close()
+
+    return results
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -471,6 +678,18 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 3: no-roots client (spawn from /, no scan) ──{RESET}")
     all_results += run_scenario_3_no_roots_client(binary)
+
+    print(f"\n{CYAN}── Scenario 4: mcp --help and flag validation ──{RESET}")
+    all_results += run_scenario_4_mcp_help(binary)
+
+    print(f"\n{CYAN}── Scenario 5: explicit path via `codedb mcp <path>` ──{RESET}")
+    all_results += run_scenario_5_explicit_path(binary, project)
+
+    print(f"\n{CYAN}── Scenario 6: empty roots/list falls back to cwd ──{RESET}")
+    all_results += run_scenario_6_empty_roots_fallback(binary, project)
+
+    print(f"\n{CYAN}── Scenario 7: stdout stays clean (JSON-RPC only) ──{RESET}")
+    all_results += run_scenario_7_stdout_clean(binary, project)
 
     print()
     passed = 0

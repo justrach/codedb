@@ -175,6 +175,19 @@ fn mainImpl() !void {
         }
     }
 
+    // Git root detection: if we're still using cwd (root == ".") and not explicit,
+    // try to find the git repository root. This handles the case where the user
+    // runs `codedb mcp` from a subdirectory of a git repo.
+    var git_root_alloc: ?[]const u8 = null;
+    defer if (git_root_alloc) |gr| allocator.free(gr);
+    if (std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit) {
+        if (git_mod.getGitRoot(".", allocator) catch null) |git_root| {
+            git_root_alloc = git_root;
+            root = git_root;
+            root_is_explicit = true;
+        }
+    }
+
     // MCP stdio reserves stdout for JSON-RPC — route status/error output to
     // stderr so startup/failure paths don't corrupt the protocol stream.
     // See #304.
@@ -208,6 +221,43 @@ fn mainImpl() !void {
 
     if (std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, "${workspaceFolder}")) {
         root = ".";
+    }
+
+    // Parse mcp-specific arguments: [path], --help, --no-telemetry.
+    // Reject unknown flags (e.g. --snapshot) so users get a clear error
+    // instead of silent misbehavior. See issue: mcp startup root handling.
+    if (std.mem.eql(u8, cmd, "mcp")) {
+        var mcp_path: ?[]const u8 = null;
+        var mcp_arg_idx: usize = cmd_args_start;
+        while (mcp_arg_idx < args.len) : (mcp_arg_idx += 1) {
+            const a = args[mcp_arg_idx];
+            if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) {
+                printUsage(&out, s);
+                return;
+            } else if (std.mem.eql(u8, a, "--no-telemetry")) {
+                // handled later in the mcp block
+            } else if (std.mem.startsWith(u8, a, "-")) {
+                out.p("{s}\xe2\x9c\x97{s} unknown flag for mcp: {s}{s}{s}\n", .{
+                    s.red, s.reset, s.bold, a, s.reset,
+                });
+                out.p("  usage: codedb [root] mcp [path] [--no-telemetry]\n", .{});
+                out.flush();
+                std.process.exit(1);
+            } else {
+                if (mcp_path != null) {
+                    out.p("{s}\xe2\x9c\x97{s} unexpected argument: {s}{s}{s}\n", .{
+                        s.red, s.reset, s.bold, a, s.reset,
+                    });
+                    out.flush();
+                    std.process.exit(1);
+                }
+                mcp_path = a;
+            }
+        }
+        if (mcp_path) |p| {
+            root = p;
+            root_is_explicit = true;
+        }
     }
 
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1554,7 +1604,20 @@ fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
             // Client never sent indexable roots — fall back to cwd so the
             // server doesn't sit in loading_snapshot forever.
             const empty_roots: []const mcp_server.Root = &.{};
-            _ = mcp_server.triggerDeferredScanWithFallback(ctx, empty_roots, ctx.fallback_cwd);
+            const already_triggered = ctx.triggered.load(.acquire);
+            const triggered = mcp_server.triggerDeferredScanWithFallback(ctx, empty_roots, ctx.fallback_cwd);
+            if (!triggered and !already_triggered) {
+                // No usable path available (cwd not indexable, no roots)
+                // AND no prior trigger from a roots response. Transition
+                // to ready with 0 files so tools don't report "scan still
+                // in progress" forever.
+                ctx.scan_done.store(true, .release);
+                mcp_server.setScanState(.ready);
+                std.log.warn("codedb mcp: no indexable root available (cwd={s})", .{ctx.fallback_cwd});
+                return;
+            }
+            // If already_triggered is true, a roots response fired the scan
+            // just before this timeout — let the scan thread finish normally.
         }
     }
     if (ctx.shutdown.load(.acquire)) return;

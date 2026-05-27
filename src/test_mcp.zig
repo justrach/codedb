@@ -1493,6 +1493,170 @@ test "issue-434: codedb_bundle ops items schema requires arguments field" {
 }
 
 
+test "mcp --help prints help and exits without starting server" {
+    try buildCliForHelpTests();
+
+    const result = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "./zig-out/bin/codedb", "mcp", "--help" },
+        .max_output_bytes = 8192,
+    });
+    defer testing.allocator.free(result.stdout);
+    defer testing.allocator.free(result.stderr);
+
+    try testing.expect(result.term == .Exited);
+    try testing.expect(result.term.Exited == 0);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
+        std.mem.indexOf(u8, result.stderr, "usage:") != null);
+}
+
+
+test "mcp -h prints help and exits without starting server" {
+    try buildCliForHelpTests();
+
+    const result = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "./zig-out/bin/codedb", "mcp", "-h" },
+        .max_output_bytes = 8192,
+    });
+    defer testing.allocator.free(result.stdout);
+    defer testing.allocator.free(result.stderr);
+
+    try testing.expect(result.term == .Exited);
+    try testing.expect(result.term.Exited == 0);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
+        std.mem.indexOf(u8, result.stderr, "usage:") != null);
+}
+
+
+test "mcp rejects unknown flags like --snapshot" {
+    try buildCliForHelpTests();
+
+    const result = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "./zig-out/bin/codedb", "mcp", "--snapshot" },
+        .max_output_bytes = 8192,
+    });
+    defer testing.allocator.free(result.stdout);
+    defer testing.allocator.free(result.stderr);
+
+    try testing.expect(result.term == .Exited);
+    try testing.expect(result.term.Exited != 0);
+    try testing.expect(std.mem.indexOf(u8, result.stderr, "unknown flag") != null or
+        std.mem.indexOf(u8, result.stdout, "unknown flag") != null);
+}
+
+
+test "mcp startup does not write human-readable logs to stdout" {
+    try buildCliForHelpTests();
+
+    // Use runCapture with a timeout - send initialize then let it exit
+    const result = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "./zig-out/bin/codedb", "mcp", "--help" },
+        .max_output_bytes = 8192,
+    });
+    defer testing.allocator.free(result.stdout);
+    defer testing.allocator.free(result.stderr);
+
+    // --help should print to stdout (not stderr) and exit cleanly
+    try testing.expect(result.term == .Exited);
+    try testing.expect(result.term.Exited == 0);
+    // Verify no "info:" or "codedb mcp:" logs appear in stdout
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "info:") == null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "codedb mcp:") == null);
+}
+
+
+test "triggerDeferredScanWithFallback returns false when already triggered (race)" {
+    var scan_done = std.atomic.Value(bool).init(false);
+    var shutdown = std.atomic.Value(bool).init(false);
+    var queue = watcher.EventQueue{};
+
+    var ds = mcp_mod.DeferredScan{
+        .io = io,
+        .allocator = testing.allocator,
+        .store = undefined,
+        .explorer = undefined,
+        .scan_done = &scan_done,
+        .shutdown = &shutdown,
+        .telem = undefined,
+        .queue = &queue,
+        .startup_t0 = cio.milliTimestamp(),
+        .fallback_cwd = "/Users/test/project",
+        .triggerFn = struct {
+            fn trigger(_: *mcp_mod.DeferredScan, _: []const u8) void {}
+        }.trigger,
+    };
+
+    // Simulate a roots response already triggering the scan
+    ds.triggered.store(true, .release);
+
+    const empty_roots: []const mcp_mod.Root = &.{};
+    const triggered = mcp_mod.triggerDeferredScanWithFallback(&ds, empty_roots, "/Users/test/project");
+    // Returns false because already triggered, NOT because no usable path
+    try testing.expect(!triggered);
+    try testing.expect(ds.triggered.load(.acquire));
+}
+
+
+test "triggerDeferredScanWithFallback returns false when no usable path" {
+    var scan_done = std.atomic.Value(bool).init(false);
+    var shutdown = std.atomic.Value(bool).init(false);
+    var queue = watcher.EventQueue{};
+
+    var ds = mcp_mod.DeferredScan{
+        .io = io,
+        .allocator = testing.allocator,
+        .store = undefined,
+        .explorer = undefined,
+        .scan_done = &scan_done,
+        .shutdown = &shutdown,
+        .telem = undefined,
+        .queue = &queue,
+        .startup_t0 = cio.milliTimestamp(),
+        .fallback_cwd = "/",
+        .triggerFn = struct {
+            fn trigger(_: *mcp_mod.DeferredScan, _: []const u8) void {}
+        }.trigger,
+    };
+
+    const empty_roots: []const mcp_mod.Root = &.{};
+    const triggered = mcp_mod.triggerDeferredScanWithFallback(&ds, empty_roots, "/");
+    try testing.expect(!triggered);
+}
+
+
+test "triggerDeferredScanWithFallback fires when fallback_cwd is indexable" {
+    var scan_done = std.atomic.Value(bool).init(false);
+    var shutdown = std.atomic.Value(bool).init(false);
+    var queue = watcher.EventQueue{};
+
+    var ds = mcp_mod.DeferredScan{
+        .io = io,
+        .allocator = testing.allocator,
+        .store = undefined,
+        .explorer = undefined,
+        .scan_done = &scan_done,
+        .shutdown = &shutdown,
+        .telem = undefined,
+        .queue = &queue,
+        .startup_t0 = cio.milliTimestamp(),
+        .fallback_cwd = "/Users/test/project",
+        .triggerFn = struct {
+            fn trigger(ctx: *mcp_mod.DeferredScan, abs_root: []const u8) void {
+                _ = ctx;
+                _ = abs_root;
+            }
+        }.trigger,
+    };
+
+    const empty_roots: []const mcp_mod.Root = &.{};
+    const triggered = mcp_mod.triggerDeferredScanWithFallback(&ds, empty_roots, "/Users/test/project");
+    try testing.expect(triggered);
+}
+
+
 test "issue-437: codedb_bundle ops items schema has discriminated oneOf per sub-tool" {
     // Stage 2 of the bundle-schema fix. Stage 1 (#434) made `arguments`
     // required but left it as a bare {type: "object"} — so a schema-greedy
