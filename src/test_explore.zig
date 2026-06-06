@@ -240,6 +240,50 @@ test "explorer: findAllSymbols returns multiple" {
     try testing.expect(results.len == 2);
 }
 
+test "issue-531: findMatchingSymbols supports prefix fuzzy and kind filters" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    try explorer.indexFile("parse.zig",
+        \\pub fn parseLineRange() void {}
+        \\pub fn parseSearchArgs() void {}
+        \\pub const Parser = struct {};
+        \\pub const parseLimit = 50;
+    );
+    try explorer.indexFile("render.zig", "pub fn renderSymbol() void {}\n");
+
+    const prefix = try explorer.findMatchingSymbols("parse", .{
+        .mode = .prefix,
+        .kind = .function,
+        .max_results = 10,
+    }, arena.allocator());
+    try testing.expectEqual(@as(usize, 2), prefix.len);
+    try testing.expectEqualStrings("parseLineRange", prefix[0].symbol.name);
+    try testing.expectEqualStrings("parseSearchArgs", prefix[1].symbol.name);
+
+    const fuzzy = try explorer.findMatchingSymbols("prsargs", .{
+        .mode = .fuzzy,
+        .kind = .function,
+        .max_results = 1,
+    }, arena.allocator());
+    try testing.expectEqual(@as(usize, 1), fuzzy.len);
+    try testing.expectEqualStrings("parseSearchArgs", fuzzy[0].symbol.name);
+
+    const struct_only = try explorer.findMatchingSymbols("Parser", .{
+        .mode = .exact,
+        .kind = .struct_def,
+    }, arena.allocator());
+    try testing.expectEqual(@as(usize, 1), struct_only.len);
+    try testing.expectEqualStrings("Parser", struct_only[0].symbol.name);
+
+    const function_only = try explorer.findMatchingSymbols("Parser", .{
+        .mode = .exact,
+        .kind = .function,
+    }, arena.allocator());
+    try testing.expectEqual(@as(usize, 0), function_only.len);
+}
+
 
 test "explorer: searchContent with trigram acceleration" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

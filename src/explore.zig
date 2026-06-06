@@ -200,6 +200,19 @@ pub const SymbolResult = struct {
     symbol: Symbol,
 };
 
+pub const SymbolMatchMode = enum {
+    exact,
+    prefix,
+    fuzzy,
+};
+
+pub const SymbolQueryOptions = struct {
+    mode: SymbolMatchMode = .exact,
+    kind: ?SymbolKind = null,
+    /// 0 means unlimited. Callers should cap fuzzy/prefix queries.
+    max_results: usize = 0,
+};
+
 pub const SearchResult = struct {
     path: []const u8,
     line_num: u32,
@@ -1860,6 +1873,90 @@ pub const Explorer = struct {
                     },
                 });
             }
+        }
+        return result_list.toOwnedSlice(allocator);
+    }
+
+    pub fn findMatchingSymbols(self: *Explorer, query: []const u8, options: SymbolQueryOptions, allocator: std.mem.Allocator) ![]const SymbolResult {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        const Candidate = struct {
+            path: []const u8,
+            symbol: Symbol,
+            score: f32,
+        };
+        const SortCtx = struct {
+            mode: SymbolMatchMode,
+            query: []const u8,
+
+            pub fn lessThan(ctx: @This(), a: Candidate, b: Candidate) bool {
+                if (ctx.mode == .fuzzy and a.score != b.score) return a.score > b.score;
+                const a_exact = std.mem.eql(u8, a.symbol.name, ctx.query);
+                const b_exact = std.mem.eql(u8, b.symbol.name, ctx.query);
+                if (a_exact != b_exact) return a_exact;
+                if (a.symbol.name.len != b.symbol.name.len) return a.symbol.name.len < b.symbol.name.len;
+                const name_order = std.mem.order(u8, a.symbol.name, b.symbol.name);
+                if (name_order != .eq) return name_order == .lt;
+                const path_order = std.mem.order(u8, a.path, b.path);
+                if (path_order != .eq) return path_order == .lt;
+                return a.symbol.line_start < b.symbol.line_start;
+            }
+        };
+
+        var candidates: std.ArrayList(Candidate) = .empty;
+        defer candidates.deinit(allocator);
+
+        var iter = self.outlines.iterator();
+        while (iter.next()) |entry| {
+            for (entry.value_ptr.symbols.items) |sym| {
+                if (options.kind) |kind| {
+                    if (sym.kind != kind) continue;
+                }
+                const score: f32 = switch (options.mode) {
+                    .exact => if (std.mem.eql(u8, sym.name, query)) 1.0 else continue,
+                    .prefix => if (std.mem.startsWith(u8, sym.name, query)) 1.0 else continue,
+                    .fuzzy => fuzzyScore(query, sym.name) orelse continue,
+                };
+                try candidates.append(allocator, .{
+                    .path = entry.key_ptr.*,
+                    .symbol = sym,
+                    .score = score,
+                });
+            }
+        }
+        if (candidates.items.len == 0) return try allocator.alloc(SymbolResult, 0);
+
+        std.mem.sort(Candidate, candidates.items, SortCtx{ .mode = options.mode, .query = query }, SortCtx.lessThan);
+
+        const take = if (options.max_results == 0) candidates.items.len else @min(options.max_results, candidates.items.len);
+        var result_list: std.ArrayList(SymbolResult) = .empty;
+        errdefer {
+            for (result_list.items) |r| {
+                allocator.free(r.path);
+                allocator.free(r.symbol.name);
+                if (r.symbol.detail) |d| allocator.free(d);
+            }
+            result_list.deinit(allocator);
+        }
+        try result_list.ensureTotalCapacity(allocator, take);
+        for (candidates.items[0..take]) |cand| {
+            const path = try allocator.dupe(u8, cand.path);
+            errdefer allocator.free(path);
+            const name = try allocator.dupe(u8, cand.symbol.name);
+            errdefer allocator.free(name);
+            const detail: ?[]u8 = if (cand.symbol.detail) |d| try allocator.dupe(u8, d) else null;
+            errdefer if (detail) |d| allocator.free(d);
+            try result_list.append(allocator, .{
+                .path = path,
+                .symbol = .{
+                    .name = name,
+                    .kind = cand.symbol.kind,
+                    .line_start = cand.symbol.line_start,
+                    .line_end = cand.symbol.line_end,
+                    .detail = detail,
+                },
+            });
         }
         return result_list.toOwnedSlice(allocator);
     }

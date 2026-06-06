@@ -617,7 +617,7 @@ pub const tools_list =
     \\{"tools":[
     \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_outline","description":"Symbol outline of one file: functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view — each symbol's declaration line with its body elided as '{ … N lines }', so a 2,000-line file collapses to ~one line per symbol.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_symbol","description":"Find where a named symbol is defined across the index. Returns file, line, and kind. Pass body=true for source. Pick this over codedb_search when you have an exact identifier.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name to search for (exact match)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+    \\{"name":"codedb_symbol","description":"Find where symbols are defined across the index. Defaults to exact identifier lookup; pass match=prefix or match=fuzzy for broader symbol discovery, kind=<symbol kind> to filter, and body=true for source.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name or query to search for"},"match":{"type":"string","enum":["exact","prefix","fuzzy"],"description":"Match mode: exact (default), prefix, or fuzzy"},"kind":{"type":"string","enum":["function","struct_def","enum_def","union_def","constant","variable","import","test_decl","comment_block","trait_def","impl_block","type_alias","macro_def","method","class_def","interface_def"],"description":"Optional symbol kind filter"},"max_results":{"type":"integer","description":"Maximum results for prefix/fuzzy or explicitly capped queries (default: 50 for prefix/fuzzy; exact queries are uncapped)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
     \\{"name":"codedb_search","description":"Substring full-text search across the index (regex if regex=true). For one identifier prefer codedb_word; for a definition prefer codedb_symbol. Scope with path_glob to filter by language.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
     \\{"name":"codedb_word","description":"Exact-identifier lookup via inverted index — every occurrence of one word, O(1). Use for single identifiers; use codedb_search for substrings or phrases.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
     \\{"name":"codedb_callers","description":"Find every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
@@ -1444,6 +1444,71 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         return;
     };
     const include_body = getBool(args, "body");
+    const mode = if (getStr(args, "match")) |m|
+        std.meta.stringToEnum(explore_mod.SymbolMatchMode, m) orelse {
+            out.appendSlice(alloc, "error: match must be one of: exact, prefix, fuzzy") catch {};
+            return;
+        }
+    else
+        explore_mod.SymbolMatchMode.exact;
+    const kind = if (getStr(args, "kind")) |k|
+        std.meta.stringToEnum(explore_mod.SymbolKind, k) orelse {
+            out.appendSlice(alloc, "error: kind must be one of: function, struct_def, enum_def, union_def, constant, variable, import, test_decl, comment_block, trait_def, impl_block, type_alias, macro_def, method, class_def, interface_def") catch {};
+            return;
+        }
+    else
+        null;
+    if (getInt(args, "max_results")) |n| {
+        if (n <= 0) {
+            const w_err = cio.listWriter(out, alloc);
+            w_err.print("error: max_results ({d}) must be >= 1", .{n}) catch {};
+            return;
+        }
+    }
+    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else if (mode == .exact) 0 else 50;
+    const use_filtered_search = mode != .exact or kind != null or getInt(args, "max_results") != null;
+    if (use_filtered_search) {
+        const results = explorer.findMatchingSymbols(name, .{
+            .mode = mode,
+            .kind = kind,
+            .max_results = max_results,
+        }, alloc) catch {
+            out.appendSlice(alloc, "error: search failed") catch {};
+            return;
+        };
+        defer {
+            for (results) |r| {
+                alloc.free(r.path);
+                alloc.free(r.symbol.name);
+                if (r.symbol.detail) |d| alloc.free(d);
+            }
+            alloc.free(results);
+        }
+
+        if (results.len == 0) {
+            out.appendSlice(alloc, "no results for: ") catch {};
+            out.appendSlice(alloc, name) catch {};
+            return;
+        }
+
+        const w = cio.listWriter(out, alloc);
+        w.print("{d} {s} results for '{s}'", .{ results.len, @tagName(mode), name }) catch {};
+        if (kind) |k| w.print(" kind={s}", .{@tagName(k)}) catch {};
+        w.writeAll(":\n") catch {};
+        for (results) |r| {
+            w.print("  {s}:{d} ({s})", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind) }) catch {};
+            if (r.symbol.detail) |d| w.print("  // {s}", .{d}) catch {};
+            w.writeAll("\n") catch {};
+            if (include_body) {
+                const body = explorer.getSymbolBody(r.path, r.symbol.line_start, r.symbol.line_end, alloc) catch null;
+                if (body) |b| {
+                    defer alloc.free(b);
+                    out.appendSlice(alloc, b) catch {};
+                }
+            }
+        }
+        return;
+    }
     if (!include_body) {
         const rendered = explorer.renderSymbols(name, alloc, out) catch {
             out.appendSlice(alloc, "error: search failed") catch {};
