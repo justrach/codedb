@@ -26,6 +26,44 @@ fn expectOutlineImport(outline: *const explore.FileOutline, import_path: []const
 }
 
 
+test "issue-1: multi-line TS/JS import paths captured for dep graph" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    try explorer.indexFile("src/role-driver.ts",
+        \\import {
+        \\  existsSync,
+        \\  readdirSync,
+        \\} from "../bus/in-memory-event-bus.ts";
+        \\
+        \\import { join } from "node:path";
+        \\
+        \\export * from "./re-export.ts";
+        \\
+        \\// loads config from "config.json" at boot
+        \\
+        \\export class RoleDriver {}
+    );
+
+    var outline = (try explorer.getOutline("src/role-driver.ts", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try testing.expectEqual(Language.typescript, outline.language);
+    // Single-line import already worked (regression guard) ...
+    try expectOutlineImport(&outline, "node:path");
+    // ... the multi-line import is the bug: its `from "..."` sits on a line
+    // that does not contain "import ", so it was dropped from the dep graph.
+    try expectOutlineImport(&outline, "../bus/in-memory-event-bus.ts");
+    // re-export deps (export ... from) are also dependencies.
+    try expectOutlineImport(&outline, "./re-export.ts");
+    // A comment (or string) that merely contains `from "..."` must NOT become a
+    // dependency. The old over-broad match grabbed exactly this kind of thing.
+    for (outline.imports.items) |imp| {
+        try testing.expect(!std.mem.eql(u8, imp, "config.json"));
+    }
+}
+
 test "issue-301: Dart / Flutter parser" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

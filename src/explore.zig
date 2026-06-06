@@ -3610,6 +3610,22 @@ pub const Explorer = struct {
             if (extractStringLiteral(line)) |path| {
                 try appendImportPath(a, outline, path);
             }
+        } else if (startsWith(line, "} from ") or
+            (startsWith(line, "export ") and containsAny(line, &.{ " from \"", " from '" })))
+        {
+            // Closing line of a multi-line import/export, e.g.
+            //   import {
+            //     a, b,
+            //   } from "../mod.ts";
+            // or a re-export like `export * from "./x.ts"`. The `from "..."`
+            // clause lands on a line that does not contain "import ", so without
+            // this branch the path is dropped (only single-line imports were
+            // captured). Gated on these concrete shapes so arbitrary `from "..."`
+            // inside strings/comments (e.g. SQL `select * from "users"`) is not
+            // mistaken for a dependency.
+            if (extractStringLiteral(line)) |path| {
+                try appendImportPath(a, outline, path);
+            }
         }
     }
 
