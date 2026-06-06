@@ -26,6 +26,91 @@ fn expectOutlineImport(outline: *const explore.FileOutline, import_path: []const
 }
 
 
+test "issue-2: relative imports resolve to repo paths in the dep graph" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    try explorer.indexFile("daemon/src/role/role-driver.ts",
+        \\import { foo } from "../bus/event-bus.ts";
+        \\import { join } from "node:path";
+    );
+
+    const deps = explorer.dep_graph.getForwardDeps("daemon/src/role/role-driver.ts") orelse
+        return error.TestUnexpectedResult;
+    var found_resolved = false;
+    var found_raw = false;
+    var found_bare = false;
+    for (deps) |d| {
+        if (std.mem.eql(u8, d, "daemon/src/bus/event-bus.ts")) found_resolved = true;
+        if (std.mem.eql(u8, d, "../bus/event-bus.ts")) found_raw = true;
+        if (std.mem.eql(u8, d, "node:path")) found_bare = true;
+    }
+    // the relative import resolves to a repo-rooted path ...
+    try testing.expect(found_resolved);
+    // ... the raw "../" form no longer appears in the graph (was dropped before) ...
+    try testing.expect(!found_raw);
+    // ... and bare specifiers are unaffected.
+    try testing.expect(found_bare);
+
+    // imported_by must now resolve to the importer.
+    const importers = try explorer.dep_graph.getImportedBy("daemon/src/bus/event-bus.ts", testing.allocator);
+    defer {
+        for (importers) |imp| testing.allocator.free(imp);
+        testing.allocator.free(importers);
+    }
+    var found_importer = false;
+    for (importers) |imp| {
+        if (std.mem.eql(u8, imp, "daemon/src/role/role-driver.ts")) found_importer = true;
+    }
+    try testing.expect(found_importer);
+}
+
+test "issue-2: extensionless relative imports resolve using the importer's extension" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    // Common TS/JS form: the import omits the ".ts" extension.
+    try explorer.indexFile("daemon/src/role/role-driver.ts",
+        \\import { foo } from "../bus/event-bus";
+    );
+
+    const deps = explorer.dep_graph.getForwardDeps("daemon/src/role/role-driver.ts") orelse
+        return error.TestUnexpectedResult;
+    var found = false;
+    for (deps) |d| {
+        if (std.mem.eql(u8, d, "daemon/src/bus/event-bus.ts")) found = true;
+    }
+    // Resolved to the indexed file path, with the importer's .ts extension added.
+    try testing.expect(found);
+
+    const importers = try explorer.dep_graph.getImportedBy("daemon/src/bus/event-bus.ts", testing.allocator);
+    defer {
+        for (importers) |imp| testing.allocator.free(imp);
+        testing.allocator.free(importers);
+    }
+    var found_importer = false;
+    for (importers) |imp| {
+        if (std.mem.eql(u8, imp, "daemon/src/role/role-driver.ts")) found_importer = true;
+    }
+    try testing.expect(found_importer);
+}
+
+test "issue-2: interned dependency keys are reused, not re-allocated per reindex" {
+    var dg = DependencyGraph.init(testing.allocator);
+    defer dg.deinit();
+
+    const a = try dg.internString("daemon/src/bus/event-bus.ts");
+    const b = try dg.internString("daemon/src/bus/event-bus.ts");
+    // Same content -> same backing allocation, so re-indexing a file with the
+    // same relative imports does not grow the arena on every rebuild.
+    try testing.expect(a.ptr == b.ptr);
+
+    const c = try dg.internString("daemon/src/other.ts");
+    try testing.expect(a.ptr != c.ptr);
+}
+
 test "issue-301: Dart / Flutter parser" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

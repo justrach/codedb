@@ -771,9 +771,19 @@ fn rebuildDepsFromOutline(explorer: *Explorer, path: []const u8, outline: *const
     errdefer deps.deinit(allocator);
     try deps.ensureTotalCapacity(allocator, outline.imports.items.len);
 
+    // Dedup like Explorer.rebuildDepsFor: a file importing the same module more
+    // than once (e.g. ../foo for both a type and a value) must not produce
+    // duplicate forward edges, so a snapshot-restored graph matches a fresh one.
+    var seen = std.StringHashMap(void).init(allocator);
+    defer seen.deinit();
+
     for (outline.imports.items) |imp| {
-        if (std.mem.indexOf(u8, imp, "..") != null) continue;
-        deps.appendAssumeCapacity(imp);
+        // Same resolution as Explorer.rebuildDepsFor: relative specifiers
+        // resolve to repo paths so restored deps match a freshly-indexed graph.
+        const dep = (try explore_mod.resolveDependencyKey(&explorer.dep_graph, outline.path, imp, allocator)) orelse continue;
+        const gop = try seen.getOrPut(dep);
+        if (gop.found_existing) continue;
+        deps.appendAssumeCapacity(dep);
     }
 
     try explorer.dep_graph.setDeps(path, deps);

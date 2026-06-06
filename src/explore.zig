@@ -225,13 +225,35 @@ pub const DependencyGraph = struct {
     forward: std.StringHashMap(std.ArrayList([]const u8)),
     reverse: std.StringHashMap(std.StringHashMap(void)),
     allocator: std.mem.Allocator,
+    /// Owns the resolved dependency strings the graph creates (e.g. relative
+    /// imports normalized to repo paths). Raw specifiers handed in by callers
+    /// are still borrowed; only graph-minted strings live here. Freed after the
+    /// maps in deinit, so map keys/values never outlive their backing bytes.
+    str_arena: std.heap.ArenaAllocator,
+    /// Dedup map for interned strings: resolved path -> its single arena-owned
+    /// copy. Re-resolving the same import (e.g. on every watcher reindex) reuses
+    /// that copy instead of growing the arena by a fresh allocation each time.
+    interned: std.StringHashMap([]const u8),
 
     pub fn init(allocator: std.mem.Allocator) DependencyGraph {
         return .{
             .forward = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
             .reverse = std.StringHashMap(std.StringHashMap(void)).init(allocator),
             .allocator = allocator,
+            .str_arena = std.heap.ArenaAllocator.init(allocator),
+            .interned = std.StringHashMap([]const u8).init(allocator),
         };
+    }
+
+    /// Intern a string into the graph-owned arena, returning a slice valid for
+    /// the lifetime of the graph. Repeated calls with the same content return
+    /// the same slice, so re-indexing a file does not leak a fresh copy per
+    /// import. Use for resolved paths that have no other owner.
+    pub fn internString(self: *DependencyGraph, s: []const u8) ![]const u8 {
+        if (self.interned.get(s)) |existing| return existing;
+        const owned = try self.str_arena.allocator().dupe(u8, s);
+        try self.interned.put(owned, owned);
+        return owned;
     }
 
     pub fn deinit(self: *DependencyGraph) void {
@@ -246,6 +268,11 @@ pub const DependencyGraph = struct {
             entry.value_ptr.deinit();
         }
         self.reverse.deinit();
+
+        // The interned map's keys/values live in str_arena; free the map
+        // structure, then the arena (which forward/reverse also borrow from).
+        self.interned.deinit();
+        self.str_arena.deinit();
     }
 
     pub fn setDeps(self: *DependencyGraph, path: []const u8, deps: std.ArrayList([]const u8)) !void {
@@ -4507,10 +4534,10 @@ pub const Explorer = struct {
         defer seen.deinit();
 
         for (outline.imports.items) |imp| {
-            if (std.mem.indexOf(u8, imp, "..") != null) continue;
-            const gop = try seen.getOrPut(imp);
+            const dep = (try resolveDependencyKey(&self.dep_graph, outline.path, imp, self.allocator)) orelse continue;
+            const gop = try seen.getOrPut(dep);
             if (gop.found_existing) continue;
-            try deps.append(self.allocator, imp);
+            try deps.append(self.allocator, dep);
         }
 
         try self.dep_graph.setDeps(path, deps);
@@ -5903,7 +5930,9 @@ fn extractStringLiteral(s: []const u8) ?[]const u8 {
 
 fn normalizePath(path: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
     var parts: std.ArrayList([]const u8) = .empty;
-    errdefer parts.deinit(allocator);
+    // `parts` holds borrowed slices into `path`; free the list on every path
+    // (success included). Previously errdefer-only, which leaked on success.
+    defer parts.deinit(allocator);
 
     var it = std.mem.splitSequence(u8, path, "/");
     while (it.next()) |part| {
@@ -5927,6 +5956,70 @@ fn normalizePath(path: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
         buf.appendSlice(allocator, part) catch return null;
     }
     return buf.toOwnedSlice(allocator) catch null;
+}
+
+fn isRelativeImport(spec: []const u8) bool {
+    return std.mem.startsWith(u8, spec, "./") or std.mem.startsWith(u8, spec, "../");
+}
+
+/// File extension of a path including the leading dot (".ts"), or null if the
+/// final segment has none. A leading-dot file (".env") counts as no extension.
+fn pathExtension(path: []const u8) ?[]const u8 {
+    const base = if (std.mem.lastIndexOfScalar(u8, path, '/')) |s| path[s + 1 ..] else path;
+    if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| {
+        if (dot > 0) return base[dot..];
+    }
+    return null;
+}
+
+/// Resolve a relative import specifier (`./` or `../`) against the importing
+/// file's path into a repo-rooted path, e.g.
+///   ("daemon/src/role/role-driver.ts", "../bus/x.ts") -> "daemon/src/bus/x.ts"
+/// Returns null if the path escapes the repo root or allocation fails. The
+/// caller owns the returned slice (allocated with `allocator`).
+fn resolveRelativeImportPath(file_path: []const u8, raw: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
+    const dir = if (std.mem.lastIndexOfScalar(u8, file_path, '/')) |sep|
+        file_path[0..sep]
+    else
+        ".";
+    const joined = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, raw }) catch return null;
+    defer allocator.free(joined);
+    return normalizePath(joined, allocator);
+}
+
+/// Map a raw import specifier to the dependency key the graph should store:
+///   - relative (./ ../) specifiers resolve to repo paths, interned in the
+///     graph arena (so they outlive the call without mutating outline.imports);
+///   - any other specifier containing ".." can't map to a repo path -> null (skip);
+///   - everything else is returned as-is (borrowed from the caller).
+/// Shared by Explorer.rebuildDepsFor and the snapshot restore path so the two
+/// never diverge. `tmp_allocator` is only used for transient resolution scratch.
+pub fn resolveDependencyKey(
+    dep_graph: *DependencyGraph,
+    importer_path: []const u8,
+    spec: []const u8,
+    tmp_allocator: std.mem.Allocator,
+) !?[]const u8 {
+    if (isRelativeImport(spec)) {
+        const tmp = resolveRelativeImportPath(importer_path, spec, tmp_allocator) orelse return null;
+        defer tmp_allocator.free(tmp);
+        // Extensionless imports ("../foo") are common in TS/JS. The resolved
+        // path then has no extension and won't match the indexed file
+        // ("dir/foo.ts"). Assume the importer's own extension (TS importing TS,
+        // JS importing JS) so the key lines up with the real file. Specifiers
+        // that already carry an extension are left as-is.
+        if (pathExtension(tmp) == null) {
+            if (pathExtension(importer_path)) |ext| {
+                const with_ext = std.fmt.allocPrint(tmp_allocator, "{s}{s}", .{ tmp, ext }) catch
+                    return try dep_graph.internString(tmp);
+                defer tmp_allocator.free(with_ext);
+                return try dep_graph.internString(with_ext);
+            }
+        }
+        return try dep_graph.internString(tmp);
+    }
+    if (std.mem.indexOf(u8, spec, "..") != null) return null;
+    return spec;
 }
 
 fn resolveDartImport(raw: []const u8, file_path: []const u8, allocator: std.mem.Allocator) ?[]const u8 {
