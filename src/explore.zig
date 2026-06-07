@@ -2764,7 +2764,7 @@ pub const Explorer = struct {
     /// final return) gets the same ranking — pre-fix only the fall-through
     /// path applied multi-signal scoring.
     fn rerankAndFinalize(
-        self: *const Explorer,
+        self: *Explorer,
         result_list: *std.ArrayList(SearchResult),
         query: []const u8,
         allocator: std.mem.Allocator,
@@ -2772,6 +2772,58 @@ pub const Explorer = struct {
         for (result_list.items) |*r| {
             r.score = self.rerankSignalScore(r.*, query);
         }
+
+        // #550: query-specific call-graph proximity for the tiered (single-word)
+        // path. Seeds = the top-N distinct files by base rerank score; their
+        // call-graph neighbors get a gentle boost so structurally-near files win
+        // ties. Shares buildGraphProximity with searchContentRanked. This is what
+        // lets graph distance move #546's (mostly single-word) queries.
+        {
+            var s_path: [3][]const u8 = undefined;
+            var s_score: [3]f32 = undefined;
+            var s_n: usize = 0;
+            for (result_list.items) |r| {
+                const sc = if (r.score == r.score) r.score else 0;
+                var seen = false;
+                for (0..s_n) |i| {
+                    if (std.mem.eql(u8, s_path[i], r.path)) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (seen) continue;
+                if (s_n < 3) {
+                    s_path[s_n] = r.path;
+                    s_score[s_n] = sc;
+                    s_n += 1;
+                } else {
+                    var w: usize = 0;
+                    for (1..3) |i| {
+                        if (s_score[i] < s_score[w] or
+                            (s_score[i] == s_score[w] and std.mem.order(u8, s_path[i], s_path[w]) == .gt)) w = i;
+                    }
+                    if (sc > s_score[w] or (sc == s_score[w] and std.mem.order(u8, r.path, s_path[w]) == .lt)) {
+                        s_path[w] = r.path;
+                        s_score[w] = sc;
+                    }
+                }
+            }
+            var s_w: [3]f32 = undefined;
+            if (s_n > 0) {
+                var mx: f32 = 0;
+                for (0..s_n) |i| mx = @max(mx, s_score[i]);
+                for (0..s_n) |i| s_w[i] = if (mx > 0) s_score[i] / mx else 1.0;
+            }
+            var proximity = self.buildGraphProximity(allocator, s_path[0..s_n], s_w[0..s_n]);
+            defer proximity.deinit();
+            if (proximity.count() > 0) {
+                for (result_list.items) |*r| {
+                    const base = if (r.score == r.score) r.score else 0;
+                    r.score = base * graphProximityBoost(&proximity, r.path);
+                }
+            }
+        }
+
         if (result_list.items.len > 1) {
             std.sort.block(SearchResult, result_list.items, {}, struct {
                 pub fn lessThan(_: void, a: SearchResult, b: SearchResult) bool {
@@ -2973,6 +3025,87 @@ pub const Explorer = struct {
         const a = proximity.get(path) orelse return 1.0;
         const beta: f32 = 0.6;
         return 1.0 + beta * a;
+    }
+
+    /// Build a query-specific spreading-activation map (file path -> activation in
+    /// (0,1]) from `seed_paths` weighted by `seed_weights` (parallel arrays).
+    /// Shared by the ranked and tiered search paths. Caller owns the returned map
+    /// (`.deinit()`); keys borrow `call_graph.node_path` (stable for the graph's
+    /// lifetime). Empty when graph distance is disabled or the graph is empty.
+    /// Weighted spreading activation over the undirected call graph: activation =
+    /// seed_weight × decay^hops, ≤MAX_HOPS, max-combined; seed files excluded (they
+    /// already rank by their own score). cf. HippoRAG / MemGraphRAG (structure-aware
+    /// node init) and arXiv:2512.15922 (spreading activation).
+    fn buildGraphProximity(
+        self: *Explorer,
+        allocator: std.mem.Allocator,
+        seed_paths: []const []const u8,
+        seed_weights: []const f32,
+    ) std.StringHashMap(f32) {
+        var proximity = std.StringHashMap(f32).init(allocator);
+        if (cio.posixGetenv("CODEDB_NO_GRAPH_DISTANCE") != null) return proximity;
+        self.ensureCallGraph(allocator);
+        const cg = self.call_graph orelse return proximity;
+        const n = cg.node_path.len;
+        if (n == 0 or seed_paths.len == 0) return proximity;
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        var seed_weight = std.StringHashMap(f32).init(a);
+        for (seed_paths, 0..) |p, i| {
+            if (p.len == 0) continue;
+            const wv = if (i < seed_weights.len) seed_weights[i] else 1.0;
+            const gop = seed_weight.getOrPut(p) catch continue;
+            if (!gop.found_existing or gop.value_ptr.* < wv) gop.value_ptr.* = wv;
+        }
+        if (seed_weight.count() == 0) return proximity;
+
+        const undirected = a.alloc(std.ArrayList(u32), n) catch return proximity;
+        for (undirected) |*l| l.* = .empty;
+        for (cg.edges) |ed| {
+            undirected[ed.from].append(a, ed.to) catch {};
+            undirected[ed.to].append(a, ed.from) catch {};
+        }
+
+        const MAX_HOPS: u32 = 3;
+        const decay: f32 = 0.5;
+        const act = a.alloc(f32, n) catch return proximity;
+        for (act) |*x| x.* = 0;
+        const hops = a.alloc(u32, n) catch return proximity;
+        for (hops) |*h| h.* = std.math.maxInt(u32);
+        const is_seed = a.alloc(bool, n) catch return proximity;
+        for (is_seed) |*s| s.* = false;
+        var queue: std.ArrayList(u32) = .empty;
+        for (cg.node_path, 0..) |np, nid| {
+            const wv = seed_weight.get(np) orelse continue;
+            if (wv > act[nid]) {
+                act[nid] = wv;
+                hops[nid] = 0;
+                is_seed[nid] = true;
+                queue.append(a, @intCast(nid)) catch {};
+            }
+        }
+        var head: usize = 0;
+        while (head < queue.items.len) : (head += 1) {
+            const u = queue.items[head];
+            if (hops[u] >= MAX_HOPS) continue;
+            const child_act = act[u] * decay;
+            for (undirected[u].items) |v| {
+                if (child_act > act[v]) {
+                    act[v] = child_act;
+                    hops[v] = hops[u] + 1;
+                    queue.append(a, v) catch {};
+                }
+            }
+        }
+        for (cg.node_path, 0..) |np, nid| {
+            if (is_seed[nid] or act[nid] <= 0) continue;
+            const gop = proximity.getOrPut(np) catch continue;
+            if (!gop.found_existing or gop.value_ptr.* < act[nid]) gop.value_ptr.* = act[nid];
+        }
+        return proximity;
     }
 
     fn centralityBoost(self: *Explorer, path: []const u8) f32 {
