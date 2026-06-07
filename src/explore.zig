@@ -2966,11 +2966,13 @@ pub const Explorer = struct {
     /// so structurally-near candidates win ties over distant same-keyword hits;
     /// files not near any seed are unaffected (1.0). Distinct from centralityBoost,
     /// which is global (query-independent) per-file importance.
-    fn graphProximityBoost(proximity: *const std.StringHashMap(u32), path: []const u8) f32 {
-        const d = proximity.get(path) orelse return 1.0;
-        const beta: f32 = 0.3;
-        const decay: f32 = 0.5;
-        return 1.0 + beta * std.math.pow(f32, decay, @as(f32, @floatFromInt(d - 1)));
+    fn graphProximityBoost(proximity: *const std.StringHashMap(f32), path: []const u8) f32 {
+        // `proximity` holds a spreading-activation strength in (0, 1] per file
+        // (seed weight × decay^hops). beta is tuned so a hop-1 neighbor of the
+        // top seed (activation 0.5) yields ~1.3× — a tiebreaker, not a dominator.
+        const a = proximity.get(path) orelse return 1.0;
+        const beta: f32 = 0.6;
+        return 1.0 + beta * a;
     }
 
     fn centralityBoost(self: *Explorer, path: []const u8) f32 {
@@ -3334,14 +3336,16 @@ pub const Explorer = struct {
         //     few-hop spreading activation as a complement to lexical IR.
         //   - Personalized PageRank: Haveliwala, "Topic-Sensitive PageRank" (2002);
         //     survey arXiv:2403.05198.
-        var proximity = std.StringHashMap(u32).init(ta); // file path -> min hops to a seed
+        var proximity = std.StringHashMap(f32).init(ta); // file path -> spreading-activation strength
         if (cio.posixGetenv("CODEDB_NO_GRAPH_DISTANCE") == null) blk_prox: {
             self.ensureCallGraph(allocator);
             const cg = self.call_graph orelse break :blk_prox;
             const n = cg.node_path.len;
             if (n == 0) break :blk_prox;
 
-            // Seeds: the top-N candidate docs by BM25 score.
+            // Seeds: the top-N candidate docs by BM25 score, with a deterministic
+            // doc_id tiebreak so a score tie never shuffles the seed set run-to-run
+            // (per_doc iterates a hashmap in arbitrary order).
             const SEED_COUNT = 3;
             var seed_id: [SEED_COUNT]u32 = undefined;
             var seed_score: [SEED_COUNT]f32 = undefined;
@@ -3355,28 +3359,39 @@ pub const Explorer = struct {
                     seed_score[n_seeds] = sc;
                     n_seeds += 1;
                 } else {
-                    var min_i: usize = 0;
+                    // Weakest current seed = lowest score; on a tie, the highest
+                    // doc_id. Replace it if the new doc wins under (score desc,
+                    // doc_id asc) — a total order, so the top-N is deterministic.
+                    var w: usize = 0;
                     for (1..SEED_COUNT) |i| {
-                        if (seed_score[i] < seed_score[min_i]) min_i = i;
+                        if (seed_score[i] < seed_score[w] or
+                            (seed_score[i] == seed_score[w] and seed_id[i] > seed_id[w])) w = i;
                     }
-                    if (sc > seed_score[min_i]) {
-                        seed_id[min_i] = did;
-                        seed_score[min_i] = sc;
+                    if (sc > seed_score[w] or (sc == seed_score[w] and did < seed_id[w])) {
+                        seed_id[w] = did;
+                        seed_score[w] = sc;
                     }
                 }
             }
             if (n_seeds == 0) break :blk_prox;
 
-            // Seed doc_ids -> file paths.
-            var seed_paths = std.StringHashMap(void).init(ta);
+            // Structure-aware node initialization (cf. HippoRAG / MemGraphRAG):
+            // weight each seed FILE by its BM25 strength relative to the top seed,
+            // so a stronger match spreads more activation than a weaker one.
+            var max_seed: f32 = 0;
+            for (0..n_seeds) |i| max_seed = @max(max_seed, seed_score[i]);
+            if (max_seed <= 0) break :blk_prox;
+            var seed_weight = std.StringHashMap(f32).init(ta);
             for (0..n_seeds) |i| {
                 const did = seed_id[i];
-                if (did < self.word_index.id_to_path.items.len) {
-                    const p = self.word_index.id_to_path.items[did];
-                    if (p.len > 0) _ = seed_paths.getOrPut(p) catch {};
-                }
+                if (did >= self.word_index.id_to_path.items.len) continue;
+                const p = self.word_index.id_to_path.items[did];
+                if (p.len == 0) continue;
+                const wv = seed_score[i] / max_seed;
+                const gop = seed_weight.getOrPut(p) catch continue;
+                if (!gop.found_existing or gop.value_ptr.* < wv) gop.value_ptr.* = wv;
             }
-            if (seed_paths.count() == 0) break :blk_prox;
+            if (seed_weight.count() == 0) break :blk_prox;
 
             // Undirected adjacency over call-graph nodes — proximity is symmetric:
             // a caller of a matched symbol is as "near" as a callee.
@@ -3387,37 +3402,48 @@ pub const Explorer = struct {
                 undirected[ed.to].append(ta, ed.from) catch {};
             }
 
-            // Multi-source BFS from every node belonging to a seed file.
+            // Weighted spreading activation (arXiv:2512.15922): each seed node is
+            // activated by its file's weight; activation propagates to neighbors
+            // scaled by `decay` per hop, capped at MAX_HOPS, each node keeping the
+            // strongest activation it receives.
             const MAX_HOPS: u32 = 3;
-            const dist = ta.alloc(u32, n) catch break :blk_prox;
-            for (dist) |*d| d.* = std.math.maxInt(u32);
+            const decay: f32 = 0.5;
+            const act = ta.alloc(f32, n) catch break :blk_prox;
+            for (act) |*a| a.* = 0;
+            const hops = ta.alloc(u32, n) catch break :blk_prox;
+            for (hops) |*h| h.* = std.math.maxInt(u32);
+            const is_seed = ta.alloc(bool, n) catch break :blk_prox;
+            for (is_seed) |*s| s.* = false;
             var queue: std.ArrayList(u32) = .empty;
             for (cg.node_path, 0..) |np, nid| {
-                if (seed_paths.contains(np)) {
-                    dist[nid] = 0;
+                const wv = seed_weight.get(np) orelse continue;
+                if (wv > act[nid]) {
+                    act[nid] = wv;
+                    hops[nid] = 0;
+                    is_seed[nid] = true;
                     queue.append(ta, @intCast(nid)) catch {};
                 }
             }
             var head: usize = 0;
             while (head < queue.items.len) : (head += 1) {
                 const u = queue.items[head];
-                if (dist[u] >= MAX_HOPS) continue;
+                if (hops[u] >= MAX_HOPS) continue;
+                const child_act = act[u] * decay;
                 for (undirected[u].items) |v| {
-                    if (dist[v] > dist[u] + 1) {
-                        dist[v] = dist[u] + 1;
+                    if (child_act > act[v]) {
+                        act[v] = child_act;
+                        hops[v] = hops[u] + 1;
                         queue.append(ta, v) catch {};
                     }
                 }
             }
 
-            // Reduce node distances to a per-file minimum. Skip seeds (dist 0):
-            // they already rank by their own strong BM25 score; the point is to
-            // lift their structural neighbors.
+            // Reduce to per-file activation, excluding the seed files (they already
+            // rank by their own BM25; the point is to lift their neighbors).
             for (cg.node_path, 0..) |np, nid| {
-                const d = dist[nid];
-                if (d == 0 or d == std.math.maxInt(u32)) continue;
+                if (is_seed[nid] or act[nid] <= 0) continue;
                 const gop = proximity.getOrPut(np) catch continue;
-                if (!gop.found_existing or gop.value_ptr.* > d) gop.value_ptr.* = d;
+                if (!gop.found_existing or gop.value_ptr.* < act[nid]) gop.value_ptr.* = act[nid];
             }
         }
 
