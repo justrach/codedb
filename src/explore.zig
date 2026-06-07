@@ -3349,27 +3349,36 @@ pub const Explorer = struct {
             const SEED_COUNT = 3;
             var seed_id: [SEED_COUNT]u32 = undefined;
             var seed_score: [SEED_COUNT]f32 = undefined;
+            var seed_path: [SEED_COUNT][]const u8 = undefined;
             var n_seeds: usize = 0;
+            const id2p = self.word_index.id_to_path.items;
             var sit = per_doc.iterator();
             while (sit.next()) |e| {
                 const did = e.key_ptr.*;
                 const sc = e.value_ptr.score;
+                const dp = if (did < id2p.len) id2p[did] else "";
                 if (n_seeds < SEED_COUNT) {
                     seed_id[n_seeds] = did;
                     seed_score[n_seeds] = sc;
+                    seed_path[n_seeds] = dp;
                     n_seeds += 1;
                 } else {
-                    // Weakest current seed = lowest score; on a tie, the highest
-                    // doc_id. Replace it if the new doc wins under (score desc,
-                    // doc_id asc) — a total order, so the top-N is deterministic.
+                    // Weakest current seed = lowest score; on a tie, the
+                    // lexicographically-greatest PATH. Replace it if the new doc
+                    // wins under (score desc, path asc). Tiebreak by path — not
+                    // doc_id — so the seed set is stable even across a re-index
+                    // (which reassigns doc_ids); a total order => deterministic.
                     var w: usize = 0;
                     for (1..SEED_COUNT) |i| {
                         if (seed_score[i] < seed_score[w] or
-                            (seed_score[i] == seed_score[w] and seed_id[i] > seed_id[w])) w = i;
+                            (seed_score[i] == seed_score[w] and std.mem.order(u8, seed_path[i], seed_path[w]) == .gt)) w = i;
                     }
-                    if (sc > seed_score[w] or (sc == seed_score[w] and did < seed_id[w])) {
+                    if (sc > seed_score[w] or
+                        (sc == seed_score[w] and std.mem.order(u8, dp, seed_path[w]) == .lt))
+                    {
                         seed_id[w] = did;
                         seed_score[w] = sc;
+                        seed_path[w] = dp;
                     }
                 }
             }
