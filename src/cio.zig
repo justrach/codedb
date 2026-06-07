@@ -216,6 +216,33 @@ pub fn posixGetenv(name: []const u8) ?[]const u8 {
     return std.mem.span(ptr);
 }
 
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+
+/// Set an environment variable (libc setenv), visible to subsequent posixGetenv
+/// reads in this process. Names ≥256 / values ≥4096 bytes are ignored. Used by
+/// CLI opt-in switches that flip in-process policy — e.g. `--allow-temp` sets
+/// CODEDB_ALLOW_TEMP (#538) — and by tests.
+pub fn posixSetenv(name: []const u8, value: []const u8) void {
+    var nbuf: [256]u8 = undefined;
+    var vbuf: [4096]u8 = undefined;
+    if (name.len >= nbuf.len or value.len >= vbuf.len) return;
+    @memcpy(nbuf[0..name.len], name);
+    nbuf[name.len] = 0;
+    @memcpy(vbuf[0..value.len], value);
+    vbuf[value.len] = 0;
+    _ = setenv(@ptrCast(&nbuf), @ptrCast(&vbuf), 1);
+}
+
+/// Remove an environment variable (libc unsetenv).
+pub fn posixUnsetenv(name: []const u8) void {
+    var nbuf: [256]u8 = undefined;
+    if (name.len >= nbuf.len) return;
+    @memcpy(nbuf[0..name.len], name);
+    nbuf[name.len] = 0;
+    _ = unsetenv(@ptrCast(&nbuf));
+}
+
 /// Read one line from stdin (fd 0) into `buf`, trimming trailing CR/LF. Returns
 /// null on EOF/error. For interactive CLI prompts only — NEVER call this in the
 /// MCP server path, where stdin is the JSON-RPC transport.

@@ -5,12 +5,24 @@ fn isExactOrChild(path: []const u8, prefix: []const u8) bool {
     if (!std.mem.startsWith(u8, path, prefix)) return false;
     return path.len == prefix.len or path[prefix.len] == '/';
 }
+/// Temp-root indexing is an opt-in escape hatch for CI / SWE-bench harnesses
+/// that clone throwaway checkouts under /tmp. Off by default (footgun guard,
+/// #80/#346). Enabled by CODEDB_ALLOW_TEMP=1; the `--allow-temp` CLI flag sets
+/// that env so both opt-ins share one switch. See #538.
+pub fn tempIndexingAllowed() bool {
+    const v = cio.posixGetenv("CODEDB_ALLOW_TEMP") orelse return false;
+    return v.len > 0 and !std.mem.eql(u8, v, "0");
+}
 
 pub fn isIndexableRoot(path: []const u8) bool {
     if (path.len == 0) return false;
     if (std.mem.eql(u8, path, "/")) return false;
-    if (isExactOrChild(path, "/private/tmp")) return false;
-    if (isExactOrChild(path, "/tmp")) return false;
+    // /tmp and /private/tmp are refused by default (footgun guard) but allowed
+    // when temp indexing is opted in (#538) — CI/SWE-bench harnesses clone into /tmp.
+    if (!tempIndexingAllowed()) {
+        if (isExactOrChild(path, "/private/tmp")) return false;
+        if (isExactOrChild(path, "/tmp")) return false;
+    }
 
     const system_prefixes = [_][]const u8{
         "/Applications",

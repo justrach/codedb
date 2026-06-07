@@ -1020,7 +1020,7 @@ test "issue-356-p2: codedb_symbol missing name surfaces received keys" {
     defer out.deinit(testing.allocator);
     bench_ctx.runDispatch(io, testing.allocator, .codedb_symbol, &parsed.value.object, &out, &store, &explorer, &agents);
 
-    try testing.expect(std.mem.indexOf(u8, out.items, "missing 'name'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "need name, prefix, pattern, or kind") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "received keys") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "symbol") != null);
 }

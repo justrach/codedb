@@ -804,6 +804,21 @@ fn insertRestoredFile(
     }
 
     try rebuildDepsFromOutline(explorer, path, &restored_outline, allocator);
+
+    // Mirror commitParsedFileOwnedOutline (explore.zig:872): symbol_index is built
+    // eagerly on every ingest and has NO lazy rebuild trigger. resolveCallees reads
+    // it without a fallback (#524 perf note), so restored files must populate it
+    // here or call-graph edges into them are lost after a snapshot load. had_prior
+    // is false: insertRestoredFile errors above if the path already exists.
+    explorer.rebuildSymbolIndexFor(path, &restored_outline, false);
+
+    // Restored files are absent from word_index and trigram_index at load time
+    // (both are rebuilt lazily/incrementally). Register the path in
+    // skip_trigram_files so searchContent's Tier 3 scans its content; without
+    // this the file falls out of every search tier the moment the trigram index
+    // is non-empty (Tier 5's full scan is then ruled out). Mirrors the
+    // outline-only branch of commitParsedFileOwnedOutline. See #507 / #537.
+    try explorer.skip_trigram_files.put(path, {});
 }
 
 // Below this many files the per-file freshness stats run on the loading thread:

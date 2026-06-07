@@ -711,13 +711,16 @@ test "issue-151: Go func and type definitions" {
     defer outline.deinit();
     var func_count: usize = 0;
     var struct_count: usize = 0;
+    var interface_count: usize = 0;
     for (outline.symbols.items) |sym| {
         if (sym.kind == .function) func_count += 1;
         if (sym.kind == .struct_def) struct_count += 1;
+        if (sym.kind == .interface_def) interface_count += 1;
     }
     try testing.expect(func_count == 2); // main + Validate
-    try testing.expect(struct_count == 2); // Config + Handler
     try testing.expect(outline.imports.items.len == 1); // "fmt"
+    try testing.expect(struct_count == 1); // Config
+    try testing.expect(interface_count == 1); // Handler
 }
 
 

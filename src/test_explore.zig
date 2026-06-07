@@ -76,6 +76,59 @@ test "codegraph: buildEdges resolves callees + inDegree centrality" {
     try testing.expectApproxEqAbs(@as(f32, 0.0), cent[0], 0.001);
     try testing.expectApproxEqAbs(@as(f32, 2.0), cent[1], 0.001);
 }
+
+test "codegraph: pageRank ranks highly-called nodes above leaves" {
+    const funcs = [_]codegraph.FuncInput{
+        .{ .id = 0, .body = "B(); helper();" },
+        .{ .id = 1, .body = "if (x) return;" },
+        .{ .id = 2, .body = "return B();" },
+    };
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    const b_ids = [_]codegraph.NodeId{1};
+    const helper_ids = [_]codegraph.NodeId{2};
+    try resolve.put("B", &b_ids);
+    try resolve.put("helper", &helper_ids);
+
+    var edges = try codegraph.buildEdges(testing.allocator, &funcs, &resolve, false);
+    defer edges.deinit(testing.allocator);
+
+    const pr = try codegraph.pageRank(testing.allocator, edges.items, 3, 0.85, 20);
+    defer testing.allocator.free(pr);
+
+    try testing.expect(pr[1] > pr[0]);
+    try testing.expect(pr[1] > pr[2]);
+}
+
+test "codegraph: shortestCallPath finds A→helper→B chain" {
+    const funcs = [_]codegraph.FuncInput{
+        .{ .id = 0, .body = "B(); helper();" },
+        .{ .id = 1, .body = "if (x) return;" },
+        .{ .id = 2, .body = "return B();" },
+    };
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    const b_ids = [_]codegraph.NodeId{1};
+    const helper_ids = [_]codegraph.NodeId{2};
+    try resolve.put("B", &b_ids);
+    try resolve.put("helper", &helper_ids);
+
+    var edges = try codegraph.buildEdges(testing.allocator, &funcs, &resolve, false);
+    defer edges.deinit(testing.allocator);
+
+    const adj = try codegraph.buildAdjacency(testing.allocator, edges.items, 3);
+    defer codegraph.freeAdjacency(testing.allocator, adj);
+
+    const from = [_]codegraph.NodeId{0};
+    const to = [_]codegraph.NodeId{1};
+    const path = (try codegraph.shortestCallPath(testing.allocator, adj, 3, &from, &to, 0)) orelse return error.TestExpectedEqual;
+    defer testing.allocator.free(path);
+
+    try testing.expectEqual(@as(usize, 2), path.len);
+    try testing.expectEqual(@as(codegraph.NodeId, 0), path[0]);
+    try testing.expectEqual(@as(codegraph.NodeId, 1), path[1]);
+}
+
 const isCommentOrBlank = explore.isCommentOrBlank;
 const Language = explore.Language;
 const SymbolKind = explore.SymbolKind;
@@ -2109,4 +2162,75 @@ test "issue-528: searchContentRegex surfaces invalid regex as error" {
     try explorer_inst.indexFile("only.zig", "const x = 42;");
     // #10: an unparseable pattern used to be swallowed and reported as "no results".
     try testing.expectError(error.InvalidRegex, explorer_inst.searchContentRegex("[", testing.allocator, 50));
+}
+
+test "issue-531: searchSymbols prefix match" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+    try explorer_inst.indexFile("a.zig", "pub fn parse_foo() void {}\npub fn parse_bar() void {}\npub fn other() void {}");
+
+    const results = try explorer_inst.searchSymbols(.{ .prefix = "parse_", .max_results = 10 }, testing.allocator);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.symbol.name);
+            if (r.symbol.detail) |d| testing.allocator.free(d);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len == 2);
+    for (results) |r| try testing.expect(std.mem.startsWith(u8, r.symbol.name, "parse_"));
+}
+
+test "issue-531: searchSymbols pattern and kind filter" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+    try explorer_inst.indexFile("svc.go",
+        \\type UserManager struct {}
+        \\type OrderManager struct {}
+        \\func main() {}
+    );
+
+    const pattern_results = try explorer_inst.searchSymbols(.{ .pattern = "*Manager", .max_results = 10 }, testing.allocator);
+    defer {
+        for (pattern_results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.symbol.name);
+            if (r.symbol.detail) |d| testing.allocator.free(d);
+        }
+        testing.allocator.free(pattern_results);
+    }
+    try testing.expect(pattern_results.len == 2);
+    try explorer_inst.indexFile("iface.go", "type Reader interface {}");
+
+    const kind = Explorer.parseSymbolKind("interface") orelse return error.TestUnexpectedResult;
+    const iface_results = try explorer_inst.searchSymbols(.{ .kind = kind, .max_results = 10 }, testing.allocator);
+    defer {
+        for (iface_results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.symbol.name);
+            if (r.symbol.detail) |d| testing.allocator.free(d);
+        }
+        testing.allocator.free(iface_results);
+    }
+    try testing.expect(iface_results.len >= 1);
+    try testing.expect(iface_results[0].symbol.kind == .interface_def);
+}
+
+test "issue-531: searchSymbols fuzzy match" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+    try explorer_inst.indexFile("x.zig", "pub fn ensureCallGraph() void {}");
+
+    const results = try explorer_inst.searchSymbols(.{ .name = "ensureCalGraph", .fuzzy = true, .max_results = 5 }, testing.allocator);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.symbol.name);
+            if (r.symbol.detail) |d| testing.allocator.free(d);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len >= 1);
+    try testing.expectEqualStrings("ensureCallGraph", results[0].symbol.name);
 }

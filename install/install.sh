@@ -299,6 +299,15 @@ def merge_hook(event, new_entry):
 merge_hook("PreToolUse", {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-block-legacy.sh"}]})
 merge_hook("SessionStart", {"matcher": "", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-warmup.sh"}]})
 
+# Auto-allow codedb's own MCP tools so callers aren't prompted for every
+# codedb_* call. Purely additive — we add only the codedb-scoped rule and
+# never touch other servers' permissions. The "mcp__codedb__*" form (literal
+# server prefix + tool glob) is the syntax Claude Code's permission validator
+# accepts; a bare "mcp__*" is rejected and silently skipped.
+perms = data.setdefault("permissions", {})
+allow = perms.setdefault("allow", [])
+if isinstance(allow, list) and "mcp__codedb__*" not in allow:
+    allow.append("mcp__codedb__*")
 with open(settings_path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")

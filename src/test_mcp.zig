@@ -1937,6 +1937,13 @@ test "issue-528: parseDepsArgs flags before/after path, rejects unknown + bad de
     try testing.expectError(error.MissingPath, mcp_mod.parseDepsArgs(&[_][]const u8{"deps"}, 1));
 }
 
+test "issue-528: hasExtraCliArgs rejects unused positional args for arity-zero commands" {
+    try testing.expect(!main_mod.hasExtraCliArgs(&[_][]const u8{ "codedb", "tree" }, 2));
+    try testing.expect(main_mod.hasExtraCliArgs(&[_][]const u8{ "codedb", "tree", "typo" }, 2));
+    try testing.expect(!main_mod.hasExtraCliArgs(&[_][]const u8{ "codedb", "status" }, 2));
+    try testing.expect(main_mod.hasExtraCliArgs(&[_][]const u8{ "codedb", "hot", "extra" }, 2));
+}
+
 test "issue-528: finishCli maps error-prefixed handler output to exit 1" {
     const alloc = testing.allocator;
     // #6: handler emitted an error → bridge now returns exit 1
@@ -1955,4 +1962,23 @@ test "issue-528: finishCli maps error-prefixed handler output to exit 1" {
     var empty_out: std.ArrayList(u8) = .empty;
     defer empty_out.deinit(alloc);
     try testing.expectEqual(@as(u8, 0), mcp_mod.finishCli(&empty_out, 0));
+}
+
+test "issue-538: temp roots are indexable only when CODEDB_ALLOW_TEMP opts in" {
+    // Default (footgun guard, #80/#346): temp roots are refused so codedb never
+    // indexes a scratch dir by accident.
+    try testing.expect(!root_policy.isIndexableRoot("/tmp/cdbtest"));
+    try testing.expect(!root_policy.isIndexableRoot("/private/tmp/cdbtest"));
+
+    // Opt-in escape hatch for SWE-bench / CI harnesses that clone throwaway
+    // checkouts under /tmp (issue #538).
+    cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
+    defer cio.posixUnsetenv("CODEDB_ALLOW_TEMP");
+    try testing.expect(root_policy.isIndexableRoot("/tmp/cdbtest"));
+    try testing.expect(root_policy.isIndexableRoot("/private/tmp/cdbtest/src"));
+
+    // The opt-in must NOT widen the guard to real system roots.
+    try testing.expect(!root_policy.isIndexableRoot("/etc"));
+    try testing.expect(!root_policy.isIndexableRoot("/usr/local/bin"));
+    try testing.expect(!root_policy.isIndexableRoot("/"));
 }

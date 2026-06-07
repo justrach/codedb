@@ -163,6 +163,12 @@ fn mainInner() void {
 fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, root: []const u8, cmd: []const u8, args: []const []const u8, cmd_args_start: usize, out: *Out, s: sty.Style) u8 {
     const use_color = s.reset.len != 0;
     if (std.mem.eql(u8, cmd, "tree")) {
+        if (hasExtraCliArgs(args, cmd_args_start)) {
+            out.p("{s}\xe2\x9c\x97{s} unexpected extra argument: {s}{s}{s}  (usage: codedb [root] {s}tree{s})\n", .{
+                s.red, s.reset, s.bold, args[cmd_args_start], s.reset, s.cyan, s.reset,
+            });
+            return 1;
+        }
         const t0 = cio.nanoTimestamp();
         const tree = explorer.getTree(allocator, use_color) catch return 1;
         defer allocator.free(tree);
@@ -512,6 +518,12 @@ fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store
             }
         }
     } else if (std.mem.eql(u8, cmd, "hot")) {
+        if (hasExtraCliArgs(args, cmd_args_start)) {
+            out.p("{s}\xe2\x9c\x97{s} unexpected extra argument: {s}{s}{s}  (usage: codedb [root] {s}hot{s})\n", .{
+                s.red, s.reset, s.bold, args[cmd_args_start], s.reset, s.cyan, s.reset,
+            });
+            return 1;
+        }
         const t0 = cio.nanoTimestamp();
         const hot = explorer.getHotFiles(store, allocator, 10) catch return 1;
         defer {
@@ -535,6 +547,12 @@ fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store
     } else if (std.mem.eql(u8, cmd, "status")) {
         // #528 item 1: read-only CLI status mirroring codedb_status, so
         // `codedb status` works without going through the MCP surface.
+        if (hasExtraCliArgs(args, cmd_args_start)) {
+            out.p("{s}\xe2\x9c\x97{s} unexpected extra argument: {s}{s}{s}  (usage: codedb [root] {s}status{s})\n", .{
+                s.red, s.reset, s.bold, args[cmd_args_start], s.reset, s.cyan, s.reset,
+            });
+            return 1;
+        }
         const t0 = cio.nanoTimestamp();
         store.mu.lock();
         const file_count = store.files.count();
@@ -659,7 +677,7 @@ fn cliWriteFull(fd: c_int, data: []const u8) bool {
 /// will proxy. Everything else (serve, mcp, snapshot, index, ...) is handled
 /// only by the cold path.
 fn cliIsQueryCmd(cmd: []const u8) bool {
-    const cmds = [_][]const u8{ "tree", "outline", "find", "search", "word", "read", "hot", "symbol", "callers", "deps", "glob", "ls", "file", "context" };
+    const cmds = [_][]const u8{ "tree", "outline", "find", "search", "word", "read", "hot", "status", "symbol", "callers", "callpath", "deps", "glob", "ls", "file", "context" };
     for (cmds) |c| {
         if (std.mem.eql(u8, cmd, c)) return true;
     }
@@ -924,6 +942,13 @@ fn mainImpl() !void {
                 // instead of only honoring it after `mcp`. Telemetry.init also
                 // honors CODEDB_NO_TELEMETRY.
                 no_telemetry = true;
+                continue;
+            } else if (std.mem.eql(u8, a, "--allow-temp")) {
+                // #538: opt-in to indexing temp roots (/tmp, /private/tmp). Sets
+                // CODEDB_ALLOW_TEMP so root_policy.tempIndexingAllowed (and any
+                // daemon this CLI spawns) honors it; the env var alone works too —
+                // the flag just flips it. Lets SWE-bench/CI harnesses index /tmp.
+                cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
                 continue;
             }
             try filtered.append(allocator, a);
@@ -1301,12 +1326,11 @@ fn mainImpl() !void {
             }
         } // end else (no snapshot)
     }
-
     if (std.mem.eql(u8, cmd, "tree") or std.mem.eql(u8, cmd, "outline") or std.mem.eql(u8, cmd, "find") or
         std.mem.eql(u8, cmd, "search") or std.mem.eql(u8, cmd, "word") or std.mem.eql(u8, cmd, "read") or
         std.mem.eql(u8, cmd, "hot") or std.mem.eql(u8, cmd, "symbol") or std.mem.eql(u8, cmd, "callers") or
-        std.mem.eql(u8, cmd, "deps") or std.mem.eql(u8, cmd, "glob") or std.mem.eql(u8, cmd, "ls") or
-        std.mem.eql(u8, cmd, "file") or std.mem.eql(u8, cmd, "context") or
+        std.mem.eql(u8, cmd, "callpath") or std.mem.eql(u8, cmd, "deps") or std.mem.eql(u8, cmd, "glob") or
+        std.mem.eql(u8, cmd, "ls") or std.mem.eql(u8, cmd, "file") or std.mem.eql(u8, cmd, "context") or
         std.mem.eql(u8, cmd, "status"))
     {
         const code = runQuery(io, allocator, &explorer, &store, abs_root, cmd, args, cmd_args_start, &out, s);
@@ -1748,6 +1772,13 @@ pub const LineRange = struct { start: u32, end: u32 };
 
 pub const LineRangeError = error{ MissingDash, BadStart, BadEnd, ZeroLine, Reversed };
 
+/// True when positional args remain after the command name. Used by arity-zero
+/// CLI commands (tree/hot/status) so typos like `codedb tree typo` exit 1
+/// instead of silently ignoring the extra token. See issue #528 (item 13).
+pub fn hasExtraCliArgs(args: []const []const u8, cmd_args_start: usize) bool {
+    return args.len > cmd_args_start;
+}
+
 /// Parse a `FROM-TO` line-range spec (the argument to `read -L`). `TO` may be
 /// `$` or `end` for end-of-file. Rejects malformed, non-numeric, zero-based,
 /// and reversed ranges so the CLI surfaces a clear error instead of silently
@@ -1862,7 +1893,7 @@ pub fn isValidMcpFlag(arg: []const u8) bool {
 }
 
 fn isCommand(arg: []const u8) bool {
-    const commands = [_][]const u8{ "tree", "outline", "find", "search", "word", "read", "hot", "status", "symbol", "callers", "deps", "glob", "ls", "file", "context", "snapshot", "serve", "mcp", "update", "nuke", "cli-daemon" };
+    const commands = [_][]const u8{ "tree", "outline", "find", "search", "word", "read", "hot", "status", "symbol", "callers", "callpath", "deps", "glob", "ls", "file", "context", "snapshot", "serve", "mcp", "update", "nuke", "cli-daemon" };
     for (commands) |c| {
         if (std.mem.eql(u8, arg, c)) return true;
     }

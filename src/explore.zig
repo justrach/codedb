@@ -599,6 +599,30 @@ fn matchGlobRec(pattern: []const u8, gi_start: usize, path: []const u8, ti_start
     return ti == path.len;
 }
 
+/// Resolved call graph retained for path queries (#531). Node metadata slices
+/// borrow stable outline/symbol strings; edges and adjacency are owned.
+pub const CallGraph = struct {
+    edges: []codegraph.Edge,
+    adj: []std.ArrayList(codegraph.NodeId),
+    node_path: []const []const u8,
+    node_name: []const []const u8,
+    node_line: []const u32,
+
+    pub fn deinit(self: *CallGraph, allocator: std.mem.Allocator) void {
+        allocator.free(self.edges);
+        codegraph.freeAdjacency(allocator, self.adj);
+        allocator.free(self.node_path);
+        allocator.free(self.node_name);
+        allocator.free(self.node_line);
+    }
+};
+
+pub const CallPathStep = struct {
+    path: []const u8,
+    name: []const u8,
+    line: u32,
+};
+
 pub const Explorer = struct {
     outlines: std.StringHashMap(FileOutline),
     dep_graph: DependencyGraph,
@@ -619,11 +643,15 @@ pub const Explorer = struct {
     /// merge them after the commit loop (see watcher.initialScanWithWorkerCount).
     defer_word_index: bool = false,
     mu: cio.RwLock = .{},
-    /// Per-file "call centrality" (summed weighted in-degree of the file's
-    /// functions in the resolved call graph). Built lazily, used as an additive
+    /// Per-file call-graph centrality (PageRank by default, or in-degree when
+    /// CODEDB_IN_DEGREE_CENTRALITY is set). Built lazily, used as an additive
     /// ranking boost in searchContentRanked. Null until built; guarded by
     /// centrality_build_mu. Keys are borrowed `outlines` keys (stable).
     call_centrality: ?std.StringHashMap(f32) = null,
+    /// Retained resolved call graph (edges + adjacency + per-node metadata) for
+    /// codedb_callpath. Built lazily alongside centrality; may be rebuilt after a
+    /// snapshot load that restored centrality without edges.
+    call_graph: ?CallGraph = null,
     centrality_build_mu: cio.Mutex = .{},
     root_dir: ?std.Io.Dir = null,
     io: ?std.Io = null,
@@ -691,6 +719,7 @@ pub const Explorer = struct {
 
         self.contents.deinit();
         if (self.call_centrality) |*c| c.deinit();
+        if (self.call_graph) |*cg| cg.deinit(self.allocator);
 
         self.word_index.deinit();
         self.trigram_index.deinit();
@@ -1864,6 +1893,154 @@ pub const Explorer = struct {
         return result_list.toOwnedSlice(allocator);
     }
 
+    pub const SymbolSearchSpec = struct {
+        name: ?[]const u8 = null,
+        prefix: ?[]const u8 = null,
+        pattern: ?[]const u8 = null,
+        kind: ?SymbolKind = null,
+        fuzzy: bool = false,
+        max_results: usize = 50,
+    };
+
+    pub const ScoredSymbolResult = struct {
+        path: []const u8,
+        symbol: Symbol,
+        score: f32,
+    };
+
+    pub fn parseSymbolKind(s: []const u8) ?SymbolKind {
+        if (std.mem.eql(u8, s, "interface")) return .interface_def;
+        if (std.mem.eql(u8, s, "struct")) return .struct_def;
+        if (std.mem.eql(u8, s, "enum")) return .enum_def;
+        if (std.mem.eql(u8, s, "method")) return .method;
+        if (std.mem.eql(u8, s, "function")) return .function;
+        if (std.mem.eql(u8, s, "class")) return .class_def;
+        return std.meta.stringToEnum(SymbolKind, s);
+    }
+
+    pub fn skipTrigramFileCount(self: *Explorer) usize {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        return self.skip_trigram_files.count();
+    }
+
+    fn symbolMatchScore(spec: SymbolSearchSpec, name: []const u8) ?f32 {
+        const has_name = spec.name != null or spec.prefix != null or spec.pattern != null or spec.fuzzy;
+        if (!has_name) return 1.0;
+        if (spec.name) |n| {
+            if (spec.fuzzy) return fuzzyScore(n, name);
+            if (!std.mem.eql(u8, name, n)) return null;
+            return 1.0;
+        }
+        if (spec.prefix) |p| {
+            if (!std.mem.startsWith(u8, name, p)) return null;
+            return 0.95;
+        }
+        if (spec.pattern) |pat| {
+            if (!matchGlob(pat, name)) return null;
+            return 0.9;
+        }
+        return null;
+    }
+
+    pub fn searchSymbols(self: *Explorer, spec: SymbolSearchSpec, allocator: std.mem.Allocator) ![]ScoredSymbolResult {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        var list: std.ArrayList(ScoredSymbolResult) = .empty;
+        errdefer {
+            for (list.items) |r| {
+                allocator.free(r.path);
+                allocator.free(r.symbol.name);
+                if (r.symbol.detail) |d| allocator.free(d);
+            }
+            list.deinit(allocator);
+        }
+
+        const Dedup = struct {
+            fn contains(items: []const ScoredSymbolResult, path: []const u8, line: u32) bool {
+                for (items) |r| {
+                    if (r.symbol.line_start == line and std.mem.eql(u8, r.path, path)) return true;
+                }
+                return false;
+            }
+        };
+
+        const appendOne = struct {
+            fn call(
+                list_ptr: *std.ArrayList(ScoredSymbolResult),
+                alloc: std.mem.Allocator,
+                path: []const u8,
+                sym: Symbol,
+                score: f32,
+            ) !void {
+                if (Dedup.contains(list_ptr.items, path, sym.line_start)) return;
+                try list_ptr.append(alloc, .{
+                    .path = try alloc.dupe(u8, path),
+                    .symbol = .{
+                        .name = try alloc.dupe(u8, sym.name),
+                        .kind = sym.kind,
+                        .line_start = sym.line_start,
+                        .line_end = sym.line_end,
+                        .detail = if (sym.detail) |d| try alloc.dupe(u8, d) else null,
+                    },
+                    .score = score,
+                });
+            }
+        }.call;
+
+        var sym_iter = self.symbol_index.iterator();
+        while (sym_iter.next()) |entry| {
+            const sym_name = entry.key_ptr.*;
+            const score = symbolMatchScore(spec, sym_name) orelse continue;
+            for (entry.value_ptr.items) |loc| {
+                if (spec.kind) |k| if (loc.kind != k) continue;
+                var detail: ?[]const u8 = null;
+                if (self.outlines.getPtr(loc.path)) |outline| {
+                    for (outline.symbols.items) |sym| {
+                        if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, sym_name)) {
+                            detail = sym.detail;
+                            break;
+                        }
+                    }
+                }
+                try appendOne(&list, allocator, loc.path, .{
+                    .name = sym_name,
+                    .kind = loc.kind,
+                    .line_start = loc.line_start,
+                    .line_end = loc.line_end,
+                    .detail = detail,
+                }, score);
+                if (list.items.len >= spec.max_results) break;
+            }
+            if (list.items.len >= spec.max_results) break;
+        }
+
+        var ol_iter = self.outlines.iterator();
+        while (ol_iter.next()) |entry| {
+            for (entry.value_ptr.symbols.items) |sym| {
+                const score = symbolMatchScore(spec, sym.name) orelse continue;
+                if (spec.kind) |k| if (sym.kind != k) continue;
+                if (Dedup.contains(list.items, entry.key_ptr.*, sym.line_start)) continue;
+                try appendOne(&list, allocator, entry.key_ptr.*, sym, score);
+                if (list.items.len >= spec.max_results) break;
+            }
+            if (list.items.len >= spec.max_results) break;
+        }
+
+        const SortCtx = struct {
+            pub fn lessThan(_: void, a: ScoredSymbolResult, b: ScoredSymbolResult) bool {
+                if (a.score != b.score) return a.score > b.score;
+                const name_cmp = std.mem.order(u8, a.symbol.name, b.symbol.name);
+                if (name_cmp != .eq) return name_cmp == .lt;
+                return std.mem.order(u8, a.path, b.path) == .lt;
+            }
+        };
+        std.mem.sort(ScoredSymbolResult, list.items, {}, SortCtx.lessThan);
+        if (list.items.len > spec.max_results) list.shrinkRetainingCapacity(spec.max_results);
+        return list.toOwnedSlice(allocator);
+    }
+
     // Resolve an exact symbol name to its definition sites for codedb_find's
     // symbol fast-path. Uses findAllSymbols — the COMPLETE lookup including the
     // outline safety scan, because symbol_index alone is incomplete for some
@@ -2095,6 +2272,21 @@ pub const Explorer = struct {
     }
 
     pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const SearchResult {
+        // #539: ensure the word index — Tier 0's recall source — is populated.
+        // After a snapshot fast-load it is built lazily (see issue-220); without
+        // this, searchContent's recall collapses to the trigram/skip_trigram tiers
+        // and a relevant restored file can be crowded out of max_results by
+        // less-relevant hot files. Rebuild here so the complete inverted index
+        // feeds Tier 0's ranked candidate set (mirrors searchWord). Runs at most
+        // once per load — rebuildWordIndex sets word_index_complete = true. Must
+        // precede the shared lock below: rebuildWordIndex takes the exclusive lock.
+        if (max_results > 0) {
+            self.mu.lockShared();
+            const needs_rebuild = !self.word_index_complete and
+                (self.contents.len() > 0 or (self.io != null and self.root_dir != null));
+            self.mu.unlockShared();
+            if (needs_rebuild) try self.rebuildWordIndex();
+        }
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
@@ -2759,46 +2951,29 @@ pub const Explorer = struct {
         self.ensureCallCentrality(allocator);
     }
 
-    /// Build `call_centrality` once (idempotent, mutex-guarded). Must be called
-    /// while holding at least a shared lock on `mu` (it reads outlines/contents
-    /// via readContentForSearch, which assumes the lock is held). The resolved
-    /// call graph: for each function body, extract call sites (codegraph), resolve
-    /// each callee name through the function symbol table, and accumulate weighted
-    /// in-degree per callee; aggregate to per-file scores.
-    fn ensureCallCentrality(self: *Explorer, allocator: std.mem.Allocator) void {
-        if (self.call_centrality != null) return;
+    /// Build the resolved call graph once (idempotent, mutex-guarded). Must be
+    /// called while holding at least a shared lock on `mu`. Retains edges for
+    /// codedb_callpath and computes per-file centrality (PageRank by default).
+    fn ensureCallGraph(self: *Explorer, allocator: std.mem.Allocator) void {
+        if (self.call_graph != null) return;
         self.centrality_build_mu.lock();
         defer self.centrality_build_mu.unlock();
-        if (self.call_centrality != null) return; // built while we waited
+        if (self.call_graph != null) return;
 
         var arena_state = std.heap.ArenaAllocator.init(allocator);
         defer arena_state.deinit();
         const a = arena_state.allocator();
 
-        // Pass 1: node id per function/method symbol + name -> [node ids] resolver.
         var node_path: std.ArrayList([]const u8) = .empty;
+        var node_name: std.ArrayList([]const u8) = .empty;
+        var node_line: std.ArrayList(u32) = .empty;
+        var funcs: std.ArrayList(codegraph.FuncInput) = .empty;
         var name_to_ids = std.StringHashMap(std.ArrayList(codegraph.NodeId)).init(a);
+
         var it = self.outlines.iterator();
         while (it.next()) |entry| {
             const path = entry.key_ptr.*;
-            for (entry.value_ptr.symbols.items) |sym| {
-                if (sym.kind != .function and sym.kind != .method) continue;
-                const id: codegraph.NodeId = @intCast(node_path.items.len);
-                node_path.append(a, path) catch return;
-                const gop = name_to_ids.getOrPut(sym.name) catch return;
-                if (!gop.found_existing) gop.value_ptr.* = .empty;
-                gop.value_ptr.append(a, id) catch return;
-            }
-        }
-        if (node_path.items.len == 0) return;
-
-        const in_degree = a.alloc(f32, node_path.items.len) catch return;
-        @memset(in_degree, 0);
-
-        // Pass 2: per file, slice each function body, extract + resolve call sites.
-        var it2 = self.outlines.iterator();
-        while (it2.next()) |entry| {
-            const ref = self.readContentForSearch(entry.key_ptr.*, a) orelse continue;
+            const ref = self.readContentForSearch(path, a) orelse continue;
             defer ref.deinit();
             const content = ref.data;
             var offs: std.ArrayList(usize) = .empty;
@@ -2814,25 +2989,147 @@ pub const Explorer = struct {
                 const end_line = @min(sym.line_end, nlines);
                 const end = if (end_line < nlines) offs.items[end_line] else content.len;
                 if (end <= start) continue;
-                const callees = codegraph.extractCallees(a, content[start..end]) catch continue;
-                for (callees) |nm| {
-                    const ids = name_to_ids.get(nm) orelse continue;
-                    if (ids.items.len == 0) continue;
-                    const w: f32 = 1.0 / @as(f32, @floatFromInt(ids.items.len));
-                    for (ids.items) |cid| in_degree[cid] += w;
-                }
+                const id: codegraph.NodeId = @intCast(node_path.items.len);
+                node_path.append(a, path) catch return;
+                node_name.append(a, sym.name) catch return;
+                node_line.append(a, sym.line_start) catch return;
+                funcs.append(a, .{ .id = id, .body = content[start..end] }) catch return;
+                const gop = name_to_ids.getOrPut(sym.name) catch return;
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                gop.value_ptr.append(a, id) catch return;
             }
         }
+        const n_nodes = node_path.items.len;
+        if (n_nodes == 0) return;
 
-        // Aggregate weighted in-degree per file. Keys borrow stable outlines keys.
-        var cmap = std.StringHashMap(f32).init(self.allocator);
-        for (node_path.items, in_degree) |path, deg| {
-            if (deg == 0) continue;
-            const gop = cmap.getOrPut(path) catch continue;
-            if (!gop.found_existing) gop.value_ptr.* = 0;
-            gop.value_ptr.* += deg;
+        var resolve = std.StringHashMap([]const codegraph.NodeId).init(a);
+        var n2i = name_to_ids.iterator();
+        while (n2i.next()) |e| resolve.put(e.key_ptr.*, e.value_ptr.items) catch return;
+
+        var edges_tmp = codegraph.buildEdges(a, funcs.items, &resolve, false) catch return;
+        defer edges_tmp.deinit(a);
+
+        const edges_owned = self.allocator.alloc(codegraph.Edge, edges_tmp.items.len) catch return;
+        @memcpy(edges_owned, edges_tmp.items);
+
+        const adj = codegraph.buildAdjacency(self.allocator, edges_owned, n_nodes) catch {
+            self.allocator.free(edges_owned);
+            return;
+        };
+
+        const np = self.allocator.alloc([]const u8, n_nodes) catch {
+            self.allocator.free(edges_owned);
+            codegraph.freeAdjacency(self.allocator, adj);
+            return;
+        };
+        @memcpy(np, node_path.items);
+
+        const nn = self.allocator.alloc([]const u8, n_nodes) catch {
+            self.allocator.free(edges_owned);
+            codegraph.freeAdjacency(self.allocator, adj);
+            self.allocator.free(np);
+            return;
+        };
+        @memcpy(nn, node_name.items);
+
+        const nl = self.allocator.alloc(u32, n_nodes) catch {
+            self.allocator.free(edges_owned);
+            codegraph.freeAdjacency(self.allocator, adj);
+            self.allocator.free(np);
+            self.allocator.free(nn);
+            return;
+        };
+        @memcpy(nl, node_line.items);
+
+        const node_scores = if (cio.posixGetenv("CODEDB_IN_DEGREE_CENTRALITY") != null)
+            codegraph.inDegreeCentrality(self.allocator, edges_owned, n_nodes) catch null
+        else
+            codegraph.pageRank(self.allocator, edges_owned, n_nodes, 0.85, 20) catch null;
+        if (node_scores == null) {
+            self.allocator.free(edges_owned);
+            codegraph.freeAdjacency(self.allocator, adj);
+            self.allocator.free(np);
+            self.allocator.free(nn);
+            self.allocator.free(nl);
+            return;
         }
-        self.call_centrality = cmap;
+        defer self.allocator.free(node_scores.?);
+
+        if (self.call_centrality == null) {
+            var cmap = std.StringHashMap(f32).init(self.allocator);
+            for (np, node_scores.?) |path, score| {
+                if (score == 0) continue;
+                const gop = cmap.getOrPut(path) catch continue;
+                if (!gop.found_existing) gop.value_ptr.* = 0;
+                gop.value_ptr.* += score;
+            }
+            self.call_centrality = cmap;
+        }
+
+        self.call_graph = .{
+            .edges = edges_owned,
+            .adj = adj,
+            .node_path = np,
+            .node_name = nn,
+            .node_line = nl,
+        };
+    }
+
+    /// Build `call_centrality` once (idempotent, mutex-guarded). Must be called
+    /// while holding at least a shared lock on `mu`.
+    fn ensureCallCentrality(self: *Explorer, allocator: std.mem.Allocator) void {
+        if (self.call_centrality != null) return;
+        self.ensureCallGraph(allocator);
+    }
+
+    /// Shortest resolved call chain between two symbol names. Returns owned steps
+    /// (path, name, line) or null when either symbol is missing or unreachable.
+    pub fn findCallPath(
+        self: *Explorer,
+        from_name: []const u8,
+        to_name: []const u8,
+        allocator: std.mem.Allocator,
+        max_hops: usize,
+    ) !?[]CallPathStep {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        self.ensureCallGraph(allocator);
+        const cg = self.call_graph orelse return null;
+
+        var from_ids: std.ArrayList(codegraph.NodeId) = .empty;
+        defer from_ids.deinit(allocator);
+        var to_ids: std.ArrayList(codegraph.NodeId) = .empty;
+        defer to_ids.deinit(allocator);
+
+        for (cg.node_name, 0..) |name, id| {
+            const nid: codegraph.NodeId = @intCast(id);
+            if (std.mem.eql(u8, name, from_name)) try from_ids.append(allocator, nid);
+            if (std.mem.eql(u8, name, to_name)) try to_ids.append(allocator, nid);
+        }
+        if (from_ids.items.len == 0 or to_ids.items.len == 0) return null;
+
+        const node_ids = codegraph.shortestCallPath(
+            allocator,
+            cg.adj,
+            cg.node_path.len,
+            from_ids.items,
+            to_ids.items,
+            max_hops,
+        ) catch return null;
+        const path = node_ids orelse return null;
+        defer allocator.free(path);
+
+        var steps: std.ArrayList(CallPathStep) = .empty;
+        errdefer steps.deinit(allocator);
+        for (path) |nid| {
+            try steps.append(allocator, .{
+                .path = cg.node_path[nid],
+                .name = cg.node_name[nid],
+                .line = cg.node_line[nid],
+            });
+        }
+        return try steps.toOwnedSlice(allocator);
     }
 
     pub fn searchContentRanked(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const SearchResult {
@@ -4164,9 +4461,16 @@ pub const Explorer = struct {
                 try appendOutlineSymbol(a, outline, name, .function, line_num, line);
             }
         } else if (startsWith(line, "type ")) {
-            const rest = line[5..];
+            const rest = std.mem.trim(u8, line[5..], " \t");
             if (extractIdent(rest)) |name| {
-                try appendOutlineSymbol(a, outline, name, .struct_def, line_num, line);
+                const after = std.mem.trim(u8, rest[name.len..], " \t");
+                const kind: SymbolKind = if (startsWith(after, "interface"))
+                    .interface_def
+                else if (startsWith(after, "struct"))
+                    .struct_def
+                else
+                    .type_alias;
+                try appendOutlineSymbol(a, outline, name, kind, line_num, line);
             }
         } else if (startsWith(line, "import ")) {
             if (extractStringLiteral(line)) |path| {
@@ -4516,7 +4820,7 @@ pub const Explorer = struct {
         try self.dep_graph.setDeps(path, deps);
     }
 
-    fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOutline, had_prior: bool) void {
+    pub fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOutline, had_prior: bool) void {
         // removeSymbolIndexFor scans the entire global symbol index, so calling
         // it per file makes a cold scan O(files * total_symbols). A brand-new
         // path has no prior entries to evict, so skip the scan entirely — only
