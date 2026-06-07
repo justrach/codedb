@@ -2960,6 +2960,19 @@ pub const Explorer = struct {
     /// when centrality isn't built (so ranking is unchanged) — it is ALWAYS a
     /// multiplier ≥ 1, never a filter, so a misresolved edge can only nudge a
     /// central file up, never drop a real result. alpha tuned via MRR.
+    /// #550: query-specific proximity boost. `proximity` maps a file path to its
+    /// minimum call-graph hop distance to a query "seed" file (a strongest BM25
+    /// match). Files within a few hops get a gentle, decaying multiplicative boost
+    /// so structurally-near candidates win ties over distant same-keyword hits;
+    /// files not near any seed are unaffected (1.0). Distinct from centralityBoost,
+    /// which is global (query-independent) per-file importance.
+    fn graphProximityBoost(proximity: *const std.StringHashMap(u32), path: []const u8) f32 {
+        const d = proximity.get(path) orelse return 1.0;
+        const beta: f32 = 0.3;
+        const decay: f32 = 0.5;
+        return 1.0 + beta * std.math.pow(f32, decay, @as(f32, @floatFromInt(d - 1)));
+    }
+
     fn centralityBoost(self: *Explorer, path: []const u8) f32 {
         const cm = self.call_centrality orelse return 1.0;
         const c = cm.get(path) orelse return 1.0;
@@ -3300,6 +3313,114 @@ pub const Explorer = struct {
         }
         if (per_doc.count() == 0) return try allocator.alloc(SearchResult, 0);
 
+        // #550: query-specific call-graph proximity. The ranker already uses
+        // *global* centrality (per-file importance); this adds a *query-specific*
+        // signal — how close (in call-graph hops) each candidate is to the files
+        // the query matched most strongly. Seeds = the top-N BM25 docs; spread
+        // activation outward over the (undirected) call graph by multi-source BFS,
+        // capped at MAX_HOPS, and fold a gentle per-hop-decaying boost into the
+        // score so files structurally near the query's best matches win ties
+        // against distant same-keyword hits. On by default; CODEDB_NO_GRAPH_DISTANCE
+        // disables it.
+        //
+        // Algorithm: bounded discrete spreading activation (per-hop decay + hop
+        // cap) from query seeds — the practical, cheap form of personalized
+        // PageRank seeded by the query's matches. Basis:
+        //   - HippoRAG (Gutiérrez et al., NeurIPS 2024): Personalized PageRank
+        //     over a knowledge graph, seeded by query-matched nodes, as the
+        //     query-specific relevance signal.
+        //   - "Leveraging Spreading Activation for Improved Document Retrieval in
+        //     Knowledge-Graph-Based RAG Systems" (arXiv:2512.15922): decayed,
+        //     few-hop spreading activation as a complement to lexical IR.
+        //   - Personalized PageRank: Haveliwala, "Topic-Sensitive PageRank" (2002);
+        //     survey arXiv:2403.05198.
+        var proximity = std.StringHashMap(u32).init(ta); // file path -> min hops to a seed
+        if (cio.posixGetenv("CODEDB_NO_GRAPH_DISTANCE") == null) blk_prox: {
+            self.ensureCallGraph(allocator);
+            const cg = self.call_graph orelse break :blk_prox;
+            const n = cg.node_path.len;
+            if (n == 0) break :blk_prox;
+
+            // Seeds: the top-N candidate docs by BM25 score.
+            const SEED_COUNT = 3;
+            var seed_id: [SEED_COUNT]u32 = undefined;
+            var seed_score: [SEED_COUNT]f32 = undefined;
+            var n_seeds: usize = 0;
+            var sit = per_doc.iterator();
+            while (sit.next()) |e| {
+                const did = e.key_ptr.*;
+                const sc = e.value_ptr.score;
+                if (n_seeds < SEED_COUNT) {
+                    seed_id[n_seeds] = did;
+                    seed_score[n_seeds] = sc;
+                    n_seeds += 1;
+                } else {
+                    var min_i: usize = 0;
+                    for (1..SEED_COUNT) |i| {
+                        if (seed_score[i] < seed_score[min_i]) min_i = i;
+                    }
+                    if (sc > seed_score[min_i]) {
+                        seed_id[min_i] = did;
+                        seed_score[min_i] = sc;
+                    }
+                }
+            }
+            if (n_seeds == 0) break :blk_prox;
+
+            // Seed doc_ids -> file paths.
+            var seed_paths = std.StringHashMap(void).init(ta);
+            for (0..n_seeds) |i| {
+                const did = seed_id[i];
+                if (did < self.word_index.id_to_path.items.len) {
+                    const p = self.word_index.id_to_path.items[did];
+                    if (p.len > 0) _ = seed_paths.getOrPut(p) catch {};
+                }
+            }
+            if (seed_paths.count() == 0) break :blk_prox;
+
+            // Undirected adjacency over call-graph nodes — proximity is symmetric:
+            // a caller of a matched symbol is as "near" as a callee.
+            const undirected = ta.alloc(std.ArrayList(u32), n) catch break :blk_prox;
+            for (undirected) |*l| l.* = .empty;
+            for (cg.edges) |ed| {
+                undirected[ed.from].append(ta, ed.to) catch {};
+                undirected[ed.to].append(ta, ed.from) catch {};
+            }
+
+            // Multi-source BFS from every node belonging to a seed file.
+            const MAX_HOPS: u32 = 3;
+            const dist = ta.alloc(u32, n) catch break :blk_prox;
+            for (dist) |*d| d.* = std.math.maxInt(u32);
+            var queue: std.ArrayList(u32) = .empty;
+            for (cg.node_path, 0..) |np, nid| {
+                if (seed_paths.contains(np)) {
+                    dist[nid] = 0;
+                    queue.append(ta, @intCast(nid)) catch {};
+                }
+            }
+            var head: usize = 0;
+            while (head < queue.items.len) : (head += 1) {
+                const u = queue.items[head];
+                if (dist[u] >= MAX_HOPS) continue;
+                for (undirected[u].items) |v| {
+                    if (dist[v] > dist[u] + 1) {
+                        dist[v] = dist[u] + 1;
+                        queue.append(ta, v) catch {};
+                    }
+                }
+            }
+
+            // Reduce node distances to a per-file minimum. Skip seeds (dist 0):
+            // they already rank by their own strong BM25 score; the point is to
+            // lift their structural neighbors.
+            for (cg.node_path, 0..) |np, nid| {
+                const d = dist[nid];
+                if (d == 0 or d == std.math.maxInt(u32)) continue;
+                const gop = proximity.getOrPut(np) catch continue;
+                if (!gop.found_existing or gop.value_ptr.* > d) gop.value_ptr.* = d;
+            }
+        }
+
         const Cand = struct { doc_id: u32, score: f32, best_line: u32 };
         var cands: std.ArrayList(Cand) = .empty;
         defer cands.deinit(ta);
@@ -3310,7 +3431,7 @@ pub const Explorer = struct {
             const cand_path = if (cand_doc_id < self.word_index.id_to_path.items.len) self.word_index.id_to_path.items[cand_doc_id] else "";
             cands.appendAssumeCapacity(.{
                 .doc_id = cand_doc_id,
-                .score = entry.value_ptr.score * pathRelevanceMultiplier(cand_path, &terms_set) * self.centralityBoost(cand_path),
+                .score = entry.value_ptr.score * pathRelevanceMultiplier(cand_path, &terms_set) * self.centralityBoost(cand_path) * graphProximityBoost(&proximity, cand_path),
                 .best_line = entry.value_ptr.best_line,
             });
         }

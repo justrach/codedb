@@ -294,6 +294,81 @@ test "explorer: findAllSymbols returns multiple" {
 }
 
 
+test "explorer: query-specific call-graph proximity lifts structurally-near files (#550)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    // Three strong "telemetry" matches are the BM25 seeds; flushQueue lives in
+    // the top seed so its call-graph node is a BFS source.
+    // The word index dedups hits per line, so "telemetry" must appear on separate
+    // lines to raise tf. seed/s2/s3 each have 3 telemetry lines (the BM25 seeds);
+    // near/far have 1 (not seeds). flushQueue lives in seed.ts.
+    try explorer.indexFile("seed.ts",
+        \\// telemetry
+        \\// telemetry
+        \\// telemetry
+        \\export function flushQueue() {
+        \\  return 1;
+        \\}
+    );
+    try explorer.indexFile("s2.ts",
+        \\// telemetry
+        \\// telemetry
+        \\// telemetry
+        \\export function s2fn() {
+        \\  return 2;
+        \\}
+    );
+    try explorer.indexFile("s3.ts",
+        \\// telemetry
+        \\// telemetry
+        \\// telemetry
+        \\export function s3fn() {
+        \\  return 3;
+        \\}
+    );
+    // near.ts is one call-graph hop from seed.ts (it calls flushQueue) with a
+    // single "telemetry" line; far.ts has identical lexical strength but no
+    // structural link, so the query-specific proximity boost should rank near.ts
+    // strictly higher.
+    try explorer.indexFile("near.ts",
+        \\// telemetry
+        \\export function buildPanel() {
+        \\  flushQueue();
+        \\}
+    );
+    try explorer.indexFile("far.ts",
+        \\// telemetry
+        \\export function buildOther() {
+        \\  localOnly();
+        \\}
+    );
+
+    const results = try explorer.searchContentRanked("telemetry", testing.allocator, 20);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    var near_score: ?f32 = null;
+    var far_score: ?f32 = null;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "near.ts")) near_score = r.score;
+        if (std.mem.eql(u8, r.path, "far.ts")) far_score = r.score;
+    }
+    try testing.expect(near_score != null);
+    try testing.expect(far_score != null);
+    // near.ts and far.ts are lexically identical "telemetry" matches, but near.ts
+    // is one call-graph hop from a seed file while far.ts is graph-distant. Only
+    // the #550 query-specific proximity boost separates them — without it the two
+    // scores are equal, so this strict-greater assertion is a red-to-green guard.
+    try testing.expect(near_score.? > far_score.?);
+}
+
 test "explorer: searchContent with trigram acceleration" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
