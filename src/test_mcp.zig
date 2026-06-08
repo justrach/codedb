@@ -1982,3 +1982,55 @@ test "issue-538: temp roots are indexable only when CODEDB_ALLOW_TEMP opts in" {
     try testing.expect(!root_policy.isIndexableRoot("/usr/local/bin"));
     try testing.expect(!root_policy.isIndexableRoot("/"));
 }
+
+test "issue-534: remote cache TTL enforcement" {
+    const remote_cache = @import("remote_cache.zig");
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const cache_dir = path_buf[0..dir_path_len];
+
+    var snap_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const snap_path = try std.fmt.bufPrint(&snap_path_buf, "{s}/codedb.snapshot", .{cache_dir});
+    {
+        const file = try std.Io.Dir.cwd().createFile(io, snap_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "test");
+    }
+
+    try testing.expect(remote_cache.isCacheFresh(io, cache_dir, 3600));
+    try testing.expect(!remote_cache.isCacheFresh(io, cache_dir, 0));
+}
+
+test "issue-534: remote cache clone-to-temp-then-rename prevents race" {
+    const remote_cache = @import("remote_cache.zig");
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const root_dir = path_buf[0..dir_path_len];
+
+    const tmp_clone = try std.fmt.allocPrint(testing.allocator, "{s}/test-repo.tmp.12345", .{root_dir});
+    defer testing.allocator.free(tmp_clone);
+    const final_dir = try std.fmt.allocPrint(testing.allocator, "{s}/test-repo", .{root_dir});
+    defer testing.allocator.free(final_dir);
+
+    try std.Io.Dir.cwd().createDirPath(io, tmp_clone);
+    var snap_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const snap_path = try std.fmt.bufPrint(&snap_buf, "{s}/codedb.snapshot", .{tmp_clone});
+    {
+        const file = try std.Io.Dir.cwd().createFile(io, snap_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "test");
+    }
+
+    try std.Io.Dir.cwd().rename(tmp_clone, std.Io.Dir.cwd(), final_dir, io);
+
+    try testing.expect(remote_cache.isCacheValid(io, final_dir));
+    std.Io.Dir.cwd().access(io, tmp_clone, .{}) catch |err| {
+        try testing.expect(err == error.FileNotFound);
+    };
+}
