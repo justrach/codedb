@@ -2034,3 +2034,32 @@ test "issue-534: remote cache clone-to-temp-then-rename prevents race" {
         try testing.expect(err == error.FileNotFound);
     };
 }
+
+test "issue-534: translateRemoteArgs maps remote keys to local handler keys" {
+    const alloc = testing.allocator;
+
+    var remote_args: std.json.ObjectMap = .empty;
+    defer remote_args.deinit(alloc);
+
+    var translated: std.json.ObjectMap = .empty;
+    defer translated.deinit(alloc);
+
+    try remote_args.put(alloc, "query", .{ .string = "src/foo.zig" });
+    mcp_mod.translateRemoteArgs(alloc, &remote_args, "outline", &translated);
+    try testing.expectEqualStrings("src/foo.zig", translated.get("path").?.string);
+
+    translated.deinit(alloc);
+    translated = .empty;
+    try remote_args.put(alloc, "query", .{ .string = "MySymbol" });
+    mcp_mod.translateRemoteArgs(alloc, &remote_args, "symbol", &translated);
+    try testing.expectEqualStrings("MySymbol", translated.get("name").?.string);
+
+    translated.deinit(alloc);
+    translated = .empty;
+    try remote_args.put(alloc, "path", .{ .string = "src/bar.zig" });
+    try remote_args.put(alloc, "lines", .{ .string = "10-60" });
+    mcp_mod.translateRemoteArgs(alloc, &remote_args, "read", &translated);
+    try testing.expectEqualStrings("src/bar.zig", translated.get("path").?.string);
+    try testing.expectEqual(@as(i64, 10), translated.get("line_start").?.integer);
+    try testing.expectEqual(@as(i64, 60), translated.get("line_end").?.integer);
+}

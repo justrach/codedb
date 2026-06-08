@@ -3685,22 +3685,58 @@ fn handleRemoteFallback(
         loadProjectWordIndexFromDiskIfPresent(io, ctx.explorer, cache_dir, alloc);
     }
 
+    var translated_args: std.json.ObjectMap = .empty;
+    defer translated_args.deinit(alloc);
+    translateRemoteArgs(alloc, args, action, &translated_args);
+
     if (std.mem.eql(u8, action, "tree")) {
         handleTree(alloc, out, ctx.explorer);
     } else if (std.mem.eql(u8, action, "outline")) {
-        handleOutline(alloc, args, out, ctx.explorer);
+        handleOutline(alloc, &translated_args, out, ctx.explorer);
     } else if (std.mem.eql(u8, action, "search")) {
-        handleSearch(alloc, args, out, ctx.explorer);
+        handleSearch(alloc, &translated_args, out, ctx.explorer);
     } else if (std.mem.eql(u8, action, "read")) {
-        handleRead(io, alloc, args, out, ctx.explorer);
+        handleRead(io, alloc, &translated_args, out, ctx.explorer);
     } else if (std.mem.eql(u8, action, "symbol")) {
-        handleSymbol(alloc, args, out, ctx.explorer);
+        handleSymbol(alloc, &translated_args, out, ctx.explorer);
     } else if (std.mem.eql(u8, action, "deps")) {
-        handleDeps(alloc, args, out, ctx.explorer);
+        handleDeps(alloc, &translated_args, out, ctx.explorer);
     } else {
         return false;
     }
     return true;
+}
+
+pub fn translateRemoteArgs(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, action: []const u8, out: *std.json.ObjectMap) void {
+    if (std.mem.eql(u8, action, "outline")) {
+        if (getStr(args, "query")) |q| {
+            out.put(alloc, "path", .{ .string = q }) catch {};
+        }
+    } else if (std.mem.eql(u8, action, "symbol")) {
+        if (getStr(args, "query")) |q| {
+            out.put(alloc, "name", .{ .string = q }) catch {};
+        }
+    } else if (std.mem.eql(u8, action, "read")) {
+        if (getStr(args, "path")) |p| {
+            out.put(alloc, "path", .{ .string = p }) catch {};
+        }
+        if (getStr(args, "lines")) |lines| {
+            if (std.mem.indexOfScalar(u8, lines, '-')) |dash_pos| {
+                const start_str = lines[0..dash_pos];
+                const end_str = lines[dash_pos + 1 ..];
+                if (std.fmt.parseInt(i64, start_str, 10)) |start| {
+                    out.put(alloc, "line_start", .{ .integer = start }) catch {};
+                } else |_| {}
+                if (std.fmt.parseInt(i64, end_str, 10)) |end| {
+                    out.put(alloc, "line_end", .{ .integer = end }) catch {};
+                } else |_| {}
+            }
+        }
+    } else if (std.mem.eql(u8, action, "search")) {
+        if (getStr(args, "query")) |q| {
+            out.put(alloc, "query", .{ .string = q }) catch {};
+        }
+    }
 }
 
 pub fn appendRemoteErrorHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), status: u16, body: []const u8) void {
