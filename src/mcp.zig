@@ -638,7 +638,7 @@ pub const tools_list =
     \\{"name":"codedb_projects","description":"List every locally indexed project on this machine: path, data-dir hash, snapshot presence.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"codedb_index","description":"Index a local FOLDER (not a file). Builds outlines, trigrams, word index, and writes codedb.snapshot. After indexing, query it via the project= param on any other tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the FOLDER (not a file) to index, e.g. /Users/you/myproject"}},"required":["path"]}},
     \\{"name":"codedb_find","description":"Fuzzy FILE-NAME search ONLY — typo-tolerant subsequence match against indexed file paths. NOT a content/symbol search: 'rerank' will NOT find files containing rerankSignalScore unless the filename itself contains 'rerank'. For symbol lookups use codedb_word/codedb_symbol; for content use codedb_search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy filename query (e.g. 'authmidlware' for auth_middleware.go, 'test_auth', 'main.zig'). Matched against path basenames, not file contents."},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
-    \\{"name":"codedb_query","description":"Composable pipeline — chain ops where each step feeds the next. Ops: find, search, filter, deps, outline, read, sort, limit. Replaces multi-call workflows with one request.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
+    \\{"name":"codedb_query","description":"Composable pipeline — chain ops where each step feeds the next. Ops: find, search, filter, deps, outline, read, sort, limit. Replaces multi-call workflows with one request.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}; filter op: {\"op\":\"filter\",\"glob\":\"src/**\"} or {\"op\":\"filter\",\"ext\":\".zig\"} ('pattern' aliases 'glob'; bare patterns auto-promote to '**/<pattern>')"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
     \\{"name":"codedb_glob","description":"Match indexed paths against a glob: * (no /), ** (across /), ? (one char), {a,b} alternatives. Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '**/*.{yaml,yml}', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
     \\{"name":"codedb_ls","description":"List immediate children of a directory: dirs first (alphabetical), then files with language and line/symbol counts. Drill down level-by-level when codedb_tree is too verbose.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
     \\]}
@@ -1460,6 +1460,17 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         return;
     }
 
+    // #573: an explicitly empty name is a usage error, not a lookup for ""
+    // (which rendered as 'no results for: '). Mirrors codedb_callers.
+    if (name != null and name.?.len == 0) {
+        if (json_fmt) {
+            writeJsonToolError(out, alloc, "codedb_symbol", "empty_name", "empty name — pass a non-empty symbol name");
+        } else {
+            out.appendSlice(alloc, "error: empty name — pass a non-empty symbol name") catch {};
+        }
+        return;
+    }
+
     const kind = if (kind_str) |k| Explorer.parseSymbolKind(k) else null;
     if (kind_str != null and kind == null) {
         if (json_fmt) {
@@ -1772,22 +1783,44 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             if (rendered) return;
         }
 
-        // Multi-word queries express natural-language / conceptual intent —
-        // rank them by BM25 (relevance) instead of raw substring order, which
-        // returns nothing for a phrase. Single-token queries keep literal
-        // substring matching so exact-identifier lookups still work.
-        const multiword = std.mem.indexOfScalar(u8, query, ' ') != null;
+        // Query-shape-aware routing lives in Explorer.searchContentAuto so the CLI
+        // (`runQuery`) and this MCP handler rank identically (#546): a multi-word
+        // query goes to BM25 + centrality, a single token keeps literal substring
+        // matching so exact-identifier lookups still work.
         // Over-fetch by `offset` (+1) so we can page into a stable window and
-        // detect whether more results exist beyond this page. BM25 ranking is
+        // detect whether more results exist beyond this page. Ranking is
         // deterministic per query, so the offset is a stable, stateless cursor.
-        const fetch_count = @min(offset_n + max_results + 1, 100000);
-        const fetched = (if (multiword)
-            explorer.searchContentRanked(query, alloc, fetch_count)
-        else
-            explorer.searchContent(query, alloc, fetch_count)) catch {
+        const want_count = @min(offset_n + max_results + 1, 100000);
+        var fetch_count = want_count;
+        var fetched = explorer.searchContentAuto(query, alloc, fetch_count) catch {
             out.appendSlice(alloc, "error: search failed") catch {};
             return;
         };
+        // #560: path_glob filters AFTER ranking, so a window of global results
+        // can hold zero in-glob hits while deeper ranks match — the page must
+        // be filled from the glob-filtered sequence, not the global one.
+        // Escalate the fetch window until the in-glob set fills the page or
+        // the index is exhausted.
+        if (path_glob) |g| {
+            while (true) {
+                var in_glob: usize = 0;
+                for (fetched) |r| {
+                    if (globMatch(g, r.path)) in_glob += 1;
+                }
+                const exhausted = fetched.len < fetch_count;
+                if (in_glob >= want_count or exhausted or fetch_count >= 100000) break;
+                fetch_count = @min(fetch_count * 4, 100000);
+                for (fetched) |r| {
+                    alloc.free(r.line_text);
+                    alloc.free(r.path);
+                }
+                alloc.free(fetched);
+                fetched = explorer.searchContentAuto(query, alloc, fetch_count) catch {
+                    out.appendSlice(alloc, "error: search failed") catch {};
+                    return;
+                };
+            }
+        }
         defer {
             for (fetched) |r| {
                 alloc.free(r.line_text);
@@ -1795,10 +1828,20 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             }
             alloc.free(fetched);
         }
-        const page_lo = @min(offset_n, fetched.len);
-        const page_hi = @min(offset_n + max_results, fetched.len);
-        const results = fetched[page_lo..page_hi];
-        const has_more = fetched.len > page_hi;
+        // Page over the glob-filtered view so offset/max_results address
+        // in-glob results rather than global ranks.
+        var glob_view: std.ArrayList(explore_mod.SearchResult) = .empty;
+        defer glob_view.deinit(alloc);
+        if (path_glob) |g| {
+            for (fetched) |r| {
+                if (globMatch(g, r.path)) glob_view.append(alloc, r) catch {};
+            }
+        }
+        const page_src: []const explore_mod.SearchResult = if (path_glob != null) glob_view.items else fetched;
+        const page_lo = @min(offset_n, page_src.len);
+        const page_hi = @min(offset_n + max_results, page_src.len);
+        const results = page_src[page_lo..page_hi];
+        const has_more = page_src.len > page_hi;
         if (json_fmt) {
             writeSearchResultsJson(out, alloc, explorer, query, results, page_lo, has_more, paths_only, path_glob, compact);
             return;
@@ -1948,9 +1991,16 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
         alloc.free(results);
     }
 
-    var shown: usize = 0;
-    for (results) |r| {
-        if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
+    // #573: single filter pass — the header count and the printed entries come
+    // from the same accumulation, so a predicate edit cannot desync them (the
+    // previous count loop + print loop duplicated four predicates verbatim).
+    var kept: std.ArrayList(usize) = .empty;
+    defer kept.deinit(alloc);
+    for (results, 0..) |r, r_idx| {
+        const lang = explore_mod.detectLanguage(r.path);
+        if (!langHasCallSites(lang)) continue;
+        // #562: a full-line comment mention is documentation, not a call site.
+        if (explore_mod.isCommentOrBlank(r.line_text, lang)) continue;
         var is_def = false;
         for (defs) |d| {
             if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
@@ -1960,22 +2010,13 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
         }
         if (is_def) continue;
         if (!hasWholeWordMatch(r.line_text, name)) continue;
-        shown += 1;
+        kept.append(alloc, r_idx) catch {};
     }
 
     const w = cio.listWriter(out, alloc);
-    w.print("{d} call sites for '{s}':\n", .{ shown, name }) catch {};
-    for (results) |r| {
-        if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
-        var is_def = false;
-        for (defs) |d| {
-            if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
-                is_def = true;
-                break;
-            }
-        }
-        if (is_def) continue;
-        if (!hasWholeWordMatch(r.line_text, name)) continue;
+    w.print("{d} call sites for '{s}':\n", .{ kept.items.len, name }) catch {};
+    for (kept.items) |kept_idx| {
+        const r = results[kept_idx];
         if (r.scope_name) |sn| {
             w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
                 r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
@@ -2153,6 +2194,59 @@ fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *st
     }
 }
 
+// #570: fallback for tasks with no identifier-shaped token. Plain words
+// (≥4 chars, glue/generic words dropped) sorted longest-first — longer words
+// are more specific ("ranking" beats "fix") — capped like the identifier pass.
+fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+    const stop = [_][]const u8{
+        "that",  "this",  "with",    "from",      "into",   "when",   "where",
+        "what",  "which", "then",    "them",      "they",   "have",   "will",
+        "should", "would", "could",  "make",      "makes",  "using",  "used",
+        "does",  "like",  "also",    "than",      "each",   "more",   "most",
+        "some",  "such",  "very",    "just",      "been",   "being",  "about",
+        "after", "before", "while",  "there",     "their",  "other",  "only",
+        "over",  "under", "between", "improve",   "implement", "ensure", "change",
+        "update",
+    };
+    var words: std.ArrayList([]const u8) = .empty;
+    defer words.deinit(alloc);
+    var seen = std.StringHashMap(void).init(alloc);
+    defer seen.deinit();
+    var i: usize = 0;
+    while (i < task.len) {
+        if (isContextIdentStart(task[i])) {
+            const start = i;
+            while (i < task.len and isContextIdentCont(task[i])) : (i += 1) {}
+            const tok = task[start..i];
+            if (tok.len >= 4 and tok.len <= 64 and !seen.contains(tok)) {
+                var is_stop = false;
+                for (stop) |s| {
+                    if (std.ascii.eqlIgnoreCase(tok, s)) {
+                        is_stop = true;
+                        break;
+                    }
+                }
+                if (!is_stop) {
+                    seen.put(tok, {}) catch {};
+                    words.append(alloc, tok) catch {};
+                }
+            }
+            continue;
+        }
+        i += 1;
+    }
+    std.sort.block([]const u8, words.items, {}, struct {
+        pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            if (a.len != b.len) return a.len > b.len;
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+    for (words.items) |w| {
+        out.append(alloc, w) catch {};
+        if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
+    }
+}
+
 fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
     const task = getStr(args, "task") orelse {
         out.appendSlice(alloc, "error: missing 'task' argument") catch {};
@@ -2209,6 +2303,13 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
 
     var candidates: std.ArrayList([]const u8) = .empty;
     extractContextCandidates(task, A, &candidates);
+    if (candidates.items.len == 0) {
+        // #570: all-lowercase tasks ("fix search ranking") carry no
+        // identifier-shaped token. Fall back to the task's plain words so the
+        // composer orients instead of dead-ending — natural language is the
+        // documented input shape.
+        extractContextFallbackWords(task, A, &candidates);
+    }
     if (candidates.items.len == 0) {
         out.appendSlice(alloc, "no candidate identifiers found in task — include symbol names (camelCase or snake_case) or \"quoted strings\" so the composer can extract keywords") catch {};
         return;
@@ -2554,6 +2655,7 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
             };
             if (rendered.count == 0) {
                 w.writeAll("  (none)\n") catch {};
+                w.writeAll("(0 files)\n") catch {};
                 if (!rendered.known) appendFuzzyPathSuggestions(alloc, out, explorer, path);
             } else {
                 w.print("({d} files)\n", .{rendered.count}) catch {};
@@ -2582,6 +2684,9 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
     }
     if (results.len == 0) {
         w.writeAll("  (none)\n") catch {};
+        // #568: empty lists must keep the '(N files)' summary so machine
+        // consumers never have to special-case the '(none)' sentinel.
+        w.writeAll("(0 files)\n") catch {};
         // Bug 4: if the path isn't indexed at all, agents read "(none)" as
         // "file exists but no callers" — which is wrong. Append fuzzy
         // suggestions so a typo is recoverable in one shot.
@@ -2606,6 +2711,7 @@ fn handleDepsPathOnly(alloc: std.mem.Allocator, path: []const u8, out: *std.Arra
     };
     if (rendered.count == 0) {
         w.writeAll("  (none)\n") catch {};
+        w.writeAll("(0 files)\n") catch {};
         if (!rendered.known) appendFuzzyPathSuggestions(alloc, out, explorer, path);
     } else {
         w.print("({d} files)\n", .{rendered.count}) catch {};
@@ -3097,11 +3203,19 @@ fn finishQueryWithFailure(
     step_i: usize,
     reason: []const u8,
     step_args: ?*const std.json.ObjectMap,
+    file_set: []const []const u8,
 ) void {
     if (step_args) |sa| {
         appendBundleArgKeysDiagnostic(alloc, out, sa);
     }
     const w = cio.listWriter(out, alloc);
+    // #558: find no longer prints its list eagerly mid-pipeline, so the
+    // partial-results contract (#356) prints the set accumulated before
+    // the failing step here instead.
+    if (file_set.len > 0) {
+        w.print("\n{d} files at failing step:\n", .{file_set.len}) catch {};
+        for (file_set) |p| w.print("  {s}\n", .{p}) catch {};
+    }
     w.print("\n--- partial ---\nfailed_at: {d}\nreason: {s}\n", .{ step_i, reason }) catch {};
 }
 
@@ -3282,9 +3396,7 @@ fn isRemoteRepoChar(c: u8) bool {
 fn isRemoteRepoPart(part: []const u8) bool {
     if (part.len == 0) return false;
     if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
-    for (part) |c| {
-        if (!isRemoteRepoChar(c)) return false;
-    }
+    for (part) |c| if (!isRemoteRepoChar(c)) return false;
     return true;
 }
 
@@ -4088,6 +4200,15 @@ fn handleLs(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std
     defer alloc.free(entries);
 
     if (entries.len == 0) {
+        // #576: an index only knows a directory through files under it, so an
+        // empty listing for a non-empty prefix means the path is not indexed —
+        // not that the directory is empty. The 'error:' prefix also gives the
+        // CLI bridge a non-zero exit via finishCli.
+        if (prefix.len > 0) {
+            const w = cio.listWriter(out, alloc);
+            w.print("error: no indexed files under '{s}' — check the path (codedb_tree shows the layout)", .{prefix}) catch {};
+            return;
+        }
         out.appendSlice(alloc, "no entries") catch {};
         return;
     }
@@ -4121,13 +4242,21 @@ pub fn runCliTool(
     io: std.Io,
     alloc: std.mem.Allocator,
     explorer: *Explorer,
+    store: *Store,
     root: []const u8,
     cmd: []const u8,
     args: []const []const u8,
     cmd_args_start: usize,
     out: *std.ArrayList(u8),
 ) ?u8 {
-    const pos: ?[]const u8 = if (args.len > cmd_args_start) args[cmd_args_start] else null;
+    // First positional. A leading '-'-prefixed arg is NOT silently bound as
+    // the positional — `callers --max-results 3 foo` previously reported call
+    // sites for '--max-results' (#573). Commands here take <name>/<path>
+    // first, so a leading flag falls through to the command's usage error.
+    const pos: ?[]const u8 = if (args.len > cmd_args_start and !std.mem.startsWith(u8, args[cmd_args_start], "-"))
+        args[cmd_args_start]
+    else
+        null;
     const out_start = out.items.len;
 
     var m: std.json.ObjectMap = .empty;
@@ -4149,6 +4278,15 @@ pub fn runCliTool(
         // the heap word index. Keeps the footprint at the MCP level.
         loadProjectTrigramFromDiskIfPresent(io, explorer, root, alloc);
         handleCallers(alloc, &m, out, explorer);
+        return finishCli(out, out_start);
+    } else if (std.mem.eql(u8, cmd, "changes")) {
+        // #578: changes reads the Store ledger (not the Explorer), which is why
+        // the bridge takes `store`. Optional positional = since_seq.
+        if (pos) |p| {
+            const since = std.fmt.parseInt(i64, p, 10) catch return cliUsage(alloc, out, "changes [since_seq]");
+            m.put(alloc, "since", .{ .integer = since }) catch return 1;
+        }
+        handleChanges(alloc, &m, out, store);
         return finishCli(out, out_start);
     } else if (std.mem.eql(u8, cmd, "callpath")) {
         if (args.len < cmd_args_start + 2) return cliUsage(alloc, out, "callpath <from> <to>");
@@ -4376,6 +4514,11 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
 
     var file_set: std.ArrayList([]const u8) = .empty;
     defer file_set.deinit(alloc);
+    // Strings the deps op appends to file_set must outlive the per-file deps_result
+    // (freed each iteration); own them in a scoped arena freed at pipeline end.
+    var deps_arena = std.heap.ArenaAllocator.init(alloc);
+    defer deps_arena.deinit();
+    const deps_alloc = deps_arena.allocator();
     var have_set = false;
     const w = cio.listWriter(out, alloc);
 
@@ -4398,14 +4541,14 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
             if (getStr(step, "word") != null)   break :blk "word";
             if (getStr(step, "name") != null)   break :blk "symbol";
             w.print("error: step {d} missing 'op'\n", .{step_i}) catch {};
-            finishQueryWithFailure(alloc, out, step_i, "missing 'op'", step);
+            finishQueryWithFailure(alloc, out, step_i, "missing 'op'", step, file_set.items);
             return;
         };
 
         if (std.mem.eql(u8, op, "find")) {
             const query = getStr(step, "query") orelse {
                 w.print("error: find needs 'query'\n", .{}) catch {};
-                finishQueryWithFailure(alloc, out, step_i, "find needs 'query'", step);
+                finishQueryWithFailure(alloc, out, step_i, "find needs 'query'", step, file_set.items);
                 return;
             };
             const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
@@ -4430,9 +4573,14 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 w.print("{d} files after find intersect\n", .{file_set.items.len}) catch {};
             } else {
                 file_set.clearRetainingCapacity();
-                w.print("{d} files matched:\n", .{matches.len}) catch {};
+                // #558: print only when find is the last step — otherwise the
+                // listing shows the pre-transform set and downstream
+                // filter/limit are invisible. The pipeline tail prints the
+                // final set instead.
+                const find_is_last = step_i + 1 == pipeline.len;
+                if (find_is_last) w.print("{d} files matched:\n", .{matches.len}) catch {};
                 for (matches) |m| {
-                    w.print("  {s}\n", .{m.path}) catch {};
+                    if (find_is_last) w.print("  {s}\n", .{m.path}) catch {};
                     file_set.append(alloc, m.path) catch {};
                 }
                 have_set = true;
@@ -4440,7 +4588,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
         } else if (std.mem.eql(u8, op, "search")) {
             const query = getStr(step, "query") orelse {
                 w.print("error: search needs 'query'\n", .{}) catch {};
-                finishQueryWithFailure(alloc, out, step_i, "search needs 'query'", step);
+                finishQueryWithFailure(alloc, out, step_i, "search needs 'query'", step, file_set.items);
                 return;
             };
             const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
@@ -4504,12 +4652,11 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
             // Accepts optional 'path' for standalone use without a prior seeding step.
             if (!have_set) {
                 if (getStr(step, "path")) |p| {
-                    const duped = alloc.dupe(u8, p) catch {
+                    const duped = deps_alloc.dupe(u8, p) catch {
                         w.print("error: out of memory\n", .{}) catch {};
                         return;
                     };
                     file_set.append(alloc, duped) catch {
-                        alloc.free(duped);
                         w.print("error: out of memory\n", .{}) catch {};
                         return;
                     };
@@ -4571,8 +4718,11 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
 
                 for (deps_result) |dep| {
                     if (!expanded.contains(dep)) {
-                        expanded.put(dep, {}) catch {};
-                        file_set.append(alloc, dep) catch {};
+                        // Own the string in the deps arena so it outlives deps_result
+                        // (freed by the defer above) once stored in file_set / expanded.
+                        const owned = deps_alloc.dupe(u8, dep) catch continue;
+                        expanded.put(owned, {}) catch {};
+                        file_set.append(alloc, owned) catch {};
                     }
                 }
             }
@@ -4585,7 +4735,21 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 have_set = true;
             }
             const ext = getStr(step, "ext");
-            const glob_pat = getStr(step, "glob");
+            const glob_raw = getStr(step, "glob") orelse getStr(step, "pattern");
+            if (ext == null and glob_raw == null) {
+                w.print("error: filter needs 'glob' (alias 'pattern') or 'ext'\n", .{}) catch {};
+                finishQueryWithFailure(alloc, out, step_i, "filter needs 'glob' (alias 'pattern') or 'ext'", step, file_set.items);
+                return;
+            }
+            // Bare patterns ('*.py') promote to '**/*.py' — same rule as
+            // codedb_search path_glob — so filter matches nested paths (#558).
+            var fpg_buf: [256]u8 = undefined;
+            const glob_pat: ?[]const u8 = if (glob_raw) |g| blk: {
+                if (std.mem.indexOfScalar(u8, g, '/') == null and g.len + 3 < fpg_buf.len) {
+                    break :blk std.fmt.bufPrint(&fpg_buf, "**/{s}", .{g}) catch g;
+                }
+                break :blk g;
+            } else null;
             var wr: usize = 0;
             for (file_set.items) |path| {
                 var keep = true;
@@ -4690,7 +4854,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
         } else if (std.mem.eql(u8, op, "word")) {
             const word = getStr(step, "word") orelse {
                 w.print("error: word needs 'word'\n", .{}) catch {};
-                finishQueryWithFailure(alloc, out, step_i, "word needs 'word'", step);
+                finishQueryWithFailure(alloc, out, step_i, "word needs 'word'", step, file_set.items);
                 return;
             };
             const hits = explorer.searchWord(word, alloc) catch {
@@ -4743,7 +4907,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
         } else if (std.mem.eql(u8, op, "symbol")) {
             const name = getStr(step, "name") orelse {
                 w.print("error: symbol needs 'name'\n", .{}) catch {};
-                finishQueryWithFailure(alloc, out, step_i, "symbol needs 'name'", step);
+                finishQueryWithFailure(alloc, out, step_i, "symbol needs 'name'", step, file_set.items);
                 return;
             };
             const results = explorer.findAllSymbols(name, alloc) catch {
@@ -4784,6 +4948,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
             if (file_set.items.len > n) file_set.items.len = n;
         } else {
             w.print("error: unknown op '{s}'\n", .{op}) catch {};
+            finishQueryWithFailure(alloc, out, step_i, "unknown op", step, file_set.items);
             return;
         }
         // Issue #356-p3: track each successfully-completed step.

@@ -11,6 +11,7 @@ const explore = @import("explore.zig");
 const Explorer = explore.Explorer;
 const linter = @import("linter.zig");
 const linter_pref = @import("linter_pref.zig");
+const ContentCache = @import("hot_cache.zig").ContentCache;
 
 
 test "store: record and retrieve snapshots" {
@@ -1049,3 +1050,87 @@ test "issue-101+102: .codedbrc max_cached threads through to ContentCache capaci
     try testing.expectEqual(@as(u32, 32), explorer.contents.capacity);
 }
 
+
+test "issue-584: ContentCache probe-window — overflow inserts, holes, and duplicate keys" {
+    // putImpl's overflow path evicts via a global CLOCK hand, so the new entry
+    // lands OUTSIDE the key's 4-slot probe window: get() can never find it.
+    // The entry's bytes (file contents, up to 64MB each) sit stranded in the
+    // cache while every lookup for that key re-reads from disk. Holes left by
+    // remove() also break lookups for in-window entries (`key_hash == 0`
+    // early-break) and let put() insert a duplicate copy of a key it already
+    // holds. All three violate the probe-window invariant.
+    const fnvBase = struct {
+        fn base(key: []const u8, cap: u32) u32 {
+            var h: u64 = 14695981039346656037;
+            for (key) |b| {
+                h ^= b;
+                h *%= 1099511628211;
+            }
+            if (h == 0) h = 1;
+            return @as(u32, @truncate(h)) % cap;
+        }
+    }.base;
+
+    // Collect 5 keys sharing one probe-window base in [1, 60] (slot 0 stays
+    // outside the window, no wraparound).
+    var bufs: [5][16]u8 = undefined;
+    var lens: [5]usize = undefined;
+    var nkeys: usize = 0;
+    var counts = [_]u8{0} ** 64;
+    var pick: u32 = 0;
+    var i: usize = 0;
+    while (i < 4096) : (i += 1) {
+        var tmp: [16]u8 = undefined;
+        const k = std.fmt.bufPrint(&tmp, "k{d}", .{i}) catch unreachable;
+        const b = fnvBase(k, 64);
+        if (b < 1 or b > 60) continue;
+        counts[b] += 1;
+        if (counts[b] >= 5) {
+            pick = b;
+            break;
+        }
+    }
+    try testing.expect(pick != 0);
+    i = 0;
+    while (i < 4096 and nkeys < 5) : (i += 1) {
+        var tmp: [16]u8 = undefined;
+        const k = std.fmt.bufPrint(&tmp, "k{d}", .{i}) catch unreachable;
+        if (fnvBase(k, 64) == pick) {
+            @memcpy(bufs[nkeys][0..k.len], k);
+            lens[nkeys] = k.len;
+            nkeys += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 5), nkeys);
+    const k0 = bufs[0][0..lens[0]];
+    const k1 = bufs[1][0..lens[1]];
+    const k2 = bufs[2][0..lens[2]];
+    const k3 = bufs[3][0..lens[3]];
+    const k4 = bufs[4][0..lens[4]];
+
+    // 1) Overflow insert must stay retrievable from its own probe window.
+    {
+        var cache = try ContentCache.initAlloc(testing.allocator, 64);
+        defer cache.deinit();
+        try cache.put(k0, "v0");
+        try cache.put(k1, "v1");
+        try cache.put(k2, "v2");
+        try cache.put(k3, "v3");
+        try cache.put(k4, "v4"); // window full -> eviction path
+        try testing.expect(cache.get(k4) != null);
+    }
+
+    // 2) A hole left by remove() must not hide in-window entries behind it.
+    // 3) Re-putting such an entry must not create a duplicate copy.
+    {
+        var cache = try ContentCache.initAlloc(testing.allocator, 64);
+        defer cache.deinit();
+        try cache.put(k0, "v0");
+        try cache.put(k1, "v1");
+        try cache.put(k2, "v2");
+        cache.remove(k1); // hole between k0 and k2
+        try testing.expect(cache.get(k2) != null);
+        try cache.put(k2, "v2b");
+        try testing.expectEqual(@as(u32, 2), cache.len());
+    }
+}

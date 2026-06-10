@@ -11694,11 +11694,13 @@ test "cli-mcp-parity: runCliTool bridges navigation commands to MCP handlers" {
     try exp.indexFile("src/store.zig", "pub const Store = struct {};\n");
     try exp.indexFile("src/main.zig", "const Store = @import(\"store.zig\").Store;\npub fn main() void {}\n");
 
+    var store = Store.init(aa);
+
     // glob: pattern -> matching indexed paths (reuses handleGlob)
     {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(aa);
-        const code = mcp_mod.runCliTool(io, aa, &exp, ".", "glob", &.{ "codedb", ".", "glob", "src/*.zig" }, 3, &out);
+        const code = mcp_mod.runCliTool(io, aa, &exp, &store, ".", "glob", &.{ "codedb", ".", "glob", "src/*.zig" }, 3, &out);
         try testing.expectEqual(@as(?u8, 0), code);
         try testing.expect(std.mem.indexOf(u8, out.items, "src/store.zig") != null);
         try testing.expect(std.mem.indexOf(u8, out.items, "src/main.zig") != null);
@@ -11708,7 +11710,7 @@ test "cli-mcp-parity: runCliTool bridges navigation commands to MCP handlers" {
     {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(aa);
-        const code = mcp_mod.runCliTool(io, aa, &exp, ".", "symbol", &.{ "codedb", ".", "symbol", "Store" }, 3, &out);
+        const code = mcp_mod.runCliTool(io, aa, &exp, &store, ".", "symbol", &.{ "codedb", ".", "symbol", "Store" }, 3, &out);
         try testing.expectEqual(@as(?u8, 0), code);
         try testing.expect(std.mem.indexOf(u8, out.items, "src/store.zig") != null);
     }
@@ -11717,14 +11719,14 @@ test "cli-mcp-parity: runCliTool bridges navigation commands to MCP handlers" {
     {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(aa);
-        try testing.expectEqual(@as(?u8, null), mcp_mod.runCliTool(io, aa, &exp, ".", "bogus", &.{ "codedb", ".", "bogus" }, 3, &out));
+        try testing.expectEqual(@as(?u8, null), mcp_mod.runCliTool(io, aa, &exp, &store, ".", "bogus", &.{ "codedb", ".", "bogus" }, 3, &out));
     }
 
     // missing required arg -> usage line, exit 1
     {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(aa);
-        try testing.expectEqual(@as(?u8, 1), mcp_mod.runCliTool(io, aa, &exp, ".", "glob", &.{ "codedb", ".", "glob" }, 3, &out));
+        try testing.expectEqual(@as(?u8, 1), mcp_mod.runCliTool(io, aa, &exp, &store, ".", "glob", &.{ "codedb", ".", "glob" }, 3, &out));
         try testing.expect(std.mem.indexOf(u8, out.items, "usage") != null);
     }
 }

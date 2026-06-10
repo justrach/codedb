@@ -1872,3 +1872,115 @@ test "issue-532: ReScript parser" {
     try expectOutlineImport(&outline, "Belt");
 }
 
+
+// ─── audit (2026-06-09): latent-issue sweep — parser/deps fixes ───
+
+// src/explore.zig parseDelimitedImport — Kotlin/Swift `import X as Y` stored "X as Y" as
+// the dep key because the alias-trim was skipped for the empty-delimiter callers.
+test "audit: Kotlin import alias stripped from dep path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    try explorer.indexFile("Main.kt", "import com.example.Foo as Bar\n");
+    var outline = (try explorer.getOutline("Main.kt", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    var saw_clean = false;
+    var saw_aliased = false;
+    for (outline.imports.items) |imp| {
+        if (std.mem.eql(u8, imp, "com.example.Foo")) saw_clean = true;
+        if (std.mem.eql(u8, imp, "com.example.Foo as Bar")) saw_aliased = true;
+    }
+    try testing.expect(saw_clean);
+    try testing.expect(!saw_aliased);
+}
+
+// src/explore.zig getImportedBy — basename fallback over-attached an ambiguous bare
+// import to every same-basename file; now skipped when the basename is ambiguous.
+test "audit: ambiguous bare import must not cross same-basename dirs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    try explorer.indexFile("a/conf.py", "x = 1\n");
+    try explorer.indexFile("b/conf.py", "y = 2\n");
+    try explorer.indexFile("importer.py", "import conf\n");
+
+    const a_imp = try explorer.getImportedBy("a/conf.py", testing.allocator);
+    defer {
+        for (a_imp) |i| testing.allocator.free(i);
+        testing.allocator.free(a_imp);
+    }
+    const b_imp = try explorer.getImportedBy("b/conf.py", testing.allocator);
+    defer {
+        for (b_imp) |i| testing.allocator.free(i);
+        testing.allocator.free(b_imp);
+    }
+
+    var a_attached = false;
+    for (a_imp) |i| {
+        if (std.mem.eql(u8, i, "importer.py")) a_attached = true;
+    }
+    var b_attached = false;
+    for (b_imp) |i| {
+        if (std.mem.eql(u8, i, "importer.py")) b_attached = true;
+    }
+
+    // the same ambiguous bare import must not be attributed to two same-basename files
+    try testing.expect(!(a_attached and b_attached));
+}
+
+// src/explore.zig extractPythonModulePath/parsePythonLine — `import a, b` recorded only
+// the first module; now one dep is recorded per comma-separated module.
+test "audit: Python comma import records all modules" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    try explorer.indexFile("m.py", "import alpha, beta\n");
+
+    var outline = (try explorer.getOutline("m.py", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try expectOutlineImport(&outline, "alpha.py");
+    try expectOutlineImport(&outline, "beta.py");
+}
+
+
+// renderImportedBy (the MCP codedb_deps reverse path) kept the unconditional
+// basename fallback when getImportedBy gained the ambiguity guard — the same
+// bare import is still attributed to every same-basename file through the
+// main deps tool.
+test "issue-588: renderImportedBy suppresses the ambiguous basename fallback" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    try explorer.indexFile("a/conf.py", "x = 1\n");
+    try explorer.indexFile("b/conf.py", "y = 2\n");
+    try explorer.indexFile("importer.py", "import conf\n");
+
+    var a_out: std.ArrayList(u8) = .empty;
+    defer a_out.deinit(testing.allocator);
+    _ = try explorer.renderImportedBy("a/conf.py", testing.allocator, &a_out);
+    var b_out: std.ArrayList(u8) = .empty;
+    defer b_out.deinit(testing.allocator);
+    _ = try explorer.renderImportedBy("b/conf.py", testing.allocator, &b_out);
+
+    const a_attached = std.mem.indexOf(u8, a_out.items, "importer.py") != null;
+    const b_attached = std.mem.indexOf(u8, b_out.items, "importer.py") != null;
+    // The ambiguous bare import must not be attributed to both files.
+    try testing.expect(!(a_attached and b_attached));
+
+    // Single-basename case keeps the fallback: with exactly one conf.py the
+    // importer is still listed.
+    var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena2.deinit();
+    var explorer2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    try explorer2.indexFile("a/conf.py", "x = 1\n");
+    try explorer2.indexFile("importer.py", "import conf\n");
+
+    var solo_out: std.ArrayList(u8) = .empty;
+    defer solo_out.deinit(testing.allocator);
+    _ = try explorer2.renderImportedBy("a/conf.py", testing.allocator, &solo_out);
+    try testing.expect(std.mem.indexOf(u8, solo_out.items, "importer.py") != null);
+}

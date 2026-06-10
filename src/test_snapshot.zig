@@ -510,8 +510,17 @@ test "snapshot: parallel freshness load re-indexes changed files, restores the r
 
     // Changed files carry fresh content (changed branch); the rest keep snapshot
     // content (restored branch) — verified directly via the content cache.
+    // Flaked once under full-suite parallelism (2026-06-10, missing content with
+    // all outlines present; 0/25 repro in isolation) — on failure, dump which
+    // file and what state survived so the next occurrence localizes the branch.
     for (0..total) |i| {
-        const cached = exp2.contents.get(abs_paths[i]) orelse return error.MissingContent;
+        const cached = exp2.contents.get(abs_paths[i]) orelse {
+            std.debug.print(
+                "MissingContent: i={d} changed={} outline_present={} contents_cached={d}/{d}\n",
+                .{ i, is_changed[i], exp2.outlines.contains(abs_paths[i]), exp2.contents.len(), total },
+            );
+            return error.MissingContent;
+        };
         const want = if (is_changed[i])
             try std.fmt.allocPrint(aa, "pub fn newfn_{d}() void {{}}\n", .{i})
         else
@@ -1230,4 +1239,78 @@ test "issue-539b: search recall ranks a relevant restored file above quota (inde
         found_canonical = true;
     };
     try testing.expect(found_canonical);
+}
+
+
+test "issue-564: snapshot fast-load defers the symbol index until first symbol use" {
+    // Pre-#564 the fast-load eagerly rebuilt the global symbol index for every
+    // restored file (~symbols-per-file map inserts and their heap) even though
+    // plain content search never reads it. The load now defers it; the first
+    // symbol/caller/callpath use builds it from outlines and answers the same.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    try exp.indexFile("util_564.zig", "pub fn uniqueSym564() void {}\n");
+    try exp.indexFile("main_564.zig", "pub fn caller564() void {\n    uniqueSym564();\n}\n");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/lazy564.codedb", .{dir_path});
+    defer testing.allocator.free(snap_path);
+    try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
+
+    var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena2.deinit();
+    const aa2 = arena2.allocator();
+    var exp2 = Explorer.init(aa2, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, aa2));
+
+    // The fast-load must NOT have materialized the symbol index — the deferral
+    // is the point: one-shot search pays neither the inserts nor their heap.
+    try testing.expectEqual(@as(usize, 0), exp2.symbol_index.count());
+
+    // First symbol use builds it on demand and answers correctly.
+    const results = try exp2.findAllSymbols("uniqueSym564", aa2);
+    try testing.expect(results.len >= 1);
+    try testing.expect(std.mem.eql(u8, results[0].path, "util_564.zig"));
+    try testing.expect(exp2.symbol_index.count() > 0);
+}
+
+// ─── audit (2026-06-09): latent-issue sweep — snapshot fast-restore ───
+// src/snapshot.zig:729 — OUTLINE_STATE import read cap (4096) was narrower than the
+// write cap (65535); a >4096-byte import silently disabled fast-restore (borrow path).
+test "audit: long import specifier round-trips on fast-restore (borrow path preserved)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    const long_imp = "a" ** 5000; // > 4096 (old read cap), <= 65535 (write cap)
+    const src = "package main\nimport \"" ++ long_imp ++ "\"\nfunc mainFn() {}\n";
+    try exp.indexFile("probe/main.go", src);
+    const pre = exp.outlines.get("probe/main.go") orelse return error.MissingOutline;
+    try testing.expect(pre.imports.items.len == 1);
+    try testing.expect(pre.imports.items[0].len == 5000);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = path_buf[0..try tmp.dir.realPathFile(io, ".", &path_buf)];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/probe.codedb", .{dir_path});
+    defer testing.allocator.free(snap_path);
+    try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
+
+    var exp2 = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer exp2.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, testing.allocator));
+    const outline = exp2.outlines.get("probe/main.go") orelse return error.MissingOutline;
+    // borrows_strings is the only discriminator: false on main (re-parse fallback), true after fix
+    try testing.expect(outline.borrows_strings);
 }

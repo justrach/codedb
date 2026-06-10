@@ -11,14 +11,15 @@ const std = @import("std");
 pub const ContentCache = struct {
     slots: []Slot,
     capacity: u32,
-    hand: u32,
     count_: u32,
     allocator: std.mem.Allocator,
     hits_: std.atomic.Value(u64),
     misses_: std.atomic.Value(u64),
     evictions_: std.atomic.Value(u64),
 
-    const PROBE_LIMIT: u32 = 4;
+    // 8-way set-associative: at typical occupancy a full window (the only
+    // eviction trigger) is vanishingly rare; probes stay short and contiguous.
+    const PROBE_LIMIT: u32 = 8;
 
     pub const Slot = struct {
         key_hash: u64,
@@ -57,7 +58,6 @@ pub const ContentCache = struct {
         return .{
             .slots = slots,
             .capacity = capacity,
-            .hand = 0,
             .count_ = 0,
             .allocator = allocator,
             .hits_ = std.atomic.Value(u64).init(0),
@@ -73,7 +73,6 @@ pub const ContentCache = struct {
         return .{
             .slots = slots,
             .capacity = capacity,
-            .hand = 0,
             .count_ = 0,
             .allocator = allocator,
             .hits_ = std.atomic.Value(u64).init(0),
@@ -104,7 +103,6 @@ pub const ContentCache = struct {
                 _ = self.hits_.fetchAdd(1, .monotonic);
                 return slot.value;
             }
-            if (!slot.present and slot.key_hash == 0) break;
         }
         _ = self.misses_.fetchAdd(1, .monotonic);
         return null;
@@ -129,43 +127,58 @@ pub const ContentCache = struct {
         const h = hashKey(key);
         const base = @as(u32, @truncate(h)) % self.capacity;
 
+        // Scan the whole window: update an existing entry in place (a hole must
+        // not shadow it into a duplicate), otherwise remember the first empty slot.
+        var empty_idx: ?u32 = null;
         var i: u32 = 0;
         while (i < PROBE_LIMIT) : (i += 1) {
             const slot_idx = (base +% i) % self.capacity;
             const slot = &self.slots[slot_idx];
-            if (slot.present and slot.key_hash == h and std.mem.eql(u8, slot.key, key)) {
-                // Compute the new value first so a failed dupe leaves the slot intact.
-                const new_value = if (own) try self.allocator.dupe(u8, value) else value;
-                if (slot.value_owned) self.allocator.free(slot.value);
-                slot.value = new_value;
-                slot.value_owned = own;
-                slot.ref_bit = true;
-                return;
-            }
-            if (!slot.present) {
-                const duped_key = try self.allocator.dupe(u8, key);
-                errdefer self.allocator.free(duped_key);
-                const new_value = if (own) try self.allocator.dupe(u8, value) else value;
-                slot.key_hash = h;
-                slot.key = duped_key;
-                slot.value = new_value;
-                slot.value_owned = own;
-                slot.ref_bit = true;
-                slot.present = true;
-                self.count_ += 1;
-                return;
+            if (slot.present) {
+                if (slot.key_hash == h and std.mem.eql(u8, slot.key, key)) {
+                    // Compute the new value first so a failed dupe leaves the slot intact.
+                    const new_value = if (own) try self.allocator.dupe(u8, value) else value;
+                    if (slot.value_owned) self.allocator.free(slot.value);
+                    slot.value = new_value;
+                    slot.value_owned = own;
+                    slot.ref_bit = true;
+                    return;
+                }
+            } else if (empty_idx == null) {
+                empty_idx = slot_idx;
             }
         }
 
-        // All probe slots occupied — evict via CLOCK sweep.
-        const evict_idx = self.clockEvict();
-        const slot = &self.slots[evict_idx];
-        if (slot.present) {
+        // Window full of other keys — evict in-window (second chance over the
+        // probe slots) so the new entry stays reachable by get(). A victim from
+        // a global sweep would strand the entry outside its own window.
+        const target_idx = empty_idx orelse blk: {
+            var victim: ?u32 = null;
+            i = 0;
+            while (i < PROBE_LIMIT) : (i += 1) {
+                const slot_idx = (base +% i) % self.capacity;
+                if (!self.slots[slot_idx].ref_bit) {
+                    victim = slot_idx;
+                    break;
+                }
+            }
+            if (victim == null) {
+                i = 0;
+                while (i < PROBE_LIMIT) : (i += 1) {
+                    self.slots[(base +% i) % self.capacity].ref_bit = false;
+                }
+                victim = base;
+            }
+            const slot = &self.slots[victim.?];
             self.allocator.free(slot.key);
             if (slot.value_owned) self.allocator.free(slot.value);
+            slot.* = empty_slot;
             self.count_ -= 1;
             _ = self.evictions_.fetchAdd(1, .monotonic);
-        }
+            break :blk victim.?;
+        };
+
+        const slot = &self.slots[target_idx];
         const duped_key = try self.allocator.dupe(u8, key);
         errdefer self.allocator.free(duped_key);
         const new_value = if (own) try self.allocator.dupe(u8, value) else value;
@@ -192,7 +205,6 @@ pub const ContentCache = struct {
                 self.count_ -= 1;
                 return;
             }
-            if (!slot.present and slot.key_hash == 0) return;
         }
     }
 
@@ -205,7 +217,6 @@ pub const ContentCache = struct {
             }
         }
         self.count_ = 0;
-        self.hand = 0;
     }
 
     pub fn len(self: *const ContentCache) u32 {
@@ -256,23 +267,6 @@ pub const ContentCache = struct {
 
     pub fn iterator(self: *const ContentCache) Iterator {
         return .{ .cache = self, .index = 0 };
-    }
-
-    fn clockEvict(self: *ContentCache) u32 {
-        var sweeps: u32 = 0;
-        while (sweeps < self.capacity * 2) : (sweeps += 1) {
-            const slot_idx = self.hand % self.capacity;
-            self.hand = (self.hand +% 1) % self.capacity;
-            const slot = &self.slots[slot_idx];
-            if (!slot.present) return slot_idx;
-            if (!slot.ref_bit) {
-                return slot_idx;
-            }
-            slot.ref_bit = false;
-        }
-        const slot_idx = self.hand % self.capacity;
-        self.hand = (self.hand +% 1) % self.capacity;
-        return slot_idx;
     }
 
     fn hashKey(key: []const u8) u64 {
@@ -374,8 +368,8 @@ test "ContentCache: mixed owned/borrowed — transitions and eviction free corre
     defer cache.deinit();
 
     const lit: []const u8 = "literal-borrowed-value";
-    try cache.put("a", "heap-duped");       // owned
-    try cache.putBorrowed("b", lit);        // borrowed
+    try cache.put("a", "heap-duped"); // owned
+    try cache.putBorrowed("b", lit); // borrowed
     try std.testing.expectEqualStrings("heap-duped", cache.get("a").?);
     try std.testing.expectEqual(lit.ptr, cache.get("b").?.ptr);
 

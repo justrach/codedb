@@ -726,7 +726,7 @@ fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std.mem
         const import_count = try readSectionInt(u32, bytes, &cursor);
         try outline.imports.ensureTotalCapacity(allocator, import_count);
         for (0..import_count) |_| {
-            const imp = try readSectionStringBorrowed(bytes, &cursor, 4096);
+            const imp = try readSectionStringBorrowed(bytes, &cursor, std.math.maxInt(u16));
             outline.imports.appendAssumeCapacity(imp);
         }
 
@@ -789,6 +789,21 @@ fn rebuildDepsFromOutline(explorer: *Explorer, path: []const u8, outline: *const
     try explorer.dep_graph.setDeps(path, deps);
 }
 
+// Process max-RSS in bytes (macOS getrusage reports bytes; Linux reports KiB).
+// Profiler-only: attribution of load-phase memory growth, not a public API.
+fn loadMaxRssBytes() u64 {
+    var ru: std.c.rusage = undefined;
+    if (std.c.getrusage(0, &ru) != 0) return 0;
+    const raw: u64 = @intCast(@max(0, ru.maxrss));
+    return if (@import("builtin").os.tag == .linux) raw * 1024 else raw;
+}
+// Written only when `load_prof` is set by loadSnapshotFast; the loader is
+// single-threaded so plain vars are safe.
+var load_prof: bool = false;
+var prof_content_ns: i128 = 0;
+var prof_deps_ns: i128 = 0;
+var prof_symidx_ns: i128 = 0;
+
 fn insertRestoredFile(
     explorer: *Explorer,
     path: []const u8,
@@ -807,20 +822,26 @@ fn insertRestoredFile(
 
     // When the content was read from an mmap the Explorer has adopted, store a
     // borrowed (zero-copy) cache value; otherwise dupe it as usual.
+    const t_content: i128 = if (load_prof) cio.nanoTimestamp() else 0;
     if (borrow_content) {
         try explorer.contents.putBorrowed(path, content);
     } else {
         try explorer.contents.put(path, content);
     }
+    if (load_prof) prof_content_ns += cio.nanoTimestamp() - t_content;
 
+    const t_deps: i128 = if (load_prof) cio.nanoTimestamp() else 0;
     try rebuildDepsFromOutline(explorer, path, &restored_outline, allocator);
+    if (load_prof) prof_deps_ns += cio.nanoTimestamp() - t_deps;
 
     // Mirror commitParsedFileOwnedOutline (explore.zig:872): symbol_index is built
     // eagerly on every ingest and has NO lazy rebuild trigger. resolveCallees reads
     // it without a fallback (#524 perf note), so restored files must populate it
     // here or call-graph edges into them are lost after a snapshot load. had_prior
     // is false: insertRestoredFile errors above if the path already exists.
+    const t_symidx: i128 = if (load_prof) cio.nanoTimestamp() else 0;
     explorer.rebuildSymbolIndexFor(path, &restored_outline, false);
+    if (load_prof) prof_symidx_ns += cio.nanoTimestamp() - t_symidx;
 
     // Restored files are absent from word_index and trigram_index at load time
     // (both are rebuilt lazily/incrementally). Register the path in
@@ -886,6 +907,11 @@ fn loadSnapshotFast(
     // Optional phase profiler (CODEDB_LOAD_PROFILE): prints a load breakdown to
     // stderr. Near-zero cost when off (one getenv + a few timestamps).
     const prof = cio.posixGetenv("CODEDB_LOAD_PROFILE") != null;
+    load_prof = prof;
+    prof_content_ns = 0;
+    prof_deps_ns = 0;
+    prof_symidx_ns = 0;
+    const rss0: u64 = if (prof) loadMaxRssBytes() else 0;
     const t_load0: i128 = if (prof) cio.nanoTimestamp() else 0;
     var fresh_ns: i128 = 0;
 
@@ -916,6 +942,7 @@ fn loadSnapshotFast(
         explorer.dep_graph.reverse.ensureTotalCapacity(fc) catch {};
     }
 
+    const rss_outline: u64 = if (prof) loadMaxRssBytes() else 0;
     const t_outline: i128 = if (prof) cio.nanoTimestamp() else 0;
     var sections = (try readSections(io, snapshot_path, allocator)) orelse return false;
     defer sections.deinit();
@@ -1011,6 +1038,7 @@ fn loadSnapshotFast(
         }
     }
 
+    const rss_recs: u64 = if (prof) loadMaxRssBytes() else 0;
     // ── Pass B: freshness check (parallelized for large trees). ──
     // statFile every record to detect edits made since the snapshot. These are
     // independent, allocation-free per-file syscalls — the dominant load cost once
@@ -1067,8 +1095,15 @@ fn loadSnapshotFast(
         }
     }
     if (prof) fresh_ns += cio.nanoTimestamp() - t_fresh0;
-
+    const rss_fresh: u64 = if (prof) loadMaxRssBytes() else 0;
     // ── Pass C: insert restored / changed / outline-only files (sequential). ──
+    // #564: defer the global symbol index — Pass C's per-file rebuilds become
+    // no-ops and ensureSymbolIndex builds it from outlines on first
+    // symbol/caller/callpath use. Plain search never needs it, so one-shot
+    // CLI queries skip the inserts and their heap entirely.
+    explorer.markSymbolIndexIncomplete();
+    var insert_ns: i128 = 0;
+    var store_ns: i128 = 0;
     for (records.items, fresh_results) |record, fr| {
         const path = record.path;
         const content = record.content;
@@ -1092,14 +1127,18 @@ fn loadSnapshotFast(
             const hash = std.hash.Wyhash.hash(0, dc);
             _ = store.recordSnapshot(path, dc.len, hash) catch {};
         } else if (outline_states.fetchRemove(path)) |removed| {
+            const t_ins: i128 = if (prof) cio.nanoTimestamp() else 0;
             insertRestoredFile(explorer, removed.key, content, removed.value, allocator, content_borrowed) catch {
                 allocator.free(removed.key);
                 var bad_outline = removed.value;
                 bad_outline.deinit();
                 continue;
             };
+            if (prof) insert_ns += cio.nanoTimestamp() - t_ins;
             const hash = record.stored_hash orelse std.hash.Wyhash.hash(0, content);
+            const t_st: i128 = if (prof) cio.nanoTimestamp() else 0;
             _ = store.recordSnapshot(removed.key, content.len, hash) catch {};
+            if (prof) store_ns += cio.nanoTimestamp() - t_st;
         } else {
             word_index_can_load_from_disk = false;
             explorer.indexFileOutlineOnly(path, content) catch continue;
@@ -1110,6 +1149,7 @@ fn loadSnapshotFast(
         file_count += 1;
     }
 
+    const rss_insert: u64 = if (prof) loadMaxRssBytes() else 0;
     if (file_count == 0) return false;
     if (expected_file_count) |expected| {
         if (file_count != expected) return false;
@@ -1163,6 +1203,20 @@ fn loadSnapshotFast(
         std.debug.print(
             "[load-profile] {d} files  total={d:.1}ms  outline={d:.1}ms  loop={d:.1}ms (freshness={d:.1}ms, rest={d:.1}ms)\n",
             .{ file_count, ms(now - t_load0), ms(outline_ns), ms(loop_ns), ms(fresh_ns), ms(loop_ns - fresh_ns) },
+        );
+        std.debug.print(
+            "[load-profile]   insert={d:.1}ms (content={d:.1}ms, deps={d:.1}ms, symidx={d:.1}ms, other={d:.1}ms)  store={d:.1}ms\n",
+            .{ ms(insert_ns), ms(prof_content_ns), ms(prof_deps_ns), ms(prof_symidx_ns), ms(insert_ns - prof_content_ns - prof_deps_ns - prof_symidx_ns), ms(store_ns) },
+        );
+        const mb = struct {
+            fn f(b: u64) f64 {
+                return @as(f64, @floatFromInt(b)) / (1024.0 * 1024.0);
+            }
+        }.f;
+        const rss_end = loadMaxRssBytes();
+        std.debug.print(
+            "[load-profile]   maxrss: start={d:.1}MB +outline={d:.1}MB +records={d:.1}MB +freshness={d:.1}MB +insert={d:.1}MB +tail={d:.1}MB end={d:.1}MB\n",
+            .{ mb(rss0), mb(rss_outline -| rss0), mb(rss_recs -| rss_outline), mb(rss_fresh -| rss_recs), mb(rss_insert -| rss_fresh), mb(rss_end -| rss_insert), mb(rss_end) },
         );
     }
 
@@ -1248,50 +1302,47 @@ fn parseJsonU64(json: []const u8, key: []const u8) ?u64 {
 /// the two are parity-tested in test_snapshot.zig ("issue-528: isSensitivePath
 /// parity") so any future drift in this security filter fails CI.
 pub fn isSensitivePath(path: []const u8) bool {
-    const sensitive_names = [_][]const u8{
-        ".env",
-        ".env.local",
-        ".env.production",
-        ".env.development",
-        ".env.staging",
-        ".env.test",
-        ".dev.vars",
-        "credentials.json",
-        "service-account.json",
-        "secrets.json",
-        "secrets.yaml",
-        "secrets.yml",
-        ".npmrc",
-        ".pypirc",
-        ".netrc",
-        "id_rsa",
-        "id_ed25519",
-        ".pem",
-    };
-
-    // Check exact filename (basename)
     const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| path[sep + 1 ..] else path;
-
+    // Fast path: most source files have extensions like .zig, .ts, .py — none start with '.'
+    // or match sensitive patterns. Skip the full check for common cases.
+    if (basename.len == 0) return false;
+    const first = basename[0];
+    // Only check sensitive names if basename starts with '.', 'c', 's', 'i' or has key/cert extension
+    if (first != '.' and first != 'c' and first != 's' and first != 'i') {
+        // Still need to check extensions and directory patterns
+        if (std.mem.endsWith(u8, basename, ".env") or
+            std.mem.endsWith(u8, basename, ".pem") or
+            std.mem.endsWith(u8, basename, ".key") or
+            std.mem.endsWith(u8, basename, ".p12") or
+            std.mem.endsWith(u8, basename, ".pfx") or
+            std.mem.endsWith(u8, basename, ".jks")) return true;
+        if (std.mem.indexOf(u8, path, ".ssh/") != null or
+            std.mem.indexOf(u8, path, ".gnupg/") != null or
+            std.mem.indexOf(u8, path, ".aws/") != null) return true;
+        return false;
+    }
+    // .env, .env.<token>; do NOT match .envoy, .envrc, .environment, etc.
+    if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env") and
+        (basename.len == 4 or basename[4] == '.' or basename[4] == '-' or basename[4] == '_')) return true;
+    // Exact matches
+    const sensitive_names = [_][]const u8{
+        ".dev.vars",        ".npmrc",               ".pypirc",      ".netrc",
+        "credentials.json", "service-account.json", "secrets.json", "secrets.yaml",
+        "secrets.yml",      "id_rsa",               "id_ed25519",   ".git-credentials",
+        "id_ecdsa",         "id_dsa",               "id_ecdsa_sk",  "id_ed25519_sk",
+    };
     for (sensitive_names) |name| {
         if (std.mem.eql(u8, basename, name)) return true;
     }
-
-    // Catch .env, .env.anything; do NOT match .envoy, .envrc, .environment, etc.
-    if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env") and
-        (basename.len == 4 or basename[4] == '.' or basename[4] == '-' or basename[4] == '_')) return true;
-
-    // Check extensions
-    if (endsWith(basename, ".pem")) return true;
-    if (endsWith(basename, ".key")) return true;
-    if (endsWith(basename, ".p12")) return true;
-    if (endsWith(basename, ".pfx")) return true;
-    if (endsWith(basename, ".jks")) return true;
-
-    // Check directory patterns
-    if (std.mem.indexOf(u8, path, ".ssh/") != null) return true;
-    if (std.mem.indexOf(u8, path, ".gnupg/") != null) return true;
-    if (std.mem.indexOf(u8, path, ".aws/") != null) return true;
-
+    if (std.mem.endsWith(u8, basename, ".env") or
+        std.mem.endsWith(u8, basename, ".pem") or
+        std.mem.endsWith(u8, basename, ".key") or
+        std.mem.endsWith(u8, basename, ".p12") or
+        std.mem.endsWith(u8, basename, ".pfx") or
+        std.mem.endsWith(u8, basename, ".jks")) return true;
+    if (std.mem.indexOf(u8, path, ".ssh/") != null or
+        std.mem.indexOf(u8, path, ".gnupg/") != null or
+        std.mem.indexOf(u8, path, ".aws/") != null) return true;
     return false;
 }
 fn endsWith(s: []const u8, suffix: []const u8) bool {

@@ -67,7 +67,29 @@ pub fn extractCallees(allocator: std.mem.Allocator, body: []const u8) ![][]const
 
     var i: usize = 0;
     while (i < body.len) : (i += 1) {
-        if (body[i] != '(') continue;
+        const c = body[i];
+        // Skip line comments, block comments, and string/char literals so an identifier
+        // mentioned only inside one is not mistaken for a call site (#548 family).
+        if (c == '/' and i + 1 < body.len and body[i + 1] == '/') {
+            i += 2;
+            while (i < body.len and body[i] != '\n') i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < body.len and body[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < body.len and !(body[i] == '*' and body[i + 1] == '/')) i += 1;
+            i += 1; // land on '/' of '*/'; the loop's i += 1 then moves past it
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            i += 1;
+            while (i < body.len and body[i] != c) {
+                if (body[i] == '\\') i += 1; // skip an escaped char
+                i += 1;
+            }
+            continue;
+        }
+        if (c != '(') continue;
         // Skip spaces/tabs between the identifier and the '('.
         var end = i;
         while (end > 0 and (body[end - 1] == ' ' or body[end - 1] == '\t')) end -= 1;

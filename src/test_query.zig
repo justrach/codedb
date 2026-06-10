@@ -1263,3 +1263,92 @@ test "issue-356-p3: codedb_read appends fuzzy suggestions when path is unreadabl
     try testing.expect(std.mem.indexOf(u8, out.items, "did you mean") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "src/main.zig") != null);
 }
+
+
+test "issue-558: codedb_query filter must filter (or error) — never silently pass every file" {
+    // Live repro: [{find},{filter,"pattern":"src/index.zig"},{limit,n:3}]
+    // returned all 50 find results — filter only reads 'ext'/'glob', so an
+    // unrecognized param silently no-ops, and find prints its full list
+    // eagerly so downstream filter/limit never affect the rendered output.
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/auth.py", "def check(): pass");
+    try explorer.indexFile("src/auth.ts", "function check() {}");
+    try explorer.indexFile("docs/auth.md", "# auth docs");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const pipe_json =
+        \\{"pipeline":[
+        \\  {"op":"find","query":"auth"},
+        \\  {"op":"filter","pattern":"*.py"},
+        \\  {"op":"limit","n":10}
+        \\]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, pipe_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_query, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // The surviving file must be listed in the final output…
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/auth.py") != null);
+    // …and filtered-out files must not be listed as results.
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/auth.ts") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "docs/auth.md") == null);
+
+    // A filter step with no recognized param must error, not pass everything.
+    const bad_json =
+        \\{"pipeline":[
+        \\  {"op":"find","query":"auth"},
+        \\  {"op":"filter","match":"*.py"}
+        \\]}
+    ;
+    const bad_parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bad_json, .{});
+    defer bad_parsed.deinit();
+
+    var bad_out: std.ArrayList(u8) = .empty;
+    defer bad_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_query, &bad_parsed.value.object, &bad_out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, bad_out.items, "error: filter needs") != null);
+}
+
+// ─── audit (2026-06-09): latent-issue sweep — memory safety ───
+// src/mcp.zig deps op appended freed dependency strings into file_set (use-after-free)
+// and leaked the seed string. testing.allocator catches both (poisoned read + leak).
+test "audit: codedb_query deps op does not use freed dependency strings" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("auth.zig", "const std = @import(\"std\");\npub fn authenticate() bool { return true; }\n");
+    try explorer.indexFile("handler.zig", "const auth = @import(\"auth.zig\");\npub fn handleLogin() void { _ = auth.authenticate(); }\n");
+    try explorer.indexFile("auth_test.zig", "const auth = @import(\"auth.zig\");\ntest \"x\" { _ = auth.authenticate(); }\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const pipe_json =
+        \\{"pipeline":[{"op":"deps","path":"auth.zig","direction":"imported_by"}]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, pipe_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_query, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "handler.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "auth_test.zig") != null);
+}

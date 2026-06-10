@@ -178,9 +178,7 @@ fn shouldSkip(path: []const u8) bool {
 }
 
 fn shouldSkipDir(name: []const u8) bool {
-    for (skip_dirs) |skip| {
-        if (std.mem.eql(u8, name, skip)) return true;
-    }
+    for (skip_dirs) |skip| if (std.mem.eql(u8, name, skip)) return true;
     return false;
 }
 
@@ -1184,7 +1182,8 @@ pub fn isSensitivePath(path: []const u8) bool {
     // Only check sensitive names if basename starts with '.', 'c', 's', 'i' or has key/cert extension
     if (first != '.' and first != 'c' and first != 's' and first != 'i') {
         // Still need to check extensions and directory patterns
-        if (std.mem.endsWith(u8, basename, ".pem") or
+        if (std.mem.endsWith(u8, basename, ".env") or
+            std.mem.endsWith(u8, basename, ".pem") or
             std.mem.endsWith(u8, basename, ".key") or
             std.mem.endsWith(u8, basename, ".p12") or
             std.mem.endsWith(u8, basename, ".pfx") or
@@ -1201,12 +1200,14 @@ pub fn isSensitivePath(path: []const u8) bool {
     const sensitive_names = [_][]const u8{
         ".dev.vars",        ".npmrc",               ".pypirc",      ".netrc",
         "credentials.json", "service-account.json", "secrets.json", "secrets.yaml",
-        "secrets.yml",      "id_rsa",               "id_ed25519",
+        "secrets.yml",      "id_rsa",               "id_ed25519",   ".git-credentials",
+        "id_ecdsa",         "id_dsa",               "id_ecdsa_sk",  "id_ed25519_sk",
     };
     for (sensitive_names) |name| {
         if (std.mem.eql(u8, basename, name)) return true;
     }
-    if (std.mem.endsWith(u8, basename, ".pem") or
+    if (std.mem.endsWith(u8, basename, ".env") or
+        std.mem.endsWith(u8, basename, ".pem") or
         std.mem.endsWith(u8, basename, ".key") or
         std.mem.endsWith(u8, basename, ".p12") or
         std.mem.endsWith(u8, basename, ".pfx") or

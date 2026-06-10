@@ -2234,3 +2234,152 @@ test "issue-531: searchSymbols fuzzy match" {
     try testing.expect(results.len >= 1);
     try testing.expectEqualStrings("ensureCallGraph", results[0].symbol.name);
 }
+
+// ─── audit (2026-06-09): latent-issue sweep — call-graph phantom edges ───
+// src/codegraph.zig extractCallees paired every '(' with the preceding identifier with
+// no comment/string stripping, so a name mentioned only in a // comment surfaced as a
+// real resolved callee in codedb_context (#548 family, for the call graph).
+test "audit: comment-only mention is not a resolved callee" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var exp = Explorer.init(a, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    try exp.indexFile("util.zig", "pub fn uniqueHelper() void {}\n");
+    try exp.indexFile("caller.zig",
+        \\pub fn caller() void {
+        \\    // see uniqueHelper() for details
+        \\}
+        \\
+    );
+    const callees = try exp.resolveCallees("caller.zig", 1, 3, a, 8);
+    for (callees) |c| try testing.expect(!std.mem.eql(u8, c.name, "uniqueHelper"));
+}
+
+test "audit: extractCallees ignores comment/string mentions" {
+    const body =
+        \\    realCall(x);
+        \\    // ghostFn() lives only in this comment
+        \\    log("please stringOnlyFn() here");
+    ;
+    const callees = try codegraph.extractCallees(testing.allocator, body);
+    defer testing.allocator.free(callees);
+    var saw_real = false;
+    for (callees) |c| {
+        if (std.mem.eql(u8, c, "realCall")) saw_real = true;
+        try testing.expect(!std.mem.eql(u8, c, "ghostFn"));
+        try testing.expect(!std.mem.eql(u8, c, "stringOnlyFn"));
+    }
+    try testing.expect(saw_real); // real call in code is still captured
+}
+
+test "issue-586: symbol_index keys must survive re-index of the file that first inserted them" {
+    // rebuildSymbolIndexFor keys the global symbol index with sym.name slices
+    // OWNED BY THE FILE'S OUTLINE. Re-indexing that file deinits the old
+    // outline — freeing the bytes the map hashes and compares — but the entry
+    // survives whenever another file shares the name (init/deinit/main are
+    // shared by nearly every Zig file). Every later probe eql()s freed memory:
+    // UB in release, and under the DebugAllocator poison the O(1) index
+    // silently loses the name, degrading every lookup to the outline scans.
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // a.zig inserts sharedFn first -> the map key aliases a.zig's outline string.
+    try explorer.indexFile("src/a.zig", "pub fn sharedFn() void {}\n");
+    try explorer.indexFile("src/b.zig", "pub fn sharedFn() void {}\n");
+
+    // Re-index the key owner: its old outline is freed; the entry stays alive
+    // because b.zig still holds a location.
+    try explorer.indexFile("src/a.zig", "pub fn sharedFn() void {}\npub fn other() void {}\n");
+
+    const locs = explorer.symbol_index.get("sharedFn") orelse return error.SymbolLostFromIndex;
+    try testing.expect(locs.items.len >= 2);
+}
+
+test "issue-587: removeFile drops the path from skip_trigram_files" {
+    // Explorer.removeFile cleans dep_graph, symbol_index, contents, word and
+    // trigram indexes, then frees the outlines key — but never removes the
+    // skip_trigram_files entry, whose key ALIASES that freed outlines key.
+    // The tier-3 search scan then iterates a dangling path and hands it to
+    // readContentForSearch (UB read; with reused memory, an arbitrary path).
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // Outline-only indexing registers the file in skip_trigram_files (#507).
+    try explorer.indexFileOutlineOnly("src/gone.zig", "pub fn ghostFn() void {}\n");
+    try testing.expectEqual(@as(usize, 1), explorer.skip_trigram_files.count());
+
+    explorer.removeFile("src/gone.zig");
+    try testing.expectEqual(@as(usize, 0), explorer.skip_trigram_files.count());
+}
+
+test "issue-594: failed re-index restores the word index from valid prior content" {
+    // commitParsedFileOwnedOutline reads `prior_content` out of the content
+    // cache and THEN calls contents.put, which frees that value in place. The
+    // trigram-failure errdefer later "restores" the word index by re-indexing
+    // prior_content — freed memory. Under the DebugAllocator poison the
+    // tokenizer finds no words in it, so a failed re-index silently wipes the
+    // file's postings instead of restoring them (release builds read garbage).
+    const FailOnce = struct {
+        backing: std.mem.Allocator,
+        next_index: usize = 0,
+        fail_index: usize,
+
+        fn allocator(self: *@This()) std.mem.Allocator {
+            return .{ .ptr = self, .vtable = &.{
+                .alloc = allocImpl,
+                .resize = resizeImpl,
+                .remap = remapImpl,
+                .free = freeImpl,
+            } };
+        }
+        fn allocImpl(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            const idx = self.next_index;
+            self.next_index += 1;
+            if (idx == self.fail_index) return null;
+            return self.backing.rawAlloc(len, alignment, ra);
+        }
+        fn resizeImpl(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return self.backing.rawResize(memory, alignment, new_len, ra);
+        }
+        fn remapImpl(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return self.backing.rawRemap(memory, alignment, new_len, ra);
+        }
+        fn freeImpl(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ra: usize) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.backing.rawFree(memory, alignment, ra);
+        }
+    };
+
+    // Pass 1: count the allocation window of the re-index on a successful run.
+    var window_start: usize = 0;
+    var window_end: usize = 0;
+    {
+        var counter = FailOnce{ .backing = testing.allocator, .fail_index = std.math.maxInt(usize) };
+        var explorer = Explorer.init(counter.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+        defer explorer.deinit();
+        try explorer.indexFile("src/a.zig", "pub fn alphaTok() void {}\n");
+        window_start = counter.next_index;
+        try explorer.indexFile("src/a.zig", "pub fn betaTok() void {}\n");
+        window_end = counter.next_index;
+    }
+    try testing.expect(window_end > window_start);
+
+    // Pass 2: fail each allocation in that window exactly once. Whenever the
+    // re-index errors out, the old content must still be word-searchable.
+    var fi = window_start;
+    while (fi < window_end) : (fi += 1) {
+        var failer = FailOnce{ .backing = testing.allocator, .fail_index = fi };
+        var explorer = Explorer.init(failer.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+        defer explorer.deinit();
+        explorer.indexFile("src/a.zig", "pub fn alphaTok() void {}\n") catch unreachable;
+        if (explorer.indexFile("src/a.zig", "pub fn betaTok() void {}\n")) |_| {
+            // Tolerated failure — the new content must be live.
+            try testing.expect(explorer.word_index.search("betatok").len > 0);
+        } else |_| {
+            if (explorer.word_index.search("alphatok").len == 0) return error.PriorContentLostOnFailedReindex;
+        }
+    }
+}
