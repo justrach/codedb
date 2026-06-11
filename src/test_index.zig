@@ -3254,3 +3254,15 @@ test "issue-600: mmap_overlay writeToDisk persists overlay edits" {
         try testing.expectEqual(@as(usize, 0), g.len);
     }
 }
+
+
+test "issue-606: word index reuses doc_id slots freed by removeFile" {
+    var wi = WordIndex.init(testing.allocator);
+    defer wi.deinit();
+
+    try wi.indexFile("a.zig", "const alpha = 1;\n");
+    wi.removeFile("a.zig");
+    try wi.indexFile("b.zig", "const beta = 2;\n");
+
+    try testing.expectEqual(@as(usize, 1), wi.id_to_path.items.len);
+}
