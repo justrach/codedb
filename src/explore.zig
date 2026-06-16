@@ -1911,12 +1911,28 @@ pub const Explorer = struct {
                 }
             }
 
-            // OCaml nested (* ... *) block comments
+            // OCaml nested (* ... *) block comments. Comment delimiters are ignored
+            // inside string and char literals so that `let pattern = "(*"` does not
+            // throw the scanner out of sync (PR review).
             if (outline.language == .ocaml) {
                 if (ocaml_comment_depth > 0) {
                     // We're inside a multi-line comment — scan for closers
                     var i: usize = 0;
+                    var in_string: u8 = 0;
                     while (i + 1 < trimmed.len) : (i += 1) {
+                        const c = trimmed[i];
+                        if (in_string != 0) {
+                            if (c == '\\' and i + 1 < trimmed.len) {
+                                i += 1;
+                            } else if (c == in_string) {
+                                in_string = 0;
+                            }
+                            continue;
+                        }
+                        if (c == '"' or c == '\'') {
+                            in_string = c;
+                            continue;
+                        }
                         if (std.mem.startsWith(u8, trimmed[i..], "(*")) {
                             ocaml_comment_depth += 1;
                             i += 1;
@@ -1936,7 +1952,21 @@ pub const Explorer = struct {
                 } else {
                     // Not currently in a comment — scan for openers
                     var i: usize = 0;
+                    var in_string: u8 = 0;
                     while (i + 1 < trimmed.len) : (i += 1) {
+                        const c = trimmed[i];
+                        if (in_string != 0) {
+                            if (c == '\\' and i + 1 < trimmed.len) {
+                                i += 1;
+                            } else if (c == in_string) {
+                                in_string = 0;
+                            }
+                            continue;
+                        }
+                        if (c == '"' or c == '\'') {
+                            in_string = c;
+                            continue;
+                        }
                         if (std.mem.startsWith(u8, trimmed[i..], "(*")) {
                             ocaml_comment_depth += 1;
                             i += 1;

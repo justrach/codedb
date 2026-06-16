@@ -1913,6 +1913,32 @@ test "ocaml: parser" {
     try expectOutlineImport(&outline, "Core");
 }
 
+test "ocaml: comment delimiters inside strings are ignored" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    // "(*" inside a string must NOT start a comment — definitions after it
+    // must still be parsed.
+    try explorer.indexFile("src/str_test.ml",
+        \\let pattern = "(* not a comment *)"
+        \\
+        \\let greet name = "hello " ^ name
+        \\
+        \\(* real comment *)
+        \\
+        \\let x = 42
+    );
+
+    var outline = (try explorer.getOutline("src/str_test.ml", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try testing.expectEqualStrings("ocaml", @tagName(outline.language));
+    // "(*" inside a string must not swallow subsequent definitions
+    try expectOutlineSymbol(&outline, "pattern", .constant);
+    try expectOutlineSymbol(&outline, "greet", .constant);
+    try expectOutlineSymbol(&outline, "x", .constant);
+}
 
 // ─── audit (2026-06-09): latent-issue sweep — parser/deps fixes ───
 
