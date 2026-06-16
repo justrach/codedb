@@ -193,6 +193,7 @@ pub const Language = enum(u8) {
     mlir,
     tablegen,
     rescript,
+    ocaml,
 };
 
 pub fn detectLanguage(path: []const u8) Language {
@@ -232,6 +233,7 @@ pub fn detectLanguage(path: []const u8) Language {
     if (std.mem.endsWith(u8, path, ".mlir")) return .mlir;
     if (std.mem.endsWith(u8, path, ".td")) return .tablegen;
     if (std.mem.endsWith(u8, path, ".res") or std.mem.endsWith(u8, path, ".resi")) return .rescript;
+    if (std.mem.endsWith(u8, path, ".ml") or std.mem.endsWith(u8, path, ".mli")) return .ocaml;
     return .unknown;
 }
 
@@ -1838,6 +1840,7 @@ pub const Explorer = struct {
         var php_state: PhpParseState = .{};
         var in_py_docstring = false;
         var in_block_comment = false;
+        var ocaml_comment_depth: u32 = 0;
         var in_go_import_block = false;
         var c_brace_depth: u32 = 0;
         var lines = std.mem.splitScalar(u8, content, '\n');
@@ -1908,6 +1911,52 @@ pub const Explorer = struct {
                 }
             }
 
+            // OCaml nested (* ... *) block comments
+            if (outline.language == .ocaml) {
+                if (ocaml_comment_depth > 0) {
+                    // We're inside a multi-line comment — scan for closers
+                    var i: usize = 0;
+                    while (i + 1 < trimmed.len) : (i += 1) {
+                        if (std.mem.startsWith(u8, trimmed[i..], "(*")) {
+                            ocaml_comment_depth += 1;
+                            i += 1;
+                        } else if (std.mem.startsWith(u8, trimmed[i..], "*)")) {
+                            if (ocaml_comment_depth > 0) ocaml_comment_depth -= 1;
+                            i += 1;
+                        }
+                    }
+                    if (ocaml_comment_depth > 0) continue;
+                    // Depth reached zero mid-line — keep text after the last *)
+                    // Find the last *) in the line
+                    if (std.mem.lastIndexOf(u8, trimmed, "*)")) |close_pos| {
+                        const after = std.mem.trimStart(u8, trimmed[close_pos + 2 ..], " \t");
+                        if (after.len == 0) continue;
+                        trimmed = after;
+                    } else continue;
+                } else {
+                    // Not currently in a comment — scan for openers
+                    var i: usize = 0;
+                    while (i + 1 < trimmed.len) : (i += 1) {
+                        if (std.mem.startsWith(u8, trimmed[i..], "(*")) {
+                            ocaml_comment_depth += 1;
+                            i += 1;
+                        } else if (std.mem.startsWith(u8, trimmed[i..], "*)")) {
+                            if (ocaml_comment_depth > 0) ocaml_comment_depth -= 1;
+                            i += 1;
+                        }
+                    }
+                    if (ocaml_comment_depth > 0) {
+                        // Comment opened but not closed on this line.
+                        // Check if there's material before the first (*.
+                        if (std.mem.indexOf(u8, trimmed, "(*")) |open_pos| {
+                            const before = std.mem.trimEnd(u8, trimmed[0..open_pos], " \t");
+                            if (before.len == 0) continue;
+                            trimmed = before;
+                        } else continue;
+                    }
+                }
+            }
+
             if (outline.language == .zig) {
                 try parser.parseZigLine(trimmed, line_num, &outline);
             } else if (outline.language == .python) {
@@ -1967,6 +2016,8 @@ pub const Explorer = struct {
                 try parser.parseTableGenLine(trimmed, line_num, &outline);
             } else if (outline.language == .rescript) {
                 try parser.parseRescriptLine(trimmed, line_num, &outline);
+            } else if (outline.language == .ocaml) {
+                try parser.parseOcamlLine(trimmed, line_num, &outline);
             }
 
             prev_line_trimmed = trimmed;
@@ -6489,6 +6540,87 @@ pub const Explorer = struct {
         try appendOutlineSymbol(a, outline, name, kind, line_num, line);
     }
 
+    /// OCaml (.ml / .mli).
+    /// `open`/`include` → import; `module` → struct_def, `module type` → interface_def;
+    /// `type` → type_alias; `external` → function; `exception` → enum_def;
+    /// `val` → function (.mli value signature); `let`/`and` → function (→ present in line
+    /// or RHS starts with `fun `/`function`) else constant.
+    /// Leading attributes ([@@...], [@...], [@@@...]) are stripped first.
+    fn parseOcamlLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
+        const a = self.allocator;
+        const code = stripLeadingOcamlAttributes(line);
+        if (code.len == 0) return;
+
+        if (startsWith(code, "open ")) {
+            const name = ocamlModulePath(std.mem.trimStart(u8, code[5..], " \t"));
+            if (name.len > 0) {
+                try appendImportPath(a, outline, name);
+                try appendOutlineSymbol(a, outline, name, .import, line_num, null);
+            }
+            return;
+        }
+        if (startsWith(code, "include ")) {
+            const name = ocamlModulePath(std.mem.trimStart(u8, code[8..], " \t"));
+            if (name.len > 0) {
+                try appendImportPath(a, outline, name);
+                try appendOutlineSymbol(a, outline, name, .import, line_num, null);
+            }
+            return;
+        }
+        if (startsWith(code, "module ")) {
+            var rest = std.mem.trimStart(u8, code[7..], " \t");
+            var kind: SymbolKind = .struct_def;
+            if (startsWith(rest, "type ")) {
+                kind = .interface_def;
+                rest = std.mem.trimStart(u8, rest[5..], " \t");
+            }
+            const name = ocamlIdent(rest);
+            if (name.len > 0) try appendOutlineSymbol(a, outline, name, kind, line_num, line);
+            return;
+        }
+        if (startsWith(code, "type ")) {
+            var rest = std.mem.trimStart(u8, code[5..], " \t");
+            if (startsWith(rest, "rec ")) rest = std.mem.trimStart(u8, rest[4..], " \t");
+            const name = ocamlIdent(rest);
+            if (name.len > 0) try appendOutlineSymbol(a, outline, name, .type_alias, line_num, line);
+            return;
+        }
+        if (startsWith(code, "external ")) {
+            const name = ocamlIdent(std.mem.trimStart(u8, code[9..], " \t"));
+            if (name.len > 0) try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+            return;
+        }
+        if (startsWith(code, "exception ")) {
+            const name = ocamlIdent(std.mem.trimStart(u8, code[10..], " \t"));
+            if (name.len > 0) try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+            return;
+        }
+        if (startsWith(code, "val ")) {
+            // .mli value signature
+            const name = ocamlIdent(std.mem.trimStart(u8, code[4..], " \t"));
+            if (name.len > 0) try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+            return;
+        }
+        var rest: []const u8 = undefined;
+        if (startsWith(code, "let ")) {
+            rest = std.mem.trimStart(u8, code[4..], " \t");
+            if (startsWith(rest, "rec ")) rest = std.mem.trimStart(u8, rest[4..], " \t");
+        } else if (startsWith(code, "and ")) {
+            rest = std.mem.trimStart(u8, code[4..], " \t");
+        } else return;
+        const name = ocamlIdent(rest);
+        if (name.len == 0) return;
+        // Heuristic: if the line contains ->, or the RHS after = begins with fun / function, treat as function.
+        const kind: SymbolKind = if (std.mem.indexOf(u8, code, "->") != null) .function else blk: {
+            if (std.mem.indexOfScalar(u8, code, '=')) |eq_pos| {
+                const rhs = std.mem.trimStart(u8, code[eq_pos + 1 ..], " \t");
+                if (startsWith(rhs, "fun ") or startsWith(rhs, "function")) break :blk .function;
+            }
+            break :blk .constant;
+        };
+        try appendOutlineSymbol(a, outline, name, kind, line_num, line);
+    }
+
     fn rebuildDepsFor(self: *Explorer, path: []const u8, outline: *FileOutline) !void {
         var deps: std.ArrayList([]const u8) = .empty;
         errdefer deps.deinit(self.allocator);
@@ -6910,6 +7042,7 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
         .fortran => std.mem.startsWith(u8, trimmed, "!"),
         .llvm_ir => std.mem.startsWith(u8, trimmed, ";"),
         .rescript => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .ocaml => std.mem.startsWith(u8, trimmed, "(*"),
         else => false,
     };
 }
@@ -7379,6 +7512,45 @@ fn stripLeadingResDecorators(line: []const u8) []const u8 {
             }
         }
         s = std.mem.trimStart(u8, s[i..], " \t");
+    }
+    return s;
+}
+
+inline fn ocamlIsIdentStart(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+}
+inline fn ocamlIsIdentChar(c: u8) bool {
+    return ocamlIsIdentStart(c) or (c >= '0' and c <= '9') or c == '\'';
+}
+/// Leading OCaml identifier (letter/_/digit/prime), or "" if none.
+fn ocamlIdent(s: []const u8) []const u8 {
+    if (s.len == 0 or !ocamlIsIdentStart(s[0])) return "";
+    var i: usize = 1;
+    while (i < s.len and ocamlIsIdentChar(s[i])) i += 1;
+    return s[0..i];
+}
+/// Leading dotted module path (Foo.Bar.Baz), trailing dots trimmed, or "".
+fn ocamlModulePath(s: []const u8) []const u8 {
+    if (s.len == 0 or !ocamlIsIdentStart(s[0])) return "";
+    var i: usize = 1;
+    while (i < s.len and (ocamlIsIdentChar(s[i]) or s[i] == '.')) i += 1;
+    var end = i;
+    while (end > 0 and s[end - 1] == '.') end -= 1;
+    return s[0..end];
+}
+/// Strip leading OCaml attributes ([@@...], [@...], [@@@...]) and trailing space.
+fn stripLeadingOcamlAttributes(line: []const u8) []const u8 {
+    var s = std.mem.trimStart(u8, line, " \t");
+    while (s.len > 0 and s[0] == '[') {
+        // Check for attribute forms: [@@, [@@@, [@ (with at least one @ after [)
+        const after_bracket = s[1..];
+        if (after_bracket.len == 0) break;
+        if (after_bracket[0] != '@') break;
+        // Walk past the closing ]
+        var i: usize = 2;
+        while (i < s.len and s[i] != ']') i += 1;
+        if (i >= s.len) break; // unclosed — bail out
+        s = std.mem.trimStart(u8, s[i + 1 ..], " \t");
     }
     return s;
 }

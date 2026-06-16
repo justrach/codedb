@@ -1872,6 +1872,47 @@ test "issue-532: ReScript parser" {
     try expectOutlineImport(&outline, "Belt");
 }
 
+test "ocaml: parser" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    try explorer.indexFile("src/User.ml",
+        \\open Base
+        \\
+        \\module User = struct
+        \\    type t = { name : string; age : int }
+        \\end
+        \\
+        \\type status = Active | Inactive
+        \\
+        \\let make name age = { name; age }
+        \\
+        \\let rec fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+        \\
+        \\external get_env : string -> string = "c_get_env"
+        \\
+        \\include Core
+    );
+
+    var outline = (try explorer.getOutline("src/User.ml", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+
+    try testing.expectEqualStrings("ocaml", @tagName(outline.language));
+
+    try expectOutlineImport(&outline, "Base");
+    try expectOutlineSymbol(&outline, "User", .struct_def);
+    try expectOutlineSymbol(&outline, "t", .type_alias);
+    try expectOutlineSymbol(&outline, "status", .type_alias);
+    // make: no ->, RHS = { name; age } → constant
+    try expectOutlineSymbol(&outline, "make", .constant);
+    // fib: no ->, RHS = if ... → constant (line-based heuristic)
+    try expectOutlineSymbol(&outline, "fib", .constant);
+    // get_env: line contains ->  → function
+    try expectOutlineSymbol(&outline, "get_env", .function);
+    try expectOutlineImport(&outline, "Core");
+}
+
 
 // ─── audit (2026-06-09): latent-issue sweep — parser/deps fixes ───
 
