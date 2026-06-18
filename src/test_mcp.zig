@@ -2315,3 +2315,31 @@ test "issue-531: codedb_context max_tokens packs sections by value under the bud
     try testing.expect(std.mem.indexOf(u8, out_budget.items, "## Most-relevant files") != null);
     try testing.expect(std.mem.indexOf(u8, out_budget.items, "## Top sites") == null);
 }
+
+// Issue #626: structural-tool steering. The search nudge only fires for bare
+// identifiers; the read nudge only for large whole-file reads.
+test "issue-626: isBareIdentifier gates the search nudge" {
+    try testing.expect(mcp_mod.isBareIdentifier("make_bytes"));
+    try testing.expect(mcp_mod.isBareIdentifier("HttpResponse"));
+    try testing.expect(mcp_mod.isBareIdentifier("_private"));
+    try testing.expect(mcp_mod.isBareIdentifier("parse2"));
+
+    // Anything that isn't a single identifier is left to plain substring search.
+    try testing.expect(!mcp_mod.isBareIdentifier(""));
+    try testing.expect(!mcp_mod.isBareIdentifier("def content"));
+    try testing.expect(!mcp_mod.isBareIdentifier("make_bytes("));
+    try testing.expect(!mcp_mod.isBareIdentifier("obj.method"));
+    try testing.expect(!mcp_mod.isBareIdentifier("2fast"));
+}
+
+test "issue-626: fullFileReadHint only nudges on large whole-file reads" {
+    try testing.expect(Explorer.fullFileReadHint("one\ntwo\nthree\n") == null);
+
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(testing.allocator);
+    var i: usize = 0;
+    while (i < 500) : (i += 1) try big.appendSlice(testing.allocator, "x\n");
+    const hint = Explorer.fullFileReadHint(big.items);
+    try testing.expect(hint != null);
+    try testing.expect(std.mem.indexOf(u8, hint.?, "codedb_outline") != null);
+}

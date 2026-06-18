@@ -618,10 +618,10 @@ pub const tools_list =
     \\{"tools":[
     \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_outline","description":"Symbol outline of one file: functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view — each symbol's declaration line with its body elided as '{ … N lines }', so a 2,000-line file collapses to ~one line per symbol.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_symbol","description":"Find symbol definitions across the index — exact name, prefix, glob pattern, fuzzy match, or kind filter. Returns file, line, kind, and score. Pass format=json for structured output.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"prefix":{"type":"string","description":"Prefix match (e.g. parse_)"},"pattern":{"type":"string","description":"Glob pattern on symbol name (e.g. *Manager)"},"kind":{"type":"string","description":"Filter by kind: function, struct, interface, class, method, enum"},"fuzzy":{"type":"boolean","description":"Fuzzy/typo-tolerant match when name is set (default: false)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"max_results":{"type":"integer","description":"Max results (default: 50, cap 200)"},"format":{"type":"string","description":"Set to json for structured JSON output"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_search","description":"Substring full-text search across the index (regex if regex=true). For one identifier prefer codedb_word; for a definition prefer codedb_symbol. Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+    \\{"name":"codedb_symbol","description":"PRIMARY tool for locating a definition — reach for this FIRST when you know or can guess a symbol name, instead of codedb_search. Finds symbol definitions across the index — exact name, prefix, glob pattern, fuzzy match, or kind filter. Returns file, line, kind, and score. Pass format=json for structured output.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"prefix":{"type":"string","description":"Prefix match (e.g. parse_)"},"pattern":{"type":"string","description":"Glob pattern on symbol name (e.g. *Manager)"},"kind":{"type":"string","description":"Filter by kind: function, struct, interface, class, method, enum"},"fuzzy":{"type":"boolean","description":"Fuzzy/typo-tolerant match when name is set (default: false)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"max_results":{"type":"integer","description":"Max results (default: 50, cap 200)"},"format":{"type":"string","description":"Set to json for structured JSON output"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_search","description":"Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
     \\{"name":"codedb_word","description":"Exact-identifier lookup via inverted index — every occurrence of one word, O(1). Use for single identifiers; use codedb_search for substrings or phrases.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
-    \\{"name":"codedb_callers","description":"Find every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+    \\{"name":"codedb_callers","description":"PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
     \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Use after codedb_callers when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]}},
     \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE tight block (keywords used + symbol definitions + ranked files + top file:line snippets). Replaces 3-5 sequential search/word/symbol calls — use for first-touch orientation on a new task. For narrow follow-ups stick with codedb_search/codedb_symbol.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (~4 chars/token, min 256). Sections are packed by value — files, symbol definitions, callers, calls, snippets — and omitted ones leave a one-line marker."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]}},
     \\{"name":"codedb_diagnostics","description":"Fetch the latest linter diagnostics for a file, produced off the edit path (ruff/biome/etc.) after a recent codedb_edit. Call right after an edit to surface real errors the change may have introduced (undefined names, type/lint issues) on top of codedb's built-in checks. Returns 'no diagnostics available yet' when none are cached or external linters are disabled.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to fetch diagnostics for"}},"required":["path"]}},
@@ -1005,7 +1005,7 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
         if (negotiateProtocolVersion(requested)) |v| negotiated = v;
     }
     const init_result = std.fmt.allocPrint(s.alloc,
-        \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"codedb is a code-intelligence and context tool — not your editor. Use it to understand the codebase before you change it: search, symbol/caller lookup, dependency graph, outlines, and codedb_context for task-shaped orientation. Make edits with your own native file tools. codedb_edit is only a fallback for clients with no native editing."}}
+        \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"codedb is a code-intelligence and context tool — not your editor. Default to the structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline for a file's structure before codedb_read, and codedb_context to orient on a new task. Use codedb_search only for substrings or phrases when you do NOT know the exact symbol name — it is a fallback, not the default. Make edits with your own native file tools. codedb_edit is only a fallback for clients with no native editing."}}
     , .{ negotiated, release_info.semver }) catch return;
     defer s.alloc.free(init_result);
     writeResult(s.alloc, s.stdout, id, init_result);
@@ -1568,6 +1568,43 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
     }
 }
 
+// Issue #626: agents reach for codedb_search with a bare symbol name and skip
+// the structural tools entirely. When the query is a single identifier the index
+// already knows as a symbol, prepend a one-line nudge toward codedb_symbol /
+// codedb_callers — fired in-context, exactly at the grep-style call.
+pub fn isBareIdentifier(s: []const u8) bool {
+    if (s.len == 0 or s.len > 128) return false;
+    if (std.ascii.isDigit(s[0])) return false;
+    for (s) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
+    }
+    return true;
+}
+
+fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query: []const u8, out: *std.ArrayList(u8)) void {
+    if (!isBareIdentifier(query)) return;
+    const spec = Explorer.SymbolSearchSpec{
+        .name = query,
+        .prefix = null,
+        .pattern = null,
+        .kind = null,
+        .fuzzy = false,
+        .max_results = 1,
+    };
+    const results = explorer.searchSymbols(spec, alloc) catch return;
+    defer {
+        for (results) |r| {
+            alloc.free(r.path);
+            alloc.free(r.symbol.name);
+            if (r.symbol.detail) |d| alloc.free(d);
+        }
+        alloc.free(results);
+    }
+    if (results.len == 0) return;
+    const w = cio.listWriter(out, alloc);
+    w.print("↪ '{s}' is an indexed symbol — codedb_symbol returns its definition and codedb_callers its call sites in one call (no search+read needed).\n", .{query}) catch {};
+}
+
 fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const query = getStr(args, "query") orelse {
         out.appendSlice(alloc, "error: missing 'query' argument") catch {};
@@ -1616,6 +1653,9 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         writeJsonToolError(out, alloc, "codedb_search", "unsupported", "format=json does not support scope=true yet");
         return;
     }
+    // Issue #626: nudge toward the structural tools when the query is a bare
+    // symbol name. Text output only — would corrupt the format=json payload.
+    if (!json_fmt) appendSearchSymbolNudge(alloc, explorer, query, out);
     if (scope and is_regex) {
         const results = explorer.searchContentRegexWithScope(query, alloc, max_results) catch |e| {
             out.appendSlice(alloc, if (e == error.InvalidRegex) "error: invalid regex" else "error: scoped regex search failed") catch {};
@@ -2915,6 +2955,7 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         defer alloc.free(extracted);
         out.appendSlice(alloc, extracted) catch {};
     } else {
+        if (Explorer.fullFileReadHint(content)) |hint| out.appendSlice(alloc, hint) catch {};
         out.appendSlice(alloc, content) catch {};
     }
 }
