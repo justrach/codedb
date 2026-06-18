@@ -2479,6 +2479,18 @@ pub const Explorer = struct {
         return .{ .data = data, .owned = true, .allocator = allocator };
     }
 
+    /// Issue #626: nudge agents toward codedb_outline when they pull a whole
+    /// large file with no range — the grep+cat habit reads entire files and
+    /// burns tokens. Returns a static one-liner, or null for small files.
+    pub fn fullFileReadHint(content: []const u8) ?[]const u8 {
+        var lines: usize = 1;
+        for (content) |c| {
+            if (c == '\n') lines += 1;
+        }
+        if (lines < 400) return null;
+        return "↪ whole-file read: codedb_outline maps this file 4-15x smaller — get the structure, pick a line range, then codedb_read just that range.\n";
+    }
+
     fn renderReadBytes(
         path: []const u8,
         content: []const u8,
@@ -2516,6 +2528,7 @@ pub const Explorer = struct {
             const lang = detectLanguage(path);
             try appendExtractedLines(content, start, end, true, opts.compact, lang, allocator, out);
         } else {
+            if (fullFileReadHint(content)) |hint| try out.appendSlice(allocator, hint);
             try out.appendSlice(allocator, content);
         }
     }
