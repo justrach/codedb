@@ -2343,3 +2343,11 @@ test "issue-626: fullFileReadHint only nudges on large whole-file reads" {
     try testing.expect(hint != null);
     try testing.expect(std.mem.indexOf(u8, hint.?, "codedb_outline") != null);
 }
+
+test "issue-626: depsHint fires only on a single unambiguous definition" {
+    try testing.expect(mcp_mod.depsHint(0) == null);
+    try testing.expect(mcp_mod.depsHint(5) == null);
+    const h = mcp_mod.depsHint(1);
+    try testing.expect(h != null);
+    try testing.expect(std.mem.indexOf(u8, h.?, "codedb_deps") != null);
+}
