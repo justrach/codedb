@@ -1273,6 +1273,28 @@ test "decomposeRegex: alternation creates OR groups" {
     try testing.expectEqual(@as(usize, 2), q.or_groups[0].len);
 }
 
+test "issue-628: alternation with a no-trigram branch falls back to scan-all" {
+    // "xy" is too short to yield a trigram. Pre-fix, decomposeRegex constrained
+    // candidate files to "createGateway"'s trigrams, dropping any file that
+    // matched only the "xy" branch — a silent 0-match false negative. The query
+    // must instead be fully unconstrained so the search scans every file.
+    var q = try decomposeRegex("xy|createGateway", testing.allocator);
+    defer q.deinit();
+    try testing.expectEqual(@as(usize, 0), q.and_trigrams.len);
+    try testing.expectEqual(@as(usize, 0), q.or_groups.len);
+
+    // A metachar-only branch (matches anywhere) must also force scan-all.
+    var q2 = try decomposeRegex(".*|createGateway", testing.allocator);
+    defer q2.deinit();
+    try testing.expectEqual(@as(usize, 0), q2.and_trigrams.len);
+    try testing.expectEqual(@as(usize, 0), q2.or_groups.len);
+
+    // Sanity: when every branch yields trigrams, prefiltering is still used.
+    var q3 = try decomposeRegex("generateText|streamText", testing.allocator);
+    defer q3.deinit();
+    try testing.expectEqual(@as(usize, 1), q3.or_groups.len);
+}
+
 
 test "decomposeRegex: quantifier removes preceding char" {
     var q = try decomposeRegex("hel+o", testing.allocator);

@@ -2757,14 +2757,24 @@ pub fn decomposeRegex(pattern: []const u8, allocator: std.mem.Allocator) !RegexQ
     if (top_pipes.items.len > 0) {
         // Top-level alternation: merge all branch trigrams into a single OR group.
         // A file matching ANY branch's trigrams is a valid candidate.
+        //
+        // Soundness (#628): if ANY branch yields no trigrams (too short, or built
+        // from regex metachars like `.`/`.*`), that branch can match a line that
+        // contains none of the other branches' trigrams. Constraining candidates
+        // to only the trigram-bearing branches would then silently drop real
+        // matches — exactly the `a|b` "returns 0 and looks authoritative" bug.
+        // When that happens we cannot prefilter at all, so fall back to an
+        // unconstrained query (candidatesRegex returns null -> scan everything).
         var all_tris: std.ArrayList(Trigram) = .empty;
         errdefer all_tris.deinit(allocator);
 
+        var any_branch_empty = false;
         var start: usize = 0;
         for (top_pipes.items) |pipe_pos| {
             const branch = pattern[start..pipe_pos];
             const branch_tris = try extractLiteralTrigrams(branch, allocator);
             defer allocator.free(branch_tris);
+            if (branch_tris.len == 0) any_branch_empty = true;
             for (branch_tris) |tri| {
                 try all_tris.append(allocator, tri);
             }
@@ -2774,8 +2784,22 @@ pub fn decomposeRegex(pattern: []const u8, allocator: std.mem.Allocator) !RegexQ
         const last_branch = pattern[start..];
         const last_tris = try extractLiteralTrigrams(last_branch, allocator);
         defer allocator.free(last_tris);
+        if (last_tris.len == 0) any_branch_empty = true;
         for (last_tris) |tri| {
             try all_tris.append(allocator, tri);
+        }
+
+        if (any_branch_empty) {
+            // Un-prefilterable alternation: scan everything rather than miss matches.
+            all_tris.deinit(allocator);
+            all_tris = .empty;
+            const e_and = try allocator.alloc(Trigram, 0);
+            const e_or = try allocator.alloc([]Trigram, 0);
+            return RegexQuery{
+                .and_trigrams = e_and,
+                .or_groups = e_or,
+                .allocator = allocator,
+            };
         }
 
         const empty_and = try allocator.alloc(Trigram, 0);
