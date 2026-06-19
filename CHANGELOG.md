@@ -3,8 +3,8 @@
 
 ## 0.2.5826 - 2026-06-19
 
-A correctness cut fixing two silent agent-facing footguns surfaced by real
-session traces.
+A correctness + agent-steering cut clearing the cluster of issues surfaced by a
+SWE-bench Lite token-efficiency benchmark and real session traces.
 
 ### `codedb_read` / `codedb_edit` accept absolute paths inside the project (#629)
 
@@ -26,6 +26,32 @@ session traces.
   read as an authoritative "not found". `decomposeRegex` now falls back to an
   unconstrained query whenever any branch yields no trigrams. Alternations
   where every branch has trigrams still prefilter as before.
+
+### In-tree `codedb.snapshot` is hidden from git (#625)
+
+- **The index no longer pollutes `git status` or risks an accidental commit.**
+  The snapshot (22.8 MB in one real repo) was written to the project root and
+  swept into working-tree diffs. After writing the in-tree snapshot,
+  `codedb.snapshot` is appended to the repo's `.git/info/exclude` — a local,
+  untracked ignore file — so git never sees it without touching the user's own
+  `.gitignore`. Best-effort and idempotent; only the in-tree write triggers it.
+
+### Agents are steered to the structural tools (#626)
+
+- **`symbol`/`callers`/`deps`/`outline` are now the path of least resistance.**
+  Tool descriptions and the MCP `initialize` instructions frame `search` as a
+  fallback and point agents at the code graph first; `codedb_deps` is surfaced
+  as the impact/blast-radius tool. Previously agents used codedb as a leaner
+  grep/read and left its structural value on the table.
+
+### Convergence governor caps navigation runaways (#624)
+
+- **Repeated identical nav calls get an in-band nudge to change strategy.** A
+  per-session ring buffer tracks recent `search`/`find`/`word`/`read`/`outline`
+  signatures; when the same call recurs ≥3× it appends a one-line hint steering
+  the agent to a structural tool, a direct read, or a refined query. It never
+  alters a tool's result and does not govern write/admin tools — a cheap
+  interception for the 3–5× token runaways seen on large repos.
 
 ## 0.2.5825 - 2026-06-12
 
