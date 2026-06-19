@@ -521,7 +521,7 @@ pub const BenchContext = struct {
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
     ) void {
-        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, 1);
+        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, 1, null);
     }
 
     pub fn runToolCall(
@@ -830,6 +830,8 @@ const Session = struct {
     /// distinct registered agent id at session start; defaults to 1 so any path
     /// that constructs a Session without registering still uses __filesystem__.
     edit_agent_id: u64 = 1,
+    /// Convergence governor state (#624): recent call signatures for this session.
+    governor: ConvergenceGovernor = .{},
 
     fn freeRoots(self: *Session) void {
         for (self.roots.items) |r| {
@@ -844,6 +846,61 @@ const Session = struct {
         self.roots.deinit(self.alloc);
     }
 };
+
+/// Convergence governor (#624): tracks recent tool-call signatures within a
+/// session so a non-convergent agent that keeps firing the *same* navigation
+/// call gets an in-band nudge to change strategy instead of looping (the 3–5×
+/// token runaways seen on large repos). It never changes a tool's result — it
+/// only lets handleCall append a one-line hint once a call repeats.
+pub const ConvergenceGovernor = struct {
+    pub const HISTORY = 8; // ring-buffer window of recent calls
+    pub const WARN_AT = 3; // same signature this many times in the window -> nudge
+
+    sigs: [HISTORY]u64 = [_]u64{0} ** HISTORY,
+    head: usize = 0,
+
+    /// Record a call signature and return how many times it has occurred within
+    /// the recent window (including this call). >= WARN_AT means it's looping.
+    pub fn record(self: *ConvergenceGovernor, sig: u64) usize {
+        const s = if (sig == 0) 1 else sig; // 0 is the empty-slot sentinel
+        var occurrences: usize = 1;
+        for (self.sigs) |prev| {
+            if (prev == s) occurrences += 1;
+        }
+        self.sigs[self.head] = s;
+        self.head = (self.head + 1) % HISTORY;
+        return occurrences;
+    }
+};
+
+/// Stable signature of a tool call (name + its argument values) so two identical
+/// calls hash equal. Iteration order is consistent for an identical call shape.
+fn callSignature(name: []const u8, args: *const std.json.ObjectMap) u64 {
+    var h = std.hash.Wyhash.init(0);
+    h.update(name);
+    var it = args.iterator();
+    while (it.next()) |e| {
+        h.update(e.key_ptr.*);
+        switch (e.value_ptr.*) {
+            .string => |sv| h.update(sv),
+            .integer => |n| h.update(std.mem.asBytes(&n)),
+            .float => |f| h.update(std.mem.asBytes(&f)),
+            .bool => |b| h.update(if (b) "1" else "0"),
+            else => {},
+        }
+    }
+    return h.final();
+}
+
+/// Navigation tools where a repeated identical call is a runaway signal worth
+/// nudging on. Write/admin tools (edit, status, changes, projects) are excluded.
+fn isGovernedNavTool(name: []const u8) bool {
+    return std.mem.eql(u8, name, "codedb_search") or
+        std.mem.eql(u8, name, "codedb_find") or
+        std.mem.eql(u8, name, "codedb_word") or
+        std.mem.eql(u8, name, "codedb_read") or
+        std.mem.eql(u8, name, "codedb_outline");
+}
 
 pub fn run(
     io: std.Io,
@@ -963,7 +1020,7 @@ pub fn run(
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) writeResult(alloc, stdout, id, tools_list_response);
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id);
+            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id, &session.governor);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
         } else {
@@ -1126,6 +1183,7 @@ fn handleCall(
     telem: *telemetry_mod.Telemetry,
     deferred_scan: ?*DeferredScan,
     edit_agent_id: u64,
+    governor: ?*ConvergenceGovernor,
 ) void {
     const is_notification = id == null;
 
@@ -1183,6 +1241,19 @@ fn handleCall(
         } else if (std.mem.eql(u8, name, "codedb_read") or std.mem.eql(u8, name, "codedb_outline")) {
             if (getStr(args, "path")) |p| {
                 logFileAccess(io, name, p, elapsed);
+            }
+        }
+    }
+
+    // Convergence governor (#624): if this exact navigation call keeps
+    // repeating within the session, nudge the agent to change strategy instead
+    // of looping. The nudge is appended to the assistant-visible output; it
+    // never alters the underlying result.
+    if (governor) |gov| {
+        if (isGovernedNavTool(name)) {
+            const occurrences = gov.record(callSignature(name, args));
+            if (occurrences >= ConvergenceGovernor.WARN_AT) {
+                out.appendSlice(alloc, "\n\n[codedb] You have issued this exact call several times — repeating it will not surface anything new. Change strategy: use a structural tool (codedb_symbol for a definition, codedb_callers for usages, codedb_deps for impact), open the file directly with codedb_read, or refine the query.") catch {};
             }
         }
     }
