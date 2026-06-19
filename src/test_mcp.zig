@@ -149,6 +149,25 @@ test "issue-93: isPathSafe blocks traversal" {
     try testing.expect(MCP.isPathSafe("README.md"));
 }
 
+test "issue-629: projectRelPath accepts absolute paths inside the project root" {
+    const MCP = @import("mcp.zig");
+    const root = "/Users/dev/project";
+
+    // Regression: codedb returned "path traversal not allowed" for ANY absolute
+    // path, so agents that hold absolute paths abandoned codedb for bash (see
+    // the #626 trajectory: codedb!,codedb! then seven bash calls). An absolute
+    // path inside the project root must resolve to its project-relative form.
+    try testing.expectEqualStrings("src/main.zig", MCP.projectRelPath("/Users/dev/project/src/main.zig", root).?);
+    // A safe relative path passes through unchanged.
+    try testing.expectEqualStrings("src/main.zig", MCP.projectRelPath("src/main.zig", root).?);
+
+    // Security must still hold:
+    try testing.expect(MCP.projectRelPath("/etc/passwd", root) == null); // outside the root
+    try testing.expect(MCP.projectRelPath("/Users/dev/project/../secret", root) == null); // escapes via ..
+    try testing.expect(MCP.projectRelPath("../../../etc/passwd", root) == null); // relative traversal
+    try testing.expect(MCP.projectRelPath("/Users/dev/projectile/secret", root) == null); // sibling prefix, not a child
+}
+
 test "auto-update: shouldRunAutoUpdate gates correctly" {
     const day_ms: i64 = 24 * 60 * 60 * 1000;
 
