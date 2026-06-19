@@ -1,6 +1,32 @@
 # Changelog
 
 
+## 0.2.5826 - 2026-06-19
+
+A correctness cut fixing two silent agent-facing footguns surfaced by real
+session traces.
+
+### `codedb_read` / `codedb_edit` accept absolute paths inside the project (#629)
+
+- **Absolute in-project paths no longer read as "path traversal".** `isPathSafe`
+  rejected every absolute path via a blanket leading-`/` check, so a path
+  pointing at a file *inside* the indexed root was refused. Agents naturally
+  hold absolute paths, hit the terse error, and abandon codedb for `bash` — a
+  real session trace showed `codedb`,`codedb` rejected back-to-back followed by
+  seven `bash` fallbacks. A new `projectRelPath` helper rewrites an in-root
+  absolute path to its project-relative form; out-of-root absolutes, `..`
+  traversal, NUL bytes, backslashes, and sensitive files stay rejected.
+
+### Regex alternation no longer drops matches silently (#628)
+
+- **`a|b` alternation where one branch can't form a trigram now scans all
+  files.** A top-level alternation like `xy|createGateway` or `.*|foo`
+  prefiltered candidates down to only the trigram-bearing branches, silently
+  dropping files that matched the other branch — `mode=regex` returned 0 and
+  read as an authoritative "not found". `decomposeRegex` now falls back to an
+  unconstrained query whenever any branch yields no trigrams. Alternations
+  where every branch has trigrams still prefilter as before.
+
 ## 0.2.5825 - 2026-06-12
 
 `0.2.5825` is a broad retrieval-quality + capability + performance cut. It fixes
