@@ -2798,15 +2798,17 @@ fn handleDepsPathOnly(alloc: std.mem.Allocator, path: []const u8, out: *std.Arra
 }
 
 fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
-    const path = getStr(args, "path") orelse {
+    const path_arg = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path' argument") catch {};
         appendBundleArgKeysDiagnostic(alloc, out, args);
         return;
     };
-    if (!isPathSafe(path)) {
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, ".", &root_buf)) |n| root_buf[0..n] else |_| "";
+    const path = projectRelPath(path_arg, root) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
-    }
+    };
     if (watcher.isSensitivePath(path)) {
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
         return;
@@ -2918,14 +2920,16 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
 }
 
 fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, agents: *AgentRegistry, cache: *ProjectCache, edit_agent_id: u64) void {
-    const path = getStr(args, "path") orelse {
+    const path_arg = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path'") catch {};
         return;
     };
-    if (!isPathSafe(path)) {
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, ".", &root_buf)) |n| root_buf[0..n] else |_| "";
+    const path = projectRelPath(path_arg, root) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
-    }
+    };
     if (watcher.isSensitivePath(path)) {
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
         return;
@@ -5032,6 +5036,30 @@ pub fn isPathSafe(path: []const u8) bool {
         if (std.mem.eql(u8, component, "..")) return false;
     }
     return true;
+}
+
+/// Map a read/edit `path` argument to a project-relative path that is safe to
+/// resolve, given the project's absolute `root`. A safe relative path passes
+/// through unchanged; an absolute path is accepted only when it lives inside
+/// `root` and is rewritten to its relative form. Everything else (out-of-root
+/// absolutes, `..` traversal, null bytes, backslashes) returns null.
+///
+/// Without this, isPathSafe rejects every absolute path as traversal, so agents
+/// that pass absolute paths get "path traversal not allowed" and abandon codedb
+/// for bash (issue #629).
+pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
+    // Already a safe relative path — pass through.
+    if (isPathSafe(path)) return path;
+    // Only absolute paths get the in-root rescue; anything else stays rejected.
+    if (path.len == 0 or path[0] != '/') return null;
+    if (root.len == 0) return null;
+    if (!root_policy.isExactOrChild(path, root)) return null;
+    var rel = path[root.len..];
+    while (rel.len > 0 and rel[0] == '/') rel = rel[1..];
+    if (rel.len == 0) return null; // the root directory itself, not a file
+    // Re-validate the stripped remainder (blocks `/root/../escape`, nulls, etc).
+    if (!isPathSafe(rel)) return null;
+    return rel;
 }
 
 fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8) void {
