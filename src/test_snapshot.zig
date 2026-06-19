@@ -18,6 +18,36 @@ const AgentRegistry = @import("agent.zig").AgentRegistry;
 const edit_mod = @import("edit.zig");
 
 
+test "issue-625: in-tree snapshot is added to .git/info/exclude" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const root = path_buf[0..root_len];
+
+    // Simulate a git repo.
+    try tmp.dir.createDirPath(io, ".git/info");
+
+    // isRootSnapshot fires only for the in-tree snapshot, not the central store.
+    const root_snap = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{root});
+    defer testing.allocator.free(root_snap);
+    try testing.expect(snapshot_mod.isRootSnapshot(root_snap, root));
+    try testing.expect(!snapshot_mod.isRootSnapshot("/home/u/.codedb/projects/ab/codedb.snapshot", root));
+
+    // First call records the exclude so git never sees the index.
+    snapshot_mod.ensureGitIgnoresSnapshot(io, root, testing.allocator);
+    const exclude1 = try tmp.dir.readFileAlloc(io, ".git/info/exclude", testing.allocator, .limited(64 * 1024));
+    defer testing.allocator.free(exclude1);
+    try testing.expect(std.mem.indexOf(u8, exclude1, "codedb.snapshot") != null);
+
+    // Idempotent: a second call must not duplicate the entry.
+    snapshot_mod.ensureGitIgnoresSnapshot(io, root, testing.allocator);
+    const exclude2 = try tmp.dir.readFileAlloc(io, ".git/info/exclude", testing.allocator, .limited(64 * 1024));
+    defer testing.allocator.free(exclude2);
+    try testing.expectEqual(exclude1.len, exclude2.len);
+}
+
 test "issue-35: edits immediately update explorer and snapshot output" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
