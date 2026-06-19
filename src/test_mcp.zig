@@ -149,6 +149,23 @@ test "issue-93: isPathSafe blocks traversal" {
     try testing.expect(MCP.isPathSafe("README.md"));
 }
 
+test "issue-624: convergence governor flags a repeated identical call" {
+    const MCP = @import("mcp.zig");
+    var gov: MCP.ConvergenceGovernor = .{};
+    const sig: u64 = 0xC0FFEE;
+    try testing.expectEqual(@as(usize, 1), gov.record(sig));
+    try testing.expectEqual(@as(usize, 2), gov.record(sig));
+    // Third identical call reaches the warn threshold — the loop is detected.
+    try testing.expectEqual(@as(usize, 3), gov.record(sig));
+    try testing.expect(gov.record(sig) >= MCP.ConvergenceGovernor.WARN_AT);
+
+    // Distinct calls in sequence are never flagged as looping.
+    var gov2: MCP.ConvergenceGovernor = .{};
+    try testing.expectEqual(@as(usize, 1), gov2.record(1));
+    try testing.expectEqual(@as(usize, 1), gov2.record(2));
+    try testing.expectEqual(@as(usize, 1), gov2.record(3));
+}
+
 test "auto-update: shouldRunAutoUpdate gates correctly" {
     const day_ms: i64 = 24 * 60 * 60 * 1000;
 
