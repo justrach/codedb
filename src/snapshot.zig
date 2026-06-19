@@ -381,6 +381,57 @@ pub fn writeSnapshot(
         std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
         return err;
     };
+
+    // #625: the snapshot lives inside the project tree — make sure git ignores
+    // it so it never pollutes `git status` or gets committed by accident.
+    if (isRootSnapshot(output_path, root_path)) {
+        ensureGitIgnoresSnapshot(io, root_path, allocator);
+    }
+}
+
+/// True when `output_path` is the in-tree project-root snapshot
+/// (`{root_path}/codedb.snapshot`), as opposed to the central ~/.codedb store.
+pub fn isRootSnapshot(output_path: []const u8, root_path: []const u8) bool {
+    if (root_path.len == 0) return false;
+    if (!std.mem.startsWith(u8, output_path, root_path)) return false;
+    return std.mem.eql(u8, output_path[root_path.len..], "/codedb.snapshot");
+}
+
+/// Append `codedb.snapshot` to the repo's `.git/info/exclude` — a local,
+/// untracked ignore file — so the in-tree index is invisible to git without
+/// touching the user's own `.gitignore`. Best-effort: not-a-git-repo, a git
+/// worktree where `.git` is a file, permissions, or any I/O error is silently
+/// skipped. Indexing must never fail because of this. Idempotent.
+pub fn ensureGitIgnoresSnapshot(io: std.Io, root_path: []const u8, allocator: std.mem.Allocator) void {
+    var info_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const info_path = std.fmt.bufPrint(&info_buf, "{s}/.git/info", .{root_path}) catch return;
+    var info_dir = std.Io.Dir.cwd().openDir(io, info_path, .{}) catch return;
+    defer info_dir.close(io);
+
+    const needle = "codedb.snapshot";
+    const existing: ?[]u8 = info_dir.readFileAlloc(io, "exclude", allocator, .limited(1024 * 1024)) catch null;
+    defer if (existing) |e| allocator.free(e);
+
+    if (existing) |content| {
+        var it = std.mem.splitScalar(u8, content, '\n');
+        while (it.next()) |line| {
+            const t = std.mem.trim(u8, line, " \t\r");
+            if (std.mem.eql(u8, t, needle) or std.mem.eql(u8, t, "/codedb.snapshot")) return;
+        }
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    if (existing) |content| {
+        buf.appendSlice(allocator, content) catch return;
+        if (content.len > 0 and content[content.len - 1] != '\n') buf.append(allocator, '\n') catch return;
+    }
+    buf.appendSlice(allocator, needle) catch return;
+    buf.append(allocator, '\n') catch return;
+
+    var file = info_dir.createFile(io, "exclude", .{}) catch return;
+    defer file.close(io);
+    file.writeStreamingAll(io, buf.items) catch return;
 }
 
 /// Read section table from a `.codedb` file.
