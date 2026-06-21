@@ -2577,3 +2577,21 @@ test "issue-632: codedb_read raw mode returns byte-exact range without line-numb
     // make the output non-byte-exact and unusable for an exact-string edit.
     try testing.expect(std.mem.indexOf(u8, out.items, " | ") == null);
 }
+
+test "issue-633: `index` is a recognized command (not a usage/unknown error)" {
+    // `codedb <root> index` scanned + persisted (the cold-load path keys on
+    // cmd=="index") but then fell through the dispatch with no `index` branch →
+    // "unknown command: index" + exit 1; and `codedb index` (no root) was a
+    // usage error because isCommand() never listed it. `index` must parse as a
+    // first-class command.
+    // `codedb index` (no explicit root) must parse as cmd=index, root=".".
+    const p = main_mod.parsePositional(&[_][]const u8{ "codedb", "index" });
+    try testing.expect(!p.usage_exit);
+    try testing.expectEqualStrings("index", p.cmd);
+    try testing.expectEqualStrings(".", p.root);
+
+    // `codedb <root> index` (explicit root) also resolves cmd=index.
+    const p2 = main_mod.parsePositional(&[_][]const u8{ "codedb", "/proj", "index" });
+    try testing.expectEqualStrings("index", p2.cmd);
+    try testing.expectEqualStrings("/proj", p2.root);
+}
