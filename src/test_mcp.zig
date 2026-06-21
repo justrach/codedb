@@ -2523,3 +2523,57 @@ test "issue-624: convergence nudge is suppressed for format=json" {
     try testing.expect(MCP.convergenceNudge(warn - 1, false) == null);
     try testing.expect(MCP.convergenceNudge(warn - 1, true) == null);
 }
+
+test "issue-632: codedb_read raw mode returns byte-exact range without line-number prefixes" {
+    // #632: a ranged codedb_read emits line-number-prefixed output (handleRead
+    // hardcodes extractLines line_numbers=true), so its bytes are NOT a verbatim
+    // copy of the source. Agents therefore can't feed it to an exact-string
+    // editor and fall back to a native read for the pre-edit span — defeating
+    // codedb on the read path (see justrach/codegraff#66). A `raw` mode should
+    // return the exact lines so codedb can serve read+edit, not just locate.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+    const dir_path = dir_buf[0..dir_path_len];
+
+    const rel = "small.txt";
+    const full = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ dir_path, rel });
+    defer testing.allocator.free(full);
+    {
+        const f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
+        defer f.close(io);
+        try f.writePositionalAll(io, "alpha\nbeta\ngamma\n", 0);
+    }
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, dir_path);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, dir_path, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    // raw=true + a line range: expect the exact source bytes for lines 1-2,
+    // with NO "N | " line-number prefixes (so it can feed an exact-match edit).
+    const args_json = try std.fmt.allocPrint(testing.allocator,
+        "{{\"path\":\"{s}\",\"line_start\":1,\"line_end\":2,\"raw\":true}}", .{rel});
+    defer testing.allocator.free(args_json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_read, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // The exact source lines must be present verbatim...
+    try testing.expect(std.mem.indexOf(u8, out.items, "alpha\nbeta") != null);
+    // ...and there must be no line-number prefix separator ("N | "), which would
+    // make the output non-byte-exact and unusable for an exact-string edit.
+    try testing.expect(std.mem.indexOf(u8, out.items, " | ") == null);
+}
