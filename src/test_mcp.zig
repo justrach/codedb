@@ -21,6 +21,13 @@ const watcher = @import("watcher.zig");
 const WordIndex = @import("index.zig").WordIndex;
 const TrigramIndex = @import("index.zig").TrigramIndex;
 const SparseNgramIndex = @import("index.zig").SparseNgramIndex;
+const cli_args_mod = @import("cli_args.zig");
+const out_mod = @import("out.zig");
+const query_mod = @import("query.zig");
+const cli_proxy_mod = @import("cli_proxy.zig");
+const bootstrap_mod = @import("bootstrap.zig");
+const background_mod = @import("background.zig");
+const commands_mod = @import("commands.zig");
 comptime {
     _ = @import("config.zig");
 }
@@ -2367,4 +2374,116 @@ test "issue-626: depsHint fires only on a single unambiguous definition" {
     const h = mcp_mod.depsHint(1);
     try testing.expect(h != null);
     try testing.expect(std.mem.indexOf(u8, h.?, "codedb_deps") != null);
+}
+
+// ── main.zig split verification (#main-split) ───────────────────────────────
+// main.zig was decomposed into out/cli_args/query/cli_proxy/bootstrap/
+// background/commands modules. These tests fail to compile if any extracted
+// module loses a public symbol, and fail at runtime if main.zig's re-exports
+// stop forwarding to the moved implementations.
+
+test "split: extracted modules expose their public API" {
+    // Referencing one decl from each extracted module forces it to compile and
+    // asserts the symbol still exists after the move.
+    comptime {
+        _ = out_mod.Out;
+        _ = out_mod.printUsage;
+        _ = cli_args_mod.parsePositional;
+        _ = cli_args_mod.parseLineRange;
+        _ = cli_args_mod.parseSearchArgs;
+        _ = cli_args_mod.hasExtraCliArgs;
+        _ = cli_args_mod.findGitRoot;
+        _ = cli_args_mod.findGitRootFrom;
+        _ = cli_args_mod.isValidMcpFlag;
+        _ = cli_args_mod.resolveRoot;
+        _ = cli_args_mod.cliIsQueryCmd;
+        _ = query_mod.runQuery;
+        _ = cli_proxy_mod.daemonLockTryAcquire;
+        _ = cli_proxy_mod.daemonLockAvailable;
+        _ = cli_proxy_mod.cliDaemonListen;
+        _ = cli_proxy_mod.cliTryProxy;
+        _ = cli_proxy_mod.cliSocketPath;
+        _ = bootstrap_mod.loadUserConfig;
+        _ = bootstrap_mod.loadBestSnapshot;
+        _ = bootstrap_mod.getDataDir;
+        _ = bootstrap_mod.coldLoadOrScan;
+        _ = bootstrap_mod.spawnWarmup;
+        _ = bootstrap_mod.persistWordIndexToDisk;
+        _ = background_mod.reapLoop;
+        _ = background_mod.scanBg;
+        _ = background_mod.triggerScanFromRoots;
+        _ = background_mod.watcherDeferredLoop;
+        _ = background_mod.idleWatchdog;
+        _ = background_mod.cliIdleWatchdog;
+        _ = commands_mod.RunCtx;
+        _ = commands_mod.runBenchEngine;
+        _ = commands_mod.runSnapshot;
+        _ = commands_mod.runCliDaemon;
+        _ = commands_mod.runServe;
+        _ = commands_mod.runMcp;
+    }
+}
+
+test "split: main.zig re-exports forward to the extracted impls" {
+    // parsePositional via the main re-export must behave identically to the
+    // cli_args implementation it forwards to.
+    const argv = [_][]const u8{ "codedb", "search", "needle" };
+    const via_main = main_mod.parsePositional(&argv);
+    const via_mod = cli_args_mod.parsePositional(&argv);
+    try testing.expectEqualStrings(via_mod.root, via_main.root);
+    try testing.expectEqualStrings(via_mod.cmd, via_main.cmd);
+    try testing.expectEqual(via_mod.cmd_args_start, via_main.cmd_args_start);
+
+    const lr_main = try main_mod.parseLineRange("2-8");
+    const lr_mod = try cli_args_mod.parseLineRange("2-8");
+    try testing.expectEqual(lr_mod.start, lr_main.start);
+    try testing.expectEqual(lr_mod.end, lr_main.end);
+
+    const sa_main = try main_mod.parseSearchArgs(&[_][]const u8{ "search", "--paths-only", "needle" }, 1);
+    const sa_mod = try cli_args_mod.parseSearchArgs(&[_][]const u8{ "search", "--paths-only", "needle" }, 1);
+    try testing.expectEqualStrings(sa_mod.query, sa_main.query);
+    try testing.expectEqual(sa_mod.paths_only, sa_main.paths_only);
+
+    try testing.expectEqual(
+        cli_args_mod.isValidMcpFlag("--no-telemetry"),
+        main_mod.isValidMcpFlag("--no-telemetry"),
+    );
+    try testing.expectEqual(
+        cli_args_mod.hasExtraCliArgs(&[_][]const u8{ "codedb", "tree", "x" }, 2),
+        main_mod.hasExtraCliArgs(&[_][]const u8{ "codedb", "tree", "x" }, 2),
+    );
+}
+
+test "split: cli_args parsing behaviour survives the move" {
+    // The read-only query-command table is the single source of truth shared by
+    // cliIsQueryCmd, isCommand, and the runQuery dispatch (#578); confirm it
+    // still classifies query vs non-query commands after the extraction.
+    try testing.expect(cli_args_mod.cliIsQueryCmd("search"));
+    try testing.expect(cli_args_mod.cliIsQueryCmd("outline"));
+    try testing.expect(!cli_args_mod.cliIsQueryCmd("serve"));
+    try testing.expect(!cli_args_mod.cliIsQueryCmd("mcp"));
+
+    // `codedb mcp <path>` is honored as `codedb <path> mcp` (#503).
+    const p = cli_args_mod.parsePositional(&[_][]const u8{ "codedb", "mcp", "/proj" });
+    try testing.expectEqualStrings("/proj", p.root);
+    try testing.expectEqualStrings("mcp", p.cmd);
+    try testing.expect(p.root_is_explicit);
+
+    try testing.expectError(error.Reversed, cli_args_mod.parseLineRange("9-2"));
+    try testing.expectError(error.UnknownFlag, cli_args_mod.parseSearchArgs(&[_][]const u8{ "search", "--bogus", "x" }, 1));
+}
+
+test "split: cli_proxy daemon lock works via main and cli_proxy" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_len];
+
+    // Acquired via the cli_proxy module; main's re-export must see it held.
+    const held = cli_proxy_mod.daemonLockTryAcquire(dir_path);
+    try testing.expect(held != null);
+    defer _ = std.c.close(held.?);
+    try testing.expect(!main_mod.daemonLockAvailable(dir_path));
+    try testing.expect(cli_proxy_mod.daemonLockTryAcquire(dir_path) == null);
 }
