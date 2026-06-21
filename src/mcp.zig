@@ -627,7 +627,7 @@ pub const tools_list =
     \\{"name":"codedb_diagnostics","description":"Fetch the latest linter diagnostics for a file, produced off the edit path (ruff/biome/etc.) after a recent codedb_edit. Call right after an edit to surface real errors the change may have introduced (undefined names, type/lint issues) on top of codedb's built-in checks. Returns 'no diagnostics available yet' when none are cached or external linters are disabled.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to fetch diagnostics for"}},"required":["path"]}},
     \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_deps","description":"PRIMARY tool for impact/blast-radius — use this instead of grepping import lines. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set transitive=true for the full BFS blast radius.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Run codedb_outline first to pick the range — large files burn tokens fast. Pass if_hash to skip re-reads when the file is unchanged.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Run codedb_outline first to pick the range — large files burn tokens fast. Pass if_hash to skip re-reads when the file is unchanged.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"raw":{"type":"boolean","description":"Byte-exact output: no line-number prefixes and no hash header, so the result can feed an exact-string edit (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_edit","description":"Fallback editor — prefer your own native file-editing tool. codedb is a context/navigation tool, not an editor; reach for codedb_edit only when no native edit capability is available. When you do edit through codedb, op=str_replace with old_string/new_string is safest (old_string must match exactly once) — it cannot mis-target surrounding lines the way a range replace can. Also supports line ops: replace (range), insert (after line), delete (range), and create (author a new file from content). The result includes a syntax-health warning if the edit unbalances delimiters or drops a still-used import — heed it and re-read before continuing. Pass if_hash from the latest codedb_read to reject stale-line edits. Set dry_run=true for a diff preview.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to edit"},"op":{"type":"string","enum":["str_replace","replace","insert","delete","create"],"description":"Edit operation. str_replace=anchored (old_string/new_string); replace/delete use range; insert uses after; create=author a NEW file from content (errors if the path already exists)."},"content":{"type":"string","description":"New content (for replace/insert/create)"},"old_string":{"type":"string","description":"For op=str_replace: exact text to find; must occur exactly once in the file."},"new_string":{"type":"string","description":"For op=str_replace: replacement text for old_string."},"range_start":{"type":"integer","description":"Start line number (for replace/delete, 1-indexed)"},"range_end":{"type":"integer","description":"End line number (for replace/delete, 1-indexed)"},"after":{"type":"integer","description":"Insert after this line number (for insert)"},"if_hash":{"type":"string","description":"Hex hash from codedb_read's 'hash:' line. Edit is rejected with HashMismatch if the file has changed since."},"dry_run":{"type":"boolean","description":"If true, return a diff preview without writing. Disk and store are untouched. Default: false."}},"required":["path","op"]}},
     \\{"name":"codedb_changes","description":"Direct way to see WHAT changed since a point in time, instead of re-scanning the tree. Files changed since a given sequence number. Pair with codedb_status (which reports the current sequence number) to poll for updates.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
     \\{"name":"codedb_status","description":"Current indexed-file count, sequence number, and scan phase.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
@@ -2956,6 +2956,9 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
     const line_start_raw = getInt(args, "line_start");
     const line_end_raw = getInt(args, "line_end");
     const compact = getBool(args, "compact");
+    // #632: byte-exact ranged read — no line-number prefixes, no hash header — so
+    // the output can feed an exact-string editor instead of forcing a native read.
+    const raw = getBool(args, "raw");
     const has_range = line_start_raw != null or line_end_raw != null;
 
     // Bug 6: validate line range explicitly. Pre-fix: invalid ranges silently
@@ -3038,22 +3041,27 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         }
     }
 
-    // Always prepend hash
-    const w = cio.listWriter(out, alloc);
-    w.print("hash:{s}\n", .{hash_str}) catch {};
+    // Prepend a content-hash ETag header — but NOT in raw mode (#632), where the
+    // caller wants byte-exact bytes it can feed to an exact-string edit.
+    if (!raw) {
+        const w = cio.listWriter(out, alloc);
+        w.print("hash:{s}\n", .{hash_str}) catch {};
+    }
 
     if (has_range or compact) {
         const start: u32 = if (line_start_raw) |n| @intCast(@min(@max(1, n), std.math.maxInt(u32))) else 1;
         const end: u32 = if (line_end_raw) |n| @intCast(@min(@max(1, n), std.math.maxInt(u32))) else std.math.maxInt(u32);
         const lang = explore_mod.detectLanguage(path);
-        const extracted = explore_mod.extractLines(content, start, end, true, compact, lang, alloc) catch {
+        const extracted = explore_mod.extractLines(content, start, end, !raw, compact, lang, alloc) catch {
             out.appendSlice(alloc, "error: line extraction failed") catch {};
             return;
         };
         defer alloc.free(extracted);
         out.appendSlice(alloc, extracted) catch {};
     } else {
-        if (Explorer.fullFileReadHint(content)) |hint| out.appendSlice(alloc, hint) catch {};
+        if (!raw) {
+            if (Explorer.fullFileReadHint(content)) |hint| out.appendSlice(alloc, hint) catch {};
+        }
         out.appendSlice(alloc, content) catch {};
     }
 }
