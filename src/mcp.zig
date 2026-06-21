@@ -902,6 +902,19 @@ fn isGovernedNavTool(name: []const u8) bool {
         std.mem.eql(u8, name, "codedb_outline");
 }
 
+/// The convergence nudge text for a governed nav call, or null when no nudge
+/// should be surfaced. Pure + unit-tested (mirrors depsHint/fullFileReadHint).
+///
+/// Suppressed for `format=json` even at the loop threshold: the nudge is plain
+/// text and appending it to a JSON payload corrupts it — the #626 nudges
+/// (appendSearchSymbolNudge, depsHint) guard the same way. #624 shipped without
+/// this guard, so a looping `codedb_search format=json` returned invalid JSON.
+pub fn convergenceNudge(occurrences: usize, json_fmt: bool) ?[]const u8 {
+    if (occurrences < ConvergenceGovernor.WARN_AT) return null;
+    if (json_fmt) return null;
+    return "\n\n[codedb] You have issued this exact call several times — repeating it will not surface anything new. Change strategy: use a structural tool (codedb_symbol for a definition, codedb_callers for usages, codedb_deps for impact), open the file directly with codedb_read, or refine the query.";
+}
+
 pub fn run(
     io: std.Io,
     alloc: std.mem.Allocator,
@@ -1252,8 +1265,11 @@ fn handleCall(
     if (governor) |gov| {
         if (isGovernedNavTool(name)) {
             const occurrences = gov.record(callSignature(name, args));
-            if (occurrences >= ConvergenceGovernor.WARN_AT) {
-                out.appendSlice(alloc, "\n\n[codedb] You have issued this exact call several times — repeating it will not surface anything new. Change strategy: use a structural tool (codedb_symbol for a definition, codedb_callers for usages, codedb_deps for impact), open the file directly with codedb_read, or refine the query.") catch {};
+            // Record always (keeps loop detection accurate across mixed
+            // text/json calls); only surface the text nudge when it won't
+            // corrupt the result — convergenceNudge suppresses it for json.
+            if (convergenceNudge(occurrences, wantsJsonFormat(args))) |msg| {
+                out.appendSlice(alloc, msg) catch {};
             }
         }
     }

@@ -569,14 +569,28 @@ test "issue-148: open pipe does not trigger HUP" {
 }
 
 test "issue-148: codedb mcp exits when stdin is closed" {
-    // Integration test: spawn codedb mcp, close stdin, verify it exits
+    // #620: this used to spawn `zig build run -- --mcp` from the repo root, which
+    // folded the compile step AND a full-repo snapshot load into the measured
+    // window, so it flaked over the 5s budget under load. Build once up front
+    // (outside the timing), then spawn the prebuilt binary against a tiny temp
+    // project so only the real stdin-EOF-to-exit path is timed.
+    try buildCliForHelpTests();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const proj_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const proj = path_buf[0..proj_len];
+    tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const x = 1;\n" }) catch {};
+
+    // Integration test: spawn the built codedb mcp, close stdin, verify it exits
     var child = std.process.spawn(io, .{
-        .argv = &.{ "zig", "build", "run", "--", "--mcp" },
+        .argv = &.{ "./zig-out/bin/codedb", proj, "mcp" },
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .ignore,
     }) catch {
-        // If spawn fails (e.g., zig not on PATH), skip the test
+        // If spawn fails (e.g., binary not built), skip the test
         return;
     };
 
@@ -2486,4 +2500,26 @@ test "split: cli_proxy daemon lock works via main and cli_proxy" {
     defer _ = std.c.close(held.?);
     try testing.expect(!main_mod.daemonLockAvailable(dir_path));
     try testing.expect(cli_proxy_mod.daemonLockTryAcquire(dir_path) == null);
+}
+
+test "issue-624: convergence nudge is suppressed for format=json" {
+    // Regression: the #624 governor appended its plain-text nudge to the tool
+    // output for any governed nav tool at the loop threshold — including
+    // codedb_search, which supports format=json. Appending text to a JSON
+    // payload corrupts it (the #626 nudges guard with `if (!json_fmt)`; the
+    // governor did not). convergenceNudge now encodes that guard.
+    const MCP = @import("mcp.zig");
+    const warn = MCP.ConvergenceGovernor.WARN_AT;
+
+    // Text output at/after the loop threshold surfaces the nudge.
+    try testing.expect(MCP.convergenceNudge(warn, false) != null);
+    try testing.expect(MCP.convergenceNudge(warn + 1, false) != null);
+
+    // format=json must NOT — otherwise the appended text breaks the JSON.
+    try testing.expect(MCP.convergenceNudge(warn, true) == null);
+    try testing.expect(MCP.convergenceNudge(warn + 5, true) == null);
+
+    // Below the loop threshold, never nudge regardless of format.
+    try testing.expect(MCP.convergenceNudge(warn - 1, false) == null);
+    try testing.expect(MCP.convergenceNudge(warn - 1, true) == null);
 }
