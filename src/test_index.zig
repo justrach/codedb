@@ -37,27 +37,6 @@ const SearchResult = @import("explore.zig").SearchResult;
 const SymbolKind = explore.SymbolKind;
 const edit_mod = @import("edit.zig");
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 test "trigram index: index and candidate lookup" {
     var ti = TrigramIndex.init(testing.allocator);
     defer ti.deinit();
@@ -72,7 +51,6 @@ test "trigram index: index and candidate lookup" {
     try testing.expectEqualStrings("src/store.zig", cands.?[0]);
 }
 
-
 test "trigram index: short query returns null" {
     var ti = TrigramIndex.init(testing.allocator);
     defer ti.deinit();
@@ -81,7 +59,6 @@ test "trigram index: short query returns null" {
     const cands = ti.candidates("hi", testing.allocator);
     try testing.expect(cands == null);
 }
-
 
 test "trigram index: no match returns empty" {
     var ti = TrigramIndex.init(testing.allocator);
@@ -92,7 +69,6 @@ test "trigram index: no match returns empty" {
     try testing.expect(cands != null);
     try testing.expect(cands.?.len == 0);
 }
-
 
 test "trigram index: re-index removes old trigrams" {
     var ti = TrigramIndex.init(testing.allocator);
@@ -113,7 +89,6 @@ test "trigram index: re-index removes old trigrams" {
     try testing.expect(c3 != null and c3.?.len == 1);
 }
 
-
 test "pairWeight: deterministic" {
     const w1 = pairWeight('a', 'b');
     const w2 = pairWeight('a', 'b');
@@ -125,7 +100,6 @@ test "pairWeight: deterministic" {
     _ = w3; // just ensure it compiles and doesn't crash
 }
 
-
 test "pairWeight: different pairs produce different values (sanity)" {
     // 'ab' and 'ba' should almost never collide for a reasonable hash.
     const w_ab = pairWeight('a', 'b');
@@ -135,13 +109,11 @@ test "pairWeight: different pairs produce different values (sanity)" {
     _ = w_ba;
 }
 
-
 test "extractSparseNgrams: short content returns empty" {
     const ng = try extractSparseNgrams("ab", testing.allocator);
     defer testing.allocator.free(ng);
     try testing.expectEqual(@as(usize, 0), ng.len);
 }
-
 
 test "extractSparseNgrams: minimum length content yields one ngram" {
     const ng = try extractSparseNgrams("abc", testing.allocator);
@@ -150,7 +122,6 @@ test "extractSparseNgrams: minimum length content yields one ngram" {
     try testing.expectEqual(@as(usize, 3), ng[0].len);
     try testing.expectEqual(@as(usize, 0), ng[0].pos);
 }
-
 
 test "extractSparseNgrams: deterministic across calls" {
     const ng1 = try extractSparseNgrams("hello world", testing.allocator);
@@ -166,7 +137,6 @@ test "extractSparseNgrams: deterministic across calls" {
     }
 }
 
-
 test "extractSparseNgrams: case-insensitive hashing" {
     const ng_lower = try extractSparseNgrams("hello", testing.allocator);
     defer testing.allocator.free(ng_lower);
@@ -178,7 +148,6 @@ test "extractSparseNgrams: case-insensitive hashing" {
         try testing.expectEqual(lo.hash, hi.hash);
     }
 }
-
 
 test "extractSparseNgrams: ngrams cover entire content" {
     const content = "the quick brown fox";
@@ -200,7 +169,6 @@ test "extractSparseNgrams: ngrams cover entire content" {
     }
 }
 
-
 test "extractSparseNgrams: coverage with force-split remainder 1 (len=17)" {
     // 17 identical chars → no interior local maxima → one span of length 17.
     // Force-split: one MAX_NGRAM_LEN=16 chunk, remainder=1 → must still cover byte 16.
@@ -217,7 +185,6 @@ test "extractSparseNgrams: coverage with force-split remainder 1 (len=17)" {
     for (covered) |c| try testing.expect(c);
 }
 
-
 test "extractSparseNgrams: coverage with force-split remainder 2 (len=18)" {
     // 18 identical chars → remainder=2 → must still cover bytes 16-17.
     const content = "aaaaaaaaaaaaaaaaaa"; // 18 'a's
@@ -233,7 +200,6 @@ test "extractSparseNgrams: coverage with force-split remainder 2 (len=18)" {
     for (covered) |c| try testing.expect(c);
 }
 
-
 test "extractSparseNgrams: ngram length bounds" {
     const content = "abcdefghijklmnopqrstuvwxyz0123456789";
     const ng = try extractSparseNgrams(content, testing.allocator);
@@ -245,7 +211,6 @@ test "extractSparseNgrams: ngram length bounds" {
     }
 }
 
-
 test "buildCoveringSet: sliding window covers all query substrings" {
     // "foobar" (6 chars); lengths [3,6] yield 4+3+2+1 = 10 substrings.
     const ngrams = try buildCoveringSet("foobar", testing.allocator);
@@ -254,13 +219,11 @@ test "buildCoveringSet: sliding window covers all query substrings" {
     for (ngrams) |ng| try testing.expect(ng.len >= 3 and ng.len <= 6);
 }
 
-
 test "buildCoveringSet: short query returns empty" {
     const ngrams = try buildCoveringSet("ab", testing.allocator);
     defer testing.allocator.free(ngrams);
     try testing.expectEqual(@as(usize, 0), ngrams.len);
 }
-
 
 test "sparse ngram index: index and candidate lookup" {
     var sni = SparseNgramIndex.init(testing.allocator);
@@ -289,7 +252,6 @@ test "sparse ngram index: index and candidate lookup" {
     try testing.expect(!found_bar);
 }
 
-
 test "sparse ngram index: short query returns null" {
     var sni = SparseNgramIndex.init(testing.allocator);
     defer sni.deinit();
@@ -298,7 +260,6 @@ test "sparse ngram index: short query returns null" {
     const cands = sni.candidates("hi", testing.allocator); // length 2 < MIN_LEN
     try testing.expect(cands == null);
 }
-
 
 test "sparse ngram index: re-index removes old ngrams" {
     var sni = SparseNgramIndex.init(testing.allocator);
@@ -316,7 +277,6 @@ test "sparse ngram index: re-index removes old ngrams" {
     if (c2) |cs| try testing.expectEqual(@as(usize, 0), cs.len);
 }
 
-
 test "sparse ngram index: removeFile prunes entries" {
     var sni = SparseNgramIndex.init(testing.allocator);
     defer sni.deinit();
@@ -327,7 +287,6 @@ test "sparse ngram index: removeFile prunes entries" {
     sni.removeFile("a.zig");
     try testing.expectEqual(@as(u32, 0), sni.fileCount());
 }
-
 
 test "sparse ngram candidates: sliding window finds file with short n-gram" {
     var sni = SparseNgramIndex.init(testing.allocator);
@@ -353,7 +312,6 @@ test "sparse ngram candidates: sliding window finds file with short n-gram" {
     try testing.expect(found_a);
 }
 
-
 test "pairWeight: common pairs have lower weight than rare pairs" {
     // Common English/code pairs should have lower base weight than rare pairs.
     // 'th' and 'er' are in the default_pair_freq table with weight 0x1000.
@@ -366,7 +324,6 @@ test "pairWeight: common pairs have lower weight than rare pairs" {
     try testing.expect(w_th < w_qx);
     try testing.expect(w_er < w_zj);
 }
-
 
 test "pairWeight: frequency-weighted produces fewer boundaries for common text" {
     // A string composed of very common pairs should produce few local maxima
@@ -382,7 +339,6 @@ test "pairWeight: frequency-weighted produces fewer boundaries for common text" 
     try testing.expect(ng_rare.len >= ng_common.len);
 }
 
-
 test "pairWeight: deterministic with frequency table" {
     const w1 = pairWeight('a', 'b');
     const w2 = pairWeight('a', 'b');
@@ -392,7 +348,6 @@ test "pairWeight: deterministic with frequency table" {
     try testing.expectEqual(pairWeight('q', 'x'), pairWeight('q', 'x'));
 }
 
-
 test "buildFrequencyTable: common pairs get lower weight than absent pairs" {
     // Construct content where 'ab' appears many times and 'qx' never appears.
     const content = "ababababababababababab";
@@ -401,7 +356,6 @@ test "buildFrequencyTable: common pairs get lower weight than absent pairs" {
     try testing.expect(table['a']['b'] < table['q']['x']);
     try testing.expectEqual(@as(u16, 0xFE00), table['q']['x']);
 }
-
 
 test "frequency table: disk round-trip" {
     var tmp_dir = testing.tmpDir(.{});
@@ -429,7 +383,6 @@ test "frequency table: disk round-trip" {
         @as([*]const u16, @ptrCast(loaded))[0 .. 256 * 256],
     );
 }
-
 
 test "frequency table: little-endian byte order on disk" {
     var tmp_dir = testing.tmpDir(.{});
@@ -461,7 +414,6 @@ test "frequency table: little-endian byte order on disk" {
     try testing.expectEqual(@as(u16, 0xABCD), loaded.?[0][1]);
 }
 
-
 test "setFrequencyTable / resetFrequencyTable: pairWeight output changes" {
     // Build a table where 'th' is rare (high weight) — opposite of default.
     var custom: [256][256]u16 = .{.{0x1000} ** 256} ** 256; // all common
@@ -485,7 +437,6 @@ test "setFrequencyTable / resetFrequencyTable: pairWeight output changes" {
     _ = after_th;
     _ = after_qx;
 }
-
 
 test "file versions: append and latest" {
     var fv = version.FileVersions.init(testing.allocator, "test.zig");
@@ -512,7 +463,6 @@ test "file versions: append and latest" {
     try testing.expect(latest.seq == 2);
     try testing.expect(latest.size == 150);
 }
-
 
 test "file versions: countSince" {
     var fv = version.FileVersions.init(testing.allocator, "test.zig");
@@ -549,7 +499,6 @@ test "file versions: countSince" {
     try testing.expect(fv.countSince(10) == 0);
 }
 
-
 test "watcher: queue overflow is explicit" {
     var queue = watcher.EventQueue{};
 
@@ -569,7 +518,6 @@ test "watcher: queue overflow is explicit" {
     try testing.expect(popped == pushed);
 }
 
-
 test "watcher: queue event copies path bytes" {
     var queue = watcher.EventQueue{};
     const original = try testing.allocator.dupe(u8, "tmp/deleted.zig");
@@ -581,7 +529,6 @@ test "watcher: queue event copies path bytes" {
     try testing.expect(event.kind == .deleted);
     try testing.expect(event.seq == 99);
 }
-
 
 test "watcher: parallel initial scan matches sequential results" {
     var tmp_dir = testing.tmpDir(.{});
@@ -624,7 +571,6 @@ test "watcher: parallel initial scan matches sequential results" {
 
     try testing.expectEqual(explorer_seq.outlines.count(), explorer_par.outlines.count());
 }
-
 
 test "watcher: parallel word-index shards match sequential (skip_file_words)" {
     // Exercises the per-worker WordIndex shard + serial mergeShard path
@@ -692,7 +638,6 @@ test "watcher: parallel word-index shards match sequential (skip_file_words)" {
     }
 }
 
-
 test "edit: range_start zero is invalid" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -718,7 +663,6 @@ test "edit: range_start zero is invalid" {
         .content = "changed",
     }));
 }
-
 
 test "edit: range_start beyond file is invalid" {
     var tmp = testing.tmpDir(.{});
@@ -746,7 +690,6 @@ test "edit: range_start beyond file is invalid" {
     }));
 }
 
-
 test "regression #2: searchContent frees trigram candidate slice" {
     // Verifies that the candidates() return value is freed by searchContent.
     // If the defer is missing, the GPA will detect the leak and fail.
@@ -768,7 +711,6 @@ test "regression #2: searchContent frees trigram candidate slice" {
     try testing.expectEqualStrings("leak-check.zig", results[0].path);
 }
 
-
 test "regression #2: searchContent no leak on zero results" {
     // Even when trigram narrows to candidates but none match full text,
     // the candidate slice must be freed.
@@ -789,7 +731,6 @@ test "regression #2: searchContent no leak on zero results" {
     try testing.expect(results.len == 0);
 }
 
-
 test "regression #2: searchContent short query skips trigrams" {
     // Queries < 3 chars can't use trigram index — ensure no leak from null path.
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -807,7 +748,6 @@ test "regression #2: searchContent short query skips trigrams" {
     }
     try testing.expect(results.len == 1);
 }
-
 
 test "regression #5: getHotFiles does not deadlock" {
     // getHotFiles used to hold explorer.mu while calling store.getLatest()
@@ -840,7 +780,6 @@ test "regression #5: getHotFiles does not deadlock" {
     try testing.expectEqualStrings("hot-c.zig", hot[1]);
 }
 
-
 test "regression #5: getHotFiles with no store entries" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -859,7 +798,6 @@ test "regression #5: getHotFiles with no store entries" {
     try testing.expect(hot.len == 1);
     try testing.expectEqualStrings("orphan.zig", hot[0]);
 }
-
 
 test "regression: concurrent hot/read with remove" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -909,7 +847,6 @@ test "regression: concurrent hot/read with remove" {
     stop.store(true, .release);
 }
 
-
 test "regression #5: store getLatestSeqUnlocked" {
     var store = Store.init(testing.allocator);
     defer store.deinit();
@@ -925,7 +862,6 @@ test "regression #5: store getLatestSeqUnlocked" {
     try testing.expect(seq == 2);
     try testing.expect(missing == 0);
 }
-
 
 test "regression #7: tree shows directory nodes" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -948,7 +884,6 @@ test "regression #7: tree shows directory nodes" {
     try testing.expect(std.mem.indexOf(u8, tree, "build.zig") != null);
 }
 
-
 test "regression #7: tree handles nested directories" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -967,7 +902,6 @@ test "regression #7: tree handles nested directories" {
     try testing.expect(std.mem.indexOf(u8, tree, "    hash.zig") != null);
 }
 
-
 test "regression #7: tree shows only basenames" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -984,7 +918,6 @@ test "regression #7: tree shows only basenames" {
     try testing.expect(std.mem.indexOf(u8, tree, "bar.zig") != null);
 }
 
-
 test "regression: searchWord empty result is allocator-owned" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -996,7 +929,6 @@ test "regression: searchWord empty result is allocator-owned" {
     defer testing.allocator.free(hits);
     try testing.expect(hits.len == 0);
 }
-
 
 test "regression: searchContent frees empty trigram candidate slice" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1015,7 +947,6 @@ test "regression: searchContent frees empty trigram candidate slice" {
     }
     try testing.expect(results.len == 0);
 }
-
 
 test "regression: queue push stays non-blocking when full" {
     var queue = watcher.EventQueue{};
@@ -1036,13 +967,11 @@ test "regression: queue push stays non-blocking when full" {
     try testing.expect(elapsed < 50 * std.time.ns_per_ms);
 }
 
-
 test "isPathSafe: rejects absolute paths" {
     const mcp = @import("mcp.zig");
     try testing.expect(!mcp.isPathSafe("/etc/passwd"));
     try testing.expect(!mcp.isPathSafe("/"));
 }
-
 
 test "isPathSafe: rejects parent traversal" {
     const mcp = @import("mcp.zig");
@@ -1051,12 +980,10 @@ test "isPathSafe: rejects parent traversal" {
     try testing.expect(!mcp.isPathSafe(".."));
 }
 
-
 test "isPathSafe: rejects empty path" {
     const mcp = @import("mcp.zig");
     try testing.expect(!mcp.isPathSafe(""));
 }
-
 
 test "isPathSafe: accepts valid relative paths" {
     const mcp = @import("mcp.zig");
@@ -1064,7 +991,6 @@ test "isPathSafe: accepts valid relative paths" {
     try testing.expect(mcp.isPathSafe("README.md"));
     try testing.expect(mcp.isPathSafe("a/b/c/d.txt"));
 }
-
 
 test "findSymbol: returned data is owned copy" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1084,7 +1010,6 @@ test "findSymbol: returned data is owned copy" {
     try testing.expectEqualStrings("a.zig", result.?.path);
     try testing.expectEqualStrings("myFunc", result.?.symbol.name);
 }
-
 
 test "findAllSymbols: returned data survives source removal" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1108,7 +1033,6 @@ test "findAllSymbols: returned data survives source removal" {
     }
 }
 
-
 test "searchContent: returned paths are owned copies" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1126,7 +1050,6 @@ test "searchContent: returned paths are owned copies" {
     // Path and line_text should still be valid (owned)
     try testing.expectEqualStrings("src/hello.zig", results[0].path);
 }
-
 
 test "trigram index: removeFile prunes empty sets" {
     var ti = TrigramIndex.init(testing.allocator);
@@ -1146,7 +1069,6 @@ test "trigram index: removeFile prunes empty sets" {
         testing.allocator.free(a);
     }
 }
-
 
 test "edit: atomic write leaves no temp files on success" {
     // Create a temp file to edit
@@ -1169,7 +1091,6 @@ test "edit: atomic write leaves no temp files on success" {
     return error.TempFileNotCleaned;
 }
 
-
 test "getBool: returns true for bool true" {
     var map: std.json.ObjectMap = .empty;
     defer map.deinit(testing.allocator);
@@ -1177,7 +1098,6 @@ test "getBool: returns true for bool true" {
     const mcp_getBool = @import("mcp.zig").getBool;
     try testing.expect(mcp_getBool(&map, "flag") == true);
 }
-
 
 test "getBool: returns false for bool false" {
     var map: std.json.ObjectMap = .empty;
@@ -1187,14 +1107,12 @@ test "getBool: returns false for bool false" {
     try testing.expect(mcp_getBool(&map, "flag") == false);
 }
 
-
 test "getBool: returns false for missing key" {
     var map: std.json.ObjectMap = .empty;
     defer map.deinit(testing.allocator);
     const mcp_getBool = @import("mcp.zig").getBool;
     try testing.expect(mcp_getBool(&map, "missing") == false);
 }
-
 
 test "getBool: returns false for non-bool value" {
     var map: std.json.ObjectMap = .empty;
@@ -1203,7 +1121,6 @@ test "getBool: returns false for non-bool value" {
     const mcp_getBool = @import("mcp.zig").getBool;
     try testing.expect(mcp_getBool(&map, "flag") == false);
 }
-
 
 test "Tool enum: all valid tool names parse" {
     const Tool = @import("mcp.zig").Tool;
@@ -1222,14 +1139,12 @@ test "Tool enum: all valid tool names parse" {
     try testing.expect(std.meta.stringToEnum(Tool, "codedb_bundle") != null);
 }
 
-
 test "Tool enum: invalid names return null" {
     const Tool = @import("mcp.zig").Tool;
     try testing.expect(std.meta.stringToEnum(Tool, "codedb_invalid") == null);
     try testing.expect(std.meta.stringToEnum(Tool, "") == null);
     try testing.expect(std.meta.stringToEnum(Tool, "tree") == null);
 }
-
 
 test "decomposeRegex: pure literal extracts trigrams" {
     var q = try decomposeRegex("hello", testing.allocator);
@@ -1239,13 +1154,11 @@ test "decomposeRegex: pure literal extracts trigrams" {
     try testing.expectEqual(@as(usize, 0), q.or_groups.len);
 }
 
-
 test "decomposeRegex: short literal yields no trigrams" {
     var q = try decomposeRegex("ab", testing.allocator);
     defer q.deinit();
     try testing.expectEqual(@as(usize, 0), q.and_trigrams.len);
 }
-
 
 test "decomposeRegex: dot breaks trigram chain" {
     var q = try decomposeRegex("he.lo", testing.allocator);
@@ -1254,14 +1167,12 @@ test "decomposeRegex: dot breaks trigram chain" {
     try testing.expectEqual(@as(usize, 0), q.and_trigrams.len);
 }
 
-
 test "decomposeRegex: dot in longer literal" {
     var q = try decomposeRegex("hello.world", testing.allocator);
     defer q.deinit();
     // "hello" -> hel,ell,llo; "world" -> wor,orl,rld = 6 trigrams
     try testing.expectEqual(@as(usize, 6), q.and_trigrams.len);
 }
-
 
 test "decomposeRegex: alternation creates OR groups" {
     var q = try decomposeRegex("foo|bar", testing.allocator);
@@ -1295,14 +1206,12 @@ test "issue-628: alternation with a no-trigram branch falls back to scan-all" {
     try testing.expectEqual(@as(usize, 1), q3.or_groups.len);
 }
 
-
 test "decomposeRegex: quantifier removes preceding char" {
     var q = try decomposeRegex("hel+o", testing.allocator);
     defer q.deinit();
     // "he" then "o" — + removes 'l', neither segment >= 3
     try testing.expectEqual(@as(usize, 0), q.and_trigrams.len);
 }
-
 
 test "decomposeRegex: escaped literal preserved" {
     var q = try decomposeRegex("a\\.bc", testing.allocator);
@@ -1311,7 +1220,6 @@ test "decomposeRegex: escaped literal preserved" {
     try testing.expectEqual(@as(usize, 2), q.and_trigrams.len);
 }
 
-
 test "decomposeRegex: character class breaks chain" {
     var q = try decomposeRegex("abc[xy]def", testing.allocator);
     defer q.deinit();
@@ -1319,14 +1227,12 @@ test "decomposeRegex: character class breaks chain" {
     try testing.expectEqual(@as(usize, 2), q.and_trigrams.len);
 }
 
-
 test "decomposeRegex: backslash-w breaks chain" {
     var q = try decomposeRegex("abc\\wdef", testing.allocator);
     defer q.deinit();
     // "abc" = 1 trigram, "def" = 1 trigram
     try testing.expectEqual(@as(usize, 2), q.and_trigrams.len);
 }
-
 
 test "candidatesRegex: finds files with AND trigrams" {
     var ti = TrigramIndex.init(testing.allocator);
@@ -1351,7 +1257,6 @@ test "candidatesRegex: finds files with AND trigrams" {
     }
     try testing.expect(found_foo);
 }
-
 
 test "candidatesRegex: OR groups union posting lists" {
     var ti = TrigramIndex.init(testing.allocator);
@@ -1379,13 +1284,11 @@ test "candidatesRegex: OR groups union posting lists" {
     try testing.expect(found_alpha or found_beta);
 }
 
-
 test "regexMatch: literal match" {
     try testing.expect(regexMatch("hello world", "hello"));
     try testing.expect(regexMatch("hello world", "world"));
     try testing.expect(!regexMatch("hello world", "xyz"));
 }
-
 
 test "regexMatch: dot matches any char" {
     try testing.expect(regexMatch("hello", "h.llo"));
@@ -1393,25 +1296,21 @@ test "regexMatch: dot matches any char" {
     try testing.expect(!regexMatch("hello", "h...lo"));
 }
 
-
 test "regexMatch: star quantifier" {
     try testing.expect(regexMatch("helllo", "hel*o"));
     try testing.expect(regexMatch("heo", "hel*o"));
     try testing.expect(regexMatch("aab", "a*b"));
 }
 
-
 test "regexMatch: plus quantifier" {
     try testing.expect(regexMatch("helllo", "hel+o"));
     try testing.expect(!regexMatch("heo", "hel+o"));
 }
 
-
 test "regexMatch: question quantifier" {
     try testing.expect(regexMatch("color", "colou?r"));
     try testing.expect(regexMatch("colour", "colou?r"));
 }
-
 
 test "regexMatch: character class" {
     try testing.expect(regexMatch("cat", "c[aeiou]t"));
@@ -1419,12 +1318,10 @@ test "regexMatch: character class" {
     try testing.expect(!regexMatch("cxt", "c[aeiou]t"));
 }
 
-
 test "regexMatch: negated character class" {
     try testing.expect(!regexMatch("cat", "c[^aeiou]t"));
     try testing.expect(regexMatch("cxt", "c[^aeiou]t"));
 }
-
 
 test "regexMatch: anchors" {
     try testing.expect(regexMatch("hello", "^hello"));
@@ -1433,7 +1330,6 @@ test "regexMatch: anchors" {
     try testing.expect(!regexMatch("hello world", "hello$"));
 }
 
-
 test "regexMatch: escape sequences" {
     try testing.expect(regexMatch("abc123", "\\d+"));
     try testing.expect(regexMatch("hello world", "\\w+\\s\\w+"));
@@ -1441,13 +1337,11 @@ test "regexMatch: escape sequences" {
     try testing.expect(!regexMatch("axb", "a\\.b"));
 }
 
-
 test "regexMatch: alternation" {
     try testing.expect(regexMatch("foo", "foo|bar"));
     try testing.expect(regexMatch("bar", "foo|bar"));
     try testing.expect(!regexMatch("baz", "foo|bar"));
 }
-
 
 test "regexMatch: alternation with many branches does not stack overflow" {
     // 300 branches: 4 chars each + 299 separators = 1499 bytes max
@@ -1474,12 +1368,10 @@ test "regexMatch: alternation with many branches does not stack overflow" {
     try testing.expect(!regexMatch("a999", pattern));
 }
 
-
 test "regexMatch: dot-star" {
     try testing.expect(regexMatch("hello world", "hello.*world"));
     try testing.expect(regexMatch("helloworld", "hello.*world"));
 }
-
 
 test "issue-454: regex \\b word boundary matches whole-word, not literal 'b'" {
     // \b is a word-boundary assertion: should match "foo" as a whole word
@@ -1490,7 +1382,6 @@ test "issue-454: regex \\b word boundary matches whole-word, not literal 'b'" {
     try testing.expect(regexMatch("foo bar", "\\bbar\\b"));
     try testing.expect(!regexMatch("foobarbaz", "\\bbar\\b"));
 }
-
 
 test "bloom: PostingMask is populated during indexing" {
     // Verify that indexing actually sets mask bits, not just zeros.
@@ -1512,7 +1403,6 @@ test "bloom: PostingMask is populated during indexing" {
     try testing.expect(mask.?.next_mask != 0);
 }
 
-
 test "bloom: loc_mask records correct position bits" {
     var ti = TrigramIndex.init(testing.allocator);
     defer ti.deinit();
@@ -1529,7 +1419,6 @@ test "bloom: loc_mask records correct position bits" {
     try testing.expect(mask.loc_mask & 1 != 0); // bit 0 set
 }
 
-
 test "bloom: next_mask records the following character" {
     var ti = TrigramIndex.init(testing.allocator);
     defer ti.deinit();
@@ -1544,7 +1433,6 @@ test "bloom: next_mask records the following character" {
     const expected_bit: u8 = @as(u8, 1) << @intCast(normalizeChar('d') % 8);
     try testing.expect(mask.next_mask & expected_bit != 0);
 }
-
 
 test "bloom: soundness — never rejects actual matches" {
     // The bloom filter must NEVER produce false negatives.
@@ -1575,7 +1463,6 @@ test "bloom: soundness — never rejects actual matches" {
     try testing.expect(found1);
     try testing.expect(found2);
 }
-
 
 test "bloom: reduces candidates vs pure trigram intersection" {
     // This is the key test: prove bloom filtering actually eliminates
@@ -1613,7 +1500,6 @@ test "bloom: reduces candidates vs pure trigram intersection" {
     try testing.expect(cands.?.len < 4);
 }
 
-
 test "bloom: loc_mask adjacency filtering works" {
     // Construct a scenario where two trigrams exist in a file but at
     // positions where they can't be adjacent. The loc_mask check should
@@ -1647,7 +1533,6 @@ test "bloom: loc_mask adjacency filtering works" {
     try testing.expect(cands.?.len >= 1); // at least the real match
 }
 
-
 test "bloom: masks accumulate across multiple positions" {
     // If a trigram appears at many positions in a file, both masks should
     // have multiple bits set (OR'd together, never replaced).
@@ -1666,7 +1551,6 @@ test "bloom: masks accumulate across multiple positions" {
     // next_mask should also have bits set (from the chars following each "the")
     try testing.expect(mask.next_mask != 0);
 }
-
 
 test "bloom: regression — candidate count for known queries" {
     // Regression benchmark: index a controlled set of files and assert
@@ -1735,7 +1619,6 @@ test "bloom: regression — candidate count for known queries" {
     }
 }
 
-
 test "regex regression: trigram extraction counts" {
     // Verify exact trigram counts for known patterns.
     // If decomposition logic changes, these catch it.
@@ -1764,7 +1647,6 @@ test "regex regression: trigram extraction counts" {
     }
 }
 
-
 test "regex regression: regexMatch edge cases" {
     // Empty pattern matches anything
     try testing.expect(regexMatch("anything", ""));
@@ -1784,7 +1666,6 @@ test "regex regression: regexMatch edge cases" {
     // Backslash at end of pattern (edge case)
     try testing.expect(!regexMatch("abc", "abc\\"));
 }
-
 
 test "regex regression: candidatesRegex reduces vs brute force" {
     var ti = TrigramIndex.init(testing.allocator);
@@ -1821,7 +1702,6 @@ test "regex regression: candidatesRegex reduces vs brute force" {
     // Candidate count should be much less than total files
     try testing.expect(cands.?.len <= 2);
 }
-
 
 test "perf regression: indexing 200 files under 200ms" {
     var ti = TrigramIndex.init(testing.allocator);
@@ -1873,7 +1753,6 @@ test "perf regression: indexing 200 files under 200ms" {
     try testing.expect(elapsed_ms < 500.0);
 }
 
-
 test "perf regression: trigram candidate lookup under 1ms per query" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1919,7 +1798,6 @@ test "perf regression: trigram candidate lookup under 1ms per query" {
     try testing.expect(ns_per_query < 1_000_000);
 }
 
-
 test "perf regression: word index lookup under 100ns per query" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1952,7 +1830,6 @@ test "perf regression: word index lookup under 100ns per query" {
     // Word lookup must be under 500ns in debug — typically ~5ns in release
     try testing.expect(ns_per_query < 500);
 }
-
 
 test "perf regression: bloom filter reduces scan work" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1987,7 +1864,6 @@ test "perf regression: bloom filter reduces scan work" {
     // This proves bloom filtering is doing work, not just passing through
     try testing.expect(cands.?.len < 25); // must eliminate at least half
 }
-
 
 test "disk word index: round-trip write and read preserves hits" {
     const alloc = testing.allocator;
@@ -2035,7 +1911,6 @@ test "disk word index: round-trip write and read preserves hits" {
     try testing.expect(found_store);
 }
 
-
 test "disk word index: skip_file_words still writes file table" {
     const alloc = testing.allocator;
     var wi = WordIndex.init(alloc);
@@ -2067,7 +1942,6 @@ test "disk word index: skip_file_words still writes file table" {
     try testing.expectEqual(@as(usize, 1), hits.len);
     try testing.expectEqualStrings("src/a.zig", loaded_wi.hitPath(hits[0]));
 }
-
 
 test "disk index: round-trip write and read preserves candidates" {
     const alloc = testing.allocator;
@@ -2113,12 +1987,10 @@ test "disk index: round-trip write and read preserves candidates" {
     try testing.expect(found);
 }
 
-
 test "disk index: readFromDisk returns null for missing files" {
     const loaded = TrigramIndex.readFromDisk(io, "/tmp/codedb_nonexistent_dir_12345", testing.allocator);
     try testing.expect(loaded == null);
 }
-
 
 test "disk index: readFromDisk returns null for corrupt magic" {
     var tmp = testing.tmpDir(.{});
@@ -2148,7 +2020,6 @@ test "disk index: readFromDisk returns null for corrupt magic" {
     try testing.expect(loaded == null);
 }
 
-
 test "disk index: empty index round-trips correctly" {
     const alloc = testing.allocator;
     var ti = TrigramIndex.init(alloc);
@@ -2169,7 +2040,6 @@ test "disk index: empty index round-trips correctly" {
 
     try testing.expectEqual(@as(u32, 0), loaded_ti.fileCount());
 }
-
 
 test "disk index: bloom masks preserved after round-trip" {
     const alloc = testing.allocator;
@@ -2203,7 +2073,6 @@ test "disk index: bloom masks preserved after round-trip" {
     try testing.expectEqual(orig_mask.loc_mask, loaded_mask.loc_mask);
 }
 
-
 test "disk index: fileCount matches after round-trip" {
     const alloc = testing.allocator;
     var ti = TrigramIndex.init(alloc);
@@ -2231,7 +2100,6 @@ test "disk index: fileCount matches after round-trip" {
     try testing.expectEqual(@as(u32, 3), loaded_ti.fileCount());
 }
 
-
 test "disk index: writeToDisk stores git_head, readGitHead retrieves it" {
     const alloc = testing.allocator;
     var ti = TrigramIndex.init(alloc);
@@ -2253,7 +2121,6 @@ test "disk index: writeToDisk stores git_head, readGitHead retrieves it" {
     try testing.expectEqualSlices(u8, &fake_head, &retrieved.?);
 }
 
-
 test "disk index: writeToDisk with null git_head, readGitHead returns null" {
     const alloc = testing.allocator;
     var ti = TrigramIndex.init(alloc);
@@ -2270,7 +2137,6 @@ test "disk index: writeToDisk with null git_head, readGitHead returns null" {
     const retrieved = try TrigramIndex.readGitHead(io, dir_path, alloc);
     try testing.expect(retrieved == null);
 }
-
 
 test "disk index: readDiskHeader returns file_count and git_head" {
     const alloc = testing.allocator;
@@ -2334,7 +2200,6 @@ test "issue-553: status reads file_count from disk header without loading the in
     try testing.expectEqualSlices(u8, &fake_head, &meta.git_head.?);
 }
 
-
 test "disk index: v1 format (no git_head) still loads and readGitHead returns null" {
     const alloc = testing.allocator;
 
@@ -2380,7 +2245,6 @@ test "disk index: v1 format (no git_head) still loads and readGitHead returns nu
     try testing.expectEqual(@as(u32, 0), loaded_ti.fileCount());
 }
 
-
 test "issue-105: large files skip trigram indexing to prevent OOM" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -2405,7 +2269,6 @@ test "issue-105: large files skip trigram indexing to prevent OOM" {
     try testing.expect(explorer.trigram_index.fileCount() == 1);
 }
 
-
 test "issue-107: codedb_deps returns results for Python files" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -2423,7 +2286,6 @@ test "issue-107: codedb_deps returns results for Python files" {
     try testing.expect(deps.len == 1);
     try testing.expectEqualStrings("consumer.py", deps[0]);
 }
-
 
 test "regression-142: trigram index finds all matching files" {
     var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -2445,7 +2307,6 @@ test "regression-142: trigram index finds all matching files" {
     try testing.expect(results.len == 2);
 }
 
-
 test "regression-142: trigram index returns no false positives" {
     var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
@@ -2458,7 +2319,6 @@ test "regression-142: trigram index returns no false positives" {
     // Must return zero results for non-existent content
     try testing.expect(results.len == 0);
 }
-
 
 test "regression-142: trigram intersection narrows correctly" {
     var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -2480,7 +2340,6 @@ test "regression-142: trigram intersection narrows correctly" {
     try testing.expect(results.len == 1);
     try testing.expectEqualStrings("match.zig", results[0].path);
 }
-
 
 test "regression-142: trigram handles file removal" {
     var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -2507,7 +2366,6 @@ test "regression-142: trigram handles file removal" {
     try testing.expect(results2.len == 1);
 }
 
-
 test "regression-142: trigram handles re-indexing same file" {
     var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
@@ -2529,7 +2387,6 @@ test "regression-142: trigram handles re-indexing same file" {
     }
     try testing.expect(new.len == 1);
 }
-
 
 test "regression-142: trigram disk roundtrip preserves results" {
     var tmp = testing.tmpDir(.{});
@@ -2556,7 +2413,6 @@ test "regression-142: trigram disk roundtrip preserves results" {
     defer testing.allocator.free(cands);
     try testing.expect(cands.len == 1);
 }
-
 
 test "regression-142: many files don't corrupt index" {
     var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -2585,7 +2441,6 @@ test "regression-142: many files don't corrupt index" {
     try testing.expectEqualStrings("file_250.zig", results[0].path);
 }
 
-
 test "regression-142: short queries fall back gracefully" {
     var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
@@ -2604,7 +2459,6 @@ test "regression-142: short queries fall back gracefully" {
     try testing.expect(results.len == 1);
 }
 
-
 test "regression-142: word index still works alongside trigram" {
     var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
@@ -2615,7 +2469,6 @@ test "regression-142: word index still works alongside trigram" {
     defer testing.allocator.free(hits);
     try testing.expect(hits.len == 1);
 }
-
 
 test "issue-164: mmap trigram index returns same candidates as heap index" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -2658,7 +2511,6 @@ test "issue-164: mmap trigram index returns same candidates as heap index" {
     try testing.expect(!mmap_idx.containsFile("nonexistent.zig"));
 }
 
-
 test "issue-164: mmap binary search on sorted lookup table" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -2695,12 +2547,10 @@ test "issue-164: mmap binary search on sorted lookup table" {
     }
 }
 
-
 test "issue-164: mmap handles missing files gracefully" {
     const result = MmapTrigramIndex.initFromDisk(io, "/tmp/nonexistent-codedb-test-dir-164", testing.allocator);
     try testing.expect(result == null);
 }
-
 
 test "issue-164: AnyTrigramIndex dispatches to mmap variant" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -2733,7 +2583,6 @@ test "issue-164: AnyTrigramIndex dispatches to mmap variant" {
     try testing.expect(!explorer.trigram_index.containsFile("bar.zig"));
 }
 
-
 test "issue-246: TrigramIndex.removeFile cleans stale path_to_id left by failed indexFile" {
     // Reproduces the corrupted state an OOM mid-way through indexFile leaves:
     //   removeFile cleared file_trigrams, getOrCreateDocId wrote to path_to_id,
@@ -2754,7 +2603,6 @@ test "issue-246: TrigramIndex.removeFile cleans stale path_to_id left by failed 
     try testing.expectEqual(@as(usize, 0), idx.path_to_id.count());
 }
 
-
 test "issue-247: TrigramIndex.id_to_path does not grow on re-index of same file" {
     // removeFile removes path_to_id[path] but leaves the id_to_path slot intact.
     // getOrCreateDocId then appends a new slot since path_to_id misses.
@@ -2772,7 +2620,6 @@ test "issue-247: TrigramIndex.id_to_path does not grow on re-index of same file"
     try testing.expectEqual(@as(usize, 1), idx.id_to_path.items.len);
 }
 
-
 test "issue-227: TrigramIndex.id_to_path stays bounded across many files re-indexed" {
     // Broader regression: ensure re-indexing multiple distinct files also doesn't
     // accumulate dead id_to_path slots.
@@ -2788,7 +2635,6 @@ test "issue-227: TrigramIndex.id_to_path stays bounded across many files re-inde
     // 3 unique files × 4 rounds = 12 slots currently; fix should keep it at 3.
     try testing.expectEqual(@as(usize, files.len), idx.id_to_path.items.len);
 }
-
 
 test "issue-248: PostingList.removeDocId removes target and preserves sorted order" {
     // Documents the correctness contract for the O(log n) binary-search replacement.
@@ -2815,7 +2661,6 @@ test "issue-248: PostingList.removeDocId removes target and preserves sorted ord
     }
 }
 
-
 test "issue-250: searchContent finds content in files skipped by trigram index" {
     // Files indexed with skip_trigram=true (e.g. past the 15k cap) must still be
     // reachable via the fallback full-scan path in searchContent.
@@ -2834,8 +2679,6 @@ test "issue-250: searchContent finds content in files skipped by trigram index" 
     }
     try testing.expectEqual(@as(usize, 1), results.len);
 }
-
-
 
 test "issue-263: skip_trigram_files searched before max_results exhausted" {
     // Files indexed with skip_trigram=true are only searched after all
@@ -2876,7 +2719,6 @@ test "issue-263: skip_trigram_files searched before max_results exhausted" {
     try testing.expect(found_large);
 }
 
-
 test "search: BM25 ranks higher-frequency line first" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -2901,7 +2743,6 @@ test "search: BM25 ranks higher-frequency line first" {
     try testing.expectEqual(@as(u32, 2), results[0].line_num);
 }
 
-
 test "issue-388: TrigramIndex.removeFile frees owned path on tombstone" {
     // owns_paths=true means getOrCreateDocId duped the path so callers can
     // free their copy. removeFile must release that dup before tombstoning
@@ -2919,7 +2760,6 @@ test "issue-388: TrigramIndex.removeFile frees owned path on tombstone" {
     // deinit. The bug leaks the dup on the tombstoned id_to_path slot
     // (cleared to ""), so deinit's `if (p.len > 0) free(p)` misses it.
 }
-
 
 test "bm25-persistence: writeToDisk/readFromDisk preserves total_tokens and doc_lengths" {
     const alloc = testing.allocator;
@@ -2988,7 +2828,6 @@ test "bm25-persistence: writeToDisk/readFromDisk preserves total_tokens and doc_
     try testing.expectEqual(pre_total, wi2.total_tokens);
 }
 
-
 test "issue-451: scope search surfaces skip-trigram canonical file" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -3028,7 +2867,6 @@ test "issue-451: scope search surfaces skip-trigram canonical file" {
     try testing.expect(found_canonical);
 }
 
-
 test "issue-447: searchContent surfaces large (>64KB) skip-trigram files for common identifiers" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -3066,7 +2904,6 @@ test "issue-447: searchContent surfaces large (>64KB) skip-trigram files for com
     }
     try testing.expect(found_canonical);
 }
-
 
 test "issue-583: disk-loaded word index — re-index and removeFile must drop stale postings" {
     // readFromDisk/mmapFromDisk set skip_file_words=true, which made removeFile
@@ -3340,4 +3177,46 @@ test "issue-606: doc_id reuse survives a persist/reload round-trip" {
     const alpha_hits = try loaded.searchDeduped("alpha", alloc);
     defer alloc.free(alpha_hits);
     try testing.expectEqual(@as(usize, 0), alpha_hits.len);
+}
+
+test "issue-635: files between 512KB and 1MB are silently dropped from the index" {
+    // watcher.parseInitialScanEntry hard-drops any file > 512KB (src/watcher.zig:451),
+    // even though the trigram threshold (line 462) was deliberately raised to 1MB so
+    // "large code files aren't invisible to search". So a 600KB source file (well
+    // under the documented 1MB cap) gets no outline / no symbol / no word+search at
+    // all — silently. (codedb_read still works via the disk fallback.)
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "src");
+
+    // small control file
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "src/small.zig", .data = "pub fn tinyMarker() void {}\n" });
+
+    // ~600KB file: > 512KB hard-skip, < 1MB documented trigram cap. Unique token.
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(testing.allocator);
+    try big.appendSlice(testing.allocator, "pub fn bigMarkerXYZ() void {}\n");
+    while (big.items.len < 600 * 1024) try big.appendSlice(testing.allocator, "pub fn filler() void {}\n");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "src/big.zig", .data = big.items });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    // control: the small file is indexed and searchable
+    const small_hits = try explorer.searchWord("tinyMarker", testing.allocator);
+    defer testing.allocator.free(small_hits);
+    try testing.expect(small_hits.len >= 1);
+
+    // the 600KB file must ALSO be indexed (it's under the documented 1MB cap).
+    const big_hits = try explorer.searchWord("bigMarkerXYZ", testing.allocator);
+    defer testing.allocator.free(big_hits);
+    try testing.expect(big_hits.len >= 1); // fails on main: big.zig dropped at the 512KB gate
 }
