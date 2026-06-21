@@ -107,6 +107,11 @@ const WorkerParsedResults = struct {
     }
 };
 
+/// #635: max file size codedb will read + index (outline/symbol/word). Files up
+/// to 1MB also get trigram coverage; 1MB..this cap get outline+word but skip
+/// trigram (see effective_skip_trigram); past this cap the file is skipped.
+/// Was 512KB, which silently dropped 512KB-1MB source files entirely.
+const max_indexed_file_bytes = 2 * 1024 * 1024;
 const skip_dirs = [_][]const u8{
     ".git",
     ".claude",
@@ -448,8 +453,13 @@ fn parseInitialScanEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, 
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{});
     defer dir.close(io);
     const stat = try dir.statFile(io, entry.path, .{});
-    if (stat.size > 512 * 1024) return null;
-    const content = try dir.readFileAlloc(io, entry.path, arena_alloc, .limited(512 * 1024));
+    if (stat.size > max_indexed_file_bytes) {
+        // #635: surface the skip instead of dropping it silently. Reachable via
+        // codedb_read (disk fallback) but invisible to search/symbol/outline.
+        std.log.warn("codedb: not indexing {s} ({d} bytes > {d} cap) — reachable only via codedb_read", .{ entry.path, stat.size, max_indexed_file_bytes });
+        return null;
+    }
+    const content = try dir.readFileAlloc(io, entry.path, arena_alloc, .limited(max_indexed_file_bytes));
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
         if (c == 0) return null;
@@ -597,8 +607,8 @@ fn readFileEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, arena_al
     const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return null;
     defer dir.close(io);
     const stat = dir.statFile(io, entry.path, .{}) catch return null;
-    if (stat.size > 512 * 1024) return null;
-    const c = dir.readFileAlloc(io, entry.path, arena_alloc, .limited(512 * 1024)) catch return null;
+    if (stat.size > max_indexed_file_bytes) return null;
+    const c = dir.readFileAlloc(io, entry.path, arena_alloc, .limited(max_indexed_file_bytes)) catch return null;
     const check_len = @min(c.len, 512);
     for (c[0..check_len]) |ch| {
         if (ch == 0) return null;
@@ -921,8 +931,8 @@ pub fn initialScan(io: std.Io, store: *Store, explorer: *Explorer, root: []const
 fn indexFileOutline(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator) !void {
     if (shouldSkipFile(path)) return;
     const stat = try dir.statFile(io, path, .{});
-    if (stat.size > 512 * 1024) return;
-    const content = try dir.readFileAlloc(io, path, allocator, .limited(512 * 1024));
+    if (stat.size > max_indexed_file_bytes) return;
+    const content = try dir.readFileAlloc(io, path, allocator, .limited(max_indexed_file_bytes));
     defer allocator.free(content);
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
@@ -1063,7 +1073,7 @@ fn hashFile(io: std.Io, dir: std.Io.Dir, path: []const u8, size: u64) !u64 {
     // Returns maxInt(u64) on IO error so the value always differs from a valid
     // previously stored hash of 0, preventing a false "content unchanged" conclusion.
     if (shouldSkipFile(path)) return 0;
-    if (size > 512 * 1024) return 0;
+    if (size > max_indexed_file_bytes) return 0;
     const file = dir.openFile(io, path, .{}) catch return std.math.maxInt(u64);
     defer file.close(io);
 
@@ -1193,12 +1203,12 @@ fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []co
     if (shouldSkipFile(path)) return;
     const stat = try dir.statFile(io, path, .{});
     // Skip files over 512KB (likely minified bundles or generated)
-    if (stat.size > 512 * 1024) return;
+    if (stat.size > max_indexed_file_bytes) return;
     // Use page_allocator arena for content — pages returned to OS immediately
     // via munmap on deinit, eliminating GPA page retention from content churn.
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
-    const content = try dir.readFileAlloc(io, path, content_arena.allocator(), .limited(512 * 1024));
+    const content = try dir.readFileAlloc(io, path, content_arena.allocator(), .limited(max_indexed_file_bytes));
     // Skip binary content (check first 512 bytes for null bytes)
     const check_len = @min(content.len, 512);
     for (content[0..check_len]) |c| {
