@@ -467,6 +467,19 @@ fn mainImpl() !void {
         try commands.runServe(&ctx);
     } else if (std.mem.eql(u8, cmd, "mcp")) {
         try commands.runMcp(&ctx);
+    } else if (std.mem.eql(u8, cmd, "index")) {
+        // #633: `index` is a first-class command. coldLoadOrScan above already
+        // scanned + persisted the on-disk index for this cmd; confirm and exit
+        // cleanly. It used to fall through to "unknown command: index" + exit 1
+        // even though the index had been built.
+        explorer.mu.lockShared();
+        const file_count = explorer.outlines.count();
+        explorer.mu.unlockShared();
+        out.p("{s}\xe2\x9c\x93{s} {s}index ready{s}  {s}{d} files{s}\n", .{
+            s.green, s.reset, s.bold, s.reset, s.dim, file_count, s.reset,
+        });
+        out.flush();
+        std.process.exit(0);
     } else {
         out.p("{s}\xe2\x9c\x97{s} unknown command: {s}{s}{s}\n", .{
             s.red, s.reset, s.bold, cmd, s.reset,
