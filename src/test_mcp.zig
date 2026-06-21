@@ -2561,8 +2561,7 @@ test "issue-632: codedb_read raw mode returns byte-exact range without line-numb
 
     // raw=true + a line range: expect the exact source bytes for lines 1-2,
     // with NO "N | " line-number prefixes (so it can feed an exact-match edit).
-    const args_json = try std.fmt.allocPrint(testing.allocator,
-        "{{\"path\":\"{s}\",\"line_start\":1,\"line_end\":2,\"raw\":true}}", .{rel});
+    const args_json = try std.fmt.allocPrint(testing.allocator, "{{\"path\":\"{s}\",\"line_start\":1,\"line_end\":2,\"raw\":true}}", .{rel});
     defer testing.allocator.free(args_json);
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
     defer parsed.deinit();
@@ -2594,4 +2593,72 @@ test "issue-633: `index` is a recognized command (not a usage/unknown error)" {
     const p2 = main_mod.parsePositional(&[_][]const u8{ "codedb", "/proj", "index" });
     try testing.expectEqualStrings("index", p2.cmd);
     try testing.expectEqualStrings("/proj", p2.root);
+}
+
+test "issue-632: codedb_read raw mode coverage — full-file byte-exact, default unchanged" {
+    // Broader coverage for #632: (a) raw full-file read is byte-exact (no hash
+    // header, no line-number prefix, no full-file hint); (b) the default ranged
+    // read still has BOTH the hash header and the "N | " prefix (regression
+    // guard); (c) a raw ranged read drops both.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+    const dir_path = dir_buf[0..dir_path_len];
+
+    const rel = "small.txt";
+    const content = "alpha\nbeta\ngamma\n";
+    const full = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ dir_path, rel });
+    defer testing.allocator.free(full);
+    {
+        const f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
+        defer f.close(io);
+        try f.writePositionalAll(io, content, 0);
+    }
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, dir_path);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, dir_path, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const Run = struct {
+        fn call(ctx: *mcp_mod.BenchContext, st: *Store, ex: *Explorer, ag: *AgentRegistry, args_json: []const u8, out: *std.ArrayList(u8)) !void {
+            const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+            defer parsed.deinit();
+            ctx.runDispatch(io, testing.allocator, .codedb_read, &parsed.value.object, out, st, ex, ag);
+        }
+    };
+
+    // (a) raw full-file read → byte-exact copy of the source, nothing prepended.
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try Run.call(&bench_ctx, &store, &explorer, &agents, "{\"path\":\"small.txt\",\"raw\":true}", &out);
+        try testing.expectEqualStrings(content, out.items);
+    }
+    // (b) default ranged read → unchanged: hash header present AND "N | " prefix.
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try Run.call(&bench_ctx, &store, &explorer, &agents, "{\"path\":\"small.txt\",\"line_start\":1,\"line_end\":2}", &out);
+        try testing.expect(std.mem.indexOf(u8, out.items, "hash:") != null);
+        try testing.expect(std.mem.indexOf(u8, out.items, " | ") != null);
+    }
+    // (c) raw ranged read → exact line, no hash header, no line-number prefix.
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try Run.call(&bench_ctx, &store, &explorer, &agents, "{\"path\":\"small.txt\",\"line_start\":2,\"line_end\":2,\"raw\":true}", &out);
+        try testing.expect(std.mem.indexOf(u8, out.items, "beta") != null);
+        try testing.expect(std.mem.indexOf(u8, out.items, " | ") == null);
+        try testing.expect(std.mem.indexOf(u8, out.items, "hash:") == null);
+    }
 }
