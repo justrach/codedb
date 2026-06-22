@@ -1084,26 +1084,40 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
     }
 }
 
-fn hashFile(io: std.Io, dir: std.Io.Dir, path: []const u8, size: u64) !u64 {
-    // Returns 0 for intentional skip (large files, filtered extensions).
-    // Returns maxInt(u64) on IO error so the value always differs from a valid
-    // previously stored hash of 0, preventing a false "content unchanged" conclusion.
+
+/// Index already-read file content: skip binary (a null byte in the first 512
+/// bytes), then index with or without trigrams by size. The single place that
+/// turns a text buffer into index entries — shared by indexFileContent and
+/// hashAndIndexFile so the binary + trigram rules live in one spot.
+fn indexContentBuffer(explorer: *Explorer, path: []const u8, content: []const u8, skip_trigram: bool) !void {
+    const check_len = @min(content.len, 512);
+    if (std.mem.indexOfScalar(u8, content[0..check_len], 0) != null) return; // binary
+    const effective_skip_trigram = skip_trigram or (content.len > max_trigram_file_bytes);
+    if (effective_skip_trigram) {
+        try explorer.indexFileSkipTrigram(path, content);
+    } else {
+        try explorer.indexFile(path, content);
+    }
+}
+
+/// Read a file once and reuse the buffer for both change detection and indexing.
+/// The live-update paths (incrementalDiff, drainNotifyFile) previously hashed and
+/// indexed in two separate full reads of a changed file — disk read twice,
+/// up to 2× max_indexed_file_bytes of IO after #635 widened the cap. This reads
+/// once. Returns the content hash to store for future change detection: 0 when the
+/// file is skipped (filtered or over the cap), maxInt(u64) on IO error (always
+/// differs from a stored hash, forcing a re-read next cycle). Binary files are
+/// hashed but not indexed, matching the prior hash-then-index split behavior.
+/// `size` is the caller's already-stat'd size, so there is no extra stat here.
+fn hashAndIndexFile(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, size: u64) u64 {
     if (shouldSkipFile(path)) return 0;
     if (size > max_indexed_file_bytes) return 0;
-    const file = dir.openFile(io, path, .{}) catch return std.math.maxInt(u64);
-    defer file.close(io);
-
-    var hasher = std.hash.Wyhash.init(0);
-    var buf: [16 * 1024]u8 = undefined;
-    var offset: u64 = 0;
-    while (true) {
-        const n = file.readPositionalAll(io, &buf, offset) catch return std.math.maxInt(u64);
-        if (n == 0) break;
-        hasher.update(buf[0..n]);
-        offset += n;
-        if (n < buf.len) break;
-    }
-    return hasher.final();
+    var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer content_arena.deinit();
+    const content = dir.readFileAlloc(io, path, content_arena.allocator(), .limited(max_indexed_file_bytes)) catch return std.math.maxInt(u64);
+    const hash = std.hash.Wyhash.hash(0, content);
+    indexContentBuffer(explorer, path, content, false) catch {};
+    return hash;
 }
 
 fn pushEventOrWait(queue: *EventQueue, event: FsEvent) void {
@@ -1135,14 +1149,27 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
             // Mtime unchanged -> skip (cheap path, no IO)
             if (old.mtime == mtime) continue;
 
-            // Size changed -> definitely changed, skip expensive hash.
+            const stable_path = known_entry.key_ptr.*;
+
+            // Mtime changed: read the file once and reuse the buffer for both the
+            // content hash (change detection) and indexing, instead of hashing
+            // (full read) and then indexing (a second full read).
             var hash: u64 = 0;
-            if (old.size == stat.size) {
-                // Same size + changed mtime -> hash to confirm content actually differs.
-                hash = hashFile(io, dir, entry.path, stat.size) catch 0;
+            var content: ?[]const u8 = null;
+            var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer content_arena.deinit();
+            if (!shouldSkipFile(entry.path) and stat.size <= max_indexed_file_bytes) {
+                if (dir.readFileAlloc(io, entry.path, content_arena.allocator(), .limited(max_indexed_file_bytes))) |buf| {
+                    content = buf;
+                    hash = std.hash.Wyhash.hash(0, buf);
+                } else |_| {
+                    hash = std.math.maxInt(u64); // IO error -> force re-index next cycle
+                }
             }
+
+            // Same size + matching prior hash -> content identical (touch, git
+            // checkout): update metadata only, no snapshot/event/re-index.
             if (old.size == stat.size and hash != 0 and old.hash != 0 and hash == old.hash) {
-                // Content identical (e.g. touch, git checkout) -> update metadata only.
                 old.mtime = mtime;
                 old.size = stat.size;
                 continue;
@@ -1152,9 +1179,8 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
             old.mtime = mtime;
             old.size = stat.size;
             old.hash = hash;
-            const stable_path = known_entry.key_ptr.*;
             if (FsEvent.init(stable_path, .modified, seq)) |ev| pushEventOrWait(queue, ev);
-            indexFileContent(io, explorer, dir, stable_path, tmp, false) catch {};
+            if (content) |buf| indexContentBuffer(explorer, stable_path, buf, false) catch {};
         } else {
             // New files always generate an event, so skip the extra full-file hash pass.
             const duped = try persistent.dupe(u8, entry.path);
@@ -1223,13 +1249,7 @@ fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []co
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
     const content = (try readIndexableFile(io, dir, path, content_arena.allocator(), stat.size, false)) orelse return;
-    // Skip trigram indexing for files over the trigram cap to bound memory on large repos
-    const effective_skip_trigram = skip_trigram or (content.len > max_trigram_file_bytes);
-    if (effective_skip_trigram) {
-        try explorer.indexFileSkipTrigram(path, content);
-    } else {
-        try explorer.indexFile(path, content);
-    }
+    try indexContentBuffer(explorer, path, content, skip_trigram);
 }
 
 // ── muonry interop ───────────────────────────────────────────────────────────
@@ -1279,10 +1299,12 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
             if (existing.mtime == mtime and existing.size == stat.size) continue;
         }
 
-        indexFileContent(io, explorer, dir, rel, alloc, false) catch continue;
+        // Read once: index + hash from the same buffer (previously two separate
+        // full reads of the same file per notification).
+        const hash = hashAndIndexFile(io, explorer, dir, rel, stat.size);
+        if (hash == std.math.maxInt(u64)) continue; // read failed — retry next cycle
 
         // Update known-file state so incrementalDiff doesn't double-process
-        const hash = hashFile(io, dir, rel, stat.size) catch continue;
         if (known.getPtr(rel)) |existing| {
             existing.mtime = mtime;
             existing.size = stat.size;
