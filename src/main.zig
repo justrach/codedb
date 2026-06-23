@@ -35,6 +35,8 @@ pub const findGitRootFrom = cli_args.findGitRootFrom;
 pub const isValidMcpFlag = cli_args.isValidMcpFlag;
 pub const resolveRoot = cli_args.resolveRoot;
 const cliIsQueryCmd = cli_args.cliIsQueryCmd;
+const mcpRootIsImplicitCwd = cli_args.mcpRootIsImplicitCwd;
+const mcpRootAcceptsEnv = cli_args.mcpRootAcceptsEnv;
 
 /// The real entry point.  In Debug builds, Zig may merge all command-branch
 /// stack frames into one producing a frame that overflows the default OS stack,
@@ -203,7 +205,7 @@ fn mainImpl() !void {
     // so the MCP scan kicks off at startup instead of waiting for a roots
     // handshake — without this, every fresh `codedb mcp` call against a
     // client that doesn't send roots/list_changed sees an empty index.
-    if (std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".")) {
+    if (mcpRootAcceptsEnv(cmd, root)) {
         if (cio.posixGetenv("CODEDB_ROOT")) |env_root| {
             if (env_root.len > 0) {
                 root = env_root;
@@ -218,7 +220,7 @@ fn mainImpl() !void {
     // rather than the subdir they happen to be in. Skipped if the env var
     // or a positional arg already pinned the root, or if no .git is found.
     var git_root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    if (std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit) {
+    if (mcpRootIsImplicitCwd(cmd, root, root_is_explicit)) {
         if (findGitRoot(io, &git_root_buf)) |git_root| {
             root = git_root;
             root_is_explicit = true;
@@ -296,7 +298,7 @@ fn mainImpl() !void {
     // path is fast (snapshot load happens in-process when the trigger fires),
     // and clients that don't advertise the roots capability fire the trigger
     // immediately on notifications/initialized — see handleSession.
-    const mcp_deferred_root = std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit;
+    const mcp_deferred_root = mcpRootIsImplicitCwd(cmd, root, root_is_explicit);
     if (!mcp_deferred_root and !root_policy.isIndexableRoot(abs_root)) {
         out.p("{s}\xe2\x9c\x97{s} refusing to index temporary root: {s}{s}{s}\n", .{
             s.red, s.reset, s.bold, abs_root, s.reset,

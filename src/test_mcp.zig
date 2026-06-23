@@ -1784,6 +1784,37 @@ test "issue-639: placeholder is normalized in cli_args only, never re-rewritten 
     try testing.expect(std.mem.indexOf(u8, main_src, "${workspaceFolder}") == null);
 }
 
+test "issue-639: mcp root-resolution gate predicates" {
+    const ca = cli_args_mod;
+    // mcpRootIsImplicitCwd — single source for the #502 git-root walk-up AND
+    // the deferred-scan handshake. Fires only for an implicit cwd mcp root.
+    try testing.expect(ca.mcpRootIsImplicitCwd("mcp", ".", false)); // bare mcp → fire
+    try testing.expect(!ca.mcpRootIsImplicitCwd("mcp", ".", true)); // env/path-pinned → skip
+    try testing.expect(!ca.mcpRootIsImplicitCwd("mcp", "/proj", false)); // explicit path → skip
+    try testing.expect(!ca.mcpRootIsImplicitCwd("search", ".", false)); // non-mcp → skip
+    // mcpRootAcceptsEnv — gates the CODEDB_ROOT fallback (explicit or not).
+    try testing.expect(ca.mcpRootAcceptsEnv("mcp", "."));
+    try testing.expect(!ca.mcpRootAcceptsEnv("mcp", "/proj"));
+    try testing.expect(!ca.mcpRootAcceptsEnv("status", "."));
+}
+
+test "issue-639: parsed ${workspaceFolder} feeds the gates like a bare `codedb mcp`" {
+    // The two halves of the bug must agree: the parse half (parsePositional)
+    // and the consume half (the gate predicates). Before the fix the
+    // placeholder parsed to (root="${workspaceFolder}", explicit=true), so
+    // both gates returned false and the #502 walk-up / deferred scan /
+    // CODEDB_ROOT fallback were all silently skipped.
+    const forms = [_][]const []const u8{
+        &.{ "codedb", "${workspaceFolder}", "mcp" },
+        &.{ "codedb", "mcp", "${workspaceFolder}" },
+    };
+    for (forms) |argv| {
+        const p = main_mod.parsePositional(argv);
+        try testing.expect(cli_args_mod.mcpRootIsImplicitCwd(p.cmd, p.root, p.root_is_explicit));
+        try testing.expect(cli_args_mod.mcpRootAcceptsEnv(p.cmd, p.root));
+    }
+}
+
 test "issue-502: isValidMcpFlag whitelist rejects unknown flags" {
     // Before fix: `codedb mcp --snapshot` silently swallowed the flag and
     // started the server with surprising state. After fix, mainImpl rejects

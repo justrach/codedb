@@ -87,6 +87,22 @@ pub fn parsePositional(args: []const []const u8) ParsedPositional {
     return .{ .root = "", .cmd = "", .cmd_args_start = 0, .root_is_explicit = false, .usage_exit = true };
 }
 
+/// True when an `mcp` root points at cwd and was left implicit — a bare
+/// `codedb mcp` or a normalized ${workspaceFolder}. Single source of truth for
+/// the #502 git-root walk-up AND the deferred-scan handshake; both used to be
+/// hand-written inline in mainImpl and drifted out of sync, which is how #639
+/// hid (a placeholder arrived with root_is_explicit set and silently disabled
+/// both paths).
+pub fn mcpRootIsImplicitCwd(cmd: []const u8, root: []const u8, root_is_explicit: bool) bool {
+    return std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit;
+}
+
+/// True when an `mcp` root points at cwd and is therefore eligible for the
+/// CODEDB_ROOT env fallback (which pins the root, explicit or not).
+pub fn mcpRootAcceptsEnv(cmd: []const u8, root: []const u8) bool {
+    return std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".");
+}
+
 /// A 1-based inclusive line range as accepted by `read -L FROM-TO`. `end` is
 /// `std.math.maxInt(u32)` when the spec used `$`/`end` (read to end-of-file).
 pub const LineRange = struct { start: u32, end: u32 };
