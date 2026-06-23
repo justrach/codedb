@@ -10,6 +10,11 @@ const std = @import("std");
 /// commands; the dispatch chain calls cliIsQueryCmd directly.
 pub const cli_query_cmds = [_][]const u8{ "tree", "outline", "find", "search", "word", "read", "hot", "status", "symbol", "callers", "callpath", "deps", "glob", "ls", "file", "context", "changes" };
 
+/// Editors that don't expand the placeholder pass the literal token as the
+/// root. #639: normalized here (not in mainImpl) so it lands before the
+/// root == "." / !root_is_explicit gates.
+pub const workspace_placeholder = "${workspaceFolder}";
+
 /// True for the read-only query commands the daemon will serve / the client
 /// will proxy. Everything else (serve, mcp, snapshot, index, ...) is handled
 /// only by the cold path.
@@ -63,12 +68,20 @@ pub fn parsePositional(args: []const []const u8) ParsedPositional {
             // Only when args[2] doesn't look like a flag; otherwise it's a
             // legitimate command-arg that the mcp subcommand may consume.
             if (a2.len > 0 and a2[0] != '-') {
+                // #639: `codedb mcp ${workspaceFolder}` (unexpanded) → cwd, non-explicit.
+                if (std.mem.eql(u8, a2, workspace_placeholder))
+                    return .{ .root = ".", .cmd = "mcp", .cmd_args_start = 3, .root_is_explicit = false };
                 return .{ .root = a2, .cmd = "mcp", .cmd_args_start = 3, .root_is_explicit = true };
             }
         }
         return .{ .root = ".", .cmd = a1, .cmd_args_start = 2, .root_is_explicit = false };
     }
     if (args.len >= 3) {
+        // #639: unexpanded ${workspaceFolder} → cwd, non-explicit, so the
+        // CODEDB_ROOT fallback, #502 git-root walk-up, and mcp deferred-scan
+        // (all gated on root == "." / !root_is_explicit) apply.
+        if (std.mem.eql(u8, a1, workspace_placeholder))
+            return .{ .root = ".", .cmd = args[2], .cmd_args_start = 3, .root_is_explicit = false };
         return .{ .root = a1, .cmd = args[2], .cmd_args_start = 3, .root_is_explicit = true };
     }
     return .{ .root = "", .cmd = "", .cmd_args_start = 0, .root_is_explicit = false, .usage_exit = true };

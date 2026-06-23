@@ -282,10 +282,6 @@ fn mainImpl() !void {
         return;
     }
 
-    if (std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, "${workspaceFolder}")) {
-        root = ".";
-    }
-
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
     const abs_root = resolveRoot(io, root, &root_buf) catch {
         out.p("{s}\xe2\x9c\x97{s} cannot resolve root: {s}{s}{s}\n", .{
