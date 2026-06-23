@@ -1,5 +1,7 @@
 //! Thin CLI client → warm daemon proxy + the per-project spawn lock.
 const std = @import("std");
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
 const cio = @import("cio.zig");
 const sty = @import("style.zig");
 const Store = @import("store.zig").Store;
@@ -35,9 +37,15 @@ const cli_blob_max: u32 = 64 * 1024;
 /// (104 bytes on macOS / 108 on Linux): "/tmp/codedb-<uid>-<hash16>.sock" is
 /// at most ~40 bytes. Returns null only if formatting somehow overflows `buf`.
 pub fn cliSocketPath(buf: []u8, abs_root: []const u8) ?[]const u8 {
-    const uid = std.c.getuid();
     const hash = std.hash.Wyhash.hash(0xc0de, abs_root);
-    return std.fmt.bufPrint(buf, "/tmp/codedb-{d}-{x:0>16}.sock", .{ uid, hash }) catch null;
+    if (is_windows) {
+        // The warm-daemon proxy is disabled on Windows; this only needs to
+        // produce a stable, compilable path (no getuid()).
+        return std.fmt.bufPrint(buf, "codedb-{x:0>16}.sock", .{hash}) catch null;
+    } else {
+        const uid = std.c.getuid();
+        return std.fmt.bufPrint(buf, "/tmp/codedb-{d}-{x:0>16}.sock", .{ uid, hash }) catch null;
+    }
 }
 
 /// Fill a sockaddr.un for `path` (which must be NUL-terminatable into sun_path).
@@ -94,24 +102,32 @@ fn cliWriteFull(fd: c_int, data: []const u8) bool {
 /// Returns null when another process holds the lock or the file can't be
 /// opened.
 pub fn daemonLockTryAcquire(data_dir: []const u8) ?c_int {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const p = std.fmt.bufPrintZ(&buf, "{s}/cli-daemon.lock", .{data_dir}) catch return null;
-    const fd = std.c.open(p.ptr, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(c_uint, 0o600));
-    if (fd < 0) return null;
-    if (std.c.flock(fd, std.c.LOCK.EX | std.c.LOCK.NB) != 0) {
-        _ = std.c.close(fd);
+    if (is_windows) {
         return null;
+    } else {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const p = std.fmt.bufPrintZ(&buf, "{s}/cli-daemon.lock", .{data_dir}) catch return null;
+        const fd = std.c.open(p.ptr, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(c_uint, 0o600));
+        if (fd < 0) return null;
+        if (std.c.flock(fd, std.c.LOCK.EX | std.c.LOCK.NB) != 0) {
+            _ = std.c.close(fd);
+            return null;
+        }
+        return fd;
     }
-    return fd;
 }
 
 /// Probe whether the spawn lock is free without keeping it: used by the CLI
 /// auto-spawn path so racing cold calls don't fork duplicate daemons.
 pub fn daemonLockAvailable(data_dir: []const u8) bool {
-    const fd = daemonLockTryAcquire(data_dir) orelse return false;
-    _ = std.c.flock(fd, std.c.LOCK.UN);
-    _ = std.c.close(fd);
-    return true;
+    if (is_windows) {
+        return false;
+    } else {
+        const fd = daemonLockTryAcquire(data_dir) orelse return false;
+        _ = std.c.flock(fd, std.c.LOCK.UN);
+        _ = std.c.close(fd);
+        return true;
+    }
 }
 
 /// Daemon side. Bind a per-project Unix socket and serve framed query requests
@@ -128,6 +144,15 @@ pub fn daemonLockAvailable(data_dir: []const u8) bool {
 /// long-lived serve/mcp daemons pass a `shutdown` flag they never watch, so for
 /// them a bind failure simply disables the proxy (clients fall back to cold).
 pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool)) void {
+    if (is_windows) {
+        // No Unix-socket proxy on Windows; CLI calls run cold in-process.
+        return;
+    } else {
+        cliDaemonListenPosix(io, allocator, explorer, store, abs_root, last_activity_ms, shutdown);
+    }
+}
+
+fn cliDaemonListenPosix(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool)) void {
     var path_buf: [128]u8 = undefined;
     const sock_path = cliSocketPath(&path_buf, abs_root) orelse {
         std.log.warn("cli-proxy: could not build socket path", .{});
@@ -276,6 +301,14 @@ fn cliRespond(conn: c_int, code: u8, out_bytes: []const u8) void {
 /// response) returns null so the caller falls back to the cold in-process path.
 /// `args` is mainImpl's filtered argv (args[0] = program name); we send args[1..].
 pub fn cliTryProxy(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8, args: []const []const u8, color: bool) ?u8 {
+    if (is_windows) {
+        return null;
+    } else {
+        return cliTryProxyPosix(io, allocator, abs_root, args, color);
+    }
+}
+
+fn cliTryProxyPosix(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8, args: []const []const u8, color: bool) ?u8 {
     _ = io;
     if (args.len < 2) return null;
 

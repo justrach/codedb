@@ -87,7 +87,7 @@ pub const WordIndex = struct {
             self.free_ids.deinit(self.allocator);
             self.doc_lengths.deinit();
             self.allocator.free(self.word_dir);
-            std.posix.munmap(m);
+            cio.munmap(m);
             return;
         }
         // Free hit lists and duped word keys
@@ -494,7 +494,7 @@ pub const WordIndex = struct {
         self.index.deinit();
         self.path_to_id.deinit();
         self.allocator.free(self.word_dir);
-        std.posix.munmap(data);
+        cio.munmap(data);
         self.index = new_index;
         self.path_to_id = new_p2i;
         self.word_dir = &.{};
@@ -671,11 +671,7 @@ pub const WordIndex = struct {
             }
         }.lt);
 
-        const rand_suffix = @as(u64, blk: {
-            var ts: std.c.timespec = undefined;
-            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-            break :blk @as(u64, @intCast(ts.nsec)) ^ (@as(u64, @intCast(ts.sec)) << 1);
-        });
+        const rand_suffix = cio.randU64();
         const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}/word.index.{x}.tmp", .{ dir_path, rand_suffix });
         defer self.allocator.free(tmp_path);
         const final_path = try std.fmt.allocPrint(self.allocator, "{s}/word.index", .{dir_path});
@@ -894,8 +890,8 @@ pub const WordIndex = struct {
         defer file.close(io);
         const size = file.length(io) catch return null;
         if (size < 51) return null;
-        const data = std.posix.mmap(null, size, .{ .READ = true }, .{ .TYPE = .SHARED }, file.handle, 0) catch return null;
-        errdefer std.posix.munmap(data);
+        const data = cio.mmapReadonly(file.handle, size) catch return null;
+        errdefer cio.munmap(data);
 
         if (!std.mem.eql(u8, data[0..4], &DISK_MAGIC)) return null;
         if (std.mem.readInt(u16, data[4..6], .little) != DISK_FORMAT_VERSION) return null;
@@ -2050,42 +2046,28 @@ pub const MmapTrigramIndex = struct {
         defer post_file.close(io);
         const post_size = post_file.length(io) catch return null;
         if (post_size < 8) return null;
-        const postings_data = std.posix.mmap(
-            null,
-            post_size,
-            .{ .READ = true },
-            .{ .TYPE = .SHARED },
-            post_file.handle,
-            0,
-        ) catch return null;
-        errdefer std.posix.munmap(postings_data);
+        const postings_data = cio.mmapReadonly(post_file.handle, post_size) catch return null;
+        errdefer cio.munmap(postings_data);
 
         // mmap lookup file
         const lk_file = std.Io.Dir.cwd().openFile(io, lookup_path, .{}) catch {
-            std.posix.munmap(postings_data);
+            cio.munmap(postings_data);
             return null;
         };
         defer lk_file.close(io);
         const lk_size = lk_file.length(io) catch {
-            std.posix.munmap(postings_data);
+            cio.munmap(postings_data);
             return null;
         };
         if (lk_size < 12) {
-            std.posix.munmap(postings_data);
+            cio.munmap(postings_data);
             return null;
         }
-        const lookup_data = std.posix.mmap(
-            null,
-            lk_size,
-            .{ .READ = true },
-            .{ .TYPE = .SHARED },
-            lk_file.handle,
-            0,
-        ) catch {
-            std.posix.munmap(postings_data);
+        const lookup_data = cio.mmapReadonly(lk_file.handle, lk_size) catch {
+            cio.munmap(postings_data);
             return null;
         };
-        errdefer std.posix.munmap(lookup_data);
+        errdefer cio.munmap(lookup_data);
 
         // Validate postings header
         if (!std.mem.eql(u8, postings_data[0..4], &TrigramIndex.POSTINGS_MAGIC)) return null;
@@ -2154,8 +2136,8 @@ pub const MmapTrigramIndex = struct {
         for (self.file_table) |p| self.allocator.free(p);
         self.allocator.free(self.file_table);
         self.file_set.deinit();
-        std.posix.munmap(self.postings_data);
-        std.posix.munmap(self.lookup_data);
+        cio.munmap(self.postings_data);
+        cio.munmap(self.lookup_data);
     }
 
     pub fn fileCount(self: *const MmapTrigramIndex) u32 {

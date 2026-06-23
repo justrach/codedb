@@ -208,7 +208,7 @@ const ProjectCtx = struct {
 
 fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
     const hash = std.hash.Wyhash.hash(0, project_path);
-    const home = cio.posixGetenv("HOME") orelse {
+    const home = cio.homeDir() orelse {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{project_path}) catch null;
     };
 
@@ -427,7 +427,7 @@ const ProjectCache = struct {
             const hash = std.hash.Wyhash.hash(0, p);
             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
             const loaded_central = blk: {
-                const home = cio.posixGetenv("HOME") orelse break :blk false;
+                const home = cio.homeDir() orelse break :blk false;
                 const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
                 break :blk snapshot_mod.loadSnapshot(io, central, &new_entry.explorer, &new_entry.store, self.alloc);
             };
@@ -3996,7 +3996,7 @@ pub fn appendRemoteErrorHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), 
 // ── Local project tools ─────────────────────────────────────────────────────
 
 fn handleProjects(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
-    const home = cio.posixGetenv("HOME") orelse {
+    const home = cio.homeDir() orelse {
         out.appendSlice(alloc, "error: cannot read HOME") catch {};
         return;
     };

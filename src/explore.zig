@@ -1426,7 +1426,7 @@ pub const Explorer = struct {
         // munmap'd after contents.deinit (above): the cache holds borrowed slices
         // into these maps, but deinit skips freeing borrowed values, so the maps
         // are still valid through it and only released here.
-        for (self.content_section_maps.items) |m| std.posix.munmap(m);
+        for (self.content_section_maps.items) |m| cio.munmap(m);
         self.content_section_maps.deinit(self.allocator);
         if (self.root_dir) |d| {
             if (self.io) |io| d.close(io);

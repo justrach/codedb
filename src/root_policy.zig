@@ -47,7 +47,7 @@ pub fn isIndexableRoot(path: []const u8) bool {
     }
 
     // Block home directory itself (not subdirectories) — prevents 17GB RAM spike (#174)
-    if (cio.posixGetenv("HOME")) |home| {
+    if (cio.homeDir()) |home| {
         if (home.len > 0 and std.mem.eql(u8, path, home)) return false;
     }
     // Also block common home patterns directly

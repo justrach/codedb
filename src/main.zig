@@ -56,14 +56,15 @@ const isHelpRequest = cli_args.isHelpRequest;
 /// fallible work into mainImpl which runs after we've already had a chance
 /// to surface usage / --version output via the fast path.
 pub fn main(init: std.process.Init.Minimal) void {
-    cio.setProcessArgs(init.args.vector);
-    if (handleFastPath(init.args.vector)) return;
+    const argv = cio.bootstrapArgs(init.args);
+    cio.setProcessArgs(argv);
+    if (handleFastPath(argv)) return;
     mainTrampoline() catch |err| {
         // Surface the failure on stderr so users see something even if the
         // worker thread crashes during startup.
         var buf: [256]u8 = undefined;
         if (std.fmt.bufPrint(&buf, "codedb: fatal startup error: {s}\n", .{@errorName(err)})) |msg| {
-            _ = std.c.write(2, msg.ptr, msg.len);
+            cio.File.stderr().writeAll(msg) catch {};
         } else |_| {}
         std.process.exit(1);
     };
@@ -89,7 +90,7 @@ fn handleFastPath(argv: []const [*:0]const u8) bool {
             "codedb  code intelligence server\n\n" ++
             "  usage: codedb [root] <command> [args...]\n\n" ++
             "  run `codedb --help` for the full command list.\n";
-        _ = std.c.write(stderr_fd, msg.ptr, msg.len);
+        (cio.File{ .handle = stderr_fd }).writeAll(msg) catch {};
         std.process.exit(1);
     }
 
@@ -99,7 +100,7 @@ fn handleFastPath(argv: []const [*:0]const u8) bool {
         const out = std.fmt.bufPrint(&buf, "codedb {s}\n", .{release_info.semver}) catch {
             std.process.exit(0);
         };
-        _ = std.c.write(stdout_fd, out.ptr, out.len);
+        (cio.File{ .handle = stdout_fd }).writeAll(out) catch {};
         std.process.exit(0);
     }
 

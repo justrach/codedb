@@ -288,7 +288,10 @@ fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: [
     {
         var tmp_file = try std.Io.Dir.openFileAbsolute(io, tmp_path, .{ .mode = .read_write });
         defer tmp_file.close(io);
-        try tmp_file.setPermissions(io, std.Io.File.Permissions.fromMode(0o755));
+        if (@import("builtin").os.tag != .windows) {
+            // POSIX execute bits; Windows has no chmod equivalent for binaries.
+            try tmp_file.setPermissions(io, std.Io.File.Permissions.fromMode(0o755));
+        }
     }
 
     try std.Io.Dir.renameAbsolute(tmp_path, dest_path, io);
@@ -357,7 +360,7 @@ pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool)
 
 pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
     const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
-    const home = cio.posixGetenv("HOME") orelse return;
+    const home = cio.homeDir() orelse return;
     if (home.len == 0) return;
 
     const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;

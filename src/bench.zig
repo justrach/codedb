@@ -42,7 +42,7 @@ const cases = [_]Case{
 };
 
 pub fn main(init: std.process.Init.Minimal) !void {
-    cio.setProcessArgs(init.args.vector);
+    cio.setProcessArgs(cio.bootstrapArgs(init.args));
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();

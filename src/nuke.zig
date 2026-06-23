@@ -23,8 +23,9 @@ const NukeStats = struct {
 
 pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
     const out = Out{ .file = stdout, .alloc = allocator };
-    const home_env = cio.posixGetenv("HOME") orelse {
-        out.p("{s}\xe2\x9c\x97{s} cannot determine HOME directory\n", .{ s.red, s.reset });
+    // HOME on POSIX; Windows exposes the equivalent as USERPROFILE.
+    const home_env = cio.homeDir() orelse {
+        out.p("{s}\xe2\x9c\x97{s} cannot determine home directory\n", .{ s.red, s.reset });
         std.process.exit(1);
     };
     const home = allocator.dupe(u8, home_env) catch {
@@ -74,40 +75,45 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
 }
 
 fn killOtherCodedbProcesses(allocator: std.mem.Allocator, self_pid: std.c.pid_t, self_exe: ?[]const u8) usize {
-    const executable_path = self_exe orelse return 0;
-    var killed: usize = 0;
-    var pid_buf: [32]u8 = undefined;
-    const self_pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{self_pid}) catch "0";
+    if (@import("builtin").os.tag == .windows) {
+        // pgrep/kill/ps are POSIX-only; there is no warm daemon to reap on Windows.
+        return 0;
+    } else {
+        const executable_path = self_exe orelse return 0;
+        var killed: usize = 0;
+        var pid_buf: [32]u8 = undefined;
+        const self_pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{self_pid}) catch "0";
 
-    const pgrep_result = cio.runCapture(.{
-        .allocator = allocator,
-        .argv = &.{ "pgrep", "-f", "codedb.*(serve|mcp)" },
-        .max_output_bytes = 4096,
-    }) catch return 0;
-    defer allocator.free(pgrep_result.stdout);
-    defer allocator.free(pgrep_result.stderr);
-
-    var line_iter = std.mem.splitScalar(u8, pgrep_result.stdout, '\n');
-    while (line_iter.next()) |pid_line| {
-        const trimmed = std.mem.trim(u8, pid_line, " \t\r\n");
-        if (trimmed.len == 0) continue;
-        if (std.mem.eql(u8, trimmed, self_pid_str)) continue;
-        const command_line = readProcessCommandLine(allocator, trimmed) orelse continue;
-        defer allocator.free(command_line);
-        if (!commandTargetsBinary(command_line, executable_path)) continue;
-        const kill_result = cio.runCapture(.{
+        const pgrep_result = cio.runCapture(.{
             .allocator = allocator,
-            .argv = &.{ "kill", trimmed },
-            .max_output_bytes = 256,
-        }) catch continue;
-        defer allocator.free(kill_result.stdout);
-        defer allocator.free(kill_result.stderr);
-        if (kill_result.term == .Exited and kill_result.term.Exited == 0) {
-            killed += 1;
-        }
-    }
+            .argv = &.{ "pgrep", "-f", "codedb.*(serve|mcp)" },
+            .max_output_bytes = 4096,
+        }) catch return 0;
+        defer allocator.free(pgrep_result.stdout);
+        defer allocator.free(pgrep_result.stderr);
 
-    return killed;
+        var line_iter = std.mem.splitScalar(u8, pgrep_result.stdout, '\n');
+        while (line_iter.next()) |pid_line| {
+            const trimmed = std.mem.trim(u8, pid_line, " \t\r\n");
+            if (trimmed.len == 0) continue;
+            if (std.mem.eql(u8, trimmed, self_pid_str)) continue;
+            const command_line = readProcessCommandLine(allocator, trimmed) orelse continue;
+            defer allocator.free(command_line);
+            if (!commandTargetsBinary(command_line, executable_path)) continue;
+            const kill_result = cio.runCapture(.{
+                .allocator = allocator,
+                .argv = &.{ "kill", trimmed },
+                .max_output_bytes = 256,
+            }) catch continue;
+            defer allocator.free(kill_result.stdout);
+            defer allocator.free(kill_result.stderr);
+            if (kill_result.term == .Exited and kill_result.term.Exited == 0) {
+                killed += 1;
+            }
+        }
+
+        return killed;
+    }
 }
 
 fn readProcessCommandLine(allocator: std.mem.Allocator, pid: []const u8) ?[]u8 {

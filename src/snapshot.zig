@@ -844,10 +844,15 @@ fn rebuildDepsFromOutline(explorer: *Explorer, path: []const u8, outline: *const
 // Process max-RSS in bytes (macOS getrusage reports bytes; Linux reports KiB).
 // Profiler-only: attribution of load-phase memory growth, not a public API.
 fn loadMaxRssBytes() u64 {
-    var ru: std.c.rusage = undefined;
-    if (std.c.getrusage(0, &ru) != 0) return 0;
-    const raw: u64 = @intCast(@max(0, ru.maxrss));
-    return if (@import("builtin").os.tag == .linux) raw * 1024 else raw;
+    if (@import("builtin").os.tag == .windows) {
+        // getrusage is POSIX-only; RSS profiling is unavailable on Windows.
+        return 0;
+    } else {
+        var ru: std.c.rusage = undefined;
+        if (std.c.getrusage(0, &ru) != 0) return 0;
+        const raw: u64 = @intCast(@max(0, ru.maxrss));
+        return if (@import("builtin").os.tag == .linux) raw * 1024 else raw;
+    }
 }
 // Written only when `load_prof` is set by loadSnapshotFast; the loader is
 // single-threaded so plain vars are safe.
@@ -1032,12 +1037,12 @@ fn loadSnapshotFast(
     var content_borrowed = false;
     const section: []const u8 = section_blk: {
         const fsize: usize = std.math.cast(usize, file_stat.size) orelse return false;
-        if (std.posix.mmap(null, fsize, .{ .READ = true }, .{ .TYPE = .SHARED }, content_file.handle, 0)) |m| {
+        if (cio.mmapReadonly(content_file.handle, fsize)) |m| {
             if (explorer.adoptContentSection(m)) {
                 content_borrowed = true;
                 break :section_blk m[sec_base..][0..sec_len];
             } else |_| {
-                std.posix.munmap(m);
+                cio.munmap(m);
             }
         } else |_| {}
         const h = allocator.alloc(u8, sec_len) catch return false;
@@ -1451,7 +1456,7 @@ pub fn writeProjectCacheSnapshot(
     allocator: std.mem.Allocator,
 ) !void {
     const hash = std.hash.Wyhash.hash(0, root_path);
-    const home_raw = cio.posixGetenv("HOME") orelse return;
+    const home_raw = cio.homeDir() orelse return;
     const home = allocator.dupe(u8, home_raw) catch return;
     defer allocator.free(home);
     const secondary = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch return;

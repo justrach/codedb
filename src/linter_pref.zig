@@ -32,7 +32,7 @@ pub fn parseBody(bytes: []const u8) Pref {
 
 /// $HOME/.codedb/linter_optin, or null when HOME is unset/empty. Caller frees.
 pub fn prefPath(allocator: std.mem.Allocator) ?[]u8 {
-    const home = cio.posixGetenv("HOME") orelse return null;
+    const home = cio.homeDir() orelse return null;
     if (home.len == 0) return null;
     return std.fmt.allocPrint(allocator, "{s}/.codedb/{s}", .{ home, filename }) catch null;
 }
@@ -72,7 +72,7 @@ pub fn read(io: std.Io, allocator: std.mem.Allocator) Pref {
 /// Called by the install / `codedb update` opt-in flow. Best-effort.
 pub fn write(io: std.Io, allocator: std.mem.Allocator, p: Pref) void {
     if (p == .unset) return;
-    const home = cio.posixGetenv("HOME") orelse return;
+    const home = cio.homeDir() orelse return;
     if (home.len == 0) return;
     const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
     defer allocator.free(dir_path);
