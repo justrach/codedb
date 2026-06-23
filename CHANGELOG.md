@@ -1,6 +1,39 @@
 # Changelog
 
 
+## 0.2.5827 - 2026-06-23
+
+Native **Windows** support: codedb now cross-compiles and runs as a native
+`x86_64-windows` binary, verified end-to-end (`--version`, `index`, `search`,
+`read`, `outline`, and MCP-over-stdio `initialize` + `tools/list`) in a Windows
+sandbox. macOS/Linux behaviour is unchanged and the full test suite still passes.
+
+### Platform shim (`cio.zig`) gains a Windows path for every POSIX primitive
+
+- **argv** — the WTF-16 command line is materialized via `std.process.Args.toSlice`
+  (POSIX still passes its argv vector through unchanged).
+- **stdio** — routed through the CRT `_write`/`_read`/`_isatty`/`_close` so the
+  HANDLE-typed `std.c.write` is never hit.
+- **sync** — `pthread` mutex/rwlock on POSIX, **SRWLOCK** on Windows.
+- **time** — `clock_gettime` on POSIX, **`QueryPerformanceCounter` + FILETIME**
+  on Windows (0.16 dropped `std.time.nanoTimestamp`/`Timer`, and `std.Io.Mutex`
+  needs an `Io`).
+- **mmap** — new `mmapReadonly`/`munmap` shim: `mmap(MAP_SHARED)` vs
+  `CreateFileMapping` + `MapViewOfFile`. All zero-copy index/snapshot/explore
+  call sites route through it, so the mmap-backed store works on Windows.
+- **env/home** — `setenv`→`_putenv_s`; new `homeDir()` resolves `$HOME` on POSIX
+  and `%USERPROFILE%` on Windows, so global data/config/snapshot paths and
+  `nuke` work rather than silently no-op.
+
+### Graceful degradation on Windows
+
+The Unix-socket + `flock` warm-daemon proxy is disabled (CLI runs cold-direct,
+MCP stays on stdio). Subprocess capture (`runCapture`) reports `SpawnUnsupported`,
+so git-SHA snapshot tagging and self-update degrade to a clean no-op/error rather
+than crashing. RSS profiling returns 0. Native `CreateProcess` + named-pipe IPC
+are tracked follow-ups for full parity.
+
+
 ## 0.2.5826 - 2026-06-23
 
 A correctness + **coverage** + agent-steering cut. It widens index coverage to
