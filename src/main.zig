@@ -37,6 +37,7 @@ pub const resolveRoot = cli_args.resolveRoot;
 const cliIsQueryCmd = cli_args.cliIsQueryCmd;
 const mcpRootIsImplicitCwd = cli_args.mcpRootIsImplicitCwd;
 const mcpRootAcceptsEnv = cli_args.mcpRootAcceptsEnv;
+const isHelpRequest = cli_args.isHelpRequest;
 
 /// The real entry point.  In Debug builds, Zig may merge all command-branch
 /// stack frames into one producing a frame that overflows the default OS stack,
@@ -240,7 +241,7 @@ fn mainImpl() !void {
         // need their own bypass.
         for (args[cmd_args_start..]) |a| {
             if (a.len == 0 or a[0] != '-') continue;
-            if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "help")) {
+            if (isHelpRequest(a)) {
                 out.file = stdout;
                 printUsage(&out, s);
                 return;
@@ -267,7 +268,7 @@ fn mainImpl() !void {
     }
 
     // Handle --help early (no root needed)
-    if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "help")) {
+    if (isHelpRequest(cmd)) {
         printUsage(&out, s);
         return;
     }

@@ -1815,6 +1815,42 @@ test "issue-639: parsed ${workspaceFolder} feeds the gates like a bare `codedb m
     }
 }
 
+test "isolate: isHelpRequest matches the three help spellings, nothing else" {
+    const ca = cli_args_mod;
+    // The exact triple that was hand-written at four sites and drift-prone.
+    try testing.expect(ca.isHelpRequest("--help"));
+    try testing.expect(ca.isHelpRequest("-h"));
+    try testing.expect(ca.isHelpRequest("help"));
+    // Near-misses must not trip it — realistic typos / neighbouring flags.
+    try testing.expect(!ca.isHelpRequest("--helpme"));
+    try testing.expect(!ca.isHelpRequest("-help"));
+    try testing.expect(!ca.isHelpRequest("h"));
+    try testing.expect(!ca.isHelpRequest("--no-telemetry"));
+    try testing.expect(!ca.isHelpRequest(""));
+}
+
+test "isolate: parsePositional routes every help form through isHelpRequest" {
+    // Wiring: the parse half and the predicate must agree. Every argv that
+    // should print usage parses to a cmd isHelpRequest recognizes — including
+    // the #502 `codedb mcp --help` collapse to cmd="--help".
+    const ca = cli_args_mod;
+    inline for (.{ "--help", "-h", "help" }) |form| {
+        const bare = main_mod.parsePositional(&.{ "codedb", form });
+        try testing.expect(ca.isHelpRequest(bare.cmd));
+        const after_mcp = main_mod.parsePositional(&.{ "codedb", "mcp", form });
+        try testing.expect(ca.isHelpRequest(after_mcp.cmd));
+    }
+}
+
+test "isolate: hand-written help-flag triple is gone from main.zig" {
+    // Reintroduction guard. The `--help`/`-h`/`help` disjunction lived inline
+    // in mainImpl at two sites; both now call isHelpRequest. The `-h` literal
+    // existed nowhere else in main.zig, so its reappearance marks a re-inline
+    // before it can drift from the cli_args source of truth.
+    const main_src = @embedFile("main.zig");
+    try testing.expect(std.mem.indexOf(u8, main_src, "\"-h\"") == null);
+}
+
 test "issue-502: isValidMcpFlag whitelist rejects unknown flags" {
     // Before fix: `codedb mcp --snapshot` silently swallowed the flag and
     // started the server with surprising state. After fix, mainImpl rejects

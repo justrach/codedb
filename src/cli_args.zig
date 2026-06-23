@@ -54,14 +54,14 @@ pub fn parsePositional(args: []const []const u8) ParsedPositional {
     if (std.mem.eql(u8, a1, "--version") or std.mem.eql(u8, a1, "-v")) {
         return .{ .root = ".", .cmd = "--version", .cmd_args_start = 2, .root_is_explicit = false };
     }
-    if (std.mem.eql(u8, a1, "--help") or std.mem.eql(u8, a1, "-h") or std.mem.eql(u8, a1, "help")) {
+    if (isHelpRequest(a1)) {
         return .{ .root = ".", .cmd = a1, .cmd_args_start = 2, .root_is_explicit = false };
     }
     if (isCommand(a1)) {
         // `codedb mcp --help` → print help, do not start server. #502.
         if (std.mem.eql(u8, a1, "mcp") and args.len >= 3) {
             const a2 = args[2];
-            if (std.mem.eql(u8, a2, "--help") or std.mem.eql(u8, a2, "-h") or std.mem.eql(u8, a2, "help")) {
+            if (isHelpRequest(a2)) {
                 return .{ .root = ".", .cmd = "--help", .cmd_args_start = 3, .root_is_explicit = false };
             }
             // `codedb mcp <path>` → honor path as root. #503.
@@ -101,6 +101,16 @@ pub fn mcpRootIsImplicitCwd(cmd: []const u8, root: []const u8, root_is_explicit:
 /// CODEDB_ROOT env fallback (which pins the root, explicit or not).
 pub fn mcpRootAcceptsEnv(cmd: []const u8, root: []const u8) bool {
     return std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".");
+}
+
+/// True for the three spellings of a help request — `--help`, `-h`, `help`.
+/// This exact three-way disjunction was hand-written at four sites
+/// (parsePositional twice, mainImpl twice); the `mcp --no-telemetry --help`
+/// combo bypass in mainImpl exists only because two of those copies couldn't
+/// see each other. Centralizing kills the drift surface the way the mcp gate
+/// predicates did for #639.
+pub fn isHelpRequest(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "help");
 }
 
 /// A 1-based inclusive line range as accepted by `read -L FROM-TO`. `end` is
