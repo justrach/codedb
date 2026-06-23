@@ -1709,6 +1709,35 @@ test "parsePositional: existing commands still parse correctly (regression)" {
     }
 }
 
+test "issue-639: unexpanded ${workspaceFolder} root normalizes to cwd, non-explicit" {
+    // Editors that don't expand the ${workspaceFolder} placeholder pass the
+    // literal token as the root. It must behave like a bare `codedb mcp`
+    // (root ".", root_is_explicit=false) so the CODEDB_ROOT fallback, the #502
+    // git-root walk-up, and deferred-scan mode all apply. Before the fix
+    // parsePositional returned the literal placeholder with root_is_explicit
+    // = true, and mainImpl only rewrote root -> "." (too late, and without
+    // clearing the explicit flag), so all three paths were silently skipped.
+
+    // `codedb ${workspaceFolder} mcp`
+    {
+        const argv = [_][]const u8{ "codedb", "${workspaceFolder}", "mcp" };
+        const p = main_mod.parsePositional(&argv);
+        try testing.expect(!p.usage_exit);
+        try testing.expectEqualStrings(".", p.root);
+        try testing.expectEqualStrings("mcp", p.cmd);
+        try testing.expect(!p.root_is_explicit);
+    }
+    // `codedb mcp ${workspaceFolder}`
+    {
+        const argv = [_][]const u8{ "codedb", "mcp", "${workspaceFolder}" };
+        const p = main_mod.parsePositional(&argv);
+        try testing.expect(!p.usage_exit);
+        try testing.expectEqualStrings(".", p.root);
+        try testing.expectEqualStrings("mcp", p.cmd);
+        try testing.expect(!p.root_is_explicit);
+    }
+}
+
 test "issue-502: isValidMcpFlag whitelist rejects unknown flags" {
     // Before fix: `codedb mcp --snapshot` silently swallowed the flag and
     // started the server with surprising state. After fix, mainImpl rejects
