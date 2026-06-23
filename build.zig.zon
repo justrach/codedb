@@ -9,8 +9,8 @@
             .hash = "mcp_zig-0.2.0-_PilzNJkAQADzH2t3vqpd_nl_W0ta-gDaumXKttuPyBy",
         },
         .nanoregex = .{
-            .url = "https://github.com/justrach/nanoregex/archive/refs/heads/main.tar.gz",
-            .hash = "nanoregex-0.0.1-EdkhcXoqAgC6HvjxEqNIedT0YWMRfouWk8dh4G5ZC2L9",
+            .url = "git+https://github.com/justrach/nanoregex#f11195945c764afdaa00d7dff8b49f1f849f6b3e",
+            .hash = "nanoregex-0.0.1-EdkhcdjkAgAA3KubDZWjZLnZPv19H2w8RlcHU-eneFB5",
         },
     },
     .paths = .{
