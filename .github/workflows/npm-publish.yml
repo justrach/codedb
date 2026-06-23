@@ -1,0 +1,39 @@
+name: npm-publish
+
+# Publishes the `codedeebee` npm launcher that matches a codedb GitHub release.
+# Manual-only: the GitHub release (with its notarized binaries) must already be
+# published, since codedeebee's postinstall fetches the release asset at install
+# time. Needs an `NPM_TOKEN` repo secret (an npm automation token).
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Tag or ref to publish from (e.g. v0.2.5826). Defaults to the branch the workflow runs on.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish codedeebee to npm
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish codedeebee
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "publishing codedeebee@$(node -p "require('./package.json').version")"
+          npm publish --access public
