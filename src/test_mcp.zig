@@ -21,6 +21,13 @@ const watcher = @import("watcher.zig");
 const WordIndex = @import("index.zig").WordIndex;
 const TrigramIndex = @import("index.zig").TrigramIndex;
 const SparseNgramIndex = @import("index.zig").SparseNgramIndex;
+const cli_args_mod = @import("cli_args.zig");
+const out_mod = @import("out.zig");
+const query_mod = @import("query.zig");
+const cli_proxy_mod = @import("cli_proxy.zig");
+const bootstrap_mod = @import("bootstrap.zig");
+const background_mod = @import("background.zig");
+const commands_mod = @import("commands.zig");
 comptime {
     _ = @import("config.zig");
 }
@@ -147,6 +154,42 @@ test "issue-93: isPathSafe blocks traversal" {
     try testing.expect(!MCP.isPathSafe(""));
     try testing.expect(MCP.isPathSafe("src/main.zig"));
     try testing.expect(MCP.isPathSafe("README.md"));
+}
+
+test "issue-629: projectRelPath accepts absolute paths inside the project root" {
+    const MCP = @import("mcp.zig");
+    const root = "/Users/dev/project";
+
+    // Regression: codedb returned "path traversal not allowed" for ANY absolute
+    // path, so agents that hold absolute paths abandoned codedb for bash (see
+    // the #626 trajectory: codedb!,codedb! then seven bash calls). An absolute
+    // path inside the project root must resolve to its project-relative form.
+    try testing.expectEqualStrings("src/main.zig", MCP.projectRelPath("/Users/dev/project/src/main.zig", root).?);
+    // A safe relative path passes through unchanged.
+    try testing.expectEqualStrings("src/main.zig", MCP.projectRelPath("src/main.zig", root).?);
+
+    // Security must still hold:
+    try testing.expect(MCP.projectRelPath("/etc/passwd", root) == null); // outside the root
+    try testing.expect(MCP.projectRelPath("/Users/dev/project/../secret", root) == null); // escapes via ..
+    try testing.expect(MCP.projectRelPath("../../../etc/passwd", root) == null); // relative traversal
+    try testing.expect(MCP.projectRelPath("/Users/dev/projectile/secret", root) == null); // sibling prefix, not a child
+}
+
+test "issue-624: convergence governor flags a repeated identical call" {
+    const MCP = @import("mcp.zig");
+    var gov: MCP.ConvergenceGovernor = .{};
+    const sig: u64 = 0xC0FFEE;
+    try testing.expectEqual(@as(usize, 1), gov.record(sig));
+    try testing.expectEqual(@as(usize, 2), gov.record(sig));
+    // Third identical call reaches the warn threshold — the loop is detected.
+    try testing.expectEqual(@as(usize, 3), gov.record(sig));
+    try testing.expect(gov.record(sig) >= MCP.ConvergenceGovernor.WARN_AT);
+
+    // Distinct calls in sequence are never flagged as looping.
+    var gov2: MCP.ConvergenceGovernor = .{};
+    try testing.expectEqual(@as(usize, 1), gov2.record(1));
+    try testing.expectEqual(@as(usize, 1), gov2.record(2));
+    try testing.expectEqual(@as(usize, 1), gov2.record(3));
 }
 
 test "auto-update: shouldRunAutoUpdate gates correctly" {
@@ -526,14 +569,28 @@ test "issue-148: open pipe does not trigger HUP" {
 }
 
 test "issue-148: codedb mcp exits when stdin is closed" {
-    // Integration test: spawn codedb mcp, close stdin, verify it exits
+    // #620: this used to spawn `zig build run -- --mcp` from the repo root, which
+    // folded the compile step AND a full-repo snapshot load into the measured
+    // window, so it flaked over the 5s budget under load. Build once up front
+    // (outside the timing), then spawn the prebuilt binary against a tiny temp
+    // project so only the real stdin-EOF-to-exit path is timed.
+    try buildCliForHelpTests();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const proj_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const proj = path_buf[0..proj_len];
+    tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const x = 1;\n" }) catch {};
+
+    // Integration test: spawn the built codedb mcp, close stdin, verify it exits
     var child = std.process.spawn(io, .{
-        .argv = &.{ "zig", "build", "run", "--", "--mcp" },
+        .argv = &.{ "./zig-out/bin/codedb", proj, "mcp" },
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .ignore,
     }) catch {
-        // If spawn fails (e.g., zig not on PATH), skip the test
+        // If spawn fails (e.g., binary not built), skip the test
         return;
     };
 
@@ -1652,6 +1709,148 @@ test "parsePositional: existing commands still parse correctly (regression)" {
     }
 }
 
+test "issue-639: unexpanded ${workspaceFolder} root normalizes to cwd, non-explicit" {
+    // Editors that don't expand the ${workspaceFolder} placeholder pass the
+    // literal token as the root. It must behave like a bare `codedb mcp`
+    // (root ".", root_is_explicit=false) so the CODEDB_ROOT fallback, the #502
+    // git-root walk-up, and deferred-scan mode all apply. Before the fix
+    // parsePositional returned the literal placeholder with root_is_explicit
+    // = true, and mainImpl only rewrote root -> "." (too late, and without
+    // clearing the explicit flag), so all three paths were silently skipped.
+
+    // `codedb ${workspaceFolder} mcp`
+    {
+        const argv = [_][]const u8{ "codedb", "${workspaceFolder}", "mcp" };
+        const p = main_mod.parsePositional(&argv);
+        try testing.expect(!p.usage_exit);
+        try testing.expectEqualStrings(".", p.root);
+        try testing.expectEqualStrings("mcp", p.cmd);
+        try testing.expect(!p.root_is_explicit);
+    }
+    // `codedb mcp ${workspaceFolder}`
+    {
+        const argv = [_][]const u8{ "codedb", "mcp", "${workspaceFolder}" };
+        const p = main_mod.parsePositional(&argv);
+        try testing.expect(!p.usage_exit);
+        try testing.expectEqualStrings(".", p.root);
+        try testing.expectEqualStrings("mcp", p.cmd);
+        try testing.expect(!p.root_is_explicit);
+    }
+}
+
+test "issue-639: parsePositional root/explicit matrix across arg forms" {
+    // The matrix that hid the bug: each arg form maps to a (root, cmd,
+    // explicit) triple. The deferred-scan / git-root-walkup / CODEDB_ROOT
+    // gates all key off (cmd=="mcp" and root=="." and !explicit), so the
+    // placeholder rows MUST land on root=".", explicit=false to behave like
+    // a bare `codedb mcp`. Anything else silently disables those paths (#639).
+    const Case = struct {
+        argv: []const []const u8,
+        root: []const u8,
+        cmd: []const u8,
+        explicit: bool,
+    };
+    const cases = [_]Case{
+        // bare mcp → cwd, deferred (non-explicit)
+        .{ .argv = &.{ "codedb", "mcp" }, .root = ".", .cmd = "mcp", .explicit = false },
+        // explicit path before cmd
+        .{ .argv = &.{ "codedb", "/proj", "mcp" }, .root = "/proj", .cmd = "mcp", .explicit = true },
+        // explicit path after mcp (#503)
+        .{ .argv = &.{ "codedb", "mcp", "/proj" }, .root = "/proj", .cmd = "mcp", .explicit = true },
+        // unexpanded placeholder before cmd → normalized to cwd, non-explicit (#639)
+        .{ .argv = &.{ "codedb", "${workspaceFolder}", "mcp" }, .root = ".", .cmd = "mcp", .explicit = false },
+        // unexpanded placeholder after mcp → normalized (#639)
+        .{ .argv = &.{ "codedb", "mcp", "${workspaceFolder}" }, .root = ".", .cmd = "mcp", .explicit = false },
+        // placeholder with a non-mcp command (generic root form) → cwd recovery (#639)
+        .{ .argv = &.{ "codedb", "${workspaceFolder}", "search" }, .root = ".", .cmd = "search", .explicit = false },
+        // explicit path + query cmd stays explicit
+        .{ .argv = &.{ "codedb", "/proj", "search" }, .root = "/proj", .cmd = "search", .explicit = true },
+    };
+    for (cases) |c| {
+        const p = main_mod.parsePositional(c.argv);
+        try testing.expect(!p.usage_exit);
+        try testing.expectEqualStrings(c.root, p.root);
+        try testing.expectEqualStrings(c.cmd, p.cmd);
+        try testing.expectEqual(c.explicit, p.root_is_explicit);
+    }
+}
+
+test "issue-639: placeholder is normalized in cli_args only, never re-rewritten in main" {
+    // Reintroduction guard. The bug hid because the placeholder was rewritten
+    // late in the dispatcher (mainImpl), after the gates had already branched
+    // on the un-normalized value. Keep the literal in exactly one place
+    // (cli_args.zig); its presence in main.zig means a late rewrite is back.
+    const main_src = @embedFile("main.zig");
+    try testing.expect(std.mem.indexOf(u8, main_src, "${workspaceFolder}") == null);
+}
+
+test "issue-639: mcp root-resolution gate predicates" {
+    const ca = cli_args_mod;
+    // mcpRootIsImplicitCwd — single source for the #502 git-root walk-up AND
+    // the deferred-scan handshake. Fires only for an implicit cwd mcp root.
+    try testing.expect(ca.mcpRootIsImplicitCwd("mcp", ".", false)); // bare mcp → fire
+    try testing.expect(!ca.mcpRootIsImplicitCwd("mcp", ".", true)); // env/path-pinned → skip
+    try testing.expect(!ca.mcpRootIsImplicitCwd("mcp", "/proj", false)); // explicit path → skip
+    try testing.expect(!ca.mcpRootIsImplicitCwd("search", ".", false)); // non-mcp → skip
+    // mcpRootAcceptsEnv — gates the CODEDB_ROOT fallback (explicit or not).
+    try testing.expect(ca.mcpRootAcceptsEnv("mcp", "."));
+    try testing.expect(!ca.mcpRootAcceptsEnv("mcp", "/proj"));
+    try testing.expect(!ca.mcpRootAcceptsEnv("status", "."));
+}
+
+test "issue-639: parsed ${workspaceFolder} feeds the gates like a bare `codedb mcp`" {
+    // The two halves of the bug must agree: the parse half (parsePositional)
+    // and the consume half (the gate predicates). Before the fix the
+    // placeholder parsed to (root="${workspaceFolder}", explicit=true), so
+    // both gates returned false and the #502 walk-up / deferred scan /
+    // CODEDB_ROOT fallback were all silently skipped.
+    const forms = [_][]const []const u8{
+        &.{ "codedb", "${workspaceFolder}", "mcp" },
+        &.{ "codedb", "mcp", "${workspaceFolder}" },
+    };
+    for (forms) |argv| {
+        const p = main_mod.parsePositional(argv);
+        try testing.expect(cli_args_mod.mcpRootIsImplicitCwd(p.cmd, p.root, p.root_is_explicit));
+        try testing.expect(cli_args_mod.mcpRootAcceptsEnv(p.cmd, p.root));
+    }
+}
+
+test "isolate: isHelpRequest matches the three help spellings, nothing else" {
+    const ca = cli_args_mod;
+    // The exact triple that was hand-written at four sites and drift-prone.
+    try testing.expect(ca.isHelpRequest("--help"));
+    try testing.expect(ca.isHelpRequest("-h"));
+    try testing.expect(ca.isHelpRequest("help"));
+    // Near-misses must not trip it — realistic typos / neighbouring flags.
+    try testing.expect(!ca.isHelpRequest("--helpme"));
+    try testing.expect(!ca.isHelpRequest("-help"));
+    try testing.expect(!ca.isHelpRequest("h"));
+    try testing.expect(!ca.isHelpRequest("--no-telemetry"));
+    try testing.expect(!ca.isHelpRequest(""));
+}
+
+test "isolate: parsePositional routes every help form through isHelpRequest" {
+    // Wiring: the parse half and the predicate must agree. Every argv that
+    // should print usage parses to a cmd isHelpRequest recognizes — including
+    // the #502 `codedb mcp --help` collapse to cmd="--help".
+    const ca = cli_args_mod;
+    inline for (.{ "--help", "-h", "help" }) |form| {
+        const bare = main_mod.parsePositional(&.{ "codedb", form });
+        try testing.expect(ca.isHelpRequest(bare.cmd));
+        const after_mcp = main_mod.parsePositional(&.{ "codedb", "mcp", form });
+        try testing.expect(ca.isHelpRequest(after_mcp.cmd));
+    }
+}
+
+test "isolate: hand-written help-flag triple is gone from main.zig" {
+    // Reintroduction guard. The `--help`/`-h`/`help` disjunction lived inline
+    // in mainImpl at two sites; both now call isHelpRequest. The `-h` literal
+    // existed nowhere else in main.zig, so its reappearance marks a re-inline
+    // before it can drift from the cli_args source of truth.
+    const main_src = @embedFile("main.zig");
+    try testing.expect(std.mem.indexOf(u8, main_src, "\"-h\"") == null);
+}
+
 test "issue-502: isValidMcpFlag whitelist rejects unknown flags" {
     // Before fix: `codedb mcp --snapshot` silently swallowed the flag and
     // started the server with surprising state. After fix, mainImpl rejects
@@ -2295,4 +2494,313 @@ test "issue-531: codedb_context max_tokens packs sections by value under the bud
     try testing.expect(std.mem.indexOf(u8, out_budget.items, "# Task") != null);
     try testing.expect(std.mem.indexOf(u8, out_budget.items, "## Most-relevant files") != null);
     try testing.expect(std.mem.indexOf(u8, out_budget.items, "## Top sites") == null);
+}
+
+// Issue #626: structural-tool steering. The search nudge only fires for bare
+// identifiers; the read nudge only for large whole-file reads.
+test "issue-626: isBareIdentifier gates the search nudge" {
+    try testing.expect(mcp_mod.isBareIdentifier("make_bytes"));
+    try testing.expect(mcp_mod.isBareIdentifier("HttpResponse"));
+    try testing.expect(mcp_mod.isBareIdentifier("_private"));
+    try testing.expect(mcp_mod.isBareIdentifier("parse2"));
+
+    // Anything that isn't a single identifier is left to plain substring search.
+    try testing.expect(!mcp_mod.isBareIdentifier(""));
+    try testing.expect(!mcp_mod.isBareIdentifier("def content"));
+    try testing.expect(!mcp_mod.isBareIdentifier("make_bytes("));
+    try testing.expect(!mcp_mod.isBareIdentifier("obj.method"));
+    try testing.expect(!mcp_mod.isBareIdentifier("2fast"));
+}
+
+test "issue-626: fullFileReadHint only nudges on large whole-file reads" {
+    try testing.expect(Explorer.fullFileReadHint("one\ntwo\nthree\n") == null);
+
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(testing.allocator);
+    var i: usize = 0;
+    while (i < 500) : (i += 1) try big.appendSlice(testing.allocator, "x\n");
+    const hint = Explorer.fullFileReadHint(big.items);
+    try testing.expect(hint != null);
+    try testing.expect(std.mem.indexOf(u8, hint.?, "codedb_outline") != null);
+}
+
+test "issue-626: depsHint fires only on a single unambiguous definition" {
+    try testing.expect(mcp_mod.depsHint(0) == null);
+    try testing.expect(mcp_mod.depsHint(5) == null);
+    const h = mcp_mod.depsHint(1);
+    try testing.expect(h != null);
+    try testing.expect(std.mem.indexOf(u8, h.?, "codedb_deps") != null);
+}
+
+// ── main.zig split verification (#main-split) ───────────────────────────────
+// main.zig was decomposed into out/cli_args/query/cli_proxy/bootstrap/
+// background/commands modules. These tests fail to compile if any extracted
+// module loses a public symbol, and fail at runtime if main.zig's re-exports
+// stop forwarding to the moved implementations.
+
+test "split: extracted modules expose their public API" {
+    // Referencing one decl from each extracted module forces it to compile and
+    // asserts the symbol still exists after the move.
+    comptime {
+        _ = out_mod.Out;
+        _ = out_mod.printUsage;
+        _ = cli_args_mod.parsePositional;
+        _ = cli_args_mod.parseLineRange;
+        _ = cli_args_mod.parseSearchArgs;
+        _ = cli_args_mod.hasExtraCliArgs;
+        _ = cli_args_mod.findGitRoot;
+        _ = cli_args_mod.findGitRootFrom;
+        _ = cli_args_mod.isValidMcpFlag;
+        _ = cli_args_mod.resolveRoot;
+        _ = cli_args_mod.cliIsQueryCmd;
+        _ = query_mod.runQuery;
+        _ = cli_proxy_mod.daemonLockTryAcquire;
+        _ = cli_proxy_mod.daemonLockAvailable;
+        _ = cli_proxy_mod.cliDaemonListen;
+        _ = cli_proxy_mod.cliTryProxy;
+        _ = cli_proxy_mod.cliSocketPath;
+        _ = bootstrap_mod.loadUserConfig;
+        _ = bootstrap_mod.loadBestSnapshot;
+        _ = bootstrap_mod.getDataDir;
+        _ = bootstrap_mod.coldLoadOrScan;
+        _ = bootstrap_mod.spawnWarmup;
+        _ = bootstrap_mod.persistWordIndexToDisk;
+        _ = background_mod.reapLoop;
+        _ = background_mod.scanBg;
+        _ = background_mod.triggerScanFromRoots;
+        _ = background_mod.watcherDeferredLoop;
+        _ = background_mod.idleWatchdog;
+        _ = background_mod.cliIdleWatchdog;
+        _ = commands_mod.RunCtx;
+        _ = commands_mod.runBenchEngine;
+        _ = commands_mod.runSnapshot;
+        _ = commands_mod.runCliDaemon;
+        _ = commands_mod.runServe;
+        _ = commands_mod.runMcp;
+    }
+}
+
+test "split: main.zig re-exports forward to the extracted impls" {
+    // parsePositional via the main re-export must behave identically to the
+    // cli_args implementation it forwards to.
+    const argv = [_][]const u8{ "codedb", "search", "needle" };
+    const via_main = main_mod.parsePositional(&argv);
+    const via_mod = cli_args_mod.parsePositional(&argv);
+    try testing.expectEqualStrings(via_mod.root, via_main.root);
+    try testing.expectEqualStrings(via_mod.cmd, via_main.cmd);
+    try testing.expectEqual(via_mod.cmd_args_start, via_main.cmd_args_start);
+
+    const lr_main = try main_mod.parseLineRange("2-8");
+    const lr_mod = try cli_args_mod.parseLineRange("2-8");
+    try testing.expectEqual(lr_mod.start, lr_main.start);
+    try testing.expectEqual(lr_mod.end, lr_main.end);
+
+    const sa_main = try main_mod.parseSearchArgs(&[_][]const u8{ "search", "--paths-only", "needle" }, 1);
+    const sa_mod = try cli_args_mod.parseSearchArgs(&[_][]const u8{ "search", "--paths-only", "needle" }, 1);
+    try testing.expectEqualStrings(sa_mod.query, sa_main.query);
+    try testing.expectEqual(sa_mod.paths_only, sa_main.paths_only);
+
+    try testing.expectEqual(
+        cli_args_mod.isValidMcpFlag("--no-telemetry"),
+        main_mod.isValidMcpFlag("--no-telemetry"),
+    );
+    try testing.expectEqual(
+        cli_args_mod.hasExtraCliArgs(&[_][]const u8{ "codedb", "tree", "x" }, 2),
+        main_mod.hasExtraCliArgs(&[_][]const u8{ "codedb", "tree", "x" }, 2),
+    );
+}
+
+test "split: cli_args parsing behaviour survives the move" {
+    // The read-only query-command table is the single source of truth shared by
+    // cliIsQueryCmd, isCommand, and the runQuery dispatch (#578); confirm it
+    // still classifies query vs non-query commands after the extraction.
+    try testing.expect(cli_args_mod.cliIsQueryCmd("search"));
+    try testing.expect(cli_args_mod.cliIsQueryCmd("outline"));
+    try testing.expect(!cli_args_mod.cliIsQueryCmd("serve"));
+    try testing.expect(!cli_args_mod.cliIsQueryCmd("mcp"));
+
+    // `codedb mcp <path>` is honored as `codedb <path> mcp` (#503).
+    const p = cli_args_mod.parsePositional(&[_][]const u8{ "codedb", "mcp", "/proj" });
+    try testing.expectEqualStrings("/proj", p.root);
+    try testing.expectEqualStrings("mcp", p.cmd);
+    try testing.expect(p.root_is_explicit);
+
+    try testing.expectError(error.Reversed, cli_args_mod.parseLineRange("9-2"));
+    try testing.expectError(error.UnknownFlag, cli_args_mod.parseSearchArgs(&[_][]const u8{ "search", "--bogus", "x" }, 1));
+}
+
+test "split: cli_proxy daemon lock works via main and cli_proxy" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_len];
+
+    // Acquired via the cli_proxy module; main's re-export must see it held.
+    const held = cli_proxy_mod.daemonLockTryAcquire(dir_path);
+    try testing.expect(held != null);
+    defer _ = std.c.close(held.?);
+    try testing.expect(!main_mod.daemonLockAvailable(dir_path));
+    try testing.expect(cli_proxy_mod.daemonLockTryAcquire(dir_path) == null);
+}
+
+test "issue-624: convergence nudge is suppressed for format=json" {
+    // Regression: the #624 governor appended its plain-text nudge to the tool
+    // output for any governed nav tool at the loop threshold — including
+    // codedb_search, which supports format=json. Appending text to a JSON
+    // payload corrupts it (the #626 nudges guard with `if (!json_fmt)`; the
+    // governor did not). convergenceNudge now encodes that guard.
+    const MCP = @import("mcp.zig");
+    const warn = MCP.ConvergenceGovernor.WARN_AT;
+
+    // Text output at/after the loop threshold surfaces the nudge.
+    try testing.expect(MCP.convergenceNudge(warn, false) != null);
+    try testing.expect(MCP.convergenceNudge(warn + 1, false) != null);
+
+    // format=json must NOT — otherwise the appended text breaks the JSON.
+    try testing.expect(MCP.convergenceNudge(warn, true) == null);
+    try testing.expect(MCP.convergenceNudge(warn + 5, true) == null);
+
+    // Below the loop threshold, never nudge regardless of format.
+    try testing.expect(MCP.convergenceNudge(warn - 1, false) == null);
+    try testing.expect(MCP.convergenceNudge(warn - 1, true) == null);
+}
+
+test "issue-632: codedb_read raw mode returns byte-exact range without line-number prefixes" {
+    // #632: a ranged codedb_read emits line-number-prefixed output (handleRead
+    // hardcodes extractLines line_numbers=true), so its bytes are NOT a verbatim
+    // copy of the source. Agents therefore can't feed it to an exact-string
+    // editor and fall back to a native read for the pre-edit span — defeating
+    // codedb on the read path (see justrach/codegraff#66). A `raw` mode should
+    // return the exact lines so codedb can serve read+edit, not just locate.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+    const dir_path = dir_buf[0..dir_path_len];
+
+    const rel = "small.txt";
+    const full = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ dir_path, rel });
+    defer testing.allocator.free(full);
+    {
+        const f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
+        defer f.close(io);
+        try f.writePositionalAll(io, "alpha\nbeta\ngamma\n", 0);
+    }
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, dir_path);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, dir_path, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    // raw=true + a line range: expect the exact source bytes for lines 1-2,
+    // with NO "N | " line-number prefixes (so it can feed an exact-match edit).
+    const args_json = try std.fmt.allocPrint(testing.allocator, "{{\"path\":\"{s}\",\"line_start\":1,\"line_end\":2,\"raw\":true}}", .{rel});
+    defer testing.allocator.free(args_json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_read, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // The exact source lines must be present verbatim...
+    try testing.expect(std.mem.indexOf(u8, out.items, "alpha\nbeta") != null);
+    // ...and there must be no line-number prefix separator ("N | "), which would
+    // make the output non-byte-exact and unusable for an exact-string edit.
+    try testing.expect(std.mem.indexOf(u8, out.items, " | ") == null);
+}
+
+test "issue-633: `index` is a recognized command (not a usage/unknown error)" {
+    // `codedb <root> index` scanned + persisted (the cold-load path keys on
+    // cmd=="index") but then fell through the dispatch with no `index` branch →
+    // "unknown command: index" + exit 1; and `codedb index` (no root) was a
+    // usage error because isCommand() never listed it. `index` must parse as a
+    // first-class command.
+    // `codedb index` (no explicit root) must parse as cmd=index, root=".".
+    const p = main_mod.parsePositional(&[_][]const u8{ "codedb", "index" });
+    try testing.expect(!p.usage_exit);
+    try testing.expectEqualStrings("index", p.cmd);
+    try testing.expectEqualStrings(".", p.root);
+
+    // `codedb <root> index` (explicit root) also resolves cmd=index.
+    const p2 = main_mod.parsePositional(&[_][]const u8{ "codedb", "/proj", "index" });
+    try testing.expectEqualStrings("index", p2.cmd);
+    try testing.expectEqualStrings("/proj", p2.root);
+}
+
+test "issue-632: codedb_read raw mode coverage — full-file byte-exact, default unchanged" {
+    // Broader coverage for #632: (a) raw full-file read is byte-exact (no hash
+    // header, no line-number prefix, no full-file hint); (b) the default ranged
+    // read still has BOTH the hash header and the "N | " prefix (regression
+    // guard); (c) a raw ranged read drops both.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+    const dir_path = dir_buf[0..dir_path_len];
+
+    const rel = "small.txt";
+    const content = "alpha\nbeta\ngamma\n";
+    const full = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ dir_path, rel });
+    defer testing.allocator.free(full);
+    {
+        const f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
+        defer f.close(io);
+        try f.writePositionalAll(io, content, 0);
+    }
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, dir_path);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, dir_path, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const Run = struct {
+        fn call(ctx: *mcp_mod.BenchContext, st: *Store, ex: *Explorer, ag: *AgentRegistry, args_json: []const u8, out: *std.ArrayList(u8)) !void {
+            const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+            defer parsed.deinit();
+            ctx.runDispatch(io, testing.allocator, .codedb_read, &parsed.value.object, out, st, ex, ag);
+        }
+    };
+
+    // (a) raw full-file read → byte-exact copy of the source, nothing prepended.
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try Run.call(&bench_ctx, &store, &explorer, &agents, "{\"path\":\"small.txt\",\"raw\":true}", &out);
+        try testing.expectEqualStrings(content, out.items);
+    }
+    // (b) default ranged read → unchanged: hash header present AND "N | " prefix.
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try Run.call(&bench_ctx, &store, &explorer, &agents, "{\"path\":\"small.txt\",\"line_start\":1,\"line_end\":2}", &out);
+        try testing.expect(std.mem.indexOf(u8, out.items, "hash:") != null);
+        try testing.expect(std.mem.indexOf(u8, out.items, " | ") != null);
+    }
+    // (c) raw ranged read → exact line, no hash header, no line-number prefix.
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try Run.call(&bench_ctx, &store, &explorer, &agents, "{\"path\":\"small.txt\",\"line_start\":2,\"line_end\":2,\"raw\":true}", &out);
+        try testing.expect(std.mem.indexOf(u8, out.items, "beta") != null);
+        try testing.expect(std.mem.indexOf(u8, out.items, " | ") == null);
+        try testing.expect(std.mem.indexOf(u8, out.items, "hash:") == null);
+    }
 }

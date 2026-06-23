@@ -1,7 +1,7 @@
 .{
     .name = .codedb2,
     .fingerprint = 0x6e18d96ca2a31757,
-    .version = "0.2.5825",
+    .version = "0.2.5826",
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .mcp_zig = .{

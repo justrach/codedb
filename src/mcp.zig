@@ -521,7 +521,7 @@ pub const BenchContext = struct {
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
     ) void {
-        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, 1);
+        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, 1, null);
     }
 
     pub fn runToolCall(
@@ -618,18 +618,18 @@ pub const tools_list =
     \\{"tools":[
     \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_outline","description":"Symbol outline of one file: functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view — each symbol's declaration line with its body elided as '{ … N lines }', so a 2,000-line file collapses to ~one line per symbol.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_symbol","description":"Find symbol definitions across the index — exact name, prefix, glob pattern, fuzzy match, or kind filter. Returns file, line, kind, and score. Pass format=json for structured output.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"prefix":{"type":"string","description":"Prefix match (e.g. parse_)"},"pattern":{"type":"string","description":"Glob pattern on symbol name (e.g. *Manager)"},"kind":{"type":"string","description":"Filter by kind: function, struct, interface, class, method, enum"},"fuzzy":{"type":"boolean","description":"Fuzzy/typo-tolerant match when name is set (default: false)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"max_results":{"type":"integer","description":"Max results (default: 50, cap 200)"},"format":{"type":"string","description":"Set to json for structured JSON output"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_search","description":"Substring full-text search across the index (regex if regex=true). For one identifier prefer codedb_word; for a definition prefer codedb_symbol. Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+    \\{"name":"codedb_symbol","description":"PRIMARY tool for locating a definition — reach for this FIRST when you know or can guess a symbol name, instead of codedb_search. Finds symbol definitions across the index — exact name, prefix, glob pattern, fuzzy match, or kind filter. Returns file, line, kind, and score. Pass format=json for structured output.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"prefix":{"type":"string","description":"Prefix match (e.g. parse_)"},"pattern":{"type":"string","description":"Glob pattern on symbol name (e.g. *Manager)"},"kind":{"type":"string","description":"Filter by kind: function, struct, interface, class, method, enum"},"fuzzy":{"type":"boolean","description":"Fuzzy/typo-tolerant match when name is set (default: false)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"max_results":{"type":"integer","description":"Max results (default: 50, cap 200)"},"format":{"type":"string","description":"Set to json for structured JSON output"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_search","description":"Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
     \\{"name":"codedb_word","description":"Exact-identifier lookup via inverted index — every occurrence of one word, O(1). Use for single identifiers; use codedb_search for substrings or phrases.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
-    \\{"name":"codedb_callers","description":"Find every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+    \\{"name":"codedb_callers","description":"PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
     \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Use after codedb_callers when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]}},
     \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE tight block (keywords used + symbol definitions + ranked files + top file:line snippets). Replaces 3-5 sequential search/word/symbol calls — use for first-touch orientation on a new task. For narrow follow-ups stick with codedb_search/codedb_symbol.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (~4 chars/token, min 256). Sections are packed by value — files, symbol definitions, callers, calls, snippets — and omitted ones leave a one-line marker."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]}},
     \\{"name":"codedb_diagnostics","description":"Fetch the latest linter diagnostics for a file, produced off the edit path (ruff/biome/etc.) after a recent codedb_edit. Call right after an edit to surface real errors the change may have introduced (undefined names, type/lint issues) on top of codedb's built-in checks. Returns 'no diagnostics available yet' when none are cached or external linters are disabled.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to fetch diagnostics for"}},"required":["path"]}},
-    \\{"name":"codedb_hot","description":"Most recently modified files in the project, newest first.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_deps","description":"Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set transitive=true for the full BFS blast radius.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Run codedb_outline first to pick the range — large files burn tokens fast. Pass if_hash to skip re-reads when the file is unchanged.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_deps","description":"PRIMARY tool for impact/blast-radius — use this instead of grepping import lines. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set transitive=true for the full BFS blast radius.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Run codedb_outline first to pick the range — large files burn tokens fast. Pass if_hash to skip re-reads when the file is unchanged.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"raw":{"type":"boolean","description":"Byte-exact output: no line-number prefixes and no hash header, so the result can feed an exact-string edit (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_edit","description":"Fallback editor — prefer your own native file-editing tool. codedb is a context/navigation tool, not an editor; reach for codedb_edit only when no native edit capability is available. When you do edit through codedb, op=str_replace with old_string/new_string is safest (old_string must match exactly once) — it cannot mis-target surrounding lines the way a range replace can. Also supports line ops: replace (range), insert (after line), delete (range), and create (author a new file from content). The result includes a syntax-health warning if the edit unbalances delimiters or drops a still-used import — heed it and re-read before continuing. Pass if_hash from the latest codedb_read to reject stale-line edits. Set dry_run=true for a diff preview.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to edit"},"op":{"type":"string","enum":["str_replace","replace","insert","delete","create"],"description":"Edit operation. str_replace=anchored (old_string/new_string); replace/delete use range; insert uses after; create=author a NEW file from content (errors if the path already exists)."},"content":{"type":"string","description":"New content (for replace/insert/create)"},"old_string":{"type":"string","description":"For op=str_replace: exact text to find; must occur exactly once in the file."},"new_string":{"type":"string","description":"For op=str_replace: replacement text for old_string."},"range_start":{"type":"integer","description":"Start line number (for replace/delete, 1-indexed)"},"range_end":{"type":"integer","description":"End line number (for replace/delete, 1-indexed)"},"after":{"type":"integer","description":"Insert after this line number (for insert)"},"if_hash":{"type":"string","description":"Hex hash from codedb_read's 'hash:' line. Edit is rejected with HashMismatch if the file has changed since."},"dry_run":{"type":"boolean","description":"If true, return a diff preview without writing. Disk and store are untouched. Default: false."}},"required":["path","op"]}},
-    \\{"name":"codedb_changes","description":"Files changed since a given sequence number. Pair with codedb_status to poll for updates.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
+    \\{"name":"codedb_changes","description":"Direct way to see WHAT changed since a point in time, instead of re-scanning the tree. Files changed since a given sequence number. Pair with codedb_status (which reports the current sequence number) to poll for updates.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
     \\{"name":"codedb_status","description":"Current indexed-file count, sequence number, and scan phase.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_snapshot","description":"Pre-rendered JSON snapshot of the entire index — tree, outlines, symbols, deps. For caching or shipping to edge workers.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_bundle","description":"Run up to 20 codedb_* calls in one round-trip. Each op is either MCP-style {\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}} or inline {\"tool\":\"codedb_search\",\"query\":\"Agent\"} — both are accepted. Example: {\"ops\":[{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}},{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}}]}. Best for parallel outline/symbol/search; avoid bundling large codedb_read calls — responses are not size-capped. If a sub-op reports `received keys: []`, the wrapper field is misnamed: use `arguments` (MCP spec), not `args`.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","description":"Sub-tool calls to dispatch (max 20). Each item must have `tool` AND `arguments` (pass `{}` if the sub-tool takes none). Inline args alongside `tool` are still accepted as a fallback.","items":{"type":"object","properties":{"tool":{"type":"string","description":"codedb_* tool name to invoke (e.g. codedb_outline, codedb_symbol, codedb_search, codedb_word, codedb_callers, codedb_read, codedb_deps, codedb_tree, codedb_hot, codedb_status, codedb_changes). Required."},"arguments":{"type":"object","description":"Per-call args matching that tool's inputSchema. Field MUST be named `arguments` (MCP `tools/call` convention) — `args` is silently ignored. Pass `{}` only if the sub-tool takes no arguments. Required."}},"required":["tool","arguments"]}},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
@@ -830,6 +830,8 @@ const Session = struct {
     /// distinct registered agent id at session start; defaults to 1 so any path
     /// that constructs a Session without registering still uses __filesystem__.
     edit_agent_id: u64 = 1,
+    /// Convergence governor state (#624): recent call signatures for this session.
+    governor: ConvergenceGovernor = .{},
 
     fn freeRoots(self: *Session) void {
         for (self.roots.items) |r| {
@@ -844,6 +846,74 @@ const Session = struct {
         self.roots.deinit(self.alloc);
     }
 };
+
+/// Convergence governor (#624): tracks recent tool-call signatures within a
+/// session so a non-convergent agent that keeps firing the *same* navigation
+/// call gets an in-band nudge to change strategy instead of looping (the 3–5×
+/// token runaways seen on large repos). It never changes a tool's result — it
+/// only lets handleCall append a one-line hint once a call repeats.
+pub const ConvergenceGovernor = struct {
+    pub const HISTORY = 8; // ring-buffer window of recent calls
+    pub const WARN_AT = 3; // same signature this many times in the window -> nudge
+
+    sigs: [HISTORY]u64 = [_]u64{0} ** HISTORY,
+    head: usize = 0,
+
+    /// Record a call signature and return how many times it has occurred within
+    /// the recent window (including this call). >= WARN_AT means it's looping.
+    pub fn record(self: *ConvergenceGovernor, sig: u64) usize {
+        const s = if (sig == 0) 1 else sig; // 0 is the empty-slot sentinel
+        var occurrences: usize = 1;
+        for (self.sigs) |prev| {
+            if (prev == s) occurrences += 1;
+        }
+        self.sigs[self.head] = s;
+        self.head = (self.head + 1) % HISTORY;
+        return occurrences;
+    }
+};
+
+/// Stable signature of a tool call (name + its argument values) so two identical
+/// calls hash equal. Iteration order is consistent for an identical call shape.
+fn callSignature(name: []const u8, args: *const std.json.ObjectMap) u64 {
+    var h = std.hash.Wyhash.init(0);
+    h.update(name);
+    var it = args.iterator();
+    while (it.next()) |e| {
+        h.update(e.key_ptr.*);
+        switch (e.value_ptr.*) {
+            .string => |sv| h.update(sv),
+            .integer => |n| h.update(std.mem.asBytes(&n)),
+            .float => |f| h.update(std.mem.asBytes(&f)),
+            .bool => |b| h.update(if (b) "1" else "0"),
+            else => {},
+        }
+    }
+    return h.final();
+}
+
+/// Navigation tools where a repeated identical call is a runaway signal worth
+/// nudging on. Write/admin tools (edit, status, changes, projects) are excluded.
+fn isGovernedNavTool(name: []const u8) bool {
+    return std.mem.eql(u8, name, "codedb_search") or
+        std.mem.eql(u8, name, "codedb_find") or
+        std.mem.eql(u8, name, "codedb_word") or
+        std.mem.eql(u8, name, "codedb_read") or
+        std.mem.eql(u8, name, "codedb_outline");
+}
+
+/// The convergence nudge text for a governed nav call, or null when no nudge
+/// should be surfaced. Pure + unit-tested (mirrors depsHint/fullFileReadHint).
+///
+/// Suppressed for `format=json` even at the loop threshold: the nudge is plain
+/// text and appending it to a JSON payload corrupts it — the #626 nudges
+/// (appendSearchSymbolNudge, depsHint) guard the same way. #624 shipped without
+/// this guard, so a looping `codedb_search format=json` returned invalid JSON.
+pub fn convergenceNudge(occurrences: usize, json_fmt: bool) ?[]const u8 {
+    if (occurrences < ConvergenceGovernor.WARN_AT) return null;
+    if (json_fmt) return null;
+    return "\n\n[codedb] You have issued this exact call several times — repeating it will not surface anything new. Change strategy: use a structural tool (codedb_symbol for a definition, codedb_callers for usages, codedb_deps for impact), open the file directly with codedb_read, or refine the query.";
+}
 
 pub fn run(
     io: std.Io,
@@ -963,7 +1033,7 @@ pub fn run(
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) writeResult(alloc, stdout, id, tools_list_response);
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id);
+            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id, &session.governor);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
         } else {
@@ -1005,7 +1075,7 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
         if (negotiateProtocolVersion(requested)) |v| negotiated = v;
     }
     const init_result = std.fmt.allocPrint(s.alloc,
-        \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"codedb is a code-intelligence and context tool — not your editor. Use it to understand the codebase before you change it: search, symbol/caller lookup, dependency graph, outlines, and codedb_context for task-shaped orientation. Make edits with your own native file tools. codedb_edit is only a fallback for clients with no native editing."}}
+        \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"codedb is a code-intelligence and context tool — not your editor. Default to the structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline for a file's structure before codedb_read, and codedb_context to orient on a new task. Use codedb_search only for substrings or phrases when you do NOT know the exact symbol name — it is a fallback, not the default. Make edits with your own native file tools. codedb_edit is only a fallback for clients with no native editing."}}
     , .{ negotiated, release_info.semver }) catch return;
     defer s.alloc.free(init_result);
     writeResult(s.alloc, s.stdout, id, init_result);
@@ -1126,6 +1196,7 @@ fn handleCall(
     telem: *telemetry_mod.Telemetry,
     deferred_scan: ?*DeferredScan,
     edit_agent_id: u64,
+    governor: ?*ConvergenceGovernor,
 ) void {
     const is_notification = id == null;
 
@@ -1183,6 +1254,22 @@ fn handleCall(
         } else if (std.mem.eql(u8, name, "codedb_read") or std.mem.eql(u8, name, "codedb_outline")) {
             if (getStr(args, "path")) |p| {
                 logFileAccess(io, name, p, elapsed);
+            }
+        }
+    }
+
+    // Convergence governor (#624): if this exact navigation call keeps
+    // repeating within the session, nudge the agent to change strategy instead
+    // of looping. The nudge is appended to the assistant-visible output; it
+    // never alters the underlying result.
+    if (governor) |gov| {
+        if (isGovernedNavTool(name)) {
+            const occurrences = gov.record(callSignature(name, args));
+            // Record always (keeps loop detection accurate across mixed
+            // text/json calls); only surface the text nudge when it won't
+            // corrupt the result — convergenceNudge suppresses it for json.
+            if (convergenceNudge(occurrences, wantsJsonFormat(args))) |msg| {
+                out.appendSlice(alloc, msg) catch {};
             }
         }
     }
@@ -1566,6 +1653,54 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             }
         }
     }
+    if (depsHint(results.len)) |h| out.appendSlice(alloc, h) catch {};
+}
+
+// Issue #626: agents reach for codedb_search with a bare symbol name and skip
+// the structural tools entirely. When the query is a single identifier the index
+// already knows as a symbol, prepend a one-line nudge toward codedb_symbol /
+// codedb_callers — fired in-context, exactly at the grep-style call.
+pub fn isBareIdentifier(s: []const u8) bool {
+    if (s.len == 0 or s.len > 128) return false;
+    if (std.ascii.isDigit(s[0])) return false;
+    for (s) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
+    }
+    return true;
+}
+
+fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query: []const u8, out: *std.ArrayList(u8)) void {
+    if (!isBareIdentifier(query)) return;
+    const spec = Explorer.SymbolSearchSpec{
+        .name = query,
+        .prefix = null,
+        .pattern = null,
+        .kind = null,
+        .fuzzy = false,
+        .max_results = 1,
+    };
+    const results = explorer.searchSymbols(spec, alloc) catch return;
+    defer {
+        for (results) |r| {
+            alloc.free(r.path);
+            alloc.free(r.symbol.name);
+            if (r.symbol.detail) |d| alloc.free(d);
+        }
+        alloc.free(results);
+    }
+    if (results.len == 0) return;
+    const w = cio.listWriter(out, alloc);
+    w.print("↪ '{s}' is an indexed symbol — codedb_symbol returns its definition and codedb_callers its call sites in one call (no search+read needed).\n", .{query}) catch {};
+}
+
+// Issue #626 follow-up: codedb_deps is the one structural tool nothing points
+// at — mcpGenerateGuidance already steers callers->callpath, edit->changes, hot.
+// Nudge toward deps right after a single-definition codedb_symbol hit, the
+// moment before an edit when blast-radius matters. Pure + count-gated so it
+// unit-tests like fullFileReadHint; text is generic since the caller knows it.
+pub fn depsHint(result_count: usize) ?[]const u8 {
+    if (result_count != 1) return null;
+    return "↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.\n";
 }
 
 fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
@@ -1616,6 +1751,9 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         writeJsonToolError(out, alloc, "codedb_search", "unsupported", "format=json does not support scope=true yet");
         return;
     }
+    // Issue #626: nudge toward the structural tools when the query is a bare
+    // symbol name. Text output only — would corrupt the format=json payload.
+    if (!json_fmt) appendSearchSymbolNudge(alloc, explorer, query, out);
     if (scope and is_regex) {
         const results = explorer.searchContentRegexWithScope(query, alloc, max_results) catch |e| {
             out.appendSlice(alloc, if (e == error.InvalidRegex) "error: invalid regex" else "error: scoped regex search failed") catch {};
@@ -2798,15 +2936,17 @@ fn handleDepsPathOnly(alloc: std.mem.Allocator, path: []const u8, out: *std.Arra
 }
 
 fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
-    const path = getStr(args, "path") orelse {
+    const path_arg = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path' argument") catch {};
         appendBundleArgKeysDiagnostic(alloc, out, args);
         return;
     };
-    if (!isPathSafe(path)) {
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, ".", &root_buf)) |n| root_buf[0..n] else |_| "";
+    const path = projectRelPath(path_arg, root) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
-    }
+    };
     if (watcher.isSensitivePath(path)) {
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
         return;
@@ -2816,6 +2956,9 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
     const line_start_raw = getInt(args, "line_start");
     const line_end_raw = getInt(args, "line_end");
     const compact = getBool(args, "compact");
+    // #632: byte-exact ranged read — no line-number prefixes, no hash header — so
+    // the output can feed an exact-string editor instead of forcing a native read.
+    const raw = getBool(args, "raw");
     const has_range = line_start_raw != null or line_end_raw != null;
 
     // Bug 6: validate line range explicitly. Pre-fix: invalid ranges silently
@@ -2898,34 +3041,42 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         }
     }
 
-    // Always prepend hash
-    const w = cio.listWriter(out, alloc);
-    w.print("hash:{s}\n", .{hash_str}) catch {};
+    // Prepend a content-hash ETag header — but NOT in raw mode (#632), where the
+    // caller wants byte-exact bytes it can feed to an exact-string edit.
+    if (!raw) {
+        const w = cio.listWriter(out, alloc);
+        w.print("hash:{s}\n", .{hash_str}) catch {};
+    }
 
     if (has_range or compact) {
         const start: u32 = if (line_start_raw) |n| @intCast(@min(@max(1, n), std.math.maxInt(u32))) else 1;
         const end: u32 = if (line_end_raw) |n| @intCast(@min(@max(1, n), std.math.maxInt(u32))) else std.math.maxInt(u32);
         const lang = explore_mod.detectLanguage(path);
-        const extracted = explore_mod.extractLines(content, start, end, true, compact, lang, alloc) catch {
+        const extracted = explore_mod.extractLines(content, start, end, !raw, compact, lang, alloc) catch {
             out.appendSlice(alloc, "error: line extraction failed") catch {};
             return;
         };
         defer alloc.free(extracted);
         out.appendSlice(alloc, extracted) catch {};
     } else {
+        if (!raw) {
+            if (Explorer.fullFileReadHint(content)) |hint| out.appendSlice(alloc, hint) catch {};
+        }
         out.appendSlice(alloc, content) catch {};
     }
 }
 
 fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, agents: *AgentRegistry, cache: *ProjectCache, edit_agent_id: u64) void {
-    const path = getStr(args, "path") orelse {
+    const path_arg = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path'") catch {};
         return;
     };
-    if (!isPathSafe(path)) {
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, ".", &root_buf)) |n| root_buf[0..n] else |_| "";
+    const path = projectRelPath(path_arg, root) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
-    }
+    };
     if (watcher.isSensitivePath(path)) {
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
         return;
@@ -5032,6 +5183,30 @@ pub fn isPathSafe(path: []const u8) bool {
         if (std.mem.eql(u8, component, "..")) return false;
     }
     return true;
+}
+
+/// Map a read/edit `path` argument to a project-relative path that is safe to
+/// resolve, given the project's absolute `root`. A safe relative path passes
+/// through unchanged; an absolute path is accepted only when it lives inside
+/// `root` and is rewritten to its relative form. Everything else (out-of-root
+/// absolutes, `..` traversal, null bytes, backslashes) returns null.
+///
+/// Without this, isPathSafe rejects every absolute path as traversal, so agents
+/// that pass absolute paths get "path traversal not allowed" and abandon codedb
+/// for bash (issue #629).
+pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
+    // Already a safe relative path — pass through.
+    if (isPathSafe(path)) return path;
+    // Only absolute paths get the in-root rescue; anything else stays rejected.
+    if (path.len == 0 or path[0] != '/') return null;
+    if (root.len == 0) return null;
+    if (!root_policy.isExactOrChild(path, root)) return null;
+    var rel = path[root.len..];
+    while (rel.len > 0 and rel[0] == '/') rel = rel[1..];
+    if (rel.len == 0) return null; // the root directory itself, not a file
+    // Re-validate the stripped remainder (blocks `/root/../escape`, nulls, etc).
+    if (!isPathSafe(rel)) return null;
+    return rel;
 }
 
 fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8) void {

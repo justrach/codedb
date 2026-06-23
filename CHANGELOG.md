@@ -1,6 +1,125 @@
 # Changelog
 
 
+## 0.2.5826 - 2026-06-23
+
+A correctness + **coverage** + agent-steering cut. It widens index coverage to
+2 MB files (medium source/vendored/lockfile/data files were being silently
+dropped), fixes editor MCP launches that pass an unexpanded `${workspaceFolder}`,
+makes `index` a first-class command, and clears a cluster of issues surfaced by a
+SWE-bench Lite token-efficiency benchmark and real session traces — on top of a
+`main.zig` split into focused modules and a halved live-update read path.
+
+### Index coverage widened to 2 MB — medium files are no longer dropped (#635)
+
+- **`max_indexed_file_bytes` raised 512 KB → 2 MB.** Files between 512 KB and
+  2 MB — generated code, vendored bundles, lockfiles, data fixtures — were
+  silently dropped from the index entirely: invisible to `search`, `word`,
+  `symbol`, and `find`, reachable only via `codedb_read`. They are now indexed
+  (full trigram up to 1 MB; outline + word index up to 2 MB). Files over the
+  2 MB cap are still skipped, but the skip is now logged rather than silent.
+- **Empirically verified A/B, 10 isolated sandboxes.** Identical fixture repos
+  (files at eight sizes, each carrying a unique sentinel token) were indexed by
+  `0.2.5825` and `0.2.5826` in separate microVMs. Result was deterministic with
+  zero variance:
+
+  | file size | 0.2.5825 (prev) | 0.2.5826 |
+  |-----------|-----------------|----------|
+  | ≤ 400 KB | found 10/10 | found 10/10 |
+  | 550 KB – 1.9 MB | **0/10** | **10/10** |
+
+  i.e. every medium file that the previous release made unsearchable is found by
+  this one. The fix reaches the cold CLI scan, not just the live watcher path.
+
+### Editor `${workspaceFolder}` MCP launches resolve to the workspace (#639)
+
+- **An unexpanded `${workspaceFolder}` no longer pins the index to a literal
+  path.** Editors (Zed, opencode) spawn `codedb mcp ${workspaceFolder}`; when the
+  client does not expand the variable, the literal string arrived as an *explicit*
+  root and pinned the index to a directory named `${workspaceFolder}` — which
+  silently disabled the #502 git-root walk-up, the deferred-scan handshake, and
+  the `CODEDB_ROOT` fallback all at once, leaving the user with an empty index.
+  The unexpanded placeholder now normalizes to cwd, non-explicit, so all three
+  recovery paths fire. The mcp root-resolution gates were extracted into pure,
+  unit-tested predicates so the parse and consume halves can no longer drift —
+  the exact gap that hid this bug.
+
+### `index` is a first-class command (#633)
+
+- **`codedb index` / `codedb <root> index` are explicitly recognized.** The
+  command existed but was not in the dispatcher's command set, so it fell through
+  to the default path and read as unrecognized.
+
+### `codedb_read` raw mode returns byte-exact ranged output (#632)
+
+- **Raw ranged reads are no longer line-number-prefixed.** `mode=raw` with a line
+  range returned decorated output instead of the exact bytes; raw now means raw.
+
+### Live-update path reads each changed file once (perf)
+
+- **The watcher hashed-then-indexed every edit — two full reads per change; now
+  one.** `hashAndIndexFile` reads the changed file once and reuses the buffer for
+  both the content hash and indexing, roughly halving file I/O on every save while
+  `codedb mcp` is running — a gap that widened once the cap moved to 2 MB.
+
+### Internal: `main.zig` split + help-flag predicate
+
+- **`main.zig` (2345 lines) split into focused modules** — `background`,
+  `bootstrap`, `cli_args`, `cli_proxy`, `commands`, `out`, `query` (≤ 600 lines
+  each). Behaviour-preserving; it's what made the gate-predicate and help-flag
+  extractions tractable.
+- **`isHelpRequest` centralizes `--help`/`-h`/`help`** — previously hand-written
+  at four sites (including the `mcp --no-telemetry --help` combo bypass that only
+  existed because two of those copies couldn't see each other). One predicate now,
+  with a reintroduction guard.
+
+### `codedb_read` / `codedb_edit` accept absolute paths inside the project (#629)
+
+- **Absolute in-project paths no longer read as "path traversal".** `isPathSafe`
+  rejected every absolute path via a blanket leading-`/` check, so a path
+  pointing at a file *inside* the indexed root was refused. Agents naturally
+  hold absolute paths, hit the terse error, and abandon codedb for `bash` — a
+  real session trace showed `codedb`,`codedb` rejected back-to-back followed by
+  seven `bash` fallbacks. A new `projectRelPath` helper rewrites an in-root
+  absolute path to its project-relative form; out-of-root absolutes, `..`
+  traversal, NUL bytes, backslashes, and sensitive files stay rejected.
+
+### Regex alternation no longer drops matches silently (#628)
+
+- **`a|b` alternation where one branch can't form a trigram now scans all
+  files.** A top-level alternation like `xy|createGateway` or `.*|foo`
+  prefiltered candidates down to only the trigram-bearing branches, silently
+  dropping files that matched the other branch — `mode=regex` returned 0 and
+  read as an authoritative "not found". `decomposeRegex` now falls back to an
+  unconstrained query whenever any branch yields no trigrams. Alternations
+  where every branch has trigrams still prefilter as before.
+
+### In-tree `codedb.snapshot` is hidden from git (#625)
+
+- **The index no longer pollutes `git status` or risks an accidental commit.**
+  The snapshot (22.8 MB in one real repo) was written to the project root and
+  swept into working-tree diffs. After writing the in-tree snapshot,
+  `codedb.snapshot` is appended to the repo's `.git/info/exclude` — a local,
+  untracked ignore file — so git never sees it without touching the user's own
+  `.gitignore`. Best-effort and idempotent; only the in-tree write triggers it.
+
+### Agents are steered to the structural tools (#626)
+
+- **`symbol`/`callers`/`deps`/`outline` are now the path of least resistance.**
+  Tool descriptions and the MCP `initialize` instructions frame `search` as a
+  fallback and point agents at the code graph first; `codedb_deps` is surfaced
+  as the impact/blast-radius tool. Previously agents used codedb as a leaner
+  grep/read and left its structural value on the table.
+
+### Convergence governor caps navigation runaways (#624)
+
+- **Repeated identical nav calls get an in-band nudge to change strategy.** A
+  per-session ring buffer tracks recent `search`/`find`/`word`/`read`/`outline`
+  signatures; when the same call recurs ≥3× it appends a one-line hint steering
+  the agent to a structural tool, a direct read, or a refined query. It never
+  alters a tool's result and does not govern write/admin tools — a cheap
+  interception for the 3–5× token runaways seen on large repos.
+
 ## 0.2.5825 - 2026-06-12
 
 `0.2.5825` is a broad retrieval-quality + capability + performance cut. It fixes

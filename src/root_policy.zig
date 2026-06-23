@@ -1,7 +1,7 @@
 const std = @import("std");
 const cio = @import("cio.zig");
 
-fn isExactOrChild(path: []const u8, prefix: []const u8) bool {
+pub fn isExactOrChild(path: []const u8, prefix: []const u8) bool {
     if (!std.mem.startsWith(u8, path, prefix)) return false;
     return path.len == prefix.len or path[prefix.len] == '/';
 }
