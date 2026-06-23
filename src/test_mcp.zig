@@ -1738,6 +1738,52 @@ test "issue-639: unexpanded ${workspaceFolder} root normalizes to cwd, non-expli
     }
 }
 
+test "issue-639: parsePositional root/explicit matrix across arg forms" {
+    // The matrix that hid the bug: each arg form maps to a (root, cmd,
+    // explicit) triple. The deferred-scan / git-root-walkup / CODEDB_ROOT
+    // gates all key off (cmd=="mcp" and root=="." and !explicit), so the
+    // placeholder rows MUST land on root=".", explicit=false to behave like
+    // a bare `codedb mcp`. Anything else silently disables those paths (#639).
+    const Case = struct {
+        argv: []const []const u8,
+        root: []const u8,
+        cmd: []const u8,
+        explicit: bool,
+    };
+    const cases = [_]Case{
+        // bare mcp → cwd, deferred (non-explicit)
+        .{ .argv = &.{ "codedb", "mcp" }, .root = ".", .cmd = "mcp", .explicit = false },
+        // explicit path before cmd
+        .{ .argv = &.{ "codedb", "/proj", "mcp" }, .root = "/proj", .cmd = "mcp", .explicit = true },
+        // explicit path after mcp (#503)
+        .{ .argv = &.{ "codedb", "mcp", "/proj" }, .root = "/proj", .cmd = "mcp", .explicit = true },
+        // unexpanded placeholder before cmd → normalized to cwd, non-explicit (#639)
+        .{ .argv = &.{ "codedb", "${workspaceFolder}", "mcp" }, .root = ".", .cmd = "mcp", .explicit = false },
+        // unexpanded placeholder after mcp → normalized (#639)
+        .{ .argv = &.{ "codedb", "mcp", "${workspaceFolder}" }, .root = ".", .cmd = "mcp", .explicit = false },
+        // placeholder with a non-mcp command (generic root form) → cwd recovery (#639)
+        .{ .argv = &.{ "codedb", "${workspaceFolder}", "search" }, .root = ".", .cmd = "search", .explicit = false },
+        // explicit path + query cmd stays explicit
+        .{ .argv = &.{ "codedb", "/proj", "search" }, .root = "/proj", .cmd = "search", .explicit = true },
+    };
+    for (cases) |c| {
+        const p = main_mod.parsePositional(c.argv);
+        try testing.expect(!p.usage_exit);
+        try testing.expectEqualStrings(c.root, p.root);
+        try testing.expectEqualStrings(c.cmd, p.cmd);
+        try testing.expectEqual(c.explicit, p.root_is_explicit);
+    }
+}
+
+test "issue-639: placeholder is normalized in cli_args only, never re-rewritten in main" {
+    // Reintroduction guard. The bug hid because the placeholder was rewritten
+    // late in the dispatcher (mainImpl), after the gates had already branched
+    // on the un-normalized value. Keep the literal in exactly one place
+    // (cli_args.zig); its presence in main.zig means a late rewrite is back.
+    const main_src = @embedFile("main.zig");
+    try testing.expect(std.mem.indexOf(u8, main_src, "${workspaceFolder}") == null);
+}
+
 test "issue-502: isValidMcpFlag whitelist rejects unknown flags" {
     // Before fix: `codedb mcp --snapshot` silently swallowed the flag and
     // started the server with surprising state. After fix, mainImpl rejects
