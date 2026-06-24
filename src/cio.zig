@@ -320,6 +320,11 @@ pub fn randU64() u64 {
     return x;
 }
 
+pub fn userId() usize {
+    if (is_windows) return 0;
+    return @intCast(std.c.getuid());
+}
+
 pub fn sleepMs(ms: u64) void {
     if (is_windows) {
         winsync.Sleep(@intCast(@min(ms, @as(u64, std.math.maxInt(u32)))));
@@ -346,6 +351,10 @@ pub fn makePipe() PipeError![2]c_int {
 
 pub fn closeFd(fd: c_int) void {
     _ = close(fd);
+}
+
+pub fn readFd(fd: c_int, buf: []u8) isize {
+    return read(fd, buf.ptr, buf.len);
 }
 
 pub fn posixGetenv(name: []const u8) ?[]const u8 {
@@ -567,14 +576,34 @@ const PosixSpawnFAStorage = [256]u8;
 /// a background thread to avoid pipe-buffer deadlock when the child writes
 /// substantially to either stream).
 /// Run `argv` and capture stdout/stderr. POSIX uses a posix_spawnp fast path;
-/// Windows has no equivalent here yet, so it reports SpawnUnsupported and every
-/// caller (git metadata, telemetry, nuke, self-update) degrades gracefully.
+/// Windows falls back to std.process.run with matching output bounds.
 pub fn runCapture(opts: RunOptions) !CaptureResult {
-    if (is_windows) {
-        return error.SpawnUnsupported;
-    } else {
-        return runCapturePosix(opts);
-    }
+    if (is_windows) return runCaptureWindows(opts);
+    return runCapturePosix(opts);
+}
+
+fn runCaptureWindows(opts: RunOptions) !CaptureResult {
+    const alloc = opts.allocator;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const result = try std.process.run(alloc, io, .{
+        .argv = opts.argv,
+        .cwd = if (opts.cwd) |cwd| .{ .path = cwd } else .inherit,
+        .stdout_limit = .limited(opts.max_output_bytes),
+        .stderr_limit = .limited(opts.max_output_bytes),
+    });
+    const term: CaptureResult.Term = switch (result.term) {
+        .exited => |code| .{ .Exited = code },
+        .signal => |sig| .{ .Signal = @intFromEnum(sig) },
+        .stopped => |sig| .{ .Stopped = @intFromEnum(sig) },
+        .unknown => |code| .{ .Unknown = code },
+    };
+    return .{
+        .stdout = result.stdout,
+        .stderr = result.stderr,
+        .term = term,
+    };
 }
 
 fn runCapturePosix(opts: RunOptions) !CaptureResult {
@@ -713,14 +742,62 @@ fn runCapturePosix(opts: RunOptions) !CaptureResult {
 }
 
 /// Fire-and-forget spawn of a detached child (used to launch the warm
-/// cli-daemon). POSIX uses posix_spawnp + /dev/null redirection; on Windows the
-/// warm-daemon accelerator is disabled, so this is a no-op.
+/// cli-daemon). POSIX uses posix_spawnp + /dev/null redirection; Windows uses
+/// CreateProcessW with detached/no-window flags.
 pub fn spawnDetached(allocator: std.mem.Allocator, argv: []const []const u8) void {
     if (is_windows) {
+        spawnDetachedWindows(allocator, argv);
         return;
     } else {
         spawnDetachedPosix(allocator, argv);
     }
+}
+
+pub fn windowsCommandLine(allocator: std.mem.Allocator, argv: []const []const u8) ?[]u8 {
+    var cmd: std.ArrayList(u8) = .empty;
+    defer cmd.deinit(allocator);
+    for (argv, 0..) |arg, i| {
+        if (i != 0) cmd.append(allocator, ' ') catch return null;
+        cmd.append(allocator, '"') catch return null;
+        var backslashes: usize = 0;
+        for (arg) |ch| {
+            switch (ch) {
+                '\\' => backslashes += 1,
+                '"' => {
+                    cmd.appendNTimes(allocator, '\\', backslashes * 2 + 1) catch return null;
+                    cmd.append(allocator, '"') catch return null;
+                    backslashes = 0;
+                },
+                else => {
+                    if (backslashes > 0) {
+                        cmd.appendNTimes(allocator, '\\', backslashes) catch return null;
+                        backslashes = 0;
+                    }
+                    cmd.append(allocator, ch) catch return null;
+                },
+            }
+        }
+        cmd.appendNTimes(allocator, '\\', backslashes * 2) catch return null;
+        cmd.append(allocator, '"') catch return null;
+    }
+    return cmd.toOwnedSlice(allocator) catch null;
+}
+
+fn spawnDetachedWindows(allocator: std.mem.Allocator, argv: []const []const u8) void {
+    if (argv.len == 0) return;
+
+    const cmd = windowsCommandLine(allocator, argv) orelse return;
+    defer allocator.free(cmd);
+    const cmd_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, cmd) catch return;
+    defer allocator.free(cmd_w);
+
+    var si: std.os.windows.STARTUPINFOW = std.mem.zeroes(std.os.windows.STARTUPINFOW);
+    si.cb = @sizeOf(std.os.windows.STARTUPINFOW);
+    var pi: std.os.windows.PROCESS.INFORMATION = undefined;
+    const flags: std.os.windows.CreateProcessFlags = .{ .detached_process = true, .create_no_window = true };
+    if (std.os.windows.kernel32.CreateProcessW(null, cmd_w.ptr, null, null, .FALSE, flags, null, null, &si, &pi) == .FALSE) return;
+    std.os.windows.CloseHandle(pi.hThread);
+    std.os.windows.CloseHandle(pi.hProcess);
 }
 
 /// Fire-and-forget spawn: posix_spawnp `argv` with stdin/stdout/stderr
@@ -807,7 +884,7 @@ pub fn mmapReadonly(handle: anytype, len: usize) MmapError![]align(std.heap.page
         defer _ = winmap.CloseHandle(mapping);
         const base = winmap.MapViewOfFile(mapping, winmap.FILE_MAP_READ, 0, 0, len) orelse
             return error.MapFailed;
-        const ptr: [*]align(std.heap.page_size_min) const u8 = @alignCast(@ptrCast(base));
+        const ptr: [*]align(std.heap.page_size_min) const u8 = @ptrCast(@alignCast(base));
         return ptr[0..len];
     } else {
         return std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .SHARED }, handle, 0) catch

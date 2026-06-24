@@ -118,6 +118,7 @@ const runQuery = query_mod.runQuery;
 
 const cli_proxy = @import("cli_proxy.zig");
 pub const daemonLockTryAcquire = cli_proxy.daemonLockTryAcquire;
+pub const daemonLockRelease = cli_proxy.daemonLockRelease;
 pub const daemonLockAvailable = cli_proxy.daemonLockAvailable;
 const cliTryProxy = cli_proxy.cliTryProxy;
 
