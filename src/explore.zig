@@ -2822,18 +2822,17 @@ pub const Explorer = struct {
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
-        var list: std.ArrayList(ScoredSymbolResult) = .empty;
-        errdefer {
-            for (list.items) |r| {
-                allocator.free(r.path);
-                allocator.free(r.symbol.name);
-                if (r.symbol.detail) |d| allocator.free(d);
-            }
-            list.deinit(allocator);
-        }
+        const Candidate = struct {
+            path: []const u8,
+            symbol: Symbol,
+            score: f32,
+        };
+
+        var candidates: std.ArrayList(Candidate) = .empty;
+        defer candidates.deinit(allocator);
 
         const Dedup = struct {
-            fn contains(items: []const ScoredSymbolResult, path: []const u8, line: u32) bool {
+            fn contains(items: []const Candidate, path: []const u8, line: u32) bool {
                 for (items) |r| {
                     if (r.symbol.line_start == line and std.mem.eql(u8, r.path, path)) return true;
                 }
@@ -2841,26 +2840,80 @@ pub const Explorer = struct {
             }
         };
 
+        const SortCtx = struct {
+            pub fn lessThan(_: void, a: Candidate, b: Candidate) bool {
+                if (a.score != b.score) return a.score > b.score;
+                const name_cmp = std.mem.order(u8, a.symbol.name, b.symbol.name);
+                if (name_cmp != .eq) return name_cmp == .lt;
+                return std.mem.order(u8, a.path, b.path) == .lt;
+            }
+
+            fn candidateBefore(a: Candidate, b: Candidate) bool {
+                return lessThan({}, a, b);
+            }
+        };
+
+        const freeOne = struct {
+            fn call(alloc: std.mem.Allocator, r: ScoredSymbolResult) void {
+                alloc.free(r.path);
+                alloc.free(r.symbol.name);
+                if (r.symbol.detail) |d| alloc.free(d);
+            }
+        }.call;
+
+        const cloneOne = struct {
+            fn call(alloc: std.mem.Allocator, candidate: Candidate) !ScoredSymbolResult {
+                const path_copy = try alloc.dupe(u8, candidate.path);
+                errdefer alloc.free(path_copy);
+                const name_copy = try alloc.dupe(u8, candidate.symbol.name);
+                errdefer alloc.free(name_copy);
+                var detail_copy: ?[]u8 = null;
+                errdefer if (detail_copy) |d| alloc.free(d);
+                if (candidate.symbol.detail) |d| {
+                    detail_copy = try alloc.dupe(u8, d);
+                }
+                return .{
+                    .path = path_copy,
+                    .symbol = .{
+                        .name = name_copy,
+                        .kind = candidate.symbol.kind,
+                        .line_start = candidate.symbol.line_start,
+                        .line_end = candidate.symbol.line_end,
+                        .detail = detail_copy,
+                    },
+                    .score = candidate.score,
+                };
+            }
+        }.call;
+
         const appendOne = struct {
             fn call(
-                list_ptr: *std.ArrayList(ScoredSymbolResult),
+                list_ptr: *std.ArrayList(Candidate),
                 alloc: std.mem.Allocator,
+                max_results: usize,
                 path: []const u8,
                 sym: Symbol,
                 score: f32,
             ) !void {
+                if (max_results == 0) return;
                 if (Dedup.contains(list_ptr.items, path, sym.line_start)) return;
-                try list_ptr.append(alloc, .{
-                    .path = try alloc.dupe(u8, path),
-                    .symbol = .{
-                        .name = try alloc.dupe(u8, sym.name),
-                        .kind = sym.kind,
-                        .line_start = sym.line_start,
-                        .line_end = sym.line_end,
-                        .detail = if (sym.detail) |d| try alloc.dupe(u8, d) else null,
-                    },
+                const candidate: Candidate = .{
+                    .path = path,
+                    .symbol = sym,
                     .score = score,
-                });
+                };
+                if (list_ptr.items.len >= max_results and
+                    !SortCtx.candidateBefore(candidate, list_ptr.items[list_ptr.items.len - 1]))
+                {
+                    return;
+                }
+
+                if (list_ptr.items.len < max_results) {
+                    try list_ptr.append(alloc, candidate);
+                } else {
+                    list_ptr.items[list_ptr.items.len - 1] = candidate;
+                }
+                std.mem.sort(Candidate, list_ptr.items, {}, SortCtx.lessThan);
             }
         }.call;
 
@@ -2879,16 +2932,14 @@ pub const Explorer = struct {
                         }
                     }
                 }
-                try appendOne(&list, allocator, loc.path, .{
+                try appendOne(&candidates, allocator, spec.max_results, loc.path, .{
                     .name = sym_name,
                     .kind = loc.kind,
                     .line_start = loc.line_start,
                     .line_end = loc.line_end,
                     .detail = detail,
                 }, score);
-                if (list.items.len >= spec.max_results) break;
             }
-            if (list.items.len >= spec.max_results) break;
         }
 
         var ol_iter = self.outlines.iterator();
@@ -2896,24 +2947,24 @@ pub const Explorer = struct {
             for (entry.value_ptr.symbols.items) |sym| {
                 const score = symbolMatchScore(spec, sym.name) orelse continue;
                 if (spec.kind) |k| if (sym.kind != k) continue;
-                if (Dedup.contains(list.items, entry.key_ptr.*, sym.line_start)) continue;
-                try appendOne(&list, allocator, entry.key_ptr.*, sym, score);
-                if (list.items.len >= spec.max_results) break;
+                if (Dedup.contains(candidates.items, entry.key_ptr.*, sym.line_start)) continue;
+                try appendOne(&candidates, allocator, spec.max_results, entry.key_ptr.*, sym, score);
             }
-            if (list.items.len >= spec.max_results) break;
         }
 
-        const SortCtx = struct {
-            pub fn lessThan(_: void, a: ScoredSymbolResult, b: ScoredSymbolResult) bool {
-                if (a.score != b.score) return a.score > b.score;
-                const name_cmp = std.mem.order(u8, a.symbol.name, b.symbol.name);
-                if (name_cmp != .eq) return name_cmp == .lt;
-                return std.mem.order(u8, a.path, b.path) == .lt;
-            }
-        };
-        std.mem.sort(ScoredSymbolResult, list.items, {}, SortCtx.lessThan);
-        if (list.items.len > spec.max_results) list.shrinkRetainingCapacity(spec.max_results);
-        return list.toOwnedSlice(allocator);
+        std.mem.sort(Candidate, candidates.items, {}, SortCtx.lessThan);
+
+        const results = try allocator.alloc(ScoredSymbolResult, candidates.items.len);
+        errdefer allocator.free(results);
+        var result_len: usize = 0;
+        errdefer {
+            for (results[0..result_len]) |r| freeOne(allocator, r);
+        }
+        for (candidates.items) |candidate| {
+            results[result_len] = try cloneOne(allocator, candidate);
+            result_len += 1;
+        }
+        return results;
     }
 
     // Resolve an exact symbol name to its definition sites for codedb_find's

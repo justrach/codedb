@@ -320,6 +320,11 @@ pub fn randU64() u64 {
     return x;
 }
 
+pub fn currentProcessId() u32 {
+    if (is_windows) return @intCast(winsync.GetCurrentProcessId());
+    return @intCast(std.c.getpid());
+}
+
 pub fn userId() usize {
     if (is_windows) return 0;
     return @intCast(std.c.getuid());
@@ -584,11 +589,30 @@ pub fn runCapture(opts: RunOptions) !CaptureResult {
 
 fn runCaptureWindows(opts: RunOptions) !CaptureResult {
     const alloc = opts.allocator;
+    if (opts.argv.len == 0) return error.EmptyArgv;
+
+    var resolved_argv0: ?[]u8 = null;
+    defer if (resolved_argv0) |path| alloc.free(path);
+    var argv_buf: ?[][]const u8 = null;
+    defer if (argv_buf) |buf| alloc.free(buf);
+
+    const argv = blk: {
+        if (try windowsResolvedRunCaptureArgv0(alloc, opts.argv[0], opts.cwd)) |resolved| {
+            resolved_argv0 = resolved;
+            const copied = try alloc.alloc([]const u8, opts.argv.len);
+            @memcpy(copied, opts.argv);
+            copied[0] = resolved;
+            argv_buf = copied;
+            break :blk copied;
+        }
+        break :blk opts.argv;
+    };
+
     var threaded: std.Io.Threaded = .init(alloc, .{});
     defer threaded.deinit();
     const io = threaded.io();
     const result = try std.process.run(alloc, io, .{
-        .argv = opts.argv,
+        .argv = argv,
         .cwd = if (opts.cwd) |cwd| .{ .path = cwd } else .inherit,
         .stdout_limit = .limited(opts.max_output_bytes),
         .stderr_limit = .limited(opts.max_output_bytes),
@@ -604,6 +628,78 @@ fn runCaptureWindows(opts: RunOptions) !CaptureResult {
         .stderr = result.stderr,
         .term = term,
     };
+}
+
+const INVALID_FILE_ATTRIBUTES: u32 = 0xffff_ffff;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+
+extern "kernel32" fn GetFileAttributesW(lpFileName: [*:0]const u16) callconv(.winapi) u32;
+
+fn windowsResolvedRunCaptureArgv0(allocator: std.mem.Allocator, argv0: []const u8, cwd: ?[]const u8) !?[]u8 {
+    if (!is_windows) return null;
+    if (argv0.len == 0) return error.EmptyArgv;
+
+    if (windowsArgv0HasPathComponent(argv0)) {
+        if (std.fs.path.isAbsoluteWindows(argv0)) return null;
+        if (cwd != null) return error.UnsafeRelativeExecutable;
+        return null;
+    }
+
+    return try resolveExecutableFromPathWindows(allocator, argv0) orelse error.ExecutableNotFound;
+}
+
+fn windowsArgv0HasPathComponent(argv0: []const u8) bool {
+    return std.mem.indexOfAny(u8, argv0, "\\/:") != null;
+}
+
+pub fn resolveExecutableFromPathWindows(allocator: std.mem.Allocator, name: []const u8) !?[]u8 {
+    if (!is_windows) return null;
+    if (name.len == 0 or windowsArgv0HasPathComponent(name)) return null;
+
+    const explicit_ext = std.fs.path.extension(name);
+    if (explicit_ext.len > 0 and !isSafeWindowsExecutableExtension(explicit_ext)) return null;
+
+    const path = posixGetenv("PATH") orelse return null;
+    var dirs = std.mem.splitScalar(u8, path, ';');
+    while (dirs.next()) |raw_dir| {
+        const dir = std.mem.trim(u8, raw_dir, " \t\"");
+        if (dir.len == 0 or !std.fs.path.isAbsoluteWindows(dir)) continue;
+
+        if (explicit_ext.len > 0) {
+            if (try windowsExecutableCandidate(allocator, dir, name)) |candidate| return candidate;
+            continue;
+        }
+
+        const safe_exts = [_][]const u8{ ".exe", ".com" };
+        for (safe_exts) |ext| {
+            const candidate_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ name, ext });
+            defer allocator.free(candidate_name);
+            if (try windowsExecutableCandidate(allocator, dir, candidate_name)) |candidate| return candidate;
+        }
+    }
+    return null;
+}
+
+fn isSafeWindowsExecutableExtension(ext: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(ext, ".exe") or std.ascii.eqlIgnoreCase(ext, ".com");
+}
+
+fn windowsExecutableCandidate(allocator: std.mem.Allocator, dir: []const u8, file_name: []const u8) !?[]u8 {
+    const sep: []const u8 = if (std.mem.endsWith(u8, dir, "\\") or std.mem.endsWith(u8, dir, "/")) "" else "\\";
+    const candidate = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ dir, sep, file_name });
+    errdefer allocator.free(candidate);
+    if (!windowsFileExists(candidate, allocator)) {
+        allocator.free(candidate);
+        return null;
+    }
+    return candidate;
+}
+
+fn windowsFileExists(path: []const u8, allocator: std.mem.Allocator) bool {
+    const w = std.unicode.utf8ToUtf16LeAllocZ(allocator, path) catch return false;
+    defer allocator.free(w);
+    const attrs = GetFileAttributesW(w.ptr);
+    return attrs != INVALID_FILE_ATTRIBUTES and (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
 fn runCapturePosix(opts: RunOptions) !CaptureResult {

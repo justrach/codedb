@@ -7,7 +7,7 @@ const cio = @import("cio.zig");
 pub fn getGitHead(root: []const u8, allocator: std.mem.Allocator) !?[40]u8 {
     const result = cio.runCapture(.{
         .allocator = allocator,
-        .argv = &.{ "git", "rev-parse", "HEAD" },
+        .argv = &.{ "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "rev-parse", "HEAD" },
         .cwd = root,
         .max_output_bytes = 256,
     }) catch return null;
@@ -155,7 +155,7 @@ pub fn buildCoChange(
     const nstr = std.fmt.bufPrint(&nbuf, "{d}", .{max_commits}) catch return null;
     const result = cio.runCapture(.{
         .allocator = allocator,
-        .argv = &.{ "git", "log", "--name-only", "--no-merges", "--pretty=format:%H", "-n", nstr },
+        .argv = &.{ "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "log", "--name-only", "--no-merges", "--pretty=format:%H", "-n", nstr },
         .cwd = root,
         .max_output_bytes = 8 * 1024 * 1024,
     }) catch return null;

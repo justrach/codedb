@@ -68,6 +68,51 @@ const EnvVarGuard = struct {
     }
 };
 
+test "windows runCapture resolves executables from safe PATH entries only" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "bin");
+    try tmp.dir.createDirPath(io, "repo");
+    var exe = try tmp.dir.createFile(io, "bin/git.exe", .{});
+    exe.close(io);
+    var planted_bat = try tmp.dir.createFile(io, "repo/git.bat", .{});
+    planted_bat.close(io);
+
+    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bin_len = try tmp.dir.realPathFile(io, "bin", &bin_buf);
+    const bin_abs = bin_buf[0..bin_len];
+
+    const old_path = EnvVarGuard.save("PATH");
+    defer old_path.restore();
+    const test_path = try std.fmt.allocPrint(testing.allocator, ".;relative;{s}", .{bin_abs});
+    defer testing.allocator.free(test_path);
+    cio.posixSetenv("PATH", test_path);
+
+    const resolved = try cio.resolveExecutableFromPathWindows(testing.allocator, "git") orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(resolved);
+    try testing.expect(std.mem.endsWith(u8, resolved, "git.exe"));
+    try testing.expect(std.mem.startsWith(u8, resolved, bin_abs));
+
+    try testing.expect((try cio.resolveExecutableFromPathWindows(testing.allocator, "git.bat")) == null);
+    try testing.expect((try cio.resolveExecutableFromPathWindows(testing.allocator, ".\\git.exe")) == null);
+}
+
+test "windows cli pipe metadata parser rejects spoofable records" {
+    const owner = "pid=123\npipe=\\\\.\\pipe\\codedb-123-deadbeef\n";
+    const ok = cli_proxy_mod.parseCliPipeMetadata(owner) orelse return error.TestUnexpectedResult;
+    try testing.expect(ok.pid == 123);
+    try testing.expect(std.mem.eql(u8, ok.pipe_name, "\\\\.\\pipe\\codedb-123-deadbeef"));
+    try testing.expect(cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 123, "\\\\.\\pipe\\codedb-123-deadbeef"));
+    try testing.expect(!cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 124, "\\\\.\\pipe\\codedb-123-deadbeef"));
+    try testing.expect(!cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 123, "\\\\.\\pipe\\codedb-other"));
+
+    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pid=0\npipe=\\\\.\\pipe\\codedb-x\n") == null);
+    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pid=123\npipe=\\\\.\\pipe\\other\n") == null);
+    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pipe=\\\\.\\pipe\\codedb-x\n") == null);
+}
+
 fn buildCliForHelpTests() !void {
     const build = try cio.runCapture(.{
         .allocator = testing.allocator,
@@ -2465,8 +2510,11 @@ test "issue-592: cli-daemon spawn lock is exclusive per project" {
     // the kernel releases the lock on any exit.
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
+    if (builtin.os.tag == .windows) {
+        try tmp.dir.createDirPath(io, "unicode-å");
+    }
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_len = try tmp.dir.realPathFile(io, if (builtin.os.tag == .windows) "unicode-å" else ".", &path_buf);
     const dir_path = path_buf[0..dir_len];
 
     const held = main_mod.daemonLockTryAcquire(dir_path);

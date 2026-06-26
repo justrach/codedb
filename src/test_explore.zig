@@ -2240,6 +2240,35 @@ test "issue-531: searchSymbols fuzzy match" {
     try testing.expectEqualStrings("ensureCallGraph", results[0].symbol.name);
 }
 
+test "searchSymbols honors max_results as allocation work cap" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(testing.allocator);
+    const w = cio.listWriter(&src, testing.allocator);
+    var i: usize = 0;
+    while (i < 80) : (i += 1) {
+        w.print("pub fn broad_{d}() void {{}}\n", .{i}) catch return error.OutOfMemory;
+    }
+    try explorer_inst.indexFile("many.zig", src.items);
+
+    var limited = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 24 });
+    const results = try explorer_inst.searchSymbols(.{ .kind = .function, .max_results = 3 }, limited.allocator());
+    defer {
+        for (results) |r| {
+            limited.allocator().free(r.path);
+            limited.allocator().free(r.symbol.name);
+            if (r.symbol.detail) |d| limited.allocator().free(d);
+        }
+        limited.allocator().free(results);
+    }
+    try testing.expectEqual(@as(usize, 3), results.len);
+    try testing.expectEqualStrings("broad_0", results[0].symbol.name);
+    try testing.expectEqualStrings("broad_1", results[1].symbol.name);
+    try testing.expectEqualStrings("broad_10", results[2].symbol.name);
+}
+
 // ─── audit (2026-06-09): latent-issue sweep — call-graph phantom edges ───
 // src/codegraph.zig extractCallees paired every '(' with the preceding identifier with
 // no comment/string stripping, so a name mentioned only in a // comment surfaced as a

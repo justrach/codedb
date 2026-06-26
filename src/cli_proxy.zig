@@ -59,6 +59,10 @@ const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x00080000;
 const SECURITY_SQOS_PRESENT: u32 = 0x00100000;
 const SECURITY_IDENTIFICATION: u32 = 0x00010000;
 const SDDL_REVISION_1: u32 = 1;
+const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x00000008;
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x00001000;
+const TOKEN_QUERY: u32 = 0x0008;
+const TokenUser: u32 = 1;
 
 extern "kernel32" fn CreateNamedPipeA(
     lpName: [*:0]const u8,
@@ -72,8 +76,9 @@ extern "kernel32" fn CreateNamedPipeA(
 ) callconv(.winapi) win.HANDLE;
 extern "kernel32" fn ConnectNamedPipe(hNamedPipe: win.HANDLE, lpOverlapped: ?*anyopaque) callconv(.winapi) win.BOOL;
 extern "kernel32" fn DisconnectNamedPipe(hNamedPipe: win.HANDLE) callconv(.winapi) win.BOOL;
-extern "kernel32" fn CreateFileA(
-    lpFileName: [*:0]const u8,
+extern "kernel32" fn GetNamedPipeServerProcessId(Pipe: win.HANDLE, ServerProcessId: *u32) callconv(.winapi) win.BOOL;
+extern "kernel32" fn CreateFileW(
+    lpFileName: [*:0]const u16,
     dwDesiredAccess: u32,
     dwShareMode: u32,
     lpSecurityAttributes: ?*anyopaque,
@@ -81,15 +86,31 @@ extern "kernel32" fn CreateFileA(
     dwFlagsAndAttributes: u32,
     hTemplateFile: ?win.HANDLE,
 ) callconv(.winapi) win.HANDLE;
+extern "kernel32" fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: win.BOOL, dwProcessId: u32) callconv(.winapi) ?win.HANDLE;
+extern "kernel32" fn GetCurrentProcess() callconv(.winapi) win.HANDLE;
 extern "kernel32" fn ReadFile(hFile: win.HANDLE, lpBuffer: [*]u8, nNumberOfBytesToRead: u32, lpNumberOfBytesRead: *u32, lpOverlapped: ?*anyopaque) callconv(.winapi) win.BOOL;
 extern "kernel32" fn WriteFile(hFile: win.HANDLE, lpBuffer: [*]const u8, nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: *u32, lpOverlapped: ?*anyopaque) callconv(.winapi) win.BOOL;
 extern "kernel32" fn LocalFree(hMem: ?*anyopaque) callconv(.winapi) ?*anyopaque;
+extern "advapi32" fn OpenProcessToken(ProcessHandle: win.HANDLE, DesiredAccess: u32, TokenHandle: *win.HANDLE) callconv(.winapi) win.BOOL;
+extern "advapi32" fn GetTokenInformation(TokenHandle: win.HANDLE, TokenInformationClass: u32, TokenInformation: ?*anyopaque, TokenInformationLength: u32, ReturnLength: *u32) callconv(.winapi) win.BOOL;
+extern "advapi32" fn EqualSid(pSid1: ?*anyopaque, pSid2: ?*anyopaque) callconv(.winapi) win.BOOL;
+extern "advapi32" fn ConvertSidToStringSidA(Sid: ?*anyopaque, StringSid: *?[*:0]u8) callconv(.winapi) win.BOOL;
 extern "advapi32" fn ConvertStringSecurityDescriptorToSecurityDescriptorA(
     sddl: [*:0]const u8,
     revision: u32,
     sd: *?*anyopaque,
     sd_size: ?*u32,
 ) callconv(.winapi) win.BOOL;
+extern "advapi32" fn SystemFunction036(RandomBuffer: ?*anyopaque, RandomBufferLength: u32) callconv(.winapi) win.BOOL;
+
+const SID_AND_ATTRIBUTES = extern struct {
+    Sid: ?*anyopaque,
+    Attributes: u32,
+};
+
+const TOKEN_USER = extern struct {
+    User: SID_AND_ATTRIBUTES,
+};
 
 /// How often a long-lived serve/mcp daemon that lost the CLI socket bind
 /// re-attempts it (see cliAcquireListener) — one second, matching the daemons'
@@ -105,10 +126,177 @@ pub fn cliSocketPath(buf: []u8, abs_root: []const u8) ?[]const u8 {
     return std.fmt.bufPrint(buf, "/tmp/codedb-{d}-{x:0>16}.sock", .{ uid, hash }) catch null;
 }
 
-fn cliPipeName(buf: []u8, abs_root: []const u8) ?[:0]const u8 {
-    const hash = std.hash.Wyhash.hash(0xc0de, abs_root);
-    const user_hash = std.hash.Wyhash.hash(0xc0de, cio.posixGetenv("USERNAME") orelse "");
-    return std.fmt.bufPrintZ(buf, "\\\\.\\pipe\\codedb-{x:0>16}-{x:0>16}", .{ hash, user_hash }) catch null;
+const cli_pipe_metadata_filename = "cli-daemon.pipe";
+
+fn cliPipeMetadataPath(allocator: std.mem.Allocator, data_dir: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ data_dir, cli_pipe_metadata_filename });
+}
+
+fn cliRandomPipeName(buf: []u8) ?[:0]const u8 {
+    return std.fmt.bufPrintZ(buf, "\\\\.\\pipe\\codedb-{d}-{x:0>16}-{x:0>16}", .{
+        cio.currentProcessId(),
+        secureRandomU64(),
+        secureRandomU64(),
+    }) catch null;
+}
+
+fn secureRandomU64() u64 {
+    var bytes: [8]u8 = undefined;
+    if (SystemFunction036(&bytes, bytes.len) != .FALSE) {
+        return std.mem.readInt(u64, &bytes, .little);
+    }
+    return cio.randU64();
+}
+
+const CliPipeMetadata = struct {
+    pid: u32,
+    pipe_name: []const u8,
+};
+
+pub fn parseCliPipeMetadata(text: []const u8) ?CliPipeMetadata {
+    var pid: ?u32 = null;
+    var pipe_name: ?[]const u8 = null;
+
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (std.mem.startsWith(u8, line, "pid=")) {
+            pid = std.fmt.parseInt(u32, line["pid=".len..], 10) catch return null;
+        } else if (std.mem.startsWith(u8, line, "pipe=")) {
+            const value = line["pipe=".len..];
+            if (!std.mem.startsWith(u8, value, "\\\\.\\pipe\\codedb-")) return null;
+            pipe_name = value;
+        }
+    }
+
+    const parsed_pid = pid orelse return null;
+    if (parsed_pid == 0) return null;
+    return .{ .pid = parsed_pid, .pipe_name = pipe_name orelse return null };
+}
+
+pub fn cliPipeMetadataMatchesOwner(text: []const u8, pid: u32, pipe_name: []const u8) bool {
+    const metadata = parseCliPipeMetadata(text) orelse return false;
+    return metadata.pid == pid and std.mem.eql(u8, metadata.pipe_name, pipe_name);
+}
+
+fn writeCliPipeMetadata(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8, pid: u32, pipe_name: []const u8) bool {
+    const path = cliPipeMetadataPath(allocator, data_dir) catch return false;
+    defer allocator.free(path);
+    const content = std.fmt.allocPrint(allocator, "pid={d}\npipe={s}\n", .{ pid, pipe_name }) catch return false;
+    defer allocator.free(content);
+    const f = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true }) catch return false;
+    defer f.close(io);
+    f.writePositionalAll(io, content, 0) catch return false;
+    return true;
+}
+
+fn deleteCliPipeMetadataIfOwner(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8, pid: u32, pipe_name: []const u8) void {
+    const path = cliPipeMetadataPath(allocator, data_dir) catch return;
+    defer allocator.free(path);
+    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024)) catch return;
+    defer allocator.free(content);
+    if (!cliPipeMetadataMatchesOwner(content, pid, pipe_name)) return;
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
+}
+
+fn readCliPipeMetadata(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8) ?[]u8 {
+    const path = cliPipeMetadataPath(allocator, data_dir) catch return null;
+    defer allocator.free(path);
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024)) catch null;
+}
+
+fn windowsPathZ(allocator: std.mem.Allocator, path: []const u8) ?[:0]u16 {
+    return std.unicode.utf8ToUtf16LeAllocZ(allocator, path) catch null;
+}
+
+const TokenSid = struct {
+    bytes: []u8,
+    sid: ?*anyopaque,
+};
+
+fn tokenSid(allocator: std.mem.Allocator, token: win.HANDLE) ?TokenSid {
+    var needed: u32 = 0;
+    _ = GetTokenInformation(token, TokenUser, null, 0, &needed);
+    if (needed == 0) return null;
+    const bytes = allocator.alloc(u8, needed) catch return null;
+    if (GetTokenInformation(token, TokenUser, bytes.ptr, needed, &needed) == .FALSE) {
+        allocator.free(bytes);
+        return null;
+    }
+    const user: *TOKEN_USER = @ptrCast(@alignCast(bytes.ptr));
+    return .{ .bytes = bytes, .sid = user.User.Sid };
+}
+
+fn currentUserSidString(allocator: std.mem.Allocator) ?[]u8 {
+    var token: win.HANDLE = undefined;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) == .FALSE) return null;
+    defer win.CloseHandle(token);
+
+    const sid_info = tokenSid(allocator, token) orelse return null;
+    defer allocator.free(sid_info.bytes);
+
+    var sid_z: ?[*:0]u8 = null;
+    if (ConvertSidToStringSidA(sid_info.sid, &sid_z) == .FALSE) return null;
+    defer _ = LocalFree(sid_z);
+    return allocator.dupe(u8, std.mem.span(sid_z.?)) catch null;
+}
+
+fn currentUserPipeSddl(allocator: std.mem.Allocator) ?[:0]u8 {
+    const sid = currentUserSidString(allocator) orelse return null;
+    defer allocator.free(sid);
+    const sddl = std.fmt.allocPrint(allocator, "D:P(A;;GA;;;{s})S:(ML;;NW;;;ME)", .{sid}) catch return null;
+    defer allocator.free(sddl);
+    return allocator.dupeZ(u8, sddl) catch null;
+}
+
+fn processUserMatchesCurrent(allocator: std.mem.Allocator, pid: u32) bool {
+    const process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, .FALSE, pid) orelse return false;
+    defer win.CloseHandle(process);
+
+    var process_token: win.HANDLE = undefined;
+    if (OpenProcessToken(process, TOKEN_QUERY, &process_token) == .FALSE) return false;
+    defer win.CloseHandle(process_token);
+
+    var current_token: win.HANDLE = undefined;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &current_token) == .FALSE) return false;
+    defer win.CloseHandle(current_token);
+
+    const process_sid = tokenSid(allocator, process_token) orelse return false;
+    defer allocator.free(process_sid.bytes);
+    const current_sid = tokenSid(allocator, current_token) orelse return false;
+    defer allocator.free(current_sid.bytes);
+
+    return EqualSid(process_sid.sid, current_sid.sid) != .FALSE;
+}
+
+fn pipeServerTrusted(allocator: std.mem.Allocator, pipe: win.HANDLE, expected_pid: u32) bool {
+    var server_pid: u32 = 0;
+    if (GetNamedPipeServerProcessId(pipe, &server_pid) == .FALSE) return false;
+    if (server_pid == 0 or server_pid != expected_pid) return false;
+    return processUserMatchesCurrent(allocator, server_pid);
+}
+
+fn pipeRetryDelayMs(failures: u32) u64 {
+    const capped: u64 = @min(@as(u64, failures), 50);
+    return 100 * capped;
+}
+
+fn shouldLogPipeRetry(failures: u32) bool {
+    return failures == 1 or failures % 50 == 0;
+}
+
+fn createCliPipeInstance(pipe_name: [:0]const u8, first_instance: bool, sa_pipe: *win.SECURITY_ATTRIBUTES) win.HANDLE {
+    const first_flag: u32 = if (first_instance) FILE_FLAG_FIRST_PIPE_INSTANCE else 0;
+    return CreateNamedPipeA(
+        pipe_name.ptr,
+        PIPE_ACCESS_DUPLEX | first_flag,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+        PIPE_UNLIMITED_INSTANCES,
+        cli_blob_max + 5,
+        cli_blob_max + 5,
+        0,
+        sa_pipe,
+    );
 }
 
 /// Fill a sockaddr.un for `path` (which must be NUL-terminatable into sun_path).
@@ -191,7 +379,9 @@ pub fn daemonLockTryAcquire(data_dir: []const u8) ?DaemonLock {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const p = std.fmt.bufPrintZ(&buf, "{s}/cli-daemon.lock", .{data_dir}) catch return null;
     if (builtin.os.tag == .windows) {
-        const handle = CreateFileA(p.ptr, GENERIC_READ | GENERIC_WRITE, 0, null, OPEN_ALWAYS, 0, null);
+        const path_w = windowsPathZ(std.heap.page_allocator, p) orelse return null;
+        defer std.heap.page_allocator.free(path_w);
+        const handle = CreateFileW(path_w.ptr, GENERIC_READ | GENERIC_WRITE, 0, null, OPEN_ALWAYS, 0, null);
         if (handle == INVALID_HANDLE_VALUE) return null;
         return handle;
     }
@@ -302,16 +492,17 @@ pub fn cliAcquireListener(sock_path: []const u8, retry: bool, retry_interval_ms:
 /// auto-spawned cli-daemon passes `false` and gets `shutdown` set so it exits
 /// promptly; the long-lived serve/mcp daemons pass `true` and keep reclaiming
 /// the socket when the previous owner exits instead of disabling the proxy.
-pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool), retry: bool) void {
+pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, data_dir: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool), retry: bool) void {
     if (builtin.os.tag == .windows) {
         var name_buf: [256]u8 = undefined;
-        const pipe_name = cliPipeName(&name_buf, abs_root) orelse {
+
+        const sddl = currentUserPipeSddl(allocator) orelse {
             shutdown.store(true, .release);
             return;
         };
-
+        defer allocator.free(sddl);
         var sd: ?*anyopaque = null;
-        if (ConvertStringSecurityDescriptorToSecurityDescriptorA("D:P(A;;GA;;;OW)", SDDL_REVISION_1, &sd, null) == .FALSE) {
+        if (ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl.ptr, SDDL_REVISION_1, &sd, null) == .FALSE) {
             shutdown.store(true, .release);
             return;
         }
@@ -322,25 +513,69 @@ pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Expl
             .bInheritHandle = .FALSE,
         };
 
+        var pipe_name: ?[:0]const u8 = null;
+        var listening_pipe: ?win.HANDLE = null;
+        var metadata_written = false;
+        var retry_failures: u32 = 0;
+        var first_pipe_instance = true;
+        const listener_pid = cio.currentProcessId();
+        defer if (listening_pipe) |pipe| win.CloseHandle(pipe);
+        defer if (metadata_written and pipe_name != null) deleteCliPipeMetadataIfOwner(io, allocator, data_dir, listener_pid, pipe_name.?);
+
         while (!shutdown.load(.acquire)) {
-            const pipe = CreateNamedPipeA(
-                pipe_name.ptr,
-                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                PIPE_UNLIMITED_INSTANCES,
-                cli_blob_max + 5,
-                cli_blob_max + 5,
-                0,
-                &sa_pipe,
-            );
-            if (pipe == INVALID_HANDLE_VALUE) {
-                shutdown.store(true, .release);
-                return;
+            if (pipe_name == null) {
+                pipe_name = cliRandomPipeName(&name_buf) orelse {
+                    shutdown.store(true, .release);
+                    return;
+                };
             }
+            if (listening_pipe == null) {
+                const new_pipe = createCliPipeInstance(pipe_name.?, first_pipe_instance, &sa_pipe);
+                if (new_pipe == INVALID_HANDLE_VALUE) {
+                    if (!metadata_written) pipe_name = null;
+                    retry_failures = retry_failures +| 1;
+                    if (shouldLogPipeRetry(retry_failures)) {
+                        std.log.warn("cli-proxy: CreateNamedPipe failed {d} time(s); retrying", .{retry_failures});
+                    }
+                    cio.sleepMs(pipeRetryDelayMs(retry_failures));
+                    continue;
+                }
+                listening_pipe = new_pipe;
+                first_pipe_instance = false;
+            }
+            retry_failures = 0;
+            if (!metadata_written) {
+                if (!writeCliPipeMetadata(io, allocator, data_dir, listener_pid, pipe_name.?)) {
+                    win.CloseHandle(listening_pipe.?);
+                    listening_pipe = null;
+                    pipe_name = null;
+                    first_pipe_instance = true;
+                    retry_failures = retry_failures +| 1;
+                    if (shouldLogPipeRetry(retry_failures)) {
+                        std.log.warn("cli-proxy: could not publish pipe metadata {d} time(s); retrying", .{retry_failures});
+                    }
+                    cio.sleepMs(pipeRetryDelayMs(retry_failures));
+                    continue;
+                }
+                metadata_written = true;
+                retry_failures = 0;
+            }
+            const pipe = listening_pipe.?;
+            listening_pipe = null;
             const connected = ConnectNamedPipe(pipe, null) != .FALSE or win.GetLastError() == .PIPE_CONNECTED;
             if (!connected) {
                 win.CloseHandle(pipe);
                 continue;
+            }
+            const next_pipe = createCliPipeInstance(pipe_name.?, false, &sa_pipe);
+            if (next_pipe != INVALID_HANDLE_VALUE) {
+                listening_pipe = next_pipe;
+                retry_failures = 0;
+            } else {
+                retry_failures = retry_failures +| 1;
+                if (shouldLogPipeRetry(retry_failures)) {
+                    std.log.warn("cli-proxy: CreateNamedPipe replacement failed {d} time(s); retrying", .{retry_failures});
+                }
             }
             last_activity_ms.store(cio.milliTimestamp(), .release);
             cliServeConn(io, allocator, explorer, store, abs_root, pipe);
@@ -466,11 +701,10 @@ fn cliRespond(conn: CliConn, code: u8, out_bytes: []const u8) void {
 /// code. On ANY failure (no daemon, connect refused, short read, oversized
 /// response) returns null so the caller falls back to the cold in-process path.
 /// `args` is mainImpl's filtered argv (args[0] = program name); we send args[1..].
-pub fn cliTryProxy(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8, args: []const []const u8, color: bool) ?u8 {
-    _ = io;
+pub fn cliTryProxy(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8, data_dir: ?[]const u8, args: []const []const u8, color: bool) ?u8 {
     if (args.len < 2) return null;
 
-    const conn = cliConnect(abs_root) orelse return null;
+    const conn = cliConnect(io, allocator, abs_root, data_dir) orelse return null;
     defer cliCloseConn(conn);
 
     // Build the NUL-joined blob from args[1..].
@@ -505,12 +739,20 @@ pub fn cliTryProxy(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u
     return code;
 }
 
-fn cliConnect(abs_root: []const u8) ?CliConn {
+fn cliConnect(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8, data_dir: ?[]const u8) ?CliConn {
     if (builtin.os.tag == .windows) {
-        var name_buf: [256]u8 = undefined;
-        const pipe_name = cliPipeName(&name_buf, abs_root) orelse return null;
-        const pipe = CreateFileA(pipe_name.ptr, GENERIC_READ | GENERIC_WRITE, 0, null, OPEN_EXISTING, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, null);
+        const dir = data_dir orelse return null;
+        const metadata_text = readCliPipeMetadata(io, allocator, dir) orelse return null;
+        defer allocator.free(metadata_text);
+        const metadata = parseCliPipeMetadata(metadata_text) orelse return null;
+        const pipe_name_w = windowsPathZ(allocator, metadata.pipe_name) orelse return null;
+        defer allocator.free(pipe_name_w);
+        const pipe = CreateFileW(pipe_name_w.ptr, GENERIC_READ | GENERIC_WRITE, 0, null, OPEN_EXISTING, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, null);
         if (pipe == INVALID_HANDLE_VALUE) return null;
+        if (!pipeServerTrusted(allocator, pipe, metadata.pid)) {
+            win.CloseHandle(pipe);
+            return null;
+        }
         return pipe;
     }
     var path_buf: [128]u8 = undefined;

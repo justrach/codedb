@@ -358,7 +358,10 @@ fn mainImpl() !void {
     // despite the variable (observed while profiling #564: a stray cli-daemon
     // served 'search' in 944µs with the variable set).
     if (cliIsQueryCmd(cmd) and cio.posixGetenv("CODEDB_NO_CLI_DAEMON") == null) {
-        if (cliTryProxy(io, allocator, abs_root, args, use_color)) |code| {
+        const probe_dir = if (abs_root.len > 0) getDataDir(io, allocator, abs_root) catch null else null;
+        defer if (probe_dir) |d| allocator.free(d);
+
+        if (cliTryProxy(io, allocator, abs_root, probe_dir, args, use_color)) |code| {
             out.flush();
             std.process.exit(code);
         }
@@ -373,8 +376,6 @@ fn mainImpl() !void {
         // duplicate rescans the index, and the stampede leaves orphans churning
         // CPU. Losers of this probe simply cold-serve their one call.
         if (abs_root.len > 0) {
-            const probe_dir = getDataDir(io, allocator, abs_root) catch null;
-            defer if (probe_dir) |d| allocator.free(d);
             const lock_free = if (probe_dir) |d| daemonLockAvailable(d) else true;
             if (lock_free) {
                 if (std.process.executablePathAlloc(io, allocator)) |self_exe| {
