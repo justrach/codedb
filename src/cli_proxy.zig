@@ -33,6 +33,11 @@ const cliIsQueryCmd = cli_args.cliIsQueryCmd;
 //   response (daemon→client): [u8 exit_code][u32 out_len][out_bytes]
 const cli_blob_max: u32 = 64 * 1024;
 
+/// How often a long-lived serve/mcp daemon that lost the CLI socket bind
+/// re-attempts it (see cliAcquireListener) — one second, matching the daemons'
+/// watchdog cadence and bounded by the previous owner's idle timeout.
+const cli_bind_retry_ms: u64 = 1000;
+
 /// Build the per-project socket path into `buf`. Stays well under sun_path
 /// (104 bytes on macOS / 108 on Linux): "/tmp/codedb-<uid>-<hash16>.sock" is
 /// at most ~40 bytes. Returns null only if formatting somehow overflows `buf`.
@@ -51,7 +56,7 @@ pub fn cliSocketPath(buf: []u8, abs_root: []const u8) ?[]const u8 {
 /// Fill a sockaddr.un for `path` (which must be NUL-terminatable into sun_path).
 /// Returns the struct plus the byte length to pass to bind/connect. Path is
 /// guaranteed short by cliSocketPath, but we guard the copy regardless.
-fn cliFillSockaddr(path: []const u8) ?struct { addr: std.c.sockaddr.un, len: std.c.socklen_t } {
+fn cliFillSockaddr(path: []const u8) ?SockAddr {
     var addr: std.c.sockaddr.un = .{ .family = std.c.AF.UNIX, .path = undefined };
     if (path.len + 1 > addr.path.len) return null;
     @memcpy(addr.path[0..path.len], path);
@@ -130,6 +135,73 @@ pub fn daemonLockAvailable(data_dir: []const u8) bool {
     }
 }
 
+/// Named sockaddr.un bundle: the struct plus the byte length for bind()/connect().
+const SockAddr = struct { addr: std.c.sockaddr.un, len: std.c.socklen_t };
+
+/// One attempt to OWN the project socket: socket() + bind() + chmod 0600 +
+/// listen(). Returns the listening fd, or null if the path is already taken or
+/// a syscall failed (the fd is closed on any failure). Never unlinks — the
+/// caller decides whether a taken path is stale.
+fn cliBindListen(sa: SockAddr, sock_path_z: [:0]const u8) ?c_int {
+    const fd = std.c.socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
+    if (fd < 0) return null;
+    var sa_mut = sa;
+    if (std.c.bind(fd, @ptrCast(&sa_mut.addr), sa_mut.len) != 0) {
+        _ = std.c.close(fd);
+        return null;
+    }
+    // Owner-only perms (0600). Must chmod the path, not fchmod the fd: Darwin
+    // ignores fchmod() on a socket fd. Safe before listen() — no client can
+    // connect yet. Non-fatal.
+    _ = std.c.chmod(sock_path_z.ptr, 0o600);
+    if (std.c.listen(fd, 16) != 0) {
+        _ = std.c.close(fd);
+        return null;
+    }
+    return fd;
+}
+
+/// True if a daemon is actively listening on the socket (a connect succeeds).
+/// Lets a retrying daemon tell a live owner apart from a stale node left by a
+/// dead daemon, so it never unlinks (steals) a socket that is still in use.
+fn cliSocketLive(sa: SockAddr) bool {
+    const fd = std.c.socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
+    if (fd < 0) return false;
+    defer _ = std.c.close(fd);
+    var sa_mut = sa;
+    return std.c.connect(fd, @ptrCast(&sa_mut.addr), sa_mut.len) == 0;
+}
+
+/// Acquire the per-project CLI socket and return a listening fd.
+///
+/// A stale node left by a dead daemon (bind fails but nothing is listening) is
+/// unlinked and rebound at once. When the path is held by a LIVE owner the
+/// behavior depends on `retry`:
+///   - retry == false (auto-spawned cli-daemon that lost the race): return null
+///     immediately so the duplicate exits instead of stealing a live socket.
+///   - retry == true (long-lived serve/mcp daemon): keep re-attempting every
+///     `retry_interval_ms` until the owner exits and the bind succeeds, so CLI
+///     calls stop falling back to a cold re-index once the older owner is gone
+///     (#619 — previously the loser disabled its proxy and never retried).
+/// Returns null if `shutdown` is set while waiting.
+pub fn cliAcquireListener(sock_path: []const u8, retry: bool, retry_interval_ms: u64, shutdown: *std.atomic.Value(bool)) ?c_int {
+    var z_buf: [128]u8 = undefined;
+    const sock_path_z = std.fmt.bufPrintZ(&z_buf, "{s}", .{sock_path}) catch return null;
+    const sa = cliFillSockaddr(sock_path) orelse return null;
+    while (true) {
+        if (cliBindListen(sa, sock_path_z)) |fd| return fd;
+        // Bind failed: the path exists. Clear it only when no one is listening
+        // (stale node), never when a live owner still holds it.
+        if (!cliSocketLive(sa)) {
+            _ = std.c.unlink(sock_path_z.ptr);
+            if (cliBindListen(sa, sock_path_z)) |fd| return fd;
+        }
+        if (!retry) return null;
+        if (shutdown.load(.acquire)) return null;
+        cio.sleepMs(retry_interval_ms);
+    }
+}
+
 /// Daemon side. Bind a per-project Unix socket and serve framed query requests
 /// against the warm `explorer`/`store`. Runs on its own detached thread so it
 /// never blocks the daemon's primary loop. Connections are handled sequentially
@@ -138,21 +210,22 @@ pub fn daemonLockAvailable(data_dir: []const u8) bool {
 ///
 /// `last_activity_ms` is bumped to the current ms timestamp at the start of
 /// every accepted connection so a time-based idle watchdog (cli-daemon) can
-/// tell when the socket has gone quiet. `shutdown` is set to true on a fatal
-/// bind/listen failure: this lets an auto-spawned cli-daemon that lost the bind
-/// race to an already-running daemon exit promptly instead of lingering. The
-/// long-lived serve/mcp daemons pass a `shutdown` flag they never watch, so for
-/// them a bind failure simply disables the proxy (clients fall back to cold).
-pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool)) void {
+/// tell when the socket has gone quiet.
+///
+/// `retry` selects the lost-bind-race policy (see cliAcquireListener): an
+/// auto-spawned cli-daemon passes `false` and gets `shutdown` set so it exits
+/// promptly; the long-lived serve/mcp daemons pass `true` and keep reclaiming
+/// the socket when the previous owner exits instead of disabling the proxy.
+pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool), retry: bool) void {
     if (is_windows) {
         // No Unix-socket proxy on Windows; CLI calls run cold in-process.
         return;
     } else {
-        cliDaemonListenPosix(io, allocator, explorer, store, abs_root, last_activity_ms, shutdown);
+        cliDaemonListenPosix(io, allocator, explorer, store, abs_root, last_activity_ms, shutdown, retry);
     }
 }
 
-fn cliDaemonListenPosix(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool)) void {
+fn cliDaemonListenPosix(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool), retry: bool) void {
     var path_buf: [128]u8 = undefined;
     const sock_path = cliSocketPath(&path_buf, abs_root) orelse {
         std.log.warn("cli-proxy: could not build socket path", .{});
@@ -165,59 +238,21 @@ fn cliDaemonListenPosix(io: std.Io, allocator: std.mem.Allocator, explorer: *Exp
         return;
     };
 
-    const sa = cliFillSockaddr(sock_path) orelse {
+    // Acquire the socket. A long-lived daemon (retry) waits out the current
+    // owner and reclaims it when the owner exits; an auto-spawned duplicate
+    // (no retry) gives up at once and exits via the shutdown flag.
+    const listenfd = cliAcquireListener(sock_path, retry, cli_bind_retry_ms, shutdown) orelse {
+        if (!shutdown.load(.acquire)) {
+            std.log.warn("cli-proxy: bind {s} failed — proxy disabled", .{sock_path});
+        }
         shutdown.store(true, .release);
         return;
     };
-
-    // Try to bind; if the path is stale (a dead daemon left it behind) unlink
-    // and retry once. listenfd is owned for the lifetime of the daemon.
-    var listenfd: c_int = -1;
-    var attempt: u8 = 0;
-    while (attempt < 2) : (attempt += 1) {
-        const fd = std.c.socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
-        if (fd < 0) {
-            std.log.warn("cli-proxy: socket() failed", .{});
-            shutdown.store(true, .release);
-            return;
-        }
-        var sa_mut = sa;
-        const rc = std.c.bind(fd, @ptrCast(&sa_mut.addr), sa_mut.len);
-        if (rc == 0) {
-            listenfd = fd;
-            break;
-        }
-        _ = std.c.close(fd);
-        if (attempt == 0) {
-            // Stale socket from a previous (now dead) daemon — clear and retry.
-            _ = std.c.unlink(sock_path_z.ptr);
-            continue;
-        }
-        // A live daemon already owns this socket (lost the bind race). Signal
-        // shutdown so a duplicate auto-spawned cli-daemon exits promptly.
-        std.log.warn("cli-proxy: bind {s} failed — proxy disabled", .{sock_path});
-        shutdown.store(true, .release);
-        return;
-    }
-    if (listenfd < 0) {
-        shutdown.store(true, .release);
-        return;
-    }
     defer {
         _ = std.c.close(listenfd);
         _ = std.c.unlink(sock_path_z.ptr);
     }
 
-    // Owner-only perms on the socket (0600). Must chmod the path, not fchmod the
-    // fd: Darwin ignores fchmod() on a socket fd, leaving the node world-rwx.
-    // Safe to do before listen() — no client can connect+use it yet. Non-fatal.
-    _ = std.c.chmod(sock_path_z.ptr, 0o600);
-
-    if (std.c.listen(listenfd, 16) != 0) {
-        std.log.warn("cli-proxy: listen failed — proxy disabled", .{});
-        shutdown.store(true, .release);
-        return;
-    }
     std.log.info("cli-proxy: listening on {s}", .{sock_path});
 
     while (true) {

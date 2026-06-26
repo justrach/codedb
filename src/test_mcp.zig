@@ -2804,3 +2804,52 @@ test "issue-632: codedb_read raw mode coverage — full-file byte-exact, default
         try testing.expect(std.mem.indexOf(u8, out.items, "hash:") == null);
     }
 }
+
+// ── #619: cli-daemon socket reclaim ─────────────────────────────────────────
+// A long-lived serve/mcp daemon that loses the CLI-socket bind to an older
+// cli-daemon must reclaim the socket once that owner exits, instead of
+// disabling its proxy forever (the pre-fix single-shot behavior never retried).
+test "issue-619: serve/mcp daemon reclaims the cli socket after the owner exits" {
+    if (@import("builtin").os.tag == .windows) return; // no unix-socket proxy on Windows
+
+    const abs_root = "/codedb-test-issue619-reclaim";
+    var pbuf: [128]u8 = undefined;
+    const sock_path = cli_proxy_mod.cliSocketPath(&pbuf, abs_root).?;
+    var zbuf: [128]u8 = undefined;
+    const sock_z = try std.fmt.bufPrintZ(&zbuf, "{s}", .{sock_path});
+    _ = std.c.unlink(sock_z.ptr);
+    defer _ = std.c.unlink(sock_z.ptr);
+
+    var sd = std.atomic.Value(bool).init(false);
+
+    // A live cli-daemon owns the socket: acquire + hold a listening fd.
+    const owner = cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &sd).?;
+
+    // Losing the race with no retry → give up at once (don't steal a live socket).
+    try testing.expect(cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &sd) == null);
+
+    // Losing the race with retry, but shutdown already signalled → return at once.
+    var sd_down = std.atomic.Value(bool).init(true);
+    try testing.expect(cli_proxy_mod.cliAcquireListener(sock_path, true, 1000, &sd_down) == null);
+
+    // A long-lived serve/mcp daemon (retry = true) keeps trying and reclaims the
+    // socket once the owner exits — the core #619 fix (pre-fix: never retried).
+    const Reclaimer = struct {
+        path: []const u8,
+        sd: *std.atomic.Value(bool),
+        fd: ?c_int,
+        done: std.atomic.Value(bool),
+        fn run(self: *@This()) void {
+            self.fd = cli_proxy_mod.cliAcquireListener(self.path, true, 10, self.sd);
+            self.done.store(true, .release);
+        }
+    };
+    var rc = Reclaimer{ .path = sock_path, .sd = &sd, .fd = null, .done = std.atomic.Value(bool).init(false) };
+    const t = try std.Thread.spawn(.{}, Reclaimer.run, .{&rc});
+
+    cio.sleepMs(30); // let the retry loop spin a few times
+    _ = std.c.close(owner); // owner idle-exits
+    t.join(); // reclaimer must return (pre-fix: no retry path → would never acquire)
+    try testing.expect(rc.fd != null);
+    if (rc.fd) |fd| _ = std.c.close(fd);
+}
