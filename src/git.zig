@@ -1,13 +1,15 @@
 const std = @import("std");
 const cio = @import("cio.zig");
 
+const disabled_hooks_config = "core.hooksPath=/codedb-hooks-disabled-do-not-exist";
+
 /// Run `git rev-parse HEAD` in `root` and return the 40-char hex SHA.
 /// Returns null if `root` is not a git repo, git is unavailable, or HEAD
 /// has no commit yet (fresh repo).
 pub fn getGitHead(root: []const u8, allocator: std.mem.Allocator) !?[40]u8 {
     const result = cio.runCapture(.{
         .allocator = allocator,
-        .argv = &.{ "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "rev-parse", "HEAD" },
+        .argv = &.{ "git", "-c", "core.fsmonitor=false", "-c", disabled_hooks_config, "rev-parse", "HEAD" },
         .cwd = root,
         .max_output_bytes = 256,
     }) catch return null;
@@ -155,7 +157,7 @@ pub fn buildCoChange(
     const nstr = std.fmt.bufPrint(&nbuf, "{d}", .{max_commits}) catch return null;
     const result = cio.runCapture(.{
         .allocator = allocator,
-        .argv = &.{ "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "log", "--name-only", "--no-merges", "--pretty=format:%H", "-n", nstr },
+        .argv = &.{ "git", "-c", "core.fsmonitor=false", "-c", disabled_hooks_config, "log", "--name-only", "--no-merges", "--pretty=format:%H", "-n", nstr },
         .cwd = root,
         .max_output_bytes = 8 * 1024 * 1024,
     }) catch return null;

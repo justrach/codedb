@@ -543,7 +543,6 @@ pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Expl
                 listening_pipe = new_pipe;
                 first_pipe_instance = false;
             }
-            retry_failures = 0;
             if (!metadata_written) {
                 if (!writeCliPipeMetadata(io, allocator, data_dir, listener_pid, pipe_name.?)) {
                     win.CloseHandle(listening_pipe.?);
@@ -558,6 +557,8 @@ pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Expl
                     continue;
                 }
                 metadata_written = true;
+                retry_failures = 0;
+            } else {
                 retry_failures = 0;
             }
             const pipe = listening_pipe.?;
