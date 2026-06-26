@@ -6,10 +6,14 @@ const win = std.os.windows;
 
 const PROCESS_TERMINATE: u32 = 0x0001;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x00001000;
+const SYNCHRONIZE: u32 = 0x00100000;
+const WAIT_OBJECT_0: u32 = 0x00000000;
+const daemon_terminate_wait_ms: u32 = 5000;
 
 extern "kernel32" fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: win.BOOL, dwProcessId: u32) callconv(.winapi) ?win.HANDLE;
 extern "kernel32" fn QueryFullProcessImageNameW(hProcess: win.HANDLE, dwFlags: u32, lpExeName: [*]u16, lpdwSize: *u32) callconv(.winapi) win.BOOL;
 extern "kernel32" fn TerminateProcess(hProcess: win.HANDLE, uExitCode: u32) callconv(.winapi) win.BOOL;
+extern "kernel32" fn WaitForSingleObject(hHandle: win.HANDLE, dwMilliseconds: u32) callconv(.winapi) u32;
 
 const Out = struct {
     file: cio.File,
@@ -161,14 +165,15 @@ fn parseWindowsDaemonPid(text: []const u8) ?u32 {
 }
 
 fn terminateWindowsProcessIfMatches(allocator: std.mem.Allocator, pid: u32, expected_exe: []const u8) bool {
-    const process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, .FALSE, pid) orelse return false;
+    const process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE, .FALSE, pid) orelse return false;
     defer win.CloseHandle(process);
 
     const image_path = windowsProcessImagePath(allocator, process) orelse return false;
     defer allocator.free(image_path);
     if (!windowsPathsEqual(allocator, image_path, expected_exe)) return false;
 
-    return TerminateProcess(process, 0) != .FALSE;
+    if (TerminateProcess(process, 0) == .FALSE) return false;
+    return WaitForSingleObject(process, daemon_terminate_wait_ms) == WAIT_OBJECT_0;
 }
 
 fn windowsProcessImagePath(allocator: std.mem.Allocator, process: win.HANDLE) ?[]u8 {
