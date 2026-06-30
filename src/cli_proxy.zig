@@ -32,16 +32,21 @@ const cliIsQueryCmd = cli_args.cliIsQueryCmd;
 //   response (daemon→client): [u8 exit_code][u32 out_len][out_bytes]
 const cli_blob_max: u32 = 64 * 1024;
 const cli_response_max: u32 = 16 * 1024 * 1024;
-const cli_response_too_large = "error: daemon response too large\n";
 
 fn cliResponseLenAllowed(out_len: u32) bool {
     return out_len <= cli_response_max;
+}
+
+fn cliResponseSendAllowed(out_len: usize) bool {
+    return out_len <= @as(usize, cli_response_max);
 }
 
 test "cli response length cap rejects oversized frames" {
     try std.testing.expect(cliResponseLenAllowed(0));
     try std.testing.expect(cliResponseLenAllowed(cli_response_max));
     try std.testing.expect(!cliResponseLenAllowed(cli_response_max + 1));
+    try std.testing.expect(cliResponseSendAllowed(cli_response_max));
+    try std.testing.expect(!cliResponseSendAllowed(@as(usize, cli_response_max) + 1));
 }
 
 const win = std.os.windows;
@@ -203,6 +208,55 @@ fn readCliPipeMetadata(io: std.Io, allocator: std.mem.Allocator, data_dir: []con
     const path = cliPipeMetadataPath(allocator, data_dir) catch return null;
     defer allocator.free(path);
     return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024)) catch null;
+}
+
+fn cliPipeMetadataNeedsPublish(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8, pid: u32, pipe_name: []const u8) bool {
+    const content = readCliPipeMetadata(io, allocator, data_dir) orelse return true;
+    defer allocator.free(content);
+    if (cliPipeMetadataMatchesOwner(content, pid, pipe_name)) return false;
+    const metadata = parseCliPipeMetadata(content) orelse return true;
+    if (metadata.pid == pid) return true;
+    return !processUserMatchesCurrent(allocator, metadata.pid);
+}
+
+fn cliPipeMetadataMonitor(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8, pid: u32, pipe_name: []const u8, shutdown: *std.atomic.Value(bool)) void {
+    while (!shutdown.load(.acquire)) {
+        if (cliPipeMetadataNeedsPublish(io, allocator, data_dir, pid, pipe_name)) {
+            if (!writeCliPipeMetadata(io, allocator, data_dir, pid, pipe_name)) {
+                std.log.warn("cli-proxy: could not refresh pipe metadata", .{});
+            }
+        }
+        cio.sleepMs(cli_bind_retry_ms);
+    }
+}
+
+test "cli pipe metadata publish decision handles stale owner records" {
+    const allocator = std.testing.allocator;
+    var io = std.Io.Threaded.init(allocator, .{});
+    defer io.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const data_dir_len = try tmp.dir.realPath(io.io(), &data_dir_buf);
+    const data_dir = data_dir_buf[0..data_dir_len];
+
+    const pid: u32 = 4242;
+    const pipe_name = "\\\\.\\pipe\\codedb-test-owner";
+    const other_pipe_name = "\\\\.\\pipe\\codedb-test-other";
+
+    try std.testing.expect(cliPipeMetadataNeedsPublish(io.io(), allocator, data_dir, pid, pipe_name));
+    try std.testing.expect(writeCliPipeMetadata(io.io(), allocator, data_dir, pid, pipe_name));
+    try std.testing.expect(!cliPipeMetadataNeedsPublish(io.io(), allocator, data_dir, pid, pipe_name));
+    try std.testing.expect(writeCliPipeMetadata(io.io(), allocator, data_dir, pid, other_pipe_name));
+    try std.testing.expect(cliPipeMetadataNeedsPublish(io.io(), allocator, data_dir, pid, pipe_name));
+
+    const metadata_path = try cliPipeMetadataPath(allocator, data_dir);
+    defer allocator.free(metadata_path);
+    const malformed = try std.Io.Dir.cwd().createFile(io.io(), metadata_path, .{ .truncate = true });
+    defer malformed.close(io.io());
+    try malformed.writePositionalAll(io.io(), "pid=nope\npipe=bad\n", 0);
+    try std.testing.expect(cliPipeMetadataNeedsPublish(io.io(), allocator, data_dir, pid, pipe_name));
 }
 
 fn windowsPathZ(allocator: std.mem.Allocator, path: []const u8) ?[:0]u16 {
@@ -519,8 +573,10 @@ pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Expl
         var retry_failures: u32 = 0;
         var first_pipe_instance = true;
         const listener_pid = cio.currentProcessId();
+        var metadata_monitor_thread: ?std.Thread = null;
         defer if (listening_pipe) |pipe| win.CloseHandle(pipe);
         defer if (metadata_written and pipe_name != null) deleteCliPipeMetadataIfOwner(io, allocator, data_dir, listener_pid, pipe_name.?);
+        defer if (metadata_monitor_thread) |thread| thread.join();
 
         while (!shutdown.load(.acquire)) {
             if (pipe_name == null) {
@@ -558,6 +614,13 @@ pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Expl
                 }
                 metadata_written = true;
                 retry_failures = 0;
+                if (retry and metadata_monitor_thread == null) {
+                    if (std.Thread.spawn(.{}, cliPipeMetadataMonitor, .{ io, allocator, data_dir, listener_pid, pipe_name.?, shutdown })) |thread| {
+                        metadata_monitor_thread = thread;
+                    } else |err| {
+                        std.log.warn("cli-proxy: could not start pipe metadata monitor: {s}", .{@errorName(err)});
+                    }
+                }
             } else {
                 retry_failures = 0;
             }
@@ -687,14 +750,12 @@ fn cliServeConn(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
 
 /// Write the framed response [u8 code][u32 out_len][out_bytes] to `conn`.
 fn cliRespond(conn: CliConn, code: u8, out_bytes: []const u8) void {
-    const response_too_large = out_bytes.len > @as(usize, cli_response_max);
-    const bounded_code: u8 = if (response_too_large) 1 else code;
-    const bounded_bytes: []const u8 = if (response_too_large) cli_response_too_large else out_bytes;
+    if (!cliResponseSendAllowed(out_bytes.len)) return;
     var hdr: [5]u8 = undefined;
-    hdr[0] = bounded_code;
-    std.mem.writeInt(u32, hdr[1..5], @intCast(bounded_bytes.len), .little);
+    hdr[0] = code;
+    std.mem.writeInt(u32, hdr[1..5], @intCast(out_bytes.len), .little);
     if (!cliWriteFull(conn, &hdr)) return;
-    if (bounded_bytes.len > 0) _ = cliWriteFull(conn, bounded_bytes);
+    if (out_bytes.len > 0) _ = cliWriteFull(conn, out_bytes);
 }
 
 /// Client side. If a daemon is listening for this project, proxy the command to
