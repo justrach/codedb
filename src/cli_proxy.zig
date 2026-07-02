@@ -216,6 +216,7 @@ fn cliPipeMetadataNeedsPublish(io: std.Io, allocator: std.mem.Allocator, data_di
     if (cliPipeMetadataMatchesOwner(content, pid, pipe_name)) return false;
     const metadata = parseCliPipeMetadata(content) orelse return true;
     if (metadata.pid == pid) return true;
+    if (builtin.os.tag != .windows) return true;
     return !processUserMatchesCurrent(allocator, metadata.pid);
 }
 
@@ -231,6 +232,8 @@ fn cliPipeMetadataMonitor(io: std.Io, allocator: std.mem.Allocator, data_dir: []
 }
 
 test "cli pipe metadata publish decision handles stale owner records" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
     const allocator = std.testing.allocator;
     var io = std.Io.Threaded.init(allocator, .{});
     defer io.deinit();
