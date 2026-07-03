@@ -24,6 +24,18 @@ pub fn isIndexableRoot(path: []const u8) bool {
         if (isExactOrChild(path, "/tmp")) return false;
     }
 
+    // OSTree distros (Fedora Silverblue/CoreOS/Nobara) bind-mount /home onto
+    // /var/home, so /var/home/<user>/<project> is a real project path, not a
+    // system dir — and realPathFile canonicalizes /home/<user>/<project> to it
+    // (same as #406/#407 fold /etc→/private/etc, /var→/private/var). Accept it
+    // before the /var system-prefix block below, mirroring the /home + /Users
+    // home-dir rule: allow project subdirs, deny the bare home. No opt-in. (#642)
+    if (std.mem.startsWith(u8, path, "/var/home/")) {
+        const rest = path["/var/home/".len..];
+        // "user" (bare home) → deny; "user/project…" → allow.
+        return std.mem.indexOfScalar(u8, rest, '/') != null;
+    }
+
     const system_prefixes = [_][]const u8{
         "/Applications",
         "/System",
@@ -86,4 +98,3 @@ test "issue-80: /tmp is denied" {
     try testing.expect(!isIndexableRoot("/tmp"));
     try testing.expect(!isIndexableRoot("/tmp/foo"));
 }
-
