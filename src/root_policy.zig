@@ -17,23 +17,28 @@ pub fn tempIndexingAllowed() bool {
 pub fn isIndexableRoot(path: []const u8) bool {
     if (path.len == 0) return false;
     if (std.mem.eql(u8, path, "/")) return false;
-    // /tmp and /private/tmp are refused by default (footgun guard) but allowed
-    // when temp indexing is opted in (#538) — CI/SWE-bench harnesses clone into /tmp.
-    if (!tempIndexingAllowed()) {
-        if (isExactOrChild(path, "/private/tmp")) return false;
-        if (isExactOrChild(path, "/tmp")) return false;
-    }
 
     // OSTree distros (Fedora Silverblue/CoreOS/Nobara) bind-mount /home onto
     // /var/home, so /var/home/<user>/<project> is a real project path, not a
     // system dir — and realPathFile canonicalizes /home/<user>/<project> to it
     // (same as #406/#407 fold /etc→/private/etc, /var→/private/var). Accept it
-    // before the /var system-prefix block below, mirroring the /home + /Users
-    // home-dir rule: allow project subdirs, deny the bare home. No opt-in. (#642)
+    // before the /var checks below, mirroring the /home + /Users home-dir
+    // rule: allow project subdirs, deny the bare home. No opt-in. (#642)
     if (std.mem.startsWith(u8, path, "/var/home/")) {
         const rest = path["/var/home/".len..];
         // "user" (bare home) → deny; "user/project…" → allow.
         return std.mem.indexOfScalar(u8, rest, '/') != null;
+    }
+
+    // /tmp, /private/tmp, /var, and /private/var are refused by default
+    // (footgun guard) but allowed when temp indexing is opted in (#538, #642)
+    // — CI/SWE-bench harnesses clone into /tmp, and macOS TMPDIR resolves
+    // under /private/var/folders.
+    if (!tempIndexingAllowed()) {
+        if (isExactOrChild(path, "/private/tmp")) return false;
+        if (isExactOrChild(path, "/tmp")) return false;
+        if (isExactOrChild(path, "/private/var")) return false;
+        if (isExactOrChild(path, "/var")) return false;
     }
 
     const system_prefixes = [_][]const u8{
@@ -51,8 +56,6 @@ pub fn isIndexableRoot(path: []const u8) bool {
         "/sys",
         "/snap",
         "/nix",
-        "/var",
-        "/private/var",
     };
     for (system_prefixes) |pfx| {
         if (isExactOrChild(path, pfx)) return false;
@@ -97,4 +100,23 @@ test "issue-80: empty path is denied" {
 test "issue-80: /tmp is denied" {
     try testing.expect(!isIndexableRoot("/tmp"));
     try testing.expect(!isIndexableRoot("/tmp/foo"));
+}
+
+test "issue-642: /var is denied by default, indexable with CODEDB_ALLOW_TEMP" {
+    try testing.expect(!isIndexableRoot("/var/tmp"));
+    try testing.expect(!isIndexableRoot("/var/log"));
+    // /var itself (no deeper path) is also denied
+    try testing.expect(!isIndexableRoot("/var"));
+    // ...but OSTree home projects under /var/home never need the opt-in (#642)
+    try testing.expect(isIndexableRoot("/var/home/xavi/project"));
+
+    // --allow-temp / CODEDB_ALLOW_TEMP=1 unblocks /var the same way it
+    // unblocks /tmp (#538): macOS TMPDIR resolves under /private/var/folders
+    // and CI workspaces live under /var/lib.
+    cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
+    defer cio.posixUnsetenv("CODEDB_ALLOW_TEMP");
+    try testing.expect(isIndexableRoot("/var/tmp"));
+    try testing.expect(isIndexableRoot("/private/var/folders/zz/scratch"));
+    // The opt-in still never unblocks the bare OSTree home dir.
+    try testing.expect(!isIndexableRoot("/var/home/xavi"));
 }
