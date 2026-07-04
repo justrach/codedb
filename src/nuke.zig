@@ -9,6 +9,11 @@ const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x00001000;
 const SYNCHRONIZE: u32 = 0x00100000;
 const WAIT_OBJECT_0: u32 = 0x00000000;
 const daemon_terminate_wait_ms: u32 = 5000;
+const windows_daemon_reap_max_passes: usize = 16;
+const windows_daemon_reap_quiet_passes: usize = 2;
+// Retry-mode serve/mcp daemons refresh cli-daemon.pipe once per metadata monitor
+// interval, so nuke needs bounded repeated passes to observe republished owners.
+const windows_daemon_reap_rescan_ms: u64 = 1000;
 
 extern "kernel32" fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: win.BOOL, dwProcessId: u32) callconv(.winapi) ?win.HANDLE;
 extern "kernel32" fn QueryFullProcessImageNameW(hProcess: win.HANDLE, dwFlags: u32, lpExeName: [*]u16, lpdwSize: *u32) callconv(.winapi) win.BOOL;
@@ -134,6 +139,28 @@ fn killWindowsMetadataProcesses(io: std.Io, allocator: std.mem.Allocator, home: 
     const projects_dir = std.fmt.allocPrint(allocator, "{s}/.codedb/projects", .{home}) catch return 0;
     defer allocator.free(projects_dir);
 
+    var killed: usize = 0;
+    var killed_any = false;
+    var quiet_passes: usize = 0;
+    var pass: usize = 0;
+    while (pass < windows_daemon_reap_max_passes) : (pass += 1) {
+        const killed_this_pass = killWindowsMetadataProcessPass(io, allocator, projects_dir, self_pid, executable_path);
+        killed += killed_this_pass;
+        if (killed_this_pass == 0) {
+            if (!killed_any) break;
+            quiet_passes += 1;
+            if (quiet_passes >= windows_daemon_reap_quiet_passes) break;
+        } else {
+            killed_any = true;
+            quiet_passes = 0;
+        }
+        if (pass + 1 >= windows_daemon_reap_max_passes) break;
+        cio.sleepMs(windows_daemon_reap_rescan_ms);
+    }
+    return killed;
+}
+
+fn killWindowsMetadataProcessPass(io: std.Io, allocator: std.mem.Allocator, projects_dir: []const u8, self_pid: u32, executable_path: []const u8) usize {
     var dir = std.Io.Dir.cwd().openDir(io, projects_dir, .{ .iterate = true }) catch return 0;
     defer dir.close(io);
 
