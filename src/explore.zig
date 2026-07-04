@@ -4978,7 +4978,20 @@ pub const Explorer = struct {
             if (path.len == 0) continue;
             const ref = self.readContentForSearch(path, allocator) orelse continue;
             defer ref.deinit();
-            const line_text = extractLineByNumber(ref.data, c.best_line) orelse continue;
+            // Resolve the hit line via the line-offset cache (O(log n)) with
+            // the scan-from-zero extractLineByNumber as fallback — the same
+            // swap the exact-recall tiers made in #611 and the context sites
+            // phase made in #646. On real repos this was up to max_results
+            // whole-file walks per ranked query.
+            var span1: [1]LineOffsetCache.Span = undefined;
+            const lines1 = [1]u32{c.best_line};
+            const line_text = blk: {
+                if (self.line_offsets.lineSpans(path, ref.data, lines1[0..], span1[0..])) |n| {
+                    if (n == 1) break :blk ref.data[span1[0].start..span1[0].end];
+                    break :blk null;
+                }
+                break :blk extractLineByNumber(ref.data, c.best_line);
+            } orelse continue;
             const duped_text = try allocator.dupe(u8, line_text);
             errdefer allocator.free(duped_text);
             const duped_path = try allocator.dupe(u8, path);
