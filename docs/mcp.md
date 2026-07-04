@@ -28,6 +28,18 @@ codedb as an MCP server in every client it can find — Claude Code, Codex,
 Gemini CLI, Cursor, opencode. It prints the exact `codedb mcp` command it
 registered.
 
+To install the binary **without touching any client config**, pass
+`--no-register` (or set `CODEDB_NO_REGISTER=1`):
+
+```bash
+curl -fsSL https://codedb.codegraff.com/install.sh | bash -s -- --no-register
+```
+
+then register it only where you want it, e.g. per-project:
+`claude mcp add codedb -s project -- codedb mcp`. To keep codedb out of an
+individual project instead, drop a `.codedbrc` with `disable = true` at that
+project's root (see §4).
+
 If you prefer to wire it up by hand, the client-specific snippets below
 all work directly.
 
@@ -173,6 +185,8 @@ comments. Unknown keys are ignored.
 max_cached   = 16384   # in-memory ContentCache size (files); default 16384
 max_versions = 100     # versions kept per file in the change log; default 100
 rerank_trace = false   # write per-search rerank-trace.jsonl (debug only)
+disable      = false   # true opts this project out entirely: the MCP server
+                       # serves no tools and nothing is indexed or written (#640)
 ```
 
 Pass an alternative path with `--config-file <path>` to the CLI for
