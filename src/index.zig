@@ -644,17 +644,18 @@ pub const WordIndex = struct {
     pub fn writeToDisk(self: *WordIndex, io: std.Io, dir_path: []const u8, git_head: ?[40]u8) !void {
         var file_table: std.ArrayList([]const u8) = .empty;
         defer file_table.deinit(self.allocator);
-        var disk_path_to_id = std.StringHashMap(u32).init(self.allocator);
-        defer disk_path_to_id.deinit();
+        const doc_to_disk = try self.allocator.alloc(u32, self.id_to_path.items.len);
+        defer self.allocator.free(doc_to_disk);
+        @memset(doc_to_disk, std.math.maxInt(u32));
 
         // id_to_path is the doc table and always complete; file_words only
         // covers incrementally indexed files once bulk-loaded docs exist.
-        for (self.id_to_path.items) |path| {
+        for (self.id_to_path.items, 0..) |path, doc_idx| {
             if (path.len == 0) continue;
             if (path.len > std.math.maxInt(u16)) return error.NameTooLong;
             const id: u32 = @intCast(file_table.items.len);
             try file_table.append(self.allocator, path);
-            try disk_path_to_id.put(path, id);
+            doc_to_disk[doc_idx] = id;
         }
 
         var words_sorted: std.ArrayList([]const u8) = .empty;
@@ -714,14 +715,26 @@ pub const WordIndex = struct {
             var hc_buf: [4]u8 = undefined;
             std.mem.writeInt(u32, &hc_buf, @intCast(hits.items.len), .little);
             try writer.interface.writeAll(&hc_buf);
+            // doc_id → disk_id is a pure integer remap (path_to_id keeps
+            // paths unique, so every live doc has exactly one disk id).
+            // The old per-hit StringHashMap lookup wyhashed the full path
+            // string for every posting — the dominant CPU term of the whole
+            // persist on large repos (#475's 840ms). Hits are also batched
+            // into 4KB chunks instead of one 8-byte writeAll each.
+            var chunk: [4096]u8 = undefined;
+            var chunk_len: usize = 0;
             for (hits.items) |hit| {
-                const hit_path = self.id_to_path.items[hit.doc_id];
-                const file_id = disk_path_to_id.get(hit_path) orelse return error.InvalidData;
-                var hit_buf: [8]u8 = undefined;
-                std.mem.writeInt(u32, hit_buf[0..4], file_id, .little);
-                std.mem.writeInt(u32, hit_buf[4..8], hit.line_num, .little);
-                try writer.interface.writeAll(&hit_buf);
+                const file_id = doc_to_disk[hit.doc_id];
+                if (file_id == std.math.maxInt(u32)) return error.InvalidData;
+                std.mem.writeInt(u32, chunk[chunk_len..][0..4], file_id, .little);
+                std.mem.writeInt(u32, chunk[chunk_len + 4 ..][0..4], hit.line_num, .little);
+                chunk_len += 8;
+                if (chunk_len == chunk.len) {
+                    try writer.interface.writeAll(chunk[0..chunk_len]);
+                    chunk_len = 0;
+                }
             }
+            if (chunk_len > 0) try writer.interface.writeAll(chunk[0..chunk_len]);
         }
 
         // v3 trailer: per-doc length table for BM25.
