@@ -256,7 +256,12 @@ test "issue-60: telemetry disabled path is a no-op" {
 test "issue-77: mcp index accepts temporary-directory roots that cause pathological cache growth" {
     var tmp_name_buf: [128]u8 = undefined;
     const tmp_name = try std.fmt.bufPrint(&tmp_name_buf, "codedb-issue-77-{d}", .{@as(i64, @intCast(@divTrunc(cio.nanoTimestamp(), 1000)))});
-    const tmp_root = try std.fs.path.join(testing.allocator, &.{ "/private/tmp", tmp_name });
+    // /private/tmp is macOS's canonical temp root; it doesn't exist on Linux
+    // (creating it needs root, so this test could never pass there — caught by
+    // the first full Linux suite run). /tmp is the same policy-denied class;
+    // Windows keeps the original spelling.
+    const tmp_base = if (builtin.os.tag == .linux) "/tmp" else "/private/tmp";
+    const tmp_root = try std.fs.path.join(testing.allocator, &.{ tmp_base, tmp_name });
     defer testing.allocator.free(tmp_root);
 
     std.Io.Dir.cwd().createDirPath(io, tmp_root) catch |err| switch (err) {
