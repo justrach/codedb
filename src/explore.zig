@@ -2858,11 +2858,18 @@ pub const Explorer = struct {
         };
 
         const SortCtx = struct {
+            // Total order: score desc, then name, path, line. line_start is
+            // the final tiebreak — without it, same-name symbols in one file
+            // compared equal and their order fell out of hash-map iteration,
+            // the residual nondeterminism the deterministic-ordering rewrite
+            // meant to eliminate.
             pub fn lessThan(_: void, a: Candidate, b: Candidate) bool {
                 if (a.score != b.score) return a.score > b.score;
                 const name_cmp = std.mem.order(u8, a.symbol.name, b.symbol.name);
                 if (name_cmp != .eq) return name_cmp == .lt;
-                return std.mem.order(u8, a.path, b.path) == .lt;
+                const path_cmp = std.mem.order(u8, a.path, b.path);
+                if (path_cmp != .eq) return path_cmp == .lt;
+                return a.symbol.line_start < b.symbol.line_start;
             }
 
             fn candidateBefore(a: Candidate, b: Candidate) bool {
@@ -2925,12 +2932,26 @@ pub const Explorer = struct {
                     return;
                 }
 
-                if (list_ptr.items.len < max_results) {
-                    try list_ptr.append(alloc, candidate);
-                } else {
-                    list_ptr.items[list_ptr.items.len - 1] = candidate;
+                // The list is kept sorted at all times, so placing the new
+                // candidate is a binary search + insert (O(log K) compares +
+                // O(K) moves) instead of the previous full re-sort per
+                // accepted insert (O(K log K) compares). Ties are impossible:
+                // the sort key ends in (path, line) and same-(path, line)
+                // candidates are deduped above.
+                var lo: usize = 0;
+                var hi: usize = list_ptr.items.len;
+                while (lo < hi) {
+                    const mid = lo + (hi - lo) / 2;
+                    if (SortCtx.candidateBefore(candidate, list_ptr.items[mid])) {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
                 }
-                std.mem.sort(Candidate, list_ptr.items, {}, SortCtx.lessThan);
+                if (list_ptr.items.len >= max_results) {
+                    _ = list_ptr.pop();
+                }
+                try list_ptr.insert(alloc, lo, candidate);
             }
         }.call;
 
@@ -2969,8 +2990,7 @@ pub const Explorer = struct {
             }
         }
 
-        std.mem.sort(Candidate, candidates.items, {}, SortCtx.lessThan);
-
+        // candidates is kept sorted by appendOne — no final sort needed.
         const results = try allocator.alloc(ScoredSymbolResult, candidates.items.len);
         errdefer allocator.free(results);
         var result_len: usize = 0;
