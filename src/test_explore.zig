@@ -2187,6 +2187,30 @@ test "issue-531: searchSymbols prefix match" {
     for (results) |r| try testing.expect(std.mem.startsWith(u8, r.symbol.name, "parse_"));
 }
 
+test "searchSymbols: same-name same-file symbols order by line (total order)" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+    // Two same-name, same-kind symbols in one file: score/name/path all tie,
+    // so only the line_start tiebreak makes their order deterministic.
+    try explorer_inst.indexFile("dup.zig",
+        \\pub fn init() void {}
+        \\pub fn deinit() void {}
+        \\pub fn init() void {}
+    );
+
+    const results = try explorer_inst.searchSymbols(.{ .name = "init", .max_results = 10 }, testing.allocator);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.symbol.name);
+            if (r.symbol.detail) |d| testing.allocator.free(d);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len == 2);
+    try testing.expect(results[0].symbol.line_start < results[1].symbol.line_start);
+}
+
 test "issue-531: searchSymbols pattern and kind filter" {
     var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_inst.deinit();
