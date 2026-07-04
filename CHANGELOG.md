@@ -1,6 +1,52 @@
 # Changelog
 
 
+## 0.2.5828 - 2026-07-04
+
+Windows warm-daemon parity, a 2× faster `codedb_context`, and OSTree
+(Fedora Silverblue / CoreOS / Nobara) root fixes.
+
+### Windows: warm CLI daemon over named pipes (#621, #641)
+
+Windows CLI queries now reuse a warm per-project daemon exactly like POSIX —
+named-pipe IPC replaces the Unix-socket path, with a Windows daemon lock and
+native detached spawning, so queries stop paying a cold index reload. Security
+hardening ships with it: 128-bit random pipe names, a DACL restricted to the
+current user, `PIPE_REJECT_REMOTE_CLIENTS`, and client-side verification of
+the server pid + SID. Includes the platform-gated Windows test suite —
+validated on a clean Windows VM: 23/23 build steps, 868/872 tests (4 platform
+skips). Thanks @nsxdavid. `codedb_symbol` results are now deterministically
+ordered (score, then name, then path) instead of hash-map order.
+
+### 2× faster `codedb_context` (#646)
+
+The composer's "Top sites (±2 lines)" phase re-walked every byte of each top
+file once per hit — 63% of the tool's wall time. It now resolves window edges
+through the 0.2.5825 line-offset cache over zero-copy cached bytes. Gated
+bench: 224.8µs → 102.6µs (−54%); on real-repo files the same call dropped
+345ms → 26ms. Context content is byte-identical: same content source
+(`contents.get`, the first branch of the old read path), same window math
+edge-for-edge, and the old scanning path remains the fallback for uncached
+files. `CODEDB_CONTEXT_PROFILE=1` ships alongside — a per-phase ns breakdown
+of the composer on stderr, in the `CODEDB_LOAD_PROFILE` house style.
+
+### OSTree homes index out of the box; `--allow-temp` honors /var (#642)
+
+`/var/home/<user>/<project>` — the real home on OSTree distros, and what
+MCP-mode realpath resolution produces for `/home/...` — is treated like
+`/home`: project subdirectories index with **no opt-in**, bare homes stay
+blocked (#644). Everything else under `/var` and `/private/var` now honors
+`--allow-temp` / `CODEDB_ALLOW_TEMP=1` the same way `/tmp` does — covering
+macOS `TMPDIR` under `/private/var/folders` and CI workspaces under
+`/var/lib` (#643, thanks @XaviCode1000).
+
+### Also
+
+- serve/mcp daemons retry and reclaim the per-project CLI socket instead of
+  going dark when a stale one lingers (#619)
+- npm: `codedeebee` gains a `win32-x64` target
+
+
 ## 0.2.5827 - 2026-06-23
 
 Native **Windows** support: codedb now cross-compiles and runs as a native
