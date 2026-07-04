@@ -324,15 +324,6 @@ print_hook_notes() {
 }
 
 main() {
-  # --no-register / CODEDB_NO_REGISTER=1: install the binary but skip MCP
-  # client registration entirely (#640); register per-project instead.
-  NO_REGISTER="${CODEDB_NO_REGISTER:-0}"
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      --no-register) NO_REGISTER=1 ;;
-    esac
-  done
   local platform version ext=""
   platform="$(detect_platform)"
 
@@ -403,24 +394,17 @@ main() {
     printf "$checksum_notice"
   fi
 
-  # Register MCP server in coding tools — skippable via --no-register or
-  # CODEDB_NO_REGISTER=1 (#640)
-  if [ "$NO_REGISTER" = "1" ] || [ "$NO_REGISTER" = "true" ]; then
-    echo ""
-    printf "  ${D}skipped MCP registration (--no-register / CODEDB_NO_REGISTER=1)${N}\n"
-    printf "  ${D}register per-project later, e.g.: claude mcp add codedb -s project -- $dest mcp${N}\n"
-  else
-    echo ""
-    printf "  ${W}registering integrations${N}\n"
-    echo ""
-    register_claude "$dest"
-    register_codex "$dest"
-    register_gemini "$dest"
-    register_cursor "$dest"
-    register_windsurf_devin "$dest"
-    register_hooks
-    print_hook_notes "$dest"
-  fi
+  # Register MCP server in coding tools
+  echo ""
+  printf "  ${W}registering integrations${N}\n"
+  echo ""
+  register_claude "$dest"
+  register_codex "$dest"
+  register_gemini "$dest"
+  register_cursor "$dest"
+  register_windsurf_devin "$dest"
+  register_hooks
+  print_hook_notes "$dest"
 
   # Check PATH
   case ":$PATH:" in
@@ -438,4 +422,4 @@ main() {
   echo ""
 }
 
-main "$@"
+main
