@@ -1446,7 +1446,45 @@ pub fn writeSnapshotDual(
     allocator: std.mem.Allocator,
 ) !void {
     try writeSnapshot(io, explorer, root_path, output_path, allocator);
-    writeProjectCacheSnapshot(io, explorer, root_path, allocator) catch {};
+    // Serialize once, byte-copy to the per-project cache. The second full
+    // serialization re-took the shared lock, re-hashed every file, and —
+    // after releaseContents — re-read the whole repo from disk. A finished
+    // snapshot is a plain file, so copy it instead (own tmp + rename, same
+    // crash-safety contract as writeSnapshot). Bonus: the two copies are now
+    // byte-identical, where two serializations could diverge between lock
+    // acquisitions.
+    copyPrimaryToProjectCache(io, root_path, output_path, allocator) catch {};
+}
+
+fn copyPrimaryToProjectCache(
+    io: std.Io,
+    root_path: []const u8,
+    primary_path: []const u8,
+    allocator: std.mem.Allocator,
+) !void {
+    const hash = std.hash.Wyhash.hash(0, root_path);
+    const home_raw = cio.homeDir() orelse return;
+    const home = allocator.dupe(u8, home_raw) catch return;
+    defer allocator.free(home);
+    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch return;
+    defer allocator.free(dir_path);
+    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+
+    const proj_txt = std.fmt.allocPrint(allocator, "{s}/project.txt", .{dir_path}) catch return;
+    defer allocator.free(proj_txt);
+    var f = try std.Io.Dir.cwd().createFile(io, proj_txt, .{ .truncate = true });
+    f.writeStreamingAll(io, root_path) catch {};
+    f.close(io);
+
+    const secondary = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{dir_path}) catch return;
+    defer allocator.free(secondary);
+    const tmp_path = std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ secondary, cio.randU64() }) catch return;
+    defer allocator.free(tmp_path);
+    try std.Io.Dir.copyFile(std.Io.Dir.cwd(), primary_path, std.Io.Dir.cwd(), tmp_path, io, .{});
+    std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), secondary, io) catch |err| {
+        std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
+        return err;
+    };
 }
 
 pub fn writeProjectCacheSnapshot(
