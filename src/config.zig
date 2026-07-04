@@ -21,11 +21,6 @@ pub const Config = struct {
     /// <data_dir>/rerank-traces.jsonl. v0 logger for offline rerank-tuning
     /// experiments. Off by default — opt in via .codedbrc.
     rerank_trace: bool = false,
-    /// When true, codedb ignores this project entirely: the MCP server stays
-    /// alive but advertises no tools and never scans or writes, and CLI
-    /// commands refuse the root. Per-project opt-out for auto-indexing and
-    /// auto-registration (#640).
-    disable: bool = false,
 
     pub const default: Config = .{};
 
@@ -48,8 +43,6 @@ pub const Config = struct {
                 if (cfg.max_cached == 0) return error.InvalidMaxCached;
             } else if (std.mem.eql(u8, key, "rerank_trace")) {
                 cfg.rerank_trace = parseBool(val) catch return error.InvalidRerankTrace;
-            } else if (std.mem.eql(u8, key, "disable")) {
-                cfg.disable = parseBool(val) catch return error.InvalidDisable;
             }
         }
         return cfg;
@@ -101,17 +94,6 @@ pub const Config = struct {
         const f = std.Io.Dir.cwd().openFile(io, ".codedbrc", .{}) catch return false;
         f.close(io);
         return true;
-    }
-
-    /// Probe `<root>/.codedbrc` for `disable = true` — the per-project
-    /// opt-out (#640). Any read or parse failure counts as "not disabled" so
-    /// a malformed config can never brick unrelated commands.
-    pub fn projectDisabled(io: std.Io, alloc: std.mem.Allocator, root: []const u8) bool {
-        if (root.len == 0) return false;
-        const path = std.fmt.allocPrint(alloc, "{s}/.codedbrc", .{root}) catch return false;
-        defer alloc.free(path);
-        const cfg = loadFromPath(io, alloc, path) catch return false;
-        return cfg.disable;
     }
 };
 
@@ -172,12 +154,4 @@ test "config: rerank_trace defaults off and parses true/false" {
     try testing.expect(cfg_off.rerank_trace == false);
 
     try testing.expectError(error.InvalidRerankTrace, Config.parse("rerank_trace = maybe\n"));
-}
-
-test "issue-640: disable key parses and defaults off" {
-    try testing.expect(!Config.default.disable);
-    try testing.expect((try Config.parse("disable = true\n")).disable);
-    try testing.expect((try Config.parse("disable = 1\n")).disable);
-    try testing.expect(!(try Config.parse("disable = false\n")).disable);
-    try testing.expectError(error.InvalidDisable, Config.parse("disable = maybe\n"));
 }
