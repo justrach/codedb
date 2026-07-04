@@ -307,6 +307,15 @@ fn mainImpl() !void {
         });
         out.exitWithFlush(1);
     }
+    // #640: per-project opt-out. Non-mcp commands refuse a disabled project;
+    // `mcp` proceeds and serves an empty tool surface instead (see runMcp) —
+    // exiting here would surface as a connection error in MCP clients.
+    if (!std.mem.eql(u8, cmd, "mcp") and Config.projectDisabled(io, allocator, abs_root)) {
+        out.p("{s}\xe2\x9c\x97{s} codedb is disabled for this project ({s}.codedbrc{s}: disable = true)\n", .{
+            s.red, s.reset, s.bold, s.reset,
+        });
+        out.exitWithFlush(1);
+    }
 
     // #553: `status` must be a cheap, fast-exiting metadata query. It previously
     // fell through to the full index bootstrap below (snapshot mmap, or — with no

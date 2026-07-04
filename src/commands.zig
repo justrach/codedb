@@ -403,7 +403,13 @@ pub fn runMcp(ctx: *RunCtx) !void {
 
     const root_from_cwd = mcp_deferred_root;
 
-    saveProjectInfo(io, allocator, data_dir, abs_root) catch {};
+    // #640: a .codedbrc `disable = true` at the root opts the project out of
+    // codedb entirely. Stay alive and protocol-correct (initialize / ping /
+    // empty tools/list — run() re-probes the root), but never scan, watch,
+    // warm, register the project, or write anything.
+    const project_disabled = Config.projectDisabled(io, allocator, abs_root);
+
+    if (!project_disabled) saveProjectInfo(io, allocator, data_dir, abs_root) catch {};
 
     // Set up query tracking WAL
     const query_log = std.fmt.allocPrint(allocator, "{s}/queries.log", .{data_dir}) catch null;
@@ -426,12 +432,15 @@ pub fn runMcp(ctx: *RunCtx) !void {
     queue.* = watcher.EventQueue{};
 
     var scan_thread: ?std.Thread = null;
-    var watch_thread: std.Thread = undefined;
+    var watch_thread: ?std.Thread = null;
 
     var deferred: mcp_server.DeferredScan = undefined;
     var maybe_deferred: ?*mcp_server.DeferredScan = null;
 
-    if (root_from_cwd) {
+    if (project_disabled) {
+        std.log.info("codedb mcp: project disabled by .codedbrc — serving no tools, not indexing", .{});
+        mcp_server.setScanState(.ready);
+    } else if (root_from_cwd) {
         deferred = .{
             .io = io,
             .allocator = allocator,
@@ -480,12 +489,14 @@ pub fn runMcp(ctx: *RunCtx) !void {
     // on this same stack frame for the whole process lifetime.
     var cli_activity = std.atomic.Value(i64).init(cio.milliTimestamp());
     var cli_listener_dead = std.atomic.Value(bool).init(false);
-    if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, &cli_activity, &cli_listener_dead, true })) |cli_t| {
-        cli_t.detach();
-    } else |err| {
-        std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
+    if (!project_disabled) {
+        if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, &cli_activity, &cli_listener_dead, true })) |cli_t| {
+            cli_t.detach();
+        } else |err| {
+            std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
+        }
+        spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
     }
-    spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
     mcp_server.run(io, allocator, store, explorer, &agents, abs_root, cfg.max_cached, &telem, maybe_deferred, &shutdown);
 
     shutdown.store(true, .release);
@@ -493,6 +504,6 @@ pub fn runMcp(ctx: *RunCtx) !void {
     if (maybe_deferred) |d| {
         if (d.scan_thread) |st| st.join();
     }
-    watch_thread.join();
+    if (watch_thread) |wt| wt.join();
     idle_thread.join();
 }

@@ -24,6 +24,7 @@ const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
 const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
+const config_mod = @import("config.zig");
 const release_info = @import("release_info.zig");
 pub const DeferredScan = struct {
     io: std.Io,
@@ -61,6 +62,12 @@ pub fn triggerDeferredScanWithFallback(
         path = fallback_cwd;
     }
     if (path.len == 0) return false;
+    // #640: a root whose .codedbrc says `disable = true` must never be
+    // scanned, whichever way it arrived (roots/list or cwd fallback).
+    if (config_mod.Config.projectDisabled(ds.io, ds.allocator, path)) {
+        std.log.info("codedb mcp: root \"{s}\" disabled by .codedbrc — not indexing", .{path});
+        return false;
+    }
     if (ds.triggered.swap(true, .acq_rel)) return false;
     ds.triggerFn(ds, path);
     return true;
@@ -385,6 +392,8 @@ const ProjectCache = struct {
     ) !ProjectCtx {
         const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
         if (!root_policy.isIndexableRoot(p))
+            return error.PathNotAllowed;
+        if (config_mod.Config.projectDisabled(io, self.alloc, p))
             return error.PathNotAllowed;
 
         self.mu.lock();
@@ -965,6 +974,11 @@ pub fn run(
         .discriminated_opt_in = discriminated_opt_in,
     }) catch tools_list;
     defer if (tools_list_response.ptr != tools_list.ptr) alloc.free(tools_list_response);
+    // #640: a project with `disable = true` in its .codedbrc opts out of
+    // codedb entirely. The server stays alive and protocol-correct
+    // (initialize/ping), but advertises zero tools and refuses tools/call, so
+    // clients load no tool schemas and nothing is ever scanned or written.
+    const project_disabled = config_mod.Config.projectDisabled(io, alloc, default_path);
     var session = Session{
         .alloc = alloc,
         .stdout = stdout,
@@ -1031,8 +1045,12 @@ pub fn run(
                 requestRoots(&session);
             }
         } else if (mcpj.eql(method, "tools/list")) {
-            if (!is_notification) writeResult(alloc, stdout, id, tools_list_response);
+            if (!is_notification) writeResult(alloc, stdout, id, if (project_disabled) "{\"tools\":[]}" else tools_list_response);
         } else if (mcpj.eql(method, "tools/call")) {
+            if (project_disabled) {
+                if (!is_notification) writeError(alloc, stdout, id, -32000, "codedb is disabled for this project (.codedbrc: disable = true)");
+                continue;
+            }
             handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id, &session.governor);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
@@ -4078,6 +4096,11 @@ fn handleIndex(
         out.appendSlice(alloc, abs_path) catch {};
         return;
     }
+    if (config_mod.Config.projectDisabled(io, alloc, abs_path)) {
+        out.appendSlice(alloc, "error: project disabled by .codedbrc: ") catch {};
+        out.appendSlice(alloc, abs_path) catch {};
+        return;
+    }
 
     // Verify it's a directory
     var check_dir = std.Io.Dir.cwd().openDir(io, abs_path, .{}) catch {
@@ -5986,4 +6009,36 @@ test "codedb_snapshot cache reuses output until store seq changes" {
     bench_ctx.runDispatch(io, alloc, .codedb_snapshot, args, &third, &store, &explorer, &agents);
     try testing.expect(std.mem.indexOf(u8, third.items, "changed") != null);
     try testing.expect(!std.mem.eql(u8, first.items, third.items));
+}
+
+test "issue-640: .codedbrc disable=true opts a project out of ProjectCache" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = ".codedbrc", .data = "disable = true\n" });
+
+    var project_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_path_len = try tmp.dir.realPathFile(io, ".", &project_path_buf);
+    const project_path = project_path_buf[0..project_path_len];
+
+    try testing.expect(config_mod.Config.projectDisabled(io, testing.allocator, project_path));
+
+    var default_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const default_path_len = try std.Io.Dir.cwd().realPathFile(io, ".", &default_path_buf);
+    const default_path = default_path_buf[0..default_path_len];
+
+    var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer default_explorer.deinit();
+    var default_store = Store.init(testing.allocator);
+    defer default_store.deinit();
+
+    var cache = ProjectCache.init(testing.allocator, default_path, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer cache.deinit();
+
+    try testing.expectError(error.PathNotAllowed, cache.get(io, project_path, &default_explorer, &default_store));
+
+    // Removing the marker clears the opt-out.
+    try tmp.dir.deleteFile(io, ".codedbrc");
+    try testing.expect(!config_mod.Config.projectDisabled(io, testing.allocator, project_path));
 }
