@@ -2433,6 +2433,23 @@ pub const Explorer = struct {
         return try allocator.dupe(u8, ref.data);
     }
 
+    pub const LineSpan = LineOffsetCache.Span;
+
+    /// Borrow the canonical cached bytes for `path`. Caller must hold `mu`
+    /// (shared) — the slice is only valid while the lock is held.
+    pub fn cachedContentLocked(self: *Explorer, path: []const u8) ?[]const u8 {
+        return self.contents.get(path);
+    }
+
+    /// Resolve 1-based `target_lines` of `path` to byte spans in `content`
+    /// via the line-offset cache (#611). Pass the canonical cached bytes
+    /// (stable pointer) so the table survives across calls. Returns the
+    /// filled count, or null when the table can't be built (OOM) — callers
+    /// fall back to scanning.
+    pub fn lineSpansFor(self: *Explorer, path: []const u8, content: []const u8, target_lines: []const u32, spans: []LineSpan) ?usize {
+        return self.line_offsets.lineSpans(path, content, target_lines, spans);
+    }
+
     pub const ReadRenderOptions = struct {
         if_hash: ?[]const u8 = null,
         line_start: ?i64 = null,
