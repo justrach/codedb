@@ -66,9 +66,17 @@ jobs:
           script: |
             const fs = require('fs');
             const body = fs.readFileSync('bench-report.md', 'utf8');
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body,
-            });
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            } catch (err) {
+              if (err.status === 403) {
+                core.warning('Skipping benchmark PR comment because this run token cannot write comments.');
+              } else {
+                throw err;
+              }
+            }

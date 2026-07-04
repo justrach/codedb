@@ -499,8 +499,18 @@ test "file versions: countSince" {
     try testing.expect(fv.countSince(10) == 0);
 }
 
+// EventQueue intentionally carries a large fixed ring; allocate it on the heap
+// so Windows smaller default test-thread stack still exercises the production
+// queue instead of failing in the stack probe.
+fn heapEventQueue() !*watcher.EventQueue {
+    const queue = try testing.allocator.create(watcher.EventQueue);
+    queue.* = .{};
+    return queue;
+}
+
 test "watcher: queue overflow is explicit" {
-    var queue = watcher.EventQueue{};
+    const queue = try heapEventQueue();
+    defer testing.allocator.destroy(queue);
 
     var pushed: usize = 0;
     while (true) : (pushed += 1) {
@@ -519,7 +529,8 @@ test "watcher: queue overflow is explicit" {
 }
 
 test "watcher: queue event copies path bytes" {
-    var queue = watcher.EventQueue{};
+    const queue = try heapEventQueue();
+    defer testing.allocator.destroy(queue);
     const original = try testing.allocator.dupe(u8, "tmp/deleted.zig");
     try testing.expect(queue.push(watcher.FsEvent.init(original, .deleted, 99) orelse unreachable));
     testing.allocator.free(original);
@@ -949,7 +960,8 @@ test "regression: searchContent frees empty trigram candidate slice" {
 }
 
 test "regression: queue push stays non-blocking when full" {
-    var queue = watcher.EventQueue{};
+    const queue = try heapEventQueue();
+    defer testing.allocator.destroy(queue);
 
     var pushed: usize = 0;
     while (true) : (pushed += 1) {
