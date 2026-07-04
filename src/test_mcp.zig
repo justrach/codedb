@@ -1161,6 +1161,21 @@ test "issue-407: root_policy blocks /var and its non-folders subtree" {
     try testing.expect(!root_policy.isIndexableRoot("/private/var/log"));
 }
 
+test "issue-642: /var/home project dirs are indexable on OSTree (Silverblue/CoreOS)" {
+    // OSTree distros (Fedora Silverblue/CoreOS/Nobara) bind-mount /home onto
+    // /var/home, so /var/home/<user>/<project> is a real project path — and
+    // realPathFile canonicalizes /home/<user>/<project> to it, the same way
+    // #406/#407 turn /etc→/private/etc and /var→/private/var. It must index like
+    // /home does, with no CODEDB_ALLOW_TEMP opt-in.
+    try testing.expect(root_policy.isIndexableRoot("/var/home/xavi/project"));
+    try testing.expect(root_policy.isIndexableRoot("/var/home/xavi/project/src"));
+    // The bare home dir and /var itself stay denied (footgun guard, #174/#407).
+    try testing.expect(!root_policy.isIndexableRoot("/var/home/xavi"));
+    try testing.expect(!root_policy.isIndexableRoot("/var/home"));
+    try testing.expect(!root_policy.isIndexableRoot("/var"));
+    try testing.expect(!root_policy.isIndexableRoot("/var/log"));
+}
+
 test "issue-412: bundle reports 'missing tool' for tool field of wrong type" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
