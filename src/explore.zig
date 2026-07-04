@@ -693,6 +693,7 @@ fn matchGlobRec(pattern: []const u8, gi_start: usize, path: []const u8, ti_start
 pub const CallGraph = struct {
     edges: []codegraph.Edge,
     adj: []std.ArrayList(codegraph.NodeId),
+    radj: []std.ArrayList(codegraph.NodeId),
     node_path: []const []const u8,
     node_name: []const []const u8,
     node_line: []const u32,
@@ -700,6 +701,7 @@ pub const CallGraph = struct {
     pub fn deinit(self: *CallGraph, allocator: std.mem.Allocator) void {
         allocator.free(self.edges);
         codegraph.freeAdjacency(allocator, self.adj);
+        codegraph.freeAdjacency(allocator, self.radj);
         allocator.free(self.node_path);
         allocator.free(self.node_name);
         allocator.free(self.node_line);
@@ -4397,13 +4399,9 @@ pub const Explorer = struct {
         }
         if (queue.items.len == 0) return null;
 
-        // adj is forward-only (callees); a reverse copy makes the walk
-        // undirected so callers of a matched symbol count as near too.
-        const radj = ta.alloc(std.ArrayList(codegraph.NodeId), n) catch return null;
-        for (radj) |*l| l.* = .empty;
-        for (cg.edges) |e| {
-            if (e.from < n and e.to < n) radj[e.to].append(ta, e.from) catch return null;
-        }
+        // adj is forward-only (callees); cg.radj (prebuilt once in
+        // ensureCallGraph) makes the walk undirected so callers of a matched
+        // symbol count as near too.
 
         var head: usize = 0;
         while (head < queue.items.len) : (head += 1) {
@@ -4415,7 +4413,7 @@ pub const Explorer = struct {
                 dist[nb] = d + 1;
                 queue.append(ta, nb) catch return null;
             }
-            for (radj[nid].items) |nb| {
+            for (cg.radj[nid].items) |nb| {
                 if (dist[nb] != unseen) continue;
                 dist[nb] = d + 1;
                 queue.append(ta, nb) catch return null;
@@ -4625,6 +4623,31 @@ pub const Explorer = struct {
         }
         defer self.allocator.free(node_scores.?);
 
+        // Reverse adjacency, built once beside `adj`: queryGraphDistances
+        // used to rebuild it from the edge list on every scored search
+        // (O(E) list allocs per query — ~43% of an uncached ranked search).
+        const radj_opt: ?[]std.ArrayList(codegraph.NodeId) = blk: {
+            const lists = self.allocator.alloc(std.ArrayList(codegraph.NodeId), n_nodes) catch break :blk null;
+            for (lists) |*l| l.* = .empty;
+            for (edges_owned) |e| {
+                if (e.from < n_nodes and e.to < n_nodes) {
+                    lists[e.to].append(self.allocator, e.from) catch {
+                        codegraph.freeAdjacency(self.allocator, lists);
+                        break :blk null;
+                    };
+                }
+            }
+            break :blk lists;
+        };
+        const radj = radj_opt orelse {
+            self.allocator.free(edges_owned);
+            codegraph.freeAdjacency(self.allocator, adj);
+            self.allocator.free(np);
+            self.allocator.free(nn);
+            self.allocator.free(nl);
+            return;
+        };
+
         if (self.call_centrality == null) {
             var cmap = std.StringHashMap(f32).init(self.allocator);
             for (np, node_scores.?) |path, score| {
@@ -4639,6 +4662,7 @@ pub const Explorer = struct {
         self.call_graph = .{
             .edges = edges_owned,
             .adj = adj,
+            .radj = radj,
             .node_path = np,
             .node_name = nn,
             .node_line = nl,
