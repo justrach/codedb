@@ -1,10 +1,11 @@
 # Changelog
 
 
-## 0.2.5828 - 2026-07-04
+## 0.2.5828 - 2026-07-05
 
-Windows warm-daemon parity, a 2× faster `codedb_context`, and OSTree
-(Fedora Silverblue / CoreOS / Nobara) root fixes.
+Windows warm-daemon parity, a 2× faster `codedb_context`, OSTree (Fedora
+Silverblue / CoreOS / Nobara) root fixes, and five follow-on perf PRs across
+symbol search, word-index persist, call-graph queries, and snapshot writes.
 
 ### Windows: warm CLI daemon over named pipes (#621, #641)
 
@@ -40,11 +41,64 @@ blocked (#644). Everything else under `/var` and `/private/var` now honors
 macOS `TMPDIR` under `/private/var/folders` and CI workspaces under
 `/var/lib` (#643, thanks @XaviCode1000).
 
+### Search & index performance (#647, #649, #650, #651, #652, #653)
+
+Five perf PRs landed back to back this cycle, each verified with a same-machine
+gated-bench A/B:
+
+- **`codedb_symbol` −18%** — `searchSymbols`' bounded candidate buffer was kept
+  sorted by re-running `std.mem.sort` on every accepted insert; it's now placed
+  by binary search + `ArrayList.insert` (#647), and the comparator gained
+  `line_start` as a final tiebreak so same-name symbols in the same file no
+  longer fall back to hash-map iteration order for their relative ordering —
+  closing the last gap in the #641 deterministic-ordering rewrite (#649).
+  23.1µs → 19.0µs on the gated bench; payloads byte-identical across
+  exact/prefix/glob/fuzzy/kind query shapes.
+- **Word-index persist drops its per-posting hash lookup** —
+  `WordIndex.writeToDisk` resolved every posting's disk file id through a
+  `StringHashMap` keyed by the full path (one wyhash of the whole path per
+  posting); since `doc_id → disk_id` is a pure integer remap, it's now
+  precomputed once into a `[]u32`, and hit writes are batched into 4KB chunks
+  instead of one 8-byte `writeAll` each (#650). `word.index` output is
+  byte-identical; this was the dominant CPU term of the 840ms word-index
+  persist flagged in #475, and the win scales with path length and posting
+  count on large repos.
+- **Call-graph reverse adjacency precomputed** — `queryGraphDistances` rebuilt
+  the reverse adjacency from the edge list on every scored search, measured at
+  118µs/call (~43% of an uncached ranked search); it's now built once in
+  `ensureCallGraph` alongside the forward adjacency (#651).
+- **`codedb snapshot` dual-write −31%** — `writeSnapshotDual` ran the full
+  serialize-and-stream pipeline twice, once per destination, re-reading and
+  re-hashing every file from disk a second time when contents were already
+  released. The project-cache copy is the same bytes, so it's now a
+  kernel-space file copy (tmp+rename) instead (#652). Warm snapshot on a
+  2000-file corpus: 0.27s → 0.18s.
+- **`codedb_context` another −12%** — ranked-search's BM25 top-k
+  materialization resolved each hit's line via a from-byte-0 scan; it now goes
+  through the line-offset cache like the exact-recall tiers (#611) and the
+  context sites phase (#646) already do (#653). 129.0µs → 113.6µs on the gated
+  bench — cumulative with #646, `codedb_context` is roughly 2× faster than at
+  the start of this cycle.
+
+### Tooling: `scripts/bench-ab.sh` (#654)
+
+One-command local A/B of the gated bench: builds the base ref in a throwaway
+`$HOME` worktree, runs `zig build bench -- --json` for base and working tree
+back-to-back on the same machine, and prints the same table CI posts on PRs.
+Defaults to `base=HEAD`, so uncommitted perf work is one command away from a
+trustworthy same-machine delta — the recipe behind every perf PR this cycle.
+
 ### Also
 
 - serve/mcp daemons retry and reclaim the per-project CLI socket instead of
   going dark when a stale one lingers (#619)
 - npm: `codedeebee` gains a `win32-x64` target
+- fix(deps): re-pinned nanoregex to `736b467` — the literal-prefix fast path
+  produced `helo` for `hel+o` and silently missed `helllo`, breaking `+` and
+  `{n,m}` quantifiers
+- test: fixed a Linux-only failure in the issue-77 regression test —
+  `/private/tmp` is macOS's canonical temp root and doesn't exist on Linux
+  (#648)
 
 
 ## 0.2.5827 - 2026-06-23
