@@ -1,6 +1,19 @@
 const std = @import("std");
 const cio = @import("cio.zig");
 const sty = @import("style.zig");
+const builtin = @import("builtin");
+const win = std.os.windows;
+
+const PROCESS_TERMINATE: u32 = 0x0001;
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x00001000;
+const SYNCHRONIZE: u32 = 0x00100000;
+const WAIT_OBJECT_0: u32 = 0x00000000;
+const daemon_terminate_wait_ms: u32 = 5000;
+
+extern "kernel32" fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: win.BOOL, dwProcessId: u32) callconv(.winapi) ?win.HANDLE;
+extern "kernel32" fn QueryFullProcessImageNameW(hProcess: win.HANDLE, dwFlags: u32, lpExeName: [*]u16, lpdwSize: *u32) callconv(.winapi) win.BOOL;
+extern "kernel32" fn TerminateProcess(hProcess: win.HANDLE, uExitCode: u32) callconv(.winapi) win.BOOL;
+extern "kernel32" fn WaitForSingleObject(hHandle: win.HANDLE, dwMilliseconds: u32) callconv(.winapi) u32;
 
 const Out = struct {
     file: cio.File,
@@ -23,8 +36,9 @@ const NukeStats = struct {
 
 pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
     const out = Out{ .file = stdout, .alloc = allocator };
-    const home_env = cio.posixGetenv("HOME") orelse {
-        out.p("{s}\xe2\x9c\x97{s} cannot determine HOME directory\n", .{ s.red, s.reset });
+    // HOME on POSIX; Windows exposes the equivalent as USERPROFILE.
+    const home_env = cio.homeDir() orelse {
+        out.p("{s}\xe2\x9c\x97{s} cannot determine home directory\n", .{ s.red, s.reset });
         std.process.exit(1);
     };
     const home = allocator.dupe(u8, home_env) catch {
@@ -37,8 +51,8 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
 
     var stats = NukeStats{};
 
-    const self_pid = std.c.getpid();
-    stats.killed_processes = killOtherCodedbProcesses(allocator, self_pid, self_exe);
+    const self_pid = cio.currentProcessId();
+    stats.killed_processes = killOtherCodedbProcesses(io, allocator, home, self_pid, self_exe);
     stats.integrations_removed = deregisterInstalledIntegrations(io, allocator, home);
     stats.snapshots_removed = removeRegisteredSnapshots(io, allocator, home);
 
@@ -73,41 +87,117 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
     out.p("\n  to reinstall: {s}curl -fsSL https://codedb.codegraff.com/install.sh | bash{s}\n", .{ s.cyan, s.reset });
 }
 
-fn killOtherCodedbProcesses(allocator: std.mem.Allocator, self_pid: std.c.pid_t, self_exe: ?[]const u8) usize {
-    const executable_path = self_exe orelse return 0;
-    var killed: usize = 0;
-    var pid_buf: [32]u8 = undefined;
-    const self_pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{self_pid}) catch "0";
+fn killOtherCodedbProcesses(io: std.Io, allocator: std.mem.Allocator, home: []const u8, self_pid: u32, self_exe: ?[]const u8) usize {
+    if (builtin.os.tag == .windows) {
+        return killWindowsMetadataProcesses(io, allocator, home, self_pid, self_exe);
+    } else {
+        const executable_path = self_exe orelse return 0;
+        var killed: usize = 0;
+        var pid_buf: [32]u8 = undefined;
+        const self_pid_str = std.fmt.bufPrint(&pid_buf, "{d}", .{self_pid}) catch "0";
 
-    const pgrep_result = cio.runCapture(.{
-        .allocator = allocator,
-        .argv = &.{ "pgrep", "-f", "codedb.*(serve|mcp)" },
-        .max_output_bytes = 4096,
-    }) catch return 0;
-    defer allocator.free(pgrep_result.stdout);
-    defer allocator.free(pgrep_result.stderr);
-
-    var line_iter = std.mem.splitScalar(u8, pgrep_result.stdout, '\n');
-    while (line_iter.next()) |pid_line| {
-        const trimmed = std.mem.trim(u8, pid_line, " \t\r\n");
-        if (trimmed.len == 0) continue;
-        if (std.mem.eql(u8, trimmed, self_pid_str)) continue;
-        const command_line = readProcessCommandLine(allocator, trimmed) orelse continue;
-        defer allocator.free(command_line);
-        if (!commandTargetsBinary(command_line, executable_path)) continue;
-        const kill_result = cio.runCapture(.{
+        const pgrep_result = cio.runCapture(.{
             .allocator = allocator,
-            .argv = &.{ "kill", trimmed },
-            .max_output_bytes = 256,
-        }) catch continue;
-        defer allocator.free(kill_result.stdout);
-        defer allocator.free(kill_result.stderr);
-        if (kill_result.term == .Exited and kill_result.term.Exited == 0) {
-            killed += 1;
-        }
-    }
+            .argv = &.{ "pgrep", "-f", "codedb.*(serve|mcp)" },
+            .max_output_bytes = 4096,
+        }) catch return 0;
+        defer allocator.free(pgrep_result.stdout);
+        defer allocator.free(pgrep_result.stderr);
 
+        var line_iter = std.mem.splitScalar(u8, pgrep_result.stdout, '\n');
+        while (line_iter.next()) |pid_line| {
+            const trimmed = std.mem.trim(u8, pid_line, " \t\r\n");
+            if (trimmed.len == 0) continue;
+            if (std.mem.eql(u8, trimmed, self_pid_str)) continue;
+            const command_line = readProcessCommandLine(allocator, trimmed) orelse continue;
+            defer allocator.free(command_line);
+            if (!commandTargetsBinary(command_line, executable_path)) continue;
+            const kill_result = cio.runCapture(.{
+                .allocator = allocator,
+                .argv = &.{ "kill", trimmed },
+                .max_output_bytes = 256,
+            }) catch continue;
+            defer allocator.free(kill_result.stdout);
+            defer allocator.free(kill_result.stderr);
+            if (kill_result.term == .Exited and kill_result.term.Exited == 0) {
+                killed += 1;
+            }
+        }
+
+        return killed;
+    }
+}
+
+fn killWindowsMetadataProcesses(io: std.Io, allocator: std.mem.Allocator, home: []const u8, self_pid: u32, self_exe: ?[]const u8) usize {
+    if (builtin.os.tag != .windows) return 0;
+    const executable_path = self_exe orelse return 0;
+    const projects_dir = std.fmt.allocPrint(allocator, "{s}/.codedb/projects", .{home}) catch return 0;
+    defer allocator.free(projects_dir);
+
+    var dir = std.Io.Dir.cwd().openDir(io, projects_dir, .{ .iterate = true }) catch return 0;
+    defer dir.close(io);
+
+    var killed: usize = 0;
+    var iter = dir.iterate();
+    while (iter.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        const metadata_path = std.fmt.allocPrint(allocator, "{s}/{s}/cli-daemon.pipe", .{ projects_dir, entry.name }) catch continue;
+        defer allocator.free(metadata_path);
+        const metadata = std.Io.Dir.cwd().readFileAlloc(io, metadata_path, allocator, .limited(1024)) catch continue;
+        defer allocator.free(metadata);
+        const pid = parseWindowsDaemonPid(metadata) orelse continue;
+        if (pid == 0 or pid == self_pid) continue;
+        if (terminateWindowsProcessIfMatches(allocator, pid, executable_path)) killed += 1;
+    }
     return killed;
+}
+
+fn parseWindowsDaemonPid(text: []const u8) ?u32 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (!std.mem.startsWith(u8, line, "pid=")) continue;
+        const pid = std.fmt.parseInt(u32, line["pid=".len..], 10) catch return null;
+        if (pid == 0) return null;
+        return pid;
+    }
+    return null;
+}
+
+fn terminateWindowsProcessIfMatches(allocator: std.mem.Allocator, pid: u32, expected_exe: []const u8) bool {
+    const process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE, .FALSE, pid) orelse return false;
+    defer win.CloseHandle(process);
+
+    const image_path = windowsProcessImagePath(allocator, process) orelse return false;
+    defer allocator.free(image_path);
+    if (!windowsPathsEqual(allocator, image_path, expected_exe)) return false;
+
+    if (TerminateProcess(process, 0) == .FALSE) return false;
+    return WaitForSingleObject(process, daemon_terminate_wait_ms) == WAIT_OBJECT_0;
+}
+
+fn windowsProcessImagePath(allocator: std.mem.Allocator, process: win.HANDLE) ?[]u8 {
+    var buf: [std.fs.max_path_bytes]u16 = undefined;
+    var len: u32 = @intCast(buf.len);
+    if (QueryFullProcessImageNameW(process, 0, &buf, &len) == .FALSE) return null;
+    return std.unicode.utf16LeToUtf8Alloc(allocator, buf[0..len]) catch null;
+}
+
+fn windowsPathsEqual(allocator: std.mem.Allocator, a: []const u8, b: []const u8) bool {
+    const norm_a = normalizeWindowsPathAlloc(allocator, a) orelse return false;
+    defer allocator.free(norm_a);
+    const norm_b = normalizeWindowsPathAlloc(allocator, b) orelse return false;
+    defer allocator.free(norm_b);
+    return std.ascii.eqlIgnoreCase(norm_a, norm_b);
+}
+
+fn normalizeWindowsPathAlloc(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
+    const trimmed = if (std.mem.startsWith(u8, path, "\\\\?\\")) path[4..] else path;
+    const out = allocator.dupe(u8, trimmed) catch return null;
+    for (out) |*ch| {
+        if (ch.* == '/') ch.* = '\\';
+    }
+    return out;
 }
 
 fn readProcessCommandLine(allocator: std.mem.Allocator, pid: []const u8) ?[]u8 {
@@ -284,7 +374,6 @@ fn rewriteConfigFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8,
     }
     try std.Io.Dir.rename(std.Io.Dir.cwd(), tmp_path, std.Io.Dir.cwd(), path, io);
 }
-
 
 pub fn removeJsonMcpServerEntry(allocator: std.mem.Allocator, content: []const u8, server_name: []const u8) !?[]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return null;

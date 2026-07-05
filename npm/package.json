@@ -1,6 +1,6 @@
 {
   "name": "codedeebee",
-  "version": "0.2.5826",
+  "version": "0.2.5828",
   "description": "Zig code intelligence MCP server — npx launcher for the codedb native binary",
   "license": "MIT",
   "author": "justrach",
@@ -35,7 +35,8 @@
   ],
   "os": [
     "darwin",
-    "linux"
+    "linux",
+    "win32"
   ],
   "cpu": [
     "x64",

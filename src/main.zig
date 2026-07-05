@@ -56,14 +56,15 @@ const isHelpRequest = cli_args.isHelpRequest;
 /// fallible work into mainImpl which runs after we've already had a chance
 /// to surface usage / --version output via the fast path.
 pub fn main(init: std.process.Init.Minimal) void {
-    cio.setProcessArgs(init.args.vector);
-    if (handleFastPath(init.args.vector)) return;
+    const argv = cio.bootstrapArgs(init.args);
+    cio.setProcessArgs(argv);
+    if (handleFastPath(argv)) return;
     mainTrampoline() catch |err| {
         // Surface the failure on stderr so users see something even if the
         // worker thread crashes during startup.
         var buf: [256]u8 = undefined;
         if (std.fmt.bufPrint(&buf, "codedb: fatal startup error: {s}\n", .{@errorName(err)})) |msg| {
-            _ = std.c.write(2, msg.ptr, msg.len);
+            cio.File.stderr().writeAll(msg) catch {};
         } else |_| {}
         std.process.exit(1);
     };
@@ -89,7 +90,7 @@ fn handleFastPath(argv: []const [*:0]const u8) bool {
             "codedb  code intelligence server\n\n" ++
             "  usage: codedb [root] <command> [args...]\n\n" ++
             "  run `codedb --help` for the full command list.\n";
-        _ = std.c.write(stderr_fd, msg.ptr, msg.len);
+        (cio.File{ .handle = stderr_fd }).writeAll(msg) catch {};
         std.process.exit(1);
     }
 
@@ -99,7 +100,7 @@ fn handleFastPath(argv: []const [*:0]const u8) bool {
         const out = std.fmt.bufPrint(&buf, "codedb {s}\n", .{release_info.semver}) catch {
             std.process.exit(0);
         };
-        _ = std.c.write(stdout_fd, out.ptr, out.len);
+        (cio.File{ .handle = stdout_fd }).writeAll(out) catch {};
         std.process.exit(0);
     }
 
@@ -117,6 +118,7 @@ const runQuery = query_mod.runQuery;
 
 const cli_proxy = @import("cli_proxy.zig");
 pub const daemonLockTryAcquire = cli_proxy.daemonLockTryAcquire;
+pub const daemonLockRelease = cli_proxy.daemonLockRelease;
 pub const daemonLockAvailable = cli_proxy.daemonLockAvailable;
 const cliTryProxy = cli_proxy.cliTryProxy;
 
@@ -356,7 +358,14 @@ fn mainImpl() !void {
     // despite the variable (observed while profiling #564: a stray cli-daemon
     // served 'search' in 944µs with the variable set).
     if (cliIsQueryCmd(cmd) and cio.posixGetenv("CODEDB_NO_CLI_DAEMON") == null) {
-        if (cliTryProxy(io, allocator, abs_root, args, use_color)) |code| {
+        var probe_dir: ?[]u8 = null;
+        defer if (probe_dir) |d| allocator.free(d);
+
+        if (builtin.os.tag == .windows and abs_root.len > 0) {
+            probe_dir = getDataDir(io, allocator, abs_root) catch null;
+        }
+
+        if (cliTryProxy(io, allocator, abs_root, probe_dir, args, use_color)) |code| {
             out.flush();
             std.process.exit(code);
         }
@@ -371,9 +380,10 @@ fn mainImpl() !void {
         // duplicate rescans the index, and the stampede leaves orphans churning
         // CPU. Losers of this probe simply cold-serve their one call.
         if (abs_root.len > 0) {
-            const probe_dir = getDataDir(io, allocator, abs_root) catch null;
-            defer if (probe_dir) |d| allocator.free(d);
-            const lock_free = if (probe_dir) |d| daemonLockAvailable(d) else true;
+            if (probe_dir == null) {
+                probe_dir = getDataDir(io, allocator, abs_root) catch null;
+            }
+            const lock_free = if (probe_dir) |d| daemonLockAvailable(d) else false;
             if (lock_free) {
                 if (std.process.executablePathAlloc(io, allocator)) |self_exe| {
                     defer allocator.free(self_exe);

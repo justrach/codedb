@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const cio = @import("cio.zig");
 const testing = std.testing;
 const io = std.testing.io;
@@ -32,10 +33,90 @@ comptime {
     _ = @import("config.zig");
 }
 
+fn zigExe() []const u8 {
+    return "zig";
+}
+
+fn builtCodedbExe() []const u8 {
+    return if (builtin.os.tag == .windows) ".\\zig-out\\bin\\codedb.exe" else "./zig-out/bin/codedb";
+}
+
+const EnvVarGuard = struct {
+    name: []const u8,
+    had_prev: bool,
+    prev_len: usize,
+    prev: [4096]u8,
+
+    fn save(name: []const u8) EnvVarGuard {
+        var g = EnvVarGuard{ .name = name, .had_prev = false, .prev_len = 0, .prev = undefined };
+        if (cio.posixGetenv(name)) |v| {
+            if (v.len <= g.prev.len) {
+                @memcpy(g.prev[0..v.len], v);
+                g.prev_len = v.len;
+                g.had_prev = true;
+            }
+        }
+        return g;
+    }
+
+    fn restore(self: *const EnvVarGuard) void {
+        if (self.had_prev) {
+            cio.posixSetenv(self.name, self.prev[0..self.prev_len]);
+        } else {
+            cio.posixUnsetenv(self.name);
+        }
+    }
+};
+
+test "windows runCapture resolves executables from safe PATH entries only" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "bin");
+    try tmp.dir.createDirPath(io, "repo");
+    var exe = try tmp.dir.createFile(io, "bin/git.exe", .{});
+    exe.close(io);
+    var planted_bat = try tmp.dir.createFile(io, "repo/git.bat", .{});
+    planted_bat.close(io);
+
+    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bin_len = try tmp.dir.realPathFile(io, "bin", &bin_buf);
+    const bin_abs = bin_buf[0..bin_len];
+
+    const old_path = EnvVarGuard.save("PATH");
+    defer old_path.restore();
+    const test_path = try std.fmt.allocPrint(testing.allocator, ".;relative;{s}", .{bin_abs});
+    defer testing.allocator.free(test_path);
+    cio.posixSetenv("PATH", test_path);
+
+    const resolved = try cio.resolveExecutableFromPathWindows(testing.allocator, "git") orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(resolved);
+    try testing.expect(std.mem.endsWith(u8, resolved, "git.exe"));
+    try testing.expect(std.mem.startsWith(u8, resolved, bin_abs));
+
+    try testing.expect((try cio.resolveExecutableFromPathWindows(testing.allocator, "git.bat")) == null);
+    try testing.expect((try cio.resolveExecutableFromPathWindows(testing.allocator, ".\\git.exe")) == null);
+}
+
+test "windows cli pipe metadata parser rejects spoofable records" {
+    const owner = "pid=123\npipe=\\\\.\\pipe\\codedb-123-deadbeef\n";
+    const ok = cli_proxy_mod.parseCliPipeMetadata(owner) orelse return error.TestUnexpectedResult;
+    try testing.expect(ok.pid == 123);
+    try testing.expect(std.mem.eql(u8, ok.pipe_name, "\\\\.\\pipe\\codedb-123-deadbeef"));
+    try testing.expect(cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 123, "\\\\.\\pipe\\codedb-123-deadbeef"));
+    try testing.expect(!cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 124, "\\\\.\\pipe\\codedb-123-deadbeef"));
+    try testing.expect(!cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 123, "\\\\.\\pipe\\codedb-other"));
+
+    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pid=0\npipe=\\\\.\\pipe\\codedb-x\n") == null);
+    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pid=123\npipe=\\\\.\\pipe\\other\n") == null);
+    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pipe=\\\\.\\pipe\\codedb-x\n") == null);
+}
+
 fn buildCliForHelpTests() !void {
     const build = try cio.runCapture(.{
         .allocator = testing.allocator,
-        .argv = &.{ "zig", "build" },
+        .argv = &.{ zigExe(), "build", "--global-cache-dir", ".zig-global-cache" },
         .max_output_bytes = 8192,
     });
     defer testing.allocator.free(build.stdout);
@@ -43,6 +124,83 @@ fn buildCliForHelpTests() !void {
 
     try testing.expect(build.term == .Exited);
     try testing.expect(build.term.Exited == 0);
+}
+
+test "windows cli-daemon auto-spawn proxies next query from unicode root" {
+    // POSIX uses the Unix-socket daemon path. This test exercises the Windows
+    // behavior-equivalent path: detached CreateProcessW startup plus named-pipe
+    // proxying for the next process.
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    try buildCliForHelpTests();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "project-unicode-å/src");
+    try tmp.dir.createDirPath(io, ".home");
+
+    {
+        const f = try tmp.dir.createFile(io, "project-unicode-å/src/sample.zig", .{ .truncate = true });
+        defer f.close(io);
+        try f.writeStreamingAll(io, "pub fn sampleSymbolForDaemon() void {}\n");
+    }
+
+    var project_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_len = try tmp.dir.realPathFile(io, "project-unicode-å", &project_buf);
+    const project_root = project_buf[0..project_len];
+
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home_len = try tmp.dir.realPathFile(io, ".home", &home_buf);
+    const test_home = home_buf[0..home_len];
+
+    const g_allow = EnvVarGuard.save("CODEDB_ALLOW_TEMP");
+    defer g_allow.restore();
+    const g_idle = EnvVarGuard.save("CODEDB_CLI_DAEMON_IDLE_MS");
+    defer g_idle.restore();
+    const g_home = EnvVarGuard.save("HOME");
+    defer g_home.restore();
+    const g_profile = EnvVarGuard.save("USERPROFILE");
+    defer g_profile.restore();
+    cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
+    cio.posixSetenv("CODEDB_CLI_DAEMON_IDLE_MS", "750");
+    cio.posixSetenv("HOME", test_home);
+    cio.posixSetenv("USERPROFILE", test_home);
+
+    const cold = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ builtCodedbExe(), project_root, "status" },
+        .max_output_bytes = 64 * 1024,
+    });
+    defer testing.allocator.free(cold.stdout);
+    defer testing.allocator.free(cold.stderr);
+    try testing.expect(cold.term == .Exited);
+    try testing.expectEqual(@as(u8, 0), cold.term.Exited);
+
+    var warm_seen = false;
+    var attempts: usize = 0;
+    while (attempts < 20) : (attempts += 1) {
+        cio.sleepMs(150);
+        const warm = try cio.runCapture(.{
+            .allocator = testing.allocator,
+            .argv = &.{ builtCodedbExe(), project_root, "find", "sampleSymbolForDaemon" },
+            .max_output_bytes = 64 * 1024,
+        });
+        defer testing.allocator.free(warm.stdout);
+        defer testing.allocator.free(warm.stderr);
+
+        if (warm.term == .Exited and warm.term.Exited == 0 and
+            std.mem.indexOf(u8, warm.stdout, "src/sample.zig") != null and
+            std.mem.indexOf(u8, warm.stdout, "loaded snapshot") == null)
+        {
+            warm_seen = true;
+            break;
+        }
+    }
+
+    // Let the short-idle detached daemon release files before tmp cleanup on Windows.
+    cio.sleepMs(900);
+    try testing.expect(warm_seen);
 }
 
 test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
@@ -98,7 +256,12 @@ test "issue-60: telemetry disabled path is a no-op" {
 test "issue-77: mcp index accepts temporary-directory roots that cause pathological cache growth" {
     var tmp_name_buf: [128]u8 = undefined;
     const tmp_name = try std.fmt.bufPrint(&tmp_name_buf, "codedb-issue-77-{d}", .{@as(i64, @intCast(@divTrunc(cio.nanoTimestamp(), 1000)))});
-    const tmp_root = try std.fs.path.join(testing.allocator, &.{ "/private/tmp", tmp_name });
+    // /private/tmp is macOS's canonical temp root; it doesn't exist on Linux
+    // (creating it needs root, so this test could never pass there — caught by
+    // the first full Linux suite run). /tmp is the same policy-denied class;
+    // Windows keeps the original spelling.
+    const tmp_base = if (builtin.os.tag == .linux) "/tmp" else "/private/tmp";
+    const tmp_root = try std.fs.path.join(testing.allocator, &.{ tmp_base, tmp_name });
     defer testing.allocator.free(tmp_root);
 
     std.Io.Dir.cwd().createDirPath(io, tmp_root) catch |err| switch (err) {
@@ -263,7 +426,7 @@ test "issue-150: --help prints usage" {
 
     const result = try cio.runCapture(.{
         .allocator = testing.allocator,
-        .argv = &.{ "./zig-out/bin/codedb", "--help" },
+        .argv = &.{ builtCodedbExe(), "--help" },
         .max_output_bytes = 8192,
     });
     defer testing.allocator.free(result.stdout);
@@ -284,7 +447,7 @@ test "issue-150: -h prints usage" {
 
     const result = try cio.runCapture(.{
         .allocator = testing.allocator,
-        .argv = &.{ "./zig-out/bin/codedb", "-h" },
+        .argv = &.{ builtCodedbExe(), "-h" },
         .max_output_bytes = 8192,
     });
     defer testing.allocator.free(result.stdout);
@@ -468,12 +631,14 @@ test "issue-148: dead MCP clients are polled every second" {
 }
 
 test "issue-148: POLLHUP detects closed pipe" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     // Verify the polling infrastructure works for pipe-based transports
     const pipe = try cio.makePipe();
-    defer _ = std.c.close(pipe[0]);
+    defer cio.closeFd(pipe[0]);
 
     // Close write end — simulates client disconnect
-    _ = std.c.close(pipe[1]);
+    cio.closeFd(pipe[1]);
 
     // Poll should detect POLLHUP on the read end
     var fds = [_]std.posix.pollfd{.{
@@ -554,9 +719,11 @@ test "issue-278: MCP session may remain idle longer than old timeout" {
 }
 
 test "issue-148: open pipe does not trigger HUP" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     const pipe = try cio.makePipe();
-    defer _ = std.c.close(pipe[0]);
-    defer _ = std.c.close(pipe[1]);
+    defer cio.closeFd(pipe[0]);
+    defer cio.closeFd(pipe[1]);
 
     var poll_fds = [_]std.posix.pollfd{.{
         .fd = pipe[0],
@@ -585,7 +752,7 @@ test "issue-148: codedb mcp exits when stdin is closed" {
 
     // Integration test: spawn the built codedb mcp, close stdin, verify it exits
     var child = std.process.spawn(io, .{
-        .argv = &.{ "./zig-out/bin/codedb", proj, "mcp" },
+        .argv = &.{ builtCodedbExe(), proj, "mcp" },
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .ignore,
@@ -1161,6 +1328,21 @@ test "issue-407: root_policy blocks /var and its non-folders subtree" {
     try testing.expect(!root_policy.isIndexableRoot("/private/var/log"));
 }
 
+test "issue-642: /var/home project dirs are indexable on OSTree (Silverblue/CoreOS)" {
+    // OSTree distros (Fedora Silverblue/CoreOS/Nobara) bind-mount /home onto
+    // /var/home, so /var/home/<user>/<project> is a real project path — and
+    // realPathFile canonicalizes /home/<user>/<project> to it, the same way
+    // #406/#407 turn /etc→/private/etc and /var→/private/var. It must index like
+    // /home does, with no CODEDB_ALLOW_TEMP opt-in.
+    try testing.expect(root_policy.isIndexableRoot("/var/home/xavi/project"));
+    try testing.expect(root_policy.isIndexableRoot("/var/home/xavi/project/src"));
+    // The bare home dir and /var itself stay denied (footgun guard, #174/#407).
+    try testing.expect(!root_policy.isIndexableRoot("/var/home/xavi"));
+    try testing.expect(!root_policy.isIndexableRoot("/var/home"));
+    try testing.expect(!root_policy.isIndexableRoot("/var"));
+    try testing.expect(!root_policy.isIndexableRoot("/var/log"));
+}
+
 test "issue-412: bundle reports 'missing tool' for tool field of wrong type" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -1286,8 +1468,8 @@ test "issue-512: direct tools call accepts inline args when arguments is empty" 
     defer parsed.deinit();
 
     const pipe = try cio.makePipe();
-    defer _ = std.c.close(pipe[0]);
-    defer _ = std.c.close(pipe[1]);
+    defer cio.closeFd(pipe[0]);
+    defer cio.closeFd(pipe[1]);
 
     bench_ctx.runHandleCall(
         io,
@@ -1302,7 +1484,9 @@ test "issue-512: direct tools call accepts inline args when arguments is empty" 
     );
 
     var response_buf: [16 * 1024]u8 = undefined;
-    const n = try std.posix.read(pipe[0], &response_buf);
+    const n_raw = cio.readFd(pipe[0], &response_buf);
+    try testing.expect(n_raw > 0);
+    const n: usize = @intCast(n_raw);
     const response = response_buf[0..n];
 
     try testing.expect(std.mem.indexOf(u8, response, "src/main.zig") != null);
@@ -2346,8 +2530,11 @@ test "issue-592: cli-daemon spawn lock is exclusive per project" {
     // the kernel releases the lock on any exit.
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
+    if (builtin.os.tag == .windows) {
+        try tmp.dir.createDirPath(io, "unicode-å");
+    }
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_len = try tmp.dir.realPathFile(io, if (builtin.os.tag == .windows) "unicode-å" else ".", &path_buf);
     const dir_path = path_buf[0..dir_len];
 
     const held = main_mod.daemonLockTryAcquire(dir_path);
@@ -2357,8 +2544,7 @@ test "issue-592: cli-daemon spawn lock is exclusive per project" {
     // ...and the CLI spawn probe must report the lock as taken.
     try testing.expect(!main_mod.daemonLockAvailable(dir_path));
 
-    _ = std.c.flock(held.?, std.c.LOCK.UN);
-    _ = std.c.close(held.?);
+    main_mod.daemonLockRelease(held.?);
     try testing.expect(main_mod.daemonLockAvailable(dir_path));
 }
 
@@ -2639,7 +2825,7 @@ test "split: cli_proxy daemon lock works via main and cli_proxy" {
     // Acquired via the cli_proxy module; main's re-export must see it held.
     const held = cli_proxy_mod.daemonLockTryAcquire(dir_path);
     try testing.expect(held != null);
-    defer _ = std.c.close(held.?);
+    defer cli_proxy_mod.daemonLockRelease(held.?);
     try testing.expect(!main_mod.daemonLockAvailable(dir_path));
     try testing.expect(cli_proxy_mod.daemonLockTryAcquire(dir_path) == null);
 }
@@ -2803,4 +2989,72 @@ test "issue-632: codedb_read raw mode coverage — full-file byte-exact, default
         try testing.expect(std.mem.indexOf(u8, out.items, " | ") == null);
         try testing.expect(std.mem.indexOf(u8, out.items, "hash:") == null);
     }
+}
+
+// ── #619: cli-daemon socket reclaim ─────────────────────────────────────────
+// A long-lived serve/mcp daemon that loses the CLI-socket bind to an older
+// cli-daemon must reclaim the socket once that owner exits, instead of
+// disabling its proxy forever (the pre-fix single-shot behavior never retried).
+test "issue-619: serve/mcp daemon reclaims the cli socket after the owner exits" {
+    if (@import("builtin").os.tag == .windows) return; // no unix-socket proxy on Windows
+
+    const abs_root = "/codedb-test-issue619-reclaim";
+    var pbuf: [128]u8 = undefined;
+    const sock_path = cli_proxy_mod.cliSocketPath(&pbuf, abs_root).?;
+    var zbuf: [128]u8 = undefined;
+    const sock_z = try std.fmt.bufPrintZ(&zbuf, "{s}", .{sock_path});
+    _ = std.c.unlink(sock_z.ptr);
+    defer _ = std.c.unlink(sock_z.ptr);
+
+    var sd = std.atomic.Value(bool).init(false);
+
+    // A live cli-daemon owns the socket: acquire + hold a listening fd.
+    const owner = cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &sd).?;
+
+    // Losing the race with no retry → give up at once (don't steal a live socket).
+    try testing.expect(cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &sd) == null);
+
+    // Losing the race with retry, but shutdown already signalled → return at once.
+    var sd_down = std.atomic.Value(bool).init(true);
+    try testing.expect(cli_proxy_mod.cliAcquireListener(sock_path, true, 1000, &sd_down) == null);
+
+    // A long-lived serve/mcp daemon (retry = true) keeps trying and reclaims the
+    // socket once the owner exits — the core #619 fix (pre-fix: never retried).
+    const Reclaimer = struct {
+        path: []const u8,
+        sd: *std.atomic.Value(bool),
+        fd: ?c_int,
+        done: std.atomic.Value(bool),
+        fn run(self: *@This()) void {
+            self.fd = cli_proxy_mod.cliAcquireListener(self.path, true, 10, self.sd);
+            self.done.store(true, .release);
+        }
+    };
+    var rc = Reclaimer{ .path = sock_path, .sd = &sd, .fd = null, .done = std.atomic.Value(bool).init(false) };
+    const t = try std.Thread.spawn(.{}, Reclaimer.run, .{&rc});
+
+    cio.sleepMs(30); // let the retry loop spin a few times
+    _ = std.c.close(owner); // owner idle-exits
+    t.join(); // reclaimer must return (pre-fix: no retry path → would never acquire)
+    try testing.expect(rc.fd != null);
+    if (rc.fd) |fd| _ = std.c.close(fd);
+}
+
+test "windows: spawnDetached command line round-trips argv with trailing backslashes" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const alloc = testing.allocator;
+
+    const argv = [_][]const u8{ "C:\\tools\\codedb.exe", "D:\\", "cli-daemon", "say \"hi\"", "a\\\\b", "tail\\\\" };
+    const cmd = cio.windowsCommandLine(alloc, &argv) orelse return error.TestUnexpectedResult;
+    defer alloc.free(cmd);
+    const cmd_w = try std.unicode.utf8ToUtf16LeAlloc(alloc, cmd);
+    defer alloc.free(cmd_w);
+
+    var it = try std.process.Args.Iterator.Windows.init(alloc, cmd_w);
+    defer it.deinit();
+    for (argv) |expected| {
+        const got = it.next() orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings(expected, got);
+    }
+    try testing.expect(it.next() == null);
 }

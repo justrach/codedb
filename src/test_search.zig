@@ -1092,9 +1092,6 @@ test "issue-429-c: searchContent rerank boosts lines that are symbol definitions
     try testing.expectEqualStrings("zzz_def.zig", results[0].path);
 }
 
-extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern "c" fn unsetenv(name: [*:0]const u8) c_int;
-
 test "lex-freq-penalty: CODEDB_LEX_FREQ_PENALTY demotes files the query saturates" {
     // engram's learned ranker down-weights pure lexical frequency (LEARNED_W
     // lexical = -2): a file the query matches on MANY lines is usually a
@@ -1116,8 +1113,8 @@ test "lex-freq-penalty: CODEDB_LEX_FREQ_PENALTY demotes files the query saturate
     try explorer.indexFile("src/handler.zig", "pub fn g() void { _ = evt; }\n");
 
     // Disabled (CODEDB_LEX_FREQ_PENALTY=0): equal per-line scores → path-asc tie → dispatcher leads.
-    _ = setenv("CODEDB_LEX_FREQ_PENALTY", "0", 1);
-    defer _ = unsetenv("CODEDB_LEX_FREQ_PENALTY");
+    cio.posixSetenv("CODEDB_LEX_FREQ_PENALTY", "0");
+    defer cio.posixUnsetenv("CODEDB_LEX_FREQ_PENALTY");
     {
         const results = try explorer.searchContent("evt", testing.allocator, 50);
         defer {
@@ -1132,7 +1129,7 @@ test "lex-freq-penalty: CODEDB_LEX_FREQ_PENALTY demotes files the query saturate
     }
 
     // Default (on): dispatcher.zig saturates the query → demoted below handler.zig.
-    _ = unsetenv("CODEDB_LEX_FREQ_PENALTY");
+    cio.posixUnsetenv("CODEDB_LEX_FREQ_PENALTY");
     {
         const results = try explorer.searchContent("evt", testing.allocator, 50);
         defer {
@@ -2381,8 +2378,8 @@ test "search-cache: ranking env toggle prevents stale hits" {
     freeSearchResults(r1);
 
     // Different fingerprint -> the cached entry must NOT be served.
-    _ = setenv("CODEDB_RVSM_SIZE_PRIOR", "1", 1);
-    defer _ = unsetenv("CODEDB_RVSM_SIZE_PRIOR");
+    cio.posixSetenv("CODEDB_RVSM_SIZE_PRIOR", "1");
+    defer cio.posixUnsetenv("CODEDB_RVSM_SIZE_PRIOR");
     const r2 = try explorer.searchContent("gnutok", testing.allocator, 10);
     freeSearchResults(r2);
     try testing.expectEqual(@as(u64, 0), explorer.search_cache.hits);
@@ -2398,8 +2395,8 @@ test "search-cache: CODEDB_NO_SEARCH_CACHE disables caching entirely" {
     defer explorer.deinit();
     try explorer.indexFile("src/off.zig", "const a = 1; // dingotok\n");
 
-    _ = setenv("CODEDB_NO_SEARCH_CACHE", "1", 1);
-    defer _ = unsetenv("CODEDB_NO_SEARCH_CACHE");
+    cio.posixSetenv("CODEDB_NO_SEARCH_CACHE", "1");
+    defer cio.posixUnsetenv("CODEDB_NO_SEARCH_CACHE");
     const r1 = try explorer.searchContent("dingotok", testing.allocator, 10);
     freeSearchResults(r1);
     const r2 = try explorer.searchContent("dingotok", testing.allocator, 10);

@@ -693,6 +693,7 @@ fn matchGlobRec(pattern: []const u8, gi_start: usize, path: []const u8, ti_start
 pub const CallGraph = struct {
     edges: []codegraph.Edge,
     adj: []std.ArrayList(codegraph.NodeId),
+    radj: []std.ArrayList(codegraph.NodeId),
     node_path: []const []const u8,
     node_name: []const []const u8,
     node_line: []const u32,
@@ -700,6 +701,7 @@ pub const CallGraph = struct {
     pub fn deinit(self: *CallGraph, allocator: std.mem.Allocator) void {
         allocator.free(self.edges);
         codegraph.freeAdjacency(allocator, self.adj);
+        codegraph.freeAdjacency(allocator, self.radj);
         allocator.free(self.node_path);
         allocator.free(self.node_name);
         allocator.free(self.node_line);
@@ -1426,7 +1428,7 @@ pub const Explorer = struct {
         // munmap'd after contents.deinit (above): the cache holds borrowed slices
         // into these maps, but deinit skips freeing borrowed values, so the maps
         // are still valid through it and only released here.
-        for (self.content_section_maps.items) |m| std.posix.munmap(m);
+        for (self.content_section_maps.items) |m| cio.munmap(m);
         self.content_section_maps.deinit(self.allocator);
         if (self.root_dir) |d| {
             if (self.io) |io| d.close(io);
@@ -2433,6 +2435,23 @@ pub const Explorer = struct {
         return try allocator.dupe(u8, ref.data);
     }
 
+    pub const LineSpan = LineOffsetCache.Span;
+
+    /// Borrow the canonical cached bytes for `path`. Caller must hold `mu`
+    /// (shared) — the slice is only valid while the lock is held.
+    pub fn cachedContentLocked(self: *Explorer, path: []const u8) ?[]const u8 {
+        return self.contents.get(path);
+    }
+
+    /// Resolve 1-based `target_lines` of `path` to byte spans in `content`
+    /// via the line-offset cache (#611). Pass the canonical cached bytes
+    /// (stable pointer) so the table survives across calls. Returns the
+    /// filled count, or null when the table can't be built (OOM) — callers
+    /// fall back to scanning.
+    pub fn lineSpansFor(self: *Explorer, path: []const u8, content: []const u8, target_lines: []const u32, spans: []LineSpan) ?usize {
+        return self.line_offsets.lineSpans(path, content, target_lines, spans);
+    }
+
     pub const ReadRenderOptions = struct {
         if_hash: ?[]const u8 = null,
         line_start: ?i64 = null,
@@ -2822,18 +2841,17 @@ pub const Explorer = struct {
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
-        var list: std.ArrayList(ScoredSymbolResult) = .empty;
-        errdefer {
-            for (list.items) |r| {
-                allocator.free(r.path);
-                allocator.free(r.symbol.name);
-                if (r.symbol.detail) |d| allocator.free(d);
-            }
-            list.deinit(allocator);
-        }
+        const Candidate = struct {
+            path: []const u8,
+            symbol: Symbol,
+            score: f32,
+        };
+
+        var candidates: std.ArrayList(Candidate) = .empty;
+        defer candidates.deinit(allocator);
 
         const Dedup = struct {
-            fn contains(items: []const ScoredSymbolResult, path: []const u8, line: u32) bool {
+            fn contains(items: []const Candidate, path: []const u8, line: u32) bool {
                 for (items) |r| {
                     if (r.symbol.line_start == line and std.mem.eql(u8, r.path, path)) return true;
                 }
@@ -2841,26 +2859,101 @@ pub const Explorer = struct {
             }
         };
 
+        const SortCtx = struct {
+            // Total order: score desc, then name, path, line. line_start is
+            // the final tiebreak — without it, same-name symbols in one file
+            // compared equal and their order fell out of hash-map iteration,
+            // the residual nondeterminism the deterministic-ordering rewrite
+            // meant to eliminate.
+            pub fn lessThan(_: void, a: Candidate, b: Candidate) bool {
+                if (a.score != b.score) return a.score > b.score;
+                const name_cmp = std.mem.order(u8, a.symbol.name, b.symbol.name);
+                if (name_cmp != .eq) return name_cmp == .lt;
+                const path_cmp = std.mem.order(u8, a.path, b.path);
+                if (path_cmp != .eq) return path_cmp == .lt;
+                return a.symbol.line_start < b.symbol.line_start;
+            }
+
+            fn candidateBefore(a: Candidate, b: Candidate) bool {
+                return lessThan({}, a, b);
+            }
+        };
+
+        const freeOne = struct {
+            fn call(alloc: std.mem.Allocator, r: ScoredSymbolResult) void {
+                alloc.free(r.path);
+                alloc.free(r.symbol.name);
+                if (r.symbol.detail) |d| alloc.free(d);
+            }
+        }.call;
+
+        const cloneOne = struct {
+            fn call(alloc: std.mem.Allocator, candidate: Candidate) !ScoredSymbolResult {
+                const path_copy = try alloc.dupe(u8, candidate.path);
+                errdefer alloc.free(path_copy);
+                const name_copy = try alloc.dupe(u8, candidate.symbol.name);
+                errdefer alloc.free(name_copy);
+                var detail_copy: ?[]u8 = null;
+                errdefer if (detail_copy) |d| alloc.free(d);
+                if (candidate.symbol.detail) |d| {
+                    detail_copy = try alloc.dupe(u8, d);
+                }
+                return .{
+                    .path = path_copy,
+                    .symbol = .{
+                        .name = name_copy,
+                        .kind = candidate.symbol.kind,
+                        .line_start = candidate.symbol.line_start,
+                        .line_end = candidate.symbol.line_end,
+                        .detail = detail_copy,
+                    },
+                    .score = candidate.score,
+                };
+            }
+        }.call;
+
         const appendOne = struct {
             fn call(
-                list_ptr: *std.ArrayList(ScoredSymbolResult),
+                list_ptr: *std.ArrayList(Candidate),
                 alloc: std.mem.Allocator,
+                max_results: usize,
                 path: []const u8,
                 sym: Symbol,
                 score: f32,
             ) !void {
+                if (max_results == 0) return;
                 if (Dedup.contains(list_ptr.items, path, sym.line_start)) return;
-                try list_ptr.append(alloc, .{
-                    .path = try alloc.dupe(u8, path),
-                    .symbol = .{
-                        .name = try alloc.dupe(u8, sym.name),
-                        .kind = sym.kind,
-                        .line_start = sym.line_start,
-                        .line_end = sym.line_end,
-                        .detail = if (sym.detail) |d| try alloc.dupe(u8, d) else null,
-                    },
+                const candidate: Candidate = .{
+                    .path = path,
+                    .symbol = sym,
                     .score = score,
-                });
+                };
+                if (list_ptr.items.len >= max_results and
+                    !SortCtx.candidateBefore(candidate, list_ptr.items[list_ptr.items.len - 1]))
+                {
+                    return;
+                }
+
+                // The list is kept sorted at all times, so placing the new
+                // candidate is a binary search + insert (O(log K) compares +
+                // O(K) moves) instead of the previous full re-sort per
+                // accepted insert (O(K log K) compares). Ties are impossible:
+                // the sort key ends in (path, line) and same-(path, line)
+                // candidates are deduped above.
+                var lo: usize = 0;
+                var hi: usize = list_ptr.items.len;
+                while (lo < hi) {
+                    const mid = lo + (hi - lo) / 2;
+                    if (SortCtx.candidateBefore(candidate, list_ptr.items[mid])) {
+                        hi = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
+                }
+                if (list_ptr.items.len >= max_results) {
+                    _ = list_ptr.pop();
+                }
+                try list_ptr.insert(alloc, lo, candidate);
             }
         }.call;
 
@@ -2879,16 +2972,14 @@ pub const Explorer = struct {
                         }
                     }
                 }
-                try appendOne(&list, allocator, loc.path, .{
+                try appendOne(&candidates, allocator, spec.max_results, loc.path, .{
                     .name = sym_name,
                     .kind = loc.kind,
                     .line_start = loc.line_start,
                     .line_end = loc.line_end,
                     .detail = detail,
                 }, score);
-                if (list.items.len >= spec.max_results) break;
             }
-            if (list.items.len >= spec.max_results) break;
         }
 
         var ol_iter = self.outlines.iterator();
@@ -2896,24 +2987,23 @@ pub const Explorer = struct {
             for (entry.value_ptr.symbols.items) |sym| {
                 const score = symbolMatchScore(spec, sym.name) orelse continue;
                 if (spec.kind) |k| if (sym.kind != k) continue;
-                if (Dedup.contains(list.items, entry.key_ptr.*, sym.line_start)) continue;
-                try appendOne(&list, allocator, entry.key_ptr.*, sym, score);
-                if (list.items.len >= spec.max_results) break;
+                if (Dedup.contains(candidates.items, entry.key_ptr.*, sym.line_start)) continue;
+                try appendOne(&candidates, allocator, spec.max_results, entry.key_ptr.*, sym, score);
             }
-            if (list.items.len >= spec.max_results) break;
         }
 
-        const SortCtx = struct {
-            pub fn lessThan(_: void, a: ScoredSymbolResult, b: ScoredSymbolResult) bool {
-                if (a.score != b.score) return a.score > b.score;
-                const name_cmp = std.mem.order(u8, a.symbol.name, b.symbol.name);
-                if (name_cmp != .eq) return name_cmp == .lt;
-                return std.mem.order(u8, a.path, b.path) == .lt;
-            }
-        };
-        std.mem.sort(ScoredSymbolResult, list.items, {}, SortCtx.lessThan);
-        if (list.items.len > spec.max_results) list.shrinkRetainingCapacity(spec.max_results);
-        return list.toOwnedSlice(allocator);
+        // candidates is kept sorted by appendOne — no final sort needed.
+        const results = try allocator.alloc(ScoredSymbolResult, candidates.items.len);
+        errdefer allocator.free(results);
+        var result_len: usize = 0;
+        errdefer {
+            for (results[0..result_len]) |r| freeOne(allocator, r);
+        }
+        for (candidates.items) |candidate| {
+            results[result_len] = try cloneOne(allocator, candidate);
+            result_len += 1;
+        }
+        return results;
     }
 
     // Resolve an exact symbol name to its definition sites for codedb_find's
@@ -4209,16 +4299,16 @@ pub const Explorer = struct {
         @memcpy(buf[pos..][0..close.len], close);
         pos += close.len;
 
-        var file = std.Io.Dir.cwd().openFile(io_inst, path, .{ .mode = .write_only }) catch blk: {
-            break :blk std.Io.Dir.cwd().createFile(io_inst, path, .{ .truncate = false }) catch return;
-        };
+        // Windows requires read access on the handle for length(), even though
+        // the trace path only appends with positional writes.
+        var file = std.Io.Dir.cwd().createFile(io_inst, path, .{ .read = true, .truncate = false }) catch return;
         var current_size = file.length(io_inst) catch {
             file.close(io_inst);
             return;
         };
         if (current_size >= size_limit) {
             file.close(io_inst);
-            file = std.Io.Dir.cwd().createFile(io_inst, path, .{ .truncate = true }) catch return;
+            file = std.Io.Dir.cwd().createFile(io_inst, path, .{ .read = true, .truncate = true }) catch return;
             current_size = 0;
         }
         defer file.close(io_inst);
@@ -4309,13 +4399,9 @@ pub const Explorer = struct {
         }
         if (queue.items.len == 0) return null;
 
-        // adj is forward-only (callees); a reverse copy makes the walk
-        // undirected so callers of a matched symbol count as near too.
-        const radj = ta.alloc(std.ArrayList(codegraph.NodeId), n) catch return null;
-        for (radj) |*l| l.* = .empty;
-        for (cg.edges) |e| {
-            if (e.from < n and e.to < n) radj[e.to].append(ta, e.from) catch return null;
-        }
+        // adj is forward-only (callees); cg.radj (prebuilt once in
+        // ensureCallGraph) makes the walk undirected so callers of a matched
+        // symbol count as near too.
 
         var head: usize = 0;
         while (head < queue.items.len) : (head += 1) {
@@ -4327,7 +4413,7 @@ pub const Explorer = struct {
                 dist[nb] = d + 1;
                 queue.append(ta, nb) catch return null;
             }
-            for (radj[nid].items) |nb| {
+            for (cg.radj[nid].items) |nb| {
                 if (dist[nb] != unseen) continue;
                 dist[nb] = d + 1;
                 queue.append(ta, nb) catch return null;
@@ -4537,6 +4623,31 @@ pub const Explorer = struct {
         }
         defer self.allocator.free(node_scores.?);
 
+        // Reverse adjacency, built once beside `adj`: queryGraphDistances
+        // used to rebuild it from the edge list on every scored search
+        // (O(E) list allocs per query — ~43% of an uncached ranked search).
+        const radj_opt: ?[]std.ArrayList(codegraph.NodeId) = blk: {
+            const lists = self.allocator.alloc(std.ArrayList(codegraph.NodeId), n_nodes) catch break :blk null;
+            for (lists) |*l| l.* = .empty;
+            for (edges_owned) |e| {
+                if (e.from < n_nodes and e.to < n_nodes) {
+                    lists[e.to].append(self.allocator, e.from) catch {
+                        codegraph.freeAdjacency(self.allocator, lists);
+                        break :blk null;
+                    };
+                }
+            }
+            break :blk lists;
+        };
+        const radj = radj_opt orelse {
+            self.allocator.free(edges_owned);
+            codegraph.freeAdjacency(self.allocator, adj);
+            self.allocator.free(np);
+            self.allocator.free(nn);
+            self.allocator.free(nl);
+            return;
+        };
+
         if (self.call_centrality == null) {
             var cmap = std.StringHashMap(f32).init(self.allocator);
             for (np, node_scores.?) |path, score| {
@@ -4551,6 +4662,7 @@ pub const Explorer = struct {
         self.call_graph = .{
             .edges = edges_owned,
             .adj = adj,
+            .radj = radj,
             .node_path = np,
             .node_name = nn,
             .node_line = nl,
@@ -4890,7 +5002,20 @@ pub const Explorer = struct {
             if (path.len == 0) continue;
             const ref = self.readContentForSearch(path, allocator) orelse continue;
             defer ref.deinit();
-            const line_text = extractLineByNumber(ref.data, c.best_line) orelse continue;
+            // Resolve the hit line via the line-offset cache (O(log n)) with
+            // the scan-from-zero extractLineByNumber as fallback — the same
+            // swap the exact-recall tiers made in #611 and the context sites
+            // phase made in #646. On real repos this was up to max_results
+            // whole-file walks per ranked query.
+            var span1: [1]LineOffsetCache.Span = undefined;
+            const lines1 = [1]u32{c.best_line};
+            const line_text = blk: {
+                if (self.line_offsets.lineSpans(path, ref.data, lines1[0..], span1[0..])) |n| {
+                    if (n == 1) break :blk ref.data[span1[0].start..span1[0].end];
+                    break :blk null;
+                }
+                break :blk extractLineByNumber(ref.data, c.best_line);
+            } orelse continue;
             const duped_text = try allocator.dupe(u8, line_text);
             errdefer allocator.free(duped_text);
             const duped_path = try allocator.dupe(u8, path);

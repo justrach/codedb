@@ -16,6 +16,7 @@ const PLATFORM_MAP = {
   "darwin-x64": "codedb-darwin-x86_64",
   "linux-arm64": "codedb-linux-arm64",
   "linux-x64": "codedb-linux-x86_64",
+  "win32-x64": "codedb-windows-x86_64.exe",
 };
 
 function logErr(msg) {

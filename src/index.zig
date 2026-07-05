@@ -87,7 +87,7 @@ pub const WordIndex = struct {
             self.free_ids.deinit(self.allocator);
             self.doc_lengths.deinit();
             self.allocator.free(self.word_dir);
-            std.posix.munmap(m);
+            cio.munmap(m);
             return;
         }
         // Free hit lists and duped word keys
@@ -494,7 +494,7 @@ pub const WordIndex = struct {
         self.index.deinit();
         self.path_to_id.deinit();
         self.allocator.free(self.word_dir);
-        std.posix.munmap(data);
+        cio.munmap(data);
         self.index = new_index;
         self.path_to_id = new_p2i;
         self.word_dir = &.{};
@@ -644,17 +644,18 @@ pub const WordIndex = struct {
     pub fn writeToDisk(self: *WordIndex, io: std.Io, dir_path: []const u8, git_head: ?[40]u8) !void {
         var file_table: std.ArrayList([]const u8) = .empty;
         defer file_table.deinit(self.allocator);
-        var disk_path_to_id = std.StringHashMap(u32).init(self.allocator);
-        defer disk_path_to_id.deinit();
+        const doc_to_disk = try self.allocator.alloc(u32, self.id_to_path.items.len);
+        defer self.allocator.free(doc_to_disk);
+        @memset(doc_to_disk, std.math.maxInt(u32));
 
         // id_to_path is the doc table and always complete; file_words only
         // covers incrementally indexed files once bulk-loaded docs exist.
-        for (self.id_to_path.items) |path| {
+        for (self.id_to_path.items, 0..) |path, doc_idx| {
             if (path.len == 0) continue;
             if (path.len > std.math.maxInt(u16)) return error.NameTooLong;
             const id: u32 = @intCast(file_table.items.len);
             try file_table.append(self.allocator, path);
-            try disk_path_to_id.put(path, id);
+            doc_to_disk[doc_idx] = id;
         }
 
         var words_sorted: std.ArrayList([]const u8) = .empty;
@@ -671,11 +672,7 @@ pub const WordIndex = struct {
             }
         }.lt);
 
-        const rand_suffix = @as(u64, blk: {
-            var ts: std.c.timespec = undefined;
-            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-            break :blk @as(u64, @intCast(ts.nsec)) ^ (@as(u64, @intCast(ts.sec)) << 1);
-        });
+        const rand_suffix = cio.randU64();
         const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}/word.index.{x}.tmp", .{ dir_path, rand_suffix });
         defer self.allocator.free(tmp_path);
         const final_path = try std.fmt.allocPrint(self.allocator, "{s}/word.index", .{dir_path});
@@ -718,14 +715,26 @@ pub const WordIndex = struct {
             var hc_buf: [4]u8 = undefined;
             std.mem.writeInt(u32, &hc_buf, @intCast(hits.items.len), .little);
             try writer.interface.writeAll(&hc_buf);
+            // doc_id → disk_id is a pure integer remap (path_to_id keeps
+            // paths unique, so every live doc has exactly one disk id).
+            // The old per-hit StringHashMap lookup wyhashed the full path
+            // string for every posting — the dominant CPU term of the whole
+            // persist on large repos (#475's 840ms). Hits are also batched
+            // into 4KB chunks instead of one 8-byte writeAll each.
+            var chunk: [4096]u8 = undefined;
+            var chunk_len: usize = 0;
             for (hits.items) |hit| {
-                const hit_path = self.id_to_path.items[hit.doc_id];
-                const file_id = disk_path_to_id.get(hit_path) orelse return error.InvalidData;
-                var hit_buf: [8]u8 = undefined;
-                std.mem.writeInt(u32, hit_buf[0..4], file_id, .little);
-                std.mem.writeInt(u32, hit_buf[4..8], hit.line_num, .little);
-                try writer.interface.writeAll(&hit_buf);
+                const file_id = doc_to_disk[hit.doc_id];
+                if (file_id == std.math.maxInt(u32)) return error.InvalidData;
+                std.mem.writeInt(u32, chunk[chunk_len..][0..4], file_id, .little);
+                std.mem.writeInt(u32, chunk[chunk_len + 4 ..][0..4], hit.line_num, .little);
+                chunk_len += 8;
+                if (chunk_len == chunk.len) {
+                    try writer.interface.writeAll(chunk[0..chunk_len]);
+                    chunk_len = 0;
+                }
             }
+            if (chunk_len > 0) try writer.interface.writeAll(chunk[0..chunk_len]);
         }
 
         // v3 trailer: per-doc length table for BM25.
@@ -894,8 +903,8 @@ pub const WordIndex = struct {
         defer file.close(io);
         const size = file.length(io) catch return null;
         if (size < 51) return null;
-        const data = std.posix.mmap(null, size, .{ .READ = true }, .{ .TYPE = .SHARED }, file.handle, 0) catch return null;
-        errdefer std.posix.munmap(data);
+        const data = cio.mmapReadonly(file.handle, size) catch return null;
+        errdefer cio.munmap(data);
 
         if (!std.mem.eql(u8, data[0..4], &DISK_MAGIC)) return null;
         if (std.mem.readInt(u16, data[4..6], .little) != DISK_FORMAT_VERSION) return null;
@@ -2050,42 +2059,28 @@ pub const MmapTrigramIndex = struct {
         defer post_file.close(io);
         const post_size = post_file.length(io) catch return null;
         if (post_size < 8) return null;
-        const postings_data = std.posix.mmap(
-            null,
-            post_size,
-            .{ .READ = true },
-            .{ .TYPE = .SHARED },
-            post_file.handle,
-            0,
-        ) catch return null;
-        errdefer std.posix.munmap(postings_data);
+        const postings_data = cio.mmapReadonly(post_file.handle, post_size) catch return null;
+        errdefer cio.munmap(postings_data);
 
         // mmap lookup file
         const lk_file = std.Io.Dir.cwd().openFile(io, lookup_path, .{}) catch {
-            std.posix.munmap(postings_data);
+            cio.munmap(postings_data);
             return null;
         };
         defer lk_file.close(io);
         const lk_size = lk_file.length(io) catch {
-            std.posix.munmap(postings_data);
+            cio.munmap(postings_data);
             return null;
         };
         if (lk_size < 12) {
-            std.posix.munmap(postings_data);
+            cio.munmap(postings_data);
             return null;
         }
-        const lookup_data = std.posix.mmap(
-            null,
-            lk_size,
-            .{ .READ = true },
-            .{ .TYPE = .SHARED },
-            lk_file.handle,
-            0,
-        ) catch {
-            std.posix.munmap(postings_data);
+        const lookup_data = cio.mmapReadonly(lk_file.handle, lk_size) catch {
+            cio.munmap(postings_data);
             return null;
         };
-        errdefer std.posix.munmap(lookup_data);
+        errdefer cio.munmap(lookup_data);
 
         // Validate postings header
         if (!std.mem.eql(u8, postings_data[0..4], &TrigramIndex.POSTINGS_MAGIC)) return null;
@@ -2154,8 +2149,8 @@ pub const MmapTrigramIndex = struct {
         for (self.file_table) |p| self.allocator.free(p);
         self.allocator.free(self.file_table);
         self.file_set.deinit();
-        std.posix.munmap(self.postings_data);
-        std.posix.munmap(self.lookup_data);
+        cio.munmap(self.postings_data);
+        cio.munmap(self.lookup_data);
     }
 
     pub fn fileCount(self: *const MmapTrigramIndex) u32 {

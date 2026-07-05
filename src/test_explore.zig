@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const cio = @import("cio.zig");
 const testing = std.testing;
 const io = std.testing.io;
@@ -1036,6 +1037,8 @@ test "explorer: searchContentRegex no match" {
 
 
 test "git: getGitHead returns 40-char hex SHA in a git repo" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     // codedb itself is a git repo, so this should succeed
     const head = try git_mod.getGitHead(".", testing.allocator);
     try testing.expect(head != null);
@@ -1848,6 +1851,8 @@ test "issue-389: FilteredWalker yields symlinked source files" {
 
 
 test "issue-405: FilteredWalker walks directory symlinks safely (cycle + escape)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     // Follow-up to #389. The current FilteredWalker.next() (src/watcher.zig:319-323)
     // treats sym_link entries as files when statFile reports .file, but silently
     // drops sym_link entries whose target is a directory. Real repos rely on
@@ -2182,6 +2187,30 @@ test "issue-531: searchSymbols prefix match" {
     for (results) |r| try testing.expect(std.mem.startsWith(u8, r.symbol.name, "parse_"));
 }
 
+test "searchSymbols: same-name same-file symbols order by line (total order)" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+    // Two same-name, same-kind symbols in one file: score/name/path all tie,
+    // so only the line_start tiebreak makes their order deterministic.
+    try explorer_inst.indexFile("dup.zig",
+        \\pub fn init() void {}
+        \\pub fn deinit() void {}
+        \\pub fn init() void {}
+    );
+
+    const results = try explorer_inst.searchSymbols(.{ .name = "init", .max_results = 10 }, testing.allocator);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.symbol.name);
+            if (r.symbol.detail) |d| testing.allocator.free(d);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expect(results.len == 2);
+    try testing.expect(results[0].symbol.line_start < results[1].symbol.line_start);
+}
+
 test "issue-531: searchSymbols pattern and kind filter" {
     var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_inst.deinit();
@@ -2233,6 +2262,35 @@ test "issue-531: searchSymbols fuzzy match" {
     }
     try testing.expect(results.len >= 1);
     try testing.expectEqualStrings("ensureCallGraph", results[0].symbol.name);
+}
+
+test "searchSymbols honors max_results as allocation work cap" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(testing.allocator);
+    const w = cio.listWriter(&src, testing.allocator);
+    var i: usize = 0;
+    while (i < 80) : (i += 1) {
+        w.print("pub fn broad_{d}() void {{}}\n", .{i}) catch return error.OutOfMemory;
+    }
+    try explorer_inst.indexFile("many.zig", src.items);
+
+    var limited = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 24 });
+    const results = try explorer_inst.searchSymbols(.{ .kind = .function, .max_results = 3 }, limited.allocator());
+    defer {
+        for (results) |r| {
+            limited.allocator().free(r.path);
+            limited.allocator().free(r.symbol.name);
+            if (r.symbol.detail) |d| limited.allocator().free(d);
+        }
+        limited.allocator().free(results);
+    }
+    try testing.expectEqual(@as(usize, 3), results.len);
+    try testing.expectEqualStrings("broad_0", results[0].symbol.name);
+    try testing.expectEqualStrings("broad_1", results[1].symbol.name);
+    try testing.expectEqualStrings("broad_10", results[2].symbol.name);
 }
 
 // ─── audit (2026-06-09): latent-issue sweep — call-graph phantom edges ───

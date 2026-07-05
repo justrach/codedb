@@ -1,6 +1,139 @@
 # Changelog
 
 
+## 0.2.5828 - 2026-07-05
+
+Windows warm-daemon parity, a 2× faster `codedb_context`, OSTree (Fedora
+Silverblue / CoreOS / Nobara) root fixes, and five follow-on perf PRs across
+symbol search, word-index persist, call-graph queries, and snapshot writes.
+
+### Windows: warm CLI daemon over named pipes (#621, #641)
+
+Windows CLI queries now reuse a warm per-project daemon exactly like POSIX —
+named-pipe IPC replaces the Unix-socket path, with a Windows daemon lock and
+native detached spawning, so queries stop paying a cold index reload. Security
+hardening ships with it: 128-bit random pipe names, a DACL restricted to the
+current user, `PIPE_REJECT_REMOTE_CLIENTS`, and client-side verification of
+the server pid + SID. Includes the platform-gated Windows test suite —
+validated on a clean Windows VM: 23/23 build steps, 868/872 tests (4 platform
+skips). Thanks @nsxdavid. `codedb_symbol` results are now deterministically
+ordered (score, then name, then path) instead of hash-map order.
+
+### 2× faster `codedb_context` (#646)
+
+The composer's "Top sites (±2 lines)" phase re-walked every byte of each top
+file once per hit — 63% of the tool's wall time. It now resolves window edges
+through the 0.2.5825 line-offset cache over zero-copy cached bytes. Gated
+bench: 224.8µs → 102.6µs (−54%); on real-repo files the same call dropped
+345ms → 26ms. Context content is byte-identical: same content source
+(`contents.get`, the first branch of the old read path), same window math
+edge-for-edge, and the old scanning path remains the fallback for uncached
+files. `CODEDB_CONTEXT_PROFILE=1` ships alongside — a per-phase ns breakdown
+of the composer on stderr, in the `CODEDB_LOAD_PROFILE` house style.
+
+### OSTree homes index out of the box; `--allow-temp` honors /var (#642)
+
+`/var/home/<user>/<project>` — the real home on OSTree distros, and what
+MCP-mode realpath resolution produces for `/home/...` — is treated like
+`/home`: project subdirectories index with **no opt-in**, bare homes stay
+blocked (#644). Everything else under `/var` and `/private/var` now honors
+`--allow-temp` / `CODEDB_ALLOW_TEMP=1` the same way `/tmp` does — covering
+macOS `TMPDIR` under `/private/var/folders` and CI workspaces under
+`/var/lib` (#643, thanks @XaviCode1000).
+
+### Search & index performance (#647, #649, #650, #651, #652, #653)
+
+Five perf PRs landed back to back this cycle, each verified with a same-machine
+gated-bench A/B:
+
+- **`codedb_symbol` −18%** — `searchSymbols`' bounded candidate buffer was kept
+  sorted by re-running `std.mem.sort` on every accepted insert; it's now placed
+  by binary search + `ArrayList.insert` (#647), and the comparator gained
+  `line_start` as a final tiebreak so same-name symbols in the same file no
+  longer fall back to hash-map iteration order for their relative ordering —
+  closing the last gap in the #641 deterministic-ordering rewrite (#649).
+  23.1µs → 19.0µs on the gated bench; payloads byte-identical across
+  exact/prefix/glob/fuzzy/kind query shapes.
+- **Word-index persist drops its per-posting hash lookup** —
+  `WordIndex.writeToDisk` resolved every posting's disk file id through a
+  `StringHashMap` keyed by the full path (one wyhash of the whole path per
+  posting); since `doc_id → disk_id` is a pure integer remap, it's now
+  precomputed once into a `[]u32`, and hit writes are batched into 4KB chunks
+  instead of one 8-byte `writeAll` each (#650). `word.index` output is
+  byte-identical; this was the dominant CPU term of the 840ms word-index
+  persist flagged in #475, and the win scales with path length and posting
+  count on large repos.
+- **Call-graph reverse adjacency precomputed** — `queryGraphDistances` rebuilt
+  the reverse adjacency from the edge list on every scored search, measured at
+  118µs/call (~43% of an uncached ranked search); it's now built once in
+  `ensureCallGraph` alongside the forward adjacency (#651).
+- **`codedb snapshot` dual-write −31%** — `writeSnapshotDual` ran the full
+  serialize-and-stream pipeline twice, once per destination, re-reading and
+  re-hashing every file from disk a second time when contents were already
+  released. The project-cache copy is the same bytes, so it's now a
+  kernel-space file copy (tmp+rename) instead (#652). Warm snapshot on a
+  2000-file corpus: 0.27s → 0.18s.
+- **`codedb_context` another −12%** — ranked-search's BM25 top-k
+  materialization resolved each hit's line via a from-byte-0 scan; it now goes
+  through the line-offset cache like the exact-recall tiers (#611) and the
+  context sites phase (#646) already do (#653). 129.0µs → 113.6µs on the gated
+  bench — cumulative with #646, `codedb_context` is roughly 2× faster than at
+  the start of this cycle.
+
+### Tooling: `scripts/bench-ab.sh` (#654)
+
+One-command local A/B of the gated bench: builds the base ref in a throwaway
+`$HOME` worktree, runs `zig build bench -- --json` for base and working tree
+back-to-back on the same machine, and prints the same table CI posts on PRs.
+Defaults to `base=HEAD`, so uncommitted perf work is one command away from a
+trustworthy same-machine delta — the recipe behind every perf PR this cycle.
+
+### Also
+
+- serve/mcp daemons retry and reclaim the per-project CLI socket instead of
+  going dark when a stale one lingers (#619)
+- npm: `codedeebee` gains a `win32-x64` target
+- fix(deps): re-pinned nanoregex to `736b467` — the literal-prefix fast path
+  produced `helo` for `hel+o` and silently missed `helllo`, breaking `+` and
+  `{n,m}` quantifiers
+- test: fixed a Linux-only failure in the issue-77 regression test —
+  `/private/tmp` is macOS's canonical temp root and doesn't exist on Linux
+  (#648)
+
+
+## 0.2.5827 - 2026-06-23
+
+Native **Windows** support: codedb now cross-compiles and runs as a native
+`x86_64-windows` binary, verified end-to-end (`--version`, `index`, `search`,
+`read`, `outline`, and MCP-over-stdio `initialize` + `tools/list`) in a Windows
+sandbox. macOS/Linux behaviour is unchanged and the full test suite still passes.
+
+### Platform shim (`cio.zig`) gains a Windows path for every POSIX primitive
+
+- **argv** — the WTF-16 command line is materialized via `std.process.Args.toSlice`
+  (POSIX still passes its argv vector through unchanged).
+- **stdio** — routed through the CRT `_write`/`_read`/`_isatty`/`_close` so the
+  HANDLE-typed `std.c.write` is never hit.
+- **sync** — `pthread` mutex/rwlock on POSIX, **SRWLOCK** on Windows.
+- **time** — `clock_gettime` on POSIX, **`QueryPerformanceCounter` + FILETIME**
+  on Windows (0.16 dropped `std.time.nanoTimestamp`/`Timer`, and `std.Io.Mutex`
+  needs an `Io`).
+- **mmap** — new `mmapReadonly`/`munmap` shim: `mmap(MAP_SHARED)` vs
+  `CreateFileMapping` + `MapViewOfFile`. All zero-copy index/snapshot/explore
+  call sites route through it, so the mmap-backed store works on Windows.
+- **env/home** — `setenv`→`_putenv_s`; new `homeDir()` resolves `$HOME` on POSIX
+  and `%USERPROFILE%` on Windows, so global data/config/snapshot paths and
+  `nuke` work rather than silently no-op.
+
+### Graceful degradation on Windows
+
+The Unix-socket + `flock` warm-daemon proxy is disabled (CLI runs cold-direct,
+MCP stays on stdio). Subprocess capture (`runCapture`) reports `SpawnUnsupported`,
+so git-SHA snapshot tagging and self-update degrade to a clean no-op/error rather
+than crashing. RSS profiling returns 0. Native `CreateProcess` + named-pipe IPC
+are tracked follow-ups for full parity.
+
+
 ## 0.2.5826 - 2026-06-23
 
 A correctness + **coverage** + agent-steering cut. It widens index coverage to

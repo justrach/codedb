@@ -297,7 +297,7 @@ pub fn runCliDaemon(ctx: *RunCtx) !void {
     // already owns the socket (we lost the bind race), cliDaemonListen sets
     // shutdown and the watchdog below returns at once, so the redundant
     // daemon exits instead of lingering idle.
-    if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, &last_activity_ms, &shutdown })) |cli_t| {
+    if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, data_dir, &last_activity_ms, &shutdown, false })) |cli_t| {
         cli_t.detach();
     } else |err| {
         std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
@@ -372,7 +372,7 @@ pub fn runServe(ctx: *RunCtx) !void {
     // on this same stack frame for the whole process lifetime.
     var cli_activity = std.atomic.Value(i64).init(cio.milliTimestamp());
     var cli_listener_dead = std.atomic.Value(bool).init(false);
-    if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, &cli_activity, &cli_listener_dead })) |cli_t| {
+    if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, data_dir, &cli_activity, &cli_listener_dead, true })) |cli_t| {
         cli_t.detach();
     } else |err| {
         std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
@@ -480,7 +480,7 @@ pub fn runMcp(ctx: *RunCtx) !void {
     // on this same stack frame for the whole process lifetime.
     var cli_activity = std.atomic.Value(i64).init(cio.milliTimestamp());
     var cli_listener_dead = std.atomic.Value(bool).init(false);
-    if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, &cli_activity, &cli_listener_dead })) |cli_t| {
+    if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, data_dir, &cli_activity, &cli_listener_dead, true })) |cli_t| {
         cli_t.detach();
     } else |err| {
         std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});

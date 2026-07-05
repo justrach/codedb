@@ -208,7 +208,7 @@ const ProjectCtx = struct {
 
 fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
     const hash = std.hash.Wyhash.hash(0, project_path);
-    const home = cio.posixGetenv("HOME") orelse {
+    const home = cio.homeDir() orelse {
         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{project_path}) catch null;
     };
 
@@ -427,7 +427,7 @@ const ProjectCache = struct {
             const hash = std.hash.Wyhash.hash(0, p);
             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
             const loaded_central = blk: {
-                const home = cio.posixGetenv("HOME") orelse break :blk false;
+                const home = cio.homeDir() orelse break :blk false;
                 const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
                 break :blk snapshot_mod.loadSnapshot(io, central, &new_entry.explorer, &new_entry.store, self.alloc);
             };
@@ -2401,6 +2401,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
     const A = arena.allocator();
+    const pf_t0 = cio.nanoTimestamp();
 
     // #531 pick 5 — two-step packing: step 1 renders every section into its
     // own arena buffer; step 2 admits sections by VALUE order under the byte
@@ -2453,6 +2454,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             }
         }
     }
+    const pf_reader = cio.nanoTimestamp();
 
     var candidates: std.ArrayList([]const u8) = .empty;
     extractContextCandidates(task, A, &candidates);
@@ -2463,6 +2465,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         // documented input shape.
         extractContextFallbackWords(task, A, &candidates);
     }
+    const pf_cand = cio.nanoTimestamp();
     if (candidates.items.len == 0) {
         out.appendSlice(alloc, sec_reader.items) catch {};
         out.appendSlice(alloc, "no candidate identifiers found in task — include symbol names (camelCase or snake_case) or \"quoted strings\" so the composer can extract keywords") catch {};
@@ -2511,6 +2514,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             }
         }
     }
+    const pf_kwloop = cio.nanoTimestamp();
 
     // Rank files by a composite score: raw hits, +bonus when the file
     // contains a symbol definition for any keyword (definition beats usage),
@@ -2544,6 +2548,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         }
     }.lt);
     const top_n = @min(ranked.items.len, CONTEXT_TOP_FILES);
+    const pf_rank = cio.nanoTimestamp();
 
     {
         const wh = cio.listWriter(&sec_head, A);
@@ -2686,6 +2691,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             }
         }
     }
+    const pf_render = cio.nanoTimestamp();
 
     if (top_n > 0) {
         const wf = cio.listWriter(&sec_files, A);
@@ -2698,6 +2704,34 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         explorer.mu.lockShared();
         defer explorer.mu.unlockShared();
         for (ranked.items[0..top_n]) |f| {
+            // Fast path: borrow the canonical cached bytes (stable pointer,
+            // no copy) and resolve each hit's [line-2 .. line+2] window via
+            // the line-offset cache (#611) — O(log n) per hit instead of a
+            // whole-file newline walk per hit, which was 63% of
+            // codedb_context. Uncached files (released contents / low-memory)
+            // take the scanning fallback below.
+            if (explorer.cachedContentLocked(f.path)) |content| {
+                for (f.top) |h| {
+                    const want_start: u32 = if (h.line > 2) h.line - 2 else 1;
+                    const want_end: u32 = h.line + 2;
+                    var lines2 = [2]u32{ want_start, want_end };
+                    var spans2: [2]explore_mod.Explorer.LineSpan = undefined;
+                    const n = explorer.lineSpansFor(f.path, content, lines2[0..], spans2[0..]) orelse 0;
+                    if (n > 0 and spans2[0].line == want_start) {
+                        const start_off = spans2[0].start;
+                        // want_end past EOF matches the scanning fallback: the
+                        // window runs to end of file.
+                        const end_off = if (n == 2) spans2[1].end else content.len;
+                        const slice = content[start_off..end_off];
+                        // Cap per-snippet length to keep output bounded.
+                        const cap = @min(slice.len, 480);
+                        wts.print("\n{s}:{d}\n```\n{s}\n```\n", .{ f.path, h.line, slice[0..cap] }) catch {};
+                        continue;
+                    }
+                    wts.print("{s}:{d}  {s}\n", .{ f.path, h.line, h.text }) catch {};
+                }
+                continue;
+            }
             // Fetch full file content once per file, then slice ±2 lines around
             // each hit. Indexed cache hits common files in ~µs; arena owns the
             // dupe so we don't leak.
@@ -2742,6 +2776,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             }
         }
     }
+    const pf_sites = cio.nanoTimestamp();
 
     // Step 2: admit by value order — head (always), files, symbols
     // (rich, falling back to lean), reader.md, callers, calls, snippets —
@@ -2804,6 +2839,12 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     }
     if (top_n == 0) {
         out.appendSlice(alloc, "\n(no content matches — try codedb_search or codedb_word for narrower queries)\n") catch {};
+    }
+    if (cio.posixGetenv("CODEDB_CONTEXT_PROFILE") != null) {
+        std.log.info("ctx-prof ns: reader={d} cand={d} kwloop={d} rank={d} render={d} sites={d} emit={d} total={d}", .{
+            pf_reader - pf_t0, pf_cand - pf_reader, pf_kwloop - pf_cand, pf_rank - pf_kwloop,
+            pf_render - pf_rank, pf_sites - pf_render, cio.nanoTimestamp() - pf_sites, cio.nanoTimestamp() - pf_t0,
+        });
     }
 }
 
@@ -3996,7 +4037,7 @@ pub fn appendRemoteErrorHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), 
 // ── Local project tools ─────────────────────────────────────────────────────
 
 fn handleProjects(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
-    const home = cio.posixGetenv("HOME") orelse {
+    const home = cio.homeDir() orelse {
         out.appendSlice(alloc, "error: cannot read HOME") catch {};
         return;
     };
