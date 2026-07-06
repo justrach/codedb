@@ -608,94 +608,150 @@ fn findBraceAlternatives(pattern: []const u8, open: usize) ?usize {
     return null;
 }
 
+const GlobFrame = struct {
+    gi: usize,
+    anchor: usize,
+    consumed: usize,
+    double: bool,
+};
+
+// Bound on simultaneously-open '*'/'**' backtrack points per matchGlobRec/
+// matchGlobFragmentThen call. A real glob pattern has at most a handful of
+// wildcards; this is generous headroom over that. Beyond it, an extra
+// wildcard degrades to a zero-width-only match instead of full backtracking
+// rather than growing the stack further.
+const glob_backtrack_cap = 64;
+
 fn matchGlobFragmentThen(fragment: []const u8, gi_start: usize, path: []const u8, ti_start: usize, rest: []const u8) bool {
     var gi = gi_start;
     var ti = ti_start;
-    while (gi < fragment.len) {
-        const c = fragment[gi];
-        if (c == '*') {
-            if (gi + 1 < fragment.len and fragment[gi + 1] == '*') {
-                var next = gi + 2;
-                if (next < fragment.len and fragment[next] == '/') next += 1;
-                if (matchGlobFragmentThen(fragment, next, path, ti, rest)) return true;
-                var k: usize = ti;
-                while (k < path.len) : (k += 1) {
-                    if (matchGlobFragmentThen(fragment, next, path, k + 1, rest)) return true;
+    // Iterative backtracking over an explicit stack of '*'/'**' choice
+    // points — a mechanical translation of the old self-recursion. A single
+    // "latest star" bookmark is NOT enough here: '**' (crosses '/') and '*'
+    // (doesn't) have different power, so when a later '*' exhausts itself at
+    // a '/' boundary, matching may still need an earlier '**' to consume
+    // further. Each backtrack retries the top-of-stack frame with one more
+    // char consumed; a frame that can't (path exhausted, or a '/' a plain
+    // '*' can't cross) is popped and the frame below it is tried instead —
+    // exactly what unwinding one more level of recursion would have done.
+    var stack: [glob_backtrack_cap]GlobFrame = undefined;
+    var depth: usize = 0;
+
+    while (true) {
+        if (gi < fragment.len) {
+            const c = fragment[gi];
+            if (c == '*') {
+                const double = gi + 1 < fragment.len and fragment[gi + 1] == '*';
+                var next: usize = if (double) gi + 2 else gi + 1;
+                if (double and next < fragment.len and fragment[next] == '/') next += 1;
+                if (depth < stack.len) {
+                    stack[depth] = .{ .gi = next, .anchor = ti, .consumed = 0, .double = double };
+                    depth += 1;
                 }
-                return false;
-            } else {
-                if (matchGlobFragmentThen(fragment, gi + 1, path, ti, rest)) return true;
-                var k: usize = ti;
-                while (k < path.len and path[k] != '/') : (k += 1) {
-                    if (matchGlobFragmentThen(fragment, gi + 1, path, k + 1, rest)) return true;
+                gi = next;
+                continue;
+            } else if (c == '?') {
+                if (ti < path.len and path[ti] != '/') {
+                    gi += 1;
+                    ti += 1;
+                    continue;
                 }
-                return false;
+            } else if (ti < path.len and path[ti] == c) {
+                gi += 1;
+                ti += 1;
+                continue;
             }
-        } else if (c == '?') {
-            if (ti >= path.len or path[ti] == '/') return false;
-            gi += 1;
-            ti += 1;
-        } else {
-            if (ti >= path.len or path[ti] != c) return false;
-            gi += 1;
-            ti += 1;
+        } else if (matchGlobRec(rest, 0, path, ti)) {
+            return true;
+        }
+
+        while (true) {
+            if (depth == 0) return false;
+            const top = &stack[depth - 1];
+            top.consumed += 1;
+            const new_ti = top.anchor + top.consumed;
+            if (new_ti > path.len or (!top.double and path[new_ti - 1] == '/')) {
+                depth -= 1;
+                continue;
+            }
+            gi = top.gi;
+            ti = new_ti;
+            break;
         }
     }
-    return matchGlobRec(rest, 0, path, ti);
 }
 
 fn matchGlobRec(pattern: []const u8, gi_start: usize, path: []const u8, ti_start: usize) bool {
     var gi = gi_start;
     var ti = ti_start;
-    while (gi < pattern.len) {
-        const c = pattern[gi];
-        if (c == '*') {
-            if (gi + 1 < pattern.len and pattern[gi + 1] == '*') {
-                // ** matches across path separators
-                var rest = gi + 2;
-                if (rest < pattern.len and pattern[rest] == '/') rest += 1;
-                if (matchGlobRec(pattern, rest, path, ti)) return true;
-                var k: usize = ti;
-                while (k < path.len) : (k += 1) {
-                    if (matchGlobRec(pattern, rest, path, k + 1)) return true;
+    // Same explicit backtrack stack as matchGlobFragmentThen; see that
+    // function for the rationale. A failed brace group (all alternatives
+    // exhausted) is a mismatch like any other and falls through to the same
+    // backtrack, matching the old recursive code's behavior of letting an
+    // enclosing '*' try the next split point.
+    var stack: [glob_backtrack_cap]GlobFrame = undefined;
+    var depth: usize = 0;
+
+    while (true) {
+        if (gi < pattern.len) {
+            const c = pattern[gi];
+            if (c == '*') {
+                const double = gi + 1 < pattern.len and pattern[gi + 1] == '*';
+                var next: usize = if (double) gi + 2 else gi + 1;
+                if (double and next < pattern.len and pattern[next] == '/') next += 1;
+                if (depth < stack.len) {
+                    stack[depth] = .{ .gi = next, .anchor = ti, .consumed = 0, .double = double };
+                    depth += 1;
                 }
-                return false;
-            } else {
-                // single * does not cross /
-                if (matchGlobRec(pattern, gi + 1, path, ti)) return true;
-                var k: usize = ti;
-                while (k < path.len and path[k] != '/') : (k += 1) {
-                    if (matchGlobRec(pattern, gi + 1, path, k + 1)) return true;
+                gi = next;
+                continue;
+            } else if (c == '?') {
+                if (ti < path.len and path[ti] != '/') {
+                    gi += 1;
+                    ti += 1;
+                    continue;
                 }
-                return false;
-            }
-        } else if (c == '?') {
-            if (ti >= path.len or path[ti] == '/') return false;
-            gi += 1;
-            ti += 1;
-        } else if (c == '{') {
-            if (findBraceAlternatives(pattern, gi)) |close| {
-                var alt_start = gi + 1;
-                var i = alt_start;
-                while (i <= close) : (i += 1) {
-                    if (i == close or pattern[i] == ',') {
-                        if (matchGlobFragmentThen(pattern[alt_start..i], 0, path, ti, pattern[close + 1 ..])) return true;
-                        alt_start = i + 1;
+            } else if (c == '{') {
+                if (findBraceAlternatives(pattern, gi)) |close| {
+                    var alt_start = gi + 1;
+                    var i = alt_start;
+                    while (i <= close) : (i += 1) {
+                        if (i == close or pattern[i] == ',') {
+                            if (matchGlobFragmentThen(pattern[alt_start..i], 0, path, ti, pattern[close + 1 ..])) return true;
+                            alt_start = i + 1;
+                        }
                     }
+                } else if (ti < path.len and path[ti] == c) {
+                    gi += 1;
+                    ti += 1;
+                    continue;
                 }
-                return false;
+            } else if (ti < path.len and path[ti] == c) {
+                gi += 1;
+                ti += 1;
+                continue;
             }
-            if (ti >= path.len or path[ti] != c) return false;
-            gi += 1;
-            ti += 1;
-        } else {
-            if (ti >= path.len or path[ti] != c) return false;
-            gi += 1;
-            ti += 1;
+        } else if (ti == path.len) {
+            return true;
+        }
+
+        while (true) {
+            if (depth == 0) return false;
+            const top = &stack[depth - 1];
+            top.consumed += 1;
+            const new_ti = top.anchor + top.consumed;
+            if (new_ti > path.len or (!top.double and path[new_ti - 1] == '/')) {
+                depth -= 1;
+                continue;
+            }
+            gi = top.gi;
+            ti = new_ti;
+            break;
         }
     }
-    return ti == path.len;
 }
+
+/// Resolved call graph retained for path queries (#531). Node metadata slices
 
 /// Resolved call graph retained for path queries (#531). Node metadata slices
 /// borrow stable outline/symbol strings; edges and adjacency are owned.

@@ -2772,3 +2772,49 @@ test "disk-backed line ranges do not reuse offsets for changed content" {
     try testing.expect(try ex.appendLineRange("fallback.zig", 2, 3, "       ", testing.allocator, &changed));
     try testing.expectEqualStrings("           2 | bbbb\n           3 | c\n", changed.items);
 }
+
+test "matchGlob: *, **, ?, and {a,b,c} semantics (golden baseline for iterative rewrite)" {
+    // Plain literal: full-string match only.
+    try testing.expect(explore.matchGlob("main.zig", "main.zig"));
+    try testing.expect(!explore.matchGlob("main.zig", "other.zig"));
+
+    // Single '*' does not cross '/'.
+    try testing.expect(explore.matchGlob("src/*.zig", "src/main.zig"));
+    try testing.expect(!explore.matchGlob("src/*.zig", "src/sub/main.zig"));
+
+    // '**' crosses '/', including matching zero directories.
+    try testing.expect(explore.matchGlob("src/**/*.zig", "src/main.zig"));
+    try testing.expect(explore.matchGlob("src/**/*.zig", "src/a/b/c/main.zig"));
+    try testing.expect(explore.matchGlob("**/*.zig", "main.zig"));
+    try testing.expect(!explore.matchGlob("src/**/*.zig", "other/main.zig"));
+
+    // '?' matches exactly one non-'/' character.
+    try testing.expect(explore.matchGlob("src/?ain.zig", "src/main.zig"));
+    try testing.expect(!explore.matchGlob("src/?ain.zig", "src/ain.zig"));
+    try testing.expect(!explore.matchGlob("a?b", "a/b"));
+
+    // Multiple stars/wildcards in one segment (bench-edge's edge_symbol_glob shape).
+    try testing.expect(explore.matchGlob("edgeHandler*_2?_5*", "edgeHandlerAlphaBeta_20_50"));
+    try testing.expect(!explore.matchGlob("edgeHandler*_2?_5*", "edgeHandlerAlphaBeta_30_50"));
+
+    // Brace alternation, including a failing-then-matching alternative.
+    try testing.expect(explore.matchGlob("src/{main,lib}.zig", "src/main.zig"));
+    try testing.expect(explore.matchGlob("src/{main,lib}.zig", "src/lib.zig"));
+    try testing.expect(!explore.matchGlob("src/{main,lib}.zig", "src/other.zig"));
+
+    // A brace alternative carrying its own star, continuing into the tail
+    // pattern after the closing brace.
+    try testing.expect(explore.matchGlob("{a*,xy}/tail.zig", "abc/tail.zig"));
+    try testing.expect(explore.matchGlob("{a*,xy}/tail.zig", "xy/tail.zig"));
+    try testing.expect(!explore.matchGlob("{a*,xy}/tail.zig", "xy/other.zig"));
+
+    // Unmatched '{' (no comma) is a literal character, not a group.
+    try testing.expect(explore.matchGlob("{abc}", "{abc}"));
+    try testing.expect(!explore.matchGlob("{abc}", "abc"));
+
+    // Multi-star adversarial pattern: must resolve correctly without the old
+    // recursion's combinatorial blowup once the matcher is iterative.
+    try testing.expect(explore.matchGlob("*a*a*a*a*a*a", "xxaxxaxxaxxaxxaxxa"));
+    try testing.expect(!explore.matchGlob("*a*a*a*a*a*a", "xxaxxaxxaxxaxxaxxb"));
+    try testing.expect(!explore.matchGlob("*a*a*a*a*a*a", "bbbbbbbbbbbbbbbbbbbb"));
+}
