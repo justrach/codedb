@@ -2264,6 +2264,34 @@ test "issue-531: searchSymbols fuzzy match" {
     try testing.expectEqualStrings("ensureCallGraph", results[0].symbol.name);
 }
 
+test "searchSymbols fuzzy SIMD slabs match scalar fuzzyScore" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer_inst = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(arena.allocator());
+    const w = cio.listWriter(&src, arena.allocator());
+    for (0..20) |i| {
+        try w.print("pub fn loadConfigVariant_{d:0>2}() void {{}}\n", .{i});
+    }
+    try w.writeAll("pub const loadConfigVariantMax: usize = 20;\n");
+    try explorer_inst.indexFile("cfg.zig", src.items);
+
+    const q = "loadConfigVarient_07";
+    const results = try explorer_inst.searchSymbols(.{ .name = q, .fuzzy = true, .max_results = 50 }, arena.allocator());
+    try testing.expect(results.len > 8);
+    for (results) |r| {
+        const expected = explore.fuzzyScore(q, r.symbol.name) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(expected, r.score);
+    }
+    try testing.expectEqualStrings("loadConfigVariant_07", results[0].symbol.name);
+
+    const fn_only = try explorer_inst.searchSymbols(.{ .name = q, .fuzzy = true, .kind = .function, .max_results = 50 }, arena.allocator());
+    try testing.expect(fn_only.len > 8);
+    for (fn_only) |r| try testing.expect(r.symbol.kind == .function);
+}
+
 test "searchSymbols honors max_results as allocation work cap" {
     var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_inst.deinit();
@@ -2476,4 +2504,38 @@ test "symbol lookups stay correct across the deferred-index restore path" {
     const after = try explorer.findAllSymbols("gatedSym", arena.allocator());
     try testing.expectEqual(@as(usize, 1), after.len);
     try testing.expectEqualStrings("a.zig", after[0].path);
+}
+
+test "searchSymbols stays correct across the deferred-index restore path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    try explorer.indexFile("a.zig", "pub fn gatedSym() void {}");
+    explorer.markSymbolIndexIncomplete();
+    try explorer.indexFile("b.zig", "pub fn gatedSym() void {}");
+
+    const exact = try explorer.searchSymbols(.{ .name = "gatedSym" }, arena.allocator());
+    try testing.expectEqual(@as(usize, 2), exact.len);
+
+    explorer.markSymbolIndexIncomplete();
+    try explorer.indexFile("c.zig", "pub fn gatedSym() void {}");
+    const fuzzy = try explorer.searchSymbols(.{ .name = "gatedSem", .fuzzy = true, .max_results = 10 }, arena.allocator());
+    try testing.expectEqual(@as(usize, 3), fuzzy.len);
+    try testing.expectEqualStrings("gatedSym", fuzzy[0].symbol.name);
+
+    // Removed with a COMPLETE index: c.zig's symbols must vanish (the index,
+    // not the scan, is authoritative now).
+    explorer.removeFile("c.zig");
+    const after_remove = try explorer.searchSymbols(.{ .name = "gatedSym" }, arena.allocator());
+    try testing.expectEqual(@as(usize, 2), after_remove.len);
+    for (after_remove) |r| try testing.expect(!std.mem.eql(u8, r.path, "c.zig"));
+
+    // Removed WHILE deferred: the restore rebuild works from outlines, which
+    // removeFile already pruned — b.zig must not resurface.
+    explorer.markSymbolIndexIncomplete();
+    explorer.removeFile("b.zig");
+    const after_deferred = try explorer.searchSymbols(.{ .name = "gatedSem", .fuzzy = true, .max_results = 10 }, arena.allocator());
+    try testing.expectEqual(@as(usize, 1), after_deferred.len);
+    try testing.expectEqualStrings("a.zig", after_deferred[0].path);
 }

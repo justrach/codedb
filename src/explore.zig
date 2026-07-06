@@ -2957,38 +2957,90 @@ pub const Explorer = struct {
             }
         }.call;
 
-        var sym_iter = self.symbol_index.iterator();
-        while (sym_iter.next()) |entry| {
-            const sym_name = entry.key_ptr.*;
-            const score = symbolMatchScore(spec, sym_name) orelse continue;
-            for (entry.value_ptr.items) |loc| {
-                if (spec.kind) |k| if (loc.kind != k) continue;
-                var detail: ?[]const u8 = null;
-                if (self.outlines.getPtr(loc.path)) |outline| {
-                    for (outline.symbols.items) |sym| {
-                        if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, sym_name)) {
-                            detail = sym.detail;
-                            break;
+        if (spec.fuzzy and spec.name != null) {
+            const q = spec.name.?;
+            if (q.len > 0 and q.len <= FUZZY_MAX_QUERY) {
+                const FuzzCand = struct {
+                    name: []const u8,
+                    locs: []const SymbolLocation,
+                };
+                var fuzz_cands: std.ArrayList(FuzzCand) = .empty;
+                defer fuzz_cands.deinit(allocator);
+                var sym_iter = self.symbol_index.iterator();
+                while (sym_iter.next()) |entry| {
+                    const sym_name = entry.key_ptr.*;
+                    if (sym_name.len == 0 or sym_name.len > FUZZY_MAX_PATH) continue;
+                    if (fuzzyPresenceReject(q, sym_name)) continue;
+                    try fuzz_cands.append(allocator, .{ .name = sym_name, .locs = entry.value_ptr.items });
+                }
+                var off: usize = 0;
+                while (off < fuzz_cands.items.len) : (off += FZ_LANES) {
+                    const slab = fuzz_cands.items[off..@min(off + FZ_LANES, fuzz_cands.items.len)];
+                    var names: [FZ_LANES][]const u8 = undefined;
+                    for (slab, 0..) |fc, l| names[l] = fc.name;
+                    var best: [FZ_LANES]f32 = undefined;
+                    var matched: [FZ_LANES]u32 = undefined;
+                    fuzzyScoreBatch(q, names[0..slab.len], &best, &matched);
+                    for (slab, 0..) |fc, l| {
+                        const score = fuzzyFinalize(q, fc.name, best[l], matched[l]) orelse continue;
+                        for (fc.locs) |loc| {
+                            if (spec.kind) |k| if (loc.kind != k) continue;
+                            var detail: ?[]const u8 = null;
+                            if (self.outlines.getPtr(loc.path)) |outline| {
+                                for (outline.symbols.items) |sym| {
+                                    if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, fc.name)) {
+                                        detail = sym.detail;
+                                        break;
+                                    }
+                                }
+                            }
+                            try appendOne(&candidates, allocator, spec.max_results, loc.path, .{
+                                .name = fc.name,
+                                .kind = loc.kind,
+                                .line_start = loc.line_start,
+                                .line_end = loc.line_end,
+                                .detail = detail,
+                            }, score);
                         }
                     }
                 }
-                try appendOne(&candidates, allocator, spec.max_results, loc.path, .{
-                    .name = sym_name,
-                    .kind = loc.kind,
-                    .line_start = loc.line_start,
-                    .line_end = loc.line_end,
-                    .detail = detail,
-                }, score);
+            }
+        } else {
+            var sym_iter = self.symbol_index.iterator();
+            while (sym_iter.next()) |entry| {
+                const sym_name = entry.key_ptr.*;
+                const score = symbolMatchScore(spec, sym_name) orelse continue;
+                for (entry.value_ptr.items) |loc| {
+                    if (spec.kind) |k| if (loc.kind != k) continue;
+                    var detail: ?[]const u8 = null;
+                    if (self.outlines.getPtr(loc.path)) |outline| {
+                        for (outline.symbols.items) |sym| {
+                            if (sym.line_start == loc.line_start and std.mem.eql(u8, sym.name, sym_name)) {
+                                detail = sym.detail;
+                                break;
+                            }
+                        }
+                    }
+                    try appendOne(&candidates, allocator, spec.max_results, loc.path, .{
+                        .name = sym_name,
+                        .kind = loc.kind,
+                        .line_start = loc.line_start,
+                        .line_end = loc.line_end,
+                        .detail = detail,
+                    }, score);
+                }
             }
         }
 
-        var ol_iter = self.outlines.iterator();
-        while (ol_iter.next()) |entry| {
-            for (entry.value_ptr.symbols.items) |sym| {
-                const score = symbolMatchScore(spec, sym.name) orelse continue;
-                if (spec.kind) |k| if (sym.kind != k) continue;
-                if (Dedup.contains(candidates.items, entry.key_ptr.*, sym.line_start)) continue;
-                try appendOne(&candidates, allocator, spec.max_results, entry.key_ptr.*, sym, score);
+        if (!self.symbol_index_complete) {
+            var ol_iter = self.outlines.iterator();
+            while (ol_iter.next()) |entry| {
+                for (entry.value_ptr.symbols.items) |sym| {
+                    const score = symbolMatchScore(spec, sym.name) orelse continue;
+                    if (spec.kind) |k| if (sym.kind != k) continue;
+                    if (Dedup.contains(candidates.items, entry.key_ptr.*, sym.line_start)) continue;
+                    try appendOne(&candidates, allocator, spec.max_results, entry.key_ptr.*, sym, score);
+                }
             }
         }
 
