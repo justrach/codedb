@@ -153,6 +153,23 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&bench_run.step);
 
+    // ── Edge-case benchmarks (synthetic pathological corpus) ──
+    const bench_edge = b.addExecutable(.{
+        .name = "bench-edge",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench_edge.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+        }),
+    });
+    bench_edge.root_module.addImport("mcp", mcp_dep.module("mcp"));
+    bench_edge.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    const bench_edge_run = b.addRunArtifact(bench_edge);
+    if (b.args) |args| bench_edge_run.addArgs(args);
+    const bench_edge_step = b.step("bench-edge", "Run edge-case benchmarks (synthetic pathological corpus)");
+    bench_edge_step.dependOn(&bench_edge_run.step);
+
     // ── Benchmark (repo benchmark — indexing speed, query latency, recall) ──
     const benchmark = b.addExecutable(.{
         .name = "benchmark",
