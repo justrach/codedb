@@ -762,6 +762,7 @@ pub const CallGraph = struct {
     node_path: []const []const u8,
     node_name: []const []const u8,
     node_line: []const u32,
+    seed_ids: []const codegraph.NodeId,
 
     pub fn deinit(self: *CallGraph, allocator: std.mem.Allocator) void {
         allocator.free(self.edges);
@@ -772,6 +773,7 @@ pub const CallGraph = struct {
         for (self.node_name) |n| allocator.free(n);
         allocator.free(self.node_name);
         allocator.free(self.node_line);
+        allocator.free(self.seed_ids);
     }
 };
 
@@ -5069,15 +5071,26 @@ pub const Explorer = struct {
         @memset(dist, unseen);
 
         var queue: std.ArrayList(codegraph.NodeId) = .empty;
-        for (cg.node_name, 0..) |name, nid| {
-            if (name.len < 3) continue;
-            var it = terms.keyIterator();
-            while (it.next()) |t| {
-                if (asciiEqlIgnoreCase(name, t.*)) {
-                    dist[nid] = 0;
-                    queue.append(ta, @intCast(nid)) catch return null;
-                    break;
+        var it = terms.keyIterator();
+        while (it.next()) |t| {
+            // Lower bound into seed_ids (sorted by case-folded name), then
+            // walk the run of equal names — replaces the full node scan.
+            var lo: usize = 0;
+            var hi: usize = cg.seed_ids.len;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                if (asciiOrderIgnoreCase(cg.node_name[cg.seed_ids[mid]], t.*) == .lt) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
                 }
+            }
+            while (lo < cg.seed_ids.len) : (lo += 1) {
+                const nid = cg.seed_ids[lo];
+                if (!asciiEqlIgnoreCase(cg.node_name[nid], t.*)) break;
+                if (dist[nid] != unseen) continue;
+                dist[nid] = 0;
+                queue.append(ta, nid) catch return null;
             }
         }
         if (queue.items.len == 0) return null;
@@ -5361,6 +5374,44 @@ pub const Explorer = struct {
             return;
         };
 
+        // Seed ids sorted by case-folded name, built once beside adj/radj:
+        // queryGraphDistances seeds by lower-bound + run walk over this
+        // order instead of scanning every node name per query term.
+        const seed_ids_opt: ?[]codegraph.NodeId = blk: {
+            var list: std.ArrayList(codegraph.NodeId) = .empty;
+            for (nn, 0..) |name, nid| {
+                if (name.len < 3) continue;
+                list.append(self.allocator, @intCast(nid)) catch {
+                    list.deinit(self.allocator);
+                    break :blk null;
+                };
+            }
+            const SeedSort = struct {
+                names: []const []const u8,
+                fn lessThan(ctx: @This(), x: codegraph.NodeId, y: codegraph.NodeId) bool {
+                    return switch (asciiOrderIgnoreCase(ctx.names[x], ctx.names[y])) {
+                        .lt => true,
+                        .gt => false,
+                        .eq => x < y,
+                    };
+                }
+            };
+            std.mem.sort(codegraph.NodeId, list.items, SeedSort{ .names = nn }, SeedSort.lessThan);
+            break :blk list.toOwnedSlice(self.allocator) catch {
+                list.deinit(self.allocator);
+                break :blk null;
+            };
+        };
+        const seed_ids = seed_ids_opt orelse {
+            self.allocator.free(edges_owned);
+            codegraph.freeAdjacency(self.allocator, adj);
+            codegraph.freeAdjacency(self.allocator, radj);
+            self.allocator.free(np);
+            self.allocator.free(nn);
+            self.allocator.free(nl);
+            return;
+        };
+
         if (self.call_centrality == null) {
             var cmap = std.StringHashMap(f32).init(self.allocator);
             for (node_path.items, node_scores.?) |path, score| {
@@ -5376,6 +5427,7 @@ pub const Explorer = struct {
             .edges = edges_owned,
             .adj = adj,
             .radj = radj,
+            .seed_ids = seed_ids,
             .node_path = np,
             .node_name = nn,
             .node_line = nl,
@@ -8136,6 +8188,16 @@ fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
         if (std.ascii.toLower(x) != std.ascii.toLower(y)) return false;
     }
     return true;
+}
+
+fn asciiOrderIgnoreCase(a: []const u8, b: []const u8) std.math.Order {
+    const n = @min(a.len, b.len);
+    for (a[0..n], b[0..n]) |x, y| {
+        const lx = std.ascii.toLower(x);
+        const ly = std.ascii.toLower(y);
+        if (lx != ly) return if (lx < ly) .lt else .gt;
+    }
+    return std.math.order(a.len, b.len);
 }
 
 fn asciiContainsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
