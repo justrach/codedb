@@ -1684,7 +1684,7 @@ pub const Explorer = struct {
     trigram_index: AnyTrigramIndex,
     /// Paths indexed with skip_trigram=true (past 15k cap or excluded).
     /// Used to restrict the searchContent fallback to only these files.
-    skip_trigram_files: std.StringHashMap(void),
+    skip_trigram_files: std.StringHashMap(?*SkipBloom),
     allocator: std.mem.Allocator,
     word_index_complete: bool = true,
     word_index_can_load_from_disk: bool = false,
@@ -1726,6 +1726,9 @@ pub const Explorer = struct {
     /// assert the short-circuit holds (issue: negative-query slow path).
     /// Production code does not read this field.
     search_tier5_count: u64 = 0,
+    /// Test-only counter: tier 3 content scans actually performed (files
+    /// the bloom prefilter did not rule out). Production code never reads it.
+    search_tier3_scan_count: u64 = 0,
     last_search_breakdown: SearchBreakdown = .{},
     /// Whole-query result cache for searchContent, validated against
     /// search_gen + the ranking-env fingerprint (see SearchResultCache).
@@ -1795,7 +1798,7 @@ pub const Explorer = struct {
             .symbol_index_complete = true,
             .word_index = WordIndex.init(allocator),
             .trigram_index = .{ .heap = TrigramIndex.init(allocator) },
-            .skip_trigram_files = std.StringHashMap(void).init(allocator),
+            .skip_trigram_files = std.StringHashMap(?*SkipBloom).init(allocator),
             .allocator = allocator,
         };
     }
@@ -1834,6 +1837,8 @@ pub const Explorer = struct {
 
         self.word_index.deinit();
         self.trigram_index.deinit();
+        var skip_blooms = self.skip_trigram_files.valueIterator();
+        while (skip_blooms.next()) |v| if (v.*) |b| self.allocator.destroy(b);
         self.skip_trigram_files.deinit();
         // Freed after outlines (above) since restored outlines borrow into these.
         for (self.outline_section_bufs.items) |b| self.allocator.free(b);
@@ -1989,10 +1994,10 @@ pub const Explorer = struct {
                 // searchContent now no-ops; tier 3 (skip_trigram_files)
                 // + tier 5 (full-scan when !trigram_ruled_out) cover
                 // the same surface area.
-                _ = self.skip_trigram_files.remove(stable_path);
+                self.removeSkipTrigram(stable_path);
             } else {
                 self.trigram_index.removeFile(stable_path);
-                try self.skip_trigram_files.put(stable_path, {});
+                try self.putSkipTrigram(stable_path, content);
             }
         } else {
             // Outline-only path (snapshot load fallback, file-watcher incremental
@@ -2005,7 +2010,7 @@ pub const Explorer = struct {
             //   • tier 5 (full outline scan) — short-circuited by trigram_ruled_out
             // Registering here means tier 3 picks the file up via searchInContent.
             // See #507.
-            try self.skip_trigram_files.put(stable_path, {});
+            try self.putSkipTrigram(stable_path, content);
         }
 
         try self.rebuildDepsFor(stable_path, &persistent_outline);
@@ -2455,7 +2460,21 @@ pub const Explorer = struct {
         while (it.next()) |k| {
             if (self.trigram_index.containsFile(k.*)) to_remove.append(self.allocator, k.*) catch break;
         }
-        for (to_remove.items) |k| _ = self.skip_trigram_files.remove(k);
+        for (to_remove.items) |k| self.removeSkipTrigram(k);
+    }
+
+    fn removeSkipTrigram(self: *Explorer, path: []const u8) void {
+        if (self.skip_trigram_files.fetchRemove(path)) |kv| {
+            if (kv.value) |b| self.allocator.destroy(b);
+        }
+    }
+
+    fn putSkipTrigram(self: *Explorer, path: []const u8, content: []const u8) !void {
+        const gop = try self.skip_trigram_files.getOrPut(path);
+        if (gop.found_existing) {
+            if (gop.value_ptr.*) |b| self.allocator.destroy(b);
+        }
+        gop.value_ptr.* = computeSkipBloom(self.allocator, content);
     }
 
     /// Swap in a trigram index (disk mmap load / post-scan build) and
@@ -2711,7 +2730,7 @@ pub const Explorer = struct {
         }
         self.dep_graph.remove(path);
         self.removeSymbolIndexFor(path);
-        _ = self.skip_trigram_files.remove(path);
+        self.removeSkipTrigram(path);
         self.contents.remove(path);
         self.content_hashes.invalidate(path);
         self.line_offsets.invalidate(path);
@@ -4258,13 +4277,36 @@ pub const Explorer = struct {
 
         const t3_start = cio.nanoTimestamp();
         if (result_list.items.len < max_results) {
-            var skip_iter = self.skip_trigram_files.keyIterator();
-            while (skip_iter.next()) |key_ptr| {
-                if (searched.contains(key_ptr.*)) continue;
-                const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
+            // Folded-trigram prefilter: any query trigram missing from a
+            // file's bloom proves the query can't match it — skip the read
+            // and scan. Null blooms (snapshot-parked entries, oversized
+            // files) always scan.
+            var q_bits_buf: [64]u16 = undefined;
+            const q_bits: ?[]const u16 = blk: {
+                if (query.len < 3) break :blk null;
+                const nq = @min(query.len - 2, q_bits_buf.len);
+                for (0..nq) |qi| {
+                    q_bits_buf[qi] = skipBloomBit(
+                        skipBloomFold(query[qi]),
+                        skipBloomFold(query[qi + 1]),
+                        skipBloomFold(query[qi + 2]),
+                    );
+                }
+                break :blk q_bits_buf[0..nq];
+            };
+            var skip_iter = self.skip_trigram_files.iterator();
+            while (skip_iter.next()) |entry| {
+                if (searched.contains(entry.key_ptr.*)) continue;
+                if (q_bits) |qb| {
+                    if (entry.value_ptr.*) |bloom| {
+                        if (!skipBloomMayMatch(bloom, qb)) continue;
+                    }
+                }
+                const ref = self.readContentForSearch(entry.key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                searched.put(key_ptr.*, {}) catch {};
-                try searchInContent(key_ptr.*, ref.data, query, allocator, max_results, max_results, &result_list);
+                searched.put(entry.key_ptr.*, {}) catch {};
+                self.search_tier3_scan_count += 1;
+                try searchInContent(entry.key_ptr.*, ref.data, query, allocator, max_results, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
         }
@@ -8032,6 +8074,47 @@ fn matchAtCaseInsensitive(content: []const u8, pos: usize, query_lower: []const 
         if (hc != nc) return false;
     }
     return true;
+}
+
+/// 8192-bit folded-trigram bloom over a skip_trigram_files entry's content.
+/// A query trigram absent from the bloom proves no case-insensitive match,
+/// so tier 3 can skip the file without reading it. Inputs to skipBloomBit
+/// must already be folded via skipBloomFold (searchInContent's A-Z fold).
+const SkipBloom = [128]u64;
+
+fn skipBloomFold(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c + 32 else c;
+}
+
+fn skipBloomBit(a: u8, b: u8, c: u8) u16 {
+    var h: u32 = a;
+    h = h *% 251 +% b;
+    h = h *% 251 +% c;
+    h *%= 2654435761;
+    return @intCast(h >> 19);
+}
+
+fn skipBloomMayMatch(bloom: *const SkipBloom, bits: []const u16) bool {
+    for (bits) |bit| {
+        if (bloom[bit >> 6] & (@as(u64, 1) << @intCast(bit & 63)) == 0) return false;
+    }
+    return true;
+}
+
+fn computeSkipBloom(allocator: std.mem.Allocator, content: []const u8) ?*SkipBloom {
+    if (content.len < 3 or content.len > (1 << 21)) return null;
+    const bloom = allocator.create(SkipBloom) catch return null;
+    @memset(bloom, 0);
+    var f0 = skipBloomFold(content[0]);
+    var f1 = skipBloomFold(content[1]);
+    for (content[2..]) |raw| {
+        const f2 = skipBloomFold(raw);
+        const bit = skipBloomBit(f0, f1, f2);
+        bloom[bit >> 6] |= @as(u64, 1) << @intCast(bit & 63);
+        f0 = f1;
+        f1 = f2;
+    }
+    return bloom;
 }
 
 fn searchInContentRegex(path: []const u8, content: []const u8, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(SearchResult)) !void {

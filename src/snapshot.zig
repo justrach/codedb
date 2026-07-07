@@ -906,7 +906,7 @@ fn insertRestoredFile(
     // this the file falls out of every search tier the moment the trigram index
     // is non-empty (Tier 5's full scan is then ruled out). Mirrors the
     // outline-only branch of commitParsedFileOwnedOutline. See #507 / #537.
-    try explorer.skip_trigram_files.put(path, {});
+    try explorer.skip_trigram_files.put(path, null);
 }
 
 // Below this many files the per-file freshness stats run on the loading thread:

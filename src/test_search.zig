@@ -2675,6 +2675,35 @@ test "skip-trigram: adoptTrigramIndex prunes covered files from the tier-3 scan 
     try testing.expectEqual(@as(usize, 2), r.len);
 }
 
+test "tier3: skip-file bloom prunes content scans without losing recall" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    // Trigram-indexed file so candidate_paths is non-null and the tier-5
+    // full scan stays ruled out for >=3-char queries.
+    try explorer.indexFile("src/base.zig", "const base = 0; // anchortok\n");
+    // Skip-set files (watcher live-update path). The needles are substrings
+    // of longer identifiers so word-index tiers 0/0.5/4 cannot serve them —
+    // only tier 3's content scan can.
+    try explorer.indexFileSkipTrigram("src/hit.zig", "const a = 1; // xxocelotalphaxx\n");
+    try explorer.indexFileSkipTrigram("src/miss.zig", "const b = 2; // yymarmotbetayy\n");
+
+    const r1 = try explorer.searchContent("ocelotalpha", testing.allocator, 10);
+    defer freeSearchResults(r1);
+    try testing.expectEqual(@as(usize, 1), r1.len);
+    try testing.expectEqualStrings("src/hit.zig", r1[0].path);
+    // miss.zig lacks the query's trigrams: the bloom must rule it out
+    // without a content scan.
+    try testing.expectEqual(@as(u64, 1), explorer.search_tier3_scan_count);
+
+    const r2 = try explorer.searchContent("marmotbeta", testing.allocator, 10);
+    defer freeSearchResults(r2);
+    try testing.expectEqual(@as(usize, 1), r2.len);
+    try testing.expectEqualStrings("src/miss.zig", r2[0].path);
+    // Recall intact through the bloom: miss.zig scanned this time (+1),
+    // hit.zig ruled out.
+    try testing.expectEqual(@as(u64, 2), explorer.search_tier3_scan_count);
+}
+
 test "skip-trigram: adoptTrigramBase keeps freshness-reindexed files as a masking overlay" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
