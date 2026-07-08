@@ -702,7 +702,9 @@ pub const CallGraph = struct {
         allocator.free(self.edges);
         codegraph.freeAdjacency(allocator, self.adj);
         codegraph.freeAdjacency(allocator, self.radj);
+        for (self.node_path) |p| allocator.free(p);
         allocator.free(self.node_path);
+        for (self.node_name) |n| allocator.free(n);
         allocator.free(self.node_name);
         allocator.free(self.node_line);
     }
@@ -1506,6 +1508,14 @@ pub const Explorer = struct {
         self.mu.lock();
         defer self.mu.unlock();
         self.bumpSearchGen();
+        if (self.call_graph) |*cg| {
+            cg.deinit(self.allocator);
+            self.call_graph = null;
+        }
+        if (self.call_centrality) |*cc| {
+            cc.deinit();
+            self.call_centrality = null;
+        }
 
         const outline_gop = try self.outlines.getOrPut(path);
         const is_new = !outline_gop.found_existing;
@@ -4590,20 +4600,45 @@ pub const Explorer = struct {
             codegraph.freeAdjacency(self.allocator, adj);
             return;
         };
-        @memcpy(np, node_path.items);
+        var np_filled: usize = 0;
+        for (node_path.items, 0..) |p, i| {
+            np[i] = self.allocator.dupe(u8, p) catch {
+                for (np[0..np_filled]) |s| self.allocator.free(s);
+                self.allocator.free(np);
+                self.allocator.free(edges_owned);
+                codegraph.freeAdjacency(self.allocator, adj);
+                return;
+            };
+            np_filled += 1;
+        }
 
         const nn = self.allocator.alloc([]const u8, n_nodes) catch {
+            for (np) |s| self.allocator.free(s);
+            self.allocator.free(np);
             self.allocator.free(edges_owned);
             codegraph.freeAdjacency(self.allocator, adj);
-            self.allocator.free(np);
             return;
         };
-        @memcpy(nn, node_name.items);
+        var nn_filled: usize = 0;
+        for (node_name.items, 0..) |nm, i| {
+            nn[i] = self.allocator.dupe(u8, nm) catch {
+                for (nn[0..nn_filled]) |s| self.allocator.free(s);
+                self.allocator.free(nn);
+                for (np) |s| self.allocator.free(s);
+                self.allocator.free(np);
+                self.allocator.free(edges_owned);
+                codegraph.freeAdjacency(self.allocator, adj);
+                return;
+            };
+            nn_filled += 1;
+        }
 
         const nl = self.allocator.alloc(u32, n_nodes) catch {
             self.allocator.free(edges_owned);
             codegraph.freeAdjacency(self.allocator, adj);
+            for (np) |s| self.allocator.free(s);
             self.allocator.free(np);
+            for (nn) |s| self.allocator.free(s);
             self.allocator.free(nn);
             return;
         };
@@ -4616,7 +4651,9 @@ pub const Explorer = struct {
         if (node_scores == null) {
             self.allocator.free(edges_owned);
             codegraph.freeAdjacency(self.allocator, adj);
+            for (np) |s| self.allocator.free(s);
             self.allocator.free(np);
+            for (nn) |s| self.allocator.free(s);
             self.allocator.free(nn);
             self.allocator.free(nl);
             return;
@@ -4642,7 +4679,9 @@ pub const Explorer = struct {
         const radj = radj_opt orelse {
             self.allocator.free(edges_owned);
             codegraph.freeAdjacency(self.allocator, adj);
+            for (np) |s| self.allocator.free(s);
             self.allocator.free(np);
+            for (nn) |s| self.allocator.free(s);
             self.allocator.free(nn);
             self.allocator.free(nl);
             return;
@@ -4650,7 +4689,7 @@ pub const Explorer = struct {
 
         if (self.call_centrality == null) {
             var cmap = std.StringHashMap(f32).init(self.allocator);
-            for (np, node_scores.?) |path, score| {
+            for (node_path.items, node_scores.?) |path, score| {
                 if (score == 0) continue;
                 const gop = cmap.getOrPut(path) catch continue;
                 if (!gop.found_existing) gop.value_ptr.* = 0;
