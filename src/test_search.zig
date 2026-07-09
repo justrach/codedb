@@ -1900,6 +1900,28 @@ test "audit: searchContent tier0 use_line_hits early-return skips rerank basenam
 
 // src/explore.zig renderPlainSearch — the MCP codedb_search fast-path rendered in raw
 // hit-count order with no basename prior, so a noise file outranked the canonical match.
+test "def-first: renderPlainSearch ranks the defining file above higher-count mentions" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // core.zig DEFINES frobnicate (basename != query, a single hit).
+    try explorer.indexFile("src/core.zig", "pub fn frobnicate() void {}\n");
+    // callers.zig merely mentions it many times (no definition, higher count).
+    try explorer.indexFile("src/callers.zig", "frobnicate();\nfrobnicate();\nfrobnicate();\nfrobnicate();\nfrobnicate();\n");
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    const rendered = try explorer.renderPlainSearch("frobnicate", testing.allocator, &out, 2, false);
+    try testing.expect(rendered);
+
+    const ci = std.mem.indexOf(u8, out.items, "src/core.zig");
+    const ai = std.mem.indexOf(u8, out.items, "src/callers.zig");
+    try testing.expect(ci != null and ai != null);
+    // the file that DEFINES frobnicate must render before the high-count mentions
+    try testing.expect(ci.? < ai.?);
+}
+
 test "audit: renderPlainSearch fast-path ranks lexical count over canonical basename" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
