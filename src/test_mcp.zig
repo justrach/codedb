@@ -3089,3 +3089,17 @@ test "search: exact-symbol query surfaces the definition site inline (fewer roun
     try testing.expect(std.mem.indexOf(u8, out.items, "is defined at") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "src/thing.zig:1") != null);
 }
+
+test "mcp: emit-rich-blocks defaults lean for agent clients, rich for GUI panels" {
+    // Assumes a clean env (no CODEDB_MCP_LEAN/RICH override), as under `zig build test`.
+    // Agent harnesses forward tool text straight into model context, so they
+    // default LEAN — no colored summary / guidance blocks to pay output tokens for.
+    try testing.expect(!mcp_mod.mcpEmitRichBlocks(null)); // no clientInfo -> lean
+    try testing.expect(!mcp_mod.mcpEmitRichBlocks("claude-code"));
+    try testing.expect(!mcp_mod.mcpEmitRichBlocks("codex"));
+    try testing.expect(!mcp_mod.mcpEmitRichBlocks("cursor"));
+    // Desktop GUI chat clients render a human-facing result panel -> rich blocks,
+    // matched case-insensitively.
+    try testing.expect(mcp_mod.mcpEmitRichBlocks("claude-ai"));
+    try testing.expect(mcp_mod.mcpEmitRichBlocks("Claude-AI"));
+}
