@@ -3040,6 +3040,106 @@ test "issue-619: serve/mcp daemon reclaims the cli socket after the owner exits"
     if (rc.fd) |fd| _ = std.c.close(fd);
 }
 
+// ── #619: cli-daemon socket handover ────────────────────────────────────────
+// The reclaim test above covers a serve/mcp daemon retrying until a dead or
+// idle-exited owner lets go. This test covers the other half: an owner that
+// is still LIVE must be actively signalled to give the socket up right away
+// (freshest-wins), instead of the newcomer waiting out a full retry/idle
+// cadence. cliServeConn is a private helper, so the owner side is simulated
+// here with a tiny raw accept loop that mirrors exactly what it does on
+// receipt of cli_yield_sentinel: read the frame, verify it, then give the
+// socket up (close the listener + unlink the path).
+const CliHandoverOwnerSim = struct {
+    fd: c_int,
+    sock_path: []const u8,
+    sd: *std.atomic.Value(bool),
+    saw_sentinel: bool = false,
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn run(self: *@This()) void {
+        // Mirror the real accept loop: keep accepting connections and only
+        // give the socket up once one of them is the actual yield sentinel.
+        // A plain liveness probe (cliSocketLive — connect then close with no
+        // data) must NOT be mistaken for a yield request.
+        while (true) {
+            const conn = std.c.accept(self.fd, null, null);
+            if (conn < 0) break;
+            var matched = false;
+            var hdr: [5]u8 = undefined;
+            var off: usize = 0;
+            while (off < hdr.len) {
+                const n = std.c.read(conn, hdr[off..].ptr, hdr.len - off);
+                if (n <= 0) break;
+                off += @intCast(n);
+            }
+            if (off == hdr.len) {
+                const blob_len = std.mem.readInt(u32, hdr[1..5], .little);
+                if (blob_len > 0 and blob_len <= 256) {
+                    var buf: [256]u8 = undefined;
+                    var boff: usize = 0;
+                    while (boff < blob_len) {
+                        const n = std.c.read(conn, buf[boff..].ptr, blob_len - boff);
+                        if (n <= 0) break;
+                        boff += @intCast(n);
+                    }
+                    if (boff == blob_len) {
+                        matched = std.mem.eql(u8, buf[0..blob_len], cli_proxy_mod.cli_yield_sentinel);
+                    }
+                }
+            }
+            _ = std.c.close(conn);
+            if (matched) {
+                self.saw_sentinel = true;
+                break;
+            }
+        }
+        // Mirror the real accept loop's response to a yield request: give the
+        // socket up entirely rather than waiting for an idle timeout.
+        _ = std.c.close(self.fd);
+        var zbuf: [128]u8 = undefined;
+        if (std.fmt.bufPrintZ(&zbuf, "{s}", .{self.sock_path})) |z| {
+            _ = std.c.unlink(z.ptr);
+        } else |_| {}
+        self.sd.store(true, .release);
+        self.done.store(true, .release);
+    }
+};
+
+test "issue-619: serve/mcp daemon signals a live owner to yield instead of waiting out the retry cadence" {
+    if (@import("builtin").os.tag == .windows) return; // no unix-socket proxy on Windows
+
+    const abs_root = "/codedb-test-issue619-handover";
+    var pbuf: [128]u8 = undefined;
+    const sock_path = cli_proxy_mod.cliSocketPath(&pbuf, abs_root).?;
+    var zbuf: [128]u8 = undefined;
+    const sock_z = try std.fmt.bufPrintZ(&zbuf, "{s}", .{sock_path});
+    _ = std.c.unlink(sock_z.ptr);
+    defer _ = std.c.unlink(sock_z.ptr);
+
+    // A live owner holds the socket (stands in for an auto-spawned
+    // cli-daemon or another serve/mcp daemon — same code path either way).
+    var owner_sd = std.atomic.Value(bool).init(false);
+    const owner_fd = cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &owner_sd).?;
+    var owner_sim = CliHandoverOwnerSim{ .fd = owner_fd, .sock_path = sock_path, .sd = &owner_sd };
+    const owner_thread = try std.Thread.spawn(.{}, CliHandoverOwnerSim.run, .{&owner_sim});
+
+    // Deliberately large retry interval: without an explicit yield signal,
+    // a passive retrying newcomer could only reclaim the socket after a full
+    // retry_interval_ms sleep (here 3000ms). The #619 handover instead sends
+    // a one-shot yield request the live owner honors immediately, so
+    // acquisition must complete far sooner than that passive cadence.
+    var newcomer_sd = std.atomic.Value(bool).init(false);
+    const start_ms = cio.milliTimestamp();
+    const newcomer_fd = cli_proxy_mod.cliAcquireListener(sock_path, true, 3000, &newcomer_sd);
+    const elapsed_ms = cio.milliTimestamp() - start_ms;
+
+    owner_thread.join();
+    try testing.expect(owner_sim.saw_sentinel); // owner actually received the sentinel frame
+    try testing.expect(newcomer_fd != null); // and the newcomer took the socket over
+    try testing.expect(elapsed_ms < 1500); // far under the passive 3000ms retry cadence
+    if (newcomer_fd) |fd| _ = std.c.close(fd);
+}
+
 test "windows: spawnDetached command line round-trips argv with trailing backslashes" {
     if (builtin.os.tag != .windows) return error.SkipZigTest;
     const alloc = testing.allocator;
