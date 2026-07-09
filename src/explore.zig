@@ -3685,6 +3685,19 @@ pub const Explorer = struct {
         return res;
     }
 
+    /// Trim a source line for search output: strip leading ASCII indentation
+    /// (the line number already locates it) and cap length, to cut agent output
+    /// tokens. Mirrors mcp.zig's trimMatchText (MAX 200 bytes, UTF-8-safe cut).
+    fn trimSearchLine(line: []const u8) struct { text: []const u8, truncated: bool } {
+        var t = line;
+        while (t.len > 0 and (t[0] == ' ' or t[0] == '\t')) t = t[1..];
+        const MAX: usize = 200;
+        if (t.len <= MAX) return .{ .text = t, .truncated = false };
+        var cut: usize = MAX;
+        while (cut > 0 and (t[cut] & 0xC0) == 0x80) cut -= 1;
+        return .{ .text = t[0..cut], .truncated = true };
+    }
+
     pub fn renderPlainSearch(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(u8), max_results: usize, paths_only: bool) !bool {
         // Rendered-output cache front door — same generation discipline as
         // searchContent's cache (see that wrapper for the staleness
@@ -3927,7 +3940,12 @@ pub const Explorer = struct {
                     }
                 } else {
                     shown += 1;
-                    try w.print("  {s}:{d}: {s}\n", .{ stats.path, line_span.line, content[line_span.start..line_span.end] });
+                    const mt = trimSearchLine(content[line_span.start..line_span.end]);
+                    if (mt.truncated) {
+                        try w.print("  {s}:{d}: {s}…\n", .{ stats.path, line_span.line, mt.text });
+                    } else {
+                        try w.print("  {s}:{d}: {s}\n", .{ stats.path, line_span.line, mt.text });
+                    }
                 }
                 if (rendered >= max_results) break;
             }

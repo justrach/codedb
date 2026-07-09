@@ -1723,6 +1723,47 @@ pub fn depsHint(result_count: usize) ?[]const u8 {
     return "↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.\n";
 }
 
+/// Cap on printed match-text bytes (~50 tokens) — trims agent output tokens
+/// on search-result rendering without dropping results or reordering them.
+const MAX_MATCH_LINE_BYTES: usize = 200;
+
+/// Strip leading ASCII whitespace (indentation is pure token waste — the
+/// agent already has the line number) and cap at MAX_MATCH_LINE_BYTES,
+/// backing off to a UTF-8 boundary so a multi-byte sequence is never split.
+fn trimMatchText(text: []const u8) struct { text: []const u8, truncated: bool } {
+    var start: usize = 0;
+    while (start < text.len and (text[start] == ' ' or text[start] == '\t')) : (start += 1) {}
+    const trimmed = text[start..];
+    if (trimmed.len <= MAX_MATCH_LINE_BYTES) return .{ .text = trimmed, .truncated = false };
+    var cut = MAX_MATCH_LINE_BYTES;
+    while (cut > 0 and (trimmed[cut] & 0xC0) == 0x80) cut -= 1;
+    return .{ .text = trimmed[0..cut], .truncated = true };
+}
+
+/// Write "<prefix><path>:<line_num>: <trimmed text>" (plus "…" if capped),
+/// WITHOUT a trailing newline — used by callers that append a scope suffix
+/// (" [in <scope> ...]") before the line ends.
+fn appendMatchLineNoNL(w: anytype, prefix: []const u8, path: []const u8, line_num: u32, line_text: []const u8) void {
+    const r = trimMatchText(line_text);
+    if (r.truncated) {
+        w.print("{s}{s}:{d}: {s}\u{2026}", .{ prefix, path, line_num, r.text }) catch {};
+    } else {
+        w.print("{s}{s}:{d}: {s}", .{ prefix, path, line_num, r.text }) catch {};
+    }
+}
+
+/// Render one search-result line: "<prefix><path>:<line>" plus ": <text>" when
+/// line_text is non-null. Trims the match text (see trimMatchText) to save
+/// agent output tokens. prefix is "  " for codedb_search, "- " for bundle, "" for query.
+fn appendMatchLine(w: anytype, prefix: []const u8, path: []const u8, line_num: u32, line_text: ?[]const u8) void {
+    if (line_text) |t| {
+        appendMatchLineNoNL(w, prefix, path, line_num, t);
+        w.print("\n", .{}) catch {};
+    } else {
+        w.print("{s}{s}:{d}\n", .{ prefix, path, line_num }) catch {};
+    }
+}
+
 fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const query = getStr(args, "query") orelse {
         out.appendSlice(alloc, "error: missing 'query' argument") catch {};
@@ -1803,17 +1844,12 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
             if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
+                appendMatchLine(w, "  ", r.path, r.line_num, null);
             } else if (r.scope_name) |sn| {
-                w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                    r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-                }) catch {};
+                appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+                w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
             } else {
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
+                appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
             }
         }
     } else if (scope) {
@@ -1859,17 +1895,12 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 continue;
             }
             if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
+                appendMatchLine(w, "  ", r.path, r.line_num, null);
             } else if (r.scope_name) |sn| {
-                w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                    r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-                }) catch {};
+                appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+                w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
             } else {
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
+                appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
             }
             shown += 1;
         }
@@ -1920,11 +1951,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 }
                 continue;
             }
-            if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-            } else {
-                w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-            }
+            appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
             shown += 1;
         }
         if (shown < visible_total) {
@@ -2047,11 +2074,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                     }
                     continue;
                 }
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
+                appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
                 shown += 1;
             }
             if (shown < visible_total) {
@@ -2075,11 +2098,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 }
                 continue;
             }
-            if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-            } else {
-                w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-            }
+            appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
             shown += 1;
         }
         if (shown < visible_total) {
@@ -2174,11 +2193,10 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     for (kept.items) |kept_idx| {
         const r = results[kept_idx];
         if (r.scope_name) |sn| {
-            w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-            }) catch {};
+            appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+            w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
         } else {
-            w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+            appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
         }
     }
 }
@@ -2673,11 +2691,10 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                         any_callers = true;
                     }
                     if (r.scope_name) |sn| {
-                        wc.print("- {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                            r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-                        }) catch {};
+                        appendMatchLineNoNL(wc, "- ", r.path, r.line_num, r.line_text);
+                        wc.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
                     } else {
-                        wc.print("- {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+                        appendMatchLine(wc, "- ", r.path, r.line_num, r.line_text);
                     }
                     shown_for_sym += 1;
                     total_shown += 1;
@@ -4795,7 +4812,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 for (file_set.items) |p| path_set.put(p, {}) catch {};
                 for (results) |r| {
                     if (path_set.contains(r.path)) {
-                        w.print("{s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+                        appendMatchLine(w, "", r.path, r.line_num, r.line_text);
                         hit_set.put(r.path, {}) catch {};
                     }
                 }
@@ -4813,7 +4830,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 defer seen.deinit();
                 file_set.clearRetainingCapacity();
                 for (results) |r| {
-                    w.print("{s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+                    appendMatchLine(w, "", r.path, r.line_num, r.line_text);
                     if (!seen.contains(r.path)) {
                         // Dupe path — search results are freed by the defer above,
                         // but file_set must outlive this step for downstream ops
