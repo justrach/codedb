@@ -17,6 +17,7 @@ const DependencyGraph = explore.DependencyGraph;
 const SymbolLocation = explore.SymbolLocation;
 const mcp_mod = @import("mcp.zig");
 const AgentRegistry = @import("agent.zig").AgentRegistry;
+const watcher = @import("watcher.zig");
 
 test "issue-264: early exit at max_results misses valid matches in remaining candidates" {
     // searchContent stops as soon as result_list.items.len >= max_results.
@@ -703,7 +704,7 @@ test "bm25-recall-b: both-terms doc beats high-tf single-term doc" {
     // doc2 has only apple, but repeated 3x (high tf).
     // doc3 has only banana, once.
     // BM25 sums idf*tf_norm per term: doc1 accumulates two idf contributions
-    // while doc2 only gets one -- doc1 must rank first.
+    // while doc2 only gets one — doc1 must rank first.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -736,7 +737,7 @@ test "bm25-recall-b: both-terms doc beats high-tf single-term doc" {
     }
 }
 
-test "bm25-recall-c: df-saturation -- ubiquitous term has near-zero idf" {
+test "bm25-recall-c: df-saturation — ubiquitous term has near-zero idf" {
     // "the" appears in all 11 docs -> idf near zero, barely contributes.
     // "unique_marker" appears only in special.txt -> high idf, special.txt ranks first.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -2679,6 +2680,86 @@ test "skip-trigram: rebuildTrigrams prunes the files it just covered" {
     const r = try explorer.searchContent("marmottok", testing.allocator, 10);
     defer freeSearchResults(r);
     try testing.expectEqual(@as(usize, 1), r.len);
+}
+
+test "perf/a2: parallel buildTrigramsFromCache is result-identical to serial rebuildTrigrams (MCP cold-scan path)" {
+    // scanBg (the MCP cold-scan path) now routes the trigram build through
+    // watcher.buildTrigramsFromCache + a disk round-trip into
+    // MmapTrigramIndex, instead of the serial Explorer.rebuildTrigrams --
+    // same pattern the CLI cold-index path already uses (bootstrap.zig).
+    // This test proves the parallel builder produces a trigram index that
+    // answers searches identically to the old serial build, over a small
+    // multi-file corpus, going through the exact same disk write + mmap
+    // adopt sequence scanBg now performs.
+    const files = [_]struct { path: []const u8, content: []const u8 }{
+        .{ .path = "src/alpha.zig", .content = "fn alphaFunc() void { needle_one(); }\nconst shared_tok = 1;\n" },
+        .{ .path = "src/beta.zig", .content = "fn betaFunc() void {}\nconst shared_tok = 2; // needle_two\n" },
+        .{ .path = "src/gamma.zig", .content = "// unrelated file, no shared markers here\nfn gammaFunc() void {}\n" },
+        .{ .path = "src/delta.zig", .content = "fn deltaFunc() void { needle_one(); needle_two(); }\n" },
+    };
+
+    var serial = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer serial.deinit();
+    var parallel = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer parallel.deinit();
+
+    for (files) |f| {
+        try serial.indexFileSkipTrigram(f.path, f.content);
+        try parallel.indexFileSkipTrigram(f.path, f.content);
+    }
+    try testing.expectEqual(@as(usize, files.len), serial.skipTrigramFileCount());
+    try testing.expectEqual(@as(usize, files.len), parallel.skipTrigramFileCount());
+
+    // Old path: serial, in-place, one file at a time.
+    try serial.rebuildTrigrams();
+    try testing.expectEqual(@as(usize, 0), serial.skipTrigramFileCount());
+
+    // New path: parallel build over the ContentCache (multiple workers,
+    // forcing the multi-threaded branch), written to disk, then reloaded as
+    // an mmap index and adopted — byte-for-byte what scanBg does now.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path_len = try tmp_dir.dir.realPathFile(io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
+
+    const tmp_tri = try watcher.buildTrigramsFromCache(&parallel.contents, testing.allocator, testing.allocator, 4);
+    try tmp_tri.writeToDisk(io, tmp_path, null);
+    tmp_tri.deinit();
+    testing.allocator.destroy(tmp_tri);
+
+    const loaded = MmapTrigramIndex.initFromDisk(io, tmp_path, testing.allocator) orelse
+        return error.MmapInitFailed;
+    parallel.adoptTrigramIndex(.{ .mmap = loaded });
+    try testing.expectEqual(@as(usize, 0), parallel.skipTrigramFileCount());
+
+    const queries = [_][]const u8{ "needle_one", "needle_two", "shared_tok", "gammaFunc", "does_not_exist_anywhere" };
+    for (queries) |q| {
+        const serial_r = try serial.searchContent(q, testing.allocator, 100);
+        defer freeSearchResults(serial_r);
+        const parallel_r = try parallel.searchContent(q, testing.allocator, 100);
+        defer freeSearchResults(parallel_r);
+
+        const serial_paths = try testing.allocator.alloc([]const u8, serial_r.len);
+        defer testing.allocator.free(serial_paths);
+        for (serial_r, 0..) |r, i| serial_paths[i] = r.path;
+        const parallel_paths = try testing.allocator.alloc([]const u8, parallel_r.len);
+        defer testing.allocator.free(parallel_paths);
+        for (parallel_r, 0..) |r, i| parallel_paths[i] = r.path;
+
+        const lt = struct {
+            fn f(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.f;
+        std.mem.sort([]const u8, serial_paths, {}, lt);
+        std.mem.sort([]const u8, parallel_paths, {}, lt);
+
+        try testing.expectEqual(serial_paths.len, parallel_paths.len);
+        for (serial_paths, parallel_paths) |sp, pp| {
+            try testing.expectEqualStrings(sp, pp);
+        }
+    }
 }
 
 // ── warmup: queries.log replay ───────────────────────────────────────────────
