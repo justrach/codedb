@@ -1671,15 +1671,7 @@ pub fn isBareIdentifier(s: []const u8) bool {
 
 fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query: []const u8, out: *std.ArrayList(u8)) void {
     if (!isBareIdentifier(query)) return;
-    const spec = Explorer.SymbolSearchSpec{
-        .name = query,
-        .prefix = null,
-        .pattern = null,
-        .kind = null,
-        .fuzzy = false,
-        .max_results = 1,
-    };
-    const results = explorer.searchSymbols(spec, alloc) catch return;
+    const results = explorer.findAllSymbols(query, alloc) catch return;
     defer {
         for (results) |r| {
             alloc.free(r.path);
@@ -1689,8 +1681,36 @@ fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query:
         alloc.free(results);
     }
     if (results.len == 0) return;
+
+    // Fewer round-trips: `query` is an indexed symbol, so instead of nudging the
+    // agent to make a *second* codedb_symbol call, surface the definition site(s)
+    // inline. Prefer real definitions over import/comment matches (same filter as
+    // renderSymbolDefsFast). One call now answers "where is X defined?".
+    var has_def = false;
+    for (results) |r| {
+        if (r.symbol.kind != .import and r.symbol.kind != .comment_block) {
+            has_def = true;
+            break;
+        }
+    }
+    var total_defs: usize = 0;
+    for (results) |r| {
+        const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+        if (!has_def or is_def) total_defs += 1;
+    }
     const w = cio.listWriter(out, alloc);
-    w.print("↪ '{s}' is an indexed symbol — codedb_symbol returns its definition and codedb_callers its call sites in one call (no search+read needed).\n", .{query}) catch {};
+    const cap: usize = 3;
+    var shown: usize = 0;
+    for (results) |r| {
+        if (shown >= cap) break;
+        const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+        if (has_def and !is_def) continue;
+        if (shown == 0) w.print("↪ '{s}' is defined at (codedb_symbol for bodies):\n", .{query}) catch {};
+        w.print("  {s}:{d} ({s})\n", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind) }) catch {};
+        shown += 1;
+    }
+    if (shown == 0) return;
+    if (total_defs > shown) w.print("  (+{d} more — codedb_symbol '{s}')\n", .{ total_defs - shown, query }) catch {};
 }
 
 // Issue #626 follow-up: codedb_deps is the one structural tool nothing points
@@ -1701,6 +1721,47 @@ fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query:
 pub fn depsHint(result_count: usize) ?[]const u8 {
     if (result_count != 1) return null;
     return "↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.\n";
+}
+
+/// Cap on printed match-text bytes (~50 tokens) — trims agent output tokens
+/// on search-result rendering without dropping results or reordering them.
+const MAX_MATCH_LINE_BYTES: usize = 200;
+
+/// Strip leading ASCII whitespace (indentation is pure token waste — the
+/// agent already has the line number) and cap at MAX_MATCH_LINE_BYTES,
+/// backing off to a UTF-8 boundary so a multi-byte sequence is never split.
+fn trimMatchText(text: []const u8) struct { text: []const u8, truncated: bool } {
+    var start: usize = 0;
+    while (start < text.len and (text[start] == ' ' or text[start] == '\t')) : (start += 1) {}
+    const trimmed = text[start..];
+    if (trimmed.len <= MAX_MATCH_LINE_BYTES) return .{ .text = trimmed, .truncated = false };
+    var cut = MAX_MATCH_LINE_BYTES;
+    while (cut > 0 and (trimmed[cut] & 0xC0) == 0x80) cut -= 1;
+    return .{ .text = trimmed[0..cut], .truncated = true };
+}
+
+/// Write "<prefix><path>:<line_num>: <trimmed text>" (plus "…" if capped),
+/// WITHOUT a trailing newline — used by callers that append a scope suffix
+/// (" [in <scope> ...]") before the line ends.
+fn appendMatchLineNoNL(w: anytype, prefix: []const u8, path: []const u8, line_num: u32, line_text: []const u8) void {
+    const r = trimMatchText(line_text);
+    if (r.truncated) {
+        w.print("{s}{s}:{d}: {s}\u{2026}", .{ prefix, path, line_num, r.text }) catch {};
+    } else {
+        w.print("{s}{s}:{d}: {s}", .{ prefix, path, line_num, r.text }) catch {};
+    }
+}
+
+/// Render one search-result line: "<prefix><path>:<line>" plus ": <text>" when
+/// line_text is non-null. Trims the match text (see trimMatchText) to save
+/// agent output tokens. prefix is "  " for codedb_search, "- " for bundle, "" for query.
+fn appendMatchLine(w: anytype, prefix: []const u8, path: []const u8, line_num: u32, line_text: ?[]const u8) void {
+    if (line_text) |t| {
+        appendMatchLineNoNL(w, prefix, path, line_num, t);
+        w.print("\n", .{}) catch {};
+    } else {
+        w.print("{s}{s}:{d}\n", .{ prefix, path, line_num }) catch {};
+    }
 }
 
 fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
@@ -1783,17 +1844,12 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
             if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
+                appendMatchLine(w, "  ", r.path, r.line_num, null);
             } else if (r.scope_name) |sn| {
-                w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                    r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-                }) catch {};
+                appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+                w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
             } else {
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
+                appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
             }
         }
     } else if (scope) {
@@ -1839,17 +1895,12 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 continue;
             }
             if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
+                appendMatchLine(w, "  ", r.path, r.line_num, null);
             } else if (r.scope_name) |sn| {
-                w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                    r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-                }) catch {};
+                appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+                w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
             } else {
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
+                appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
             }
             shown += 1;
         }
@@ -1900,11 +1951,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 }
                 continue;
             }
-            if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-            } else {
-                w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-            }
+            appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
             shown += 1;
         }
         if (shown < visible_total) {
@@ -2027,11 +2074,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                     }
                     continue;
                 }
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
+                appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
                 shown += 1;
             }
             if (shown < visible_total) {
@@ -2055,11 +2098,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 }
                 continue;
             }
-            if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-            } else {
-                w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-            }
+            appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
             shown += 1;
         }
         if (shown < visible_total) {
@@ -2154,11 +2193,10 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     for (kept.items) |kept_idx| {
         const r = results[kept_idx];
         if (r.scope_name) |sn| {
-            w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-            }) catch {};
+            appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+            w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
         } else {
-            w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+            appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
         }
     }
 }
@@ -2653,11 +2691,10 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                         any_callers = true;
                     }
                     if (r.scope_name) |sn| {
-                        wc.print("- {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                            r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-                        }) catch {};
+                        appendMatchLineNoNL(wc, "- ", r.path, r.line_num, r.line_text);
+                        wc.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
                     } else {
-                        wc.print("- {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+                        appendMatchLine(wc, "- ", r.path, r.line_num, r.line_text);
                     }
                     shown_for_sym += 1;
                     total_shown += 1;
@@ -4775,7 +4812,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 for (file_set.items) |p| path_set.put(p, {}) catch {};
                 for (results) |r| {
                     if (path_set.contains(r.path)) {
-                        w.print("{s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+                        appendMatchLine(w, "", r.path, r.line_num, r.line_text);
                         hit_set.put(r.path, {}) catch {};
                     }
                 }
@@ -4793,7 +4830,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 defer seen.deinit();
                 file_set.clearRetainingCapacity();
                 for (results) |r| {
-                    w.print("{s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+                    appendMatchLine(w, "", r.path, r.line_num, r.line_text);
                     if (!seen.contains(r.path)) {
                         // Dupe path — search results are freed by the defer above,
                         // but file_set must outlive this step for downstream ops

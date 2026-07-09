@@ -3058,3 +3058,34 @@ test "windows: spawnDetached command line round-trips argv with trailing backsla
     }
     try testing.expect(it.next() == null);
 }
+
+test "search: exact-symbol query surfaces the definition site inline (fewer round-trips, #1)" {
+    // codedb_search for a bare identifier that is an indexed symbol should lead
+    // with the def location, so the agent doesn't have to make a 2nd
+    // codedb_symbol call just to learn where it is defined.
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/thing.zig", "pub fn parseThing() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const search_json =
+        \\{"query":"parseThing"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, search_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "is defined at") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/thing.zig:1") != null);
+}
