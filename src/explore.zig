@@ -3931,6 +3931,31 @@ pub const Explorer = struct {
             // OOM building the offset table → bail to the full searchContent
             // path (caller falls through), which renders the same results.
             const n_spans = self.line_offsets.lineSpans(stats.path, content, target_lines[0..target_count], &spans) orelse return false;
+            // Def-line-first: within a file that defines the query symbol, render the
+            // definition line(s) before mere mentions — stable-moves matching spans to
+            // the front (reorders the OUTPUT spans, not lineSpans' sorted input).
+            if (stats.defines) {
+                if (self.outlines.get(stats.path)) |outline| {
+                    var def_w: usize = 0;
+                    var i: usize = 0;
+                    while (i < n_spans) : (i += 1) {
+                        var is_def = false;
+                        for (outline.symbols.items) |sym| {
+                            if (sym.line_start == spans[i].line and asciiEqlIgnoreCase(sym.name, query)) {
+                                is_def = true;
+                                break;
+                            }
+                        }
+                        if (is_def) {
+                            const tmp = spans[i];
+                            var j: usize = i;
+                            while (j > def_w) : (j -= 1) spans[j] = spans[j - 1];
+                            spans[def_w] = tmp;
+                            def_w += 1;
+                        }
+                    }
+                }
+            }
             for (spans[0..n_spans]) |line_span| {
                 rendered += 1;
 
