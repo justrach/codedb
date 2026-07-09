@@ -3750,6 +3750,7 @@ pub const Explorer = struct {
             // if a file's hits were ever non-contiguous).
             hits_end: usize,
             is_doc: bool,
+            defines: bool,
         };
 
         var tier0_files_buf: [512]Tier0File = undefined;
@@ -3806,6 +3807,7 @@ pub const Explorer = struct {
                     .first_seen = run_start,
                     .hits_end = run_end,
                     .is_doc = isDocLanguage(detectLanguage(hit_path)),
+                    .defines = self.fileDefinesSymbol(hit_path, query),
                 };
                 tier0_files_len += 1;
             }
@@ -3857,7 +3859,9 @@ pub const Explorer = struct {
             var priors_buf: [512]f32 = undefined;
             var order_buf: [512]u32 = undefined;
             for (tier0_files, 0..) |stats, i| {
-                priors_buf[i] = RankCtx.prior(stats.path, query);
+                var pr = RankCtx.prior(stats.path, query);
+                if (stats.defines) pr += 20.0; // float the actual definition above mentions
+                priors_buf[i] = pr;
                 order_buf[i] = @intCast(i);
             }
             const order = order_buf[0..tier0_files.len];
@@ -3927,6 +3931,31 @@ pub const Explorer = struct {
             // OOM building the offset table → bail to the full searchContent
             // path (caller falls through), which renders the same results.
             const n_spans = self.line_offsets.lineSpans(stats.path, content, target_lines[0..target_count], &spans) orelse return false;
+            // Def-line-first: within a file that defines the query symbol, render the
+            // definition line(s) before mere mentions — stable-moves matching spans to
+            // the front (reorders the OUTPUT spans, not lineSpans' sorted input).
+            if (stats.defines) {
+                if (self.outlines.get(stats.path)) |outline| {
+                    var def_w: usize = 0;
+                    var i: usize = 0;
+                    while (i < n_spans) : (i += 1) {
+                        var is_def = false;
+                        for (outline.symbols.items) |sym| {
+                            if (sym.line_start == spans[i].line and asciiEqlIgnoreCase(sym.name, query)) {
+                                is_def = true;
+                                break;
+                            }
+                        }
+                        if (is_def) {
+                            const tmp = spans[i];
+                            var j: usize = i;
+                            while (j > def_w) : (j -= 1) spans[j] = spans[j - 1];
+                            spans[def_w] = tmp;
+                            def_w += 1;
+                        }
+                    }
+                }
+            }
             for (spans[0..n_spans]) |line_span| {
                 rendered += 1;
 
