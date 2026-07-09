@@ -521,7 +521,7 @@ pub const BenchContext = struct {
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
     ) void {
-        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, 1, null);
+        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, 1, null, null);
     }
 
     pub fn runToolCall(
@@ -842,6 +842,7 @@ const Session = struct {
     }
 
     fn deinit(self: *Session) void {
+        if (self.client_name) |cn| self.alloc.free(cn);
         self.freeRoots();
         self.roots.deinit(self.alloc);
     }
@@ -1033,7 +1034,7 @@ pub fn run(
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) writeResult(alloc, stdout, id, tools_list_response);
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id, &session.governor);
+            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id, &session.governor, session.client_name);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
         } else {
@@ -1060,7 +1061,11 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
         const ci = p.object.get("clientInfo") orelse break :client_name;
         if (ci != .object) break :client_name;
         if (mcpj.getStr(&ci.object, "name")) |name| {
-            s.client_name = name;
+            // Own the string: `name` borrows the initialize request's parsed
+            // JSON, freed at the end of this dispatch iteration; the
+            // client-aware block policy reads it on later tools/call requests.
+            if (s.client_name) |old| s.alloc.free(old);
+            s.client_name = s.alloc.dupe(u8, name) catch null;
         }
     }
     // #505 / #506: negotiate the protocol version with the client.
@@ -1197,6 +1202,7 @@ fn handleCall(
     deferred_scan: ?*DeferredScan,
     edit_agent_id: u64,
     governor: ?*ConvergenceGovernor,
+    client_name: ?[]const u8,
 ) void {
     const is_notification = id == null;
 
@@ -1275,7 +1281,7 @@ fn handleCall(
     }
     if (is_notification) return;
 
-    const lean = mcpLeanMode();
+    const lean = !mcpEmitRichBlocks(client_name);
 
     // Block 1: Human-readable colored summary (ANSI — preview pane always
     // renders it). Skipped in lean mode (agents don't render ANSI; the
@@ -5495,22 +5501,56 @@ pub fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json
 // ── MCP UX: 3-block response helpers ────────────────────────────────────────
 // Colors are always on — MCP preview pane always renders ANSI. No TTY check.
 
-var mcp_lean_mode_cached: ?bool = null;
+const McpBlockPolicy = enum { default, lean, rich };
+var mcp_env_policy_cached: ?McpBlockPolicy = null;
 
-/// True when CODEDB_MCP_LEAN is set (any non-empty value). Cached on first
-/// read. When true, MCP responses omit Block 1 (colored summary header) and
-/// Block 3 (guidance hints) — emitting only Block 2 (raw data). Saves
-/// tokens for agent consumers that can't render ANSI and don't need the
-/// hints.
-fn mcpLeanMode() bool {
-    if (mcp_lean_mode_cached) |v| return v;
-    const v = cio.posixGetenv("CODEDB_MCP_LEAN") orelse {
-        mcp_lean_mode_cached = false;
-        return false;
-    };
-    const enabled = v.len > 0 and !std.mem.eql(u8, v, "0") and !std.mem.eql(u8, v, "false");
-    mcp_lean_mode_cached = enabled;
-    return enabled;
+fn mcpEnvTruthy(v: []const u8) bool {
+    return v.len > 0 and !std.mem.eql(u8, v, "0") and !std.mem.eql(u8, v, "false");
+}
+
+/// Global env override for the human-facing summary/guidance blocks.
+/// CODEDB_MCP_LEAN wins over CODEDB_MCP_RICH; each accepts 1/true (on) or
+/// 0/false (off). Cached on first read.
+fn mcpEnvPolicy() McpBlockPolicy {
+    if (mcp_env_policy_cached) |v| return v;
+    var policy: McpBlockPolicy = .default;
+    if (cio.posixGetenv("CODEDB_MCP_LEAN")) |v| {
+        policy = if (mcpEnvTruthy(v)) .lean else .rich;
+    } else if (cio.posixGetenv("CODEDB_MCP_RICH")) |v| {
+        policy = if (mcpEnvTruthy(v)) .rich else .lean;
+    }
+    mcp_env_policy_cached = policy;
+    return policy;
+}
+
+/// Built-in "rich" allowlist: desktop GUI chat clients that render tool
+/// results in a human-facing panel. Agent harnesses (claude-code, codex,
+/// cursor, ...) are intentionally absent — they forward tool text straight
+/// into model context, so they default lean to save output tokens.
+fn mcpBuiltinRichClient(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "claude-ai");
+}
+
+/// Decide whether to emit Block 1 (colored summary) + Block 3 (guidance).
+/// Default is LEAN (omit them): agents can't render ANSI and pay output
+/// tokens for a summary that duplicates Block 2. Rich is emitted only for
+/// human-facing GUI clients (built-in allowlist, extended by the
+/// comma-separated CODEDB_MCP_RICH_CLIENTS env). Env policy overrides win.
+pub fn mcpEmitRichBlocks(client_name: ?[]const u8) bool {
+    switch (mcpEnvPolicy()) {
+        .lean => return false,
+        .rich => return true,
+        .default => {},
+    }
+    const name = client_name orelse return false;
+    if (cio.posixGetenv("CODEDB_MCP_RICH_CLIENTS")) |list| {
+        var it = std.mem.tokenizeScalar(u8, list, ',');
+        while (it.next()) |entry| {
+            const trimmed = std.mem.trim(u8, entry, " \t");
+            if (trimmed.len > 0 and std.ascii.eqlIgnoreCase(name, trimmed)) return true;
+        }
+    }
+    return mcpBuiltinRichClient(name);
 }
 
 const MCP_RESET = "\x1b[0m";

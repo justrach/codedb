@@ -261,7 +261,35 @@ The installer does this for you.
 
 ---
 
-## 7. Going deeper
+## 7. Response verbosity — lean vs rich (token cost)
+
+Every MCP tool result carries the data block the model consumes
+(`audience: assistant`). Interactive clients also get two `audience: user`
+blocks: a colored one-line summary and a follow-up hint. Well-behaved clients
+render those in a preview pane and keep them out of the model context — but
+many forward everything to the model, where they cost output tokens for output
+the model can't render (they add ~34% to a small result like `codedb_symbol`).
+
+codedb decides per session, from the `clientInfo.name` sent at `initialize`:
+
+- **Agent harnesses default lean** (data block only) — `claude-code`, `codex`,
+  and any client not on the rich allowlist.
+- **Human-facing GUI clients get the rich blocks** — currently `claude-ai`
+  (Claude Desktop).
+
+Override the default:
+
+| Env var | Effect |
+|---|---|
+| `CODEDB_MCP_LEAN=1` | Force lean for every client (data block only). |
+| `CODEDB_MCP_RICH=1` | Force rich for every client. |
+| `CODEDB_MCP_RICH_CLIENTS=name1,name2` | Add clients (by `clientInfo.name`, case-insensitive) to the rich allowlist. |
+
+`CODEDB_MCP_LEAN` takes precedence over `CODEDB_MCP_RICH`.
+
+---
+
+## 8. Going deeper
 
 - [Architecture](architecture.md) — engine internals, index layout
 - [CLI reference](cli.md) — every command, every flag
