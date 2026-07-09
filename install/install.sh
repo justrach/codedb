@@ -224,6 +224,16 @@ hooks_dir = os.path.join(home, ".claude", "hooks")
 settings_path = os.path.join(home, ".claude", "settings.json")
 os.makedirs(hooks_dir, exist_ok=True)
 
+# Opt-out: CODEDB_NO_HOOKS=1 at install time, or a persisted removal marker,
+# skips (re-)registering the PreToolUse block-legacy hook. Without this, any
+# reinstall/update silently re-adds a hook the user deliberately removed.
+no_hooks_marker = os.path.join(home, ".codedb", "no-hooks")
+skip_pretooluse = bool(os.environ.get("CODEDB_NO_HOOKS")) or os.path.exists(no_hooks_marker)
+if os.environ.get("CODEDB_NO_HOOKS") and not os.path.exists(no_hooks_marker):
+    os.makedirs(os.path.dirname(no_hooks_marker), exist_ok=True)
+    with open(no_hooks_marker, "w") as f:
+        f.write("")
+
 scripts = {
     "codedb-block-legacy.sh": r'''#!/bin/bash
 # codedb PreToolUse guard. Nudges agents from native file tools to codedb —
@@ -339,7 +349,8 @@ def merge_hook(event, new_entry):
         existing.append(new_entry)
     hooks[event] = existing
 
-merge_hook("PreToolUse", {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-block-legacy.sh"}]})
+if not skip_pretooluse:
+    merge_hook("PreToolUse", {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-block-legacy.sh"}]})
 merge_hook("SessionStart", {"matcher": "", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-warmup.sh"}]})
 
 # Auto-allow codedb's own MCP tools so callers aren't prompted for every
