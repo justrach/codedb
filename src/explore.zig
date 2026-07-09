@@ -3573,19 +3573,23 @@ pub const Explorer = struct {
                     if (!gop_h.found_existing) gop_h.value_ptr.* = 0;
                     gop_h.value_ptr.* += @intCast(@min(hpf_run_end - hpf_run_start, std.math.maxInt(u32)));
                 }
+                const SortKey = struct { count: u32, len: usize, path: []const u8 };
+                var sort_keys = try allocator.alloc(SortKey, cp.len);
+                defer allocator.free(sort_keys);
+                for (cp, 0..) |p, i| {
+                    const cnt = hits_per_file.get(p) orelse 0;
+                    const clen = if (self.contents.get(p)) |c| c.len else std.math.maxInt(usize);
+                    sort_keys[i] = .{ .count = cnt, .len = clen, .path = p };
+                }
                 const SortCtx = struct {
-                    contents: *ContentCache,
-                    counts: *const std.StringHashMap(u32),
-                    pub fn lessThan(ctx: @This(), a: []const u8, b: []const u8) bool {
-                        const a_count = ctx.counts.get(a) orelse 0;
-                        const b_count = ctx.counts.get(b) orelse 0;
-                        if (a_count != b_count) return a_count > b_count;
-                        const a_len = if (ctx.contents.get(a)) |c| c.len else std.math.maxInt(usize);
-                        const b_len = if (ctx.contents.get(b)) |c| c.len else std.math.maxInt(usize);
-                        return a_len < b_len;
+                    pub fn lessThan(_: void, a: SortKey, b: SortKey) bool {
+                        if (a.count != b.count) return a.count > b.count;
+                        return a.len < b.len;
                     }
                 };
-                std.mem.sort([]const u8, @constCast(cp), SortCtx{ .contents = &self.contents, .counts = &hits_per_file }, SortCtx.lessThan);
+                std.mem.sort(SortKey, sort_keys, {}, SortCtx.lessThan);
+                const cp_mut = @constCast(cp);
+                for (sort_keys, 0..) |sk, i| cp_mut[i] = sk.path;
 
                 const estimated_total = cp.len + self.skip_trigram_files.count();
                 const max_per_file = @max(@as(usize, 1), max_results / @max(@as(usize, 1), estimated_total));
@@ -4877,13 +4881,8 @@ pub const Explorer = struct {
             // df: distinct doc_ids in this posting list. tf: count of (term,doc)
             // entries (each entry is a distinct line per indexFile dedup).
             // line_hits: per-doc map of line_num → count for best-line picking.
-            var doc_tf = U32HashMap(u32).init(ta);
             var doc_best_line = U32HashMap(struct { line: u32, count: u32 }).init(ta);
             for (hits) |h| {
-                const tf_gop = try doc_tf.getOrPut(h.doc_id);
-                if (!tf_gop.found_existing) tf_gop.value_ptr.* = 0;
-                tf_gop.value_ptr.* += 1;
-
                 const ln_gop = try doc_best_line.getOrPut(h.doc_id);
                 if (!ln_gop.found_existing) {
                     ln_gop.value_ptr.* = .{ .line = h.line_num, .count = 1 };
@@ -4896,23 +4895,23 @@ pub const Explorer = struct {
                     ln_gop.value_ptr.count += 1;
                 }
             }
-            const df: u32 = @intCast(doc_tf.count());
+            const df: u32 = @intCast(doc_best_line.count());
             // BM25 idf with the +1 smoothing variant: log(1 + (N - df + 0.5)/(df + 0.5))
             const num: f32 = @as(f32, @floatFromInt(N)) - @as(f32, @floatFromInt(df)) + 0.5;
             const den: f32 = @as(f32, @floatFromInt(df)) + 0.5;
             const idf: f32 = @log(1.0 + num / den);
 
-            var tf_iter = doc_tf.iterator();
+            var tf_iter = doc_best_line.iterator();
             while (tf_iter.next()) |entry| {
                 const doc_id = entry.key_ptr.*;
-                const tf: f32 = @floatFromInt(entry.value_ptr.*);
+                const tf: f32 = @floatFromInt(entry.value_ptr.count);
                 const dl_raw = self.word_index.docLength(doc_id);
                 const dl: f32 = if (dl_raw == 0) 1.0 else @floatFromInt(dl_raw);
                 const norm = 1.0 - b + b * (dl / avgdl);
                 const tf_sat = (tf * (k1 + 1.0)) / (tf + k1 * norm);
                 const term_score = idf * (tf_sat + bm25_plus_delta);
 
-                const ln_info = doc_best_line.get(doc_id) orelse continue;
+                const ln_info = entry.value_ptr.*;
                 const agg_gop = try per_doc.getOrPut(doc_id);
                 if (!agg_gop.found_existing) {
                     agg_gop.value_ptr.* = .{

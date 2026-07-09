@@ -1671,15 +1671,7 @@ pub fn isBareIdentifier(s: []const u8) bool {
 
 fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query: []const u8, out: *std.ArrayList(u8)) void {
     if (!isBareIdentifier(query)) return;
-    const spec = Explorer.SymbolSearchSpec{
-        .name = query,
-        .prefix = null,
-        .pattern = null,
-        .kind = null,
-        .fuzzy = false,
-        .max_results = 1,
-    };
-    const results = explorer.searchSymbols(spec, alloc) catch return;
+    const results = explorer.findAllSymbols(query, alloc) catch return;
     defer {
         for (results) |r| {
             alloc.free(r.path);
