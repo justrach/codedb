@@ -89,20 +89,60 @@ const ParsedScanFile = struct {
     skip_trigram: bool,
 };
 
+const PersistedScanFile = struct {
+    path: []const u8,
+    content: []const u8,
+    outline: explore_mod.FileOutline,
+    skip_trigram: bool,
+};
+
 const WorkerParsedResults = struct {
     arena: std.heap.ArenaAllocator,
-    items: std.ArrayList(ParsedScanFile),
+    items: []?PersistedScanFile = &.{},
+    ready: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    mutex: std.Io.Mutex = .init,
+    condition: std.Io.Condition = .init,
 
     fn init(backing: std.mem.Allocator) WorkerParsedResults {
-        return .{
-            .arena = std.heap.ArenaAllocator.init(backing),
-            .items = .empty,
-        };
+        return .{ .arena = std.heap.ArenaAllocator.init(backing) };
+    }
+
+    fn prepare(self: *WorkerParsedResults, count: usize) !void {
+        self.items = try self.arena.allocator().alloc(?PersistedScanFile, count);
+        @memset(self.items, null);
+    }
+
+    /// Publish results in entry order. Release/acquire on `ready` makes the slot
+    /// visible without a mutex on the common path where the producer is ahead.
+    fn publish(self: *WorkerParsedResults, io: std.Io, index: usize, file: ?PersistedScanFile) void {
+        self.items[index] = file;
+        const ready = index + 1;
+        self.ready.store(ready, .release);
+        // Wake in batches: waking the main thread for every file turns a fast
+        // producer/consumer pair into thousands of kernel context switches.
+        if (ready == self.items.len or ready % 64 == 0) {
+            self.mutex.lockUncancelable(io);
+            self.condition.signal(io);
+            self.mutex.unlock(io);
+        }
+    }
+
+    fn takeReady(self: *WorkerParsedResults, io: std.Io, index: usize) ?PersistedScanFile {
+        if (self.ready.load(.acquire) <= index) {
+            self.mutex.lockUncancelable(io);
+            while (self.ready.load(.acquire) <= index) self.condition.waitUncancelable(io, &self.mutex);
+            self.mutex.unlock(io);
+        }
+        const file = self.items[index];
+        self.items[index] = null;
+        return file;
     }
 
     fn deinit(self: *WorkerParsedResults, backing: std.mem.Allocator) void {
         _ = backing;
-        self.items.deinit(self.arena.allocator());
+        for (self.items) |*maybe_file| {
+            if (maybe_file.*) |*file| file.outline.deinit();
+        }
         self.arena.deinit();
     }
 };
@@ -484,19 +524,26 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
     return entries;
 }
 
-fn parseInitialScanEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, arena_alloc: std.mem.Allocator) !?ParsedScanFile {
+fn parseInitialScanEntry(
+    io: std.Io,
+    root: []const u8,
+    entry: InitialScanEntry,
+    content_alloc: std.mem.Allocator,
+    parse_alloc: std.mem.Allocator,
+) !?ParsedScanFile {
     if (shouldSkipFile(entry.path)) return null;
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{});
     defer dir.close(io);
     const stat = try dir.statFile(io, entry.path, .{});
-    const content = (try readIndexableFile(io, dir, entry.path, arena_alloc, stat.size, true)) orelse return null;
+    const content = (try readIndexableFile(io, dir, entry.path, content_alloc, stat.size, true)) orelse return null;
+    errdefer content_alloc.free(content);
     // Threshold for including a file in the trigram index. Bumped from 64KB to
     // 1MB after the search-shootout bench (issue: large code files like
     // ReactFiberCompleteWork.js at 77KB were invisible to substring search,
     // causing agents to miss call sites in them). 1MB covers all reasonable
     // code files; minified/generated bundles past 1MB are correctly skipped.
     const effective_skip_trigram = entry.skip_trigram or (content.len > max_trigram_file_bytes);
-    const parsed = try explore_mod.Explorer.parseContentForIndexing(arena_alloc, entry.path, content);
+    const parsed = try explore_mod.Explorer.parseContentForIndexing(parse_alloc, entry.path, content);
     return .{
         .path = entry.path,
         .content = parsed.content,
@@ -505,17 +552,39 @@ fn parseInitialScanEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, 
     };
 }
 
-fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry, word_shard: ?*WordIndex) void {
+fn parseInitialScanWorkerEntry(
+    io: std.Io,
+    results: *WorkerParsedResults,
+    root: []const u8,
+    entry: InitialScanEntry,
+    scratch_alloc: std.mem.Allocator,
+    word_shard: ?*WordIndex,
+) ?PersistedScanFile {
     const persist = results.arena.allocator();
-    // Parse each file in a per-file scratch arena that is reset between files,
-    // then copy only the keep-data (content + outline) into the persistent
-    // results arena. parseContentForIndexing allocates large transient parse
-    // state (AST/token buffers) that is not part of the returned content/outline;
-    // without resetting per file, a worker's arena retains every file's
-    // transients chunk-wide (high-water-mark, never reclaimed), which dominated
-    // initial-scan RSS on large repos (~4.3GB -> contents+outline only).
-    // The results arena (and thus the clone) is touched by this worker only, so
-    // the copy is race-free; commit on the main thread re-dups both anyway.
+    const parsed = parseInitialScanEntry(io, root, entry, persist, scratch_alloc) catch return null;
+    if (parsed == null) return null;
+
+    var file = parsed.?;
+    defer file.outline.deinit();
+    var keep_content = false;
+    defer if (!keep_content) persist.free(file.content);
+
+    const outline_copy = explore_mod.Explorer.cloneOutlinePackedBorrowingPath(&file.outline, std.heap.c_allocator) catch return null;
+    if (word_shard) |ws| ws.indexFile(file.path, file.content) catch {};
+    keep_content = true;
+    return .{
+        .path = file.path,
+        .content = file.content,
+        .outline = outline_copy,
+        .skip_trigram = file.skip_trigram,
+    };
+}
+
+fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry, word_shard: ?*WordIndex) void {
+    // Read content directly into the persistent result arena, while allocating
+    // transient parser state in a per-file scratch arena that is reset between
+    // files. The final outline uses packed libc-owned storage so the main thread
+    // can adopt it as soon as this worker publishes the corresponding slot.
     //
     // When word_shard is set, also build the WordIndex for this chunk in parallel
     // here (lock-free, content is hot) instead of on the serial commit thread.
@@ -523,20 +592,10 @@ fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8
     // assign global doc_ids, so the merged index is identical to the serial path.
     var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer scratch.deinit();
-    for (entries) |entry| {
+    for (entries, 0..) |entry, index| {
         _ = scratch.reset(.retain_capacity);
-        const parsed = parseInitialScanEntry(io, root, entry, scratch.allocator()) catch null;
-        if (parsed) |file| {
-            const content_copy = persist.dupe(u8, file.content) catch continue;
-            const outline_copy = explore_mod.Explorer.cloneOutline(&file.outline, persist) catch continue;
-            results.items.append(persist, .{
-                .path = file.path,
-                .content = content_copy,
-                .outline = outline_copy,
-                .skip_trigram = file.skip_trigram,
-            }) catch continue;
-            if (word_shard) |ws| ws.indexFile(file.path, content_copy) catch {};
-        }
+        const file = parseInitialScanWorkerEntry(io, results, root, entry, scratch.allocator(), word_shard);
+        results.publish(io, index, file);
     }
 }
 
@@ -557,7 +616,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
             {
                 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                 defer arena.deinit();
-                const parsed = try parseInitialScanEntry(io, root, entry, arena.allocator());
+                const parsed = try parseInitialScanEntry(io, root, entry, arena.allocator(), arena.allocator());
                 if (parsed) |file| {
                     try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
                 }
@@ -567,14 +626,16 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     }
 
     const workers = try allocator.alloc(WorkerParsedResults, n_workers);
-    var workers_committed: usize = 0;
-    defer {
-        // Free any workers not yet committed (on error path)
-        for (workers[workers_committed..]) |*worker| worker.deinit(allocator);
-        allocator.free(workers);
-    }
+    defer allocator.free(workers);
     const threads = try allocator.alloc(std.Thread, n_workers);
     defer allocator.free(threads);
+    for (workers) |*worker| worker.* = WorkerParsedResults.init(std.heap.page_allocator);
+    var workers_committed: usize = 0;
+    defer {
+        // Free any workers not yet committed (on error path).
+        for (workers[workers_committed..]) |*worker| worker.deinit(allocator);
+    }
+    var spawned: usize = 0;
 
     // When the word index is enabled (cold `index`/`mcp` path), build it in
     // parallel per-worker shards backed by each worker's arena, then merge the
@@ -587,16 +648,18 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     const use_shards = explorer.word_index.enabled and explorer.word_index.skip_file_words;
     const shards: ?[]WordIndex = if (use_shards) try allocator.alloc(WordIndex, n_workers) else null;
     defer if (shards) |sh| allocator.free(sh);
+    var joined: usize = 0;
+    errdefer for (threads[joined..spawned]) |thread| thread.join();
 
     const chunk_size = entries.items.len / n_workers;
     const remainder = entries.items.len % n_workers;
     var offset: usize = 0;
     for (workers, 0..) |*worker, i| {
-        worker.* = WorkerParsedResults.init(std.heap.page_allocator);
         const extra: usize = if (i < remainder) 1 else 0;
         const count = chunk_size + extra;
         const chunk = entries.items[offset .. offset + count];
         offset += count;
+        try worker.prepare(count);
         var shard_ptr: ?*WordIndex = null;
         if (shards) |sh| {
             sh[i] = WordIndex.init(worker.arena.allocator());
@@ -604,22 +667,25 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
             shard_ptr = &sh[i];
         }
         threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, shard_ptr });
+        spawned += 1;
     }
-    for (threads) |thread| thread.join();
-
-    // Commit outlines/contents/deps/symbol serially (those mutate shared maps);
-    // word indexing is deferred and folded in per worker via mergeShard, so the
-    // global doc_ids land in chunk order — identical to the single-worker path.
+    // Shared Explorer maps remain serial, but consume ready slots while workers
+    // continue parsing. Worker/chunk order matches the prior cold-scan semantics
+    // for symbol precedence, cache eviction, dependency output, and persistence.
     if (use_shards) explorer.defer_word_index = true;
     defer explorer.defer_word_index = false;
-    for (workers, 0..) |*worker, wi| {
-        for (worker.items.items) |file| {
-            try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
+    for (workers) |*worker| {
+        for (0..worker.items.len) |item_index| {
+            if (worker.takeReady(io, item_index)) |file| {
+                try explorer.commitParsedFileAdoptOutline(file.path, file.content, file.outline, true, file.skip_trigram);
+            }
         }
+    }
+
+    for (threads[0..spawned]) |thread| thread.join();
+    joined = spawned;
+    for (workers, 0..) |*worker, wi| {
         if (shards) |sh| try explorer.word_index.mergeShard(&sh[wi]);
-        // Free this worker's arena immediately — releases pages to OS,
-        // prevents holding all workers' content simultaneously. (This also
-        // frees the worker's word shard, which mergeShard has copied out.)
         worker.deinit(allocator);
         workers_committed += 1;
     }
@@ -852,7 +918,7 @@ pub fn initialScanWithTrigrams(
         for (entries.items) |entry| {
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
-            const parsed = parseInitialScanEntry(io, root, entry, arena.allocator()) catch null;
+            const parsed = parseInitialScanEntry(io, root, entry, arena.allocator(), arena.allocator()) catch null;
             if (parsed) |file| {
                 if (!skip_outlines) {
                     explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, true) catch continue;
@@ -900,34 +966,41 @@ pub fn initialScanWithTrigrams(
     } else {
         // Full path: parse outlines + build trigrams
         const workers = try allocator.alloc(WorkerParsedResults, n_workers);
+        defer allocator.free(workers);
+        const threads = try allocator.alloc(std.Thread, n_workers);
+        defer allocator.free(threads);
+        for (workers) |*worker| worker.* = WorkerParsedResults.init(std.heap.page_allocator);
         var workers_committed: usize = 0;
         defer {
             for (workers[workers_committed..]) |*worker| worker.deinit(allocator);
-            allocator.free(workers);
         }
-        const threads = try allocator.alloc(std.Thread, n_workers);
-        defer allocator.free(threads);
+        var spawned: usize = 0;
+        var joined: usize = 0;
+        errdefer for (threads[joined..spawned]) |thread| thread.join();
 
         const chunk_size = entries.items.len / n_workers;
         const remainder = entries.items.len % n_workers;
         var offset: usize = 0;
         for (workers, 0..) |*worker, i| {
-            worker.* = WorkerParsedResults.init(std.heap.page_allocator);
             const extra: usize = if (i < remainder) 1 else 0;
             const count = chunk_size + extra;
             const chunk = entries.items[offset .. offset + count];
             offset += count;
+            try worker.prepare(count);
             threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, null });
+            spawned += 1;
         }
-        for (threads) |thread| thread.join();
-
-        for (workers) |*worker| {
-            for (worker.items.items) |file| {
-                explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, true) catch continue;
-                if (file.content.len <= max_trigram_file_bytes) {
-                    tmp_tri.indexFile(file.path, file.content) catch {};
+        for (workers, 0..) |*worker, wi| {
+            for (0..worker.items.len) |item_index| {
+                if (worker.takeReady(io, item_index)) |file| {
+                    explorer.commitParsedFileAdoptOutline(file.path, file.content, file.outline, true, true) catch continue;
+                    if (file.content.len <= max_trigram_file_bytes) {
+                        tmp_tri.indexFile(file.path, file.content) catch {};
+                    }
                 }
             }
+            threads[wi].join();
+            joined += 1;
             worker.deinit(allocator);
             workers_committed += 1;
         }
@@ -1083,7 +1156,6 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
         };
     }
 }
-
 
 /// Index already-read file content: skip binary (a null byte in the first 512
 /// bytes), then index with or without trigrams by size. The single place that

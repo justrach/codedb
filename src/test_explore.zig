@@ -249,6 +249,57 @@ test "explorer: searchContent finds query embedded in longer identifier" {
 }
 
 
+test "explorer: packed outline clone owns one string backing" {
+    const expected_mask = explore.FileOutline.nameLenBit("packedSymbol".len);
+    var packed_outline = blk: {
+        var source = explore.FileOutline.init(testing.allocator, "src/packed_outline.zig");
+        defer source.deinit();
+        {
+            const name = try testing.allocator.dupe(u8, "packedSymbol");
+            errdefer testing.allocator.free(name);
+            const detail = try testing.allocator.dupe(u8, "fn packedSymbol() void");
+            errdefer testing.allocator.free(detail);
+            try source.symbols.append(testing.allocator, .{
+                .name = name,
+                .kind = .function,
+                .line_start = 7,
+                .line_end = 9,
+                .detail = detail,
+            });
+            source.name_len_mask |= explore.FileOutline.nameLenBit(name.len);
+        }
+        {
+            const import = try testing.allocator.dupe(u8, "dep.zig");
+            errdefer testing.allocator.free(import);
+            try source.imports.append(testing.allocator, import);
+        }
+        break :blk try Explorer.cloneOutlinePackedBorrowingPath(&source, testing.allocator);
+    };
+    defer packed_outline.deinit();
+
+    try testing.expect(!packed_outline.owns_path);
+    try testing.expect(packed_outline.borrows_strings);
+    try testing.expect(packed_outline.owned_string_storage != null);
+    try testing.expectEqualStrings("packedSymbol", packed_outline.symbols.items[0].name);
+    try testing.expectEqualStrings("fn packedSymbol() void", packed_outline.symbols.items[0].detail.?);
+    try testing.expectEqualStrings("dep.zig", packed_outline.imports.items[0]);
+    try testing.expectEqual(expected_mask, packed_outline.name_len_mask);
+}
+
+test "explorer: adopt outline permits path argument to alias owned path" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    const owned_path = try testing.allocator.dupe(u8, "src/adopted.zig");
+    var outline = explore.FileOutline.init(testing.allocator, owned_path);
+    outline.owns_path = true;
+    try explorer.commitParsedFileAdoptOutline(outline.path, "const adopted = true;", outline, false, true);
+
+    var committed = (try explorer.getOutline("src/adopted.zig", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer committed.deinit();
+    try testing.expectEqualStrings("src/adopted.zig", committed.path);
+}
+
 test "explorer: index file and get outline" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

@@ -104,6 +104,10 @@ pub const FileOutline = struct {
     /// section, retained by the Explorer) rather than individual allocations,
     /// so deinit must not free them. The ArrayLists themselves are still owned.
     borrows_strings: bool = false,
+    /// Optional packed backing for borrowed symbol/import strings. Worker-built
+    /// outlines use one allocation instead of one malloc per string; snapshot
+    /// outlines borrow external state and leave this null.
+    owned_string_storage: ?[]u8 = null,
     /// Bitmask of symbol-name lengths present (bit min(len, 63)). A
     /// conservative superset — never cleared on symbol removal — that lets
     /// per-query definition scans (fileDefinesSymbol, pathRerankFacts) skip
@@ -131,7 +135,9 @@ pub const FileOutline = struct {
     }
     pub fn deinit(self: *FileOutline) void {
         if (self.owns_path) self.allocator.free(self.path);
-        if (!self.borrows_strings) {
+        if (self.owned_string_storage) |storage| {
+            self.allocator.free(storage);
+        } else if (!self.borrows_strings) {
             for (self.symbols.items) |sym| {
                 self.allocator.free(sym.name);
                 if (sym.detail) |d| self.allocator.free(d);
@@ -1492,18 +1498,19 @@ pub const Explorer = struct {
 
     pub fn commitParsedFileOwnedOutline(self: *Explorer, path: []const u8, content: []const u8, outline: FileOutline, full_index: bool, skip_trigram: bool) !void {
         var owned_outline = outline;
-        // One deinit only: an errdefer here would stack with the defer below
-        // and double-free the parsed outline on any post-clone error.
-        var persistent_outline = cloneOutline(&owned_outline, self.allocator) catch |err| {
-            owned_outline.deinit();
-            return err;
-        };
+        // The parsed outline is always consumed, including when cloning fails.
         defer owned_outline.deinit();
+        const persistent_outline = try cloneOutlineBorrowingPath(&owned_outline, self.allocator);
+        return self.commitParsedFileAdoptOutline(path, content, persistent_outline, full_index, skip_trigram);
+    }
+
+    /// Commit an outline whose strings and list storage already have a lifetime
+    /// independent of the parser/worker that produced it. Ownership is consumed
+    /// on both success and error. The outline path may be borrowed: commit rebinds
+    /// it to the stable key owned by `self.outlines` before publishing it.
+    pub fn commitParsedFileAdoptOutline(self: *Explorer, path: []const u8, content: []const u8, outline: FileOutline, full_index: bool, skip_trigram: bool) !void {
+        var persistent_outline = outline;
         errdefer persistent_outline.deinit();
-        if (persistent_outline.owns_path) {
-            self.allocator.free(persistent_outline.path);
-            persistent_outline.owns_path = false;
-        }
 
         self.mu.lock();
         defer self.mu.unlock();
@@ -1519,6 +1526,11 @@ pub const Explorer = struct {
 
         const outline_gop = try self.outlines.getOrPut(path);
         const is_new = !outline_gop.found_existing;
+        var new_stable_path: ?[]const u8 = null;
+        errdefer if (is_new) {
+            _ = self.outlines.remove(new_stable_path orelse path);
+            if (new_stable_path) |owned_path| self.allocator.free(owned_path);
+        };
         var prior_outline: ?FileOutline = if (outline_gop.found_existing)
             outline_gop.value_ptr.*
         else
@@ -1527,14 +1539,15 @@ pub const Explorer = struct {
             break :blk outline_gop.key_ptr.*;
         } else blk: {
             const duped = try self.allocator.dupe(u8, path);
+            new_stable_path = duped;
             outline_gop.key_ptr.* = duped;
             break :blk duped;
         };
-        errdefer if (is_new) {
-            _ = self.outlines.remove(stable_path);
-            self.allocator.free(stable_path);
-        };
 
+        if (persistent_outline.owns_path) {
+            persistent_outline.allocator.free(persistent_outline.path);
+            persistent_outline.owns_path = false;
+        }
         persistent_outline.path = stable_path;
 
         const prior_content = self.contents.get(stable_path);
@@ -2563,14 +2576,92 @@ pub const Explorer = struct {
     }
 
     pub fn cloneOutline(src: *const FileOutline, allocator: std.mem.Allocator) !FileOutline {
-        const copied_path = try allocator.dupe(u8, src.path);
-        // No errdefer here: dst.deinit() below handles freeing copied_path via owns_path.
+        return cloneOutlineImpl(src, allocator, true);
+    }
 
-        var dst = FileOutline.init(allocator, copied_path);
-        dst.owns_path = true;
+    /// Deep-copy an outline's symbols/imports while borrowing its path. This is
+    /// useful when the caller will immediately rebind the clone to a stable path,
+    /// avoiding an allocate/copy/free cycle for the temporary path.
+    pub fn cloneOutlineBorrowingPath(src: *const FileOutline, allocator: std.mem.Allocator) !FileOutline {
+        return cloneOutlineImpl(src, allocator, false);
+    }
+
+    /// Deep-copy an outline into exact-sized arrays plus one packed allocation
+    /// for all symbol/import strings. The resulting path is borrowed. This keeps
+    /// cross-thread malloc traffic bounded to at most three allocations per file.
+    pub fn cloneOutlinePackedBorrowingPath(src: *const FileOutline, allocator: std.mem.Allocator) !FileOutline {
+        var string_bytes: usize = 0;
+        for (src.symbols.items) |sym| {
+            if (sym.name.len > std.math.maxInt(usize) - string_bytes) return error.OutOfMemory;
+            string_bytes += sym.name.len;
+            if (sym.detail) |detail| {
+                if (detail.len > std.math.maxInt(usize) - string_bytes) return error.OutOfMemory;
+                string_bytes += detail.len;
+            }
+        }
+        for (src.imports.items) |imp| {
+            if (imp.len > std.math.maxInt(usize) - string_bytes) return error.OutOfMemory;
+            string_bytes += imp.len;
+        }
+
+        var dst = FileOutline.init(allocator, src.path);
         errdefer dst.deinit();
+        dst.language = src.language;
         dst.line_count = src.line_count;
         dst.byte_size = src.byte_size;
+        dst.name_len_mask = src.name_len_mask;
+        dst.path_class = src.path_class;
+
+        const storage = try allocator.alloc(u8, string_bytes);
+        dst.owned_string_storage = storage;
+        dst.borrows_strings = true;
+        try dst.symbols.ensureTotalCapacity(allocator, src.symbols.items.len);
+        try dst.imports.ensureTotalCapacity(allocator, src.imports.items.len);
+
+        var cursor: usize = 0;
+        for (src.symbols.items) |sym| {
+            const copied_name = storage[cursor .. cursor + sym.name.len];
+            @memcpy(copied_name, sym.name);
+            cursor += sym.name.len;
+            const copied_detail: ?[]const u8 = if (sym.detail) |detail| blk: {
+                const copied = storage[cursor .. cursor + detail.len];
+                @memcpy(copied, detail);
+                cursor += detail.len;
+                break :blk copied;
+            } else null;
+            dst.symbols.appendAssumeCapacity(.{
+                .name = copied_name,
+                .kind = sym.kind,
+                .line_start = sym.line_start,
+                .line_end = sym.line_end,
+                .detail = copied_detail,
+            });
+        }
+        for (src.imports.items) |imp| {
+            const copied_import = storage[cursor .. cursor + imp.len];
+            @memcpy(copied_import, imp);
+            cursor += imp.len;
+            dst.imports.appendAssumeCapacity(copied_import);
+        }
+        std.debug.assert(cursor == string_bytes);
+        return dst;
+    }
+
+    fn cloneOutlineImpl(src: *const FileOutline, allocator: std.mem.Allocator, copy_path: bool) !FileOutline {
+        var dst = FileOutline.init(allocator, src.path);
+        errdefer dst.deinit();
+        if (copy_path) {
+            dst.path = try allocator.dupe(u8, src.path);
+            dst.owns_path = true;
+        }
+        dst.language = src.language;
+        dst.line_count = src.line_count;
+        dst.byte_size = src.byte_size;
+        dst.name_len_mask = src.name_len_mask;
+        dst.path_class = src.path_class;
+
+        try dst.symbols.ensureTotalCapacity(allocator, src.symbols.items.len);
+        try dst.imports.ensureTotalCapacity(allocator, src.imports.items.len);
         for (src.symbols.items) |sym| {
             const copied_name = try allocator.dupe(u8, sym.name);
             errdefer allocator.free(copied_name);
@@ -2581,19 +2672,18 @@ pub const Explorer = struct {
             } else null;
             errdefer if (copied_detail) |d| allocator.free(d);
 
-            try dst.symbols.append(allocator, .{
+            dst.symbols.appendAssumeCapacity(.{
                 .name = copied_name,
                 .kind = sym.kind,
                 .line_start = sym.line_start,
                 .line_end = sym.line_end,
                 .detail = copied_detail,
             });
-            dst.name_len_mask |= FileOutline.nameLenBit(copied_name.len);
         }
         for (src.imports.items) |imp| {
             const copied_import = try allocator.dupe(u8, imp);
             errdefer allocator.free(copied_import);
-            try dst.imports.append(allocator, copied_import);
+            dst.imports.appendAssumeCapacity(copied_import);
         }
 
         return dst;
