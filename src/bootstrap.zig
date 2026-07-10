@@ -446,7 +446,15 @@ pub fn coldLoadOrScan(
             index_mod.setFrequencyTable(ft);
         }
 
+        const index_profile = cio.posixGetenv("CODEDB_INDEX_PROFILE") != null;
         const t_scan = cio.nanoTimestamp();
+        var profile_word_persist_ns: i128 = 0;
+        var profile_tri_build_ns: i128 = 0;
+        var profile_tri_write_ns: i128 = 0;
+        var profile_tri_mmap_ns: i128 = 0;
+        var profile_freq_ns: i128 = 0;
+        var profile_centrality_ns: i128 = 0;
+        var profile_snapshot_ns: i128 = 0;
         // Use page_allocator for word index during scan — freed pages
         // return to OS immediately instead of c_allocator retention.
         explorer.mu.lock();
@@ -519,37 +527,57 @@ pub fn coldLoadOrScan(
             // in parallel from the content already cached in Explorer.contents
             // — no second pass over the filesystem.
             if (needs_word_index) {
+                const t_word_persist: i128 = if (index_profile) cio.nanoTimestamp() else 0;
                 persistWordIndexToDisk(io, explorer, data_dir, git_head);
                 explorer.markWordIndexAsComplete();
+                if (index_profile) profile_word_persist_ns = cio.nanoTimestamp() - t_word_persist;
             }
             const cpu_count = std.Thread.getCpuCount() catch 1;
             const tri_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
-            const tmp_tri = watcher.buildTrigramsFromCache(&explorer.contents, allocator, std.heap.c_allocator, tri_workers) catch null;
+            const t_tri_build: i128 = if (index_profile) cio.nanoTimestamp() else 0;
+            const tmp_tri = watcher.buildTrigramsFromCache(&explorer.contents, allocator, std.heap.c_allocator, tri_workers) catch |err| blk: {
+                std.log.warn("could not build trigram index: {}", .{err});
+                break :blk null;
+            };
+            if (index_profile) profile_tri_build_ns = cio.nanoTimestamp() - t_tri_build;
+            var trigram_written = false;
             if (tmp_tri) |tri| {
                 defer {
                     tri.deinit();
                     std.heap.c_allocator.destroy(tri);
                 }
-                tri.writeToDisk(io, data_dir, git_head) catch |err| {
-                    std.log.warn("could not persist trigram index: {}", .{err});
-                };
+                const t_tri_write: i128 = if (index_profile) cio.nanoTimestamp() else 0;
+                write_trigrams: {
+                    tri.writeToDisk(io, data_dir, git_head) catch |err| {
+                        std.log.warn("could not persist trigram index: {}", .{err});
+                        break :write_trigrams;
+                    };
+                    trigram_written = true;
+                }
+                if (index_profile) profile_tri_write_ns = cio.nanoTimestamp() - t_tri_write;
             }
-            // Load trigrams as mmap (zero heap cost); then we can safely
-            // release file contents since mmap serves future searches.
-            if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
-                explorer.adoptTrigramIndex(.{ .mmap = loaded });
+            // Load only the index successfully written by this build. If build,
+            // persistence, or mmap fails, retain contents for fallback search.
+            const t_tri_mmap: i128 = if (index_profile) cio.nanoTimestamp() else 0;
+            if (trigram_written) {
+                if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
+                    explorer.adoptTrigramIndex(.{ .mmap = loaded });
+                    release_contents_after_cache = true;
+                }
             }
-            release_contents_after_cache = true;
+            if (index_profile) profile_tri_mmap_ns = cio.nanoTimestamp() - t_tri_mmap;
         }
 
         // If no freq table was loaded, build one from indexed content and
         // persist for next run.  Streams file-by-file — zero extra memory.
         if (freq_table_heap.* == null) {
             if (explorer.contents.count() > 0) {
+                const t_freq: i128 = if (index_profile) cio.nanoTimestamp() else 0;
                 const ft = index_mod.buildFrequencyTableFromMap(&explorer.contents);
                 index_mod.writeFrequencyTable(io, &ft, data_dir) catch |err| {
                     std.log.warn("could not persist frequency table: {}", .{err});
                 };
+                if (index_profile) profile_freq_ns = cio.nanoTimestamp() - t_freq;
             }
         }
 
@@ -558,14 +586,38 @@ pub fn coldLoadOrScan(
             // and a later load restores it instead of paying the lazy
             // first-query rebuild. Same env gate as the search path.
             if (cio.posixGetenv("CODEDB_NO_CENTRALITY") == null) {
+                const t_centrality: i128 = if (index_profile) cio.nanoTimestamp() else 0;
                 explorer.buildCallCentrality(allocator);
+                if (index_profile) profile_centrality_ns = cio.nanoTimestamp() - t_centrality;
             }
+            const t_snapshot: i128 = if (index_profile) cio.nanoTimestamp() else 0;
             snapshot_mod.writeProjectCacheSnapshot(io, explorer, abs_root, allocator) catch |err| {
                 std.log.warn("could not persist project-cache snapshot: {}", .{err});
             };
+            if (index_profile) profile_snapshot_ns = cio.nanoTimestamp() - t_snapshot;
         }
         if (release_contents_after_cache) {
             explorer.releaseContents();
+        }
+        if (index_profile) {
+            const now = cio.nanoTimestamp();
+            const to_ms = struct {
+                fn f(ns: i128) f64 {
+                    return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+                }
+            }.f;
+            std.debug.print("[index-profile] cold total={d:.1}ms scan={d:.1}ms word_persist={d:.1}ms tri_build={d:.1}ms tri_write={d:.1}ms tri_mmap={d:.1}ms freq={d:.1}ms centrality={d:.1}ms snapshot={d:.1}ms other={d:.1}ms\n", .{
+                to_ms(now - t_scan),
+                to_ms(scan_elapsed),
+                to_ms(profile_word_persist_ns),
+                to_ms(profile_tri_build_ns),
+                to_ms(profile_tri_write_ns),
+                to_ms(profile_tri_mmap_ns),
+                to_ms(profile_freq_ns),
+                to_ms(profile_centrality_ns),
+                to_ms(profile_snapshot_ns),
+                to_ms((now - t_scan) - scan_elapsed - profile_word_persist_ns - profile_tri_build_ns - profile_tri_write_ns - profile_tri_mmap_ns - profile_freq_ns - profile_centrality_ns - profile_snapshot_ns),
+            });
         }
     } // end else (no snapshot)
 }

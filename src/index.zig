@@ -17,7 +17,13 @@ pub const WordIndex = struct {
     /// WordIndex owns these path keys.
     file_words: std.StringHashMap([]const []const u8),
     allocator: std.mem.Allocator,
+    /// Bulk builders can skip per-file term sets; incremental updates re-enable
+    /// them after the immutable/bulk portion has been assembled.
     skip_file_words: bool = false,
+    /// Whether each non-empty id_to_path entry owns its path allocation. This is
+    /// independent of file_words tracking (bulk/mmap indexes own path strings,
+    /// while normal mutable indexes alias file_words keys).
+    owns_id_paths: bool = false,
     enabled: bool = true,
     path_to_id: std.StringHashMap(u32),
     id_to_path: std.ArrayList([]const u8),
@@ -106,7 +112,7 @@ pub const WordIndex = struct {
         }
         self.file_words.deinit();
 
-        if (self.skip_file_words) {
+        if (self.owns_id_paths) {
             for (self.id_to_path.items) |path| {
                 if (path.len > 0) self.allocator.free(path);
             }
@@ -147,9 +153,9 @@ pub const WordIndex = struct {
             _ = self.path_to_id.remove(stable_path);
             if (doc_id < self.id_to_path.items.len) {
                 const old_path = self.id_to_path.items[doc_id];
-                // Bulk modes (skip_file_words) give id_to_path its own strings;
-                // otherwise the slot aliases stable_path, freed below.
-                if (self.skip_file_words and old_path.len > 0) self.allocator.free(old_path);
+                // Bulk/mmap modes give id_to_path its own strings; otherwise the
+                // slot aliases stable_path, which is freed below.
+                if (self.owns_id_paths and old_path.len > 0) self.allocator.free(old_path);
                 self.id_to_path.items[doc_id] = "";
                 self.free_ids.append(self.allocator, doc_id) catch {};
             }
@@ -198,7 +204,7 @@ pub const WordIndex = struct {
         }
         if (doc_id < self.id_to_path.items.len) {
             const old_path = self.id_to_path.items[doc_id];
-            if (self.skip_file_words and old_path.len > 0) self.allocator.free(old_path);
+            if (self.owns_id_paths and old_path.len > 0) self.allocator.free(old_path);
             self.id_to_path.items[doc_id] = "";
             self.free_ids.append(self.allocator, doc_id) catch {};
         }
@@ -232,7 +238,7 @@ pub const WordIndex = struct {
         token: []const u8,
         doc_id: u32,
         line_num: u32,
-        words_set: *std.StringHashMap(void),
+        words_set: ?*std.StringHashMap(void),
     ) !void {
         const gop = try self.index.getOrPut(token);
         if (!gop.found_existing) {
@@ -250,8 +256,10 @@ pub const WordIndex = struct {
         if (gop.value_ptr.items.len > 0) {
             const last = gop.value_ptr.items[gop.value_ptr.items.len - 1];
             if (last.doc_id == doc_id and last.line_num == line_num) {
-                const wgop = try words_set.getOrPut(gop.key_ptr.*);
-                if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
+                if (words_set) |set| {
+                    const wgop = try set.getOrPut(gop.key_ptr.*);
+                    if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
+                }
                 return;
             }
         }
@@ -259,8 +267,10 @@ pub const WordIndex = struct {
             .doc_id = doc_id,
             .line_num = line_num,
         });
-        const wgop = try words_set.getOrPut(gop.key_ptr.*);
-        if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
+        if (words_set) |set| {
+            const wgop = try set.getOrPut(gop.key_ptr.*);
+            if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
+        }
     }
 
     pub fn indexFile(self: *WordIndex, path: []const u8, content: []const u8) !void {
@@ -270,6 +280,7 @@ pub const WordIndex = struct {
         // Clean up old entries first; removeFile guarantees the path is no
         // longer tracked, so the stable copy is always a fresh dupe.
         self.removeFile(path);
+        if (self.skip_file_words) self.owns_id_paths = true;
 
         const stable_path = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(stable_path);
@@ -283,6 +294,7 @@ pub const WordIndex = struct {
         var words_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer words_arena.deinit();
         var words_set = std.StringHashMap(void).init(words_arena.allocator());
+        const tracked_words: ?*std.StringHashMap(void) = if (self.skip_file_words) null else &words_set;
         var line_num: u32 = 0;
         var lines = std.mem.splitScalar(u8, content, '\n');
         var doc_token_count: u32 = 0;
@@ -315,7 +327,7 @@ pub const WordIndex = struct {
                 };
 
                 // Index the lowercase form.
-                try indexOneToken(self, lower_word, doc_id, line_num, &words_set);
+                try indexOneToken(self, lower_word, doc_id, line_num, tracked_words);
 
                 // Sub-tokens from identifier splitting (camelCase, snake_case, etc.).
                 // Skip the alloc'd ArrayList when the word is too short or all-lower
@@ -334,23 +346,21 @@ pub const WordIndex = struct {
                     defer sub_toks.deinit(aa);
                     splitIdentifier(word, &sub_toks, aa) catch continue;
                     for (sub_toks.items) |sub| {
-                        try indexOneToken(self, sub, doc_id, line_num, &words_set);
+                        try indexOneToken(self, sub, doc_id, line_num, tracked_words);
                     }
                 }
             }
         }
 
-        // Per-file word list — what makes the next removeFile O(file) instead
-        // of an index-wide sweep. Bulk paths (readFromDisk/mergeShard) leave it
-        // empty for their files; anything indexed through here gets a list. In
-        // skip_file_words mode id_to_path owns stable_path, so the file_words
-        // key must be its own allocation.
-        {
-            const fw_key = if (self.skip_file_words)
+        // Per-file word lists make subsequent removeFile O(file). Cold worker
+        // shards skip them entirely; merged/mmap paths fall back to one index
+        // sweep on the first update, after which incremental files are tracked.
+        if (!self.skip_file_words) {
+            const fw_key = if (self.owns_id_paths)
                 try self.allocator.dupe(u8, stable_path)
             else
                 stable_path;
-            errdefer if (self.skip_file_words) self.allocator.free(fw_key);
+            errdefer if (self.owns_id_paths) self.allocator.free(fw_key);
             const compact = try self.allocator.alloc([]const u8, words_set.count());
             errdefer self.allocator.free(compact);
             var ki: usize = 0;
@@ -379,15 +389,21 @@ pub const WordIndex = struct {
     /// each shard's global range follows the previous one). See the per-worker
     /// shard build in watcher.initialScanWithWorkerCount.
     pub fn mergeShard(self: *WordIndex, shard: *WordIndex) !void {
+        std.debug.assert(self.id_to_path.items.len == 0 or self.owns_id_paths);
         const base: u32 = @intCast(self.id_to_path.items.len);
+        self.owns_id_paths = true;
 
-        // Paths + per-doc lengths.
+        // Paths + per-doc lengths. Roll each document back transactionally: the
+        // old ordering freed `duped` after a later map failure while id_to_path
+        // still referenced it, leaving a dangling pointer/double-free hazard.
         for (shard.id_to_path.items, 0..) |path, local| {
             const global_id: u32 = base + @as(u32, @intCast(local));
             const duped = try self.allocator.dupe(u8, path);
             errdefer self.allocator.free(duped);
             try self.id_to_path.append(self.allocator, duped);
+            errdefer _ = self.id_to_path.pop();
             try self.path_to_id.put(duped, global_id);
+            errdefer _ = self.path_to_id.remove(duped);
             if (shard.doc_lengths.get(@intCast(local))) |len| {
                 try self.doc_lengths.put(global_id, len);
             }
@@ -876,13 +892,11 @@ pub const WordIndex = struct {
         }
         result.total_tokens = total_tokens_loaded;
 
-        // Loaded indexes skip file_words: only incremental removeFile needs it,
-        // and queries / BM25 never do. Same hundreds-of-MB save the bulk scan
-        // already takes (see main.zig). id_to_path owns the path strings now, so
-        // keep them out of the cleanup defer (used_paths=true) and free them via
-        // the skip_file_words deinit path.
+        // Loaded indexes have no file_words for their bulk documents, but future
+        // incremental writes should track them. id_to_path owns the loaded path
+        // strings independently of that tracking policy.
         @memset(used_paths, true);
-        result.skip_file_words = true;
+        result.owns_id_paths = true;
 
         return result;
     }
@@ -911,7 +925,7 @@ pub const WordIndex = struct {
         const file_count = std.mem.readInt(u32, data[6..10], .little);
 
         var result = WordIndex.init(allocator);
-        result.skip_file_words = true;
+        result.owns_id_paths = true;
         // mmap_data stays null until the hand-off below, so this errdefer takes
         // the heap deinit path (frees the duped paths); word_dir + mmap have
         // their own errdefers.
@@ -1413,6 +1427,64 @@ pub const TrigramIndex = struct {
                 .next_mask = te.mask.next_mask,
                 .loc_mask = te.mask.loc_mask,
             });
+        }
+    }
+
+    /// Bulk-insert directly from the worker's reusable extraction map. This
+    /// avoids materializing a second per-file trigram array before insertion.
+    pub fn insertBulkMapNew(self: *TrigramIndex, path: []const u8, trigrams: *std.AutoHashMap(Trigram, PostingMask)) !void {
+        const doc_id = try self.getOrCreateDocId(path);
+        var iter = trigrams.iterator();
+        while (iter.next()) |entry| {
+            const idx_gop = try self.index.getOrPut(entry.key_ptr.*);
+            if (!idx_gop.found_existing) {
+                idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
+            }
+            try idx_gop.value_ptr.items.append(self.allocator, .{
+                .doc_id = doc_id,
+                .next_mask = entry.value_ptr.next_mask,
+                .loc_mask = entry.value_ptr.loc_mask,
+            });
+        }
+    }
+
+    /// Merge a cold-build shard whose local document IDs start at zero. Shards
+    /// are merged in source-file order, so offsetting each posting by `base`
+    /// preserves the sorted-posting invariant. New trigram lists are moved
+    /// without copying; overlapping lists append one contiguous shard slice.
+    pub fn mergeBulkShard(self: *TrigramIndex, shard: *TrigramIndex) !void {
+        std.debug.assert(self.owns_paths);
+        std.debug.assert(self.free_ids.items.len == 0);
+        std.debug.assert(shard.free_ids.items.len == 0);
+
+        const base: u32 = @intCast(self.id_to_path.items.len);
+        try self.id_to_path.ensureUnusedCapacity(self.allocator, shard.id_to_path.items.len);
+        try self.path_to_id.ensureUnusedCapacity(@intCast(shard.id_to_path.items.len));
+        for (shard.id_to_path.items, 0..) |path, local_id| {
+            const duped = try self.allocator.dupe(u8, path);
+            errdefer self.allocator.free(duped);
+            self.id_to_path.appendAssumeCapacity(duped);
+            errdefer _ = self.id_to_path.pop();
+            try self.path_to_id.put(duped, base + @as(u32, @intCast(local_id)));
+            errdefer _ = self.path_to_id.remove(duped);
+        }
+
+        const can_transfer = self.allocator.ptr == shard.allocator.ptr and
+            self.allocator.vtable == shard.allocator.vtable;
+        var iter = shard.index.iterator();
+        while (iter.next()) |entry| {
+            for (entry.value_ptr.items.items) |*posting| posting.doc_id += base;
+
+            const gop = try self.index.getOrPut(entry.key_ptr.*);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
+                if (can_transfer) {
+                    gop.value_ptr.items = entry.value_ptr.items;
+                    entry.value_ptr.items = .empty;
+                    continue;
+                }
+            }
+            try gop.value_ptr.items.appendSlice(self.allocator, entry.value_ptr.items.items);
         }
     }
 

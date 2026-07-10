@@ -1436,6 +1436,17 @@ fn dispatch(
     if (toolDependsOnScannedIndex(tool) and project_path == null) {
         waitForScanReady(scan_wait_timeout_ms);
     }
+    // Mutations must not race the cold-scan shard publication: a worker shard
+    // represents the file contents observed at scan start and is merged as one
+    // generation. Read-only tools may return partial results after the short
+    // timeout above, but edits/re-indexing wait for that generation to publish.
+    if (project_path == null and (tool == .codedb_edit or tool == .codedb_bundle or tool == .codedb_index)) {
+        waitForScanReady(120_000);
+        if (getScanState() != .ready) {
+            out.appendSlice(alloc, "error: initial scan is still in progress; retry the mutation shortly") catch {};
+            return;
+        }
+    }
 
     if (tool == .codedb_word or tool == .codedb_context or (tool == .codedb_search and shouldLoadWordIndexForSearch(args))) {
         const effective_project = project_path orelse cache.default_path;
@@ -2885,7 +2896,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     }
     if (cio.posixGetenv("CODEDB_CONTEXT_PROFILE") != null) {
         std.log.info("ctx-prof ns: reader={d} cand={d} kwloop={d} rank={d} render={d} sites={d} emit={d} total={d}", .{
-            pf_reader - pf_t0, pf_cand - pf_reader, pf_kwloop - pf_cand, pf_rank - pf_kwloop,
+            pf_reader - pf_t0,   pf_cand - pf_reader,  pf_kwloop - pf_cand,            pf_rank - pf_kwloop,
             pf_render - pf_rank, pf_sites - pf_render, cio.nanoTimestamp() - pf_sites, cio.nanoTimestamp() - pf_t0,
         });
     }

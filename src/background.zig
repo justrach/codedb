@@ -48,8 +48,20 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     // passed `heads_match`, which meant a genuinely cold scan (no disk
     // index at all, heads_match=false) built trigrams file-by-file, single
     // threaded, inline in the commit loop below.
+    // Bulk word indexing follows the CLI path too: worker-local shards avoid
+    // tokenizing every file on the serial commit spine. initialScan restores
+    // incremental file-word tracking before it returns.
+    explorer.mu.lock();
+    explorer.word_index.skip_file_words = true;
+    explorer.mu.unlock();
+    var initial_scan_ok = true;
     watcher.initialScan(io, store, explorer, root, allocator, true) catch |err| {
         std.log.warn("background scan failed: {}", .{err});
+        initial_scan_ok = false;
+        explorer.mu.lock();
+        explorer.word_index_complete = false;
+        explorer.word_index_can_load_from_disk = false;
+        explorer.mu.unlock();
     };
 
     // Phase gate: bail if shutting down after initial scan
@@ -59,9 +71,9 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
         return;
     }
     mcp_server.setScanState(.indexing);
-    persistWordIndexToDisk(io, explorer, data_dir, git_head);
+    if (initial_scan_ok) persistWordIndexToDisk(io, explorer, data_dir, git_head);
 
-    if (heads_match) {
+    if (heads_match and initial_scan_ok) {
         const current_count = @as(u32, @intCast(explorer.outlines.count()));
         if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
             if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
@@ -124,20 +136,28 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     // the exclusive lock) must be excluded for the entire parallel section,
     // not just while collecting entries. Other readers (search) can still
     // run concurrently under the shared lock.
+    var trigram_written = false;
     {
         const cpu_count = std.Thread.getCpuCount() catch 1;
         const tri_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
         explorer.mu.lockShared();
-        const tmp_tri = watcher.buildTrigramsFromCache(&explorer.contents, allocator, std.heap.c_allocator, tri_workers) catch null;
+        const tmp_tri = watcher.buildTrigramsFromCache(&explorer.contents, allocator, std.heap.c_allocator, tri_workers) catch |err| blk: {
+            std.log.warn("could not build trigram index: {}", .{err});
+            break :blk null;
+        };
         explorer.mu.unlockShared();
         if (tmp_tri) |tri| {
             defer {
                 tri.deinit();
                 std.heap.c_allocator.destroy(tri);
             }
-            tri.writeToDisk(io, data_dir, git_head) catch |err| {
-                std.log.warn("could not persist trigram index: {}", .{err});
-            };
+            write_trigrams: {
+                tri.writeToDisk(io, data_dir, git_head) catch |err| {
+                    std.log.warn("could not persist trigram index: {}", .{err});
+                    break :write_trigrams;
+                };
+                trigram_written = true;
+            }
         }
     }
 
@@ -148,11 +168,18 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
         return;
     }
 
-    // Compact: swap heap index for mmap — zero RSS, data lives in OS page cache.
-    if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
-        explorer.adoptTrigramIndex(.{ .mmap = loaded });
-    } else if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
-        explorer.adoptTrigramIndex(.{ .heap = loaded });
+    // Compact only the index written by this build. If building or persistence
+    // failed, an older on-disk index may describe another Git head; keep the
+    // ContentCache fallback instead of adopting stale candidate coverage.
+    var trigram_adopted = false;
+    if (trigram_written) {
+        if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
+            explorer.adoptTrigramIndex(.{ .mmap = loaded });
+            trigram_adopted = true;
+        } else if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
+            explorer.adoptTrigramIndex(.{ .heap = loaded });
+            trigram_adopted = true;
+        }
     }
 
     scan_done.store(true, .release);
@@ -168,7 +195,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
         std.log.warn("could not auto-write snapshot: {}", .{err});
     };
     const file_count = explorer.outlines.count();
-    if (file_count > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
+    if (trigram_adopted and (file_count > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null)) {
         explorer.releaseContents();
         explorer.releaseSecondaryIndexes();
     }

@@ -7,6 +7,11 @@ const TrigramIndex = @import("index.zig").TrigramIndex;
 const WordIndex = @import("index.zig").WordIndex;
 const explore_mod = @import("explore.zig");
 const git_mod = @import("git.zig");
+
+fn nsToMs(ns: i128) f64 {
+    return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+}
+
 pub const EventKind = enum(u8) {
     created,
     modified,
@@ -100,6 +105,7 @@ const WorkerParsedResults = struct {
     arena: std.heap.ArenaAllocator,
     items: []?PersistedScanFile = &.{},
     ready: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    word_index_error: ?anyerror = null,
     mutex: std.Io.Mutex = .init,
     condition: std.Io.Condition = .init,
 
@@ -570,7 +576,13 @@ fn parseInitialScanWorkerEntry(
     defer if (!keep_content) persist.free(file.content);
 
     const outline_copy = explore_mod.Explorer.cloneOutlinePackedBorrowingPath(&file.outline, std.heap.c_allocator) catch return null;
-    if (word_shard) |ws| ws.indexFile(file.path, file.content) catch {};
+    if (word_shard) |ws| {
+        if (results.word_index_error == null) {
+            ws.indexFile(file.path, file.content) catch |err| {
+                results.word_index_error = err;
+            };
+        }
+    }
     keep_content = true;
     return .{
         .path = file.path,
@@ -600,10 +612,23 @@ fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8
 }
 
 pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, skip_trigram: bool, worker_count: usize) !void {
+    const profile = cio.posixGetenv("CODEDB_INDEX_PROFILE") != null;
+    const profile_start: i128 = if (profile) cio.nanoTimestamp() else 0;
+    explorer.mu.lock();
+    const bulk_skip_file_words = explorer.word_index.skip_file_words;
+    if (bulk_skip_file_words) explorer.defer_word_index = true;
+    explorer.mu.unlock();
+    defer if (bulk_skip_file_words) {
+        explorer.mu.lock();
+        explorer.defer_word_index = false;
+        explorer.word_index.skip_file_words = false;
+        explorer.mu.unlock();
+    };
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 
     var entries = try collectInitialScanEntries(io, store, dir, allocator, skip_trigram);
+    const profile_collect_done: i128 = if (profile) cio.nanoTimestamp() else 0;
     defer {
         for (entries.items) |entry| allocator.free(entry.path);
         entries.deinit(allocator);
@@ -612,6 +637,12 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     if (entries.items.len == 0) return;
     const n_workers = @max(@as(usize, 1), @min(worker_count, entries.items.len));
     if (n_workers == 1) {
+        // There is no shard to publish in the serial path; index words inline.
+        if (bulk_skip_file_words) {
+            explorer.mu.lock();
+            explorer.defer_word_index = false;
+            explorer.mu.unlock();
+        }
         for (entries.items) |entry| {
             {
                 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -621,6 +652,20 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
                     try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
                 }
             }
+        }
+        if (profile) {
+            const now = cio.nanoTimestamp();
+            const to_ms = struct {
+                fn f(ns: i128) f64 {
+                    return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+                }
+            }.f;
+            std.debug.print("[index-profile] scan files={d} workers=1 total={d:.1}ms collect={d:.1}ms parse_commit={d:.1}ms\n", .{
+                entries.items.len,
+                to_ms(now - profile_start),
+                to_ms(profile_collect_done - profile_start),
+                to_ms(now - profile_collect_done),
+            });
         }
         return;
     }
@@ -669,11 +714,10 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
         threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, shard_ptr });
         spawned += 1;
     }
+    const profile_spawn_done: i128 = if (profile) cio.nanoTimestamp() else 0;
     // Shared Explorer maps remain serial, but consume ready slots while workers
     // continue parsing. Worker/chunk order matches the prior cold-scan semantics
     // for symbol precedence, cache eviction, dependency output, and persistence.
-    if (use_shards) explorer.defer_word_index = true;
-    defer explorer.defer_word_index = false;
     for (workers) |*worker| {
         for (0..worker.items.len) |item_index| {
             if (worker.takeReady(io, item_index)) |file| {
@@ -681,13 +725,44 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
             }
         }
     }
+    const profile_commit_done: i128 = if (profile) cio.nanoTimestamp() else 0;
 
     for (threads[0..spawned]) |thread| thread.join();
     joined = spawned;
-    for (workers, 0..) |*worker, wi| {
-        if (shards) |sh| try explorer.word_index.mergeShard(&sh[wi]);
+    const profile_join_done: i128 = if (profile) cio.nanoTimestamp() else 0;
+    for (workers) |*worker| {
+        if (worker.word_index_error) |err| return err;
+    }
+    if (shards) |sh| {
+        // Queries/status readers use Explorer.mu shared; publish the complete
+        // merged word index under one exclusive section so no reader can observe
+        // hash-map reallocations or a partially merged document range.
+        explorer.mu.lock();
+        defer explorer.mu.unlock();
+        for (sh) |*shard| try explorer.word_index.mergeShard(shard);
+    }
+    for (workers) |*worker| {
         worker.deinit(allocator);
         workers_committed += 1;
+    }
+    if (profile) {
+        const now = cio.nanoTimestamp();
+        const to_ms = struct {
+            fn f(ns: i128) f64 {
+                return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
+            }
+        }.f;
+        std.debug.print("[index-profile] scan files={d} workers={d} shards={} total={d:.1}ms collect={d:.1}ms setup_spawn={d:.1}ms parse_commit={d:.1}ms join={d:.1}ms merge_free={d:.1}ms\n", .{
+            entries.items.len,
+            n_workers,
+            use_shards,
+            to_ms(now - profile_start),
+            to_ms(profile_collect_done - profile_start),
+            to_ms(profile_spawn_done - profile_collect_done),
+            to_ms(profile_commit_done - profile_spawn_done),
+            to_ms(profile_join_done - profile_commit_done),
+            to_ms(now - profile_join_done),
+        });
     }
 }
 
@@ -740,19 +815,17 @@ const TriExtractResults = struct {
     }
 };
 
-// Extract trigrams from a chunk of (path, content) entries that are already
-// in memory — no file reads. Used by the cold-run non-search path to
-// parallelize what was previously a serial main-thread loop.
+// Build a private trigram shard from a chunk of (path, content) entries that
+// are already in memory. Both extraction and hash/posting insertion happen on
+// the worker; the main thread later merges one posting slice per shard+trigram.
 const CachedEntry = struct { path: []const u8, content: []const u8 };
 
-fn cachedTrigramExtractWorker(results: *TriExtractResults, entries: []const CachedEntry) void {
-    const alloc = results.arena.allocator();
+fn cachedTrigramBuildWorker(shard: *TrigramIndex, entries: []const CachedEntry, build_error: *?anyerror) void {
     const index_m = @import("index.zig");
     var local = std.AutoHashMap(index_m.Trigram, index_m.PostingMask).init(std.heap.c_allocator);
     defer local.deinit();
     local.ensureTotalCapacity(4096) catch {};
     for (entries) |entry| {
-        if (entry.content.len > max_trigram_file_bytes) continue;
         local.clearRetainingCapacity();
         if (entry.content.len >= 3) {
             for (0..entry.content.len - 2) |i| {
@@ -763,7 +836,10 @@ fn cachedTrigramExtractWorker(results: *TriExtractResults, entries: []const Cach
                     (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
                     (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
                 const tri = index_m.packTrigram(index_m.normalizeChar(c0), index_m.normalizeChar(c1), index_m.normalizeChar(c2));
-                const gop = local.getOrPut(tri) catch continue;
+                const gop = local.getOrPut(tri) catch |err| {
+                    build_error.* = err;
+                    return;
+                };
                 if (!gop.found_existing) gop.value_ptr.* = index_m.PostingMask{};
                 gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
                 if (i + 3 < entry.content.len) {
@@ -771,14 +847,10 @@ fn cachedTrigramExtractWorker(results: *TriExtractResults, entries: []const Cach
                 }
             }
         }
-        const tri_entries = alloc.alloc(TriExtractEntry, local.count()) catch continue;
-        var ti: usize = 0;
-        var iter = local.iterator();
-        while (iter.next()) |e| {
-            tri_entries[ti] = .{ .tri = e.key_ptr.*, .mask = e.value_ptr.* };
-            ti += 1;
-        }
-        results.items.append(alloc, .{ .path = entry.path, .trigrams = tri_entries }) catch {};
+        shard.insertBulkMapNew(entry.path, &local) catch |err| {
+            build_error.* = err;
+            return;
+        };
     }
 }
 
@@ -790,8 +862,14 @@ pub fn buildTrigramsFromCache(
     trigram_alloc: std.mem.Allocator,
     worker_count: usize,
 ) !*TrigramIndex {
+    const profile = cio.posixGetenv("CODEDB_INDEX_PROFILE") != null;
+    const profile_start: i128 = if (profile) cio.nanoTimestamp() else 0;
     var tmp_tri = try trigram_alloc.create(TrigramIndex);
     tmp_tri.* = TrigramIndex.init(trigram_alloc);
+    errdefer {
+        tmp_tri.deinit();
+        trigram_alloc.destroy(tmp_tri);
+    }
     tmp_tri.owns_paths = true;
     tmp_tri.index.ensureTotalCapacity(131072) catch {};
     tmp_tri.path_to_id.ensureTotalCapacity(@intCast(@min(contents.count(), 65536))) catch {};
@@ -806,43 +884,84 @@ pub fn buildTrigramsFromCache(
         if (e.value_ptr.*.len > max_trigram_file_bytes) continue;
         entries.appendAssumeCapacity(.{ .path = e.key_ptr.*, .content = e.value_ptr.* });
     }
+    const profile_collect_done: i128 = if (profile) cio.nanoTimestamp() else 0;
     if (entries.items.len == 0) return tmp_tri;
 
     const n_workers = @max(@as(usize, 1), @min(worker_count, entries.items.len));
     if (n_workers == 1) {
-        var results = TriExtractResults.init(std.heap.page_allocator);
-        defer results.deinit(allocator);
-        cachedTrigramExtractWorker(&results, entries.items);
-        for (results.items.items) |r| tmp_tri.insertBulkNew(r.path, r.trigrams) catch {};
+        var build_error: ?anyerror = null;
+        cachedTrigramBuildWorker(tmp_tri, entries.items, &build_error);
+        if (build_error) |err| return err;
+        if (profile) {
+            const now = cio.nanoTimestamp();
+            std.debug.print("[index-profile] trigram files={d} workers=1 total={d:.1}ms collect={d:.1}ms build={d:.1}ms\n", .{
+                entries.items.len,
+                nsToMs(now - profile_start),
+                nsToMs(profile_collect_done - profile_start),
+                nsToMs(now - profile_collect_done),
+            });
+        }
         return tmp_tri;
     }
 
-    const extractors = try allocator.alloc(TriExtractResults, n_workers);
-    var extractors_done: usize = 0;
+    // Shards use c_allocator so no caller-provided allocator is touched from
+    // multiple threads. In production the destination uses c_allocator too,
+    // allowing mergeBulkShard to transfer first-seen posting lists directly.
+    const shards = try allocator.alloc(TrigramIndex, n_workers);
+    var shards_initialized: usize = 0;
+    var shards_deinitialized: usize = 0;
     defer {
-        for (extractors[extractors_done..]) |*r| r.deinit(allocator);
-        allocator.free(extractors);
+        for (shards[shards_deinitialized..shards_initialized]) |*shard| shard.deinit();
+        allocator.free(shards);
     }
     const threads = try allocator.alloc(std.Thread, n_workers);
     defer allocator.free(threads);
+    const build_errors = try allocator.alloc(?anyerror, n_workers);
+    defer allocator.free(build_errors);
+    @memset(build_errors, null);
+    var spawned: usize = 0;
+    var joined = false;
+    errdefer if (!joined) for (threads[0..spawned]) |thread| thread.join();
 
     const chunk_size = entries.items.len / n_workers;
     const remainder = entries.items.len % n_workers;
     var offset: usize = 0;
-    for (extractors, 0..) |*ext, i| {
-        ext.* = TriExtractResults.init(std.heap.page_allocator);
+    for (shards, 0..) |*shard, i| {
+        shard.* = TrigramIndex.init(std.heap.c_allocator);
+        shards_initialized += 1;
         const extra: usize = if (i < remainder) 1 else 0;
         const count = chunk_size + extra;
         const chunk = entries.items[offset .. offset + count];
         offset += count;
-        threads[i] = try std.Thread.spawn(.{}, cachedTrigramExtractWorker, .{ ext, chunk });
+        shard.index.ensureTotalCapacity(32768) catch {};
+        shard.path_to_id.ensureTotalCapacity(@intCast(count)) catch {};
+        threads[i] = try std.Thread.spawn(.{}, cachedTrigramBuildWorker, .{ shard, chunk, &build_errors[i] });
+        spawned += 1;
     }
-    for (threads) |t| t.join();
+    const profile_spawn_done: i128 = if (profile) cio.nanoTimestamp() else 0;
+    for (threads[0..spawned]) |thread| thread.join();
+    joined = true;
+    const profile_build_done: i128 = if (profile) cio.nanoTimestamp() else 0;
+    for (build_errors) |maybe_error| {
+        if (maybe_error) |err| return err;
+    }
 
-    for (extractors) |*ext| {
-        for (ext.items.items) |r| tmp_tri.insertBulkNew(r.path, r.trigrams) catch {};
-        ext.deinit(allocator);
-        extractors_done += 1;
+    for (shards) |*shard| {
+        try tmp_tri.mergeBulkShard(shard);
+        shard.deinit();
+        shards_deinitialized += 1;
+    }
+    if (profile) {
+        const now = cio.nanoTimestamp();
+        std.debug.print("[index-profile] trigram files={d} workers={d} total={d:.1}ms collect={d:.1}ms setup_spawn={d:.1}ms build={d:.1}ms merge_free={d:.1}ms\n", .{
+            entries.items.len,
+            n_workers,
+            nsToMs(now - profile_start),
+            nsToMs(profile_collect_done - profile_start),
+            nsToMs(profile_spawn_done - profile_collect_done),
+            nsToMs(profile_build_done - profile_spawn_done),
+            nsToMs(now - profile_build_done),
+        });
     }
     return tmp_tri;
 }
