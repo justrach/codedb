@@ -84,6 +84,7 @@ const FileMap = std.StringHashMap(FileState);
 
 const InitialScanEntry = struct {
     path: []u8,
+    size: u64,
     skip_trigram: bool,
 };
 
@@ -506,6 +507,23 @@ pub fn trigramFileCap() usize {
     return std.fmt.parseInt(usize, raw, 10) catch 15_000;
 }
 
+// statScanForInitial: helper matching loadSnapshotFast's freshnessScan pattern.
+// Paths collected serially first (in caller), then stats fanned via chunks to
+// workers; side-effect is stat + recordSnapshot + storing the size back into the
+// entry. Per-stat errors are swallowed like the ref; record failures set shared
+// err_out and stop the worker.
+fn statScanForInitial(io: std.Io, store: *Store, dir: std.Io.Dir, recs: []InitialScanEntry, err_out: *?anyerror) void {
+    for (recs) |*record| {
+        if (err_out.* != null) return;
+        const ds = dir.statFile(io, record.path, .{}) catch continue;
+        record.size = ds.size;
+        _ = store.recordSnapshot(record.path, ds.size, 0) catch |e| {
+            err_out.* = e;
+            return;
+        };
+    }
+}
+
 fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocator: std.mem.Allocator, skip_trigram: bool) !std.ArrayList(InitialScanEntry) {
     var walker = try FilteredWalker.init(io, dir, allocator);
     defer walker.deinit();
@@ -517,15 +535,66 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
     }
 
     const max_trigram_files = trigramFileCap();
-    var file_count: usize = 0;
+    // Paths collected serially first (via FilteredWalker, pure walk no stats).
     while (try walker.next()) |entry| {
-        const stat = dir.statFile(io, entry.path, .{}) catch continue;
-        _ = try store.recordSnapshot(entry.path, stat.size, 0);
-        file_count += 1;
         try entries.append(allocator, .{
             .path = try allocator.dupe(u8, entry.path),
-            .skip_trigram = skip_trigram or (file_count > max_trigram_files),
+            .size = 0,
+            .skip_trigram = false, // set after parallel stat fan
         });
+    }
+    // Stats fanned out to workers (exact pattern from loadSnapshotFast: Pass A serial collect,
+    // Pass B chunk+spawn to statScanForInitial on disjoint slices; swallows per-stat errors,
+    // propagates record error, uses env/256/4 idiom, static chunks, join).
+    if (entries.items.len > 0) {
+        var build_err: ?anyerror = null;
+        const want_workers = blk: {
+            if (cio.posixGetenv("CODEDB_LOAD_WORKERS")) |raw| {
+                const parsed = std.fmt.parseInt(usize, raw, 10) catch 0;
+                if (parsed > 0) break :blk parsed;
+            }
+            if (entries.items.len < 256) break :blk 1;
+            const cpu_count = std.Thread.getCpuCount() catch 1;
+            break :blk @min(@as(usize, @intCast(cpu_count)), 4);
+        };
+        const n_workers = @max(@as(usize, 1), @min(want_workers, entries.items.len));
+        if (n_workers <= 1) {
+            statScanForInitial(io, store, dir, entries.items, &build_err);
+        } else if (allocator.alloc(std.Thread, n_workers)) |threads| {
+            defer allocator.free(threads);
+            const chunk = entries.items.len / n_workers;
+            const rem = entries.items.len % n_workers;
+            var off: usize = 0;
+            var spawned: usize = 0;
+            var spawn_failed = false;
+            for (0..n_workers) |i| {
+                const extra: usize = if (i < rem) 1 else 0;
+                const start = off;
+                off += chunk + extra;
+                const recs = entries.items[start..off];
+                if (spawn_failed) {
+                    statScanForInitial(io, store, dir, recs, &build_err);
+                    continue;
+                }
+                if (std.Thread.spawn(.{}, statScanForInitial, .{ io, store, dir, recs, &build_err })) |t| {
+                    threads[spawned] = t;
+                    spawned += 1;
+                } else |_| {
+                    statScanForInitial(io, store, dir, recs, &build_err);
+                    spawn_failed = true;
+                }
+            }
+            for (threads[0..spawned]) |t| t.join();
+        } else |_| {
+            statScanForInitial(io, store, dir, entries.items, &build_err);
+        }
+        if (build_err) |e| return e;
+    }
+    // Set skip_trigram using serial count (preserves original cap semantics on discovery order).
+    var file_count: usize = 0;
+    for (entries.items) |*e| {
+        file_count += 1;
+        e.skip_trigram = skip_trigram or (file_count > max_trigram_files);
     }
     return entries;
 }
@@ -540,8 +609,7 @@ fn parseInitialScanEntry(
     if (shouldSkipFile(entry.path)) return null;
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{});
     defer dir.close(io);
-    const stat = try dir.statFile(io, entry.path, .{});
-    const content = (try readIndexableFile(io, dir, entry.path, content_alloc, stat.size, true)) orelse return null;
+    const content = (try readIndexableFile(io, dir, entry.path, content_alloc, entry.size, true)) orelse return null;
     errdefer content_alloc.free(content);
     // Threshold for including a file in the trigram index. Bumped from 64KB to
     // 1MB after the search-shootout bench (issue: large code files like
@@ -775,8 +843,6 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     }
 }
 
-
-
 // Build a private trigram shard from a chunk of InitialScanEntry items — reads
 // each file, extracts trigrams, and inserts postings directly, all on the worker.
 // Used by the skip_outlines fast path in initialScanWithTrigrams.
@@ -789,8 +855,7 @@ fn readAndBuildTrigramShardWorker(io: std.Io, shard: *TrigramIndex, root: []cons
         if (shouldSkipFile(entry.path)) continue;
         const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch continue;
         defer dir.close(io);
-        const stat = dir.statFile(io, entry.path, .{}) catch continue;
-        const content = (readIndexableFile(io, dir, entry.path, std.heap.c_allocator, stat.size, false) catch continue) orelse continue;
+        const content = (readIndexableFile(io, dir, entry.path, std.heap.c_allocator, entry.size, false) catch continue) orelse continue;
         defer std.heap.c_allocator.free(content);
         if (content.len > max_trigram_file_bytes) continue;
         local.clearRetainingCapacity();
