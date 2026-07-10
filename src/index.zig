@@ -1669,6 +1669,18 @@ pub const TrigramIndex = struct {
             }
         }
 
+        // Precompute doc_id -> disk file_id ONCE (one path hash per doc), so the
+        // Step-3 posting loop does an array load instead of hashing the full path
+        // string per posting (tens of millions of times on a large repo). Mirrors
+        // the WordIndex doc_to_disk fix (#475).
+        const doc_to_disk = try self.allocator.alloc(u32, self.id_to_path.items.len);
+        defer self.allocator.free(doc_to_disk);
+        @memset(doc_to_disk, std.math.maxInt(u32));
+        for (self.id_to_path.items, 0..) |path, doc_idx| {
+            if (path.len == 0) continue;
+            doc_to_disk[doc_idx] = disk_path_to_id.get(path) orelse std.math.maxInt(u32);
+        }
+
         const file_count: u32 = @intCast(file_table.items.len);
 
         // Step 2: Collect all trigrams, sort them, serialize postings contiguously
@@ -1697,10 +1709,10 @@ pub const TrigramIndex = struct {
             const offset: u32 = @intCast(postings_buf.items.len);
             var count: u32 = 0;
             for (posting_list.items.items) |p| {
-                // Map in-memory doc_id to disk file_id via path lookup
-                if (p.doc_id >= self.id_to_path.items.len) continue;
-                const path = self.id_to_path.items[p.doc_id];
-                const fid = disk_path_to_id.get(path) orelse continue;
+                // Map in-memory doc_id to disk file_id via the precomputed array.
+                if (p.doc_id >= doc_to_disk.len) continue;
+                const fid = doc_to_disk[p.doc_id];
+                if (fid == std.math.maxInt(u32)) continue;
                 try postings_buf.append(self.allocator, .{
                     .file_id = fid,
                     .next_mask = p.next_mask,

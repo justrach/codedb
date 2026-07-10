@@ -224,21 +224,74 @@ hooks_dir = os.path.join(home, ".claude", "hooks")
 settings_path = os.path.join(home, ".claude", "settings.json")
 os.makedirs(hooks_dir, exist_ok=True)
 
+# Opt-out: CODEDB_NO_HOOKS=1 at install time, or a persisted removal marker,
+# skips (re-)registering the PreToolUse block-legacy hook. Without this, any
+# reinstall/update silently re-adds a hook the user deliberately removed.
+no_hooks_marker = os.path.join(home, ".codedb", "no-hooks")
+skip_pretooluse = bool(os.environ.get("CODEDB_NO_HOOKS")) or os.path.exists(no_hooks_marker)
+if os.environ.get("CODEDB_NO_HOOKS") and not os.path.exists(no_hooks_marker):
+    os.makedirs(os.path.dirname(no_hooks_marker), exist_ok=True)
+    with open(no_hooks_marker, "w") as f:
+        f.write("")
+
 scripts = {
     "codedb-block-legacy.sh": r'''#!/bin/bash
+# codedb PreToolUse guard. Nudges agents from native file tools to codedb —
+# but ONLY inside a codedb-indexed repo, and never for paths outside it.
+# Fail-open by design (a nudge, not a wall). Disable entirely: CODEDB_NO_HOOKS=1.
+[ -n "$CODEDB_NO_HOOKS" ] && exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 command -v codedb >/dev/null 2>&1 || exit 0
+
 INPUT=$(cat)
 CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+[ -z "$CMD" ] && exit 0
+
 STRIPPED=$(echo "$CMD" | sed -E 's/^[[:space:]]*(env|sudo|command|builtin|exec|nohup)[[:space:]]+//')
 STRIPPED=$(echo "$STRIPPED" | sed -E 's/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+//')
 FIRST=$(echo "$STRIPPED" | awk '{print $1}')
+
 case "$FIRST" in
-  grep|rg|egrep|fgrep) echo "BLOCKED: Use mcp__codedb__codedb_search instead of $FIRST. If codedb MCP is not connected, use Bash directly." >&2; exit 2 ;;
-  cat) echo "BLOCKED: Use mcp__codedb__codedb_read instead of cat. If codedb MCP is not connected, use Bash directly." >&2; exit 2 ;;
-  head|tail) echo "BLOCKED: Use mcp__codedb__codedb_read with line_start/line_end instead of $FIRST. If codedb MCP is not connected, use Bash directly." >&2; exit 2 ;;
-  sed|awk) echo "BLOCKED: Use mcp__codedb__codedb_edit instead of $FIRST. If codedb MCP is not connected, use Bash directly." >&2; exit 2 ;;
-  find) echo "BLOCKED: Use mcp__codedb__codedb_find or mcp__codedb__codedb_glob instead of find. If codedb MCP is not connected, use Bash directly." >&2; exit 2 ;;
+  grep|rg|egrep|fgrep|cat|head|tail|sed|awk|find) ;;
+  *) exit 0 ;;
+esac
+
+# Scope 1: cwd must sit at/under a codedb-indexed root. Otherwise codedb has
+# nothing to offer here — allow the native tool (no blocking outside repos, on
+# unindexed dirs, or in ~/.claude).
+PWD_ABS=$(pwd -P)
+REPO_ROOT=""
+for pt in "$HOME"/.codedb/projects/*/project.txt; do
+  [ -f "$pt" ] || continue
+  root=$(head -1 "$pt" 2>/dev/null)
+  [ -z "$root" ] && continue
+  [ "$root" = "/" ] && continue        # degenerate root matches everything
+  [ "$root" = "$HOME" ] && continue    # home indexed as a project would block all of ~
+  if [ "$PWD_ABS" = "$root" ] || [ "${PWD_ABS#"$root"/}" != "$PWD_ABS" ]; then
+    REPO_ROOT="$root"; break
+  fi
+done
+[ -z "$REPO_ROOT" ] && exit 0
+
+# Scope 2: if the command names an ABSOLUTE path outside this repo (cat /etc/hosts,
+# grep x /tmp/f), codedb can't read it — allow. Relative paths are assumed
+# in-repo (cwd is in-repo). Fail-open: any out-of-repo absolute arg -> allow.
+set -f
+for tok in $STRIPPED; do
+  case "$tok" in
+    /*)
+      if [ "$tok" = "$REPO_ROOT" ] || [ "${tok#"$REPO_ROOT"/}" != "$tok" ]; then :; else set +f; exit 0; fi
+      ;;
+  esac
+done
+set +f
+
+case "$FIRST" in
+  grep|rg|egrep|fgrep) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_search \"<text>\" (codedb_word for an exact identifier, codedb_callers for call sites) instead of $FIRST — ranked + fewer tokens. Native $FIRST is allowed outside this repo or with CODEDB_NO_HOOKS=1." >&2; exit 2 ;;
+  cat) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_read path=<file> (codedb_outline first for a map) instead of cat. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
+  head|tail) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_read path=<file> line_start=.. line_end=.. instead of $FIRST. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
+  sed|awk) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_edit (op=str_replace) instead of $FIRST for edits. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
+  find) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_find (fuzzy names) or codedb_glob (patterns) instead of find. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
 esac
 exit 0
 ''',
@@ -296,7 +349,8 @@ def merge_hook(event, new_entry):
         existing.append(new_entry)
     hooks[event] = existing
 
-merge_hook("PreToolUse", {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-block-legacy.sh"}]})
+if not skip_pretooluse:
+    merge_hook("PreToolUse", {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-block-legacy.sh"}]})
 merge_hook("SessionStart", {"matcher": "", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-warmup.sh"}]})
 
 # Auto-allow codedb's own MCP tools so callers aren't prompted for every

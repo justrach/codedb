@@ -702,7 +702,9 @@ pub const CallGraph = struct {
         allocator.free(self.edges);
         codegraph.freeAdjacency(allocator, self.adj);
         codegraph.freeAdjacency(allocator, self.radj);
+        for (self.node_path) |p| allocator.free(p);
         allocator.free(self.node_path);
+        for (self.node_name) |n| allocator.free(n);
         allocator.free(self.node_name);
         allocator.free(self.node_line);
     }
@@ -1506,6 +1508,14 @@ pub const Explorer = struct {
         self.mu.lock();
         defer self.mu.unlock();
         self.bumpSearchGen();
+        if (self.call_graph) |*cg| {
+            cg.deinit(self.allocator);
+            self.call_graph = null;
+        }
+        if (self.call_centrality) |*cc| {
+            cc.deinit();
+            self.call_centrality = null;
+        }
 
         const outline_gop = try self.outlines.getOrPut(path);
         const is_new = !outline_gop.found_existing;
@@ -3625,19 +3635,23 @@ pub const Explorer = struct {
                     if (!gop_h.found_existing) gop_h.value_ptr.* = 0;
                     gop_h.value_ptr.* += @intCast(@min(hpf_run_end - hpf_run_start, std.math.maxInt(u32)));
                 }
+                const SortKey = struct { count: u32, len: usize, path: []const u8 };
+                var sort_keys = try allocator.alloc(SortKey, cp.len);
+                defer allocator.free(sort_keys);
+                for (cp, 0..) |p, i| {
+                    const cnt = hits_per_file.get(p) orelse 0;
+                    const clen = if (self.contents.get(p)) |c| c.len else std.math.maxInt(usize);
+                    sort_keys[i] = .{ .count = cnt, .len = clen, .path = p };
+                }
                 const SortCtx = struct {
-                    contents: *ContentCache,
-                    counts: *const std.StringHashMap(u32),
-                    pub fn lessThan(ctx: @This(), a: []const u8, b: []const u8) bool {
-                        const a_count = ctx.counts.get(a) orelse 0;
-                        const b_count = ctx.counts.get(b) orelse 0;
-                        if (a_count != b_count) return a_count > b_count;
-                        const a_len = if (ctx.contents.get(a)) |c| c.len else std.math.maxInt(usize);
-                        const b_len = if (ctx.contents.get(b)) |c| c.len else std.math.maxInt(usize);
-                        return a_len < b_len;
+                    pub fn lessThan(_: void, a: SortKey, b: SortKey) bool {
+                        if (a.count != b.count) return a.count > b.count;
+                        return a.len < b.len;
                     }
                 };
-                std.mem.sort([]const u8, @constCast(cp), SortCtx{ .contents = &self.contents, .counts = &hits_per_file }, SortCtx.lessThan);
+                std.mem.sort(SortKey, sort_keys, {}, SortCtx.lessThan);
+                const cp_mut = @constCast(cp);
+                for (sort_keys, 0..) |sk, i| cp_mut[i] = sk.path;
 
                 const estimated_total = cp.len + self.skip_trigram_files.count();
                 const max_per_file = @max(@as(usize, 1), max_results / @max(@as(usize, 1), estimated_total));
@@ -3733,6 +3747,19 @@ pub const Explorer = struct {
         return res;
     }
 
+    /// Trim a source line for search output: strip leading ASCII indentation
+    /// (the line number already locates it) and cap length, to cut agent output
+    /// tokens. Mirrors mcp.zig's trimMatchText (MAX 200 bytes, UTF-8-safe cut).
+    fn trimSearchLine(line: []const u8) struct { text: []const u8, truncated: bool } {
+        var t = line;
+        while (t.len > 0 and (t[0] == ' ' or t[0] == '\t')) t = t[1..];
+        const MAX: usize = 200;
+        if (t.len <= MAX) return .{ .text = t, .truncated = false };
+        var cut: usize = MAX;
+        while (cut > 0 and (t[cut] & 0xC0) == 0x80) cut -= 1;
+        return .{ .text = t[0..cut], .truncated = true };
+    }
+
     pub fn renderPlainSearch(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(u8), max_results: usize, paths_only: bool) !bool {
         // Rendered-output cache front door — same generation discipline as
         // searchContent's cache (see that wrapper for the staleness
@@ -3775,6 +3802,7 @@ pub const Explorer = struct {
             // if a file's hits were ever non-contiguous).
             hits_end: usize,
             is_doc: bool,
+            defines: bool,
         };
 
         var tier0_files_buf: [512]Tier0File = undefined;
@@ -3831,6 +3859,7 @@ pub const Explorer = struct {
                     .first_seen = run_start,
                     .hits_end = run_end,
                     .is_doc = isDocLanguage(detectLanguage(hit_path)),
+                    .defines = self.fileDefinesSymbol(hit_path, query),
                 };
                 tier0_files_len += 1;
             }
@@ -3882,7 +3911,9 @@ pub const Explorer = struct {
             var priors_buf: [512]f32 = undefined;
             var order_buf: [512]u32 = undefined;
             for (tier0_files, 0..) |stats, i| {
-                priors_buf[i] = RankCtx.prior(stats.path, query);
+                var pr = RankCtx.prior(stats.path, query);
+                if (stats.defines) pr += 20.0; // float the actual definition above mentions
+                priors_buf[i] = pr;
                 order_buf[i] = @intCast(i);
             }
             const order = order_buf[0..tier0_files.len];
@@ -3952,6 +3983,31 @@ pub const Explorer = struct {
             // OOM building the offset table → bail to the full searchContent
             // path (caller falls through), which renders the same results.
             const n_spans = self.line_offsets.lineSpans(stats.path, content, target_lines[0..target_count], &spans) orelse return false;
+            // Def-line-first: within a file that defines the query symbol, render the
+            // definition line(s) before mere mentions — stable-moves matching spans to
+            // the front (reorders the OUTPUT spans, not lineSpans' sorted input).
+            if (stats.defines) {
+                if (self.outlines.get(stats.path)) |outline| {
+                    var def_w: usize = 0;
+                    var i: usize = 0;
+                    while (i < n_spans) : (i += 1) {
+                        var is_def = false;
+                        for (outline.symbols.items) |sym| {
+                            if (sym.line_start == spans[i].line and asciiEqlIgnoreCase(sym.name, query)) {
+                                is_def = true;
+                                break;
+                            }
+                        }
+                        if (is_def) {
+                            const tmp = spans[i];
+                            var j: usize = i;
+                            while (j > def_w) : (j -= 1) spans[j] = spans[j - 1];
+                            spans[def_w] = tmp;
+                            def_w += 1;
+                        }
+                    }
+                }
+            }
             for (spans[0..n_spans]) |line_span| {
                 rendered += 1;
 
@@ -3975,7 +4031,12 @@ pub const Explorer = struct {
                     }
                 } else {
                     shown += 1;
-                    try w.print("  {s}:{d}: {s}\n", .{ stats.path, line_span.line, content[line_span.start..line_span.end] });
+                    const mt = trimSearchLine(content[line_span.start..line_span.end]);
+                    if (mt.truncated) {
+                        try w.print("  {s}:{d}: {s}…\n", .{ stats.path, line_span.line, mt.text });
+                    } else {
+                        try w.print("  {s}:{d}: {s}\n", .{ stats.path, line_span.line, mt.text });
+                    }
                 }
                 if (rendered >= max_results) break;
             }
@@ -4642,20 +4703,45 @@ pub const Explorer = struct {
             codegraph.freeAdjacency(self.allocator, adj);
             return;
         };
-        @memcpy(np, node_path.items);
+        var np_filled: usize = 0;
+        for (node_path.items, 0..) |p, i| {
+            np[i] = self.allocator.dupe(u8, p) catch {
+                for (np[0..np_filled]) |s| self.allocator.free(s);
+                self.allocator.free(np);
+                self.allocator.free(edges_owned);
+                codegraph.freeAdjacency(self.allocator, adj);
+                return;
+            };
+            np_filled += 1;
+        }
 
         const nn = self.allocator.alloc([]const u8, n_nodes) catch {
+            for (np) |s| self.allocator.free(s);
+            self.allocator.free(np);
             self.allocator.free(edges_owned);
             codegraph.freeAdjacency(self.allocator, adj);
-            self.allocator.free(np);
             return;
         };
-        @memcpy(nn, node_name.items);
+        var nn_filled: usize = 0;
+        for (node_name.items, 0..) |nm, i| {
+            nn[i] = self.allocator.dupe(u8, nm) catch {
+                for (nn[0..nn_filled]) |s| self.allocator.free(s);
+                self.allocator.free(nn);
+                for (np) |s| self.allocator.free(s);
+                self.allocator.free(np);
+                self.allocator.free(edges_owned);
+                codegraph.freeAdjacency(self.allocator, adj);
+                return;
+            };
+            nn_filled += 1;
+        }
 
         const nl = self.allocator.alloc(u32, n_nodes) catch {
             self.allocator.free(edges_owned);
             codegraph.freeAdjacency(self.allocator, adj);
+            for (np) |s| self.allocator.free(s);
             self.allocator.free(np);
+            for (nn) |s| self.allocator.free(s);
             self.allocator.free(nn);
             return;
         };
@@ -4668,7 +4754,9 @@ pub const Explorer = struct {
         if (node_scores == null) {
             self.allocator.free(edges_owned);
             codegraph.freeAdjacency(self.allocator, adj);
+            for (np) |s| self.allocator.free(s);
             self.allocator.free(np);
+            for (nn) |s| self.allocator.free(s);
             self.allocator.free(nn);
             self.allocator.free(nl);
             return;
@@ -4694,7 +4782,9 @@ pub const Explorer = struct {
         const radj = radj_opt orelse {
             self.allocator.free(edges_owned);
             codegraph.freeAdjacency(self.allocator, adj);
+            for (np) |s| self.allocator.free(s);
             self.allocator.free(np);
+            for (nn) |s| self.allocator.free(s);
             self.allocator.free(nn);
             self.allocator.free(nl);
             return;
@@ -4702,7 +4792,7 @@ pub const Explorer = struct {
 
         if (self.call_centrality == null) {
             var cmap = std.StringHashMap(f32).init(self.allocator);
-            for (np, node_scores.?) |path, score| {
+            for (node_path.items, node_scores.?) |path, score| {
                 if (score == 0) continue;
                 const gop = cmap.getOrPut(path) catch continue;
                 if (!gop.found_existing) gop.value_ptr.* = 0;
@@ -4929,13 +5019,8 @@ pub const Explorer = struct {
             // df: distinct doc_ids in this posting list. tf: count of (term,doc)
             // entries (each entry is a distinct line per indexFile dedup).
             // line_hits: per-doc map of line_num → count for best-line picking.
-            var doc_tf = U32HashMap(u32).init(ta);
             var doc_best_line = U32HashMap(struct { line: u32, count: u32 }).init(ta);
             for (hits) |h| {
-                const tf_gop = try doc_tf.getOrPut(h.doc_id);
-                if (!tf_gop.found_existing) tf_gop.value_ptr.* = 0;
-                tf_gop.value_ptr.* += 1;
-
                 const ln_gop = try doc_best_line.getOrPut(h.doc_id);
                 if (!ln_gop.found_existing) {
                     ln_gop.value_ptr.* = .{ .line = h.line_num, .count = 1 };
@@ -4948,23 +5033,23 @@ pub const Explorer = struct {
                     ln_gop.value_ptr.count += 1;
                 }
             }
-            const df: u32 = @intCast(doc_tf.count());
+            const df: u32 = @intCast(doc_best_line.count());
             // BM25 idf with the +1 smoothing variant: log(1 + (N - df + 0.5)/(df + 0.5))
             const num: f32 = @as(f32, @floatFromInt(N)) - @as(f32, @floatFromInt(df)) + 0.5;
             const den: f32 = @as(f32, @floatFromInt(df)) + 0.5;
             const idf: f32 = @log(1.0 + num / den);
 
-            var tf_iter = doc_tf.iterator();
+            var tf_iter = doc_best_line.iterator();
             while (tf_iter.next()) |entry| {
                 const doc_id = entry.key_ptr.*;
-                const tf: f32 = @floatFromInt(entry.value_ptr.*);
+                const tf: f32 = @floatFromInt(entry.value_ptr.count);
                 const dl_raw = self.word_index.docLength(doc_id);
                 const dl: f32 = if (dl_raw == 0) 1.0 else @floatFromInt(dl_raw);
                 const norm = 1.0 - b + b * (dl / avgdl);
                 const tf_sat = (tf * (k1 + 1.0)) / (tf + k1 * norm);
                 const term_score = idf * (tf_sat + bm25_plus_delta);
 
-                const ln_info = doc_best_line.get(doc_id) orelse continue;
+                const ln_info = entry.value_ptr.*;
                 const agg_gop = try per_doc.getOrPut(doc_id);
                 if (!agg_gop.found_existing) {
                     agg_gop.value_ptr.* = .{

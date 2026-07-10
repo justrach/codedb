@@ -19,6 +19,17 @@ signals in isolation — 3 experiments proved that flat-lines; the win is the
       lexically-relevant) competitors in lockstep. See research.md "P0 result". Keep
       `line_count` as a P4 feature; it is inert alone.
 
+- [x] **Def-first: rank the defining file first in codedb_search** — **DONE → +1, SHIPPED (PR #665).**
+      `codedb_search`'s fast path (`renderPlainSearchUncached`) ordered tier0 by hit
+      count + basename prior only; the def-aware ranking lived in `searchContentRanked`,
+      which `codedb_search` never calls. Added a `defines` flag (via `fileDefinesSymbol`)
+      + `+20` rank prior for defining files. Measured on a **pinned** eval
+      (`scripts/rank-eval.py`, methodology in `def-first-eval.md`): def-file-#1 8/10→9/10,
+      zero regressions. The pinned corpus + isolated `$HOME` is what makes a ranking A/B
+      trustworthy — an earlier unpinned run showed a phantom 8→7 that reproduced with the
+      code reverted (snapshot drift). Holdout: `renderPlainSearch`-as-query bails to
+      `searchContentAuto` (docs not demoted there) — next pass.
+
 ## P1 — biggest signal gap (the real IRFL win)
 - [ ] **Git version-history signals** (AmaLgam / Rahman / BLIA). Mine `git log`
       once at index time:

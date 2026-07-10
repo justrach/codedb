@@ -2539,3 +2539,32 @@ test "searchSymbols stays correct across the deferred-index restore path" {
     try testing.expectEqual(@as(usize, 1), after_deferred.len);
     try testing.expectEqualStrings("a.zig", after_deferred[0].path);
 }
+
+test "issue-656: call graph is stale and dangling after a file edit" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+    try explorer_inst.indexFile("calls.zig",
+        \\pub fn alpha() void {}
+        \\pub fn beta() void {}
+    );
+
+    // First query builds the call graph: no alpha -> beta edge yet.
+    const before = try explorer_inst.findCallPath("alpha", "beta", testing.allocator, 4);
+    try testing.expect(before == null);
+
+    // Edit the file so alpha NOW calls beta. The commit path refreshes deps,
+    // the symbol index, and line offsets — but call_graph is never rebuilt,
+    // and worse, its node_name/node_path slices borrow outline memory that
+    // the re-index just freed. A fresh graph resolves the new edge; the
+    // stale/dangling one cannot.
+    try explorer_inst.indexFile("calls.zig",
+        \\pub fn alpha() void {
+        \\    beta();
+        \\}
+        \\pub fn beta() void {}
+    );
+
+    const after = try explorer_inst.findCallPath("alpha", "beta", testing.allocator, 4);
+    defer if (after) |steps| testing.allocator.free(steps);
+    try testing.expect(after != null);
+}

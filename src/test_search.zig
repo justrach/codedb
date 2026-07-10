@@ -1900,6 +1900,50 @@ test "audit: searchContent tier0 use_line_hits early-return skips rerank basenam
 
 // src/explore.zig renderPlainSearch — the MCP codedb_search fast-path rendered in raw
 // hit-count order with no basename prior, so a noise file outranked the canonical match.
+test "def-first: renderPlainSearch surfaces the definition line before mentions in the same file" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // A comment mentioning `gadget` appears BEFORE its definition; several call
+    // sites follow. Line-order rendering would show the line-1 comment first.
+    try explorer.indexFile("src/g.zig",
+        "// gadget helper\nconst a = gadget;\nconst b = gadget;\npub fn gadget() void {}\ngadget();\ngadget();\n");
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    const rendered = try explorer.renderPlainSearch("gadget", testing.allocator, &out, 6, false);
+    try testing.expect(rendered);
+
+    // the def line (`pub fn gadget`, line 4) must render before the comment mention (line 1)
+    const def_i = std.mem.indexOf(u8, out.items, "src/g.zig:4:");
+    const com_i = std.mem.indexOf(u8, out.items, "src/g.zig:1:");
+    try testing.expect(def_i != null and com_i != null);
+    try testing.expect(def_i.? < com_i.?);
+}
+
+test "def-first: renderPlainSearch ranks the defining file above higher-count mentions" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // core.zig DEFINES frobnicate (basename != query, a single hit).
+    try explorer.indexFile("src/core.zig", "pub fn frobnicate() void {}\n");
+    // callers.zig merely mentions it many times (no definition, higher count).
+    try explorer.indexFile("src/callers.zig", "frobnicate();\nfrobnicate();\nfrobnicate();\nfrobnicate();\nfrobnicate();\n");
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    const rendered = try explorer.renderPlainSearch("frobnicate", testing.allocator, &out, 2, false);
+    try testing.expect(rendered);
+
+    const ci = std.mem.indexOf(u8, out.items, "src/core.zig");
+    const ai = std.mem.indexOf(u8, out.items, "src/callers.zig");
+    try testing.expect(ci != null and ai != null);
+    // the file that DEFINES frobnicate must render before the high-count mentions
+    try testing.expect(ci.? < ai.?);
+}
+
 test "audit: renderPlainSearch fast-path ranks lexical count over canonical basename" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
