@@ -573,7 +573,10 @@ pub fn coldLoadOrScan(
         if (freq_table_heap.* == null) {
             if (explorer.contents.count() > 0) {
                 const t_freq: i128 = if (index_profile) cio.nanoTimestamp() else 0;
-                const ft = index_mod.buildFrequencyTableFromMap(&explorer.contents);
+                const cpu_count = std.Thread.getCpuCount() catch 1;
+                const freq_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
+                const ft = index_mod.buildFrequencyTableFromMapParallel(&explorer.contents, allocator, freq_workers) catch
+                    index_mod.buildFrequencyTableFromMap(&explorer.contents);
                 index_mod.writeFrequencyTable(io, &ft, data_dir) catch |err| {
                     std.log.warn("could not persist frequency table: {}", .{err});
                 };

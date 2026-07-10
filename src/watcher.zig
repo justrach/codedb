@@ -592,7 +592,7 @@ fn parseInitialScanWorkerEntry(
     };
 }
 
-fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry, word_shard: ?*WordIndex) void {
+fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry, word_shard: ?*WordIndex, trigram_shard: ?*TrigramIndex) void {
     // Read content directly into the persistent result arena, while allocating
     // transient parser state in a per-file scratch arena that is reset between
     // files. The final outline uses packed libc-owned storage so the main thread
@@ -600,6 +600,8 @@ fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8
     //
     // When word_shard is set, also build the WordIndex for this chunk in parallel
     // here (lock-free, content is hot) instead of on the serial commit thread.
+    // When trigram_shard is set, build trigrams into the private shard so the
+    // main thread can merge posting lists in one pass instead of serial indexFile.
     // Files are indexed in chunk order, matching the order commit/mergeShard will
     // assign global doc_ids, so the merged index is identical to the serial path.
     var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -607,6 +609,13 @@ fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8
     for (entries, 0..) |entry, index| {
         _ = scratch.reset(.retain_capacity);
         const file = parseInitialScanWorkerEntry(io, results, root, entry, scratch.allocator(), word_shard);
+        if (file) |f| {
+            if (trigram_shard) |ts| {
+                if (!f.skip_trigram and f.content.len <= max_trigram_file_bytes) {
+                    ts.indexFile(f.path, f.content) catch {};
+                }
+            }
+        }
         results.publish(io, index, file);
     }
 }
@@ -711,7 +720,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
             sh[i].skip_file_words = true;
             shard_ptr = &sh[i];
         }
-        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, shard_ptr });
+        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, shard_ptr, null });
         spawned += 1;
     }
     const profile_spawn_done: i128 = if (profile) cio.nanoTimestamp() else 0;
@@ -766,54 +775,51 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     }
 }
 
-/// Fast scan: walk + parse outlines + build trigrams in one pass.
-/// Avoids re-reading files for trigram build. Returns a TrigramIndex
-/// allocated with the given trigram_alloc (caller owns).
-fn readFileEntry(io: std.Io, root: []const u8, entry: InitialScanEntry, arena_alloc: std.mem.Allocator) ?struct { path: []const u8, content: []const u8 } {
-    if (shouldSkipFile(entry.path)) return null;
-    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return null;
-    defer dir.close(io);
-    const stat = dir.statFile(io, entry.path, .{}) catch return null;
-    const c = (readIndexableFile(io, dir, entry.path, arena_alloc, stat.size, false) catch return null) orelse return null;
-    return .{ .path = entry.path, .content = c };
-}
 
-const ReadResult = struct { path: []const u8, content: []const u8 };
-const ReadResults = struct {
-    arena: std.heap.ArenaAllocator,
-    items: std.ArrayList(ReadResult),
 
-    fn init(backing: std.mem.Allocator) ReadResults {
-        return .{ .arena = std.heap.ArenaAllocator.init(backing), .items = .empty };
-    }
-    fn deinit(self: *ReadResults, _: std.mem.Allocator) void {
-        self.items.deinit(self.arena.allocator());
-        self.arena.deinit();
-    }
-};
-
-fn readWorker(io: std.Io, results: *ReadResults, root: []const u8, entries: []const InitialScanEntry) void {
-    const alloc = results.arena.allocator();
+// Build a private trigram shard from a chunk of InitialScanEntry items — reads
+// each file, extracts trigrams, and inserts postings directly, all on the worker.
+// Used by the skip_outlines fast path in initialScanWithTrigrams.
+fn readAndBuildTrigramShardWorker(io: std.Io, shard: *TrigramIndex, root: []const u8, entries: []const InitialScanEntry, build_error: *?anyerror) void {
+    const index_m = @import("index.zig");
+    var local = std.AutoHashMap(index_m.Trigram, index_m.PostingMask).init(std.heap.c_allocator);
+    defer local.deinit();
+    local.ensureTotalCapacity(4096) catch {};
     for (entries) |entry| {
-        if (readFileEntry(io, root, entry, alloc)) |r| {
-            results.items.append(alloc, r) catch {};
+        if (shouldSkipFile(entry.path)) continue;
+        const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch continue;
+        defer dir.close(io);
+        const stat = dir.statFile(io, entry.path, .{}) catch continue;
+        const content = (readIndexableFile(io, dir, entry.path, std.heap.c_allocator, stat.size, false) catch continue) orelse continue;
+        defer std.heap.c_allocator.free(content);
+        if (content.len > max_trigram_file_bytes) continue;
+        local.clearRetainingCapacity();
+        if (content.len >= 3) {
+            for (0..content.len - 2) |i| {
+                const c0 = content[i];
+                const c1 = content[i + 1];
+                const c2 = content[i + 2];
+                if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
+                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
+                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
+                const tri = index_m.packTrigram(index_m.normalizeChar(c0), index_m.normalizeChar(c1), index_m.normalizeChar(c2));
+                const gop = local.getOrPut(tri) catch |err| {
+                    build_error.* = err;
+                    return;
+                };
+                if (!gop.found_existing) gop.value_ptr.* = index_m.PostingMask{};
+                gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
+                if (i + 3 < content.len) {
+                    gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(index_m.normalizeChar(content[i + 3]) % 8);
+                }
+            }
         }
+        shard.insertBulkMapNew(entry.path, &local) catch |err| {
+            build_error.* = err;
+            return;
+        };
     }
 }
-
-const TriExtractEntry = TrigramIndex.BulkEntry;
-const TriExtractResult = struct { path: []const u8, trigrams: []TriExtractEntry };
-const TriExtractResults = struct {
-    arena: std.heap.ArenaAllocator,
-    items: std.ArrayList(TriExtractResult),
-    fn init(backing: std.mem.Allocator) TriExtractResults {
-        return .{ .arena = std.heap.ArenaAllocator.init(backing), .items = .empty };
-    }
-    fn deinit(self: *TriExtractResults, _: std.mem.Allocator) void {
-        self.items.deinit(self.arena.allocator());
-        self.arena.deinit();
-    }
-};
 
 // Build a private trigram shard from a chunk of (path, content) entries that
 // are already in memory. Both extraction and hash/posting insertion happen on
@@ -966,43 +972,6 @@ pub fn buildTrigramsFromCache(
     return tmp_tri;
 }
 
-fn trigramExtractWorker(io: std.Io, results: *TriExtractResults, root: []const u8, entries: []const InitialScanEntry) void {
-    const alloc = results.arena.allocator();
-    const index_m = @import("index.zig");
-    var local = std.AutoHashMap(index_m.Trigram, index_m.PostingMask).init(std.heap.c_allocator);
-    defer local.deinit();
-    local.ensureTotalCapacity(4096) catch {};
-    for (entries) |entry| {
-        const r = readFileEntry(io, root, entry, alloc) orelse continue;
-        if (r.content.len > max_trigram_file_bytes) continue;
-        local.clearRetainingCapacity();
-        if (r.content.len >= 3) {
-            for (0..r.content.len - 2) |i| {
-                const c0 = r.content[i];
-                const c1 = r.content[i + 1];
-                const c2 = r.content[i + 2];
-                if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
-                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
-                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
-                const tri = index_m.packTrigram(index_m.normalizeChar(c0), index_m.normalizeChar(c1), index_m.normalizeChar(c2));
-                const gop = local.getOrPut(tri) catch continue;
-                if (!gop.found_existing) gop.value_ptr.* = index_m.PostingMask{};
-                gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
-                if (i + 3 < r.content.len) {
-                    gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(index_m.normalizeChar(r.content[i + 3]) % 8);
-                }
-            }
-        }
-        const tri_entries = alloc.alloc(TriExtractEntry, local.count()) catch continue;
-        var ti: usize = 0;
-        var iter = local.iterator();
-        while (iter.next()) |e| {
-            tri_entries[ti] = .{ .tri = e.key_ptr.*, .mask = e.value_ptr.* };
-            ti += 1;
-        }
-        results.items.append(alloc, .{ .path = r.path, .trigrams = tri_entries }) catch {};
-    }
-}
 pub fn initialScanWithTrigrams(
     io: std.Io,
     store: *Store,
@@ -1029,7 +998,6 @@ pub fn initialScanWithTrigrams(
     var tmp_tri = try trigram_alloc.create(TrigramIndex);
     tmp_tri.* = TrigramIndex.init(trigram_alloc);
     tmp_tri.owns_paths = true;
-    // Pre-size to avoid resize copies during bulk insert (~99K unique trigrams typical)
     tmp_tri.index.ensureTotalCapacity(131072) catch {};
     tmp_tri.path_to_id.ensureTotalCapacity(@intCast(@min(entries.items.len, 65536))) catch {};
 
@@ -1042,7 +1010,6 @@ pub fn initialScanWithTrigrams(
                 if (!skip_outlines) {
                     explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, true) catch continue;
                 }
-                // Build trigrams from same content — no re-read needed
                 if (file.content.len <= max_trigram_file_bytes) {
                     tmp_tri.indexFile(file.path, file.content) catch {};
                 }
@@ -1051,77 +1018,93 @@ pub fn initialScanWithTrigrams(
         return tmp_tri;
     }
 
-    if (skip_outlines) {
-        // Fast path: read files + extract trigrams in parallel workers
-        const extractors = try allocator.alloc(TriExtractResults, n_workers);
-        var extractors_done: usize = 0;
-        defer {
-            for (extractors[extractors_done..]) |*r| r.deinit(allocator);
-            allocator.free(extractors);
-        }
-        const threads = try allocator.alloc(std.Thread, n_workers);
-        defer allocator.free(threads);
+    // Shards use c_allocator so no caller-provided allocator is touched from
+    // multiple threads. The destination (tmp_tri) uses trigram_alloc, which in
+    // practice is also c_allocator, so mergeBulkShard transfers posting lists.
+    const shards = try allocator.alloc(TrigramIndex, n_workers);
+    var shards_initialized: usize = 0;
+    var shards_deinitialized: usize = 0;
+    defer {
+        for (shards[shards_deinitialized..shards_initialized]) |*shard| shard.deinit();
+        allocator.free(shards);
+    }
+    const threads = try allocator.alloc(std.Thread, n_workers);
+    defer allocator.free(threads);
+    const build_errors = try allocator.alloc(?anyerror, n_workers);
+    defer allocator.free(build_errors);
+    @memset(build_errors, null);
+    var spawned: usize = 0;
+    var joined = false;
+    errdefer if (!joined) for (threads[0..spawned]) |thread| thread.join();
 
-        const chunk_size = entries.items.len / n_workers;
-        const remainder = entries.items.len % n_workers;
+    const chunk_size = entries.items.len / n_workers;
+    const remainder = entries.items.len % n_workers;
+
+    if (skip_outlines) {
+        // Read files + build trigrams into private shards in parallel.
         var offset: usize = 0;
-        for (extractors, 0..) |*ext, i| {
-            ext.* = TriExtractResults.init(std.heap.page_allocator);
+        for (shards, 0..) |*shard, i| {
+            shard.* = TrigramIndex.init(std.heap.c_allocator);
+            shards_initialized += 1;
             const extra: usize = if (i < remainder) 1 else 0;
             const count = chunk_size + extra;
             const chunk = entries.items[offset .. offset + count];
             offset += count;
-            threads[i] = try std.Thread.spawn(.{}, trigramExtractWorker, .{ io, ext, root, chunk });
+            shard.index.ensureTotalCapacity(32768) catch {};
+            shard.path_to_id.ensureTotalCapacity(@intCast(count)) catch {};
+            threads[i] = try std.Thread.spawn(.{}, readAndBuildTrigramShardWorker, .{ io, shard, root, chunk, &build_errors[i] });
+            spawned += 1;
         }
-        for (threads) |thread| thread.join();
-
-        for (extractors) |*ext| {
-            for (ext.items.items) |r| {
-                tmp_tri.insertBulkNew(r.path, r.trigrams) catch {};
-            }
-            ext.deinit(allocator);
-            extractors_done += 1;
+        for (threads[0..spawned]) |thread| thread.join();
+        joined = true;
+        for (build_errors) |maybe_error| {
+            if (maybe_error) |err| return err;
+        }
+        for (shards) |*shard| {
+            try tmp_tri.mergeBulkShard(shard);
+            shard.deinit();
+            shards_deinitialized += 1;
         }
     } else {
-        // Full path: parse outlines + build trigrams
+        // Parse outlines + build trigrams into private shards in parallel.
         const workers = try allocator.alloc(WorkerParsedResults, n_workers);
         defer allocator.free(workers);
-        const threads = try allocator.alloc(std.Thread, n_workers);
-        defer allocator.free(threads);
         for (workers) |*worker| worker.* = WorkerParsedResults.init(std.heap.page_allocator);
         var workers_committed: usize = 0;
         defer {
             for (workers[workers_committed..]) |*worker| worker.deinit(allocator);
         }
-        var spawned: usize = 0;
-        var joined: usize = 0;
-        errdefer for (threads[joined..spawned]) |thread| thread.join();
 
-        const chunk_size = entries.items.len / n_workers;
-        const remainder = entries.items.len % n_workers;
         var offset: usize = 0;
         for (workers, 0..) |*worker, i| {
+            shards[i] = TrigramIndex.init(std.heap.c_allocator);
+            shards_initialized += 1;
             const extra: usize = if (i < remainder) 1 else 0;
             const count = chunk_size + extra;
             const chunk = entries.items[offset .. offset + count];
             offset += count;
             try worker.prepare(count);
-            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, null });
+            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, null, &shards[i] });
             spawned += 1;
         }
+        // Commit outlines serially while workers may still be parsing. Trigram
+        // building happens on the worker threads inside the shards; the main
+        // thread only merges completed shards at the end.
         for (workers, 0..) |*worker, wi| {
             for (0..worker.items.len) |item_index| {
                 if (worker.takeReady(io, item_index)) |file| {
                     explorer.commitParsedFileAdoptOutline(file.path, file.content, file.outline, true, true) catch continue;
-                    if (file.content.len <= max_trigram_file_bytes) {
-                        tmp_tri.indexFile(file.path, file.content) catch {};
-                    }
                 }
             }
             threads[wi].join();
-            joined += 1;
             worker.deinit(allocator);
             workers_committed += 1;
+        }
+        joined = true;
+        for (shards) |*shard| {
+            try tmp_tri.mergeBulkShard(shard);
+            shard.deinit();
+            shards_deinitialized += 1;
         }
     }
     return tmp_tri;

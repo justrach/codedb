@@ -3266,6 +3266,75 @@ pub fn buildFrequencyTableFromMap(contents: *ContentCache) [256][256]u16 {
     return finishFrequencyTable(&counts);
 }
 
+/// Build a frequency table from a ContentCache, parallelized across workers.
+/// Each worker counts byte-pair occurrences in its chunk into a private table;
+/// the main thread sums the tables (65k integer additions) and normalises.
+pub fn buildFrequencyTableFromMapParallel(contents: *ContentCache, allocator: std.mem.Allocator, worker_count: usize) ![256][256]u16 {
+    const n_files = contents.count();
+    if (n_files == 0) {
+        const zero: [256][256]u64 = .{.{0} ** 256} ** 256;
+        return finishFrequencyTable(&zero);
+    }
+
+    // Collect content slices into an array for chunked distribution.
+    var slices = try std.ArrayList([]const u8).initCapacity(allocator, n_files);
+    defer slices.deinit(allocator);
+    var iter = contents.iterator();
+    while (iter.next()) |entry| {
+        const content = entry.value_ptr.*;
+        if (content.len >= 2) slices.appendAssumeCapacity(content);
+    }
+    if (slices.items.len == 0) {
+        const zero: [256][256]u64 = .{.{0} ** 256} ** 256;
+        return finishFrequencyTable(&zero);
+    }
+
+    const n_workers = @max(@as(usize, 1), @min(worker_count, slices.items.len));
+    if (n_workers == 1) return buildFrequencyTableFromSlices(slices.items);
+
+    const Counts = [256][256]u64;
+    const worker_counts = try allocator.alloc(Counts, n_workers);
+    defer allocator.free(worker_counts);
+    @memset(std.mem.sliceAsBytes(worker_counts), 0);
+
+    const threads = try allocator.alloc(std.Thread, n_workers);
+    defer allocator.free(threads);
+    var spawned: usize = 0;
+    errdefer for (threads[0..spawned]) |t| t.join();
+
+    const chunk_size = slices.items.len / n_workers;
+    const remainder = slices.items.len % n_workers;
+    var offset: usize = 0;
+    for (0..n_workers) |i| {
+        const extra: usize = if (i < remainder) 1 else 0;
+        const count = chunk_size + extra;
+        const chunk = slices.items[offset .. offset + count];
+        offset += count;
+        threads[i] = try std.Thread.spawn(.{}, freqCountWorker, .{ chunk, &worker_counts[i] });
+        spawned += 1;
+    }
+    for (threads[0..spawned]) |t| t.join();
+
+    // Sum worker tables.
+    var merged: Counts = .{.{0} ** 256} ** 256;
+    for (worker_counts) |*wc| {
+        for (0..256) |a| {
+            for (0..256) |b| {
+                merged[a][b] += wc[a][b];
+            }
+        }
+    }
+    return finishFrequencyTable(&merged);
+}
+
+fn freqCountWorker(slices: []const []const u8, out: *[256][256]u64) void {
+    for (slices) |content| {
+        for (0..content.len - 1) |i| {
+            out[content[i]][content[i + 1]] += 1;
+        }
+    }
+}
+
 fn finishFrequencyTable(counts: *const [256][256]u64) [256][256]u16 {
     var max_count: u64 = 1;
     for (counts) |row| {
