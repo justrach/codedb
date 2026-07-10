@@ -42,7 +42,13 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     };
 
     mcp_server.setScanState(.walking);
-    watcher.initialScan(io, store, explorer, root, allocator, heads_match) catch |err| {
+    // Always skip per-file trigram indexing during the walk — trigrams are
+    // built afterward in one parallel pass over the populated ContentCache
+    // (mirrors the CLI cold-index path in bootstrap.zig). Previously this
+    // passed `heads_match`, which meant a genuinely cold scan (no disk
+    // index at all, heads_match=false) built trigrams file-by-file, single
+    // threaded, inline in the commit loop below.
+    watcher.initialScan(io, store, explorer, root, allocator, true) catch |err| {
         std.log.warn("background scan failed: {}", .{err});
     };
 
@@ -98,19 +104,42 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
                 return;
             }
         }
-        explorer.rebuildTrigrams() catch {};
+        // No reusable disk index (stale/missing/count mismatch) — fall
+        // through to the parallel trigram build below, same as a cold scan.
     }
 
-    // Phase gate: bail before disk write if shutting down
+    // Phase gate: bail before trigram build if shutting down
     if (shutdown.load(.acquire)) {
         scan_done.store(true, .release);
         mcp_server.setScanState(.ready);
         return;
     }
 
-    explorer.trigram_index.writeToDisk(io, data_dir, git_head) catch |err| {
-        std.log.warn("could not persist trigram index: {}", .{err});
-    };
+    // Build the trigram index in parallel from the ContentCache that
+    // initialScan just populated — mirrors watcher.buildTrigramsFromCache's
+    // use on the CLI cold-index path (bootstrap.zig). A shared (read) lock
+    // is held for the whole build: worker threads read file content slices
+    // straight out of ContentCache without copying, so any concurrent
+    // writer (codedb_edit, incremental file-watcher commits, which all take
+    // the exclusive lock) must be excluded for the entire parallel section,
+    // not just while collecting entries. Other readers (search) can still
+    // run concurrently under the shared lock.
+    {
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        const tri_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
+        explorer.mu.lockShared();
+        const tmp_tri = watcher.buildTrigramsFromCache(&explorer.contents, allocator, std.heap.c_allocator, tri_workers) catch null;
+        explorer.mu.unlockShared();
+        if (tmp_tri) |tri| {
+            defer {
+                tri.deinit();
+                std.heap.c_allocator.destroy(tri);
+            }
+            tri.writeToDisk(io, data_dir, git_head) catch |err| {
+                std.log.warn("could not persist trigram index: {}", .{err});
+            };
+        }
+    }
 
     // Phase gate: bail before mmap swap if shutting down
     if (shutdown.load(.acquire)) {
