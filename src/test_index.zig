@@ -1999,6 +1999,37 @@ test "disk index: round-trip write and read preserves candidates" {
     try testing.expect(found);
 }
 
+test "disk index: streamed postings cross a batch boundary" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    ti.owns_paths = true;
+    defer ti.deinit();
+
+    // 4,097 postings makes the writer flush one full 4,096-entry batch and
+    // then its one-entry tail. The disk reader must recover every document.
+    for (0..4097) |i| {
+        const path = try std.fmt.allocPrint(alloc, "src/batch-{d}.zig", .{i});
+        defer alloc.free(path);
+        try ti.indexFile(path, "abc");
+    }
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+    try ti.writeToDisk(io, dir_path, null);
+
+    const loaded = TrigramIndex.readFromDisk(io, dir_path, alloc);
+    try testing.expect(loaded != null);
+    var loaded_ti = loaded.?;
+    defer loaded_ti.deinit();
+    const candidates = loaded_ti.candidates("abc", alloc);
+    defer if (candidates) |items| alloc.free(items);
+    try testing.expect(candidates != null);
+    try testing.expectEqual(@as(usize, 4097), candidates.?.len);
+}
+
 test "disk index: readFromDisk returns null for missing files" {
     const loaded = TrigramIndex.readFromDisk(io, "/tmp/codedb_nonexistent_dir_12345", testing.allocator);
     try testing.expect(loaded == null);

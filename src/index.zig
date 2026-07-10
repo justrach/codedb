@@ -1770,34 +1770,12 @@ pub const TrigramIndex = struct {
             }
         }.lt);
 
-        // Step 3: Build postings blob and lookup entries
-        var postings_buf: std.ArrayList(DiskPosting) = .empty;
-        defer postings_buf.deinit(self.allocator);
+        // Step 3: Stream postings to the temporary file while retaining only
+        // the compact lookup table. Materializing every DiskPosting first can
+        // briefly double the memory required by a large cold-built index and
+        // then makes the allocator copy the whole postings blob again on grow.
         var lookup_entries: std.ArrayList(LookupEntry) = .empty;
         defer lookup_entries.deinit(self.allocator);
-
-        for (trigrams_sorted.items) |tri| {
-            const posting_list = self.index.getPtr(tri) orelse continue;
-            const offset: u32 = @intCast(postings_buf.items.len);
-            var count: u32 = 0;
-            for (posting_list.items.items) |p| {
-                // Map in-memory doc_id to disk file_id via the precomputed array.
-                if (p.doc_id >= doc_to_disk.len) continue;
-                const fid = doc_to_disk[p.doc_id];
-                if (fid == std.math.maxInt(u32)) continue;
-                try postings_buf.append(self.allocator, .{
-                    .file_id = fid,
-                    .next_mask = p.next_mask,
-                    .loc_mask = p.loc_mask,
-                });
-                count += 1;
-            }
-            try lookup_entries.append(self.allocator, .{
-                .trigram = @as(u32, tri),
-                .offset = offset,
-                .count = count,
-            });
-        }
 
         // Step 4: Write postings file atomically (random suffix prevents collisions)
         const post_rand: u64 = cio.randU64();
@@ -1838,9 +1816,47 @@ pub const TrigramIndex = struct {
                 try pw.interface.writeAll(path);
             }
 
-            // Postings data
-            const postings_bytes = std.mem.sliceAsBytes(postings_buf.items);
-            try pw.interface.writeAll(postings_bytes);
+            // The writer has a 256 KiB buffer, but group postings explicitly
+            // too so the inner loop does not dispatch one virtual write per
+            // posting. The batch is fixed-size, keeping peak extra memory flat.
+            var posting_batch: [4096]DiskPosting = undefined;
+            var batch_len: usize = 0;
+            var postings_len: usize = 0;
+            for (trigrams_sorted.items) |tri| {
+                const posting_list = self.index.getPtr(tri) orelse continue;
+                const offset: u32 = @intCast(postings_len);
+                var count: u32 = 0;
+                for (posting_list.items.items) |p| {
+                    // Map in-memory doc_id to disk file_id via the precomputed array.
+                    if (p.doc_id >= doc_to_disk.len) continue;
+                    const fid = doc_to_disk[p.doc_id];
+                    if (fid == std.math.maxInt(u32)) continue;
+                    // The on-disk lookup format uses u32 offsets and counts.
+                    // Reject instead of wrapping once its representable range
+                    // is full; a corrupt index would otherwise be persisted.
+                    if (postings_len >= std.math.maxInt(u32) or count >= std.math.maxInt(u32)) return error.IndexTooLarge;
+                    posting_batch[batch_len] = .{
+                        .file_id = fid,
+                        .next_mask = p.next_mask,
+                        .loc_mask = p.loc_mask,
+                    };
+                    batch_len += 1;
+                    postings_len += 1;
+                    count += 1;
+                    if (batch_len == posting_batch.len) {
+                        try pw.interface.writeAll(std.mem.sliceAsBytes(posting_batch[0..batch_len]));
+                        batch_len = 0;
+                    }
+                }
+                try lookup_entries.append(self.allocator, .{
+                    .trigram = @as(u32, tri),
+                    .offset = offset,
+                    .count = count,
+                });
+            }
+            if (batch_len > 0) {
+                try pw.interface.writeAll(std.mem.sliceAsBytes(posting_batch[0..batch_len]));
+            }
             try pw.interface.flush();
         }
         try std.Io.Dir.cwd().rename(postings_tmp, std.Io.Dir.cwd(), postings_final, io);
