@@ -1,4 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+const AtomicCounter = if (builtin.cpu.arch == .wasm32) u32 else u64;
 
 /// Fixed-capacity CLOCK eviction cache for file contents.
 /// Keys are always owned (duped on put, freed on eviction/remove/clear/deinit).
@@ -13,9 +16,9 @@ pub const ContentCache = struct {
     capacity: u32,
     count_: u32,
     allocator: std.mem.Allocator,
-    hits_: std.atomic.Value(u64),
-    misses_: std.atomic.Value(u64),
-    evictions_: std.atomic.Value(u64),
+    hits_: std.atomic.Value(AtomicCounter),
+    misses_: std.atomic.Value(AtomicCounter),
+    evictions_: std.atomic.Value(AtomicCounter),
     /// Total bytes of cache-owned values (borrowed values are exempt).
     owned_bytes: usize,
     /// CLOCK hand for the global budget sweep (window eviction has its own).
@@ -74,9 +77,9 @@ pub const ContentCache = struct {
             .capacity = capacity,
             .count_ = 0,
             .allocator = allocator,
-            .hits_ = std.atomic.Value(u64).init(0),
-            .misses_ = std.atomic.Value(u64).init(0),
-            .evictions_ = std.atomic.Value(u64).init(0),
+            .hits_ = std.atomic.Value(AtomicCounter).init(0),
+            .misses_ = std.atomic.Value(AtomicCounter).init(0),
+            .evictions_ = std.atomic.Value(AtomicCounter).init(0),
             .owned_bytes = 0,
             .sweep_hand = 0,
             .byte_budget = DEFAULT_BYTE_BUDGET,
@@ -93,9 +96,9 @@ pub const ContentCache = struct {
             .capacity = capacity,
             .count_ = 0,
             .allocator = allocator,
-            .hits_ = std.atomic.Value(u64).init(0),
-            .misses_ = std.atomic.Value(u64).init(0),
-            .evictions_ = std.atomic.Value(u64).init(0),
+            .hits_ = std.atomic.Value(AtomicCounter).init(0),
+            .misses_ = std.atomic.Value(AtomicCounter).init(0),
+            .evictions_ = std.atomic.Value(AtomicCounter).init(0),
             .owned_bytes = 0,
             .sweep_hand = 0,
             .byte_budget = DEFAULT_BYTE_BUDGET,
@@ -473,13 +476,13 @@ test "ContentCache: byte budget evicts owned values until the new value fits" {
     cache.byte_budget = 1000;
     cache.max_entry_bytes = 1000;
 
-    const v300 = "x" ** 300;
-    try cache.put("a", v300);
-    try cache.put("b", v300);
-    try cache.put("c", v300);
+    const v300: [300]u8 = @splat('x');
+    try cache.put("a", &v300);
+    try cache.put("b", &v300);
+    try cache.put("c", &v300);
     try std.testing.expectEqual(@as(usize, 900), cache.stats().owned_bytes);
 
-    try cache.put("d", v300);
+    try cache.put("d", &v300);
     const s = cache.stats();
     try std.testing.expect(s.owned_bytes <= 1000);
     try std.testing.expect(s.evictions >= 1);
@@ -494,8 +497,8 @@ test "ContentCache: per-entry ceiling refuses oversized values and drops the sta
     try cache.put("k", "small");
     try std.testing.expect(cache.get("k") != null);
 
-    const big = "y" ** 200;
-    try cache.put("k", big);
+    const big: [200]u8 = @splat('y');
+    try cache.put("k", &big);
     try std.testing.expect(cache.get("k") == null);
     try std.testing.expectEqual(@as(usize, 0), cache.stats().owned_bytes);
 }
@@ -505,8 +508,8 @@ test "ContentCache: borrowed values are exempt from the byte budget" {
     defer cache.deinit();
     cache.byte_budget = 10;
 
-    const big = "z" ** 1000;
-    try cache.putBorrowed("snap", big);
+    const big: [1000]u8 = @splat('z');
+    try cache.putBorrowed("snap", &big);
     try std.testing.expect(cache.get("snap") != null);
     try std.testing.expectEqual(@as(usize, 0), cache.stats().owned_bytes);
     try std.testing.expectEqual(@as(u64, 0), cache.stats().evictions);

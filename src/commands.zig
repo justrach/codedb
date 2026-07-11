@@ -323,7 +323,7 @@ pub fn runCliDaemon(ctx: *RunCtx) !void {
         var sock_buf: [128]u8 = undefined;
         if (cliSocketPath(&sock_buf, abs_root)) |sock_path| {
             var sock_z_buf: [128]u8 = undefined;
-            if (std.fmt.bufPrintZ(&sock_z_buf, "{s}", .{sock_path})) |sock_z| {
+            if (cio.bufPrintZ(&sock_z_buf, "{s}", .{sock_path})) |sock_z| {
                 _ = std.c.unlink(sock_z.ptr);
             } else |_| {}
         }

@@ -1,0 +1,5 @@
+^foo
+m
+foo
+bar foo
+foo bar

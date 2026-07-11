@@ -44,7 +44,7 @@ pub const FsEvent = struct {
 pub const EventQueue = struct {
     const CAPACITY = 4096;
 
-    events: [CAPACITY]?FsEvent = [_]?FsEvent{null} ** CAPACITY,
+    events: [CAPACITY]?FsEvent = @splat(null),
     head: usize = 0,
     tail: usize = 0,
     mu: cio.Mutex = .{},
@@ -85,6 +85,7 @@ const FileMap = std.StringHashMap(FileState);
 const InitialScanEntry = struct {
     path: []u8,
     size: u64,
+    stat_succeeded: bool,
     skip_trigram: bool,
 };
 
@@ -507,20 +508,15 @@ pub fn trigramFileCap() usize {
     return std.fmt.parseInt(usize, raw, 10) catch 15_000;
 }
 
-// statScanForInitial: helper matching loadSnapshotFast's freshnessScan pattern.
-// Paths collected serially first (in caller), then stats fanned via chunks to
-// workers; side-effect is stat + recordSnapshot + storing the size back into the
-// entry. Per-stat errors are swallowed like the ref; record failures set shared
-// err_out and stop the worker.
-fn statScanForInitial(io: std.Io, store: *Store, dir: std.Io.Dir, recs: []InitialScanEntry, err_out: *?anyerror) void {
+// Paths are collected serially first, then stat calls fan out across disjoint
+// chunks. Workers only publish size/stat_succeeded into their own entries; the
+// caller records snapshots serially in discovery order after every join. That
+// keeps sequence assignment deterministic and avoids shared worker error state.
+fn statScanForInitial(io: std.Io, dir: std.Io.Dir, recs: []InitialScanEntry) void {
     for (recs) |*record| {
-        if (err_out.* != null) return;
         const ds = dir.statFile(io, record.path, .{}) catch continue;
         record.size = ds.size;
-        _ = store.recordSnapshot(record.path, ds.size, 0) catch |e| {
-            err_out.* = e;
-            return;
-        };
+        record.stat_succeeded = true;
     }
 }
 
@@ -540,14 +536,14 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
         try entries.append(allocator, .{
             .path = try allocator.dupe(u8, entry.path),
             .size = 0,
+            .stat_succeeded = false,
             .skip_trigram = false, // set after parallel stat fan
         });
     }
-    // Stats fanned out to workers (exact pattern from loadSnapshotFast: Pass A serial collect,
-    // Pass B chunk+spawn to statScanForInitial on disjoint slices; swallows per-stat errors,
-    // propagates record error, uses env/256/4 idiom, static chunks, join).
+    // Stats fan out across disjoint slices; per-stat errors are swallowed. After
+    // joining, snapshots are recorded serially so sequence order remains stable
+    // and record errors propagate without cross-thread error sharing.
     if (entries.items.len > 0) {
-        var build_err: ?anyerror = null;
         const want_workers = blk: {
             if (cio.posixGetenv("CODEDB_LOAD_WORKERS")) |raw| {
                 const parsed = std.fmt.parseInt(usize, raw, 10) catch 0;
@@ -558,10 +554,17 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
             break :blk @min(@as(usize, @intCast(cpu_count)), 4);
         };
         const n_workers = @max(@as(usize, 1), @min(want_workers, entries.items.len));
-        if (n_workers <= 1) {
-            statScanForInitial(io, store, dir, entries.items, &build_err);
-        } else if (allocator.alloc(std.Thread, n_workers)) |threads| {
+        stat_fan: {
+            if (n_workers <= 1) {
+                statScanForInitial(io, dir, entries.items);
+                break :stat_fan;
+            }
+            const threads = allocator.alloc(std.Thread, n_workers) catch {
+                statScanForInitial(io, dir, entries.items);
+                break :stat_fan;
+            };
             defer allocator.free(threads);
+
             const chunk = entries.items.len / n_workers;
             const rem = entries.items.len % n_workers;
             var off: usize = 0;
@@ -573,22 +576,23 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
                 off += chunk + extra;
                 const recs = entries.items[start..off];
                 if (spawn_failed) {
-                    statScanForInitial(io, store, dir, recs, &build_err);
+                    statScanForInitial(io, dir, recs);
                     continue;
                 }
-                if (std.Thread.spawn(.{}, statScanForInitial, .{ io, store, dir, recs, &build_err })) |t| {
+                if (std.Thread.spawn(.{}, statScanForInitial, .{ io, dir, recs })) |t| {
                     threads[spawned] = t;
                     spawned += 1;
                 } else |_| {
-                    statScanForInitial(io, store, dir, recs, &build_err);
+                    statScanForInitial(io, dir, recs);
                     spawn_failed = true;
                 }
             }
             for (threads[0..spawned]) |t| t.join();
-        } else |_| {
-            statScanForInitial(io, store, dir, entries.items, &build_err);
         }
-        if (build_err) |e| return e;
+        for (entries.items) |entry| {
+            if (!entry.stat_succeeded) continue;
+            _ = try store.recordSnapshot(entry.path, entry.size, 0);
+        }
     }
     // Set skip_trigram using serial count (preserves original cap semantics on discovery order).
     var file_count: usize = 0;
@@ -601,14 +605,12 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
 
 fn parseInitialScanEntry(
     io: std.Io,
-    root: []const u8,
+    dir: std.Io.Dir,
     entry: InitialScanEntry,
     content_alloc: std.mem.Allocator,
     parse_alloc: std.mem.Allocator,
 ) !?ParsedScanFile {
     if (shouldSkipFile(entry.path)) return null;
-    const dir = try std.Io.Dir.cwd().openDir(io, root, .{});
-    defer dir.close(io);
     const content = (try readIndexableFile(io, dir, entry.path, content_alloc, entry.size, true)) orelse return null;
     errdefer content_alloc.free(content);
     // Threshold for including a file in the trigram index. Bumped from 64KB to
@@ -629,13 +631,13 @@ fn parseInitialScanEntry(
 fn parseInitialScanWorkerEntry(
     io: std.Io,
     results: *WorkerParsedResults,
-    root: []const u8,
+    dir: std.Io.Dir,
     entry: InitialScanEntry,
     scratch_alloc: std.mem.Allocator,
     word_shard: ?*WordIndex,
 ) ?PersistedScanFile {
     const persist = results.arena.allocator();
-    const parsed = parseInitialScanEntry(io, root, entry, persist, scratch_alloc) catch return null;
+    const parsed = parseInitialScanEntry(io, dir, entry, persist, scratch_alloc) catch return null;
     if (parsed == null) return null;
 
     var file = parsed.?;
@@ -661,6 +663,12 @@ fn parseInitialScanWorkerEntry(
 }
 
 fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry, word_shard: ?*WordIndex, trigram_shard: ?*TrigramIndex) void {
+    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch {
+        for (0..entries.len) |index| results.publish(io, index, null);
+        return;
+    };
+    defer dir.close(io);
+
     // Read content directly into the persistent result arena, while allocating
     // transient parser state in a per-file scratch arena that is reset between
     // files. The final outline uses packed libc-owned storage so the main thread
@@ -676,7 +684,7 @@ fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8
     defer scratch.deinit();
     for (entries, 0..) |entry, index| {
         _ = scratch.reset(.retain_capacity);
-        const file = parseInitialScanWorkerEntry(io, results, root, entry, scratch.allocator(), word_shard);
+        const file = parseInitialScanWorkerEntry(io, results, dir, entry, scratch.allocator(), word_shard);
         if (file) |f| {
             if (trigram_shard) |ts| {
                 if (!f.skip_trigram and f.content.len <= max_trigram_file_bytes) {
@@ -724,7 +732,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
             {
                 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
                 defer arena.deinit();
-                const parsed = try parseInitialScanEntry(io, root, entry, arena.allocator(), arena.allocator());
+                const parsed = try parseInitialScanEntry(io, dir, entry, arena.allocator(), arena.allocator());
                 if (parsed) |file| {
                     try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
                 }
@@ -843,42 +851,68 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     }
 }
 
+fn extractTrigramMasks(
+    content: []const u8,
+    local: *std.AutoHashMap(@import("index.zig").Trigram, @import("index.zig").PostingMask),
+) !void {
+    if (content.len < 3) return;
+    const index_m = @import("index.zig");
+    var c0 = content[0];
+    var c1 = content[1];
+    var c2 = content[2];
+    var n0 = index_m.normalizeChar(c0);
+    var n1 = index_m.normalizeChar(c1);
+    var n2 = index_m.normalizeChar(c2);
+
+    for (0..content.len - 2) |i| {
+        const has_next = i + 3 < content.len;
+        const c3 = if (has_next) content[i + 3] else 0;
+        const n3 = if (has_next) index_m.normalizeChar(c3) else 0;
+        if (!((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
+            (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
+            (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')))
+        {
+            const tri = index_m.packTrigram(n0, n1, n2);
+            const gop = try local.getOrPut(tri);
+            if (!gop.found_existing) gop.value_ptr.* = index_m.PostingMask{};
+            gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i & 7);
+            if (has_next) {
+                gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(n3 & 7);
+            }
+        }
+        c0 = c1;
+        c1 = c2;
+        c2 = c3;
+        n0 = n1;
+        n1 = n2;
+        n2 = n3;
+    }
+}
+
 // Build a private trigram shard from a chunk of InitialScanEntry items — reads
 // each file, extracts trigrams, and inserts postings directly, all on the worker.
 // Used by the skip_outlines fast path in initialScanWithTrigrams.
 fn readAndBuildTrigramShardWorker(io: std.Io, shard: *TrigramIndex, root: []const u8, entries: []const InitialScanEntry, build_error: *?anyerror) void {
+    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch |err| {
+        build_error.* = err;
+        return;
+    };
+    defer dir.close(io);
+
     const index_m = @import("index.zig");
     var local = std.AutoHashMap(index_m.Trigram, index_m.PostingMask).init(std.heap.c_allocator);
     defer local.deinit();
     local.ensureTotalCapacity(4096) catch {};
     for (entries) |entry| {
         if (shouldSkipFile(entry.path)) continue;
-        const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch continue;
-        defer dir.close(io);
         const content = (readIndexableFile(io, dir, entry.path, std.heap.c_allocator, entry.size, false) catch continue) orelse continue;
         defer std.heap.c_allocator.free(content);
         if (content.len > max_trigram_file_bytes) continue;
         local.clearRetainingCapacity();
-        if (content.len >= 3) {
-            for (0..content.len - 2) |i| {
-                const c0 = content[i];
-                const c1 = content[i + 1];
-                const c2 = content[i + 2];
-                if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
-                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
-                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
-                const tri = index_m.packTrigram(index_m.normalizeChar(c0), index_m.normalizeChar(c1), index_m.normalizeChar(c2));
-                const gop = local.getOrPut(tri) catch |err| {
-                    build_error.* = err;
-                    return;
-                };
-                if (!gop.found_existing) gop.value_ptr.* = index_m.PostingMask{};
-                gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
-                if (i + 3 < content.len) {
-                    gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(index_m.normalizeChar(content[i + 3]) % 8);
-                }
-            }
-        }
+        extractTrigramMasks(content, &local) catch |err| {
+            build_error.* = err;
+            return;
+        };
         shard.insertBulkMapNew(entry.path, &local) catch |err| {
             build_error.* = err;
             return;
@@ -898,26 +932,10 @@ fn cachedTrigramBuildWorker(shard: *TrigramIndex, entries: []const CachedEntry, 
     local.ensureTotalCapacity(4096) catch {};
     for (entries) |entry| {
         local.clearRetainingCapacity();
-        if (entry.content.len >= 3) {
-            for (0..entry.content.len - 2) |i| {
-                const c0 = entry.content[i];
-                const c1 = entry.content[i + 1];
-                const c2 = entry.content[i + 2];
-                if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
-                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
-                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
-                const tri = index_m.packTrigram(index_m.normalizeChar(c0), index_m.normalizeChar(c1), index_m.normalizeChar(c2));
-                const gop = local.getOrPut(tri) catch |err| {
-                    build_error.* = err;
-                    return;
-                };
-                if (!gop.found_existing) gop.value_ptr.* = index_m.PostingMask{};
-                gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
-                if (i + 3 < entry.content.len) {
-                    gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(index_m.normalizeChar(entry.content[i + 3]) % 8);
-                }
-            }
-        }
+        extractTrigramMasks(entry.content, &local) catch |err| {
+            build_error.* = err;
+            return;
+        };
         shard.insertBulkMapNew(entry.path, &local) catch |err| {
             build_error.* = err;
             return;
@@ -1070,7 +1088,7 @@ pub fn initialScanWithTrigrams(
         for (entries.items) |entry| {
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
-            const parsed = parseInitialScanEntry(io, root, entry, arena.allocator(), arena.allocator()) catch null;
+            const parsed = parseInitialScanEntry(io, dir, entry, arena.allocator(), arena.allocator()) catch null;
             if (parsed) |file| {
                 if (!skip_outlines) {
                     explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, true) catch continue;

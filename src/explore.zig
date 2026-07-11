@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ContentCache = @import("hot_cache.zig").ContentCache;
 const nanoregex = @import("nanoregex");
 const cio = @import("cio.zig");
@@ -11,6 +12,8 @@ const AnyTrigramIndex = idx.AnyTrigramIndex;
 const SparseNgramIndex = idx.SparseNgramIndex;
 const codegraph = @import("codegraph.zig");
 const git = @import("git.zig");
+
+const SearchGeneration = if (builtin.cpu.arch == .wasm32) u32 else u64;
 
 /// Fast hash context for u32-keyed maps on hot paths (ranked search aggregation).
 /// Zig's AutoHashMap runs the 4 key bytes through Wyhash even for an integer key;
@@ -1351,7 +1354,7 @@ pub const Explorer = struct {
     plain_render_cache: PlainRenderCache,
     /// Bumped (atomically — searches run under the SHARED lock) by every
     /// mutation that can change search results; see bumpSearchGen callers.
-    search_gen: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    search_gen: std.atomic.Value(SearchGeneration) = std.atomic.Value(SearchGeneration).init(0),
     /// Buffers adopted from snapshot loads (the raw outline_state section).
     /// Restored FileOutlines borrow their import/symbol strings as slices into
     /// these (see FileOutline.borrows_strings), so they must outlive every
@@ -2515,6 +2518,7 @@ pub const Explorer = struct {
         if (self.contents.get(path)) |cached| {
             return .{ .data = cached, .owned = false, .allocator = allocator };
         }
+        if (builtin.os.tag == .freestanding) return null;
         const io = self.io orelse return null;
         const dir = self.root_dir orelse std.Io.Dir.cwd();
         const data = dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch return null;
@@ -3497,7 +3501,24 @@ pub const Explorer = struct {
             const SLOT_NONE = std.math.maxInt(u32);
             const SLOT_INVALID = SLOT_NONE - 1;
             const ndocs = self.word_index.id_to_path.items.len;
-            const use_slots = ndocs > 0 and (ndocs <= 4096 or (ndocs <= 65536 and word_hits.len >= 512));
+
+            // Fresh and persisted indexes keep postings in nondecreasing doc-id
+            // order, which guarantees one contiguous run per document. That is
+            // the overwhelmingly common read path, so avoid allocating and
+            // populating a dedup table for it. Incremental swap-removal from an
+            // older/mutated index can fragment a document into multiple runs;
+            // detect any ordering break and retain the defensive table below.
+            var postings_grouped = true;
+            var previous_doc = word_hits[0].doc_id;
+            for (word_hits[1..]) |hit| {
+                if (hit.doc_id < previous_doc) {
+                    postings_grouped = false;
+                    break;
+                }
+                previous_doc = hit.doc_id;
+            }
+
+            const use_slots = !postings_grouped and ndocs > 0 and (ndocs <= 4096 or (ndocs <= 65536 and word_hits.len >= 512));
             var slots: []u32 = &.{};
             defer if (slots.len > 0) allocator.free(slots);
             var idx_by_doc = std.AutoHashMap(u32, u32).init(allocator);
@@ -3505,7 +3526,7 @@ pub const Explorer = struct {
             if (use_slots) {
                 slots = try allocator.alloc(u32, ndocs);
                 @memset(slots, SLOT_NONE);
-            } else {
+            } else if (!postings_grouped) {
                 idx_by_doc.ensureTotalCapacity(@intCast(@min(word_hits.len, 1024))) catch {};
             }
 
@@ -3523,6 +3544,7 @@ pub const Explorer = struct {
                 defer run_start = run_end;
 
                 var cur: u32 = blk: {
+                    if (postings_grouped) break :blk SLOT_NONE;
                     if (use_slots) {
                         if (doc_id >= ndocs) break :blk SLOT_INVALID;
                         break :blk slots[doc_id];
@@ -3569,10 +3591,12 @@ pub const Explorer = struct {
                             cur = SLOT_INVALID;
                         };
                     }
-                    if (use_slots) {
-                        if (doc_id < ndocs) slots[doc_id] = cur;
-                    } else {
-                        idx_by_doc.put(doc_id, cur) catch {};
+                    if (!postings_grouped) {
+                        if (use_slots) {
+                            if (doc_id < ndocs) slots[doc_id] = cur;
+                        } else {
+                            idx_by_doc.put(doc_id, cur) catch {};
+                        }
                     }
                 }
                 if (cur != SLOT_INVALID) {
@@ -4451,6 +4475,7 @@ pub const Explorer = struct {
     /// Caps query at 256 bytes, results at 50 entries, file at 10 MB
     /// (rotates by truncate-clobber).
     fn appendRerankTrace(self: *const Explorer, query: []const u8, results: []const SearchResult) void {
+        if (builtin.os.tag == .freestanding) return;
         const path = self.rerank_trace_path orelse return;
         const io_inst = self.io orelse return;
 
@@ -4671,6 +4696,7 @@ pub const Explorer = struct {
     /// git repo — the attempted flag stops re-shelling. Mirrors
     /// ensureCallGraph: call while holding at least a shared lock on `mu`.
     fn ensureCoChange(self: *Explorer) void {
+        if (builtin.os.tag == .freestanding) return;
         if (self.co_change != null or self.co_change_attempted) return;
         self.cochange_build_mu.lock();
         defer self.cochange_build_mu.unlock();
@@ -5342,15 +5368,18 @@ pub const Explorer = struct {
     /// Search for a word using the inverted word index. O(1) lookup.
     pub fn searchWord(self: *Explorer, word: []const u8, allocator: std.mem.Allocator) ![]const idx.WordHit {
         self.mu.lockShared();
+        var shared_locked = true;
+        defer if (shared_locked) self.mu.unlockShared();
+
         const needs_rebuild = !self.word_index_complete and
             (self.contents.len() > 0 or (self.io != null and self.root_dir != null));
-        self.mu.unlockShared();
         if (needs_rebuild) {
+            self.mu.unlockShared();
+            shared_locked = false;
             try self.rebuildWordIndex();
+            self.mu.lockShared();
+            shared_locked = true;
         }
-
-        self.mu.lockShared();
-        defer self.mu.unlockShared();
         // #569: a multi-word query can never be a single index token — fall back
         // to per-token matching so phrase-shaped queries don't silently dead-end.
         if (std.mem.indexOfScalar(u8, word, ' ') != null) {
@@ -7529,7 +7558,7 @@ pub fn regexMatch(haystack: []const u8, pattern: []const u8) bool {
 /// the SIMD anchor inside indexOfCaseInsensitive — lower is rarer. Anchor
 /// choice never affects correctness, only how often candidates verify.
 const code_char_freq: [256]u8 = blk: {
-    var t = [_]u8{3} ** 256;
+    var t: [256]u8 = @splat(3);
     const ranks = "zqjxkvbywgpfmucdlhrsnioate";
     for (ranks, 0..) |c, i| t[c] = @intCast(i + 4);
     for ('0'..'9' + 1) |c| t[c] = 5;
@@ -8599,7 +8628,7 @@ fn fuzzyFilenameStart(path: []const u8) usize {
 // chars can be rejected in O(path) without the DP — and would fail the LCS check
 // anyway, so no result changes.
 pub fn fuzzyPresenceReject(query: []const u8, path: []const u8) bool {
-    var present = [_]bool{false} ** 256;
+    var present: [256]bool = @splat(false);
     for (path) |c| present[toLowerByte(c)] = true;
     var hits: usize = 0;
     for (query) |c| {
@@ -8729,9 +8758,9 @@ pub fn fuzzyScoreBatch(query: []const u8, paths: []const []const u8, out_best: *
     const BoolV = @Vector(FZ_LANES, bool);
 
     const count = paths.len;
-    var lens: [FZ_LANES]usize = .{0} ** FZ_LANES;
-    var len_arr: [FZ_LANES]u32 = .{0} ** FZ_LANES;
-    var fname_arr: [FZ_LANES]u32 = .{0} ** FZ_LANES;
+    var lens: [FZ_LANES]usize = @splat(0);
+    var len_arr: [FZ_LANES]u32 = @splat(0);
+    var fname_arr: [FZ_LANES]u32 = @splat(0);
     var max_len: usize = 0;
     for (0..count) |l| {
         lens[l] = paths[l].len;
@@ -8748,9 +8777,9 @@ pub fn fuzzyScoreBatch(query: []const u8, paths: []const []const u8, out_best: *
     var po_t: [FUZZY_MAX_PATH]U8V = undefined;
     var wb_t: [FUZZY_MAX_PATH]BoolV = undefined;
     for (0..max_len) |j| {
-        var lo: [FZ_LANES]u8 = .{0} ** FZ_LANES;
-        var orig: [FZ_LANES]u8 = .{0} ** FZ_LANES;
-        var wbf: [FZ_LANES]bool = .{false} ** FZ_LANES;
+        var lo: [FZ_LANES]u8 = @splat(0);
+        var orig: [FZ_LANES]u8 = @splat(0);
+        var wbf: [FZ_LANES]bool = @splat(false);
         for (0..count) |l| {
             if (j < lens[l]) {
                 const c = paths[l][j];

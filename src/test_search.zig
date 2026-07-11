@@ -507,6 +507,61 @@ test "issue-393: BM25 ranking surfaces high-density file before single-mention f
     }
 }
 
+test "searchContent Tier-0 grouped postings match fragmented fallback exactly" {
+    var grouped = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer grouped.deinit();
+    var fragmented = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer fragmented.deinit();
+
+    const fixtures = [_]struct { path: []const u8, content: []const u8 }{
+        .{ .path = "src/a.zig", .content = "const needle = 1;\n// needle second occurrence\n" },
+        .{ .path = "docs/b.md", .content = "needle documentation\n" },
+        .{ .path = "src/c.zig", .content = "fn needle() void {}\n" },
+        .{ .path = "src/noise.zig", .content = "const unrelated = true;\n" },
+    };
+    for (fixtures) |fixture| {
+        try grouped.indexFile(fixture.path, fixture.content);
+        try fragmented.indexFile(fixture.path, fixture.content);
+    }
+
+    // Natural postings are grouped by document: A1, A2, B1, C1. Reorder the
+    // equivalent control list to A1, B1, A2, C1 so searchContent must take its
+    // defensive slots/hash aggregation path. No semantic hit is added or lost.
+    const postings = fragmented.word_index.index.getPtr("needle") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 4), postings.items.len);
+    const a_second = postings.items[1];
+    postings.items[1] = postings.items[2];
+    postings.items[2] = a_second;
+    try testing.expect(postings.items[1].doc_id > postings.items[2].doc_id);
+
+    // A cap of two forces both paths to make the same ordering/truncation
+    // decision rather than merely comparing an unbounded candidate set.
+    const expected = try grouped.searchContent("needle", testing.allocator, 2);
+    defer {
+        for (expected) |result| {
+            testing.allocator.free(result.path);
+            testing.allocator.free(result.line_text);
+        }
+        testing.allocator.free(expected);
+    }
+    const actual = try fragmented.searchContent("needle", testing.allocator, 2);
+    defer {
+        for (actual) |result| {
+            testing.allocator.free(result.path);
+            testing.allocator.free(result.line_text);
+        }
+        testing.allocator.free(actual);
+    }
+
+    try testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |a, b| {
+        try testing.expectEqualStrings(a.path, b.path);
+        try testing.expectEqual(a.line_num, b.line_num);
+        try testing.expectEqualStrings(a.line_text, b.line_text);
+        try testing.expectEqual(a.score, b.score);
+    }
+}
+
 test "issue-400: BM25 ranks both-terms file above single-term files" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1907,8 +1962,7 @@ test "def-first: renderPlainSearch surfaces the definition line before mentions 
 
     // A comment mentioning `gadget` appears BEFORE its definition; several call
     // sites follow. Line-order rendering would show the line-1 comment first.
-    try explorer.indexFile("src/g.zig",
-        "// gadget helper\nconst a = gadget;\nconst b = gadget;\npub fn gadget() void {}\ngadget();\ngadget();\n");
+    try explorer.indexFile("src/g.zig", "// gadget helper\nconst a = gadget;\nconst b = gadget;\npub fn gadget() void {}\ngadget();\ngadget();\n");
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);

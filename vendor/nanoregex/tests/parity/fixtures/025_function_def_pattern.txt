@@ -1,0 +1,5 @@
+fn [A-Za-z_][A-Za-z0-9_]*\(
+
+pub fn main() void
+fn helper(x: i32) i32
+const fn_ptr = foo

@@ -9,6 +9,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const is_windows = builtin.os.tag == .windows;
+const is_freestanding = builtin.os.tag == .freestanding;
 
 // POSIX libc byte-I/O on integer fds. On Windows the CRT spells the same
 // primitives with a leading underscore; the cross-platform wrappers below pick
@@ -60,7 +61,7 @@ fn getenv(name: [*:0]const u8) ?[*:0]const u8 {
 /// a write error instead of killing the process. No-op on Windows — there is no
 /// SIGPIPE; a broken pipe is reported through the write call's return value.
 pub fn ignoreSigpipe() void {
-    if (is_windows) {
+    if (is_windows or is_freestanding) {
         return;
     } else {
         var act: std.posix.Sigaction = .{
@@ -80,7 +81,7 @@ pub fn ignoreSigpipe() void {
 /// malfunctions. Called once at cli-daemon startup. On Windows the equivalent
 /// detachment is requested at spawn time (DETACHED_PROCESS), so this is a no-op.
 pub fn detachFromTerminal() void {
-    if (is_windows) {
+    if (is_windows or is_freestanding) {
         return;
     } else {
         _ = std.c.setsid();
@@ -96,6 +97,11 @@ pub fn detachFromTerminal() void {
 }
 
 // ── Stdio ────────────────────────────────────────────────────────────────
+
+/// Zig 0.17 renamed std.fmt.bufPrintZ to bufPrintSentinel.
+pub fn bufPrintZ(buf: []u8, comptime fmt: []const u8, args: anytype) std.fmt.BufPrintError![:0]u8 {
+    return std.fmt.bufPrintSentinel(buf, fmt, args, 0);
+}
 
 pub const File = struct {
     handle: c_int,
@@ -174,6 +180,12 @@ pub const Mutex = if (is_windows) struct {
     pub fn tryLock(self: *Mutex) bool {
         return winsync.TryAcquireSRWLockExclusive(&self.inner) != 0;
     }
+} else if (is_freestanding) struct {
+    pub fn lock(_: *Mutex) void {}
+    pub fn unlock(_: *Mutex) void {}
+    pub fn tryLock(_: *Mutex) bool {
+        return true;
+    }
 } else struct {
     inner: std.c.pthread_mutex_t = .{},
 
@@ -209,6 +221,17 @@ pub const RwLock = if (is_windows) struct {
     pub fn tryLockShared(self: *RwLock) bool {
         return winsync.TryAcquireSRWLockShared(&self.inner) != 0;
     }
+} else if (is_freestanding) struct {
+    pub fn lock(_: *RwLock) void {}
+    pub fn unlock(_: *RwLock) void {}
+    pub fn lockShared(_: *RwLock) void {}
+    pub fn unlockShared(_: *RwLock) void {}
+    pub fn tryLock(_: *RwLock) bool {
+        return true;
+    }
+    pub fn tryLockShared(_: *RwLock) bool {
+        return true;
+    }
 } else struct {
     inner: std.c.pthread_rwlock_t = .{},
 
@@ -236,6 +259,7 @@ pub const RwLock = if (is_windows) struct {
 
 /// Wall-clock nanoseconds since the Unix epoch.
 pub fn nanoTimestamp() i128 {
+    if (is_freestanding) return 0;
     if (is_windows) {
         var ft: winsync.FILETIME = undefined;
         winsync.GetSystemTimePreciseAsFileTime(&ft);
@@ -255,6 +279,7 @@ pub fn milliTimestamp() i64 {
 
 /// Monotonic tick source for Timer (raw counter units, not nanoseconds).
 fn monoTicks() u64 {
+    if (is_freestanding) return 0;
     if (is_windows) {
         var ctr: i64 = undefined;
         _ = winsync.QueryPerformanceCounter(&ctr);
@@ -305,8 +330,10 @@ pub fn randU64() u64 {
     const now: u128 = @bitCast(nanoTimestamp());
     const ns: u64 = @truncate(now);
     const sec: u64 = @truncate(now / 1_000_000_000);
-    const tid: u64 = @intCast(std.Thread.getCurrentId());
-    const pid: u64 = if (is_windows)
+    const tid: u64 = if (is_freestanding) 0 else @intCast(std.Thread.getCurrentId());
+    const pid: u64 = if (is_freestanding)
+        0
+    else if (is_windows)
         @intCast(winsync.GetCurrentProcessId())
     else
         @intCast(std.c.getpid());
@@ -321,16 +348,18 @@ pub fn randU64() u64 {
 }
 
 pub fn currentProcessId() u32 {
+    if (is_freestanding) return 0;
     if (is_windows) return @intCast(winsync.GetCurrentProcessId());
     return @intCast(std.c.getpid());
 }
 
 pub fn userId() usize {
-    if (is_windows) return 0;
+    if (is_windows or is_freestanding) return 0;
     return @intCast(std.c.getuid());
 }
 
 pub fn sleepMs(ms: u64) void {
+    if (is_freestanding) return;
     if (is_windows) {
         winsync.Sleep(@intCast(@min(ms, @as(u64, std.math.maxInt(u32)))));
     } else {
@@ -363,6 +392,7 @@ pub fn readFd(fd: c_int, buf: []u8) isize {
 }
 
 pub fn posixGetenv(name: []const u8) ?[]const u8 {
+    if (is_freestanding) return null;
     var buf: [256]u8 = undefined;
     if (name.len >= buf.len) return null;
     @memcpy(buf[0..name.len], name);
@@ -990,6 +1020,7 @@ pub fn mmapReadonly(handle: anytype, len: usize) MmapError![]align(std.heap.page
 
 /// Release a view previously returned by mmapReadonly.
 pub fn munmap(data: []align(std.heap.page_size_min) const u8) void {
+    if (is_freestanding) return;
     if (is_windows) {
         _ = winmap.UnmapViewOfFile(data.ptr);
     } else {

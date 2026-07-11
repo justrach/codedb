@@ -2,7 +2,7 @@
 
 ## Project
 
-Zig 0.16.x code intelligence server. Tests live in `src/tests.zig`. Build and test with `zig build test`.
+Zig 0.17.0-dev code intelligence server (pinned to `0.17.0-dev.813+2153f8143`). Tests live in `src/test_*.zig`. Build and test with `zig build test`.
 
 ## Rules
 

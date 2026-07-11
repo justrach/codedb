@@ -13,11 +13,9 @@ const Language = explore.Language;
 const SymbolKind = explore.SymbolKind;
 const mcp_mod = @import("mcp.zig");
 
-
 const fuzzyScore = @import("explore.zig").fuzzyScore;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const edit_mod = @import("edit.zig");
-
 
 test "issue-360: edit rejects mismatched if_hash and leaves file untouched" {
     var tmp = testing.tmpDir(.{});
@@ -53,7 +51,6 @@ test "issue-360: edit rejects mismatched if_hash and leaves file untouched" {
     try testing.expectEqualStrings(original, after_bytes);
 }
 
-
 test "issue-360: edit response reports hex hash matching codedb_read" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -86,7 +83,6 @@ test "issue-360: edit response reports hex hash matching codedb_read" {
     const expected_hash = std.hash.Wyhash.hash(0, new_bytes);
     try testing.expectEqual(expected_hash, result.new_hash);
 }
-
 
 test "issue-360: edit dry_run returns diff preview and leaves file untouched" {
     var tmp = testing.tmpDir(.{});
@@ -134,7 +130,6 @@ test "issue-360: edit dry_run returns diff preview and leaves file untouched" {
     try testing.expect(std.mem.indexOf(u8, preview, "+BETA") != null);
 }
 
-
 test "issue-163: fuzzy exact match scores highest" {
     const exact = fuzzyScore("main.zig", "src/main.zig");
     const partial = fuzzyScore("main.zig", "src/main_helper.zig");
@@ -143,20 +138,17 @@ test "issue-163: fuzzy exact match scores highest" {
     try testing.expect(exact.? > partial.?);
 }
 
-
 test "issue-163: fuzzy subsequence match works" {
     const score = fuzzyScore("authmid", "src/auth_middleware.py");
     try testing.expect(score != null);
     try testing.expect(score.? > 0);
 }
 
-
 test "issue-163: fuzzy typo-tolerant (missing char)" {
     // "auth_midlware" missing the 'd' in middleware — should still match via subsequence
     const score = fuzzyScore("auth_midlware", "src/auth_middleware.py");
     try testing.expect(score != null);
 }
-
 
 test "issue-163: fuzzy word boundary bonus" {
     // "auth" at word boundary should score higher than "auth" buried in a word
@@ -167,7 +159,6 @@ test "issue-163: fuzzy word boundary bonus" {
     try testing.expect(boundary.? > buried.?);
 }
 
-
 test "issue-163: fuzzy filename ranks above directory" {
     // "test" in filename portion should score higher than "test" only in directory
     const in_name = fuzzyScore("test", "src/test_auth.py");
@@ -176,7 +167,6 @@ test "issue-163: fuzzy filename ranks above directory" {
     try testing.expect(in_dir != null);
     try testing.expect(in_name.? > in_dir.?);
 }
-
 
 test "issue-163: fuzzy no match returns null" {
     const score = fuzzyScore("zzzzxyz", "src/main.zig");
@@ -196,7 +186,6 @@ test "issue-518: fuzzy find has a subsequence floor — garbage queries return n
     try testing.expect(fuzzyScore("auth_midlware", "src/auth_middleware.py") != null);
 }
 
-
 test "issue-163: fuzzyFindFiles via Explorer" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -214,7 +203,6 @@ test "issue-163: fuzzyFindFiles via Explorer" {
     try testing.expect(std.mem.indexOf(u8, results[0].path, "auth_middleware") != null);
 }
 
-
 test "issue-163: multi-part query matches both parts" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -230,7 +218,6 @@ test "issue-163: multi-part query matches both parts" {
     try testing.expect(results.len >= 1);
     try testing.expect(std.mem.indexOf(u8, results[0].path, "middleware") != null);
 }
-
 
 test "issue-163: extension constraint filters results" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -250,7 +237,6 @@ test "issue-163: extension constraint filters results" {
     }
 }
 
-
 test "issue-163: special entry point files get bonus" {
     const score_main = fuzzyScore("main", "src/main.zig");
     const score_regular = fuzzyScore("main", "src/maintain.zig");
@@ -260,7 +246,6 @@ test "issue-163: special entry point files get bonus" {
     try testing.expect(score_main.? > score_regular.?);
 }
 
-
 test "issue-163: transpositions handled by Smith-Waterman" {
     // These all failed with the old subsequence matcher
     try testing.expect(fuzzyScore("mpc", "src/mcp.zig") != null);
@@ -268,7 +253,6 @@ test "issue-163: transpositions handled by Smith-Waterman" {
     try testing.expect(fuzzyScore("agnet", "src/agent.zig") != null);
     try testing.expect(fuzzyScore("indxe", "src/index.zig") != null);
 }
-
 
 test "issue-168: query pipeline find → limit produces file set" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -295,7 +279,6 @@ test "issue-168: query pipeline find → limit produces file set" {
     try testing.expect(found_handler);
 }
 
-
 test "issue-168: query pipeline search returns matching lines" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -316,7 +299,6 @@ test "issue-168: query pipeline search returns matching lines" {
     try testing.expect(std.mem.indexOf(u8, results[0].path, "main.zig") != null);
 }
 
-
 test "issue-168: query pipeline filter by extension" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -335,7 +317,6 @@ test "issue-168: query pipeline filter by extension" {
     }
 }
 
-
 test "issue-168: query pipeline outline returns symbols" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -346,7 +327,6 @@ test "issue-168: query pipeline outline returns symbols" {
     defer outline.deinit();
     try testing.expect(outline.symbols.items.len >= 2);
 }
-
 
 test "issue-168: query pipeline chained find → filter narrows results" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -368,7 +348,6 @@ test "issue-168: query pipeline chained find → filter narrows results" {
     try testing.expect(py_only.len < all.len); // filtered set is smaller
 }
 
-
 test "issue-168: query pipeline handles empty results gracefully" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -380,7 +359,6 @@ test "issue-168: query pipeline handles empty results gracefully" {
     defer testing.allocator.free(results);
     try testing.expectEqual(@as(usize, 0), results.len);
 }
-
 
 test "issue-168: recall — find + filter preserves only matching extension" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -402,7 +380,6 @@ test "issue-168: recall — find + filter preserves only matching extension" {
     try testing.expect(py.len == 2);
     for (py) |r| try testing.expect(std.mem.endsWith(u8, r.path, ".py"));
 }
-
 
 test "issue-168: recall — search finds content across multiple files" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -436,7 +413,6 @@ test "issue-168: recall — search finds content across multiple files" {
     try testing.expect(!found_c);
 }
 
-
 test "issue-168: recall — fuzzy find ranks exact matches highest" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -457,7 +433,6 @@ test "issue-168: recall — fuzzy find ranks exact matches highest" {
     }
 }
 
-
 test "issue-168: recall — multi-part query intersection" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -475,7 +450,6 @@ test "issue-168: recall — multi-part query intersection" {
     try testing.expect(std.mem.indexOf(u8, results[0].path, "auth_controller") != null);
 }
 
-
 test "issue-168: recall — transposition tolerance in pipeline" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -492,7 +466,6 @@ test "issue-168: recall — transposition tolerance in pipeline" {
     try testing.expect(std.mem.indexOf(u8, results[0].path, "middleware") != null);
 }
 
-
 test "auto-retry: delimiter stripping finds results" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -505,7 +478,6 @@ test "auto-retry: delimiter stripping finds results" {
     try testing.expect(results.len >= 1);
     try testing.expect(std.mem.indexOf(u8, results[0].path, "auth_middleware") != null);
 }
-
 
 test "per-file truncation: max 5 matches per file in output" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -532,7 +504,6 @@ test "per-file truncation: max 5 matches per file in output" {
     // At the explorer level all 10 should be found
     try testing.expect(results.len >= 10);
 }
-
 
 test "issue-359: globPaths matches files by glob pattern" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -569,7 +540,6 @@ test "issue-359: globPaths matches files by glob pattern" {
         try testing.expect(std.mem.order(u8, all_zigs[i - 1], all_zigs[i]) == .lt);
     }
 }
-
 
 test "issue-359: lsDir returns immediate children with file metadata" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -624,7 +594,6 @@ test "issue-359: lsDir returns immediate children with file metadata" {
     try testing.expectEqual(@as(usize, 2), file_count);
 }
 
-
 test "issue-359: mcp.globMatch backtracks across **/* boundary" {
     // Pipeline filter (codedb_query) calls mcp.globMatch on each path. The
     // iterative version forgot the outer ** position when it entered the
@@ -640,7 +609,6 @@ test "issue-359: mcp.globMatch backtracks across **/* boundary" {
     try testing.expect(mcp_mod.globMatch("src/*.zig", "src/mcp.zig"));
     try testing.expect(!mcp_mod.globMatch("docs/*.md", "src/mcp.zig"));
 }
-
 
 test "issue-511: glob supports brace alternatives" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -661,7 +629,6 @@ test "issue-511: glob supports brace alternatives" {
     try testing.expect(mcp_mod.globMatch("src/{mcp,explore}.zig", "src/explore.zig"));
     try testing.expect(!mcp_mod.globMatch("src/{mcp,explore}.zig", "src/main.zig"));
 }
-
 
 test "issue-359: globPaths recall — every matching path survives at every depth" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -711,7 +678,6 @@ test "issue-359: globPaths recall — every matching path survives at every dept
     try testing.expect(mcp_mod.globMatch("**/*.md", "src/sub/notes.md"));
     try testing.expect(!mcp_mod.globMatch("src/**/*.zig", "tests/h.zig"));
 }
-
 
 test "issue-359/360: retrieval recall — search/word/symbol/fuzzy/glob/deps all return ground truth" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -854,7 +820,6 @@ test "issue-359/360: retrieval recall — search/word/symbol/fuzzy/glob/deps all
     }
 }
 
-
 test "issue-356-1: codedb_query returns partial results when a step fails" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -895,7 +860,6 @@ test "issue-356-1: codedb_query returns partial results when a step fails" {
     try testing.expect(std.mem.indexOf(u8, out.items, "failed_at: 1") != null);
 }
 
-
 test "issue-356-2: codedb_outline suggests fuzzy alternatives for non-indexed paths" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -929,7 +893,6 @@ test "issue-356-2: codedb_outline suggests fuzzy alternatives for non-indexed pa
     // src/main.zig is the closest fuzzy match for src/man.zig.
     try testing.expect(std.mem.indexOf(u8, out.items, "src/main.zig") != null);
 }
-
 
 test "issue-356-3: codedb_query surfaces received keys on missing-arg errors" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -965,7 +928,6 @@ test "issue-356-3: codedb_query surfaces received keys on missing-arg errors" {
     try testing.expect(std.mem.indexOf(u8, out.items, "q") != null);
 }
 
-
 test "issue-356-p2: codedb_outline missing path surfaces received keys" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -994,7 +956,6 @@ test "issue-356-p2: codedb_outline missing path surfaces received keys" {
     try testing.expect(std.mem.indexOf(u8, out.items, "received keys") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "file_path") != null);
 }
-
 
 test "issue-356-p2: codedb_symbol missing name surfaces received keys" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -1025,7 +986,6 @@ test "issue-356-p2: codedb_symbol missing name surfaces received keys" {
     try testing.expect(std.mem.indexOf(u8, out.items, "symbol") != null);
 }
 
-
 test "issue-356-p2: codedb_search missing query surfaces received keys" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -1053,7 +1013,6 @@ test "issue-356-p2: codedb_search missing query surfaces received keys" {
     try testing.expect(std.mem.indexOf(u8, out.items, "missing 'query'") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "received keys") != null);
 }
-
 
 test "issue-356-p2: codedb_word missing word surfaces received keys" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -1083,7 +1042,6 @@ test "issue-356-p2: codedb_word missing word surfaces received keys" {
     try testing.expect(std.mem.indexOf(u8, out.items, "received keys") != null);
 }
 
-
 test "issue-356-p2: codedb_read missing path surfaces received keys" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -1112,7 +1070,6 @@ test "issue-356-p2: codedb_read missing path surfaces received keys" {
     try testing.expect(std.mem.indexOf(u8, out.items, "received keys") != null);
 }
 
-
 test "issue-356-p2: codedb_deps missing path surfaces received keys" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -1140,7 +1097,6 @@ test "issue-356-p2: codedb_deps missing path surfaces received keys" {
     try testing.expect(std.mem.indexOf(u8, out.items, "missing 'path'") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "received keys") != null);
 }
-
 
 test "issue-356-p3: codedb_query emits per-stage summary tail on success" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -1180,7 +1136,6 @@ test "issue-356-p3: codedb_query emits per-stage summary tail on success" {
     try testing.expect(std.mem.indexOf(u8, out.items, "1: sort") != null);
 }
 
-
 test "issue-356-p3: codedb_outline includes actionable hint when parser fails" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -1215,7 +1170,6 @@ test "issue-356-p3: codedb_outline includes actionable hint when parser fails" {
     // from a stale index in addition to the 'did you mean' suggestions.
     try testing.expect(std.mem.indexOf(u8, out.items, "codedb_index") != null);
 }
-
 
 test "issue-356-p3: codedb_read appends fuzzy suggestions when path is unreadable" {
     const tmp_io = testing.io;
@@ -1263,7 +1217,6 @@ test "issue-356-p3: codedb_read appends fuzzy suggestions when path is unreadabl
     try testing.expect(std.mem.indexOf(u8, out.items, "did you mean") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "src/main.zig") != null);
 }
-
 
 test "issue-558: codedb_query filter must filter (or error) — never silently pass every file" {
     // Live repro: [{find},{filter,"pattern":"src/index.zig"},{limit,n:3}]

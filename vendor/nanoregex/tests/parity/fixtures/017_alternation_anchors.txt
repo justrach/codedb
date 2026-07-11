@@ -1,0 +1,6 @@
+^cat|dog$
+m
+cat sees dog
+dog sees cat
+catnap
+bulldog

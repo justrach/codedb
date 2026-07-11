@@ -154,7 +154,7 @@ fn cliPipeMetadataPath(allocator: std.mem.Allocator, data_dir: []const u8) ![]u8
 }
 
 fn cliRandomPipeName(buf: []u8) ?[:0]const u8 {
-    return std.fmt.bufPrintZ(buf, "\\\\.\\pipe\\codedb-{d}-{x:0>16}-{x:0>16}", .{
+    return cio.bufPrintZ(buf, "\\\\.\\pipe\\codedb-{d}-{x:0>16}-{x:0>16}", .{
         cio.currentProcessId(),
         secureRandomU64(),
         secureRandomU64(),
@@ -450,7 +450,7 @@ const DaemonLock = if (builtin.os.tag == .windows) win.HANDLE else c_int;
 
 pub fn daemonLockTryAcquire(data_dir: []const u8) ?DaemonLock {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const p = std.fmt.bufPrintZ(&buf, "{s}/cli-daemon.lock", .{data_dir}) catch return null;
+    const p = cio.bufPrintZ(&buf, "{s}/cli-daemon.lock", .{data_dir}) catch return null;
     if (builtin.os.tag == .windows) {
         const path_w = windowsPathZ(std.heap.page_allocator, p) orelse return null;
         defer std.heap.page_allocator.free(path_w);
@@ -556,7 +556,7 @@ fn cliSendYieldRequest(sa: SockAddr) void {
 /// Returns null if `shutdown` is set while waiting.
 pub fn cliAcquireListener(sock_path: []const u8, retry: bool, retry_interval_ms: u64, shutdown: *std.atomic.Value(bool)) ?c_int {
     var z_buf: [128]u8 = undefined;
-    const sock_path_z = std.fmt.bufPrintZ(&z_buf, "{s}", .{sock_path}) catch return null;
+    const sock_path_z = cio.bufPrintZ(&z_buf, "{s}", .{sock_path}) catch return null;
     const sa = cliFillSockaddr(sock_path) orelse return null;
     var yield_sent = false;
     while (true) {
@@ -706,7 +706,7 @@ fn cliDaemonListenPosix(io: std.Io, allocator: std.mem.Allocator, explorer: *Exp
         return;
     };
     var path_z_buf: [128]u8 = undefined;
-    const sock_path_z = std.fmt.bufPrintZ(&path_z_buf, "{s}", .{sock_path}) catch {
+    const sock_path_z = cio.bufPrintZ(&path_z_buf, "{s}", .{sock_path}) catch {
         shutdown.store(true, .release);
         return;
     };

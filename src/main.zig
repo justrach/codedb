@@ -39,11 +39,11 @@ const mcpRootIsImplicitCwd = cli_args.mcpRootIsImplicitCwd;
 const mcpRootAcceptsEnv = cli_args.mcpRootAcceptsEnv;
 const isHelpRequest = cli_args.isHelpRequest;
 
-/// The real entry point.  In Debug builds, Zig may merge all command-branch
+/// The real entry point. In Debug builds, Zig may merge all command-branch
 /// stack frames into one producing a frame that overflows the default OS stack,
-/// so we trampoline through a thread with an explicit 64 MB stack.
-/// In optimised builds the merged frame is ~190 KB, so 8 MB is ample and
-/// avoids triggering Rosetta 2's 64 MB stack allocation bug on x86_64-macos.
+/// so those builds trampoline through a thread with an explicit 64 MB stack.
+/// Optimized builds have a ~190 KB frame and run directly on the process stack,
+/// avoiding an OS thread create/join on every CLI invocation.
 ///
 /// #504: must have a non-error-union return type. A Zig binary with
 /// `pub fn main(...) !void` ad-hoc-signed and run via Rosetta (or, in the
@@ -59,7 +59,11 @@ pub fn main(init: std.process.Init.Minimal) void {
     const argv = cio.bootstrapArgs(init.args);
     cio.setProcessArgs(argv);
     if (handleFastPath(argv)) return;
-    mainTrampoline() catch |err| {
+    if (builtin.mode != .Debug) {
+        mainInner(argv);
+        return;
+    }
+    mainTrampoline(argv) catch |err| {
         // Surface the failure on stderr so users see something even if the
         // worker thread crashes during startup.
         var buf: [256]u8 = undefined;
@@ -70,9 +74,8 @@ pub fn main(init: std.process.Init.Minimal) void {
     };
 }
 
-fn mainTrampoline() !void {
-    const stack_size: usize = if (builtin.mode == .Debug) 64 * 1024 * 1024 else 8 * 1024 * 1024;
-    const thread = try std.Thread.spawn(.{ .stack_size = stack_size }, mainInner, .{});
+fn mainTrampoline(argv: []const [*:0]const u8) !void {
+    const thread = try std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, mainInner, .{argv});
     thread.join();
 }
 
@@ -107,8 +110,8 @@ fn handleFastPath(argv: []const [*:0]const u8) bool {
     return false;
 }
 
-fn mainInner() void {
-    mainImpl() catch |err| {
+fn mainInner(argv: []const [*:0]const u8) void {
+    mainImpl(argv) catch |err| {
         std.debug.print("fatal: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
@@ -127,7 +130,7 @@ const loadUserConfig = bootstrap.loadUserConfig;
 const getDataDir = bootstrap.getDataDir;
 
 const commands = @import("commands.zig");
-fn mainImpl() !void {
+fn mainImpl(argv: []const [*:0]const u8) !void {
     // Use c_allocator (libc malloc) — better page reclamation than GPA
     const allocator = std.heap.c_allocator;
     cio.ignoreSigpipe();
@@ -145,9 +148,6 @@ fn mainImpl() !void {
     var out = Out{ .file = stdout, .alloc = allocator };
     defer out.flush();
 
-    const raw_args = try cio.argsAlloc(allocator);
-    defer cio.argsFree(allocator, raw_args);
-
     // Extract --config-file=<path> / --config-file <path> before positional
     // arg parsing so a leading `--config-file=X` isn't misread as the root.
     // See #101, #102.
@@ -156,15 +156,15 @@ fn mainImpl() !void {
     const args = blk: {
         var filtered: std.ArrayList([]const u8) = .empty;
         errdefer filtered.deinit(allocator);
-        try filtered.append(allocator, raw_args[0]);
+        try filtered.append(allocator, std.mem.span(argv[0]));
         var i: usize = 1;
-        while (i < raw_args.len) : (i += 1) {
-            const a = raw_args[i];
+        while (i < argv.len) : (i += 1) {
+            const a = std.mem.span(argv[i]);
             if (std.mem.startsWith(u8, a, "--config-file=")) {
                 explicit_config = a["--config-file=".len..];
                 continue;
-            } else if (std.mem.eql(u8, a, "--config-file") and i + 1 < raw_args.len) {
-                explicit_config = raw_args[i + 1];
+            } else if (std.mem.eql(u8, a, "--config-file") and i + 1 < argv.len) {
+                explicit_config = std.mem.span(argv[i + 1]);
                 i += 1;
                 continue;
             } else if (std.mem.eql(u8, a, "--no-telemetry")) {

@@ -96,8 +96,9 @@ export fn wasm_get_outline(
     defer outline.deinit();
 
     // Serialize to JSON with proper escaping
-    var buf: std.ArrayList(u8) = .empty;
-    const writer = buf.writer(allocator);
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
     writer.writeByte('[') catch return null;
     for (outline.symbols.items, 0..) |sym, i| {
         if (i > 0) writer.writeByte(',') catch return null;
@@ -115,7 +116,7 @@ export fn wasm_get_outline(
     }
     writer.writeByte(']') catch return null;
 
-    const slice = buf.toOwnedSlice(allocator) catch return null;
+    const slice = buf.toOwnedSlice() catch return null;
     out_len_ptr.* = slice.len;
     return slice.ptr;
 }
@@ -142,8 +143,9 @@ export fn wasm_search(
     }
 
     // Serialize to JSON
-    var buf: std.ArrayList(u8) = .empty;
-    const writer = buf.writer(allocator);
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
     writer.writeByte('[') catch return null;
     for (results, 0..) |r, i| {
         if (i > 0) writer.writeByte(',') catch return null;
@@ -171,7 +173,7 @@ export fn wasm_search(
     }
     writer.writeByte(']') catch return null;
 
-    const slice = buf.toOwnedSlice(allocator) catch return null;
+    const slice = buf.toOwnedSlice() catch return null;
     out_len_ptr.* = slice.len;
     return slice.ptr;
 }
@@ -180,8 +182,9 @@ export fn wasm_search(
 export fn wasm_get_tree(out_len_ptr: *usize) ?[*]u8 {
     const exp = getExplorer();
 
-    var buf: std.ArrayList(u8) = .empty;
-    const writer = buf.writer(allocator);
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
     writer.writeByte('[') catch return null;
     var first = true;
     var iter = exp.outlines.iterator();
@@ -201,7 +204,7 @@ export fn wasm_get_tree(out_len_ptr: *usize) ?[*]u8 {
     }
     writer.writeByte(']') catch return null;
 
-    const slice = buf.toOwnedSlice(allocator) catch return null;
+    const slice = buf.toOwnedSlice() catch return null;
     out_len_ptr.* = slice.len;
     return slice.ptr;
 }
@@ -210,8 +213,9 @@ export fn wasm_get_tree(out_len_ptr: *usize) ?[*]u8 {
 export fn wasm_get_all_outlines(out_len_ptr: *usize) ?[*]u8 {
     const exp = getExplorer();
 
-    var buf: std.ArrayList(u8) = .empty;
-    const writer = buf.writer(allocator);
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
     writer.writeByte('{') catch return null;
     var first = true;
     var iter = exp.outlines.iterator();
@@ -239,7 +243,7 @@ export fn wasm_get_all_outlines(out_len_ptr: *usize) ?[*]u8 {
     }
     writer.writeByte('}') catch return null;
 
-    const slice = buf.toOwnedSlice(allocator) catch return null;
+    const slice = buf.toOwnedSlice() catch return null;
     out_len_ptr.* = slice.len;
     return slice.ptr;
 }

@@ -29,8 +29,60 @@ const cli_proxy_mod = @import("cli_proxy.zig");
 const bootstrap_mod = @import("bootstrap.zig");
 const background_mod = @import("background.zig");
 const commands_mod = @import("commands.zig");
+const mcp_json = @import("mcp_json.zig");
 comptime {
     _ = @import("config.zig");
+}
+
+test "mcp json: line reader preserves newline and EOF framing" {
+    var reader: std.Io.Reader = .fixed("first\nlast");
+
+    const first = mcp_json.readLineBuf(testing.allocator, &reader) orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(first);
+    try testing.expectEqualStrings("first", first);
+
+    const last = mcp_json.readLineBuf(testing.allocator, &reader) orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(last);
+    try testing.expectEqualStrings("last", last);
+    try testing.expect(mcp_json.readLineBuf(testing.allocator, &reader) == null);
+}
+
+test "mcp json: line reader enforces maximum message size" {
+    const exact = try testing.allocator.alloc(u8, mcp_json.MAX_LINE);
+    defer testing.allocator.free(exact);
+    @memset(exact, 'x');
+    var exact_reader: std.Io.Reader = .fixed(exact);
+    const accepted = mcp_json.readLineBuf(testing.allocator, &exact_reader) orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(accepted);
+    try testing.expectEqual(exact.len, accepted.len);
+
+    const oversized = try testing.allocator.alloc(u8, mcp_json.MAX_LINE + 1);
+    defer testing.allocator.free(oversized);
+    @memset(oversized, 'y');
+    var oversized_reader: std.Io.Reader = .fixed(oversized);
+    try testing.expect(mcp_json.readLineBuf(testing.allocator, &oversized_reader) == null);
+}
+
+test "mcp json: typed fields and escaping preserve protocol behavior" {
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"name":"codedb","count":7,"enabled":true,"other":null}
+    , .{});
+    defer parsed.deinit();
+    const object = &parsed.value.object;
+    try testing.expectEqualStrings("codedb", mcp_json.getStr(object, "name").?);
+    try testing.expectEqual(@as(i64, 7), mcp_json.getInt(object, "count").?);
+    try testing.expect(mcp_json.getBool(object, "enabled"));
+    try testing.expect(mcp_json.getStr(object, "count") == null);
+    try testing.expect(mcp_json.getInt(object, "name") == null);
+    try testing.expect(!mcp_json.getBool(object, "missing"));
+
+    var escaped: std.ArrayList(u8) = .empty;
+    defer escaped.deinit(testing.allocator);
+    mcp_json.writeEscaped(testing.allocator, &escaped, "plain \"quote\" \\ slash\n\r\t\x00\x08\x0c\x1f");
+    try testing.expectEqualStrings(
+        "plain \\\"quote\\\" \\\\ slash\\n\\r\\t\\u0000\\u0008\\u000c\\u001f",
+        escaped.items,
+    );
 }
 
 fn zigExe() []const u8 {
@@ -3002,7 +3054,7 @@ test "issue-619: serve/mcp daemon reclaims the cli socket after the owner exits"
     var pbuf: [128]u8 = undefined;
     const sock_path = cli_proxy_mod.cliSocketPath(&pbuf, abs_root).?;
     var zbuf: [128]u8 = undefined;
-    const sock_z = try std.fmt.bufPrintZ(&zbuf, "{s}", .{sock_path});
+    const sock_z = try cio.bufPrintZ(&zbuf, "{s}", .{sock_path});
     _ = std.c.unlink(sock_z.ptr);
     defer _ = std.c.unlink(sock_z.ptr);
 
@@ -3097,7 +3149,7 @@ const CliHandoverOwnerSim = struct {
         // socket up entirely rather than waiting for an idle timeout.
         _ = std.c.close(self.fd);
         var zbuf: [128]u8 = undefined;
-        if (std.fmt.bufPrintZ(&zbuf, "{s}", .{self.sock_path})) |z| {
+        if (cio.bufPrintZ(&zbuf, "{s}", .{self.sock_path})) |z| {
             _ = std.c.unlink(z.ptr);
         } else |_| {}
         self.sd.store(true, .release);
@@ -3112,7 +3164,7 @@ test "issue-619: serve/mcp daemon signals a live owner to yield instead of waiti
     var pbuf: [128]u8 = undefined;
     const sock_path = cli_proxy_mod.cliSocketPath(&pbuf, abs_root).?;
     var zbuf: [128]u8 = undefined;
-    const sock_z = try std.fmt.bufPrintZ(&zbuf, "{s}", .{sock_path});
+    const sock_z = try cio.bufPrintZ(&zbuf, "{s}", .{sock_path});
     _ = std.c.unlink(sock_z.ptr);
     defer _ = std.c.unlink(sock_z.ptr);
 

@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/justrach/codedb/releases/latest"><img src="https://img.shields.io/github/v/release/justrach/codedb?style=flat-square&label=version" alt="Release" /></a>
   <a href="https://github.com/justrach/codedb/blob/main/LICENSE"><img src="https://img.shields.io/github/license/justrach/codedb?style=flat-square" alt="License" /></a>
-  <img src="https://img.shields.io/badge/zig-0.16-f7a41d?style=flat-square" alt="Zig 0.16" />
+  <img src="https://img.shields.io/badge/zig-0.17.0--dev-f7a41d?style=flat-square" alt="Zig 0.17.0-dev" />
   <img src="https://img.shields.io/badge/status-alpha-orange?style=flat-square" alt="Alpha" />
   <a href="https://deepwiki.com/justrach/codedb"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" /></a>
   <br />
@@ -121,6 +121,7 @@ This replaces the `codedb` binary with the latest GitHub Release and keeps your 
 - **[CLI reference](docs/cli.md)** — every command, every flag
 - **[Architecture](docs/architecture.md)** — engine internals, index layout
 - **[Benchmarks](docs/benchmarks.md)** — micro-benchmarks + agentic-eval results vs codegraph, FTS5, lean-ctx
+- **[Zig 0.17.0-dev migration guide](docs/zig-0.17-migration.md)** — repeatable zigup workflow and API change recipes
 
 | Platform | Binary | Signed |
 |----------|--------|--------|
@@ -454,7 +455,7 @@ rm -f codedb.snapshot      # remove snapshot from current project only
 
 ## 🔨 Building from Source
 
-**Requirements:** Zig 0.16+
+**Requirements:** Zig `0.17.0-dev.813+2153f8143` (the exact tested development snapshot). See the [migration guide](docs/zig-0.17-migration.md) for reproducible zigup setup.
 
 ```bash
 git clone https://github.com/justrach/codedb.git
