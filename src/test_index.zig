@@ -648,7 +648,27 @@ test "watcher: parallel initial scan matches sequential results" {
     }
 }
 
-test "watcher: rolling trigram shards match canonical masks exactly" {
+fn buildScalarTrigramMasks(content: []const u8, masks: *std.AutoHashMap(Trigram, PostingMask)) !void {
+    if (content.len < 3) return;
+    for (0..content.len - 2) |i| {
+        const c0 = content[i];
+        const c1 = content[i + 1];
+        const c2 = content[i + 2];
+        if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
+            (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
+            (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
+
+        const tri = packTrigram(normalizeChar(c0), normalizeChar(c1), normalizeChar(c2));
+        const gop = try masks.getOrPut(tri);
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
+        if (i + 3 < content.len) {
+            gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(normalizeChar(content[i + 3]) % 8);
+        }
+    }
+}
+
+test "rolling trigram indexes match scalar masks exactly" {
     var source = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer source.deinit();
     var canonical = TrigramIndex.init(testing.allocator);
@@ -660,12 +680,34 @@ test "watcher: rolling trigram shards match canonical masks exactly" {
         .{ .path = "edge/two.txt", .content = "Ab" },
         .{ .path = "edge/three.txt", .content = "AbC" },
         .{ .path = "edge/whitespace.txt", .content = " \t\nAbCdEf" },
+        .{ .path = "edge/only-whitespace.txt", .content = " \t\n\r \t\n" },
         .{ .path = "edge/rollover.txt", .content = "aaaaaaaaaaaaZ" },
         .{ .path = "edge/mixed.txt", .content = "MiXeD-case final" },
+        .{ .path = "edge/arbitrary-bytes.bin", .content = "\x00\x01AZ \t\n\r\xffabc" },
     };
     for (fixtures) |fixture| {
         try source.indexFile(fixture.path, fixture.content);
         try canonical.indexFile(fixture.path, fixture.content);
+    }
+
+    // Keep a deliberately scalar reference independent from both rolling
+    // implementations. Verify every mask and ensure neither path adds keys.
+    for (fixtures) |fixture| {
+        var expected = std.AutoHashMap(Trigram, PostingMask).init(testing.allocator);
+        defer expected.deinit();
+        try buildScalarTrigramMasks(fixture.content, &expected);
+
+        var actual_count: usize = 0;
+        var actual_iter = canonical.index.iterator();
+        while (actual_iter.next()) |entry| {
+            if (entry.value_ptr.get(fixture.path)) |actual_mask| {
+                actual_count += 1;
+                const expected_mask = expected.get(entry.key_ptr.*) orelse return error.TestUnexpectedResult;
+                try testing.expectEqual(expected_mask.loc_mask, actual_mask.loc_mask);
+                try testing.expectEqual(expected_mask.next_mask, actual_mask.next_mask);
+            }
+        }
+        try testing.expectEqual(expected.count(), actual_count);
     }
 
     const sharded = try watcher.buildTrigramsFromCache(

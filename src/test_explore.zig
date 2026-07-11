@@ -2568,3 +2568,97 @@ test "issue-656: call graph is stale and dangling after a file edit" {
     defer if (after) |steps| testing.allocator.free(steps);
     try testing.expect(after != null);
 }
+
+test "render caches preserve output and invalidate on mutation" {
+    var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer ex.deinit();
+    try ex.indexFile("src/alpha.zig", "pub fn alpha() void {}\nconst cached_word = 1;\n");
+
+    var tree_first: std.ArrayList(u8) = .empty;
+    defer tree_first.deinit(testing.allocator);
+    var tree_cached: std.ArrayList(u8) = .empty;
+    defer tree_cached.deinit(testing.allocator);
+    try ex.renderTree(testing.allocator, &tree_first, false);
+    try ex.renderTree(testing.allocator, &tree_cached, false);
+    try testing.expectEqualSlices(u8, tree_first.items, tree_cached.items);
+
+    var outline_first: std.ArrayList(u8) = .empty;
+    defer outline_first.deinit(testing.allocator);
+    var outline_cached: std.ArrayList(u8) = .empty;
+    defer outline_cached.deinit(testing.allocator);
+    try testing.expect(try ex.renderOutline("src/alpha.zig", testing.allocator, &outline_first, false));
+    try testing.expect(try ex.renderOutline("src/alpha.zig", testing.allocator, &outline_cached, false));
+    try testing.expectEqualSlices(u8, outline_first.items, outline_cached.items);
+
+    var word_first: std.ArrayList(u8) = .empty;
+    defer word_first.deinit(testing.allocator);
+    var word_cached: std.ArrayList(u8) = .empty;
+    defer word_cached.deinit(testing.allocator);
+    try ex.renderWord("cached_word", testing.allocator, &word_first);
+    try ex.renderWord("cached_word", testing.allocator, &word_cached);
+    try testing.expectEqualSlices(u8, word_first.items, word_cached.items);
+
+    try ex.indexFile("src/beta.zig", "pub fn beta() void {}\nconst cached_word = 2;\n");
+    var tree_after: std.ArrayList(u8) = .empty;
+    defer tree_after.deinit(testing.allocator);
+    try ex.renderTree(testing.allocator, &tree_after, false);
+    try testing.expect(std.mem.indexOf(u8, tree_after.items, "beta.zig") != null);
+
+    var word_after: std.ArrayList(u8) = .empty;
+    defer word_after.deinit(testing.allocator);
+    try ex.renderWord("cached_word", testing.allocator, &word_after);
+    try testing.expect(std.mem.indexOf(u8, word_after.items, "src/beta.zig") != null);
+
+    try ex.indexFile("src/alpha.zig", "pub fn renamedAlpha() void {}\n");
+    var outline_after: std.ArrayList(u8) = .empty;
+    defer outline_after.deinit(testing.allocator);
+    try testing.expect(try ex.renderOutline("src/alpha.zig", testing.allocator, &outline_after, false));
+    try testing.expect(std.mem.indexOf(u8, outline_after.items, "renamedAlpha") != null);
+    try testing.expect(std.mem.indexOf(u8, outline_after.items, "function alpha") == null);
+}
+
+test "cached deep reads and fuzzy finds invalidate exactly" {
+    var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer ex.deinit();
+
+    var content: std.ArrayList(u8) = .empty;
+    defer content.deinit(testing.allocator);
+    const content_writer = cio.listWriter(&content, testing.allocator);
+    for (1..121) |line| try content_writer.print("line-{d}\n", .{line});
+    try ex.indexFile("deep-alpha.zig", content.items);
+
+    const opts = Explorer.ReadRenderOptions{ .line_start = 100, .line_end = 102 };
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(testing.allocator);
+    var cached: std.ArrayList(u8) = .empty;
+    defer cached.deinit(testing.allocator);
+    try testing.expect(try ex.renderCachedRead("deep-alpha.zig", testing.allocator, &first, opts));
+    try testing.expect(try ex.renderCachedRead("deep-alpha.zig", testing.allocator, &cached, opts));
+    try testing.expectEqualSlices(u8, first.items, cached.items);
+    try testing.expect(std.mem.indexOf(u8, cached.items, "  100 | line-100") != null);
+    try testing.expect(std.mem.indexOf(u8, cached.items, "  103 |") == null);
+
+    const fuzzy_first = try ex.fuzzyFindFiles("deep alfa", testing.allocator, 10);
+    defer testing.allocator.free(fuzzy_first);
+    const fuzzy_cached = try ex.fuzzyFindFiles("deep alfa", testing.allocator, 10);
+    defer testing.allocator.free(fuzzy_cached);
+    try testing.expectEqual(fuzzy_first.len, fuzzy_cached.len);
+    for (fuzzy_first, fuzzy_cached) |a, b| {
+        try testing.expectEqualStrings(a.path, b.path);
+        try testing.expectEqual(a.score, b.score);
+    }
+
+    try ex.indexFile("deep-alfa-extra.zig", "pub fn extra() void {}\n");
+    const fuzzy_after = try ex.fuzzyFindFiles("deep alfa", testing.allocator, 10);
+    defer testing.allocator.free(fuzzy_after);
+    try testing.expect(fuzzy_after.len > fuzzy_cached.len);
+
+    content.clearRetainingCapacity();
+    for (1..121) |line| try content_writer.print("changed-{d}\n", .{line});
+    try ex.indexFile("deep-alpha.zig", content.items);
+    var changed: std.ArrayList(u8) = .empty;
+    defer changed.deinit(testing.allocator);
+    try testing.expect(try ex.renderCachedRead("deep-alpha.zig", testing.allocator, &changed, opts));
+    try testing.expect(std.mem.indexOf(u8, changed.items, "changed-100") != null);
+    try testing.expect(std.mem.indexOf(u8, changed.items, "line-100") == null);
+}

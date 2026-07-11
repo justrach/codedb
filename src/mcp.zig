@@ -2628,35 +2628,8 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             wsr.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
             wsl.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
             if (inline_bodies) {
-                if (explorer.getContent(sr.path, A) catch null) |content| {
-                    var cur_line: u32 = 1;
-                    var i: usize = 0;
-                    var line_start: ?usize = null;
-                    var captured: u32 = 0;
-                    const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line + 39) else sr.line;
-                    const max_lines: u32 = body_end - sr.line + 1;
-                    if (cur_line == sr.line) line_start = 0;
-                    while (i < content.len and captured < max_lines) : (i += 1) {
-                        if (content[i] == '\n') {
-                            if (line_start) |ls| {
-                                const line_end = i;
-                                wsr.print("       {d:>5} | {s}\n", .{ cur_line, content[ls..line_end] }) catch {};
-                                captured += 1;
-                            }
-                            cur_line += 1;
-                            if (cur_line >= sr.line and cur_line <= body_end) {
-                                line_start = i + 1;
-                            } else {
-                                line_start = null;
-                            }
-                        }
-                    }
-                    if (line_start) |ls| {
-                        if (captured < max_lines) {
-                            wsr.print("       {d:>5} | {s}\n", .{ cur_line, content[ls..] }) catch {};
-                        }
-                    }
-                }
+                const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line + 39) else sr.line;
+                _ = explorer.appendLineRange(sr.path, sr.line, body_end, "       ", A, &sec_syms_rich) catch false;
             }
         }
 
@@ -5313,13 +5286,19 @@ fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, 
     buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
     appendId(alloc, &buf, id);
     buf.appendSlice(alloc, ",\"result\":") catch return;
-    // Batch-copy non-newline runs instead of per-byte append.
-    var i: usize = 0;
-    while (i < result.len) {
-        const start = i;
-        while (i < result.len and result[i] != '\n' and result[i] != '\r') : (i += 1) {}
-        if (i > start) buf.appendSlice(alloc, result[start..i]) catch return;
-        if (i < result.len) i += 1;
+    // MCP responses are normally compact JSON with no raw line breaks. Let
+    // std.mem's vectorized search prove that once, then copy the whole payload;
+    // retain the sanitizing fallback for any non-canonical producer.
+    if (std.mem.indexOfAny(u8, result, "\n\r") == null) {
+        buf.appendSlice(alloc, result) catch return;
+    } else {
+        var i: usize = 0;
+        while (i < result.len) {
+            const start = i;
+            while (i < result.len and result[i] != '\n' and result[i] != '\r') : (i += 1) {}
+            if (i > start) buf.appendSlice(alloc, result[start..i]) catch return;
+            if (i < result.len) i += 1;
+        }
     }
     buf.appendSlice(alloc, "}\n") catch return;
     stdout.writeAll(buf.items) catch {
