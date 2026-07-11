@@ -196,7 +196,7 @@ test "adversarial: extractSparseNgrams on all-same-character content" {
     try testing.expect(result.len > 0);
 
     // Verify every byte position is covered by at least one n-gram
-    var covered: [19]bool = .{false} ** 19;
+    var covered: [19]bool = @splat(false);
     for (result) |ng| {
         for (ng.pos..ng.pos + ng.len) |p| {
             if (p < 19) covered[p] = true;
@@ -649,7 +649,7 @@ test "adversarial: setFrequencyTable changes pairWeight output" {
     const before = pairWeight('a', 'b');
 
     // Create a custom table where 'a','b' has a very different weight
-    var custom: [256][256]u16 = .{.{0x5000} ** 256} ** 256;
+    var custom: [256][256]u16 = @splat(@splat(0x5000));
     custom['a']['b'] = 0x0100; // very low
     setFrequencyTable(&custom);
     defer resetFrequencyTable();

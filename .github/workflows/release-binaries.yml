@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 env:
-  ZIG_VERSION: 0.16.0
+  ZIG_VERSION: 0.17.0-dev.813+2153f8143
 
 jobs:
   build:
@@ -23,25 +23,25 @@ jobs:
       matrix:
         include:
           - runner: macos-15-intel
+            zig_host: x86_64-macos
+            zig_sha256: 3938c46ae4bca3c13f423b09503e3ef00bb4b7ef12b8bc1e5122ede366057a5b
             zig_target: x86_64-macos
             asset_name: codedb-darwin-x86_64
-            zig_archive: zig-x86_64-macos-0.16.0.tar.xz
-            zig_dir: zig-x86_64-macos-0.16.0
           - runner: macos-14
+            zig_host: aarch64-macos
+            zig_sha256: 36673d2513afa4a96c86780648ba504beedd7f0451389091cf9d53e38d5b4840
             zig_target: aarch64-macos
             asset_name: codedb-darwin-arm64
-            zig_archive: zig-aarch64-macos-0.16.0.tar.xz
-            zig_dir: zig-aarch64-macos-0.16.0
           - runner: ubuntu-24.04
+            zig_host: x86_64-linux
+            zig_sha256: b0d46ffc4587b9e8dd0b524ee5bc4da1e67f28bba55e7c534cec64af2f2d7a74
             zig_target: x86_64-linux
             asset_name: codedb-linux-x86_64
-            zig_archive: zig-x86_64-linux-0.16.0.tar.xz
-            zig_dir: zig-x86_64-linux-0.16.0
           - runner: ubuntu-24.04
+            zig_host: x86_64-linux
+            zig_sha256: b0d46ffc4587b9e8dd0b524ee5bc4da1e67f28bba55e7c534cec64af2f2d7a74
             zig_target: aarch64-linux
             asset_name: codedb-linux-arm64
-            zig_archive: zig-x86_64-linux-0.16.0.tar.xz
-            zig_dir: zig-x86_64-linux-0.16.0
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
       APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -53,13 +53,22 @@ jobs:
           fetch-depth: 0
           ref: ${{ env.RELEASE_TAG }}
 
-      - name: Install Zig
+      - name: Install pinned Zig
         shell: bash
         run: |
           set -euo pipefail
-          curl -L "https://ziglang.org/download/${ZIG_VERSION}/${{ matrix.zig_archive }}" -o zig.tar.xz
+          grep -Fq ".minimum_zig_version = \"${ZIG_VERSION}\"" build.zig.zon || {
+            echo "release tag does not require the workflow's pinned Zig ${ZIG_VERSION}" >&2
+            exit 1
+          }
+          archive="zig-${{ matrix.zig_host }}-${ZIG_VERSION}.tar.xz"
+          zig_dir="zig-${{ matrix.zig_host }}-${ZIG_VERSION}"
+          curl --fail --show-error --location --retry 3 \
+            "https://ziglang.org/builds/${archive}" -o zig.tar.xz
+          echo "${{ matrix.zig_sha256 }}  zig.tar.xz" | shasum -a 256 --check
           tar -xf zig.tar.xz
-          echo "$PWD/${{ matrix.zig_dir }}" >> "$GITHUB_PATH"
+          test "$("$PWD/${zig_dir}/zig" version)" = "$ZIG_VERSION"
+          echo "$PWD/${zig_dir}" >> "$GITHUB_PATH"
 
       - name: Import Apple signing certificate
         if: runner.os == 'macOS' && env.APPLE_CERTIFICATE_P12 != ''

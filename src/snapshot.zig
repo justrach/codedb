@@ -354,7 +354,7 @@ pub fn writeSnapshot(
     if (git_head) |head| {
         try fw.writeAll(&head);
     } else {
-        try fw.writeAll(&([_]u8{0x00} ** 40));
+        try fw.writeAll(&@as([40]u8, @splat(0x00)));
     }
 
     var sc_buf: [4]u8 = undefined;

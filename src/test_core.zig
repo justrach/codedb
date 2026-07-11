@@ -1048,7 +1048,7 @@ test "issue-584: ContentCache probe-window — overflow inserts, holes, and dupl
     var bufs: [5][16]u8 = undefined;
     var lens: [5]usize = undefined;
     var nkeys: usize = 0;
-    var counts = [_]u8{0} ** 64;
+    var counts: [64]u8 = @splat(0);
     var pick: u32 = 0;
     var i: usize = 0;
     while (i < 4096) : (i += 1) {

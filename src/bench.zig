@@ -192,7 +192,6 @@ fn copyCorpus(io: std.Io, allocator: std.mem.Allocator, repo_root: []const u8, t
     }
 }
 
-
 fn makeTempCorpusDir(io: std.Io, buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
     const base = cio.posixGetenv("TMPDIR") orelse "/tmp";
     const ns = cio.nanoTimestamp();

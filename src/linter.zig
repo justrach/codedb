@@ -528,8 +528,8 @@ pub const DiagnosticsCache = struct {
 
     mu: cio.Mutex = .{},
     alloc: std.mem.Allocator,
-    entries: [MAX]?Entry = .{null} ** MAX,
-    pending: [MAX]?[]u8 = .{null} ** MAX,
+    entries: [MAX]?Entry = @splat(null),
+    pending: [MAX]?[]u8 = @splat(null),
     inflight: usize = 0,
 
     pub fn init(alloc: std.mem.Allocator) DiagnosticsCache {

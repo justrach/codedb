@@ -36,13 +36,13 @@ pub const FuncInput = struct {
 /// languages); over-filtering a rare real call only loses an additive boost.
 fn isCallKeyword(name: []const u8) bool {
     const kws = [_][]const u8{
-        "if",     "else",   "for",     "while",  "switch", "return",  "catch",
-        "try",    "defer",  "errdefer", "and",   "or",     "orelse",  "sizeof",
-        "typeof", "do",     "case",    "when",   "match",  "with",    "in",
-        "not",    "is",     "await",   "yield",  "throw",  "new",     "delete",
-        "fn",     "func",   "function", "def",   "class",  "struct",  "enum",
-        "union",  "const",  "var",     "let",    "static", "assert",  "where",
-        "select", "from",   "foreach", "using",  "unless", "until",   "elif",
+        "if",     "else",  "for",      "while", "switch", "return", "catch",
+        "try",    "defer", "errdefer", "and",   "or",     "orelse", "sizeof",
+        "typeof", "do",    "case",     "when",  "match",  "with",   "in",
+        "not",    "is",    "await",    "yield", "throw",  "new",    "delete",
+        "fn",     "func",  "function", "def",   "class",  "struct", "enum",
+        "union",  "const", "var",      "let",   "static", "assert", "where",
+        "select", "from",  "foreach",  "using", "unless", "until",  "elif",
     };
     for (kws) |kw| if (std.mem.eql(u8, name, kw)) return true;
     return false;

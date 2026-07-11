@@ -37,7 +37,7 @@ pub const Event = struct {
 
     pub const Kind = union(enum) {
         tool_call: struct {
-            tool: [32]u8 = .{0} ** 32,
+            tool: [32]u8 = @splat(0),
             tool_len: u8 = 0,
             latency_ns: i128,
             err: bool,
@@ -339,9 +339,9 @@ pub const Telemetry = struct {
             },
             .search_breakdown => |sb| {
                 try w.print(",\"event_type\":\"search_breakdown\",\"tier0_ns\":{d},\"tier05_ns\":{d},\"tier1_ns\":{d},\"tier2_ns\":{d},\"tier3_ns\":{d},\"tier4_ns\":{d},\"tier5_ns\":{d},\"rerank_ns\":{d},\"tier_reached\":{d},\"candidates\":{d},\"results\":{d}", .{
-                    sb.tier0_ns,  sb.tier05_ns, sb.tier1_ns,
-                    sb.tier2_ns,  sb.tier3_ns,  sb.tier4_ns,
-                    sb.tier5_ns,  sb.rerank_ns, sb.tier_reached,
+                    sb.tier0_ns,        sb.tier05_ns,    sb.tier1_ns,
+                    sb.tier2_ns,        sb.tier3_ns,     sb.tier4_ns,
+                    sb.tier5_ns,        sb.rerank_ns,    sb.tier_reached,
                     sb.candidate_count, sb.result_count,
                 });
             },

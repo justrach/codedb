@@ -2,13 +2,15 @@
 const cio = @import("cio.zig");
 //
 // Exposes codedb's exploration + edit engine as MCP tools.
-// Uses mcp-zig for protocol utilities; adds roots support for workspace awareness.
+// Implements the JSON-RPC transport directly and adds roots support for workspace awareness.
 
 const std = @import("std");
 const testing = std.testing;
-const mcp_lib = @import("mcp");
-const mcpj = mcp_lib.json;
-pub const Root = mcp_lib.mcp.Root;
+const mcpj = @import("mcp_json.zig");
+pub const Root = struct {
+    uri: []u8,
+    name: []u8,
+};
 const Store = @import("store.zig").Store;
 const explore_mod = @import("explore.zig");
 const Explorer = explore_mod.Explorer;
@@ -329,7 +331,7 @@ const ProjectCache = struct {
         return .{
             .mu = .{},
             .alloc = alloc_,
-            .entries = [_]?*Entry{null} ** MAX_CACHED,
+            .entries = @splat(null),
             .default_path = default_path_,
             .default_snapshot_cache = .{},
             .default_deps_cache = .{},
@@ -857,7 +859,7 @@ pub const ConvergenceGovernor = struct {
     pub const HISTORY = 8; // ring-buffer window of recent calls
     pub const WARN_AT = 3; // same signature this many times in the window -> nudge
 
-    sigs: [HISTORY]u64 = [_]u64{0} ** HISTORY,
+    sigs: [HISTORY]u64 = @splat(0),
     head: usize = 0,
 
     /// Record a call signature and return how many times it has occurred within

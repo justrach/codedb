@@ -7,6 +7,12 @@ permissions:
   contents: read
   pull-requests: write
 
+env:
+  ZIG_VERSION: 0.17.0-dev.813+2153f8143
+  ZIG_SHA256: b0d46ffc4587b9e8dd0b524ee5bc4da1e67f28bba55e7c534cec64af2f2d7a74
+  LEGACY_ZIG_VERSION: 0.16.0
+  LEGACY_ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+
 jobs:
   bench:
     runs-on: ubuntu-latest
@@ -15,40 +21,60 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Zig
+      - name: Install pinned Zig toolchains
         run: |
-          curl -L https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o zig.tar.xz
-          tar -xf zig.tar.xz
-          echo "$PWD/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
+          set -euo pipefail
+
+          head_archive="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          head_dir="zig-x86_64-linux-${ZIG_VERSION}"
+          curl --fail --show-error --location --retry 3 \
+            "https://ziglang.org/builds/${head_archive}" -o zig-head.tar.xz
+          echo "${ZIG_SHA256}  zig-head.tar.xz" | sha256sum --check
+          tar -xf zig-head.tar.xz
+          test "$("$PWD/${head_dir}/zig" version)" = "$ZIG_VERSION"
+
+          legacy_archive="zig-x86_64-linux-${LEGACY_ZIG_VERSION}.tar.xz"
+          legacy_dir="zig-x86_64-linux-${LEGACY_ZIG_VERSION}"
+          curl --fail --show-error --location --retry 3 \
+            "https://ziglang.org/download/${LEGACY_ZIG_VERSION}/${legacy_archive}" -o zig-legacy.tar.xz
+          echo "${LEGACY_ZIG_SHA256}  zig-legacy.tar.xz" | sha256sum --check
+          tar -xf zig-legacy.tar.xz
+          test "$("$PWD/${legacy_dir}/zig" version)" = "$LEGACY_ZIG_VERSION"
+
+          echo "$PWD/${head_dir}" >> "$GITHUB_PATH"
 
       - name: Benchmark head
         run: python3 scripts/run-bench-json.py bench-head.json
 
-      - name: Benchmark base
+      - name: Benchmark base with its declared compiler
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
+          set -euo pipefail
+          git fetch origin "$BASE_REF" --depth=1
           git worktree add ../codedb-base FETCH_HEAD
           cd ../codedb-base
-          if python3 "$GITHUB_WORKSPACE/scripts/run-bench-json.py" "$GITHUB_WORKSPACE/bench-base.json"; then
-            echo "have_base_json=true" >> "$GITHUB_ENV"
-          else
-            echo "have_base_json=false" >> "$GITHUB_ENV"
-          fi
+
+          base_zig_version=$(sed -n 's/.*\.minimum_zig_version = "\([^"]*\)".*/\1/p' build.zig.zon)
+          case "$base_zig_version" in
+            "$ZIG_VERSION")
+              base_zig_dir="$GITHUB_WORKSPACE/zig-x86_64-linux-${ZIG_VERSION}"
+              ;;
+            "$LEGACY_ZIG_VERSION")
+              base_zig_dir="$GITHUB_WORKSPACE/zig-x86_64-linux-${LEGACY_ZIG_VERSION}"
+              ;;
+            *)
+              echo "unsupported base Zig version: ${base_zig_version:-missing}" >&2
+              exit 1
+              ;;
+          esac
+          test "$("$base_zig_dir/zig" version)" = "$base_zig_version"
+          PATH="$base_zig_dir:$PATH" \
+            python3 "$GITHUB_WORKSPACE/scripts/run-bench-json.py" "$GITHUB_WORKSPACE/bench-base.json"
 
       - name: Compare
-        if: env.have_base_json == 'true'
         run: |
           python3 scripts/compare-bench.py bench-base.json bench-head.json --threshold-pct 10 --markdown-out bench-report.md
-
-      - name: Bootstrap report
-        if: env.have_base_json != 'true'
-        run: |
-          cat > bench-report.md <<'EOF'
-          ## Benchmark Regression Report
-
-          Skipped strict comparison because the base branch does not yet emit machine-readable benchmark JSON.
-          This PR introduces the JSON benchmark format that future PRs will compare against.
-          EOF
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
