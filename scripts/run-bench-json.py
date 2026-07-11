@@ -10,6 +10,7 @@ import sys
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run `zig build bench -- --json` and persist the JSON payload.")
     parser.add_argument("output", help="output JSON file")
+    parser.add_argument("bench_args", nargs=argparse.REMAINDER, help="arguments forwarded to the benchmark after --json")
     return parser.parse_args()
 
 
@@ -29,7 +30,7 @@ def extract_json(stdout: str, stderr: str) -> str:
 def main() -> int:
     args = parse_args()
     proc = subprocess.run(
-        ["zig", "build", "bench", "--", "--json"],
+        ["zig", "build", "bench", "--", "--json", *args.bench_args],
         capture_output=True,
         text=True,
         check=False,

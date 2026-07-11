@@ -152,6 +152,30 @@ git diff --check
 MCP E2E passed 20/20 scenarios, including roots negotiation, explicit-root,
 no-roots, and direct-inline-argument modes.
 
+## Required protocol for follow-up performance changes
+
+Further optimization commits on this branch use the automated paired gate:
+
+```bash
+CODEDB_BENCH_PAIRS=10 CODEDB_BENCH_OUT=zig-out/bench-ab \
+  scripts/bench-ab.sh <base-ref>
+```
+
+For release claims, use at least 20 pairs. The runner:
+
+1. builds the base ref in a throwaway worktree;
+2. gives base and head the exact same base-worktree corpus;
+3. verifies the corpus fingerprint for every pair;
+4. alternates `base -> head` and `head -> base` order;
+5. requires raw response-hash parity for parity-enabled tools;
+6. reports paired medians, head win counts, and a deterministic bootstrap 95%
+   interval;
+7. rejects regressions from the paired median rather than a single-run minimum.
+
+Raw samples and the Markdown report remain in `CODEDB_BENCH_OUT` when it is set.
+Cross-compiler release-outcome comparisons remain separate from same-compiler
+source-attribution runs.
+
 ## Limits and follow-up work
 
 These numbers are workload-specific, and the largest cache-backed gains are

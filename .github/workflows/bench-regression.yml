@@ -21,6 +21,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Test paired benchmark comparator
+        run: python3 -m unittest scripts/test_compare_bench_paired.py
+
       - name: Install pinned Zig toolchains
         run: |
           set -euo pipefail
@@ -47,6 +50,7 @@ jobs:
         run: python3 scripts/run-bench-json.py bench-head.json
 
       - name: Benchmark base with its declared compiler
+        id: base_bench
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
@@ -69,8 +73,54 @@ jobs:
               ;;
           esac
           test "$("$base_zig_dir/zig" version)" = "$base_zig_version"
+          echo "zig_version=$base_zig_version" >> "$GITHUB_OUTPUT"
+          echo "zig_dir=$base_zig_dir" >> "$GITHUB_OUTPUT"
           PATH="$base_zig_dir:$PATH" \
             python3 "$GITHUB_WORKSPACE/scripts/run-bench-json.py" "$GITHUB_WORKSPACE/bench-base.json"
+
+      - name: Paired counterbalanced benchmark with parity gate
+        env:
+          BASE_ZIG_VERSION: ${{ steps.base_bench.outputs.zig_version }}
+          BASE_ZIG_DIR: ${{ steps.base_bench.outputs.zig_dir }}
+          PAIRS: 5
+        run: |
+          set -euo pipefail
+          if [[ "$BASE_ZIG_VERSION" != "$ZIG_VERSION" ]] || ! grep -q corpus_hash ../codedb-base/src/bench.zig; then
+            echo "Base predates the paired schema or uses a migration compiler; keeping the release-outcome comparison only."
+            exit 0
+          fi
+
+          mkdir -p bench-paired
+          corpus_source=$(realpath ../codedb-base)
+          run_sample() {
+            side="$1"
+            pair="$2"
+            if [[ "$side" == base ]]; then
+              cwd="../codedb-base"
+              zig_dir="$BASE_ZIG_DIR"
+            else
+              cwd="$GITHUB_WORKSPACE"
+              zig_dir="$GITHUB_WORKSPACE/zig-x86_64-linux-${ZIG_VERSION}"
+            fi
+            (
+              cd "$cwd"
+              PATH="$zig_dir:$PATH" python3 "$GITHUB_WORKSPACE/scripts/run-bench-json.py" \
+                "$GITHUB_WORKSPACE/bench-paired/$side-$(printf '%02d' "$pair").json" \
+                --corpus-source "$corpus_source"
+            )
+          }
+
+          for ((pair = 1; pair <= PAIRS; pair++)); do
+            if (( pair % 2 == 1 )); then
+              run_sample base "$pair"
+              run_sample head "$pair"
+            else
+              run_sample head "$pair"
+              run_sample base "$pair"
+            fi
+          done
+          python3 scripts/compare-bench-paired.py bench-paired --require-parity \
+            --threshold-pct 10 --min-abs-ns 50000 --markdown-out bench-paired-report.md
 
       - name: Compare
         run: |
@@ -84,6 +134,8 @@ jobs:
             bench-base.json
             bench-head.json
             bench-report.md
+            bench-paired/
+            bench-paired-report.md
 
       - name: Comment PR
         if: github.event_name == 'pull_request'
@@ -91,7 +143,8 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const body = fs.readFileSync('bench-report.md', 'utf8');
+            const report = fs.existsSync('bench-paired-report.md') ? 'bench-paired-report.md' : 'bench-report.md';
+            const body = fs.readFileSync(report, 'utf8');
             try {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,

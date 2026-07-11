@@ -143,16 +143,33 @@ If you changed benchmarks:
 Benchmark-related PRs must say:
 
 - what layer is being measured
-  - driver-only
-  - HTTP-only
-  - end-to-end HTTP+DB
+  - handler/driver-only
+  - in-process MCP/HTTP
+  - end-to-end transport and storage
 - whether caches are on or off
 - whether numbers are cold-start or warmed steady-state
-- number of runs
-- whether values are single-run or median
+- number of paired runs and their counterbalanced execution order
+- paired median and dispersion/confidence interval
 - exact machine or CI environment
+- whether base and head used the same compiler (source attribution) or each
+  revision's declared compiler (release-outcome comparison)
 
-Do not publish cached results as uncached DB performance.
+Performance claims must use output/hit parity on an identical corpus. For the
+gated MCP benchmark, run:
+
+```bash
+CODEDB_BENCH_PAIRS=10 scripts/bench-ab.sh <base-ref>
+```
+
+The runner gives both revisions the same corpus, alternates `base → head` and
+`head → base`, requires response-hash parity for parity-enabled tools, and
+reports paired medians with a deterministic bootstrap interval. Increase to 20
+or more pairs for release claims. A parity exemption must be explicit in the
+benchmark case and justified by genuinely nondeterministic output.
+
+Single-run minima may be shown as diagnostics, but they are not acceptable
+performance evidence and must not drive an acceptance claim. Do not publish
+cached results as uncached performance.
 
 ## Review Expectations
 

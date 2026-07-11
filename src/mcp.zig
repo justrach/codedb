@@ -537,13 +537,14 @@ pub const BenchContext = struct {
         explorer: *Explorer,
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
-    ) struct { dispatch_ns: u64, response_bytes: usize } {
+    ) struct { dispatch_ns: u64, response_bytes: usize, response_hash: u64 } {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(alloc);
 
         const t0 = cio.nanoTimestamp();
         dispatch(io, alloc, tool, args, &out, store, explorer, agents, &self.cache, null, 1);
         const elapsed = cio.nanoTimestamp() - t0;
+        const response_hash = std.hash.Wyhash.hash(0, out.items);
 
         const is_error = std.mem.startsWith(u8, out.items, "error:");
         telem.recordToolCall(name, elapsed, is_error, out.items.len);
@@ -564,26 +565,26 @@ pub const BenchContext = struct {
         var result: std.ArrayList(u8) = .empty;
         defer result.deinit(alloc);
         result.ensureTotalCapacity(alloc, out.items.len + summary.items.len + guidance.items.len + 256) catch {};
-        result.appendSlice(alloc, "{\"content\":[") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0 };
+        result.appendSlice(alloc, "{\"content\":[") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0, .response_hash = response_hash };
 
         if (summary.items.len > 0) {
-            result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+            result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len, .response_hash = response_hash };
             mcpj.writeEscaped(alloc, &result, summary.items);
-            result.appendSlice(alloc, "\"},") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+            result.appendSlice(alloc, "\"},") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len, .response_hash = response_hash };
         }
 
-        result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+        result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len, .response_hash = response_hash };
         mcpj.writeEscaped(alloc, &result, out.items);
-        result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+        result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len, .response_hash = response_hash };
 
         if (guidance.items.len > 0) {
-            result.appendSlice(alloc, ",{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+            result.appendSlice(alloc, ",{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len, .response_hash = response_hash };
             mcpj.writeEscaped(alloc, &result, guidance.items);
-            result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+            result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len, .response_hash = response_hash };
         }
 
-        result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-        return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+        result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len, .response_hash = response_hash };
+        return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len, .response_hash = response_hash };
     }
 };
 

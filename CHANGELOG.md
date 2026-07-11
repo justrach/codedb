@@ -19,6 +19,9 @@ normalization, and the full suite, WASM build, and MCP E2E (20/20) pass.
 
 Detailed methodology, per-tool tables, memory bounds, limitations, and follow-up
 targets are in [`docs/performance-0.2.5830.md`](docs/performance-0.2.5830.md).
+The A/B runner now enforces a shared corpus fingerprint, response-hash parity,
+AB/BA counterbalancing, paired medians, and bootstrap intervals; single-run
+minima are diagnostic only and cannot support a performance claim.
 
 
 ## 0.2.5829 - 2026-07-11
