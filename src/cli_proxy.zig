@@ -319,7 +319,7 @@ fn currentUserPipeSddl(allocator: std.mem.Allocator) ?[:0]u8 {
     defer allocator.free(sid);
     const sddl = std.fmt.allocPrint(allocator, "D:P(A;;GA;;;{s})S:(ML;;NW;;;ME)", .{sid}) catch return null;
     defer allocator.free(sddl);
-    return allocator.dupeZ(u8, sddl) catch null;
+    return allocator.dupeSentinel(u8, sddl, 0) catch null;
 }
 
 fn processUserMatchesCurrent(allocator: std.mem.Allocator, pid: u32) bool {
