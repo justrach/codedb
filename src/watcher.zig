@@ -85,6 +85,7 @@ const FileMap = std.StringHashMap(FileState);
 const InitialScanEntry = struct {
     path: []u8,
     size: u64,
+    stat_succeeded: bool,
     skip_trigram: bool,
 };
 
@@ -507,20 +508,15 @@ pub fn trigramFileCap() usize {
     return std.fmt.parseInt(usize, raw, 10) catch 15_000;
 }
 
-// statScanForInitial: helper matching loadSnapshotFast's freshnessScan pattern.
-// Paths collected serially first (in caller), then stats fanned via chunks to
-// workers; side-effect is stat + recordSnapshot + storing the size back into the
-// entry. Per-stat errors are swallowed like the ref; record failures set shared
-// err_out and stop the worker.
-fn statScanForInitial(io: std.Io, store: *Store, dir: std.Io.Dir, recs: []InitialScanEntry, err_out: *?anyerror) void {
+// Paths are collected serially first, then stat calls fan out across disjoint
+// chunks. Workers only publish size/stat_succeeded into their own entries; the
+// caller records snapshots serially in discovery order after every join. That
+// keeps sequence assignment deterministic and avoids shared worker error state.
+fn statScanForInitial(io: std.Io, dir: std.Io.Dir, recs: []InitialScanEntry) void {
     for (recs) |*record| {
-        if (err_out.* != null) return;
         const ds = dir.statFile(io, record.path, .{}) catch continue;
         record.size = ds.size;
-        _ = store.recordSnapshot(record.path, ds.size, 0) catch |e| {
-            err_out.* = e;
-            return;
-        };
+        record.stat_succeeded = true;
     }
 }
 
@@ -540,14 +536,14 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
         try entries.append(allocator, .{
             .path = try allocator.dupe(u8, entry.path),
             .size = 0,
+            .stat_succeeded = false,
             .skip_trigram = false, // set after parallel stat fan
         });
     }
-    // Stats fanned out to workers (exact pattern from loadSnapshotFast: Pass A serial collect,
-    // Pass B chunk+spawn to statScanForInitial on disjoint slices; swallows per-stat errors,
-    // propagates record error, uses env/256/4 idiom, static chunks, join).
+    // Stats fan out across disjoint slices; per-stat errors are swallowed. After
+    // joining, snapshots are recorded serially so sequence order remains stable
+    // and record errors propagate without cross-thread error sharing.
     if (entries.items.len > 0) {
-        var build_err: ?anyerror = null;
         const want_workers = blk: {
             if (cio.posixGetenv("CODEDB_LOAD_WORKERS")) |raw| {
                 const parsed = std.fmt.parseInt(usize, raw, 10) catch 0;
@@ -558,10 +554,17 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
             break :blk @min(@as(usize, @intCast(cpu_count)), 4);
         };
         const n_workers = @max(@as(usize, 1), @min(want_workers, entries.items.len));
-        if (n_workers <= 1) {
-            statScanForInitial(io, store, dir, entries.items, &build_err);
-        } else if (allocator.alloc(std.Thread, n_workers)) |threads| {
+        stat_fan: {
+            if (n_workers <= 1) {
+                statScanForInitial(io, dir, entries.items);
+                break :stat_fan;
+            }
+            const threads = allocator.alloc(std.Thread, n_workers) catch {
+                statScanForInitial(io, dir, entries.items);
+                break :stat_fan;
+            };
             defer allocator.free(threads);
+
             const chunk = entries.items.len / n_workers;
             const rem = entries.items.len % n_workers;
             var off: usize = 0;
@@ -573,22 +576,23 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
                 off += chunk + extra;
                 const recs = entries.items[start..off];
                 if (spawn_failed) {
-                    statScanForInitial(io, store, dir, recs, &build_err);
+                    statScanForInitial(io, dir, recs);
                     continue;
                 }
-                if (std.Thread.spawn(.{}, statScanForInitial, .{ io, store, dir, recs, &build_err })) |t| {
+                if (std.Thread.spawn(.{}, statScanForInitial, .{ io, dir, recs })) |t| {
                     threads[spawned] = t;
                     spawned += 1;
                 } else |_| {
-                    statScanForInitial(io, store, dir, recs, &build_err);
+                    statScanForInitial(io, dir, recs);
                     spawn_failed = true;
                 }
             }
             for (threads[0..spawned]) |t| t.join();
-        } else |_| {
-            statScanForInitial(io, store, dir, entries.items, &build_err);
         }
-        if (build_err) |e| return e;
+        for (entries.items) |entry| {
+            if (!entry.stat_succeeded) continue;
+            _ = try store.recordSnapshot(entry.path, entry.size, 0);
+        }
     }
     // Set skip_trigram using serial count (preserves original cap semantics on discovery order).
     var file_count: usize = 0;

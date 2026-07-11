@@ -586,6 +586,19 @@ test "watcher: parallel initial scan matches sequential results" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
+    const previous_load_workers = if (cio.posixGetenv("CODEDB_LOAD_WORKERS")) |value|
+        try testing.allocator.dupe(u8, value)
+    else
+        null;
+    defer {
+        if (previous_load_workers) |value| {
+            cio.posixSetenv("CODEDB_LOAD_WORKERS", value);
+            testing.allocator.free(value);
+        } else {
+            cio.posixUnsetenv("CODEDB_LOAD_WORKERS");
+        }
+    }
+
     try tmp_dir.dir.createDirPath(io, "src/nested");
     try tmp_dir.dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = "const std = @import(\"std\");\npub fn alpha() void {}\n// TODO: keep me\n" });
     try tmp_dir.dir.writeFile(io, .{ .sub_path = "src/nested/util.py", .data = "def beta():\n    return 42\n# TODO later\n" });
@@ -600,6 +613,7 @@ test "watcher: parallel initial scan matches sequential results" {
     var explorer_seq = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_seq.deinit();
     explorer_seq.setRoot(io, root);
+    cio.posixSetenv("CODEDB_LOAD_WORKERS", "1");
     try watcher.initialScanWithWorkerCount(io, &store_seq, &explorer_seq, root, testing.allocator, false, 1);
 
     var store_par = Store.init(testing.allocator);
@@ -607,6 +621,7 @@ test "watcher: parallel initial scan matches sequential results" {
     var explorer_par = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_par.deinit();
     explorer_par.setRoot(io, root);
+    cio.posixSetenv("CODEDB_LOAD_WORKERS", "4");
     try watcher.initialScanWithWorkerCount(io, &store_par, &explorer_par, root, testing.allocator, false, 4);
 
     const tree_seq = try explorer_seq.getTree(testing.allocator, false);
@@ -622,6 +637,15 @@ test "watcher: parallel initial scan matches sequential results" {
     try testing.expectEqual(seq_hits.len, par_hits.len);
 
     try testing.expectEqual(explorer_seq.outlines.count(), explorer_par.outlines.count());
+
+    // Parallel stat workers only fill disjoint entry slots; snapshots are
+    // committed serially afterward, preserving discovery-order sequence IDs.
+    for ([_][]const u8{ "src/main.zig", "src/nested/util.py", "README.md" }) |path| {
+        const seq_version = store_seq.getLatest(path) orelse return error.TestUnexpectedResult;
+        const par_version = store_par.getLatest(path) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(seq_version.seq, par_version.seq);
+        try testing.expectEqual(seq_version.size, par_version.size);
+    }
 }
 
 test "watcher: rolling trigram shards match canonical masks exactly" {
