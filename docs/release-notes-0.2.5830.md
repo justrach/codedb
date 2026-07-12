@@ -23,7 +23,7 @@ The final release gate uses 20 counterbalanced AB/BA pairs against production ba
 - duration-normalized full JSON-RPC response parity across every measured iteration: **PASS** for every parity-enabled tool
 - paired regression gate (>10% and >50us): **PASS**
 
-The largest in-process paired-median improvements are exact symbol **81.97%**, tree **67.55%**, outline **60.75%**, word **36.89%**, bundle **28.42%**, and hot-file lookup **22.15%**. Full methodology, transport-level measurements, limitations, and the persisted paired report are in [`docs/performance-0.2.5830.md`](https://github.com/justrach/codedb/blob/v0.2.5830/docs/performance-0.2.5830.md).
+The largest in-process paired-median improvements are exact symbol **81.72%**, tree **67.60%**, outline **59.79%**, word **37.16%**, bundle **27.73%**, and hot-file lookup **17.81%**. Full methodology, transport-level measurements, limitations, and the persisted paired report are in [`docs/performance-0.2.5830.md`](https://github.com/justrach/codedb/blob/v0.2.5830/docs/performance-0.2.5830.md).
 
 ## Verification
 

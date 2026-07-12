@@ -60,7 +60,7 @@ Normalized MCP responses were byte-identical between baseline and candidate for
 
 The final source-attribution gate used production baseline `dd36e94`
 (`v0.2.5829`) with pinned harness-only descendant `24e89c7`, and performance
-candidate `91ecd6e`. Both binaries used the same pinned Zig compiler and the same
+candidate `bc72bfc`. Both binaries used the same pinned Zig compiler and the same
 fixed 21-file benchmark corpus copied from `dd36e94`. Twenty
 AB/BA-counterbalanced pairs passed:
 
@@ -70,8 +70,8 @@ AB/BA-counterbalanced pairs passed:
 - duration-normalized, full JSON-RPC response hash across every measured
   iteration: **PASS** for every parity-enabled tool in all pairs;
 - paired-median regression gate (>10% and >50us): **PASS**;
-- tree, outline, symbol, word, hot, and bundle improved by 22.15%-81.97%;
-- context, read, and search improved by 11.68%, 6.29%, and 1.41%;
+- tree, outline, symbol, word, hot, and bundle improved by 17.81%-81.72%;
+- context, read, edit, and find improved by 11.89%, 4.81%, 2.04%, and 3.27%;
 - no parity-enabled tool had a material regression.
 
 The complete persisted report is
