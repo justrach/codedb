@@ -50,6 +50,10 @@ A 20-pair AB/BA host comparison on the same immutable 641-file corpus measured:
 - deterministic bootstrap 95% interval: **0.36%-1.46% faster**;
 - optimized wins: **14/20**.
 
+A separate 10-pair full MCP gate passed corpus/provenance checks, full response
+parity for every parity-enabled tool, and the material-regression threshold.
+No handler cache or query path was reduced to obtain the indexing result.
+
 This is a small but measured improvement, not a Raspberry Pi hardware claim.
 The main benefit is eliminating geometric-growth allocation churn and retained
 capacity slack without taking resources away from query performance.
