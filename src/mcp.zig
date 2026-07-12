@@ -26,7 +26,6 @@ const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
 const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
-const resource_profile = @import("resource_profile.zig");
 const release_info = @import("release_info.zig");
 pub const DeferredScan = struct {
     io: std.Io,
@@ -72,15 +71,11 @@ pub fn triggerDeferredScanWithFallback(
 // ── Project cache ────────────────────────────────────────────────────────────
 
 const SnapshotCache = struct {
+    const MAX_CACHED_BYTES = 16 * 1024 * 1024;
+
     seq: u64 = std.math.maxInt(u64),
     bytes: ?[]u8 = null,
     mu: cio.Mutex = .{},
-    max_cached_bytes: usize,
-
-    fn init() SnapshotCache {
-        const limits = resource_profile.cacheLimits(resource_profile.current());
-        return .{ .max_cached_bytes = limits.snapshot_bytes };
-    }
 
     fn deinit(self: *SnapshotCache, alloc: std.mem.Allocator) void {
         if (self.bytes) |bytes| {
@@ -113,7 +108,7 @@ const SnapshotCache = struct {
         self.mu.lock();
         defer self.mu.unlock();
 
-        if (fresh.len > self.max_cached_bytes) {
+        if (fresh.len > MAX_CACHED_BYTES) {
             if (self.bytes) |bytes| {
                 alloc.free(bytes);
                 self.bytes = null;
@@ -321,7 +316,6 @@ const ProjectCache = struct {
     mu: cio.RwLock,
     alloc: std.mem.Allocator,
     entries: [MAX_CACHED]?*Entry,
-    max_cached: usize,
     default_path: []const u8,
     default_snapshot_cache: SnapshotCache,
     default_deps_cache: DepsCache,
@@ -334,14 +328,12 @@ const ProjectCache = struct {
     diag: linter_mod.DiagnosticsCache,
 
     fn init(alloc_: std.mem.Allocator, default_path_: []const u8, content_cache_capacity_: u32) ProjectCache {
-        const limits = resource_profile.cacheLimits(resource_profile.current());
         return .{
             .mu = .{},
             .alloc = alloc_,
             .entries = @splat(null),
-            .max_cached = limits.project_entries,
             .default_path = default_path_,
-            .default_snapshot_cache = SnapshotCache.init(),
+            .default_snapshot_cache = .{},
             .default_deps_cache = .{},
             .content_cache_capacity = content_cache_capacity_,
             .linter = .{},
@@ -354,7 +346,7 @@ const ProjectCache = struct {
         self.diag.deinit();
         self.default_snapshot_cache.deinit(self.alloc);
         self.default_deps_cache.deinit(self.alloc);
-        for (self.entries[0..self.max_cached]) |*slot| {
+        for (&self.entries) |*slot| {
             if (slot.*) |entry| {
                 self.destroyEntry(entry);
                 slot.* = null;
@@ -375,7 +367,7 @@ const ProjectCache = struct {
         self.mu.lock();
         defer self.mu.unlock();
 
-        for (self.entries[0..self.max_cached]) |*slot| {
+        for (&self.entries) |*slot| {
             if (slot.*) |entry| {
                 if (std.mem.eql(u8, entry.path, path)) {
                     self.destroyEntry(entry);
@@ -401,7 +393,7 @@ const ProjectCache = struct {
         defer self.mu.unlock();
 
         const now = cio.milliTimestamp();
-        for (self.entries[0..self.max_cached]) |*slot| {
+        for (&self.entries) |*slot| {
             if (slot.*) |entry| {
                 if (std.mem.eql(u8, entry.path, p)) {
                     entry.last_used = now;
@@ -419,7 +411,7 @@ const ProjectCache = struct {
         new_entry.explorer = Explorer.init(self.alloc, self.content_cache_capacity);
         new_entry.explorer.setRoot(io, p);
         new_entry.store = Store.init(self.alloc);
-        new_entry.snapshot_cache = SnapshotCache.init();
+        new_entry.snapshot_cache = .{};
         new_entry.deps_cache = .{};
         new_entry.last_used = now;
 
@@ -458,7 +450,7 @@ const ProjectCache = struct {
         // Release raw file contents retained by the snapshot load — outlines,
         // trigram index, and word index are sufficient for all query tools.
         const fc = new_entry.explorer.outlines.count();
-        if (fc > 1000 or resource_profile.lowMemoryEnabled()) {
+        if (fc > 1000) {
             new_entry.explorer.releaseContents();
             new_entry.explorer.releaseSecondaryIndexes();
         }
@@ -466,7 +458,7 @@ const ProjectCache = struct {
         // Find free slot or evict LRU
         var target_slot: usize = 0;
         var found_free = false;
-        for (self.entries[0..self.max_cached], 0..) |slot, i| {
+        for (self.entries, 0..) |slot, i| {
             if (slot == null) {
                 target_slot = i;
                 found_free = true;
@@ -476,7 +468,7 @@ const ProjectCache = struct {
         if (!found_free) {
             var oldest_i: usize = 0;
             var oldest_t: i64 = self.entries[0].?.last_used;
-            for (self.entries[1..self.max_cached], 0..) |slot_opt, j| {
+            for (self.entries[1..], 0..) |slot_opt, j| {
                 if (slot_opt.?.last_used < oldest_t) {
                     oldest_t = slot_opt.?.last_used;
                     oldest_i = j + 1;
@@ -4232,7 +4224,7 @@ fn handleIndex(
         default_explorer.setRoot(io, abs_path);
         if (snapshot_mod.loadSnapshot(io, snapshot_path, default_explorer, default_store, alloc)) {
             loadProjectTrigramFromDiskIfPresent(io, default_explorer, abs_path, alloc);
-            if (default_explorer.outlines.count() > 1000 or resource_profile.lowMemoryEnabled()) {
+            if (default_explorer.outlines.count() > 1000) {
                 default_explorer.releaseContents();
                 default_explorer.releaseSecondaryIndexes();
             }

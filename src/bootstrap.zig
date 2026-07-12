@@ -4,7 +4,6 @@
 //! mainImpl; shared by main.zig, commands.zig, and background.zig.
 const std = @import("std");
 const cio = @import("cio.zig");
-const resource_profile = @import("resource_profile.zig");
 const Config = @import("config.zig").Config;
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
@@ -222,7 +221,7 @@ pub fn spawnWarmup(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer
     if (cio.posixGetenv("CODEDB_NO_WARMUP") != null) return;
     // Low-memory mode trades latency for RSS everywhere else (see
     // compactMcpReadyMemory); don't pre-pay index builds + caches there.
-    if (resource_profile.lowMemoryEnabled()) return;
+    if (cio.posixGetenv("CODEDB_LOW_MEMORY") != null) return;
     const ctx = allocator.create(WarmupCtx) catch return;
     const data_dir_copy = allocator.dupe(u8, data_dir) catch {
         allocator.destroy(ctx);
@@ -281,7 +280,7 @@ pub fn compactMcpReadyMemory(
     const file_count = explorer.outlines.count();
     explorer.mu.unlockShared();
 
-    if (file_count <= 1000 and !resource_profile.lowMemoryEnabled()) return;
+    if (file_count <= 1000 and cio.posixGetenv("CODEDB_LOW_MEMORY") == null) return;
 
     const can_release_contents =
         explorer.wordIndexIsComplete() or
@@ -533,8 +532,8 @@ pub fn coldLoadOrScan(
                 explorer.markWordIndexAsComplete();
                 if (index_profile) profile_word_persist_ns = cio.nanoTimestamp() - t_word_persist;
             }
-            const cpu_count: usize = @intCast(std.Thread.getCpuCount() catch 1);
-            const tri_workers = resource_profile.workerCount(cpu_count, 8);
+            const cpu_count = std.Thread.getCpuCount() catch 1;
+            const tri_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
             const t_tri_build: i128 = if (index_profile) cio.nanoTimestamp() else 0;
             const tmp_tri = watcher.buildTrigramsFromCache(&explorer.contents, allocator, std.heap.c_allocator, tri_workers) catch |err| blk: {
                 std.log.warn("could not build trigram index: {}", .{err});
@@ -574,8 +573,8 @@ pub fn coldLoadOrScan(
         if (freq_table_heap.* == null) {
             if (explorer.contents.count() > 0) {
                 const t_freq: i128 = if (index_profile) cio.nanoTimestamp() else 0;
-                const cpu_count: usize = @intCast(std.Thread.getCpuCount() catch 1);
-                const freq_workers = resource_profile.workerCount(cpu_count, 8);
+                const cpu_count = std.Thread.getCpuCount() catch 1;
+                const freq_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
                 const ft = index_mod.buildFrequencyTableFromMapParallel(&explorer.contents, allocator, freq_workers) catch
                     index_mod.buildFrequencyTableFromMap(&explorer.contents);
                 index_mod.writeFrequencyTable(io, &ft, data_dir) catch |err| {

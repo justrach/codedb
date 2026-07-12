@@ -3,7 +3,6 @@ const builtin = @import("builtin");
 const ContentCache = @import("hot_cache.zig").ContentCache;
 const nanoregex = @import("nanoregex");
 const cio = @import("cio.zig");
-const resource_profile = @import("resource_profile.zig");
 const Store = @import("store.zig").Store;
 const idx = @import("index.zig");
 const WordIndex = idx.WordIndex;
@@ -889,10 +888,11 @@ const LineOffsetCache = struct {
     map: std.StringHashMap(Entry),
     mu: cio.Mutex = .{},
     total_bytes: usize = 0,
-    max_bytes: usize,
 
-    fn init(allocator: std.mem.Allocator, max_bytes: usize) LineOffsetCache {
-        return .{ .map = std.StringHashMap(Entry).init(allocator), .max_bytes = max_bytes };
+    const MAX_BYTES: usize = 16 * 1024 * 1024;
+
+    fn init(allocator: std.mem.Allocator) LineOffsetCache {
+        return .{ .map = std.StringHashMap(Entry).init(allocator) };
     }
 
     fn deinit(self: *LineOffsetCache) void {
@@ -998,7 +998,7 @@ const LineOffsetCache = struct {
             n += 1;
         }
 
-        if (self.total_bytes > self.max_bytes) self.clearLocked();
+        if (self.total_bytes > MAX_BYTES) self.clearLocked();
         return n;
     }
 
@@ -1031,7 +1031,7 @@ const LineOffsetCache = struct {
             if (compact and isCommentOrBlank(line, language)) continue;
             try writer.print("{s}{d:>5} | {s}\n", .{ line_prefix, line_num, line });
         }
-        if (self.total_bytes > self.max_bytes) self.clearLocked();
+        if (self.total_bytes > MAX_BYTES) self.clearLocked();
         return true;
     }
 };
@@ -1076,11 +1076,14 @@ const SearchResultCache = struct {
     /// Test-visible counters; production code does not read them.
     hits: u64 = 0,
     misses: u64 = 0,
-    max_entries: usize,
-    max_bytes: usize,
 
-    fn init(allocator: std.mem.Allocator, max_entries: usize, max_bytes: usize) SearchResultCache {
-        return .{ .allocator = allocator, .max_entries = max_entries, .max_bytes = max_bytes };
+    const MAX_ENTRIES: usize = 64;
+    const MAX_BYTES: usize = 4 * 1024 * 1024;
+    /// One entry may not claim more than a quarter of the byte budget.
+    const MAX_ENTRY_BYTES: usize = MAX_BYTES / 4;
+
+    fn init(allocator: std.mem.Allocator) SearchResultCache {
+        return .{ .allocator = allocator };
     }
 
     fn freeEntry(self: *SearchResultCache, e: *Entry) void {
@@ -1149,7 +1152,7 @@ const SearchResultCache = struct {
     fn put(self: *SearchResultCache, query: []const u8, max_results: usize, gen: u64, env_fp: u64, results: []const SearchResult, breakdown: SearchBreakdown) void {
         var bytes: usize = query.len + @sizeOf(Entry);
         for (results) |r| bytes += r.path.len + r.line_text.len + @sizeOf(CachedResult);
-        if (bytes > self.max_bytes / 4) return;
+        if (bytes > MAX_ENTRY_BYTES) return;
 
         const owned = self.allocator.alloc(CachedResult, results.len) catch return;
         var n: usize = 0;
@@ -1187,8 +1190,8 @@ const SearchResultCache = struct {
             i += 1;
         }
         // Evict least-recently-used entries until the new one fits.
-        while (self.entries.items.len >= self.max_entries or
-            (self.entries.items.len > 0 and self.total_bytes + bytes > self.max_bytes))
+        while (self.entries.items.len >= MAX_ENTRIES or
+            (self.entries.items.len > 0 and self.total_bytes + bytes > MAX_BYTES))
         {
             var lru: usize = 0;
             for (self.entries.items, 0..) |e, j| {
@@ -1258,11 +1261,13 @@ const PlainRenderCache = struct {
     /// Test-visible counters; production code does not read them.
     hits: u64 = 0,
     misses: u64 = 0,
-    max_entries: usize,
-    max_bytes: usize,
 
-    fn init(allocator: std.mem.Allocator, max_entries: usize, max_bytes: usize) PlainRenderCache {
-        return .{ .allocator = allocator, .max_entries = max_entries, .max_bytes = max_bytes };
+    const MAX_ENTRIES: usize = 64;
+    const MAX_BYTES: usize = 4 * 1024 * 1024;
+    const MAX_ENTRY_BYTES: usize = MAX_BYTES / 4;
+
+    fn init(allocator: std.mem.Allocator) PlainRenderCache {
+        return .{ .allocator = allocator };
     }
 
     fn freeEntry(self: *PlainRenderCache, e: *Entry) void {
@@ -1304,7 +1309,7 @@ const PlainRenderCache = struct {
 
     /// Copies `bytes` into cache-owned memory. Any OOM just skips caching.
     fn put(self: *PlainRenderCache, query: []const u8, max_results: usize, paths_only: bool, gen: u64, env_fp: u64, bytes: []const u8, breakdown: SearchBreakdown) void {
-        if (bytes.len > self.max_bytes / 4) return;
+        if (bytes.len > MAX_ENTRY_BYTES) return;
         const bytes_copy = self.allocator.dupe(u8, bytes) catch return;
         const query_copy = self.allocator.dupe(u8, query) catch {
             self.allocator.free(bytes_copy);
@@ -1324,8 +1329,8 @@ const PlainRenderCache = struct {
             }
             i += 1;
         }
-        while (self.entries.items.len >= self.max_entries or
-            (self.entries.items.len > 0 and self.total_bytes + bytes_copy.len > self.max_bytes))
+        while (self.entries.items.len >= MAX_ENTRIES or
+            (self.entries.items.len > 0 and self.total_bytes + bytes_copy.len > MAX_BYTES))
         {
             var lru: usize = 0;
             for (self.entries.items, 0..) |e, j| {
@@ -1374,10 +1379,11 @@ const FuzzyFileCache = struct {
     entries: std.ArrayList(Entry) = .empty,
     mu: cio.Mutex = .{},
     tick: u64 = 0,
-    max_entries: usize,
 
-    fn init(allocator: std.mem.Allocator, max_entries: usize) FuzzyFileCache {
-        return .{ .allocator = allocator, .max_entries = max_entries };
+    const MAX_ENTRIES: usize = 32;
+
+    fn init(allocator: std.mem.Allocator) FuzzyFileCache {
+        return .{ .allocator = allocator };
     }
 
     fn freeEntry(self: *FuzzyFileCache, entry: *Entry) void {
@@ -1421,7 +1427,7 @@ const FuzzyFileCache = struct {
             }
             i += 1;
         }
-        if (self.entries.items.len >= self.max_entries) {
+        if (self.entries.items.len >= MAX_ENTRIES) {
             var lru: usize = 0;
             for (self.entries.items, 0..) |entry, index| {
                 if (entry.last_used < self.entries.items[lru].last_used) lru = index;
@@ -1456,10 +1462,9 @@ const TreeRenderCache = struct {
     allocator: std.mem.Allocator,
     entries: [2]?Entry = .{ null, null },
     mu: cio.Mutex = .{},
-    max_entry_bytes: usize,
 
-    fn init(allocator: std.mem.Allocator, max_entry_bytes: usize) TreeRenderCache {
-        return .{ .allocator = allocator, .max_entry_bytes = max_entry_bytes };
+    fn init(allocator: std.mem.Allocator) TreeRenderCache {
+        return .{ .allocator = allocator };
     }
 
     fn deinit(self: *TreeRenderCache) void {
@@ -1480,7 +1485,7 @@ const TreeRenderCache = struct {
     }
 
     fn put(self: *TreeRenderCache, gen: SearchGeneration, use_color: bool, bytes: []const u8) void {
-        if (bytes.len > self.max_entry_bytes) return;
+        if (bytes.len > 16 * 1024 * 1024) return;
         const copy = self.allocator.dupe(u8, bytes) catch return;
         self.mu.lock();
         defer self.mu.unlock();
@@ -1506,17 +1511,13 @@ const OutlineRenderCache = struct {
     mu: cio.Mutex = .{},
     tick: u64 = 0,
     total_bytes: usize = 0,
-    max_entries: usize,
-    max_bytes: usize,
-    max_entry_bytes: usize,
 
-    fn init(allocator: std.mem.Allocator, max_entries: usize, max_bytes: usize, max_entry_bytes: usize) OutlineRenderCache {
-        return .{
-            .allocator = allocator,
-            .max_entries = max_entries,
-            .max_bytes = max_bytes,
-            .max_entry_bytes = max_entry_bytes,
-        };
+    const MAX_ENTRIES: usize = 32;
+    const MAX_BYTES: usize = 16 * 1024 * 1024;
+    const MAX_ENTRY_BYTES: usize = 4 * 1024 * 1024;
+
+    fn init(allocator: std.mem.Allocator) OutlineRenderCache {
+        return .{ .allocator = allocator };
     }
 
     fn freeEntry(self: *OutlineRenderCache, entry: *Entry) void {
@@ -1543,7 +1544,7 @@ const OutlineRenderCache = struct {
     }
 
     fn put(self: *OutlineRenderCache, path: []const u8, compact: bool, gen: SearchGeneration, bytes: []const u8) void {
-        if (bytes.len > self.max_entry_bytes) return;
+        if (bytes.len > MAX_ENTRY_BYTES) return;
         const path_copy = self.allocator.dupe(u8, path) catch return;
         const bytes_copy = self.allocator.dupe(u8, bytes) catch {
             self.allocator.free(path_copy);
@@ -1563,8 +1564,8 @@ const OutlineRenderCache = struct {
             }
             i += 1;
         }
-        while (self.entries.items.len >= self.max_entries or
-            (self.entries.items.len > 0 and self.total_bytes + bytes_copy.len > self.max_bytes))
+        while (self.entries.items.len >= MAX_ENTRIES or
+            (self.entries.items.len > 0 and self.total_bytes + bytes_copy.len > MAX_BYTES))
         {
             var lru: usize = 0;
             for (self.entries.items, 0..) |entry, index| {
@@ -1719,20 +1720,19 @@ pub const Explorer = struct {
     }
 
     fn initFallible(allocator: std.mem.Allocator, content_cache_capacity: u32) !Explorer {
-        const limits = resource_profile.cacheLimits(resource_profile.current());
         return .{
             .outlines = std.StringHashMap(FileOutline).init(allocator),
             .dep_graph = DependencyGraph.init(allocator),
             .contents = try ContentCache.initAlloc(allocator, content_cache_capacity),
             .content_hashes = ContentHashCache.init(allocator),
-            .line_offsets = LineOffsetCache.init(allocator, limits.line_offset_bytes),
-            .search_cache = SearchResultCache.init(allocator, limits.search_entries, limits.search_bytes),
-            .ranked_cache = SearchResultCache.init(allocator, limits.search_entries, limits.search_bytes),
-            .plain_render_cache = PlainRenderCache.init(allocator, limits.plain_render_entries, limits.plain_render_bytes),
-            .tree_render_cache = TreeRenderCache.init(allocator, limits.tree_entry_bytes),
-            .outline_render_cache = OutlineRenderCache.init(allocator, limits.outline_entries, limits.outline_bytes, limits.outline_entry_bytes),
-            .fuzzy_file_cache = FuzzyFileCache.init(allocator, limits.fuzzy_entries),
-            .word_render_cache = OutlineRenderCache.init(allocator, limits.outline_entries, limits.outline_bytes, limits.outline_entry_bytes),
+            .line_offsets = LineOffsetCache.init(allocator),
+            .search_cache = SearchResultCache.init(allocator),
+            .ranked_cache = SearchResultCache.init(allocator),
+            .plain_render_cache = PlainRenderCache.init(allocator),
+            .tree_render_cache = TreeRenderCache.init(allocator),
+            .outline_render_cache = OutlineRenderCache.init(allocator),
+            .fuzzy_file_cache = FuzzyFileCache.init(allocator),
+            .word_render_cache = OutlineRenderCache.init(allocator),
             .symbol_index = std.StringHashMap(std.ArrayList(SymbolLocation)).init(allocator),
             .symbol_index_complete = true,
             .word_index = WordIndex.init(allocator),
