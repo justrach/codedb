@@ -1328,7 +1328,7 @@ pub const TrigramIndex = struct {
                 posting.loc_mask = mask.loc_mask;
             }
 
-            try tri_list.append(self.allocator, tri);
+            tri_list.appendAssumeCapacity(tri);
         }
         const stable_path = self.id_to_path.items[doc_id];
         try self.file_trigrams.put(stable_path, tri_list);
@@ -1384,7 +1384,7 @@ pub const TrigramIndex = struct {
                 posting.next_mask = mask.next_mask;
                 posting.loc_mask = mask.loc_mask;
             }
-            try tri_list.append(self.allocator, tri);
+            tri_list.appendAssumeCapacity(tri);
         }
         try self.file_trigrams.put(path, tri_list);
     }
@@ -1435,7 +1435,7 @@ pub const TrigramIndex = struct {
             const posting = try idx_gop.value_ptr.getOrAddPosting(self.allocator, doc_id);
             posting.next_mask = mask.next_mask;
             posting.loc_mask = mask.loc_mask;
-            try tri_list.append(self.allocator, tri);
+            tri_list.appendAssumeCapacity(tri);
         }
         try self.file_trigrams.put(path, tri_list);
     }
