@@ -1,6 +1,121 @@
 # Changelog
 
 
+## 0.2.5830 - 2026-07-12
+
+The first performance batch for this release accelerates steady-state MCP and
+core read-only tools while preserving response and retrieval parity. Measured
+MCP round trips improve from **2.16x to 99.11x** across tree, outline, symbol,
+read, find, word, search, and bundle workloads. Large synthetic handler cases
+improve **12.8x-109.7x** for outlines, deep reads, trees, fuzzy file lookup, and
+word output; exact symbols improve **22.4x** through direct hash-index lookup.
+
+The implementation adds bounded, mutation-generation-validated render/score
+caches, cached content hashes and line offsets, offset-based context body
+extraction, a compact JSON-RPC framing fast path, and rolling generic trigram
+construction. Ranking, parser, path-security, telemetry, and MCP schema behavior
+are unchanged. Baseline/candidate MCP responses were byte-identical after ID
+normalization, and the full suite, WASM build, and MCP E2E (20/20) pass.
+
+Detailed methodology, per-tool tables, memory bounds, limitations, and follow-up
+targets are in [`docs/performance-0.2.5830.md`](docs/performance-0.2.5830.md).
+The release gate ran 20 counterbalanced AB/BA pairs against the immutable
+0.2.5829 source plus a pinned harness-only parity backport. Every parity-enabled
+tool matched across every measured iteration after normalizing only response
+duration, and no benchmark crossed the 10% plus 50us regression threshold. The
+runner enforces a shared corpus fingerprint, full JSON-RPC response hashes,
+commit/tree/compiler/corpus/order provenance, paired medians, and bootstrap
+intervals; single-run minima are diagnostic only.
+
+
+## 0.2.5829 - 2026-07-11
+
+The release toolchain moves to pinned Zig `0.17.0-dev.813+2153f8143` without
+changing codedb's retrieval semantics, while a focused performance pass makes
+user-facing search faster than the previous Zig 0.16.0 build. The migration,
+performance work, and retrieval-parity requirements are tracked in #673.
+
+### Zig 0.17 migration
+
+- **Compiler and release jobs are pinned to the exact tested development
+  snapshot.** `build.zig.zon` and binary-release CI select and assert
+  `0.17.0-dev.813+2153f8143`; transition benchmark CI selects each revision's
+  verified 0.16/0.17 compiler instead of silently skipping the base comparison.
+  Release downloads are verified before use. The build graph uses Zig 0.17
+  passthrough/lazy-path APIs, and removed
+  language/library APIs were migrated without changing command behavior.
+- **Published targets remain covered.** Native, Windows, and freestanding/WASM
+  paths use target-appropriate atomics and platform guards. Normal POSIX and
+  Windows argv are borrowed for process lifetime rather than copied again by
+  the command parser.
+- **Dependencies are reproducible.** The Zig-0.17-compatible `nanoregex` source
+  is vendored with its license; the small protocol-neutral JSON helpers formerly
+  supplied by `mcp-zig` now live in `src/mcp_json.zig`, avoiding an otherwise
+  incompatible server-framework dependency.
+- **Migration details are documented.** `docs/zig-0.17-migration.md` records the
+  removed APIs, dependency strategy, target-specific fixes, verification flow,
+  and the exact codedb file/subsystem inventory.
+
+### Faster than Zig 0.16, with unchanged retrieval
+
+Same-machine A/B used native macOS arm64 `ReleaseFast` binaries, clean
+`428d8df` on Zig 0.16.0 as the baseline, and an immutable 631-file
+`git archive` corpus. Direct tests ran 20 alternating A/B pairs with 200
+iterations per query. CLI tests used 5 warmups and 40 measured Hyperfine runs,
+isolated homes/caches, and daemon/telemetry disabled.
+
+- **Cold single-token CLI search: 127.0ms → 105.7ms** — **1.20× faster**
+  (−16.8%). Warm snapshot-backed CLI search: 117.2ms → 102.8ms — **1.14×
+  faster** (−12.3%). Hyperfine reported outliers in both sets; the Zig 0.17
+  build also had materially lower variance.
+- **Exact-word lookup geometric mean: 3.217× faster.** Representative medians:
+  `config` 6607.5ns → 2452.5ns, `error` 12792.5ns → 3227.5ns, `request`
+  6245ns → 2345ns, and `response` 10860ns → 2885ns. Pair-sorted postings now
+  compact adjacent duplicate `(doc_id, line)` hits linearly; malformed, legacy,
+  or fragmented postings retain full hash deduplication and first-occurrence
+  order through a detected fallback.
+- **Tier-0 content retrieval avoids a per-query document map** when posting doc
+  IDs are nondecreasing. Any ordering break selects the previous direct-slot or
+  hash-map path, preserving defensive behavior for incrementally fragmented
+  indexes. Ranking weights, tier order, result caps, and tie-breakers are
+  unchanged.
+- **Cold trigram construction reuses one directory handle per worker** and rolls
+  both raw and normalized byte windows, reducing overlapping loads and ASCII
+  normalization from roughly four per byte to one. Whitespace skipping,
+  `loc_mask`, `next_mask`, case folding, and final-trigram boundaries are
+  unchanged.
+- **Release startup avoids unnecessary work.** Optimized builds execute directly
+  on the process stack instead of creating and immediately joining a worker
+  thread; Debug retains its 64MB-stack trampoline. Borrowed argv parsing removes
+  per-argument allocation/copy/free while retaining Windows bootstrap lifetime.
+  Completed word-index searches also retain their existing shared lock instead
+  of unlocking and immediately reacquiring it.
+
+No scoring, ranking, tokenization, parser, filtering, or result-rendering
+formula changed in this pass. Direct benchmark hit counts are identical, and
+parity tests cover sorted and malformed word postings, grouped and fragmented
+Tier-0 aggregation, sequential versus parallel indexing, persisted/mmap index
+round-trips, and lazy word-index rebuilds.
+
+The overall direct-query geometric mean is **1.405× faster**; search-only and
+symbol groups are effectively flat to slightly faster (1.007× and 1.013×).
+The remaining known gap is the generic full parse/serial-commit initial scan:
+166ms → 169ms median (**1.8% slower**). Production cold single-token search uses
+the optimized trigram scan path above. Closing the generic gap requires a
+larger parser/commit ownership or pipeline redesign and is intentionally not
+mixed into this behavior-preserving release.
+
+### Verification
+
+- uncached full Zig suite: 23/23 build steps; 892/896 tests passed, 4 platform skips
+- focused suites include 181/181 index, 132/132 explore, 113/113 search,
+  and 152/156 MCP tests (4 platform skips)
+- MCP E2E: 20/20 passed across roots handshake, explicit-root, no-roots, and
+  inline-argument scenarios
+- immutable-corpus direct-query hit counts matched the Zig 0.16.0 baseline
+- `git diff --check` and modified-file lint passed
+
+
 ## 0.2.5828 - 2026-07-05
 
 Windows warm-daemon parity, a 2× faster `codedb_context`, OSTree (Fedora

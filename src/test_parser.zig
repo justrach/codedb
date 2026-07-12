@@ -9,7 +9,6 @@ const SymbolKind = explore.SymbolKind;
 const DependencyGraph = explore.DependencyGraph;
 const Store = @import("store.zig").Store;
 
-
 fn expectOutlineSymbol(outline: *const explore.FileOutline, name: []const u8, kind: SymbolKind) !void {
     for (outline.symbols.items) |sym| {
         if (std.mem.eql(u8, sym.name, name) and sym.kind == kind) return;
@@ -17,14 +16,12 @@ fn expectOutlineSymbol(outline: *const explore.FileOutline, name: []const u8, ki
     return error.TestUnexpectedResult;
 }
 
-
 fn expectOutlineImport(outline: *const explore.FileOutline, import_path: []const u8) !void {
     for (outline.imports.items) |imp| {
         if (std.mem.eql(u8, imp, import_path)) return;
     }
     return error.TestUnexpectedResult;
 }
-
 
 test "issue-1: multi-line TS/JS import paths captured for dep graph" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -240,7 +237,6 @@ test "issue-301: Dart / Flutter parser" {
     try testing.expect(std.mem.indexOf(u8, tree, "home_screen.dart  dart") != null);
 }
 
-
 test "issue-php-1: PHP class definition herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -267,7 +263,6 @@ test "issue-php-1: PHP class definition herkend" {
     }
     try testing.expect(found);
 }
-
 
 test "issue-php-2: PHP methode binnen class herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -298,7 +293,6 @@ test "issue-php-2: PHP methode binnen class herkend" {
     try testing.expectEqual(@as(usize, 2), method_count);
 }
 
-
 test "issue-php-3: PHP top-level functie herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -325,7 +319,6 @@ test "issue-php-3: PHP top-level functie herkend" {
     try testing.expectEqual(@as(usize, 2), fn_count);
 }
 
-
 test "issue-php-4: PHP interface herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -351,7 +344,6 @@ test "issue-php-4: PHP interface herkend" {
     }
     try testing.expect(found);
 }
-
 
 test "issue-php-5: PHP trait herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -381,7 +373,6 @@ test "issue-php-5: PHP trait herkend" {
     try testing.expect(found);
 }
 
-
 test "issue-php-6: PHP use-import omgezet naar pad in dep_graph" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -400,7 +391,6 @@ test "issue-php-6: PHP use-import omgezet naar pad in dep_graph" {
     try testing.expectEqualStrings("app/Models/Candidate.php", outline.imports.items[0]);
     try testing.expectEqualStrings("illuminate/Support/Facades/DB.php", outline.imports.items[1]);
 }
-
 
 test "issue-php-7: PHP commentaarregels worden overgeslagen" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -424,7 +414,6 @@ test "issue-php-7: PHP commentaarregels worden overgeslagen" {
     try testing.expectEqual(@as(usize, 1), outline.symbols.items.len);
     try testing.expect(outline.symbols.items[0].kind == .class_def);
 }
-
 
 test "issue-php-8: PHP function after class is top-level, not method" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -458,7 +447,6 @@ test "issue-php-8: PHP function after class is top-level, not method" {
     try testing.expectEqual(@as(usize, 1), function_count);
 }
 
-
 test "issue-php-9: PHP 8.1 enum herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -487,7 +475,6 @@ test "issue-php-9: PHP 8.1 enum herkend" {
     try testing.expect(found_method);
 }
 
-
 test "issue-php-10: PHP grouped use-statement parsed into individual imports" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -508,7 +495,6 @@ test "issue-php-10: PHP grouped use-statement parsed into individual imports" {
     try testing.expectEqualStrings("app/Models/Candidate.php", outline.imports.items[1]);
     try testing.expectEqualStrings("app/Models/Role.php", outline.imports.items[2]);
 }
-
 
 test "issue-php-11: PHP readonly class herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -535,7 +521,6 @@ test "issue-php-11: PHP readonly class herkend" {
     try testing.expect(found);
 }
 
-
 test "issue-php-12: PHP class and public constants herkend" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -560,7 +545,6 @@ test "issue-php-12: PHP class and public constants herkend" {
     }
     try testing.expectEqual(@as(usize, 3), constant_count);
 }
-
 
 test "issue-php-13: PHP nested braces in methods do not break class tracking" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -603,7 +587,6 @@ test "issue-php-13: PHP nested braces in methods do not break class tracking" {
     try testing.expectEqual(@as(usize, 1), function_count);
 }
 
-
 test "issue-php-14: PHP multi-line block comments do not produce symbols" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -640,7 +623,6 @@ test "issue-php-14: PHP multi-line block comments do not produce symbols" {
     try testing.expectEqual(@as(usize, 1), function_count);
 }
 
-
 test "issue-php-15: PHP use-as alias stripped from import path" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -657,7 +639,6 @@ test "issue-php-15: PHP use-as alias stripped from import path" {
     try testing.expectEqual(@as(usize, 1), outline.imports.items.len);
     try testing.expectEqualStrings("app/Models/User.php", outline.imports.items[0]);
 }
-
 
 test "issue-php-16: PHP escaped quotes do not end string mode" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -696,7 +677,6 @@ test "issue-php-16: PHP escaped quotes do not end string mode" {
     try testing.expectEqual(@as(usize, 1), function_count);
 }
 
-
 test "issue-php-17: PHP code after block comment terminator is parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -722,7 +702,6 @@ test "issue-php-17: PHP code after block comment terminator is parsed" {
     try testing.expectEqual(@as(usize, 1), function_count);
 }
 
-
 test "issue-php-18: PHP use-as alias case-insensitive" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -742,7 +721,6 @@ test "issue-php-18: PHP use-as alias case-insensitive" {
     try testing.expectEqualStrings("app/Services/Cache.php", outline.imports.items[1]);
     try testing.expectEqualStrings("app/Services/Logger.php", outline.imports.items[2]);
 }
-
 
 test "issue-111: Python triple-quote docstrings not parsed as code" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -768,7 +746,6 @@ test "issue-111: Python triple-quote docstrings not parsed as code" {
     try testing.expect(func_count == 1);
 }
 
-
 test "issue-112: Python import-as alias stripped from dep path" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -784,7 +761,6 @@ test "issue-112: Python import-as alias stripped from dep path" {
     }
     try testing.expect(deps.len == 1);
 }
-
 
 test "issue-113: TypeScript block comments not parsed as code" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -807,7 +783,6 @@ test "issue-113: TypeScript block comments not parsed as code" {
     try testing.expect(func_count == 1);
 }
 
-
 test "issue-114: TypeScript import-as alias does not affect dep path" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -822,7 +797,6 @@ test "issue-114: TypeScript import-as alias does not affect dep path" {
     try testing.expect(outline.imports.items.len == 1);
     try testing.expectEqualStrings("./mod", outline.imports.items[0]);
 }
-
 
 test "issue-151: Go func and type definitions" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -867,7 +841,6 @@ test "issue-151: Go func and type definitions" {
     try testing.expect(interface_count == 1); // Handler
 }
 
-
 test "issue-151: Ruby class, module, and def" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -903,7 +876,6 @@ test "issue-151: Ruby class, module, and def" {
     try testing.expect(outline.imports.items.len == 2); // json + ./helpers
 }
 
-
 test "issue-151: Ruby =begin/=end comments skipped" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -929,7 +901,6 @@ test "issue-151: Ruby =begin/=end comments skipped" {
     try testing.expect(func_count == 1); // only real_method
 }
 
-
 test "issue-151: Go block comments skipped" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -952,7 +923,6 @@ test "issue-151: Go block comments skipped" {
     }
     try testing.expect(func_count == 1); // only realFunc
 }
-
 
 test "issue-301: Dart block comments skipped" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -980,7 +950,6 @@ test "issue-301: Dart block comments skipped" {
     try testing.expectEqual(@as(usize, 0), func_count);
 }
 
-
 test "issue-179: block comment does not produce phantom symbols" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -1002,7 +971,6 @@ test "issue-179: block comment does not produce phantom symbols" {
     try testing.expect(!found_fake);
 }
 
-
 test "issue-179: code after single-line /* */ comment is parsed" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -1020,7 +988,6 @@ test "issue-179: code after single-line /* */ comment is parsed" {
     }
     try testing.expect(found);
 }
-
 
 test "issue-179: Python docstring with text does not leak symbols" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -1069,7 +1036,6 @@ test "issue-518: Python class is labeled class_def, not struct_def" {
     try expectOutlineSymbol(&outline, "Widget", .class_def);
 }
 
-
 test "issue-108: HCL resource block parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1085,7 +1051,6 @@ test "issue-108: HCL resource block parsed" {
     try testing.expect(results.len == 1);
     try testing.expectEqual(SymbolKind.struct_def, results[0].symbol.kind);
 }
-
 
 test "issue-108: HCL variable and output parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1110,7 +1075,6 @@ test "issue-108: HCL variable and output parsed" {
     try testing.expectEqual(SymbolKind.constant, outs[0].symbol.kind);
 }
 
-
 test "issue-108: HCL module and provider parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1132,7 +1096,6 @@ test "issue-108: HCL module and provider parsed" {
     try testing.expect(mods.len == 1);
 }
 
-
 test "issue-108: HCL comment lines skipped" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1147,7 +1110,6 @@ test "issue-108: HCL comment lines skipped" {
     defer alloc.free(results);
     try testing.expect(results.len == 1);
 }
-
 
 test "issue-215: R function assignment parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1165,7 +1127,6 @@ test "issue-215: R function assignment parsed" {
     try testing.expectEqual(SymbolKind.function, results[0].symbol.kind);
 }
 
-
 test "issue-215: R library import parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1178,7 +1139,6 @@ test "issue-215: R library import parsed" {
     const outline = try explorer.getOutline("script.r", alloc) orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(usize, 2), outline.imports.items.len);
 }
-
 
 test "issue-215: R setClass parsed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1197,7 +1157,6 @@ test "issue-215: R setClass parsed" {
     defer alloc.free(a2);
     try testing.expect(a2.len == 1);
 }
-
 
 test "issue-319: C parser extracts includes macros types and functions" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1276,7 +1235,6 @@ test "issue-319: C parser extracts includes macros types and functions" {
     try testing.expectEqual(SymbolKind.function, alloc_item[0].symbol.kind);
 }
 
-
 test "issue-319: C parser avoids comments strings prototypes and macro calls" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1322,7 +1280,6 @@ test "issue-319: C parser avoids comments strings prototypes and macro calls" {
     defer alloc.free(handler);
     try testing.expectEqual(@as(usize, 0), handler.len);
 }
-
 
 test "issue-321: common detected extensions produce outlines" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1639,7 +1596,6 @@ test "issue-321: common detected extensions produce outlines" {
     try testing.expectEqual(@as(usize, 1), r0.len);
 }
 
-
 test "issue-179: Python inline docstring does not leak symbols" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1660,7 +1616,6 @@ test "issue-179: Python inline docstring does not leak symbols" {
     defer alloc.free(fake);
     try testing.expectEqual(@as(usize, 0), fake.len);
 }
-
 
 test "issue-179: Python multi-line docstring with def inside" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1686,7 +1641,6 @@ test "issue-179: Python multi-line docstring with def inside" {
     defer alloc.free(inner);
     try testing.expectEqual(@as(usize, 0), inner.len);
 }
-
 
 test "issue-331: C parser does not index indented call sites as functions" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1726,7 +1680,6 @@ test "issue-331: C parser does not index indented call sites as functions" {
     try testing.expect(found_real);
 }
 
-
 test "issue-331: C parser finds nginx-style split-line definitions" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1759,7 +1712,6 @@ test "issue-331: C parser finds nginx-style split-line definitions" {
     try testing.expect(found_init);
     try testing.expect(found_create);
 }
-
 
 test "issue-392: Swift parser" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1872,7 +1824,6 @@ test "issue-532: ReScript parser" {
     try expectOutlineImport(&outline, "Belt");
 }
 
-
 // ─── audit (2026-06-09): latent-issue sweep — parser/deps fixes ───
 
 // src/explore.zig parseDelimitedImport — Kotlin/Swift `import X as Y` stored "X as Y" as
@@ -1944,7 +1895,6 @@ test "audit: Python comma import records all modules" {
     try expectOutlineImport(&outline, "alpha.py");
     try expectOutlineImport(&outline, "beta.py");
 }
-
 
 // renderImportedBy (the MCP codedb_deps reverse path) kept the unconditional
 // basename fallback when getImportedBy gained the ambiguity guard — the same

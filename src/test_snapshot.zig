@@ -17,7 +17,6 @@ const git_mod = @import("git.zig");
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const edit_mod = @import("edit.zig");
 
-
 test "issue-625: in-tree snapshot is added to .git/info/exclude" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -110,7 +109,6 @@ test "issue-35: edits immediately update explorer and snapshot output" {
     try testing.expect(std.mem.indexOf(u8, after_snap, "oldName") == null);
 }
 
-
 test "snapshot_json: snapshot builds and is valid JSON" {
     // Explorer uses arena for internal data
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -147,7 +145,6 @@ test "snapshot_json: snapshot builds and is valid JSON" {
     try testing.expect(symbol_index.contains("main"));
     try testing.expect(symbol_index.contains("version"));
 }
-
 
 test "issue-44: snapshot stale after working tree changes cause stale query results" {
     var tmp = testing.tmpDir(.{});
@@ -204,7 +201,6 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
     }
     try testing.expect(results.len == 1);
 }
-
 
 test "issue-46: empty-repo snapshot rejected on load" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -378,7 +374,6 @@ test "snapshot: CONTENT_HASHES records the correct per-file hash (order-aligned)
     }
 }
 
-
 test "issue-220: snapshot fast load restores outlines and lazily rebuilds word index" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -535,7 +530,7 @@ test "snapshot: parallel freshness load re-indexes changed files, restores the r
     try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, arena2.allocator()));
     try testing.expectEqual(total, exp2.outlines.count());
 
-    var is_changed = [_]bool{false} ** total;
+    var is_changed: [total]bool = @splat(false);
     for (changed) |i| is_changed[i] = true;
 
     // Changed files carry fresh content (changed branch); the rest keep snapshot
@@ -558,7 +553,6 @@ test "snapshot: parallel freshness load re-indexes changed files, restores the r
         try testing.expectEqualStrings(want, cached);
     }
 }
-
 
 test "snapshot: writer streams uncached file contents for large repos" {
     var tmp = testing.tmpDir(.{});
@@ -617,7 +611,6 @@ test "snapshot: writer streams uncached file contents for large repos" {
     try testing.expect(loaded.wordIndexIsComplete());
 }
 
-
 test "issue-220: partial word index state rebuilds before search" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -660,7 +653,6 @@ test "issue-220: partial word index state rebuilds before search" {
     try testing.expect(exp2.wordIndexNeedsPersist());
 }
 
-
 test "issue-220: word index persistence tracking skips redundant rewrites" {
     var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer exp.deinit();
@@ -684,7 +676,6 @@ test "issue-220: word index persistence tracking skips redundant rewrites" {
     exp.markWordIndexPersisted(second_gen);
     try testing.expect(!exp.wordIndexNeedsPersist());
 }
-
 
 test "issue-45: snapshot written in non-git directory cannot be loaded" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -716,7 +707,6 @@ test "issue-45: snapshot written in non-git directory cannot be loaded" {
     const snap_head = snapshot_mod.readSnapshotGitHead(io, snap_path);
     try testing.expect(snap_head == null);
 }
-
 
 test "issue-47: concurrent snapshot writes from parallel instances corrupt file" {
     // BUG: Two codedb instances indexing the same repo write codedb.snapshot
@@ -787,7 +777,6 @@ test "issue-47: concurrent snapshot writes from parallel instances corrupt file"
     try testing.expect(loaded);
 }
 
-
 test "issue-42: scan thread is joined before allocator-backed state is freed" {
     var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -818,7 +807,6 @@ test "issue-42: scan thread is joined before allocator-backed state is freed" {
     allocator.free(data_dir);
     _ = gpa.deinit();
 }
-
 
 test "issue-40: truncated snapshot silently loads partial data" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -860,7 +848,6 @@ test "issue-40: truncated snapshot silently loads partial data" {
     try testing.expect(!loaded);
 }
 
-
 test "issue-41: snapshot not validated against repo identity allows cross-project loading" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -888,7 +875,6 @@ test "issue-41: snapshot not validated against repo identity allows cross-projec
     const loaded = snapshot_mod.loadSnapshotValidated(io, snap_path, "/some/other/project", &exp2, &store, testing.allocator);
     try testing.expect(!loaded);
 }
-
 
 test "snapshot: symbol detail longer than 4096 bytes survives round-trip" {
     // Regression for readSectionString rejecting names/details > 4096 bytes.
@@ -936,7 +922,6 @@ test "snapshot: symbol detail longer than 4096 bytes survives round-trip" {
     try testing.expect(results.len >= 1);
 }
 
-
 test "snapshot: corrupted OUTLINE_STATE section falls back to CONTENT load" {
     // Regression for the codedb 0.2.56 writer u16 overflow bug: when OUTLINE_STATE
     // contains a detail that overflows u16 the section cursor de-syncs, making
@@ -970,7 +955,7 @@ test "snapshot: corrupted OUTLINE_STATE section falls back to CONTENT load" {
         const ols = sections.get(@intFromEnum(snapshot_mod.SectionId.outline_state)) orelse return;
         const f = try std.Io.Dir.cwd().openFile(io, snap_path, .{ .mode = .read_write });
         defer f.close(io);
-        try f.writePositionalAll(io, &([_]u8{0xFF} ** 16), ols.offset);
+        try f.writePositionalAll(io, &@as([16]u8, @splat(0xFF)), ols.offset);
     }
 
     var exp2 = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -987,7 +972,6 @@ test "snapshot: corrupted OUTLINE_STATE section falls back to CONTENT load" {
     const results = try exp2.findAllSymbols("aFunc", sym_arena.allocator());
     try testing.expect(results.len >= 1);
 }
-
 
 test "issue-379: snapshot loader returns true with zero outlines for empty-explorer snapshot" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1017,7 +1001,6 @@ test "issue-379: snapshot loader returns true with zero outlines for empty-explo
     }
 }
 
-
 test "issue-528: isSensitivePath parity between snapshot.zig and watcher.zig" {
     // The secret/credential filter is duplicated (snapshot persistence vs live
     // indexing). The #528 audit flagged a possible divergence; the two are
@@ -1026,20 +1009,20 @@ test "issue-528: isSensitivePath parity between snapshot.zig and watcher.zig" {
     // one path but not the other.
     const cases = [_][]const u8{
         // secrets — both copies must block
-        ".env",                  ".env.local",          ".env.production",
-        ".env.development",      ".env.staging",        ".env.test",
-        ".dev.vars",             ".npmrc",              ".pypirc",
-        ".netrc",                "credentials.json",    "service-account.json",
-        "secrets.json",          "secrets.yaml",        "secrets.yml",
-        "id_rsa",                "id_ed25519",          "server.key",
-        "cert.pem",              "keystore.jks",        "identity.pfx",
-        "bundle.p12",            "config/.env.local",   "a/b/secrets.yaml",
+        ".env",                         ".env.local",         ".env.production",
+        ".env.development",             ".env.staging",       ".env.test",
+        ".dev.vars",                    ".npmrc",             ".pypirc",
+        ".netrc",                       "credentials.json",   "service-account.json",
+        "secrets.json",                 "secrets.yaml",       "secrets.yml",
+        "id_rsa",                       "id_ed25519",         "server.key",
+        "cert.pem",                     "keystore.jks",       "identity.pfx",
+        "bundle.p12",                   "config/.env.local",  "a/b/secrets.yaml",
         "deep/nested/.ssh/known_hosts", ".gnupg/secring.gpg", "x/.aws/credentials",
         // non-secrets — both copies must allow (esp. the .env-prefix edge cases)
-        ".envoy.json",           ".environment",        ".envrc",
-        ".envconfig.yaml",       "main.zig",            "src/server.zig",
-        "README.md",             "package.json",        "id_rsa.pub",
-        "envvars.ts",            "Makefile",            "Dockerfile",
+        ".envoy.json",                  ".environment",       ".envrc",
+        ".envconfig.yaml",              "main.zig",           "src/server.zig",
+        "README.md",                    "package.json",       "id_rsa.pub",
+        "envvars.ts",                   "Makefile",           "Dockerfile",
     };
     for (cases) |p| {
         try testing.expectEqual(watcher.isSensitivePath(p), snapshot_mod.isSensitivePath(p));
@@ -1271,7 +1254,6 @@ test "issue-539b: search recall ranks a relevant restored file above quota (inde
     try testing.expect(found_canonical);
 }
 
-
 test "issue-564: snapshot fast-load defers the symbol index until first symbol use" {
     // Pre-#564 the fast-load eagerly rebuilt the global symbol index for every
     // restored file (~symbols-per-file map inserts and their heap) even though
@@ -1320,7 +1302,7 @@ test "audit: long import specifier round-trips on fast-restore (borrow path pres
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    const long_imp = "a" ** 5000; // > 4096 (old read cap), <= 65535 (write cap)
+    const long_imp: [5000]u8 = @splat('a'); // > 4096 (old read cap), <= 65535 (write cap)
     const src = "package main\nimport \"" ++ long_imp ++ "\"\nfunc mainFn() {}\n";
     try exp.indexFile("probe/main.go", src);
     const pre = exp.outlines.get("probe/main.go") orelse return error.MissingOutline;

@@ -687,13 +687,11 @@ fn handleConnection(
 // ── Transport helpers ───────────────────────────────────────────
 
 /// Read some bytes from the TCP stream into `dest`. Returns 0 on clean EOF.
-/// This is the direct-vtable analogue of the old `conn.stream.read`: no
-/// buffered reader state, so each call issues one `netRead` syscall.
+/// This uses the low-level stream API without allocating buffered reader state.
 fn readSome(io: std.Io, stream: std.Io.net.Stream, dest: []u8) !usize {
     if (dest.len == 0) return 0;
     var iov: [1][]u8 = .{dest};
-    const n = try io.vtable.netRead(io.userdata, stream.socket.handle, &iov);
-    return n;
+    return stream.read(io, &iov);
 }
 
 // ── Response helpers ────────────────────────────────────────────

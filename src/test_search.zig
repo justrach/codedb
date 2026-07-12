@@ -17,6 +17,7 @@ const DependencyGraph = explore.DependencyGraph;
 const SymbolLocation = explore.SymbolLocation;
 const mcp_mod = @import("mcp.zig");
 const AgentRegistry = @import("agent.zig").AgentRegistry;
+const watcher = @import("watcher.zig");
 
 test "issue-264: early exit at max_results misses valid matches in remaining candidates" {
     // searchContent stops as soon as result_list.items.len >= max_results.
@@ -506,6 +507,61 @@ test "issue-393: BM25 ranking surfaces high-density file before single-mention f
     }
 }
 
+test "searchContent Tier-0 grouped postings match fragmented fallback exactly" {
+    var grouped = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer grouped.deinit();
+    var fragmented = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer fragmented.deinit();
+
+    const fixtures = [_]struct { path: []const u8, content: []const u8 }{
+        .{ .path = "src/a.zig", .content = "const needle = 1;\n// needle second occurrence\n" },
+        .{ .path = "docs/b.md", .content = "needle documentation\n" },
+        .{ .path = "src/c.zig", .content = "fn needle() void {}\n" },
+        .{ .path = "src/noise.zig", .content = "const unrelated = true;\n" },
+    };
+    for (fixtures) |fixture| {
+        try grouped.indexFile(fixture.path, fixture.content);
+        try fragmented.indexFile(fixture.path, fixture.content);
+    }
+
+    // Natural postings are grouped by document: A1, A2, B1, C1. Reorder the
+    // equivalent control list to A1, B1, A2, C1 so searchContent must take its
+    // defensive slots/hash aggregation path. No semantic hit is added or lost.
+    const postings = fragmented.word_index.index.getPtr("needle") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 4), postings.items.len);
+    const a_second = postings.items[1];
+    postings.items[1] = postings.items[2];
+    postings.items[2] = a_second;
+    try testing.expect(postings.items[1].doc_id > postings.items[2].doc_id);
+
+    // A cap of two forces both paths to make the same ordering/truncation
+    // decision rather than merely comparing an unbounded candidate set.
+    const expected = try grouped.searchContent("needle", testing.allocator, 2);
+    defer {
+        for (expected) |result| {
+            testing.allocator.free(result.path);
+            testing.allocator.free(result.line_text);
+        }
+        testing.allocator.free(expected);
+    }
+    const actual = try fragmented.searchContent("needle", testing.allocator, 2);
+    defer {
+        for (actual) |result| {
+            testing.allocator.free(result.path);
+            testing.allocator.free(result.line_text);
+        }
+        testing.allocator.free(actual);
+    }
+
+    try testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |a, b| {
+        try testing.expectEqualStrings(a.path, b.path);
+        try testing.expectEqual(a.line_num, b.line_num);
+        try testing.expectEqualStrings(a.line_text, b.line_text);
+        try testing.expectEqual(a.score, b.score);
+    }
+}
+
 test "issue-400: BM25 ranks both-terms file above single-term files" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -703,7 +759,7 @@ test "bm25-recall-b: both-terms doc beats high-tf single-term doc" {
     // doc2 has only apple, but repeated 3x (high tf).
     // doc3 has only banana, once.
     // BM25 sums idf*tf_norm per term: doc1 accumulates two idf contributions
-    // while doc2 only gets one -- doc1 must rank first.
+    // while doc2 only gets one — doc1 must rank first.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
@@ -736,7 +792,7 @@ test "bm25-recall-b: both-terms doc beats high-tf single-term doc" {
     }
 }
 
-test "bm25-recall-c: df-saturation -- ubiquitous term has near-zero idf" {
+test "bm25-recall-c: df-saturation — ubiquitous term has near-zero idf" {
     // "the" appears in all 11 docs -> idf near zero, barely contributes.
     // "unique_marker" appears only in special.txt -> high idf, special.txt ranks first.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1900,6 +1956,49 @@ test "audit: searchContent tier0 use_line_hits early-return skips rerank basenam
 
 // src/explore.zig renderPlainSearch — the MCP codedb_search fast-path rendered in raw
 // hit-count order with no basename prior, so a noise file outranked the canonical match.
+test "def-first: renderPlainSearch surfaces the definition line before mentions in the same file" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // A comment mentioning `gadget` appears BEFORE its definition; several call
+    // sites follow. Line-order rendering would show the line-1 comment first.
+    try explorer.indexFile("src/g.zig", "// gadget helper\nconst a = gadget;\nconst b = gadget;\npub fn gadget() void {}\ngadget();\ngadget();\n");
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    const rendered = try explorer.renderPlainSearch("gadget", testing.allocator, &out, 6, false);
+    try testing.expect(rendered);
+
+    // the def line (`pub fn gadget`, line 4) must render before the comment mention (line 1)
+    const def_i = std.mem.indexOf(u8, out.items, "src/g.zig:4:");
+    const com_i = std.mem.indexOf(u8, out.items, "src/g.zig:1:");
+    try testing.expect(def_i != null and com_i != null);
+    try testing.expect(def_i.? < com_i.?);
+}
+
+test "def-first: renderPlainSearch ranks the defining file above higher-count mentions" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // core.zig DEFINES frobnicate (basename != query, a single hit).
+    try explorer.indexFile("src/core.zig", "pub fn frobnicate() void {}\n");
+    // callers.zig merely mentions it many times (no definition, higher count).
+    try explorer.indexFile("src/callers.zig", "frobnicate();\nfrobnicate();\nfrobnicate();\nfrobnicate();\nfrobnicate();\n");
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    const rendered = try explorer.renderPlainSearch("frobnicate", testing.allocator, &out, 2, false);
+    try testing.expect(rendered);
+
+    const ci = std.mem.indexOf(u8, out.items, "src/core.zig");
+    const ai = std.mem.indexOf(u8, out.items, "src/callers.zig");
+    try testing.expect(ci != null and ai != null);
+    // the file that DEFINES frobnicate must render before the high-count mentions
+    try testing.expect(ci.? < ai.?);
+}
+
 test "audit: renderPlainSearch fast-path ranks lexical count over canonical basename" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -2635,6 +2734,86 @@ test "skip-trigram: rebuildTrigrams prunes the files it just covered" {
     const r = try explorer.searchContent("marmottok", testing.allocator, 10);
     defer freeSearchResults(r);
     try testing.expectEqual(@as(usize, 1), r.len);
+}
+
+test "perf/a2: parallel buildTrigramsFromCache is result-identical to serial rebuildTrigrams (MCP cold-scan path)" {
+    // scanBg (the MCP cold-scan path) now routes the trigram build through
+    // watcher.buildTrigramsFromCache + a disk round-trip into
+    // MmapTrigramIndex, instead of the serial Explorer.rebuildTrigrams --
+    // same pattern the CLI cold-index path already uses (bootstrap.zig).
+    // This test proves the parallel builder produces a trigram index that
+    // answers searches identically to the old serial build, over a small
+    // multi-file corpus, going through the exact same disk write + mmap
+    // adopt sequence scanBg now performs.
+    const files = [_]struct { path: []const u8, content: []const u8 }{
+        .{ .path = "src/alpha.zig", .content = "fn alphaFunc() void { needle_one(); }\nconst shared_tok = 1;\n" },
+        .{ .path = "src/beta.zig", .content = "fn betaFunc() void {}\nconst shared_tok = 2; // needle_two\n" },
+        .{ .path = "src/gamma.zig", .content = "// unrelated file, no shared markers here\nfn gammaFunc() void {}\n" },
+        .{ .path = "src/delta.zig", .content = "fn deltaFunc() void { needle_one(); needle_two(); }\n" },
+    };
+
+    var serial = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer serial.deinit();
+    var parallel = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer parallel.deinit();
+
+    for (files) |f| {
+        try serial.indexFileSkipTrigram(f.path, f.content);
+        try parallel.indexFileSkipTrigram(f.path, f.content);
+    }
+    try testing.expectEqual(@as(usize, files.len), serial.skipTrigramFileCount());
+    try testing.expectEqual(@as(usize, files.len), parallel.skipTrigramFileCount());
+
+    // Old path: serial, in-place, one file at a time.
+    try serial.rebuildTrigrams();
+    try testing.expectEqual(@as(usize, 0), serial.skipTrigramFileCount());
+
+    // New path: parallel build over the ContentCache (multiple workers,
+    // forcing the multi-threaded branch), written to disk, then reloaded as
+    // an mmap index and adopted — byte-for-byte what scanBg does now.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path_len = try tmp_dir.dir.realPathFile(io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
+
+    const tmp_tri = try watcher.buildTrigramsFromCache(&parallel.contents, testing.allocator, testing.allocator, 4);
+    try tmp_tri.writeToDisk(io, tmp_path, null);
+    tmp_tri.deinit();
+    testing.allocator.destroy(tmp_tri);
+
+    const loaded = MmapTrigramIndex.initFromDisk(io, tmp_path, testing.allocator) orelse
+        return error.MmapInitFailed;
+    parallel.adoptTrigramIndex(.{ .mmap = loaded });
+    try testing.expectEqual(@as(usize, 0), parallel.skipTrigramFileCount());
+
+    const queries = [_][]const u8{ "needle_one", "needle_two", "shared_tok", "gammaFunc", "does_not_exist_anywhere" };
+    for (queries) |q| {
+        const serial_r = try serial.searchContent(q, testing.allocator, 100);
+        defer freeSearchResults(serial_r);
+        const parallel_r = try parallel.searchContent(q, testing.allocator, 100);
+        defer freeSearchResults(parallel_r);
+
+        const serial_paths = try testing.allocator.alloc([]const u8, serial_r.len);
+        defer testing.allocator.free(serial_paths);
+        for (serial_r, 0..) |r, i| serial_paths[i] = r.path;
+        const parallel_paths = try testing.allocator.alloc([]const u8, parallel_r.len);
+        defer testing.allocator.free(parallel_paths);
+        for (parallel_r, 0..) |r, i| parallel_paths[i] = r.path;
+
+        const lt = struct {
+            fn f(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.f;
+        std.mem.sort([]const u8, serial_paths, {}, lt);
+        std.mem.sort([]const u8, parallel_paths, {}, lt);
+
+        try testing.expectEqual(serial_paths.len, parallel_paths.len);
+        for (serial_paths, parallel_paths) |sp, pp| {
+            try testing.expectEqualStrings(sp, pp);
+        }
+    }
 }
 
 // ── warmup: queries.log replay ───────────────────────────────────────────────

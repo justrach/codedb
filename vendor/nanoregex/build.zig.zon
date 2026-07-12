@@ -1,0 +1,8 @@
+.{
+    .name = .nanoregex,
+    .version = "0.0.1",
+    .fingerprint = 0xc8e46b5d7121d911,
+    .minimum_zig_version = "0.17.0-dev.813+2153f8143",
+    .dependencies = .{},
+    .paths = .{""},
+}

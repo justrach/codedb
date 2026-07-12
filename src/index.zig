@@ -17,7 +17,13 @@ pub const WordIndex = struct {
     /// WordIndex owns these path keys.
     file_words: std.StringHashMap([]const []const u8),
     allocator: std.mem.Allocator,
+    /// Bulk builders can skip per-file term sets; incremental updates re-enable
+    /// them after the immutable/bulk portion has been assembled.
     skip_file_words: bool = false,
+    /// Whether each non-empty id_to_path entry owns its path allocation. This is
+    /// independent of file_words tracking (bulk/mmap indexes own path strings,
+    /// while normal mutable indexes alias file_words keys).
+    owns_id_paths: bool = false,
     enabled: bool = true,
     path_to_id: std.StringHashMap(u32),
     id_to_path: std.ArrayList([]const u8),
@@ -106,7 +112,7 @@ pub const WordIndex = struct {
         }
         self.file_words.deinit();
 
-        if (self.skip_file_words) {
+        if (self.owns_id_paths) {
             for (self.id_to_path.items) |path| {
                 if (path.len > 0) self.allocator.free(path);
             }
@@ -147,9 +153,9 @@ pub const WordIndex = struct {
             _ = self.path_to_id.remove(stable_path);
             if (doc_id < self.id_to_path.items.len) {
                 const old_path = self.id_to_path.items[doc_id];
-                // Bulk modes (skip_file_words) give id_to_path its own strings;
-                // otherwise the slot aliases stable_path, freed below.
-                if (self.skip_file_words and old_path.len > 0) self.allocator.free(old_path);
+                // Bulk/mmap modes give id_to_path its own strings; otherwise the
+                // slot aliases stable_path, which is freed below.
+                if (self.owns_id_paths and old_path.len > 0) self.allocator.free(old_path);
                 self.id_to_path.items[doc_id] = "";
                 self.free_ids.append(self.allocator, doc_id) catch {};
             }
@@ -198,7 +204,7 @@ pub const WordIndex = struct {
         }
         if (doc_id < self.id_to_path.items.len) {
             const old_path = self.id_to_path.items[doc_id];
-            if (self.skip_file_words and old_path.len > 0) self.allocator.free(old_path);
+            if (self.owns_id_paths and old_path.len > 0) self.allocator.free(old_path);
             self.id_to_path.items[doc_id] = "";
             self.free_ids.append(self.allocator, doc_id) catch {};
         }
@@ -232,7 +238,7 @@ pub const WordIndex = struct {
         token: []const u8,
         doc_id: u32,
         line_num: u32,
-        words_set: *std.StringHashMap(void),
+        words_set: ?*std.StringHashMap(void),
     ) !void {
         const gop = try self.index.getOrPut(token);
         if (!gop.found_existing) {
@@ -250,8 +256,10 @@ pub const WordIndex = struct {
         if (gop.value_ptr.items.len > 0) {
             const last = gop.value_ptr.items[gop.value_ptr.items.len - 1];
             if (last.doc_id == doc_id and last.line_num == line_num) {
-                const wgop = try words_set.getOrPut(gop.key_ptr.*);
-                if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
+                if (words_set) |set| {
+                    const wgop = try set.getOrPut(gop.key_ptr.*);
+                    if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
+                }
                 return;
             }
         }
@@ -259,8 +267,10 @@ pub const WordIndex = struct {
             .doc_id = doc_id,
             .line_num = line_num,
         });
-        const wgop = try words_set.getOrPut(gop.key_ptr.*);
-        if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
+        if (words_set) |set| {
+            const wgop = try set.getOrPut(gop.key_ptr.*);
+            if (!wgop.found_existing) wgop.key_ptr.* = gop.key_ptr.*;
+        }
     }
 
     pub fn indexFile(self: *WordIndex, path: []const u8, content: []const u8) !void {
@@ -270,6 +280,7 @@ pub const WordIndex = struct {
         // Clean up old entries first; removeFile guarantees the path is no
         // longer tracked, so the stable copy is always a fresh dupe.
         self.removeFile(path);
+        if (self.skip_file_words) self.owns_id_paths = true;
 
         const stable_path = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(stable_path);
@@ -283,6 +294,7 @@ pub const WordIndex = struct {
         var words_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer words_arena.deinit();
         var words_set = std.StringHashMap(void).init(words_arena.allocator());
+        const tracked_words: ?*std.StringHashMap(void) = if (self.skip_file_words) null else &words_set;
         var line_num: u32 = 0;
         var lines = std.mem.splitScalar(u8, content, '\n');
         var doc_token_count: u32 = 0;
@@ -315,7 +327,7 @@ pub const WordIndex = struct {
                 };
 
                 // Index the lowercase form.
-                try indexOneToken(self, lower_word, doc_id, line_num, &words_set);
+                try indexOneToken(self, lower_word, doc_id, line_num, tracked_words);
 
                 // Sub-tokens from identifier splitting (camelCase, snake_case, etc.).
                 // Skip the alloc'd ArrayList when the word is too short or all-lower
@@ -334,23 +346,21 @@ pub const WordIndex = struct {
                     defer sub_toks.deinit(aa);
                     splitIdentifier(word, &sub_toks, aa) catch continue;
                     for (sub_toks.items) |sub| {
-                        try indexOneToken(self, sub, doc_id, line_num, &words_set);
+                        try indexOneToken(self, sub, doc_id, line_num, tracked_words);
                     }
                 }
             }
         }
 
-        // Per-file word list — what makes the next removeFile O(file) instead
-        // of an index-wide sweep. Bulk paths (readFromDisk/mergeShard) leave it
-        // empty for their files; anything indexed through here gets a list. In
-        // skip_file_words mode id_to_path owns stable_path, so the file_words
-        // key must be its own allocation.
-        {
-            const fw_key = if (self.skip_file_words)
+        // Per-file word lists make subsequent removeFile O(file). Cold worker
+        // shards skip them entirely; merged/mmap paths fall back to one index
+        // sweep on the first update, after which incremental files are tracked.
+        if (!self.skip_file_words) {
+            const fw_key = if (self.owns_id_paths)
                 try self.allocator.dupe(u8, stable_path)
             else
                 stable_path;
-            errdefer if (self.skip_file_words) self.allocator.free(fw_key);
+            errdefer if (self.owns_id_paths) self.allocator.free(fw_key);
             const compact = try self.allocator.alloc([]const u8, words_set.count());
             errdefer self.allocator.free(compact);
             var ki: usize = 0;
@@ -379,15 +389,21 @@ pub const WordIndex = struct {
     /// each shard's global range follows the previous one). See the per-worker
     /// shard build in watcher.initialScanWithWorkerCount.
     pub fn mergeShard(self: *WordIndex, shard: *WordIndex) !void {
+        std.debug.assert(self.id_to_path.items.len == 0 or self.owns_id_paths);
         const base: u32 = @intCast(self.id_to_path.items.len);
+        self.owns_id_paths = true;
 
-        // Paths + per-doc lengths.
+        // Paths + per-doc lengths. Roll each document back transactionally: the
+        // old ordering freed `duped` after a later map failure while id_to_path
+        // still referenced it, leaving a dangling pointer/double-free hazard.
         for (shard.id_to_path.items, 0..) |path, local| {
             const global_id: u32 = base + @as(u32, @intCast(local));
             const duped = try self.allocator.dupe(u8, path);
             errdefer self.allocator.free(duped);
             try self.id_to_path.append(self.allocator, duped);
+            errdefer _ = self.id_to_path.pop();
             try self.path_to_id.put(duped, global_id);
+            errdefer _ = self.path_to_id.remove(duped);
             if (shard.doc_lengths.get(@intCast(local))) |len| {
                 try self.doc_lengths.put(global_id, len);
             }
@@ -501,34 +517,46 @@ pub const WordIndex = struct {
         self.mmap_data = null;
     }
 
-    /// Look up hits, returning results allocated by the caller.
-    /// Deduplicates by (path, line_num).
+    /// Look up hits, returning results allocated by the caller and deduplicated
+    /// by (doc_id, line_num). Valid posting lists are pair-sorted, so their only
+    /// possible duplicates are adjacent and compact in one allocation without a
+    /// hash table. Retain a hash fallback for malformed, legacy, or incrementally
+    /// swap-removed lists whose ordering has been broken.
     pub fn searchDeduped(self: *WordIndex, word: []const u8, allocator: std.mem.Allocator) ![]const WordHit {
         const hits = self.search(word);
-        if (hits.len == 0) return try allocator.alloc(WordHit, 0);
-        if (hits.len == 1) {
-            var out = try allocator.alloc(WordHit, 1);
-            out[0] = hits[0];
-            return out;
+        var result = try allocator.alloc(WordHit, hits.len);
+        errdefer allocator.free(result);
+
+        var result_len: usize = 0;
+        var sorted = true;
+        for (hits) |hit| {
+            if (result_len > 0) {
+                const previous = result[result_len - 1];
+                if (hit.doc_id < previous.doc_id or
+                    (hit.doc_id == previous.doc_id and hit.line_num < previous.line_num))
+                {
+                    sorted = false;
+                    break;
+                }
+                if (hit.doc_id == previous.doc_id and hit.line_num == previous.line_num) continue;
+            }
+            result[result_len] = hit;
+            result_len += 1;
         }
+        if (sorted) return try allocator.realloc(result, result_len);
 
         const DedupKey = struct { doc_id: u32, line_num: u32 };
         var seen = std.AutoHashMap(DedupKey, void).init(allocator);
         defer seen.deinit();
         try seen.ensureTotalCapacity(@intCast(hits.len));
-
-        var result: std.ArrayList(WordHit) = .empty;
-        errdefer result.deinit(allocator);
-        try result.ensureTotalCapacity(allocator, hits.len);
-
+        result_len = 0;
         for (hits) |hit| {
-            const key = DedupKey{ .doc_id = hit.doc_id, .line_num = hit.line_num };
-            const gop = try seen.getOrPut(key);
-            if (!gop.found_existing) {
-                result.appendAssumeCapacity(hit);
-            }
+            const gop = try seen.getOrPut(.{ .doc_id = hit.doc_id, .line_num = hit.line_num });
+            if (gop.found_existing) continue;
+            result[result_len] = hit;
+            result_len += 1;
         }
-        return result.toOwnedSlice(allocator);
+        return try allocator.realloc(result, result_len);
     }
 
     /// Collect all hits for index keys that begin with `prefix_raw` (normalized internally to
@@ -684,7 +712,7 @@ pub const WordIndex = struct {
         var file_buf: [256 * 1024]u8 = undefined;
         var writer = file.writer(io, &file_buf);
 
-        var header_buf: [51]u8 = [_]u8{0} ** 51;
+        var header_buf: [51]u8 = @splat(0);
         @memcpy(header_buf[0..4], &DISK_MAGIC);
         std.mem.writeInt(u16, header_buf[4..6], DISK_FORMAT_VERSION, .little);
         std.mem.writeInt(u32, header_buf[6..10], @intCast(file_table.items.len), .little);
@@ -876,13 +904,11 @@ pub const WordIndex = struct {
         }
         result.total_tokens = total_tokens_loaded;
 
-        // Loaded indexes skip file_words: only incremental removeFile needs it,
-        // and queries / BM25 never do. Same hundreds-of-MB save the bulk scan
-        // already takes (see main.zig). id_to_path owns the path strings now, so
-        // keep them out of the cleanup defer (used_paths=true) and free them via
-        // the skip_file_words deinit path.
+        // Loaded indexes have no file_words for their bulk documents, but future
+        // incremental writes should track them. id_to_path owns the loaded path
+        // strings independently of that tracking policy.
         @memset(used_paths, true);
-        result.skip_file_words = true;
+        result.owns_id_paths = true;
 
         return result;
     }
@@ -911,7 +937,7 @@ pub const WordIndex = struct {
         const file_count = std.mem.readInt(u32, data[6..10], .little);
 
         var result = WordIndex.init(allocator);
-        result.skip_file_words = true;
+        result.owns_id_paths = true;
         // mmap_data stays null until the hand-off below, so this errdefer takes
         // the heap deinit path (frees the duped paths); word_dir + mmap have
         // their own errdefers.
@@ -1236,28 +1262,41 @@ pub const TrigramIndex = struct {
         local.ensureTotalCapacity(estimated_unique) catch {};
 
         if (content.len >= 3) {
+            // Keep overlapping raw and normalized windows as rolling locals. The
+            // old loop requested three loads and up to four normalizations at every
+            // position; rolling advances each value once without changing masks.
+            var c0 = content[0];
+            var c1 = content[1];
+            var c2 = content[2];
+            var n0 = normalizeChar(c0);
+            var n1 = normalizeChar(c1);
+            var n2 = normalizeChar(c2);
             for (0..content.len - 2) |i| {
-                // Skip trigrams that are pure whitespace (terrible filters, ~12% of all occurrences)
-                const c0 = content[i];
-                const c1 = content[i + 1];
-                const c2 = content[i + 2];
-                if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
-                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
-                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
+                const has_next = i + 3 < content.len;
+                const c3 = if (has_next) content[i + 3] else 0;
+                const n3 = if (has_next) normalizeChar(c3) else 0;
 
-                const tri = packTrigram(
-                    normalizeChar(c0),
-                    normalizeChar(c1),
-                    normalizeChar(c2),
-                );
-                const gop = try local.getOrPut(tri);
-                if (!gop.found_existing) {
-                    gop.value_ptr.* = PostingMask{};
+                // Skip trigrams that are pure whitespace (terrible filters,
+                // ~12% of all occurrences).
+                if (!((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
+                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
+                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')))
+                {
+                    const tri = packTrigram(n0, n1, n2);
+                    const gop = try local.getOrPut(tri);
+                    if (!gop.found_existing) gop.value_ptr.* = PostingMask{};
+                    gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i & 7);
+                    if (has_next) {
+                        gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(n3 & 7);
+                    }
                 }
-                gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
-                if (i + 3 < content.len) {
-                    gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(normalizeChar(content[i + 3]) % 8);
-                }
+
+                c0 = c1;
+                c1 = c2;
+                c2 = c3;
+                n0 = n1;
+                n1 = n2;
+                n2 = n3;
             }
         }
 
@@ -1387,11 +1426,12 @@ pub const TrigramIndex = struct {
             if (!idx_gop.found_existing) {
                 idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
             }
-            try idx_gop.value_ptr.items.append(self.allocator, .{
-                .doc_id = doc_id,
-                .next_mask = mask.next_mask,
-                .loc_mask = mask.loc_mask,
-            });
+            // removeFile can free and then reuse a lower doc_id, so append
+            // would violate PostingList's sorted-doc-ID invariant. Mmap-backed
+            // persistence relies on that ordering for its merge/binary searches.
+            const posting = try idx_gop.value_ptr.getOrAddPosting(self.allocator, doc_id);
+            posting.next_mask = mask.next_mask;
+            posting.loc_mask = mask.loc_mask;
             try tri_list.append(self.allocator, tri);
         }
         try self.file_trigrams.put(path, tri_list);
@@ -1413,6 +1453,64 @@ pub const TrigramIndex = struct {
                 .next_mask = te.mask.next_mask,
                 .loc_mask = te.mask.loc_mask,
             });
+        }
+    }
+
+    /// Bulk-insert directly from the worker's reusable extraction map. This
+    /// avoids materializing a second per-file trigram array before insertion.
+    pub fn insertBulkMapNew(self: *TrigramIndex, path: []const u8, trigrams: *std.AutoHashMap(Trigram, PostingMask)) !void {
+        const doc_id = try self.getOrCreateDocId(path);
+        var iter = trigrams.iterator();
+        while (iter.next()) |entry| {
+            const idx_gop = try self.index.getOrPut(entry.key_ptr.*);
+            if (!idx_gop.found_existing) {
+                idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
+            }
+            try idx_gop.value_ptr.items.append(self.allocator, .{
+                .doc_id = doc_id,
+                .next_mask = entry.value_ptr.next_mask,
+                .loc_mask = entry.value_ptr.loc_mask,
+            });
+        }
+    }
+
+    /// Merge a cold-build shard whose local document IDs start at zero. Shards
+    /// are merged in source-file order, so offsetting each posting by `base`
+    /// preserves the sorted-posting invariant. New trigram lists are moved
+    /// without copying; overlapping lists append one contiguous shard slice.
+    pub fn mergeBulkShard(self: *TrigramIndex, shard: *TrigramIndex) !void {
+        std.debug.assert(self.owns_paths);
+        std.debug.assert(self.free_ids.items.len == 0);
+        std.debug.assert(shard.free_ids.items.len == 0);
+
+        const base: u32 = @intCast(self.id_to_path.items.len);
+        try self.id_to_path.ensureUnusedCapacity(self.allocator, shard.id_to_path.items.len);
+        try self.path_to_id.ensureUnusedCapacity(@intCast(shard.id_to_path.items.len));
+        for (shard.id_to_path.items, 0..) |path, local_id| {
+            const duped = try self.allocator.dupe(u8, path);
+            errdefer self.allocator.free(duped);
+            self.id_to_path.appendAssumeCapacity(duped);
+            errdefer _ = self.id_to_path.pop();
+            try self.path_to_id.put(duped, base + @as(u32, @intCast(local_id)));
+            errdefer _ = self.path_to_id.remove(duped);
+        }
+
+        const can_transfer = self.allocator.ptr == shard.allocator.ptr and
+            self.allocator.vtable == shard.allocator.vtable;
+        var iter = shard.index.iterator();
+        while (iter.next()) |entry| {
+            for (entry.value_ptr.items.items) |*posting| posting.doc_id += base;
+
+            const gop = try self.index.getOrPut(entry.key_ptr.*);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
+                if (can_transfer) {
+                    gop.value_ptr.items = entry.value_ptr.items;
+                    entry.value_ptr.items = .empty;
+                    continue;
+                }
+            }
+            try gop.value_ptr.items.appendSlice(self.allocator, entry.value_ptr.items.items);
         }
     }
 
@@ -1645,28 +1743,27 @@ pub const TrigramIndex = struct {
     };
 
     /// Write the current in-memory index to disk in a two-file format.
-    /// Files are written atomically (write to tmp, then rename).
+    /// Each file is replaced via tmp + rename; publishing the pair is not transactional.
     pub fn writeToDisk(self: *TrigramIndex, io: std.Io, dir_path: []const u8, git_head: ?[40]u8) !void {
-        // Step 1: Build file table from path_to_id (reuse existing doc IDs for consistency)
+        // Step 1: Build the file table in ascending in-memory doc_id order. Posting
+        // lists are sorted by doc_id, so this makes their remapped disk file_ids
+        // sorted too — an invariant required by the mmap merge and binary searches.
+        // Retain the existing tracked-file selection while avoiding an intermediate
+        // path→disk-ID map and its second lookup pass.
         var file_table: std.ArrayList([]const u8) = .empty;
         defer file_table.deinit(self.allocator);
-        var disk_path_to_id = std.StringHashMap(u32).init(self.allocator);
-        defer disk_path_to_id.deinit();
-
-        if (self.file_trigrams.count() > 0) {
-            var ft_iter = self.file_trigrams.keyIterator();
-            while (ft_iter.next()) |path_ptr| {
-                const id: u32 = @intCast(file_table.items.len);
-                try file_table.append(self.allocator, path_ptr.*);
-                try disk_path_to_id.put(path_ptr.*, id);
-            }
-        } else {
-            for (self.id_to_path.items) |path| {
-                if (path.len == 0) continue;
-                const id: u32 = @intCast(file_table.items.len);
-                try file_table.append(self.allocator, path);
-                try disk_path_to_id.put(path, id);
-            }
+        const doc_to_disk = try self.allocator.alloc(u32, self.id_to_path.items.len);
+        defer self.allocator.free(doc_to_disk);
+        @memset(doc_to_disk, std.math.maxInt(u32));
+        const use_tracked_files = self.file_trigrams.count() > 0;
+        for (self.id_to_path.items, 0..) |path, doc_idx| {
+            if (path.len == 0) continue;
+            if (use_tracked_files and !self.file_trigrams.contains(path)) continue;
+            if (path.len > std.math.maxInt(u16)) return error.NameTooLong;
+            if (file_table.items.len >= std.math.maxInt(u32)) return error.IndexTooLarge;
+            const disk_id: u32 = @intCast(file_table.items.len);
+            try file_table.append(self.allocator, path);
+            doc_to_disk[doc_idx] = disk_id;
         }
 
         const file_count: u32 = @intCast(file_table.items.len);
@@ -1686,50 +1783,46 @@ pub const TrigramIndex = struct {
             }
         }.lt);
 
-        // Step 3: Build postings blob and lookup entries
-        var postings_buf: std.ArrayList(DiskPosting) = .empty;
-        defer postings_buf.deinit(self.allocator);
-        var lookup_entries: std.ArrayList(LookupEntry) = .empty;
-        defer lookup_entries.deinit(self.allocator);
+        // Step 3: The sorted trigram list determines the lookup header count.
+        // Stream both payloads in fixed batches so auxiliary persistence memory
+        // remains bounded by the two batches rather than index cardinality.
+        if (trigrams_sorted.items.len > std.math.maxInt(u32)) return error.IndexTooLarge;
+        const lookup_entry_count: u32 = @intCast(trigrams_sorted.items.len);
 
-        for (trigrams_sorted.items) |tri| {
-            const posting_list = self.index.getPtr(tri) orelse continue;
-            const offset: u32 = @intCast(postings_buf.items.len);
-            var count: u32 = 0;
-            for (posting_list.items.items) |p| {
-                // Map in-memory doc_id to disk file_id via path lookup
-                if (p.doc_id >= self.id_to_path.items.len) continue;
-                const path = self.id_to_path.items[p.doc_id];
-                const fid = disk_path_to_id.get(path) orelse continue;
-                try postings_buf.append(self.allocator, .{
-                    .file_id = fid,
-                    .next_mask = p.next_mask,
-                    .loc_mask = p.loc_mask,
-                });
-                count += 1;
-            }
-            try lookup_entries.append(self.allocator, .{
-                .trigram = @as(u32, tri),
-                .offset = offset,
-                .count = count,
-            });
-        }
-
-        // Step 4: Write postings file atomically (random suffix prevents collisions)
+        // Step 4: Write postings and lookup files to random-suffixed temporaries.
         const post_rand: u64 = cio.randU64();
         const postings_tmp = try std.fmt.allocPrint(self.allocator, "{s}/trigram.postings.{x}.tmp", .{ dir_path, post_rand });
         defer self.allocator.free(postings_tmp);
         const postings_final = try std.fmt.allocPrint(self.allocator, "{s}/trigram.postings", .{dir_path});
         defer self.allocator.free(postings_final);
+        const lk_rand: u64 = cio.randU64();
+        const lookup_tmp = try std.fmt.allocPrint(self.allocator, "{s}/trigram.lookup.{x}.tmp", .{ dir_path, lk_rand });
+        defer self.allocator.free(lookup_tmp);
+        const lookup_final = try std.fmt.allocPrint(self.allocator, "{s}/trigram.lookup", .{dir_path});
+        defer self.allocator.free(lookup_final);
 
         {
-            const file = try std.Io.Dir.cwd().createFile(io, postings_tmp, .{});
-            defer file.close(io);
+            const postings_file = try std.Io.Dir.cwd().createFile(io, postings_tmp, .{});
+            defer postings_file.close(io);
+            const lookup_file = try std.Io.Dir.cwd().createFile(io, lookup_tmp, .{});
+            defer lookup_file.close(io);
 
             var pw_buf: [256 * 1024]u8 = undefined;
-            var pw = file.writer(io, &pw_buf);
+            var pw = postings_file.writer(io, &pw_buf);
+            var lw_buf: [64 * 1024]u8 = undefined;
+            var lw = lookup_file.writer(io, &lw_buf);
 
-            // Header v3: magic(4) + version(2) + file_count(4) + head_len(1) + head(40) = 51 bytes
+            // Lookup header: magic(4) + version(2) + pad(2) + entry_count(4) = 12 bytes
+            try lw.interface.writeAll(&LOOKUP_MAGIC);
+            var lookup_version_buf: [2]u8 = undefined;
+            std.mem.writeInt(u16, &lookup_version_buf, FORMAT_VERSION, .little);
+            try lw.interface.writeAll(&lookup_version_buf);
+            try lw.interface.writeAll(&[_]u8{ 0, 0 });
+            var lookup_count_buf: [4]u8 = undefined;
+            std.mem.writeInt(u32, &lookup_count_buf, lookup_entry_count, .little);
+            try lw.interface.writeAll(&lookup_count_buf);
+
+            // Postings header v3: magic(4) + version(2) + file_count(4) + head_len(1) + head(40) = 51 bytes
             try pw.interface.writeAll(&POSTINGS_MAGIC);
             var ver_buf: [2]u8 = undefined;
             std.mem.writeInt(u16, &ver_buf, FORMAT_VERSION, .little);
@@ -1743,7 +1836,7 @@ pub const TrigramIndex = struct {
                 try pw.interface.writeAll(&head);
             } else {
                 try pw.interface.writeAll(&.{0});
-                try pw.interface.writeAll(&([_]u8{0} ** 40));
+                try pw.interface.writeAll(&@as([40]u8, @splat(0)));
             }
 
             // File table: for each file, path_len(u16) + path bytes
@@ -1754,43 +1847,61 @@ pub const TrigramIndex = struct {
                 try pw.interface.writeAll(path);
             }
 
-            // Postings data
-            const postings_bytes = std.mem.sliceAsBytes(postings_buf.items);
-            try pw.interface.writeAll(postings_bytes);
+            // The writer has a 256 KiB buffer, but group postings explicitly
+            // too so the inner loop does not dispatch one virtual write per
+            // posting. The batch is fixed-size, keeping peak extra memory flat.
+            var posting_batch: [4096]DiskPosting = undefined;
+            var posting_batch_len: usize = 0;
+            var lookup_batch: [4096]LookupEntry = undefined;
+            var lookup_batch_len: usize = 0;
+            var postings_len: usize = 0;
+            for (trigrams_sorted.items) |tri| {
+                const posting_list = self.index.getPtr(tri) orelse unreachable;
+                const offset: u32 = @intCast(postings_len);
+                var count: u32 = 0;
+                for (posting_list.items.items) |p| {
+                    // Map in-memory doc_id to disk file_id via the precomputed array.
+                    if (p.doc_id >= doc_to_disk.len) continue;
+                    const fid = doc_to_disk[p.doc_id];
+                    if (fid == std.math.maxInt(u32)) continue;
+                    // The on-disk lookup format uses u32 offsets and counts.
+                    // Reject instead of wrapping once its representable range
+                    // is full; a corrupt index would otherwise be persisted.
+                    if (postings_len >= std.math.maxInt(u32) or count >= std.math.maxInt(u32)) return error.IndexTooLarge;
+                    posting_batch[posting_batch_len] = .{
+                        .file_id = fid,
+                        .next_mask = p.next_mask,
+                        .loc_mask = p.loc_mask,
+                    };
+                    posting_batch_len += 1;
+                    postings_len += 1;
+                    count += 1;
+                    if (posting_batch_len == posting_batch.len) {
+                        try pw.interface.writeAll(std.mem.sliceAsBytes(posting_batch[0..posting_batch_len]));
+                        posting_batch_len = 0;
+                    }
+                }
+                lookup_batch[lookup_batch_len] = .{
+                    .trigram = @as(u32, tri),
+                    .offset = offset,
+                    .count = count,
+                };
+                lookup_batch_len += 1;
+                if (lookup_batch_len == lookup_batch.len) {
+                    try lw.interface.writeAll(std.mem.sliceAsBytes(lookup_batch[0..lookup_batch_len]));
+                    lookup_batch_len = 0;
+                }
+            }
+            if (posting_batch_len > 0) {
+                try pw.interface.writeAll(std.mem.sliceAsBytes(posting_batch[0..posting_batch_len]));
+            }
+            if (lookup_batch_len > 0) {
+                try lw.interface.writeAll(std.mem.sliceAsBytes(lookup_batch[0..lookup_batch_len]));
+            }
             try pw.interface.flush();
-        }
-        try std.Io.Dir.cwd().rename(postings_tmp, std.Io.Dir.cwd(), postings_final, io);
-
-        // Step 5: Write lookup file atomically (random suffix prevents collisions)
-        const lk_rand: u64 = cio.randU64();
-        const lookup_tmp = try std.fmt.allocPrint(self.allocator, "{s}/trigram.lookup.{x}.tmp", .{ dir_path, lk_rand });
-        defer self.allocator.free(lookup_tmp);
-        const lookup_final = try std.fmt.allocPrint(self.allocator, "{s}/trigram.lookup", .{dir_path});
-        defer self.allocator.free(lookup_final);
-
-        {
-            const file = try std.Io.Dir.cwd().createFile(io, lookup_tmp, .{});
-            defer file.close(io);
-
-            var lw_buf: [64 * 1024]u8 = undefined;
-            var lw = file.writer(io, &lw_buf);
-
-            // Header: magic(4) + version(2) + pad(2) + entry_count(4) = 12 bytes
-            try lw.interface.writeAll(&LOOKUP_MAGIC);
-            var ver_buf2: [2]u8 = undefined;
-            std.mem.writeInt(u16, &ver_buf2, FORMAT_VERSION, .little);
-            try lw.interface.writeAll(&ver_buf2);
-            var pad_buf: [2]u8 = .{ 0, 0 };
-            try lw.interface.writeAll(&pad_buf);
-            var ec_buf: [4]u8 = undefined;
-            std.mem.writeInt(u32, &ec_buf, @intCast(lookup_entries.items.len), .little);
-            try lw.interface.writeAll(&ec_buf);
-
-            // Entries (already aligned at 12 bytes each)
-            const entry_bytes = std.mem.sliceAsBytes(lookup_entries.items);
-            try lw.interface.writeAll(entry_bytes);
             try lw.interface.flush();
         }
+        try std.Io.Dir.cwd().rename(postings_tmp, std.Io.Dir.cwd(), postings_final, io);
         try std.Io.Dir.cwd().rename(lookup_tmp, std.Io.Dir.cwd(), lookup_final, io);
     }
 
@@ -3046,7 +3157,7 @@ pub const MAX_NGRAM_LEN: usize = 16;
 /// Rare pairs   → HIGH weight (they become n-gram boundaries).
 /// All unspecified pairs default to 0xFE00 (rare = high weight).
 pub const default_pair_freq: [256][256]u16 = blk: {
-    var table: [256][256]u16 = .{.{0xFE00} ** 256} ** 256;
+    var table: [256][256]u16 = @splat(@splat(0xFE00));
     // English bigrams (lowercase) — common in identifiers and prose
     table['t']['h'] = 0x1000;
     table['h']['e'] = 0x1000;
@@ -3144,7 +3255,7 @@ pub fn resetFrequencyTable() void {
 /// Build a per-project frequency table by counting byte-pair occurrences in
 /// `content`, then inverting counts to weights (common → low, rare → high).
 pub fn buildFrequencyTable(content: []const u8) [256][256]u16 {
-    var counts: [256][256]u64 = .{.{0} ** 256} ** 256;
+    var counts: [256][256]u64 = @splat(@splat(0));
     if (content.len >= 2) {
         for (0..content.len - 1) |i| {
             counts[content[i]][content[i + 1]] += 1;
@@ -3157,7 +3268,7 @@ pub fn buildFrequencyTable(content: []const u8) [256][256]u16 {
 /// Zero extra memory — counts pairs within each slice, skipping cross-slice
 /// boundaries (negligible loss for large corpora).
 pub fn buildFrequencyTableFromSlices(slices: []const []const u8) [256][256]u16 {
-    var counts: [256][256]u64 = .{.{0} ** 256} ** 256;
+    var counts: [256][256]u64 = @splat(@splat(0));
     for (slices) |content| {
         if (content.len < 2) continue;
         for (0..content.len - 1) |i| {
@@ -3170,7 +3281,7 @@ pub fn buildFrequencyTableFromSlices(slices: []const []const u8) [256][256]u16 {
 /// Build a frequency table by streaming over a StringHashMap of content.
 /// Iterates file-by-file — no concatenation, zero extra memory.
 pub fn buildFrequencyTableFromMap(contents: *ContentCache) [256][256]u16 {
-    var counts: [256][256]u64 = .{.{0} ** 256} ** 256;
+    var counts: [256][256]u64 = @splat(@splat(0));
     var iter = contents.iterator();
     while (iter.next()) |entry| {
         const content = entry.value_ptr.*;
@@ -3182,6 +3293,75 @@ pub fn buildFrequencyTableFromMap(contents: *ContentCache) [256][256]u16 {
     return finishFrequencyTable(&counts);
 }
 
+/// Build a frequency table from a ContentCache, parallelized across workers.
+/// Each worker counts byte-pair occurrences in its chunk into a private table;
+/// the main thread sums the tables (65k integer additions) and normalises.
+pub fn buildFrequencyTableFromMapParallel(contents: *ContentCache, allocator: std.mem.Allocator, worker_count: usize) ![256][256]u16 {
+    const n_files = contents.count();
+    if (n_files == 0) {
+        const zero: [256][256]u64 = @splat(@splat(0));
+        return finishFrequencyTable(&zero);
+    }
+
+    // Collect content slices into an array for chunked distribution.
+    var slices = try std.ArrayList([]const u8).initCapacity(allocator, n_files);
+    defer slices.deinit(allocator);
+    var iter = contents.iterator();
+    while (iter.next()) |entry| {
+        const content = entry.value_ptr.*;
+        if (content.len >= 2) slices.appendAssumeCapacity(content);
+    }
+    if (slices.items.len == 0) {
+        const zero: [256][256]u64 = @splat(@splat(0));
+        return finishFrequencyTable(&zero);
+    }
+
+    const n_workers = @max(@as(usize, 1), @min(worker_count, slices.items.len));
+    if (n_workers == 1) return buildFrequencyTableFromSlices(slices.items);
+
+    const Counts = [256][256]u64;
+    const worker_counts = try allocator.alloc(Counts, n_workers);
+    defer allocator.free(worker_counts);
+    @memset(std.mem.sliceAsBytes(worker_counts), 0);
+
+    const threads = try allocator.alloc(std.Thread, n_workers);
+    defer allocator.free(threads);
+    var spawned: usize = 0;
+    errdefer for (threads[0..spawned]) |t| t.join();
+
+    const chunk_size = slices.items.len / n_workers;
+    const remainder = slices.items.len % n_workers;
+    var offset: usize = 0;
+    for (0..n_workers) |i| {
+        const extra: usize = if (i < remainder) 1 else 0;
+        const count = chunk_size + extra;
+        const chunk = slices.items[offset .. offset + count];
+        offset += count;
+        threads[i] = try std.Thread.spawn(.{}, freqCountWorker, .{ chunk, &worker_counts[i] });
+        spawned += 1;
+    }
+    for (threads[0..spawned]) |t| t.join();
+
+    // Sum worker tables.
+    var merged: Counts = @splat(@splat(0));
+    for (worker_counts) |*wc| {
+        for (0..256) |a| {
+            for (0..256) |b| {
+                merged[a][b] += wc[a][b];
+            }
+        }
+    }
+    return finishFrequencyTable(&merged);
+}
+
+fn freqCountWorker(slices: []const []const u8, out: *[256][256]u64) void {
+    for (slices) |content| {
+        for (0..content.len - 1) |i| {
+            out[content[i]][content[i + 1]] += 1;
+        }
+    }
+}
+
 fn finishFrequencyTable(counts: *const [256][256]u64) [256][256]u16 {
     var max_count: u64 = 1;
     for (counts) |row| {
@@ -3190,7 +3370,7 @@ fn finishFrequencyTable(counts: *const [256][256]u64) [256][256]u16 {
         }
     }
     // Invert: count 0 → 0xFE00 (rare, high); max_count → 0x1000 (common, low).
-    var table: [256][256]u16 = .{.{0xFE00} ** 256} ** 256;
+    var table: [256][256]u16 = @splat(@splat(0xFE00));
     for (0..256) |a| {
         for (0..256) |b| {
             const c = counts[a][b];

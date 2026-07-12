@@ -1,20 +1,16 @@
 .{
     .name = .codedb2,
     .fingerprint = 0x6e18d96ca2a31757,
-    .version = "0.2.5826",
-    .minimum_zig_version = "0.16.0",
+    .version = "0.2.5830",
+    .minimum_zig_version = "0.17.0-dev.813+2153f8143",
     .dependencies = .{
-        .mcp_zig = .{
-            .url = "https://github.com/justrach/mcp-zig/archive/refs/heads/feature/7-zig-0-16-0-migration.tar.gz",
-            .hash = "mcp_zig-0.2.0-_PilzNJkAQADzH2t3vqpd_nl_W0ta-gDaumXKttuPyBy",
-        },
         .nanoregex = .{
-            .url = "git+https://github.com/justrach/nanoregex#736b46703454d5f37d3e46164fc91354386bb29c",
-            .hash = "nanoregex-0.0.1-EdkhcVDrAgB3eslIGGP7RK60162q26bVDA9GH44_iKnt",
+            .path = "vendor/nanoregex",
         },
     },
     .paths = .{
         "src",
+        "vendor/nanoregex",
         "build.zig",
         "build.zig.zon",
     },

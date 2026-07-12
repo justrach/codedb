@@ -15,7 +15,7 @@ jobs:
             const msg = [
               "👋 Thanks for the contribution! Quick heads-up: this repo lands changes on the **current `release/*` branch**, not `main`.",
               "",
-              "Please retarget this PR via **Edit → base branch** to the active release branch (currently `release/0.2.5825`).",
+              "Please retarget this PR via **Edit → base branch** to the active `release/*` branch shown in the repository branch list.",
               "",
               "_(Automated hint — reply here if you need a hand.)_",
             ].join("\n");

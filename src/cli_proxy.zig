@@ -122,6 +122,22 @@ const TOKEN_USER = extern struct {
 /// watchdog cadence and bounded by the previous owner's idle timeout.
 const cli_bind_retry_ms: u64 = 1000;
 
+/// #619 handover: wire-protocol sentinel a starting serve/mcp daemon sends to
+/// the CURRENT socket owner to ask it to give up the socket right away,
+/// instead of the newcomer waiting out the owner's idle timeout / full retry
+/// cadence. Any live owner — an auto-spawned cli-daemon or another serve/mcp
+/// daemon — honors it unconditionally on receipt (cliServeConn): same-uid
+/// access to the socket (chmod 0600) is already the trust boundary for this
+/// protocol, so no extra authentication is layered on top. Exported for
+/// tests. Chosen so it can never collide with a real request blob, which
+/// always starts with a project root path (see cliTryProxy).
+pub const cli_yield_sentinel = "\x01codedb-cli-yield-v1\x01";
+
+/// Settle delay after sending a yield request before the very next bind
+/// attempt: gives the owner a moment to process the sentinel, unbind, and
+/// unlink before we retry, without paying the full retry_interval_ms.
+const cli_yield_settle_ms: u64 = 20;
+
 /// Build the per-project socket path into `buf`. Stays well under sun_path
 /// (104 bytes on macOS / 108 on Linux): "/tmp/codedb-<uid>-<hash16>.sock" is
 /// at most ~40 bytes. Returns null only if formatting somehow overflows `buf`.
@@ -138,7 +154,7 @@ fn cliPipeMetadataPath(allocator: std.mem.Allocator, data_dir: []const u8) ![]u8
 }
 
 fn cliRandomPipeName(buf: []u8) ?[:0]const u8 {
-    return std.fmt.bufPrintZ(buf, "\\\\.\\pipe\\codedb-{d}-{x:0>16}-{x:0>16}", .{
+    return cio.bufPrintZ(buf, "\\\\.\\pipe\\codedb-{d}-{x:0>16}-{x:0>16}", .{
         cio.currentProcessId(),
         secureRandomU64(),
         secureRandomU64(),
@@ -303,7 +319,7 @@ fn currentUserPipeSddl(allocator: std.mem.Allocator) ?[:0]u8 {
     defer allocator.free(sid);
     const sddl = std.fmt.allocPrint(allocator, "D:P(A;;GA;;;{s})S:(ML;;NW;;;ME)", .{sid}) catch return null;
     defer allocator.free(sddl);
-    return allocator.dupeZ(u8, sddl) catch null;
+    return allocator.dupeSentinel(u8, sddl, 0) catch null;
 }
 
 fn processUserMatchesCurrent(allocator: std.mem.Allocator, pid: u32) bool {
@@ -434,7 +450,7 @@ const DaemonLock = if (builtin.os.tag == .windows) win.HANDLE else c_int;
 
 pub fn daemonLockTryAcquire(data_dir: []const u8) ?DaemonLock {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const p = std.fmt.bufPrintZ(&buf, "{s}/cli-daemon.lock", .{data_dir}) catch return null;
+    const p = cio.bufPrintZ(&buf, "{s}/cli-daemon.lock", .{data_dir}) catch return null;
     if (builtin.os.tag == .windows) {
         const path_w = windowsPathZ(std.heap.page_allocator, p) orelse return null;
         defer std.heap.page_allocator.free(path_w);
@@ -505,6 +521,25 @@ fn cliSocketLive(sa: SockAddr) bool {
     return std.c.connect(fd, @ptrCast(&sa_mut.addr), sa_mut.len) == 0;
 }
 
+/// #619 handover: connect to a LIVE owner and send the yield sentinel
+/// (best-effort — a write failure just means we fall back to the normal
+/// retry cadence). Does not wait for or read the owner's response: the
+/// owner closes and unlinks the socket synchronously before it ever gets a
+/// chance to write one, so waiting on a reply here would just be a way to
+/// hang against a buggy or hostile peer for no benefit.
+fn cliSendYieldRequest(sa: SockAddr) void {
+    const fd = std.c.socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
+    if (fd < 0) return;
+    defer _ = std.c.close(fd);
+    var sa_mut = sa;
+    if (std.c.connect(fd, @ptrCast(&sa_mut.addr), sa_mut.len) != 0) return;
+    var hdr: [5]u8 = undefined;
+    hdr[0] = 0;
+    std.mem.writeInt(u32, hdr[1..5], @intCast(cli_yield_sentinel.len), .little);
+    if (!cliWriteFull(fd, &hdr)) return;
+    _ = cliWriteFull(fd, cli_yield_sentinel);
+}
+
 /// Acquire the per-project CLI socket and return a listening fd.
 ///
 /// A stale node left by a dead daemon (bind fails but nothing is listening) is
@@ -512,15 +547,18 @@ fn cliSocketLive(sa: SockAddr) bool {
 /// behavior depends on `retry`:
 ///   - retry == false (auto-spawned cli-daemon that lost the race): return null
 ///     immediately so the duplicate exits instead of stealing a live socket.
-///   - retry == true (long-lived serve/mcp daemon): keep re-attempting every
-///     `retry_interval_ms` until the owner exits and the bind succeeds, so CLI
-///     calls stop falling back to a cold re-index once the older owner is gone
-///     (#619 — previously the loser disabled its proxy and never retried).
+///   - retry == true (long-lived serve/mcp daemon): send the owner a one-shot
+///     yield request (#619 handover — see cli_yield_sentinel) so a live owner
+///     gives the socket up right away instead of us waiting out its idle
+///     timeout, then keep re-attempting every `retry_interval_ms` until the
+///     bind succeeds. The request is sent at most once per call so two
+///     daemons racing to start can't ping-pong signals back and forth.
 /// Returns null if `shutdown` is set while waiting.
 pub fn cliAcquireListener(sock_path: []const u8, retry: bool, retry_interval_ms: u64, shutdown: *std.atomic.Value(bool)) ?c_int {
     var z_buf: [128]u8 = undefined;
-    const sock_path_z = std.fmt.bufPrintZ(&z_buf, "{s}", .{sock_path}) catch return null;
+    const sock_path_z = cio.bufPrintZ(&z_buf, "{s}", .{sock_path}) catch return null;
     const sa = cliFillSockaddr(sock_path) orelse return null;
+    var yield_sent = false;
     while (true) {
         if (cliBindListen(sa, sock_path_z)) |fd| return fd;
         // Bind failed: the path exists. Clear it only when no one is listening
@@ -528,6 +566,11 @@ pub fn cliAcquireListener(sock_path: []const u8, retry: bool, retry_interval_ms:
         if (!cliSocketLive(sa)) {
             _ = std.c.unlink(sock_path_z.ptr);
             if (cliBindListen(sa, sock_path_z)) |fd| return fd;
+        } else if (retry and !yield_sent) {
+            yield_sent = true;
+            cliSendYieldRequest(sa);
+            cio.sleepMs(cli_yield_settle_ms);
+            continue;
         }
         if (!retry) return null;
         if (shutdown.load(.acquire)) return null;
@@ -645,7 +688,7 @@ pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Expl
                 }
             }
             last_activity_ms.store(cio.milliTimestamp(), .release);
-            cliServeConn(io, allocator, explorer, store, abs_root, pipe);
+            _ = cliServeConn(io, allocator, explorer, store, abs_root, pipe);
             _ = DisconnectNamedPipe(pipe);
             win.CloseHandle(pipe);
         }
@@ -663,7 +706,7 @@ fn cliDaemonListenPosix(io: std.Io, allocator: std.mem.Allocator, explorer: *Exp
         return;
     };
     var path_z_buf: [128]u8 = undefined;
-    const sock_path_z = std.fmt.bufPrintZ(&path_z_buf, "{s}", .{sock_path}) catch {
+    const sock_path_z = cio.bufPrintZ(&path_z_buf, "{s}", .{sock_path}) catch {
         shutdown.store(true, .release);
         return;
     };
@@ -694,51 +737,71 @@ fn cliDaemonListenPosix(io: std.Io, allocator: std.mem.Allocator, explorer: *Exp
         }
         // Record activity for the cli-daemon idle watchdog before serving.
         last_activity_ms.store(cio.milliTimestamp(), .release);
-        cliServeConn(io, allocator, explorer, store, abs_root, conn);
+        const yield_requested = cliServeConn(io, allocator, explorer, store, abs_root, conn);
         _ = std.c.close(conn);
+        if (yield_requested) {
+            // #619 handover: give the socket up right away. The `defer`
+            // above closes the listener and unlinks the path so the
+            // requesting daemon's next bind attempt succeeds; `shutdown` is
+            // set so any caller watching it (e.g. the cli-daemon idle
+            // watchdog) treats this exactly like a lost bind race.
+            shutdown.store(true, .release);
+            return;
+        }
     }
 }
 
 /// Handle one client connection: read the framed request, run the query into a
 /// sink buffer via runQuery, and write the framed response.
-fn cliServeConn(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, conn: CliConn) void {
+///
+/// Returns true when the request was the #619 yield sentinel (see
+/// cli_yield_sentinel): the caller must then stop listening and give the
+/// socket up so the requesting daemon can take over.
+fn cliServeConn(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, conn: CliConn) bool {
     // Header: [u8 color][u32 blob_len]
     var hdr: [5]u8 = undefined;
-    if (!cliReadFull(conn, &hdr)) return;
+    if (!cliReadFull(conn, &hdr)) return false;
     const color = hdr[0] != 0;
     const blob_len = std.mem.readInt(u32, hdr[1..5], .little);
     if (blob_len == 0 or blob_len > cli_blob_max) {
         cliRespond(conn, 1, "");
-        return;
+        return false;
     }
 
     const blob = allocator.alloc(u8, blob_len) catch {
         cliRespond(conn, 1, "");
-        return;
+        return false;
     };
     defer allocator.free(blob);
-    if (!cliReadFull(conn, blob)) return;
+    if (!cliReadFull(conn, blob)) return false;
+
+    // #619 handover: a starting serve/mcp daemon asking us to give up the
+    // socket. Ack and tell the caller to stop listening — no query dispatch.
+    if (std.mem.eql(u8, blob, cli_yield_sentinel)) {
+        cliRespond(conn, 0, "");
+        return true;
+    }
 
     // Rebuild argv = ["codedb"] ++ split(blob, '\0'), skipping empty fields.
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(allocator);
     argv.append(allocator, "codedb") catch {
         cliRespond(conn, 1, "");
-        return;
+        return false;
     };
     var it = std.mem.splitScalar(u8, blob, 0);
     while (it.next()) |field| {
         if (field.len == 0) continue;
         argv.append(allocator, field) catch {
             cliRespond(conn, 1, "");
-            return;
+            return false;
         };
     }
 
     const parsed = parsePositional(argv.items);
     if (parsed.usage_exit or !cliIsQueryCmd(parsed.cmd)) {
         cliRespond(conn, 1, "");
-        return;
+        return false;
     }
 
     var sink: std.ArrayList(u8) = .empty;
@@ -749,6 +812,7 @@ fn cliServeConn(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
     out.flush();
 
     cliRespond(conn, code, sink.items);
+    return false;
 }
 
 /// Write the framed response [u8 code][u32 out_len][out_bytes] to `conn`.

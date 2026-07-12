@@ -33,10 +33,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // ── mcp-zig dependency ──
-    const mcp_dep = b.dependency("mcp_zig", .{});
-    exe.root_module.addImport("mcp", mcp_dep.module("mcp"));
-
     // ── nanoregex dependency ──
     const nanoregex_dep = b.dependency("nanoregex", .{});
     exe.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
@@ -58,16 +54,15 @@ pub fn build(b: *std.Build) void {
                 "--timestamp",
                 "-s",
                 identity,
-                b.getInstallPath(.bin, "codedb"),
             });
-            codesign.step.dependOn(&install_exe.step);
-            b.getInstallStep().dependOn(&codesign.step);
+            codesign.addFileArg(exe.getEmittedBin());
+            install_exe.step.dependOn(&codesign.step);
         }
     }
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step("run", "Run codedb daemon");
     run_step.dependOn(&run_cmd.step);
@@ -76,16 +71,16 @@ pub fn build(b: *std.Build) void {
     const test_filter = b.option([]const u8, "test-filter", "Only run tests whose name contains this substring");
     const test_step = b.step("test", "Run all tests");
 
-    const test_files = [_]struct { name: []const u8, path: []const u8, needs_mcp: bool, needs_nanoregex: bool }{
-        .{ .name = "test-core",     .path = "src/test_core.zig",     .needs_mcp = false, .needs_nanoregex = false },
-        .{ .name = "test-explore",  .path = "src/test_explore.zig",  .needs_mcp = false, .needs_nanoregex = true },
-        .{ .name = "test-index",    .path = "src/test_index.zig",    .needs_mcp = true,  .needs_nanoregex = true },
-        .{ .name = "test-parser",   .path = "src/test_parser.zig",   .needs_mcp = false, .needs_nanoregex = true },
-        .{ .name = "test-search",   .path = "src/test_search.zig",   .needs_mcp = true,  .needs_nanoregex = true },
-        .{ .name = "test-snapshot", .path = "src/test_snapshot.zig", .needs_mcp = false, .needs_nanoregex = true },
-        .{ .name = "test-mcp",      .path = "src/test_mcp.zig",      .needs_mcp = true,  .needs_nanoregex = true },
-        .{ .name = "test-query",    .path = "src/test_query.zig",    .needs_mcp = true,  .needs_nanoregex = true },
-        .{ .name = "test-bench",    .path = "src/test_bench.zig",    .needs_mcp = false, .needs_nanoregex = true },
+    const test_files = [_]struct { name: []const u8, path: []const u8, needs_nanoregex: bool }{
+        .{ .name = "test-core", .path = "src/test_core.zig", .needs_nanoregex = false },
+        .{ .name = "test-explore", .path = "src/test_explore.zig", .needs_nanoregex = true },
+        .{ .name = "test-index", .path = "src/test_index.zig", .needs_nanoregex = true },
+        .{ .name = "test-parser", .path = "src/test_parser.zig", .needs_nanoregex = true },
+        .{ .name = "test-search", .path = "src/test_search.zig", .needs_nanoregex = true },
+        .{ .name = "test-snapshot", .path = "src/test_snapshot.zig", .needs_nanoregex = true },
+        .{ .name = "test-mcp", .path = "src/test_mcp.zig", .needs_nanoregex = true },
+        .{ .name = "test-query", .path = "src/test_query.zig", .needs_nanoregex = true },
+        .{ .name = "test-bench", .path = "src/test_bench.zig", .needs_nanoregex = true },
     };
 
     for (test_files) |tf| {
@@ -97,7 +92,6 @@ pub fn build(b: *std.Build) void {
                 .link_libc = true,
             }),
         });
-        if (tf.needs_mcp) t.root_module.addImport("mcp", mcp_dep.module("mcp"));
         if (tf.needs_nanoregex) t.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
         if (test_filter) |f| {
             const filters = b.allocator.alloc([]const u8, 1) catch @panic("oom");
@@ -110,7 +104,6 @@ pub fn build(b: *std.Build) void {
         const individual_step = b.step(tf.name, b.fmt("Run {s}", .{tf.name}));
         individual_step.dependOn(&run.step);
     }
-
 
     // ── Library tests (verify the module root compiles) ──
     const lib_tests = b.addTest(.{
@@ -135,7 +128,6 @@ pub fn build(b: *std.Build) void {
     adversarial_tests.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
     test_step.dependOn(&b.addRunArtifact(adversarial_tests).step);
 
-
     // ── Benchmarks ──
     const bench = b.addExecutable(.{
         .name = "bench",
@@ -147,11 +139,26 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const bench_run = b.addRunArtifact(bench);
-    bench.root_module.addImport("mcp", mcp_dep.module("mcp"));
     bench.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
-    if (b.args) |args| bench_run.addArgs(args);
+    bench_run.addPassthruArgs();
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&bench_run.step);
+
+    // ── Edge-case benchmarks (synthetic pathological corpus) ──
+    const bench_edge = b.addExecutable(.{
+        .name = "bench-edge",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench_edge.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+        }),
+    });
+    bench_edge.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    const bench_edge_run = b.addRunArtifact(bench_edge);
+    bench_edge_run.addPassthruArgs();
+    const bench_edge_step = b.step("bench-edge", "Run edge-case benchmarks (synthetic pathological corpus)");
+    bench_edge_step.dependOn(&bench_edge_run.step);
 
     // ── Benchmark (repo benchmark — indexing speed, query latency, recall) ──
     const benchmark = b.addExecutable(.{
@@ -163,10 +170,9 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    benchmark.root_module.addImport("mcp", mcp_dep.module("mcp"));
     benchmark.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
     const benchmark_run = b.addRunArtifact(benchmark);
-    if (b.args) |args| benchmark_run.addArgs(args);
+    benchmark_run.addPassthruArgs();
     const benchmark_step = b.step("benchmark", "Run repo benchmark (use -- --root /path/to/repo)");
     benchmark_step.dependOn(&benchmark_run.step);
 

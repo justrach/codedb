@@ -2,13 +2,15 @@
 const cio = @import("cio.zig");
 //
 // Exposes codedb's exploration + edit engine as MCP tools.
-// Uses mcp-zig for protocol utilities; adds roots support for workspace awareness.
+// Implements the JSON-RPC transport directly and adds roots support for workspace awareness.
 
 const std = @import("std");
 const testing = std.testing;
-const mcp_lib = @import("mcp");
-const mcpj = mcp_lib.json;
-pub const Root = mcp_lib.mcp.Root;
+const mcpj = @import("mcp_json.zig");
+pub const Root = struct {
+    uri: []u8,
+    name: []u8,
+};
 const Store = @import("store.zig").Store;
 const explore_mod = @import("explore.zig");
 const Explorer = explore_mod.Explorer;
@@ -329,7 +331,7 @@ const ProjectCache = struct {
         return .{
             .mu = .{},
             .alloc = alloc_,
-            .entries = [_]?*Entry{null} ** MAX_CACHED,
+            .entries = @splat(null),
             .default_path = default_path_,
             .default_snapshot_cache = .{},
             .default_deps_cache = .{},
@@ -482,6 +484,37 @@ const ProjectCache = struct {
     }
 };
 
+fn assembleMcpContentEnvelope(
+    alloc: std.mem.Allocator,
+    summary: []const u8,
+    output: []const u8,
+    guidance: []const u8,
+    is_error: bool,
+    result: *std.ArrayList(u8),
+) bool {
+    result.ensureTotalCapacity(alloc, output.len + summary.len + guidance.len + 256) catch {};
+    result.appendSlice(alloc, "{\"content\":[") catch return false;
+
+    if (summary.len > 0) {
+        result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return false;
+        mcpj.writeEscaped(alloc, result, summary);
+        result.appendSlice(alloc, "\"},") catch return false;
+    }
+
+    result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"assistant\"]},\"text\":\"") catch return false;
+    mcpj.writeEscaped(alloc, result, output);
+    result.appendSlice(alloc, "\"}") catch return false;
+
+    if (guidance.len > 0) {
+        result.appendSlice(alloc, ",{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return false;
+        mcpj.writeEscaped(alloc, result, guidance);
+        result.appendSlice(alloc, "\"}") catch return false;
+    }
+
+    result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return false;
+    return true;
+}
+
 pub const BenchContext = struct {
     cache: ProjectCache,
 
@@ -521,7 +554,7 @@ pub const BenchContext = struct {
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
     ) void {
-        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, 1, null);
+        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, 1, null, null);
     }
 
     pub fn runToolCall(
@@ -535,7 +568,7 @@ pub const BenchContext = struct {
         explorer: *Explorer,
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
-    ) struct { dispatch_ns: u64, response_bytes: usize } {
+    ) struct { dispatch_ns: u64, response_bytes: usize, response_hash: u64 } {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(alloc);
 
@@ -552,6 +585,15 @@ pub const BenchContext = struct {
         summary.appendSlice(alloc, if (is_error) MCP_RED ++ MCP_CROSS ++ " " ++ MCP_RESET else MCP_GREEN ++ MCP_CHECK ++ " " ++ MCP_RESET) catch {};
         summary.appendSlice(alloc, mcpToolIcon(name)) catch {};
         mcpGenerateSummary(alloc, name, args, out.items, is_error, &summary);
+
+        // Normalize only the nondeterministic duration. Everything else in the
+        // client-visible MCP envelope participates in response parity.
+        var parity_summary: std.ArrayList(u8) = .empty;
+        defer parity_summary.deinit(alloc);
+        parity_summary.appendSlice(alloc, summary.items) catch {};
+        var parity_dur_buf: [96]u8 = undefined;
+        parity_summary.appendSlice(alloc, mcpFormatDuration(&parity_dur_buf, 0)) catch {};
+
         var dur_buf: [96]u8 = undefined;
         summary.appendSlice(alloc, mcpFormatDuration(&dur_buf, elapsed)) catch {};
 
@@ -561,27 +603,33 @@ pub const BenchContext = struct {
 
         var result: std.ArrayList(u8) = .empty;
         defer result.deinit(alloc);
-        result.ensureTotalCapacity(alloc, out.items.len + summary.items.len + guidance.items.len + 256) catch {};
-        result.appendSlice(alloc, "{\"content\":[") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0 };
-
-        if (summary.items.len > 0) {
-            result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-            mcpj.writeEscaped(alloc, &result, summary.items);
-            result.appendSlice(alloc, "\"},") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+        if (!assembleMcpContentEnvelope(alloc, summary.items, out.items, guidance.items, is_error, &result)) {
+            return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0, .response_hash = 0 };
         }
 
-        result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-        mcpj.writeEscaped(alloc, &result, out.items);
-        result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-
-        if (guidance.items.len > 0) {
-            result.appendSlice(alloc, ",{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-            mcpj.writeEscaped(alloc, &result, guidance.items);
-            result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+        const bench_id = std.json.Value{ .integer = 1 };
+        var rpc_result: std.ArrayList(u8) = .empty;
+        defer rpc_result.deinit(alloc);
+        if (!assembleJsonRpcResult(alloc, bench_id, result.items, &rpc_result)) {
+            return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0, .response_hash = 0 };
         }
 
-        result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-        return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+        var parity_result: std.ArrayList(u8) = .empty;
+        defer parity_result.deinit(alloc);
+        if (!assembleMcpContentEnvelope(alloc, parity_summary.items, out.items, guidance.items, is_error, &parity_result)) {
+            return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = rpc_result.items.len, .response_hash = 0 };
+        }
+        var parity_rpc_result: std.ArrayList(u8) = .empty;
+        defer parity_rpc_result.deinit(alloc);
+        if (!assembleJsonRpcResult(alloc, bench_id, parity_result.items, &parity_rpc_result)) {
+            return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = rpc_result.items.len, .response_hash = 0 };
+        }
+
+        return .{
+            .dispatch_ns = @intCast(elapsed),
+            .response_bytes = rpc_result.items.len,
+            .response_hash = std.hash.Wyhash.hash(0, parity_rpc_result.items),
+        };
     }
 };
 
@@ -617,17 +665,17 @@ pub const Tool = enum {
 pub const tools_list =
     \\{"tools":[
     \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_outline","description":"Symbol outline of one file: functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view — each symbol's declaration line with its body elided as '{ … N lines }', so a 2,000-line file collapses to ~one line per symbol.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_symbol","description":"PRIMARY tool for locating a definition — reach for this FIRST when you know or can guess a symbol name, instead of codedb_search. Finds symbol definitions across the index — exact name, prefix, glob pattern, fuzzy match, or kind filter. Returns file, line, kind, and score. Pass format=json for structured output.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"prefix":{"type":"string","description":"Prefix match (e.g. parse_)"},"pattern":{"type":"string","description":"Glob pattern on symbol name (e.g. *Manager)"},"kind":{"type":"string","description":"Filter by kind: function, struct, interface, class, method, enum"},"fuzzy":{"type":"boolean","description":"Fuzzy/typo-tolerant match when name is set (default: false)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"max_results":{"type":"integer","description":"Max results (default: 50, cap 200)"},"format":{"type":"string","description":"Set to json for structured JSON output"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_search","description":"Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+    \\{"name":"codedb_outline","description":"Replaces reading a whole file with cat/head/tail: symbol outline of one file — functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view — each symbol's declaration line with its body elided as '{ … N lines }', so a 2,000-line file collapses to ~one line per symbol.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_symbol","description":"Replaces grepping for a definition: PRIMARY tool for locating a definition — reach for this FIRST when you know or can guess a symbol name, instead of codedb_search. Finds symbol definitions across the index — exact name, prefix, glob pattern, fuzzy match, or kind filter. Returns file, line, kind, and score. Pass format=json for structured output.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"prefix":{"type":"string","description":"Prefix match (e.g. parse_)"},"pattern":{"type":"string","description":"Glob pattern on symbol name (e.g. *Manager)"},"kind":{"type":"string","description":"Filter by kind: function, struct, interface, class, method, enum"},"fuzzy":{"type":"boolean","description":"Fuzzy/typo-tolerant match when name is set (default: false)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"max_results":{"type":"integer","description":"Max results (default: 50, cap 200)"},"format":{"type":"string","description":"Set to json for structured JSON output"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
     \\{"name":"codedb_word","description":"Exact-identifier lookup via inverted index — every occurrence of one word, O(1). Use for single identifiers; use codedb_search for substrings or phrases.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
-    \\{"name":"codedb_callers","description":"PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+    \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
     \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Use after codedb_callers when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]}},
     \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE tight block (keywords used + symbol definitions + ranked files + top file:line snippets). Replaces 3-5 sequential search/word/symbol calls — use for first-touch orientation on a new task. For narrow follow-ups stick with codedb_search/codedb_symbol.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (~4 chars/token, min 256). Sections are packed by value — files, symbol definitions, callers, calls, snippets — and omitted ones leave a one-line marker."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]}},
     \\{"name":"codedb_diagnostics","description":"Fetch the latest linter diagnostics for a file, produced off the edit path (ruff/biome/etc.) after a recent codedb_edit. Call right after an edit to surface real errors the change may have introduced (undefined names, type/lint issues) on top of codedb's built-in checks. Returns 'no diagnostics available yet' when none are cached or external linters are disabled.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to fetch diagnostics for"}},"required":["path"]}},
     \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_deps","description":"PRIMARY tool for impact/blast-radius — use this instead of grepping import lines. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set transitive=true for the full BFS blast radius.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
-    \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Run codedb_outline first to pick the range — large files burn tokens fast. Pass if_hash to skip re-reads when the file is unchanged.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"raw":{"type":"boolean","description":"Byte-exact output: no line-number prefixes and no hash header, so the result can feed an exact-string edit (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_deps","description":"Replaces grepping import lines: PRIMARY tool for impact/blast-radius — use this instead. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set transitive=true for the full BFS blast radius.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_read","description":"Replaces cat/head/tail: read file contents, optionally a line range. Run codedb_outline first to pick the range — large files burn tokens fast. Pass if_hash to skip re-reads when the file is unchanged.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"raw":{"type":"boolean","description":"Byte-exact output: no line-number prefixes and no hash header, so the result can feed an exact-string edit (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_edit","description":"Fallback editor — prefer your own native file-editing tool. codedb is a context/navigation tool, not an editor; reach for codedb_edit only when no native edit capability is available. When you do edit through codedb, op=str_replace with old_string/new_string is safest (old_string must match exactly once) — it cannot mis-target surrounding lines the way a range replace can. Also supports line ops: replace (range), insert (after line), delete (range), and create (author a new file from content). The result includes a syntax-health warning if the edit unbalances delimiters or drops a still-used import — heed it and re-read before continuing. Pass if_hash from the latest codedb_read to reject stale-line edits. Set dry_run=true for a diff preview.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to edit"},"op":{"type":"string","enum":["str_replace","replace","insert","delete","create"],"description":"Edit operation. str_replace=anchored (old_string/new_string); replace/delete use range; insert uses after; create=author a NEW file from content (errors if the path already exists)."},"content":{"type":"string","description":"New content (for replace/insert/create)"},"old_string":{"type":"string","description":"For op=str_replace: exact text to find; must occur exactly once in the file."},"new_string":{"type":"string","description":"For op=str_replace: replacement text for old_string."},"range_start":{"type":"integer","description":"Start line number (for replace/delete, 1-indexed)"},"range_end":{"type":"integer","description":"End line number (for replace/delete, 1-indexed)"},"after":{"type":"integer","description":"Insert after this line number (for insert)"},"if_hash":{"type":"string","description":"Hex hash from codedb_read's 'hash:' line. Edit is rejected with HashMismatch if the file has changed since."},"dry_run":{"type":"boolean","description":"If true, return a diff preview without writing. Disk and store are untouched. Default: false."}},"required":["path","op"]}},
     \\{"name":"codedb_changes","description":"Direct way to see WHAT changed since a point in time, instead of re-scanning the tree. Files changed since a given sequence number. Pair with codedb_status (which reports the current sequence number) to poll for updates.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
     \\{"name":"codedb_status","description":"Current indexed-file count, sequence number, and scan phase.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
@@ -636,9 +684,9 @@ pub const tools_list =
     \\{"name":"codedb_remote","description":"Query indexed public repos via api.wiki.codes. Pass action= one of: tree, outline, search, read, symbol, deps, score, cves, commits, branches, dep-history, policy, actions. Use action=actions first if unsure what a repo supports.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. vercel/next.js) or a raw wiki slug such as chromium."},"action":{"type":"string","enum":["tree","outline","search","read","actions","symbol","policy","deps","score","cves","commits","branches","dep-history"],"description":"What to query from api.wiki.codes: actions, tree, search, outline, read, symbol, policy, deps, score, cves, commits, branches, dep-history."},"query":{"type":"string","description":"Action-specific argument. search: text query. symbol: identifier name. outline: file path."},"path":{"type":"string","description":"For action=read: the file path to fetch."},"lines":{"type":"string","description":"For action=read: line range like '10-60' (1-indexed, inclusive). Omit for full file."},"limit":{"type":"integer","description":"For search/tree/deps/commits/branches/dep-history: cap the number of items returned (server may enforce its own ceiling)."},"offset":{"type":"integer","description":"For tree/deps/commits/branches/dep-history: skip the first N items (pagination)."},"prefix":{"type":"string","description":"For tree: only return paths starting with this prefix (e.g. 'src/')."},"expand":{"type":"boolean","description":"For tree: when true, return the full file list. When false returns a compact directory summary when supported."},"since":{"type":"string","description":"For commits/dep-history: ISO timestamp or commit SHA to start from."},"scope":{"type":"string","enum":["runtime","all"],"description":"For score/cves only. Defaults to runtime; use all to include dev/tooling dependencies."},"backend":{"type":"string","enum":["wiki"],"description":"Deprecated compatibility field. Only 'wiki' is accepted; requests always use api.wiki.codes."}},"required":["repo","action"]}},
     \\{"name":"codedb_projects","description":"List every locally indexed project on this machine: path, data-dir hash, snapshot presence.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"codedb_index","description":"Index a local FOLDER (not a file). Builds outlines, trigrams, word index, and writes codedb.snapshot. After indexing, query it via the project= param on any other tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the FOLDER (not a file) to index, e.g. /Users/you/myproject"}},"required":["path"]}},
-    \\{"name":"codedb_find","description":"Fuzzy FILE-NAME search ONLY — typo-tolerant subsequence match against indexed file paths. NOT a content/symbol search: 'rerank' will NOT find files containing rerankSignalScore unless the filename itself contains 'rerank'. For symbol lookups use codedb_word/codedb_symbol; for content use codedb_search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy filename query (e.g. 'authmidlware' for auth_middleware.go, 'test_auth', 'main.zig'). Matched against path basenames, not file contents."},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+    \\{"name":"codedb_find","description":"Replaces find for filenames: fuzzy FILE-NAME search ONLY — typo-tolerant subsequence match against indexed file paths. NOT a content/symbol search: 'rerank' will NOT find files containing rerankSignalScore unless the filename itself contains 'rerank'. For symbol lookups use codedb_word/codedb_symbol; for content use codedb_search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy filename query (e.g. 'authmidlware' for auth_middleware.go, 'test_auth', 'main.zig'). Matched against path basenames, not file contents."},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
     \\{"name":"codedb_query","description":"Composable pipeline — chain ops where each step feeds the next. Ops: find, search, filter, deps, outline, read, sort, limit. Replaces multi-call workflows with one request.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}; filter op: {\"op\":\"filter\",\"glob\":\"src/**\"} or {\"op\":\"filter\",\"ext\":\".zig\"} ('pattern' aliases 'glob'; bare patterns auto-promote to '**/<pattern>')"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
-    \\{"name":"codedb_glob","description":"Match indexed paths against a glob: * (no /), ** (across /), ? (one char), {a,b} alternatives. Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '**/*.{yaml,yml}', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
+    \\{"name":"codedb_glob","description":"Replaces find for path patterns: match indexed paths against a glob: * (no /), ** (across /), ? (one char), {a,b} alternatives. Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '**/*.{yaml,yml}', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
     \\{"name":"codedb_ls","description":"List immediate children of a directory: dirs first (alphabetical), then files with language and line/symbol counts. Drill down level-by-level when codedb_tree is too verbose.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
     \\]}
 ;
@@ -842,6 +890,7 @@ const Session = struct {
     }
 
     fn deinit(self: *Session) void {
+        if (self.client_name) |cn| self.alloc.free(cn);
         self.freeRoots();
         self.roots.deinit(self.alloc);
     }
@@ -856,7 +905,7 @@ pub const ConvergenceGovernor = struct {
     pub const HISTORY = 8; // ring-buffer window of recent calls
     pub const WARN_AT = 3; // same signature this many times in the window -> nudge
 
-    sigs: [HISTORY]u64 = [_]u64{0} ** HISTORY,
+    sigs: [HISTORY]u64 = @splat(0),
     head: usize = 0,
 
     /// Record a call signature and return how many times it has occurred within
@@ -1033,7 +1082,7 @@ pub fn run(
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) writeResult(alloc, stdout, id, tools_list_response);
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id, &session.governor);
+            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id, &session.governor, session.client_name);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
         } else {
@@ -1060,7 +1109,11 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
         const ci = p.object.get("clientInfo") orelse break :client_name;
         if (ci != .object) break :client_name;
         if (mcpj.getStr(&ci.object, "name")) |name| {
-            s.client_name = name;
+            // Own the string: `name` borrows the initialize request's parsed
+            // JSON, freed at the end of this dispatch iteration; the
+            // client-aware block policy reads it on later tools/call requests.
+            if (s.client_name) |old| s.alloc.free(old);
+            s.client_name = s.alloc.dupe(u8, name) catch null;
         }
     }
     // #505 / #506: negotiate the protocol version with the client.
@@ -1197,6 +1250,7 @@ fn handleCall(
     deferred_scan: ?*DeferredScan,
     edit_agent_id: u64,
     governor: ?*ConvergenceGovernor,
+    client_name: ?[]const u8,
 ) void {
     const is_notification = id == null;
 
@@ -1275,7 +1329,7 @@ fn handleCall(
     }
     if (is_notification) return;
 
-    const lean = mcpLeanMode();
+    const lean = !mcpEmitRichBlocks(client_name);
 
     // Block 1: Human-readable colored summary (ANSI — preview pane always
     // renders it). Skipped in lean mode (agents don't render ANSI; the
@@ -1299,33 +1353,11 @@ fn handleCall(
     }
 
     // Assemble MCP content envelope (1 block in lean mode, up to 3 otherwise).
+    // BenchContext uses this same path so parity covers the full client-visible
+    // response shape, escaping, guidance, and isError value.
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(alloc);
-    result.ensureTotalCapacity(alloc, out.items.len + summary.items.len + guidance.items.len + 256) catch {};
-    result.appendSlice(alloc, "{\"content\":[") catch return;
-
-    // Block 1 (summary — audience: user; spec-canonical signal that
-    // token-conscious clients can strip)
-    if (summary.items.len > 0) {
-        result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return;
-        mcpj.writeEscaped(alloc, &result, summary.items);
-        result.appendSlice(alloc, "\"},") catch return;
-    }
-
-    // Block 2 (raw data — audience: assistant; this is what the model
-    // actually consumes)
-    result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"assistant\"]},\"text\":\"") catch return;
-    mcpj.writeEscaped(alloc, &result, out.items);
-    result.appendSlice(alloc, "\"}") catch return;
-
-    // Block 3 (guidance — audience: user)
-    if (guidance.items.len > 0) {
-        result.appendSlice(alloc, ",{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return;
-        mcpj.writeEscaped(alloc, &result, guidance.items);
-        result.appendSlice(alloc, "\"}") catch return;
-    }
-
-    result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return;
+    if (!assembleMcpContentEnvelope(alloc, summary.items, out.items, guidance.items, is_error, &result)) return;
     writeResult(alloc, stdout, id, result.items);
 }
 
@@ -1429,6 +1461,17 @@ fn dispatch(
 
     if (toolDependsOnScannedIndex(tool) and project_path == null) {
         waitForScanReady(scan_wait_timeout_ms);
+    }
+    // Mutations must not race the cold-scan shard publication: a worker shard
+    // represents the file contents observed at scan start and is merged as one
+    // generation. Read-only tools may return partial results after the short
+    // timeout above, but edits/re-indexing wait for that generation to publish.
+    if (project_path == null and (tool == .codedb_edit or tool == .codedb_bundle or tool == .codedb_index)) {
+        waitForScanReady(120_000);
+        if (getScanState() != .ready) {
+            out.appendSlice(alloc, "error: initial scan is still in progress; retry the mutation shortly") catch {};
+            return;
+        }
     }
 
     if (tool == .codedb_word or tool == .codedb_context or (tool == .codedb_search and shouldLoadWordIndexForSearch(args))) {
@@ -1671,15 +1714,7 @@ pub fn isBareIdentifier(s: []const u8) bool {
 
 fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query: []const u8, out: *std.ArrayList(u8)) void {
     if (!isBareIdentifier(query)) return;
-    const spec = Explorer.SymbolSearchSpec{
-        .name = query,
-        .prefix = null,
-        .pattern = null,
-        .kind = null,
-        .fuzzy = false,
-        .max_results = 1,
-    };
-    const results = explorer.searchSymbols(spec, alloc) catch return;
+    const results = explorer.findAllSymbols(query, alloc) catch return;
     defer {
         for (results) |r| {
             alloc.free(r.path);
@@ -1689,8 +1724,36 @@ fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query:
         alloc.free(results);
     }
     if (results.len == 0) return;
+
+    // Fewer round-trips: `query` is an indexed symbol, so instead of nudging the
+    // agent to make a *second* codedb_symbol call, surface the definition site(s)
+    // inline. Prefer real definitions over import/comment matches (same filter as
+    // renderSymbolDefsFast). One call now answers "where is X defined?".
+    var has_def = false;
+    for (results) |r| {
+        if (r.symbol.kind != .import and r.symbol.kind != .comment_block) {
+            has_def = true;
+            break;
+        }
+    }
+    var total_defs: usize = 0;
+    for (results) |r| {
+        const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+        if (!has_def or is_def) total_defs += 1;
+    }
     const w = cio.listWriter(out, alloc);
-    w.print("↪ '{s}' is an indexed symbol — codedb_symbol returns its definition and codedb_callers its call sites in one call (no search+read needed).\n", .{query}) catch {};
+    const cap: usize = 3;
+    var shown: usize = 0;
+    for (results) |r| {
+        if (shown >= cap) break;
+        const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+        if (has_def and !is_def) continue;
+        if (shown == 0) w.print("↪ '{s}' is defined at (codedb_symbol for bodies):\n", .{query}) catch {};
+        w.print("  {s}:{d} ({s})\n", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind) }) catch {};
+        shown += 1;
+    }
+    if (shown == 0) return;
+    if (total_defs > shown) w.print("  (+{d} more — codedb_symbol '{s}')\n", .{ total_defs - shown, query }) catch {};
 }
 
 // Issue #626 follow-up: codedb_deps is the one structural tool nothing points
@@ -1701,6 +1764,47 @@ fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query:
 pub fn depsHint(result_count: usize) ?[]const u8 {
     if (result_count != 1) return null;
     return "↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.\n";
+}
+
+/// Cap on printed match-text bytes (~50 tokens) — trims agent output tokens
+/// on search-result rendering without dropping results or reordering them.
+const MAX_MATCH_LINE_BYTES: usize = 200;
+
+/// Strip leading ASCII whitespace (indentation is pure token waste — the
+/// agent already has the line number) and cap at MAX_MATCH_LINE_BYTES,
+/// backing off to a UTF-8 boundary so a multi-byte sequence is never split.
+fn trimMatchText(text: []const u8) struct { text: []const u8, truncated: bool } {
+    var start: usize = 0;
+    while (start < text.len and (text[start] == ' ' or text[start] == '\t')) : (start += 1) {}
+    const trimmed = text[start..];
+    if (trimmed.len <= MAX_MATCH_LINE_BYTES) return .{ .text = trimmed, .truncated = false };
+    var cut = MAX_MATCH_LINE_BYTES;
+    while (cut > 0 and (trimmed[cut] & 0xC0) == 0x80) cut -= 1;
+    return .{ .text = trimmed[0..cut], .truncated = true };
+}
+
+/// Write "<prefix><path>:<line_num>: <trimmed text>" (plus "…" if capped),
+/// WITHOUT a trailing newline — used by callers that append a scope suffix
+/// (" [in <scope> ...]") before the line ends.
+fn appendMatchLineNoNL(w: anytype, prefix: []const u8, path: []const u8, line_num: u32, line_text: []const u8) void {
+    const r = trimMatchText(line_text);
+    if (r.truncated) {
+        w.print("{s}{s}:{d}: {s}\u{2026}", .{ prefix, path, line_num, r.text }) catch {};
+    } else {
+        w.print("{s}{s}:{d}: {s}", .{ prefix, path, line_num, r.text }) catch {};
+    }
+}
+
+/// Render one search-result line: "<prefix><path>:<line>" plus ": <text>" when
+/// line_text is non-null. Trims the match text (see trimMatchText) to save
+/// agent output tokens. prefix is "  " for codedb_search, "- " for bundle, "" for query.
+fn appendMatchLine(w: anytype, prefix: []const u8, path: []const u8, line_num: u32, line_text: ?[]const u8) void {
+    if (line_text) |t| {
+        appendMatchLineNoNL(w, prefix, path, line_num, t);
+        w.print("\n", .{}) catch {};
+    } else {
+        w.print("{s}{s}:{d}\n", .{ prefix, path, line_num }) catch {};
+    }
 }
 
 fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
@@ -1783,17 +1887,12 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
             if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
+                appendMatchLine(w, "  ", r.path, r.line_num, null);
             } else if (r.scope_name) |sn| {
-                w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                    r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-                }) catch {};
+                appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+                w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
             } else {
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
+                appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
             }
         }
     } else if (scope) {
@@ -1839,17 +1938,12 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 continue;
             }
             if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
+                appendMatchLine(w, "  ", r.path, r.line_num, null);
             } else if (r.scope_name) |sn| {
-                w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                    r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-                }) catch {};
+                appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+                w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
             } else {
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
+                appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
             }
             shown += 1;
         }
@@ -1900,11 +1994,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 }
                 continue;
             }
-            if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-            } else {
-                w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-            }
+            appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
             shown += 1;
         }
         if (shown < visible_total) {
@@ -2027,11 +2117,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                     }
                     continue;
                 }
-                if (paths_only) {
-                    w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-                } else {
-                    w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-                }
+                appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
                 shown += 1;
             }
             if (shown < visible_total) {
@@ -2055,11 +2141,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 }
                 continue;
             }
-            if (paths_only) {
-                w.print("  {s}:{d}\n", .{ r.path, r.line_num }) catch {};
-            } else {
-                w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
-            }
+            appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
             shown += 1;
         }
         if (shown < visible_total) {
@@ -2154,11 +2236,10 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     for (kept.items) |kept_idx| {
         const r = results[kept_idx];
         if (r.scope_name) |sn| {
-            w.print("  {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-            }) catch {};
+            appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+            w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
         } else {
-            w.print("  {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+            appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
         }
     }
 }
@@ -2571,35 +2652,8 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             wsr.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
             wsl.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
             if (inline_bodies) {
-                if (explorer.getContent(sr.path, A) catch null) |content| {
-                    var cur_line: u32 = 1;
-                    var i: usize = 0;
-                    var line_start: ?usize = null;
-                    var captured: u32 = 0;
-                    const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line + 39) else sr.line;
-                    const max_lines: u32 = body_end - sr.line + 1;
-                    if (cur_line == sr.line) line_start = 0;
-                    while (i < content.len and captured < max_lines) : (i += 1) {
-                        if (content[i] == '\n') {
-                            if (line_start) |ls| {
-                                const line_end = i;
-                                wsr.print("       {d:>5} | {s}\n", .{ cur_line, content[ls..line_end] }) catch {};
-                                captured += 1;
-                            }
-                            cur_line += 1;
-                            if (cur_line >= sr.line and cur_line <= body_end) {
-                                line_start = i + 1;
-                            } else {
-                                line_start = null;
-                            }
-                        }
-                    }
-                    if (line_start) |ls| {
-                        if (captured < max_lines) {
-                            wsr.print("       {d:>5} | {s}\n", .{ cur_line, content[ls..] }) catch {};
-                        }
-                    }
-                }
+                const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line + 39) else sr.line;
+                _ = explorer.appendLineRange(sr.path, sr.line, body_end, "       ", A, &sec_syms_rich) catch false;
             }
         }
 
@@ -2653,11 +2707,10 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                         any_callers = true;
                     }
                     if (r.scope_name) |sn| {
-                        wc.print("- {s}:{d}: {s}  [in {s} ({s}, L{d}-L{d})]\n", .{
-                            r.path, r.line_num, r.line_text, sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
-                        }) catch {};
+                        appendMatchLineNoNL(wc, "- ", r.path, r.line_num, r.line_text);
+                        wc.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
                     } else {
-                        wc.print("- {s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+                        appendMatchLine(wc, "- ", r.path, r.line_num, r.line_text);
                     }
                     shown_for_sym += 1;
                     total_shown += 1;
@@ -2842,7 +2895,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     }
     if (cio.posixGetenv("CODEDB_CONTEXT_PROFILE") != null) {
         std.log.info("ctx-prof ns: reader={d} cand={d} kwloop={d} rank={d} render={d} sites={d} emit={d} total={d}", .{
-            pf_reader - pf_t0, pf_cand - pf_reader, pf_kwloop - pf_cand, pf_rank - pf_kwloop,
+            pf_reader - pf_t0,   pf_cand - pf_reader,  pf_kwloop - pf_cand,            pf_rank - pf_kwloop,
             pf_render - pf_rank, pf_sites - pf_render, cio.nanoTimestamp() - pf_sites, cio.nanoTimestamp() - pf_t0,
         });
     }
@@ -4775,7 +4828,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 for (file_set.items) |p| path_set.put(p, {}) catch {};
                 for (results) |r| {
                     if (path_set.contains(r.path)) {
-                        w.print("{s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+                        appendMatchLine(w, "", r.path, r.line_num, r.line_text);
                         hit_set.put(r.path, {}) catch {};
                     }
                 }
@@ -4793,7 +4846,7 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
                 defer seen.deinit();
                 file_set.clearRetainingCapacity();
                 for (results) |r| {
-                    w.print("{s}:{d}: {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+                    appendMatchLine(w, "", r.path, r.line_num, r.line_text);
                     if (!seen.contains(r.path)) {
                         // Dupe path — search results are freed by the defer above,
                         // but file_set must outlive this step for downstream ops
@@ -5250,22 +5303,33 @@ pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
     return rel;
 }
 
+fn assembleJsonRpcResult(alloc: std.mem.Allocator, id: ?std.json.Value, result: []const u8, buf: *std.ArrayList(u8)) bool {
+    buf.ensureTotalCapacity(alloc, result.len + 64) catch {};
+    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return false;
+    appendId(alloc, buf, id);
+    buf.appendSlice(alloc, ",\"result\":") catch return false;
+    // MCP responses are normally compact JSON with no raw line breaks. Let
+    // std.mem's vectorized search prove that once, then copy the whole payload;
+    // retain the sanitizing fallback for any non-canonical producer.
+    if (std.mem.indexOfAny(u8, result, "\n\r") == null) {
+        buf.appendSlice(alloc, result) catch return false;
+    } else {
+        var i: usize = 0;
+        while (i < result.len) {
+            const start = i;
+            while (i < result.len and result[i] != '\n' and result[i] != '\r') : (i += 1) {}
+            if (i > start) buf.appendSlice(alloc, result[start..i]) catch return false;
+            if (i < result.len) i += 1;
+        }
+    }
+    buf.appendSlice(alloc, "}\n") catch return false;
+    return true;
+}
+
 fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8) void {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
-    buf.ensureTotalCapacity(alloc, result.len + 64) catch {};
-    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
-    appendId(alloc, &buf, id);
-    buf.appendSlice(alloc, ",\"result\":") catch return;
-    // Batch-copy non-newline runs instead of per-byte append.
-    var i: usize = 0;
-    while (i < result.len) {
-        const start = i;
-        while (i < result.len and result[i] != '\n' and result[i] != '\r') : (i += 1) {}
-        if (i > start) buf.appendSlice(alloc, result[start..i]) catch return;
-        if (i < result.len) i += 1;
-    }
-    buf.appendSlice(alloc, "}\n") catch return;
+    if (!assembleJsonRpcResult(alloc, id, result, &buf)) return;
     stdout.writeAll(buf.items) catch {
         stdout_broken.store(true, .release);
         return;
@@ -5495,22 +5559,56 @@ pub fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json
 // ── MCP UX: 3-block response helpers ────────────────────────────────────────
 // Colors are always on — MCP preview pane always renders ANSI. No TTY check.
 
-var mcp_lean_mode_cached: ?bool = null;
+const McpBlockPolicy = enum { default, lean, rich };
+var mcp_env_policy_cached: ?McpBlockPolicy = null;
 
-/// True when CODEDB_MCP_LEAN is set (any non-empty value). Cached on first
-/// read. When true, MCP responses omit Block 1 (colored summary header) and
-/// Block 3 (guidance hints) — emitting only Block 2 (raw data). Saves
-/// tokens for agent consumers that can't render ANSI and don't need the
-/// hints.
-fn mcpLeanMode() bool {
-    if (mcp_lean_mode_cached) |v| return v;
-    const v = cio.posixGetenv("CODEDB_MCP_LEAN") orelse {
-        mcp_lean_mode_cached = false;
-        return false;
-    };
-    const enabled = v.len > 0 and !std.mem.eql(u8, v, "0") and !std.mem.eql(u8, v, "false");
-    mcp_lean_mode_cached = enabled;
-    return enabled;
+fn mcpEnvTruthy(v: []const u8) bool {
+    return v.len > 0 and !std.mem.eql(u8, v, "0") and !std.mem.eql(u8, v, "false");
+}
+
+/// Global env override for the human-facing summary/guidance blocks.
+/// CODEDB_MCP_LEAN wins over CODEDB_MCP_RICH; each accepts 1/true (on) or
+/// 0/false (off). Cached on first read.
+fn mcpEnvPolicy() McpBlockPolicy {
+    if (mcp_env_policy_cached) |v| return v;
+    var policy: McpBlockPolicy = .default;
+    if (cio.posixGetenv("CODEDB_MCP_LEAN")) |v| {
+        policy = if (mcpEnvTruthy(v)) .lean else .rich;
+    } else if (cio.posixGetenv("CODEDB_MCP_RICH")) |v| {
+        policy = if (mcpEnvTruthy(v)) .rich else .lean;
+    }
+    mcp_env_policy_cached = policy;
+    return policy;
+}
+
+/// Built-in "rich" allowlist: desktop GUI chat clients that render tool
+/// results in a human-facing panel. Agent harnesses (claude-code, codex,
+/// cursor, ...) are intentionally absent — they forward tool text straight
+/// into model context, so they default lean to save output tokens.
+fn mcpBuiltinRichClient(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "claude-ai");
+}
+
+/// Decide whether to emit Block 1 (colored summary) + Block 3 (guidance).
+/// Default is LEAN (omit them): agents can't render ANSI and pay output
+/// tokens for a summary that duplicates Block 2. Rich is emitted only for
+/// human-facing GUI clients (built-in allowlist, extended by the
+/// comma-separated CODEDB_MCP_RICH_CLIENTS env). Env policy overrides win.
+pub fn mcpEmitRichBlocks(client_name: ?[]const u8) bool {
+    switch (mcpEnvPolicy()) {
+        .lean => return false,
+        .rich => return true,
+        .default => {},
+    }
+    const name = client_name orelse return false;
+    if (cio.posixGetenv("CODEDB_MCP_RICH_CLIENTS")) |list| {
+        var it = std.mem.tokenizeScalar(u8, list, ',');
+        while (it.next()) |entry| {
+            const trimmed = std.mem.trim(u8, entry, " \t");
+            if (trimmed.len > 0 and std.ascii.eqlIgnoreCase(name, trimmed)) return true;
+        }
+    }
+    return mcpBuiltinRichClient(name);
 }
 
 const MCP_RESET = "\x1b[0m";

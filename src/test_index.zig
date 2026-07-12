@@ -391,7 +391,7 @@ test "frequency table: little-endian byte order on disk" {
     const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
     const dir_path = dir_buf[0..dir_path_len];
 
-    var table: [256][256]u16 = .{.{0} ** 256} ** 256;
+    var table: [256][256]u16 = @splat(@splat(0));
     table[0][0] = 0x1234; // little-endian on disk: 0x34, 0x12
     table[0][1] = 0xABCD; // little-endian on disk: 0xCD, 0xAB
     try writeFrequencyTable(io, &table, dir_path);
@@ -416,7 +416,7 @@ test "frequency table: little-endian byte order on disk" {
 
 test "setFrequencyTable / resetFrequencyTable: pairWeight output changes" {
     // Build a table where 'th' is rare (high weight) — opposite of default.
-    var custom: [256][256]u16 = .{.{0x1000} ** 256} ** 256; // all common
+    var custom: [256][256]u16 = @splat(@splat(0x1000)); // all common
     custom['q']['x'] = 0xFE00; // make 'qx' rare
 
     const before_th = pairWeight('t', 'h');
@@ -541,9 +541,63 @@ test "watcher: queue event copies path bytes" {
     try testing.expect(event.seq == 99);
 }
 
+test "word index: posting construction suppresses duplicate line hits" {
+    var wi = WordIndex.init(testing.allocator);
+    defer wi.deinit();
+
+    // Repeated source tokens and identifier splitting can present the same
+    // normalized term more than once, but each (document, line) is one hit.
+    try wi.indexFile("a.zig", "alpha alpha alpha_value alpha\nalpha\n");
+    try wi.indexFile("b.zig", "alpha alpha\n");
+
+    const raw = wi.search("alpha");
+    try testing.expectEqual(@as(usize, 3), raw.len);
+    try testing.expectEqual(@as(u32, 1), raw[0].line_num);
+    try testing.expectEqual(@as(u32, 2), raw[1].line_num);
+    try testing.expectEqual(@as(u32, 1), raw[2].line_num);
+
+    const owned = try wi.searchDeduped("ALPHA", testing.allocator);
+    defer testing.allocator.free(owned);
+    try testing.expectEqual(raw.len, owned.len);
+    for (raw, owned) |expected, actual| {
+        try testing.expectEqual(expected.doc_id, actual.doc_id);
+        try testing.expectEqual(expected.line_num, actual.line_num);
+    }
+}
+
+test "word index: searchDeduped handles non-adjacent malformed postings" {
+    var wi = WordIndex.init(testing.allocator);
+    defer wi.deinit();
+
+    try wi.indexFile("a.zig", "alpha\n");
+    try wi.indexFile("b.zig", "alpha\n");
+    const alpha = wi.index.getPtr("alpha") orelse return error.TestUnexpectedResult;
+    // Simulate a legacy/corrupt unsorted list with a repeated first posting.
+    try alpha.append(testing.allocator, alpha.items[0]);
+
+    const hits = try wi.searchDeduped("alpha", testing.allocator);
+    defer testing.allocator.free(hits);
+    try testing.expectEqual(@as(usize, 2), hits.len);
+    try testing.expectEqualStrings("a.zig", wi.hitPath(hits[0]));
+    try testing.expectEqualStrings("b.zig", wi.hitPath(hits[1]));
+}
+
 test "watcher: parallel initial scan matches sequential results" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
+
+    const previous_load_workers = if (cio.posixGetenv("CODEDB_LOAD_WORKERS")) |value|
+        try testing.allocator.dupe(u8, value)
+    else
+        null;
+    defer {
+        if (previous_load_workers) |value| {
+            cio.posixSetenv("CODEDB_LOAD_WORKERS", value);
+            testing.allocator.free(value);
+        } else {
+            cio.posixUnsetenv("CODEDB_LOAD_WORKERS");
+        }
+    }
 
     try tmp_dir.dir.createDirPath(io, "src/nested");
     try tmp_dir.dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = "const std = @import(\"std\");\npub fn alpha() void {}\n// TODO: keep me\n" });
@@ -559,6 +613,7 @@ test "watcher: parallel initial scan matches sequential results" {
     var explorer_seq = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_seq.deinit();
     explorer_seq.setRoot(io, root);
+    cio.posixSetenv("CODEDB_LOAD_WORKERS", "1");
     try watcher.initialScanWithWorkerCount(io, &store_seq, &explorer_seq, root, testing.allocator, false, 1);
 
     var store_par = Store.init(testing.allocator);
@@ -566,6 +621,7 @@ test "watcher: parallel initial scan matches sequential results" {
     var explorer_par = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_par.deinit();
     explorer_par.setRoot(io, root);
+    cio.posixSetenv("CODEDB_LOAD_WORKERS", "4");
     try watcher.initialScanWithWorkerCount(io, &store_par, &explorer_par, root, testing.allocator, false, 4);
 
     const tree_seq = try explorer_seq.getTree(testing.allocator, false);
@@ -581,6 +637,102 @@ test "watcher: parallel initial scan matches sequential results" {
     try testing.expectEqual(seq_hits.len, par_hits.len);
 
     try testing.expectEqual(explorer_seq.outlines.count(), explorer_par.outlines.count());
+
+    // Parallel stat workers only fill disjoint entry slots; snapshots are
+    // committed serially afterward, preserving discovery-order sequence IDs.
+    for ([_][]const u8{ "src/main.zig", "src/nested/util.py", "README.md" }) |path| {
+        const seq_version = store_seq.getLatest(path) orelse return error.TestUnexpectedResult;
+        const par_version = store_par.getLatest(path) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(seq_version.seq, par_version.seq);
+        try testing.expectEqual(seq_version.size, par_version.size);
+    }
+}
+
+fn buildScalarTrigramMasks(content: []const u8, masks: *std.AutoHashMap(Trigram, PostingMask)) !void {
+    if (content.len < 3) return;
+    for (0..content.len - 2) |i| {
+        const c0 = content[i];
+        const c1 = content[i + 1];
+        const c2 = content[i + 2];
+        if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
+            (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
+            (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
+
+        const tri = packTrigram(normalizeChar(c0), normalizeChar(c1), normalizeChar(c2));
+        const gop = try masks.getOrPut(tri);
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
+        if (i + 3 < content.len) {
+            gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(normalizeChar(content[i + 3]) % 8);
+        }
+    }
+}
+
+test "rolling trigram indexes match scalar masks exactly" {
+    var source = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer source.deinit();
+    var canonical = TrigramIndex.init(testing.allocator);
+    defer canonical.deinit();
+
+    const fixtures = [_]struct { path: []const u8, content: []const u8 }{
+        .{ .path = "edge/empty.txt", .content = "" },
+        .{ .path = "edge/one.txt", .content = "A" },
+        .{ .path = "edge/two.txt", .content = "Ab" },
+        .{ .path = "edge/three.txt", .content = "AbC" },
+        .{ .path = "edge/whitespace.txt", .content = " \t\nAbCdEf" },
+        .{ .path = "edge/only-whitespace.txt", .content = " \t\n\r \t\n" },
+        .{ .path = "edge/rollover.txt", .content = "aaaaaaaaaaaaZ" },
+        .{ .path = "edge/mixed.txt", .content = "MiXeD-case final" },
+        .{ .path = "edge/arbitrary-bytes.bin", .content = "\x00\x01AZ \t\n\r\xffabc" },
+    };
+    for (fixtures) |fixture| {
+        try source.indexFile(fixture.path, fixture.content);
+        try canonical.indexFile(fixture.path, fixture.content);
+    }
+
+    // Keep a deliberately scalar reference independent from both rolling
+    // implementations. Verify every mask and ensure neither path adds keys.
+    for (fixtures) |fixture| {
+        var expected = std.AutoHashMap(Trigram, PostingMask).init(testing.allocator);
+        defer expected.deinit();
+        try buildScalarTrigramMasks(fixture.content, &expected);
+
+        var actual_count: usize = 0;
+        var actual_iter = canonical.index.iterator();
+        while (actual_iter.next()) |entry| {
+            if (entry.value_ptr.get(fixture.path)) |actual_mask| {
+                actual_count += 1;
+                const expected_mask = expected.get(entry.key_ptr.*) orelse return error.TestUnexpectedResult;
+                try testing.expectEqual(expected_mask.loc_mask, actual_mask.loc_mask);
+                try testing.expectEqual(expected_mask.next_mask, actual_mask.next_mask);
+            }
+        }
+        try testing.expectEqual(expected.count(), actual_count);
+    }
+
+    const sharded = try watcher.buildTrigramsFromCache(
+        &source.contents,
+        testing.allocator,
+        testing.allocator,
+        4,
+    );
+    defer {
+        sharded.deinit();
+        testing.allocator.destroy(sharded);
+    }
+
+    try testing.expectEqual(canonical.index.count(), sharded.index.count());
+    var tri_iter = canonical.index.iterator();
+    while (tri_iter.next()) |entry| {
+        const actual_postings = sharded.index.get(entry.key_ptr.*) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(entry.value_ptr.count(), actual_postings.count());
+        for (entry.value_ptr.items.items) |expected_posting| {
+            const path = canonical.id_to_path.items[expected_posting.doc_id];
+            const actual_mask = actual_postings.get(path) orelse return error.TestUnexpectedResult;
+            try testing.expectEqual(expected_posting.loc_mask, actual_mask.loc_mask);
+            try testing.expectEqual(expected_posting.next_mask, actual_mask.next_mask);
+        }
+    }
 }
 
 test "watcher: parallel word-index shards match sequential (skip_file_words)" {
@@ -1997,6 +2149,176 @@ test "disk index: round-trip write and read preserves candidates" {
         if (std.mem.eql(u8, p, "src/index.zig")) found = true;
     }
     try testing.expect(found);
+}
+
+test "disk index: streamed postings cross a batch boundary" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    ti.owns_paths = true;
+    defer ti.deinit();
+
+    // 4,097 postings makes the writer flush one full 4,096-entry batch and
+    // then its one-entry tail. The disk reader must recover every document.
+    for (0..4097) |i| {
+        const path = try std.fmt.allocPrint(alloc, "src/batch-{d}.zig", .{i});
+        defer alloc.free(path);
+        try ti.indexFile(path, "abc");
+    }
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+    try ti.writeToDisk(io, dir_path, null);
+
+    const loaded = TrigramIndex.readFromDisk(io, dir_path, alloc);
+    try testing.expect(loaded != null);
+    var loaded_ti = loaded.?;
+    defer loaded_ti.deinit();
+    const candidates = loaded_ti.candidates("abc", alloc);
+    defer if (candidates) |items| alloc.free(items);
+    try testing.expect(candidates != null);
+    try testing.expectEqual(@as(usize, 4097), candidates.?.len);
+}
+
+test "disk index: streamed lookup crosses a batch boundary" {
+    const alloc = testing.allocator;
+    const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+    var ti = TrigramIndex.init(alloc);
+    ti.owns_paths = true;
+    defer ti.deinit();
+
+    // 4,097 distinct trigrams forces one full lookup batch and a one-entry
+    // tail. Check entries before, at, and after the boundary with both readers.
+    for (0..4097) |i| {
+        const content = [3]u8{
+            alphabet[i % alphabet.len],
+            alphabet[(i / alphabet.len) % alphabet.len],
+            alphabet[(i / (alphabet.len * alphabet.len)) % alphabet.len],
+        };
+        const path = try std.fmt.allocPrint(alloc, "src/lookup-{d}.zig", .{i});
+        errdefer alloc.free(path);
+        try ti.indexFile(path, &content);
+        alloc.free(path);
+    }
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+    try ti.writeToDisk(io, dir_path, null);
+
+    const loaded = TrigramIndex.readFromDisk(io, dir_path, alloc);
+    try testing.expect(loaded != null);
+    var heap_index = loaded.?;
+    defer heap_index.deinit();
+    var mmap_index = MmapTrigramIndex.initFromDisk(io, dir_path, alloc) orelse
+        return error.MmapInitFailed;
+    defer mmap_index.deinit();
+
+    for ([_]usize{ 0, 4095, 4096 }) |i| {
+        const query = [3]u8{
+            alphabet[i % alphabet.len],
+            alphabet[(i / alphabet.len) % alphabet.len],
+            alphabet[(i / (alphabet.len * alphabet.len)) % alphabet.len],
+        };
+        const expected_path = try std.fmt.allocPrint(alloc, "src/lookup-{d}.zig", .{i});
+        defer alloc.free(expected_path);
+
+        const heap_candidates = heap_index.candidates(&query, alloc);
+        defer if (heap_candidates) |items| alloc.free(items);
+        try testing.expect(heap_candidates != null);
+        try testing.expectEqual(@as(usize, 1), heap_candidates.?.len);
+        try testing.expectEqualStrings(expected_path, heap_candidates.?[0]);
+
+        const mmap_candidates = mmap_index.candidates(&query, alloc);
+        defer if (mmap_candidates) |items| alloc.free(items);
+        try testing.expect(mmap_candidates != null);
+        try testing.expectEqual(@as(usize, 1), mmap_candidates.?.len);
+        try testing.expectEqualStrings(expected_path, mmap_candidates.?[0]);
+    }
+}
+
+test "disk index: mmap candidate parity survives persisted doc ID remapping" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+
+    // Each short file contributes one distinct query trigram; only the final
+    // file contains the whole query. This catches disk file IDs that do not
+    // preserve the sorted posting-list order required by mmap intersections.
+    try ti.indexFile("src/abc.zig", "abc");
+    try ti.indexFile("src/bcd.zig", "bcd");
+    try ti.indexFile("src/cde.zig", "cde");
+    try ti.indexFile("src/def.zig", "def");
+    try ti.indexFile("src/efg.zig", "efg");
+    try ti.indexFile("src/fgh.zig", "fgh");
+    try ti.indexFile("src/ghi.zig", "ghi");
+    try ti.indexFile("src/full.zig", "abcdefghi");
+
+    const heap_candidates = ti.candidates("abcdefghi", alloc);
+    defer if (heap_candidates) |items| alloc.free(items);
+    try testing.expect(heap_candidates != null);
+    try testing.expectEqual(@as(usize, 1), heap_candidates.?.len);
+    try testing.expectEqualStrings("src/full.zig", heap_candidates.?[0]);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+    try ti.writeToDisk(io, dir_path, null);
+
+    var mmap_index = MmapTrigramIndex.initFromDisk(io, dir_path, alloc) orelse
+        return error.MmapInitFailed;
+    defer mmap_index.deinit();
+    const mmap_candidates = mmap_index.candidates("abcdefghi", alloc);
+    defer if (mmap_candidates) |items| alloc.free(items);
+    try testing.expect(mmap_candidates != null);
+    try testing.expectEqual(@as(usize, 1), mmap_candidates.?.len);
+    try testing.expectEqualStrings(heap_candidates.?[0], mmap_candidates.?[0]);
+}
+
+test "trigram index: insertExtracted preserves mmap posting order after doc ID reuse" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+
+    var extracted = TrigramIndex.extractTrigrams("abcdefghi", alloc);
+    defer extracted.deinit();
+    try ti.insertExtracted("src/a.zig", &extracted);
+    try ti.insertExtracted("src/b.zig", &extracted);
+    try ti.insertExtracted("src/c.zig", &extracted);
+    ti.removeFile("src/a.zig");
+    try ti.insertExtracted("src/a.zig", &extracted);
+
+    const heap_candidates = ti.candidates("abcdefghi", alloc);
+    defer if (heap_candidates) |items| alloc.free(items);
+    try testing.expect(heap_candidates != null);
+    try testing.expectEqual(@as(usize, 3), heap_candidates.?.len);
+    try testing.expectEqualStrings("src/a.zig", heap_candidates.?[0]);
+    try testing.expectEqualStrings("src/b.zig", heap_candidates.?[1]);
+    try testing.expectEqualStrings("src/c.zig", heap_candidates.?[2]);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+    try ti.writeToDisk(io, dir_path, null);
+
+    var mmap_index = MmapTrigramIndex.initFromDisk(io, dir_path, alloc) orelse
+        return error.MmapInitFailed;
+    defer mmap_index.deinit();
+    const mmap_candidates = mmap_index.candidates("abcdefghi", alloc);
+    defer if (mmap_candidates) |items| alloc.free(items);
+    try testing.expect(mmap_candidates != null);
+    try testing.expectEqual(@as(usize, 3), mmap_candidates.?.len);
+    try testing.expectEqualStrings("src/a.zig", mmap_candidates.?[0]);
+    try testing.expectEqualStrings("src/b.zig", mmap_candidates.?[1]);
+    try testing.expectEqualStrings("src/c.zig", mmap_candidates.?[2]);
 }
 
 test "disk index: readFromDisk returns null for missing files" {
