@@ -67,8 +67,9 @@ The profile does not change ranking, parser behavior, path security, sensitive
 file filtering, telemetry behavior, result caps, or MCP schemas. Smaller caches
 may rebuild results more often, and two-worker indexing can take longer than
 four-worker indexing. Output remains the same. The development gate compares
-full benchmark response hashes between default and Pi profiles; all 15 measured
-tools matched on the fixed corpus.
+duration-normalized benchmark response hashes between default and Pi profiles;
+all 13 parity-enabled tools matched on the fixed corpus. Status and snapshot are
+excluded because they contain intentionally nondeterministic fields.
 
 ## Worker override
 
