@@ -11,6 +11,8 @@ const ToolBench = struct {
     tool: []const u8,
     avg_latency_ns: u64,
     response_bytes: usize,
+    response_hash: u64,
+    parity: bool,
     ops_per_sec: f64,
     telemetry_avg_ns: u64,
     telemetry_delta_pct: f64,
@@ -21,6 +23,8 @@ const Case = struct {
     name: []const u8,
     args_json: []const u8,
     iterations: usize,
+    /// False only when output intentionally embeds per-run nondeterminism.
+    parity: bool = true,
 };
 
 const cases = [_]Case{
@@ -34,11 +38,38 @@ const cases = [_]Case{
     .{ .tool = .codedb_read, .name = "codedb_read", .args_json = "{\"path\":\"src/main.zig\",\"line_start\":1,\"line_end\":20}", .iterations = 100 },
     .{ .tool = .codedb_edit, .name = "codedb_edit", .args_json = "{\"path\":\"src/bench_target.zig\",\"op\":\"replace\",\"range_start\":1,\"range_end\":1,\"content\":\"pub const bench_value = 2;\\n\"}", .iterations = 10 },
     .{ .tool = .codedb_changes, .name = "codedb_changes", .args_json = "{\"since\":0}", .iterations = 100 },
-    .{ .tool = .codedb_status, .name = "codedb_status", .args_json = "{}", .iterations = 100 },
-    .{ .tool = .codedb_snapshot, .name = "codedb_snapshot", .args_json = "{}", .iterations = 20 },
+    // Status intentionally exposes cache counters, which may differ when the
+    // candidate removes work while returning the same query results.
+    .{ .tool = .codedb_status, .name = "codedb_status", .args_json = "{}", .iterations = 100, .parity = false },
+    // Snapshot output embeds its per-run temporary destination path.
+    .{ .tool = .codedb_snapshot, .name = "codedb_snapshot", .args_json = "{}", .iterations = 20, .parity = false },
     .{ .tool = .codedb_bundle, .name = "codedb_bundle", .args_json = "{\"ops\":[{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}},{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"telemetry\",\"max_results\":5}},{\"tool\":\"codedb_word\",\"arguments\":{\"word\":\"Telemetry\"}}]}", .iterations = 50 },
     .{ .tool = .codedb_find, .name = "codedb_find", .args_json = "{\"query\":\"main\"}", .iterations = 100 },
     .{ .tool = .codedb_context, .name = "codedb_context", .args_json = "{\"task\":\"trace recordToolCall execution path through writePositionalAll and the SpinLock acquisition in Telemetry — what is the hot path\"}", .iterations = 50 },
+};
+
+const corpus_files = [_][]const u8{
+    "README.md",
+    "build.zig",
+    "build.zig.zon",
+    "src/agent.zig",
+    "src/bench.zig",
+    "src/edit.zig",
+    "src/explore.zig",
+    "src/git.zig",
+    "src/index.zig",
+    "src/lib.zig",
+    "src/main.zig",
+    "src/mcp.zig",
+    "src/root_policy.zig",
+    "src/server.zig",
+    "src/snapshot.zig",
+    "src/snapshot_json.zig",
+    "src/store.zig",
+    "src/style.zig",
+    "src/telemetry.zig",
+    "src/version.zig",
+    "src/watcher.zig",
 };
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -51,14 +82,21 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const emit_json = blk: {
-        const args = try cio.argsAlloc(allocator);
-        defer cio.argsFree(allocator, args);
-        for (args[1..]) |arg| {
-            if (std.mem.eql(u8, arg, "--json")) break :blk true;
+    const process_args = try cio.argsAlloc(allocator);
+    defer cio.argsFree(allocator, process_args);
+    var emit_json = false;
+    var corpus_source_arg: ?[]const u8 = null;
+    var arg_index: usize = 1;
+    while (arg_index < process_args.len) : (arg_index += 1) {
+        const arg = process_args[arg_index];
+        if (std.mem.eql(u8, arg, "--json")) {
+            emit_json = true;
+        } else if (std.mem.eql(u8, arg, "--corpus-source")) {
+            arg_index += 1;
+            if (arg_index >= process_args.len) return error.MissingCorpusSource;
+            corpus_source_arg = process_args[arg_index];
         }
-        break :blk false;
-    };
+    }
 
     var tmp_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp_root = try makeTempCorpusDir(io, &tmp_path_buf);
@@ -67,8 +105,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var repo_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const repo_root_len = try std.Io.Dir.cwd().realPathFile(io, ".", &repo_path_buf);
     const repo_root = repo_path_buf[0..repo_root_len];
+    const corpus_source = corpus_source_arg orelse repo_root;
+    const corpus_hash = try hashCorpus(io, allocator, corpus_source);
 
-    try copyCorpus(io, allocator, repo_root, tmp_root);
+    try copyCorpus(io, allocator, corpus_source, tmp_root);
     try writeBenchTarget(io, tmp_root);
 
     var store = Store.init(allocator);
@@ -110,6 +150,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
             .tool = case.name,
             .avg_latency_ns = base.avg_latency_ns,
             .response_bytes = base.response_bytes,
+            .response_hash = base.response_hash,
+            .parity = case.parity,
             .ops_per_sec = opsPerSec(base.avg_latency_ns),
             .telemetry_avg_ns = with_telem.avg_latency_ns,
             .telemetry_delta_pct = deltaPct(base.avg_latency_ns, with_telem.avg_latency_ns),
@@ -119,7 +161,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const corpus = summarizeCorpus(&explorer);
     try writeHumanSummary(allocator, cio.File.stderr(), corpus.files, corpus.bytes, &results);
     if (emit_json) {
-        try writeJsonSummary(allocator, cio.File.stdout(), repo_root, tmp_root, corpus.files, corpus.bytes, &results);
+        try writeJsonSummary(allocator, cio.File.stdout(), repo_root, tmp_root, corpus_hash, corpus.files, corpus.bytes, &results);
     }
 }
 
@@ -133,9 +175,10 @@ fn runCase(
     case: Case,
     args: *const std.json.ObjectMap,
     telem: *telemetry.Telemetry,
-) !struct { avg_latency_ns: u64, response_bytes: usize } {
+) !struct { avg_latency_ns: u64, response_bytes: usize, response_hash: u64 } {
     var total_ns: u64 = 0;
     var response_bytes: usize = 0;
+    var response_hash: u64 = 0;
 
     for (0..case.iterations) |_| {
         if (case.tool == .codedb_edit) {
@@ -145,40 +188,19 @@ fn runCase(
         const r = bench_ctx.runToolCall(io, allocator, case.name, case.tool, args, store, explorer, agents, telem);
         total_ns +|= r.dispatch_ns;
         response_bytes = r.response_bytes;
+        var iteration_hash = r.response_hash;
+        response_hash = std.hash.Wyhash.hash(response_hash, std.mem.asBytes(&iteration_hash));
     }
 
     return .{
         .avg_latency_ns = @intCast(@divTrunc(total_ns, case.iterations)),
         .response_bytes = response_bytes,
+        .response_hash = response_hash,
     };
 }
 
 fn copyCorpus(io: std.Io, allocator: std.mem.Allocator, repo_root: []const u8, tmp_root: []const u8) !void {
-    const files = [_][]const u8{
-        "README.md",
-        "build.zig",
-        "build.zig.zon",
-        "src/agent.zig",
-        "src/bench.zig",
-        "src/edit.zig",
-        "src/explore.zig",
-        "src/git.zig",
-        "src/index.zig",
-        "src/lib.zig",
-        "src/main.zig",
-        "src/mcp.zig",
-        "src/root_policy.zig",
-        "src/server.zig",
-        "src/snapshot.zig",
-        "src/snapshot_json.zig",
-        "src/store.zig",
-        "src/style.zig",
-        "src/telemetry.zig",
-        "src/version.zig",
-        "src/watcher.zig",
-    };
-
-    for (files) |rel| {
+    for (corpus_files) |rel| {
         const src = try std.fs.path.join(allocator, &.{ repo_root, rel });
         defer allocator.free(src);
         const dst = try std.fs.path.join(allocator, &.{ tmp_root, rel });
@@ -190,6 +212,20 @@ fn copyCorpus(io: std.Io, allocator: std.mem.Allocator, repo_root: []const u8, t
 
         try std.Io.Dir.copyFile(std.Io.Dir.cwd(), src, std.Io.Dir.cwd(), dst, io, .{});
     }
+}
+
+fn hashCorpus(io: std.Io, allocator: std.mem.Allocator, corpus_root: []const u8) !u64 {
+    var hash = std.hash.Wyhash.init(0x434f_4445_4442);
+    for (corpus_files) |rel| {
+        const src = try std.fs.path.join(allocator, &.{ corpus_root, rel });
+        defer allocator.free(src);
+        const content = try std.Io.Dir.cwd().readFileAlloc(io, src, allocator, .limited(64 * 1024 * 1024));
+        defer allocator.free(content);
+        hash.update(rel);
+        hash.update(&[_]u8{0});
+        hash.update(content);
+    }
+    return hash.final();
 }
 
 fn makeTempCorpusDir(io: std.Io, buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
@@ -234,7 +270,7 @@ fn writeHumanSummary(allocator: std.mem.Allocator, file: cio.File, file_count: u
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
     const writer = cio.listWriter(&out, allocator);
-    try writer.print("── E2E MCP Tool Benchmarks ({d} files, {d}KB) ──\n", .{ file_count, total_bytes / 1024 });
+    try writer.print("── In-process MCP Handler Benchmarks ({d} files, {d}KB) ──\n", .{ file_count, total_bytes / 1024 });
     try writer.writeAll("Tool              Latency    Size     Ops/sec   TelemetryΔ\n");
     for (results) |result| {
         var latency_buf: [32]u8 = undefined;
@@ -250,22 +286,25 @@ fn writeHumanSummary(allocator: std.mem.Allocator, file: cio.File, file_count: u
     try file.writeAll(out.items);
 }
 
-fn writeJsonSummary(allocator: std.mem.Allocator, file: cio.File, repo_root: []const u8, corpus_root: []const u8, file_count: usize, total_bytes: u64, results: []const ToolBench) !void {
+fn writeJsonSummary(allocator: std.mem.Allocator, file: cio.File, repo_root: []const u8, corpus_root: []const u8, corpus_hash: u64, file_count: usize, total_bytes: u64, results: []const ToolBench) !void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
     const writer = cio.listWriter(&out, allocator);
-    try writer.print("{{\"repo_root\":\"{s}\",\"corpus_root\":\"{s}\",\"file_count\":{d},\"total_bytes\":{d},\"tools\":[", .{
+    try writer.print("{{\"repo_root\":\"{s}\",\"corpus_root\":\"{s}\",\"corpus_hash\":{d},\"file_count\":{d},\"total_bytes\":{d},\"tools\":[", .{
         repo_root,
         corpus_root,
+        corpus_hash,
         file_count,
         total_bytes,
     });
     for (results, 0..) |result, idx| {
         if (idx > 0) try writer.writeByte(',');
-        try writer.print("{{\"tool\":\"{s}\",\"avg_latency_ns\":{d},\"response_bytes\":{d},\"ops_per_sec\":{d:.3},\"telemetry_avg_ns\":{d},\"telemetry_delta_pct\":{d:.3}}}", .{
+        try writer.print("{{\"tool\":\"{s}\",\"avg_latency_ns\":{d},\"response_bytes\":{d},\"response_hash\":{d},\"parity\":{},\"ops_per_sec\":{d:.3},\"telemetry_avg_ns\":{d},\"telemetry_delta_pct\":{d:.3}}}", .{
             result.tool,
             result.avg_latency_ns,
             result.response_bytes,
+            result.response_hash,
+            result.parity,
             result.ops_per_sec,
             result.telemetry_avg_ns,
             result.telemetry_delta_pct,

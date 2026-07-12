@@ -484,6 +484,37 @@ const ProjectCache = struct {
     }
 };
 
+fn assembleMcpContentEnvelope(
+    alloc: std.mem.Allocator,
+    summary: []const u8,
+    output: []const u8,
+    guidance: []const u8,
+    is_error: bool,
+    result: *std.ArrayList(u8),
+) bool {
+    result.ensureTotalCapacity(alloc, output.len + summary.len + guidance.len + 256) catch {};
+    result.appendSlice(alloc, "{\"content\":[") catch return false;
+
+    if (summary.len > 0) {
+        result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return false;
+        mcpj.writeEscaped(alloc, result, summary);
+        result.appendSlice(alloc, "\"},") catch return false;
+    }
+
+    result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"assistant\"]},\"text\":\"") catch return false;
+    mcpj.writeEscaped(alloc, result, output);
+    result.appendSlice(alloc, "\"}") catch return false;
+
+    if (guidance.len > 0) {
+        result.appendSlice(alloc, ",{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return false;
+        mcpj.writeEscaped(alloc, result, guidance);
+        result.appendSlice(alloc, "\"}") catch return false;
+    }
+
+    result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return false;
+    return true;
+}
+
 pub const BenchContext = struct {
     cache: ProjectCache,
 
@@ -537,7 +568,7 @@ pub const BenchContext = struct {
         explorer: *Explorer,
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
-    ) struct { dispatch_ns: u64, response_bytes: usize } {
+    ) struct { dispatch_ns: u64, response_bytes: usize, response_hash: u64 } {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(alloc);
 
@@ -554,6 +585,15 @@ pub const BenchContext = struct {
         summary.appendSlice(alloc, if (is_error) MCP_RED ++ MCP_CROSS ++ " " ++ MCP_RESET else MCP_GREEN ++ MCP_CHECK ++ " " ++ MCP_RESET) catch {};
         summary.appendSlice(alloc, mcpToolIcon(name)) catch {};
         mcpGenerateSummary(alloc, name, args, out.items, is_error, &summary);
+
+        // Normalize only the nondeterministic duration. Everything else in the
+        // client-visible MCP envelope participates in response parity.
+        var parity_summary: std.ArrayList(u8) = .empty;
+        defer parity_summary.deinit(alloc);
+        parity_summary.appendSlice(alloc, summary.items) catch {};
+        var parity_dur_buf: [96]u8 = undefined;
+        parity_summary.appendSlice(alloc, mcpFormatDuration(&parity_dur_buf, 0)) catch {};
+
         var dur_buf: [96]u8 = undefined;
         summary.appendSlice(alloc, mcpFormatDuration(&dur_buf, elapsed)) catch {};
 
@@ -563,27 +603,21 @@ pub const BenchContext = struct {
 
         var result: std.ArrayList(u8) = .empty;
         defer result.deinit(alloc);
-        result.ensureTotalCapacity(alloc, out.items.len + summary.items.len + guidance.items.len + 256) catch {};
-        result.appendSlice(alloc, "{\"content\":[") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0 };
-
-        if (summary.items.len > 0) {
-            result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-            mcpj.writeEscaped(alloc, &result, summary.items);
-            result.appendSlice(alloc, "\"},") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+        if (!assembleMcpContentEnvelope(alloc, summary.items, out.items, guidance.items, is_error, &result)) {
+            return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0, .response_hash = 0 };
         }
 
-        result.appendSlice(alloc, "{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-        mcpj.writeEscaped(alloc, &result, out.items);
-        result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-
-        if (guidance.items.len > 0) {
-            result.appendSlice(alloc, ",{\"type\":\"text\",\"text\":\"") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-            mcpj.writeEscaped(alloc, &result, guidance.items);
-            result.appendSlice(alloc, "\"}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+        var parity_result: std.ArrayList(u8) = .empty;
+        defer parity_result.deinit(alloc);
+        if (!assembleMcpContentEnvelope(alloc, parity_summary.items, out.items, guidance.items, is_error, &parity_result)) {
+            return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len, .response_hash = 0 };
         }
 
-        result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
-        return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len };
+        return .{
+            .dispatch_ns = @intCast(elapsed),
+            .response_bytes = result.items.len,
+            .response_hash = std.hash.Wyhash.hash(0, parity_result.items),
+        };
     }
 };
 
@@ -1307,33 +1341,11 @@ fn handleCall(
     }
 
     // Assemble MCP content envelope (1 block in lean mode, up to 3 otherwise).
+    // BenchContext uses this same path so parity covers the full client-visible
+    // response shape, escaping, guidance, and isError value.
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(alloc);
-    result.ensureTotalCapacity(alloc, out.items.len + summary.items.len + guidance.items.len + 256) catch {};
-    result.appendSlice(alloc, "{\"content\":[") catch return;
-
-    // Block 1 (summary — audience: user; spec-canonical signal that
-    // token-conscious clients can strip)
-    if (summary.items.len > 0) {
-        result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return;
-        mcpj.writeEscaped(alloc, &result, summary.items);
-        result.appendSlice(alloc, "\"},") catch return;
-    }
-
-    // Block 2 (raw data — audience: assistant; this is what the model
-    // actually consumes)
-    result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"assistant\"]},\"text\":\"") catch return;
-    mcpj.writeEscaped(alloc, &result, out.items);
-    result.appendSlice(alloc, "\"}") catch return;
-
-    // Block 3 (guidance — audience: user)
-    if (guidance.items.len > 0) {
-        result.appendSlice(alloc, ",{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return;
-        mcpj.writeEscaped(alloc, &result, guidance.items);
-        result.appendSlice(alloc, "\"}") catch return;
-    }
-
-    result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return;
+    if (!assembleMcpContentEnvelope(alloc, summary.items, out.items, guidance.items, is_error, &result)) return;
     writeResult(alloc, stdout, id, result.items);
 }
 
