@@ -56,6 +56,25 @@ Normalized MCP responses were byte-identical between baseline and candidate for
 `tree`, `outline`, `symbol`, `read`, `find`, `word`, `search`, `context`, and
 `bundle`.
 
+### Paired release gate
+
+The final source-attribution gate used production baseline `dd36e94`
+(`v0.2.5829`) with pinned harness-only descendant `24e89c7`, and performance
+candidate `33ea66c`. Both binaries used the same Zig compiler and the same fixed
+21-file benchmark corpus copied from `dd36e94`. Twenty AB/BA-counterbalanced
+pairs passed:
+
+- shared corpus fingerprint: **PASS** in all pairs;
+- duration-normalized, full JSON-RPC response hash across every measured
+  iteration: **PASS** for every parity-enabled tool in all pairs;
+- paired-median regression gate (>10% and >50us): **PASS**;
+- tree, outline, symbol, word, hot, and bundle improved by 19.18%-81.63%;
+- context and read improved by 7.06% and 2.75%;
+- no parity-enabled tool had a material regression.
+
+The complete persisted report is
+[`bench-0.2.5830-paired-report.md`](bench-0.2.5830-paired-report.md).
+
 ### Core edge cases
 
 `zig build bench-edge -- --json` used a generated 3,005-file corpus to expose
@@ -150,7 +169,10 @@ git diff --check
 ```
 
 MCP E2E passed 20/20 scenarios, including roots negotiation, explicit-root,
-no-roots, and direct-inline-argument modes.
+no-roots, and direct-inline-argument modes. The final local release gate also
+passed 20 paired AB/BA samples with a shared corpus and full normalized JSON-RPC
+response parity; GitHub's paired five-pair gate passed from the immutable PR
+base and published its report and raw samples as workflow artifacts.
 
 ## Required protocol for follow-up performance changes
 
@@ -167,7 +189,8 @@ For release claims, use at least 20 pairs. The runner:
 2. gives base and head the exact same base-worktree corpus;
 3. verifies the corpus fingerprint for every pair;
 4. alternates `base -> head` and `head -> base` order;
-5. requires raw response-hash parity for parity-enabled tools;
+5. requires duration-normalized full JSON-RPC response-hash parity across every
+   measured iteration for parity-enabled tools;
 6. reports paired medians, head win counts, and a deterministic bootstrap 95%
    interval;
 7. rejects regressions from the paired median rather than a single-run minimum.

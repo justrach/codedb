@@ -1,7 +1,7 @@
 # Changelog
 
 
-## 0.2.5830 - Unreleased
+## 0.2.5830 - 2026-07-12
 
 The first performance batch for this release accelerates steady-state MCP and
 core read-only tools while preserving response and retrieval parity. Measured
@@ -19,9 +19,12 @@ normalization, and the full suite, WASM build, and MCP E2E (20/20) pass.
 
 Detailed methodology, per-tool tables, memory bounds, limitations, and follow-up
 targets are in [`docs/performance-0.2.5830.md`](docs/performance-0.2.5830.md).
-The A/B runner now enforces a shared corpus fingerprint, response-hash parity,
-AB/BA counterbalancing, paired medians, and bootstrap intervals; single-run
-minima are diagnostic only and cannot support a performance claim.
+The release gate ran 20 counterbalanced AB/BA pairs against the immutable
+0.2.5829 source plus a pinned harness-only parity backport. Every parity-enabled
+tool matched across every measured iteration after normalizing only response
+duration, and no benchmark crossed the 10% plus 50us regression threshold. The
+runner enforces a shared corpus fingerprint, full JSON-RPC response hashes,
+paired medians, and bootstrap intervals; single-run minima are diagnostic only.
 
 
 ## 0.2.5829 - 2026-07-11
