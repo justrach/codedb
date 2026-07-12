@@ -607,16 +607,28 @@ pub const BenchContext = struct {
             return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0, .response_hash = 0 };
         }
 
+        const bench_id = std.json.Value{ .integer = 1 };
+        var rpc_result: std.ArrayList(u8) = .empty;
+        defer rpc_result.deinit(alloc);
+        if (!assembleJsonRpcResult(alloc, bench_id, result.items, &rpc_result)) {
+            return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0, .response_hash = 0 };
+        }
+
         var parity_result: std.ArrayList(u8) = .empty;
         defer parity_result.deinit(alloc);
         if (!assembleMcpContentEnvelope(alloc, parity_summary.items, out.items, guidance.items, is_error, &parity_result)) {
-            return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = result.items.len, .response_hash = 0 };
+            return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = rpc_result.items.len, .response_hash = 0 };
+        }
+        var parity_rpc_result: std.ArrayList(u8) = .empty;
+        defer parity_rpc_result.deinit(alloc);
+        if (!assembleJsonRpcResult(alloc, bench_id, parity_result.items, &parity_rpc_result)) {
+            return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = rpc_result.items.len, .response_hash = 0 };
         }
 
         return .{
             .dispatch_ns = @intCast(elapsed),
-            .response_bytes = result.items.len,
-            .response_hash = std.hash.Wyhash.hash(0, parity_result.items),
+            .response_bytes = rpc_result.items.len,
+            .response_hash = std.hash.Wyhash.hash(0, parity_rpc_result.items),
         };
     }
 };
@@ -5318,22 +5330,33 @@ pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
     return rel;
 }
 
+fn assembleJsonRpcResult(alloc: std.mem.Allocator, id: ?std.json.Value, result: []const u8, buf: *std.ArrayList(u8)) bool {
+    buf.ensureTotalCapacity(alloc, result.len + 64) catch {};
+    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return false;
+    appendId(alloc, buf, id);
+    buf.appendSlice(alloc, ",\"result\":") catch return false;
+    // MCP responses are normally compact JSON with no raw line breaks. Let
+    // std.mem's vectorized search prove that once, then copy the whole payload;
+    // retain the sanitizing fallback for any non-canonical producer.
+    if (std.mem.indexOfAny(u8, result, "\n\r") == null) {
+        buf.appendSlice(alloc, result) catch return false;
+    } else {
+        var i: usize = 0;
+        while (i < result.len) {
+            const start = i;
+            while (i < result.len and result[i] != '\n' and result[i] != '\r') : (i += 1) {}
+            if (i > start) buf.appendSlice(alloc, result[start..i]) catch return false;
+            if (i < result.len) i += 1;
+        }
+    }
+    buf.appendSlice(alloc, "}\n") catch return false;
+    return true;
+}
+
 fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8) void {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
-    buf.ensureTotalCapacity(alloc, result.len + 64) catch {};
-    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
-    appendId(alloc, &buf, id);
-    buf.appendSlice(alloc, ",\"result\":") catch return;
-    // Batch-copy non-newline runs instead of per-byte append.
-    var i: usize = 0;
-    while (i < result.len) {
-        const start = i;
-        while (i < result.len and result[i] != '\n' and result[i] != '\r') : (i += 1) {}
-        if (i > start) buf.appendSlice(alloc, result[start..i]) catch return;
-        if (i < result.len) i += 1;
-    }
-    buf.appendSlice(alloc, "}\n") catch return;
+    if (!assembleJsonRpcResult(alloc, id, result, &buf)) return;
     stdout.writeAll(buf.items) catch {
         stdout_broken.store(true, .release);
         return;
