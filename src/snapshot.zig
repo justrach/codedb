@@ -24,6 +24,7 @@
 
 const std = @import("std");
 const cio = @import("cio.zig");
+const resource_profile = @import("resource_profile.zig");
 const explore_mod = @import("explore.zig");
 const Explorer = explore_mod.Explorer;
 const FileOutline = explore_mod.FileOutline;
@@ -1114,8 +1115,8 @@ fn loadSnapshotFast(
                 if (parsed > 0) break :blk parsed;
             }
             if (records.items.len < FRESHNESS_PARALLEL_THRESHOLD) break :blk 1;
-            const cpu_count = std.Thread.getCpuCount() catch 1;
-            break :blk @min(@as(usize, @intCast(cpu_count)), FRESHNESS_MAX_WORKERS);
+            const cpu_count: usize = @intCast(std.Thread.getCpuCount() catch 1);
+            break :blk resource_profile.workerCount(cpu_count, FRESHNESS_MAX_WORKERS);
         };
         const n_workers = @max(@as(usize, 1), @min(want_workers, records.items.len));
         if (n_workers <= 1) {

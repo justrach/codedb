@@ -4,6 +4,7 @@
 //! driven by commands.zig (serve/mcp/cli-daemon).
 const std = @import("std");
 const cio = @import("cio.zig");
+const resource_profile = @import("resource_profile.zig");
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
@@ -88,7 +89,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
                     std.log.warn("could not auto-write snapshot: {}", .{err});
                 };
                 const fc = explorer.outlines.count();
-                if (fc > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
+                if (fc > 1000 or resource_profile.lowMemoryEnabled()) {
                     explorer.releaseContents();
                     explorer.releaseSecondaryIndexes();
                 }
@@ -109,7 +110,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
                     std.log.warn("could not auto-write snapshot: {}", .{err});
                 };
                 const fc = explorer.outlines.count();
-                if (fc > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
+                if (fc > 1000 or resource_profile.lowMemoryEnabled()) {
                     explorer.releaseContents();
                     explorer.releaseSecondaryIndexes();
                 }
@@ -138,8 +139,8 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     // run concurrently under the shared lock.
     var trigram_written = false;
     {
-        const cpu_count = std.Thread.getCpuCount() catch 1;
-        const tri_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
+        const cpu_count: usize = @intCast(std.Thread.getCpuCount() catch 1);
+        const tri_workers = resource_profile.workerCount(cpu_count, 8);
         explorer.mu.lockShared();
         const tmp_tri = watcher.buildTrigramsFromCache(&explorer.contents, allocator, std.heap.c_allocator, tri_workers) catch |err| blk: {
             std.log.warn("could not build trigram index: {}", .{err});
@@ -195,7 +196,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
         std.log.warn("could not auto-write snapshot: {}", .{err});
     };
     const file_count = explorer.outlines.count();
-    if (trigram_adopted and (file_count > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null)) {
+    if (trigram_adopted and (file_count > 1000 or resource_profile.lowMemoryEnabled())) {
         explorer.releaseContents();
         explorer.releaseSecondaryIndexes();
     }

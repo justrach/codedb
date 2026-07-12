@@ -1,6 +1,7 @@
 const std = @import("std");
 const ContentCache = @import("hot_cache.zig").ContentCache;
 const cio = @import("cio.zig");
+const resource_profile = @import("resource_profile.zig");
 const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
 const TrigramIndex = @import("index.zig").TrigramIndex;
@@ -550,8 +551,8 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
                 if (parsed > 0) break :blk parsed;
             }
             if (entries.items.len < 256) break :blk 1;
-            const cpu_count = std.Thread.getCpuCount() catch 1;
-            break :blk @min(@as(usize, @intCast(cpu_count)), 4);
+            const cpu_count: usize = @intCast(std.Thread.getCpuCount() catch 1);
+            break :blk resource_profile.workerCount(cpu_count, 4);
         };
         const n_workers = @max(@as(usize, 1), @min(want_workers, entries.items.len));
         stat_fan: {
@@ -1074,8 +1075,8 @@ pub fn initialScanWithTrigrams(
     }
     if (entries.items.len == 0) return null;
 
-    const cpu_count = std.Thread.getCpuCount() catch 1;
-    const n_workers = @max(@as(usize, 1), @min(@as(usize, @intCast(cpu_count)), @min(entries.items.len, 8)));
+    const cpu_count: usize = @intCast(std.Thread.getCpuCount() catch 1);
+    const n_workers = @min(entries.items.len, resource_profile.workerCount(cpu_count, 8));
 
     // Single-worker fast path
     var tmp_tri = try trigram_alloc.create(TrigramIndex);
@@ -1200,8 +1201,8 @@ pub fn initialScan(io: std.Io, store: *Store, explorer: *Explorer, root: []const
             const parsed = std.fmt.parseInt(usize, raw, 10) catch 0;
             if (parsed > 0) break :blk parsed;
         }
-        const cpu_count = std.Thread.getCpuCount() catch 1;
-        break :blk @min(@as(usize, @intCast(cpu_count)), 8);
+        const cpu_count: usize = @intCast(std.Thread.getCpuCount() catch 1);
+        break :blk resource_profile.workerCount(cpu_count, 8);
     };
     try initialScanWithWorkerCount(io, store, explorer, root, allocator, skip_trigram, worker_count);
 }

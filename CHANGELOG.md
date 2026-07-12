@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Add an opt-in `CODEDB_RESOURCE_PROFILE=pi` policy for Raspberry Pi 4 and
+  similar 2-4 GB ARM64 systems. It caps parallel index/freshness phases at two
+  workers, reduces the principal response/read cache ceiling from about 108 MiB
+  to about 27 MiB, retains two secondary project contexts instead of five,
+  skips eager query warmup, and releases resident file contents after persisted
+  indexes are ready. Ranking, retrieval, path security,
+  telemetry, result caps, and MCP schemas are unchanged.
+- Add `CODEDB_WORKER_LIMIT` as a global explicit cap and an on-device cold/warm
+  peak-RSS probe in `scripts/bench-pi.sh`.
 
 ## 0.2.5830 - 2026-07-12
 
