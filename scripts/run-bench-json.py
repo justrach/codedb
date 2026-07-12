@@ -2,13 +2,22 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import pathlib
+import shutil
 import subprocess
 import sys
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run `zig build bench -- --json` and persist the JSON payload.")
+    parser.add_argument("--bench-side", choices=("base", "head"))
+    parser.add_argument("--bench-pair", type=int)
+    parser.add_argument("--bench-order", choices=("AB", "BA"))
+    parser.add_argument("--bench-sequence", type=int, choices=(1, 2))
+    parser.add_argument("--production-source-sha")
+    parser.add_argument("--corpus-source-sha")
     parser.add_argument("output", help="output JSON file")
     parser.add_argument("bench_args", nargs=argparse.REMAINDER, help="arguments forwarded to the benchmark after --json")
     return parser.parse_args()
@@ -25,6 +34,79 @@ def extract_json(stdout: str, stderr: str) -> str:
             if line.startswith("{") and line.endswith("}"):
                 return line + "\n"
     raise RuntimeError("benchmark command did not emit JSON")
+
+
+def command_output(*command: str) -> str:
+    return subprocess.run(command, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def file_sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def bench_arg_value(args: argparse.Namespace, name: str) -> str | None:
+    try:
+        index = args.bench_args.index(name)
+    except ValueError:
+        return None
+    if index + 1 >= len(args.bench_args):
+        raise ValueError(f"{name} requires a value")
+    return args.bench_args[index + 1]
+
+
+def git_is_clean(path: pathlib.Path) -> bool:
+    status = command_output("git", "-C", str(path), "status", "--porcelain", "--untracked-files=all")
+    return status == ""
+
+
+def benchmark_provenance(args: argparse.Namespace) -> dict | None:
+    fields = (
+        args.bench_side,
+        args.bench_pair,
+        args.bench_order,
+        args.bench_sequence,
+        args.production_source_sha,
+        args.corpus_source_sha,
+    )
+    if not any(value is not None for value in fields):
+        return None
+    if any(value is None for value in fields):
+        raise ValueError("paired benchmark provenance arguments must be provided together")
+    source_root = pathlib.Path.cwd().resolve()
+    corpus_arg = bench_arg_value(args, "--corpus-source")
+    if corpus_arg is None:
+        raise ValueError("paired benchmark provenance requires --corpus-source")
+    corpus_root = pathlib.Path(corpus_arg).resolve()
+    source_sha = command_output("git", "-C", str(source_root), "rev-parse", "HEAD")
+    corpus_source_sha = command_output("git", "-C", str(corpus_root), "rev-parse", "HEAD")
+    if corpus_source_sha != args.corpus_source_sha:
+        raise ValueError(
+            f"corpus source HEAD {corpus_source_sha} does not match claimed {args.corpus_source_sha}"
+        )
+    zig_command = shutil.which("zig")
+    if zig_command is None:
+        raise ValueError("zig executable not found on PATH")
+    zig_path = pathlib.Path(zig_command).resolve()
+    return {
+        "side": args.bench_side,
+        "pair": args.bench_pair,
+        "order": args.bench_order,
+        "sequence": args.bench_sequence,
+        "source_sha": source_sha,
+        "source_tree_sha": command_output("git", "-C", str(source_root), "rev-parse", "HEAD^{tree}"),
+        "source_dirty": not git_is_clean(source_root),
+        "production_source_sha": args.production_source_sha,
+        "corpus_source_sha": corpus_source_sha,
+        "corpus_source_tree_sha": command_output("git", "-C", str(corpus_root), "rev-parse", "HEAD^{tree}"),
+        "corpus_source_dirty": not git_is_clean(corpus_root),
+        "compiler_version": command_output(str(zig_path), "version"),
+        "compiler_sha256": file_sha256(zig_path),
+        "build_mode": "ReleaseFast",
+    }
 
 
 def main() -> int:
@@ -44,8 +126,11 @@ def main() -> int:
             sys.stderr.write("---- stdout ----\n")
             sys.stderr.write(proc.stdout)
         return proc.returncode
-    payload = extract_json(proc.stdout, proc.stderr)
-    pathlib.Path(args.output).write_text(payload, encoding="utf-8")
+    payload = json.loads(extract_json(proc.stdout, proc.stderr))
+    provenance = benchmark_provenance(args)
+    if provenance is not None:
+        payload["benchmark_provenance"] = provenance
+    pathlib.Path(args.output).write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
     return 0
 
 

@@ -104,25 +104,35 @@ jobs:
               test "$(git rev-parse FETCH_HEAD)" = "$PAIRED_5829_SHA"
             }
             git merge-base --is-ancestor "$EVENT_BASE_SHA" "$PAIRED_5829_SHA"
+            test "$(git diff --name-only "$EVENT_BASE_SHA..$PAIRED_5829_SHA")" = $'src/bench.zig\nsrc/mcp.zig'
             git worktree add ../codedb-paired-base "$PAIRED_5829_SHA"
             paired_base="../codedb-paired-base"
           fi
 
           mkdir -p bench-paired
           corpus_source=$(realpath ../codedb-base)
+          head_source_sha=$(git rev-parse HEAD)
+          git worktree add ../codedb-paired-head "$head_source_sha"
+          head_cwd=$(realpath ../codedb-paired-head)
           run_sample() {
             side="$1"
             pair="$2"
+            order="$3"
+            sequence="$4"
             if [[ "$side" == base ]]; then
               cwd="$paired_base"
               zig_dir="$BASE_ZIG_DIR"
+              production_sha="$EVENT_BASE_SHA"
             else
-              cwd="$GITHUB_WORKSPACE"
+              cwd="$head_cwd"
               zig_dir="$GITHUB_WORKSPACE/zig-x86_64-linux-${ZIG_VERSION}"
+              production_sha="$head_source_sha"
             fi
             (
               cd "$cwd"
-              PATH="$zig_dir:$PATH" python3 "$GITHUB_WORKSPACE/scripts/run-bench-json.py" \
+              PATH="$zig_dir:$PATH" python3 "$head_cwd/scripts/run-bench-json.py" \
+                --bench-side "$side" --bench-pair "$pair" --bench-order "$order" --bench-sequence "$sequence" \
+                --production-source-sha "$production_sha" --corpus-source-sha "$EVENT_BASE_SHA" \
                 "$GITHUB_WORKSPACE/bench-paired/$side-$(printf '%02d' "$pair").json" \
                 --corpus-source "$corpus_source"
             )
@@ -130,14 +140,15 @@ jobs:
 
           for ((pair = 1; pair <= PAIRS; pair++)); do
             if (( pair % 2 == 1 )); then
-              run_sample base "$pair"
-              run_sample head "$pair"
+              run_sample base "$pair" AB 1
+              run_sample head "$pair" AB 2
             else
-              run_sample head "$pair"
-              run_sample base "$pair"
+              run_sample head "$pair" BA 1
+              run_sample base "$pair" BA 2
             fi
           done
-          python3 scripts/compare-bench-paired.py bench-paired --require-parity \
+          python3 "$head_cwd/scripts/compare-bench-paired.py" bench-paired --require-parity --require-provenance \
+            --allow-parity-skip codedb_snapshot --allow-parity-skip codedb_status \
             --threshold-pct 10 --min-abs-ns 50000 --markdown-out bench-paired-report.md
 
       - name: Compare

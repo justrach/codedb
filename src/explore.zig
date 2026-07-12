@@ -813,12 +813,11 @@ const LexFreqPenalty = struct {
 };
 
 /// Per-file content hashes for cached reads. Entries are keyed by path and
-/// validated against the canonical content slice; mutation paths also invalidate
-/// explicitly so allocator address reuse cannot serve a stale `if_hash` result.
+/// validated against the content-cache entry generation; mutation paths also
+/// invalidate explicitly so allocator reuse cannot serve a stale `if_hash` result.
 const ContentHashCache = struct {
     const Entry = struct {
-        content_ptr: usize,
-        content_len: usize,
+        content_generation: u64,
         hash: u64,
     };
 
@@ -835,23 +834,31 @@ const ContentHashCache = struct {
         self.map.deinit();
     }
 
-    fn get(self: *ContentHashCache, path: []const u8, content: []const u8) u64 {
+    fn get(self: *ContentHashCache, path: []const u8, content: []const u8, content_generation: u64, cacheable: bool) u64 {
+        if (!cacheable) return std.hash.Wyhash.hash(0, content);
         self.mu.lock();
         defer self.mu.unlock();
-        const ptr = @intFromPtr(content.ptr);
         if (self.map.getPtr(path)) |entry| {
-            if (entry.content_ptr == ptr and entry.content_len == content.len) return entry.hash;
+            if (entry.content_generation == content_generation) return entry.hash;
             const hash = std.hash.Wyhash.hash(0, content);
-            entry.* = .{ .content_ptr = ptr, .content_len = content.len, .hash = hash };
+            entry.* = .{ .content_generation = content_generation, .hash = hash };
             return hash;
         }
 
         const hash = std.hash.Wyhash.hash(0, content);
         const key = self.map.allocator.dupe(u8, path) catch return hash;
-        self.map.put(key, .{ .content_ptr = ptr, .content_len = content.len, .hash = hash }) catch {
+        self.map.put(key, .{ .content_generation = content_generation, .hash = hash }) catch {
             self.map.allocator.free(key);
         };
         return hash;
+    }
+
+    fn clear(self: *ContentHashCache) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        var iter = self.map.keyIterator();
+        while (iter.next()) |key| self.map.allocator.free(key.*);
+        self.map.clearRetainingCapacity();
     }
 
     fn invalidate(self: *ContentHashCache, path: []const u8) void {
@@ -1814,6 +1821,7 @@ pub const Explorer = struct {
         self.mu.lock();
         defer self.mu.unlock();
         self.contents.clear();
+        self.content_hashes.clear();
         self.line_offsets.clear();
     }
 
@@ -2856,9 +2864,9 @@ pub const Explorer = struct {
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
-        const content = self.contents.get(path) orelse return false;
-        const hash = self.content_hashes.get(path, content);
-        try self.renderReadBytes(path, content, hash, allocator, out, opts);
+        const content_ref = self.contents.getWithGeneration(path) orelse return false;
+        const hash = self.content_hashes.get(path, content_ref.value, content_ref.generation, content_ref.value_owned);
+        try self.renderReadBytes(path, content_ref.value, hash, allocator, out, opts);
         return true;
     }
 

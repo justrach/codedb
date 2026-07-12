@@ -2728,6 +2728,26 @@ test "cached deep reads and fuzzy finds invalidate exactly" {
     try testing.expect(std.mem.indexOf(u8, changed.items, "line-100") == null);
 }
 
+test "content hashes are recomputed for mutable borrowed storage" {
+    var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer ex.deinit();
+
+    var content = "const a = 1;\n".*;
+    try ex.contents.putBorrowed("hash.zig", content[0..]);
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(testing.allocator);
+    try testing.expect(try ex.renderCachedRead("hash.zig", testing.allocator, &first, .{}));
+    const hash_end = std.mem.indexOfScalar(u8, first.items, '\n').?;
+    const first_hash = first.items["hash:".len..hash_end];
+
+    @memcpy(content[0..], "const b = 2;\n");
+    var changed: std.ArrayList(u8) = .empty;
+    defer changed.deinit(testing.allocator);
+    try testing.expect(try ex.renderCachedRead("hash.zig", testing.allocator, &changed, .{ .if_hash = first_hash }));
+    try testing.expect(!std.mem.startsWith(u8, changed.items, "unchanged:"));
+    try testing.expect(std.mem.indexOf(u8, changed.items, "const b = 2;") != null);
+}
+
 test "disk-backed line ranges do not reuse offsets for changed content" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

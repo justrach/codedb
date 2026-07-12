@@ -5,9 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import statistics
 import sys
 from pathlib import Path
+
+
+PINNED_BASELINE_HARNESSES = {
+    "24e89c70d4f9cdaf5542a78d83d1890a42b4a046": "dd36e9431925014ee2bed80346669a4afee7e42e",
+}
+PINNED_COMMIT_TREES = {
+    "24e89c70d4f9cdaf5542a78d83d1890a42b4a046": "e0012e49b5819b8ac800831d7e0dce6a84bca1a1",
+    "dd36e9431925014ee2bed80346669a4afee7e42e": "e705e2623b28d2456eb9d4934817b79f4de35216",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -16,6 +26,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold-pct", type=float, default=10.0)
     parser.add_argument("--min-abs-ns", type=int, default=50_000)
     parser.add_argument("--require-parity", action="store_true")
+    parser.add_argument("--require-provenance", action="store_true")
+    parser.add_argument("--allow-parity-skip", action="append", default=[], metavar="TOOL")
     parser.add_argument("--markdown-out")
     parser.add_argument("--bootstrap-samples", type=int, default=20_000)
     return parser.parse_args()
@@ -56,10 +68,127 @@ def tool_map(data: dict) -> dict[str, dict]:
     return {tool["tool"]: tool for tool in data["tools"]}
 
 
-def compare(samples: list[tuple[dict, dict]], threshold_pct: float, min_abs_ns: int, require_parity: bool, bootstrap_samples: int) -> tuple[str, list[str]]:
+def validate_provenance(samples: list[tuple[dict, dict]]) -> tuple[list[str], str | None]:
+    failures: list[str] = []
+    base_sources: set[str] = set()
+    head_sources: set[str] = set()
+    base_production_sources: set[str] = set()
+    base_source_trees: set[str] = set()
+    head_source_trees: set[str] = set()
+    compilers: set[str] = set()
+    compiler_hashes: set[str] = set()
+    corpus_sources: set[str] = set()
+    corpus_trees: set[str] = set()
+    sha_pattern = re.compile(r"^[0-9a-f]{40}$")
+
+    for pair_index, (base, head) in enumerate(samples, 1):
+        expected_order = "AB" if pair_index % 2 == 1 else "BA"
+        expected_sequences = {"base": 1 if expected_order == "AB" else 2, "head": 2 if expected_order == "AB" else 1}
+        for side, data in (("base", base), ("head", head)):
+            meta = data.get("benchmark_provenance")
+            if not isinstance(meta, dict):
+                failures.append(f"pair {pair_index} {side}: benchmark_provenance missing")
+                continue
+            expected = {
+                "side": side,
+                "pair": pair_index,
+                "order": expected_order,
+                "sequence": expected_sequences[side],
+                "build_mode": "ReleaseFast",
+            }
+            for field, value in expected.items():
+                if meta.get(field) != value:
+                    failures.append(f"pair {pair_index} {side}: {field}={meta.get(field)!r}, expected {value!r}")
+            if meta.get("source_dirty") is not False:
+                failures.append(f"pair {pair_index} {side}: source tree was dirty")
+            if meta.get("corpus_source_dirty") is not False:
+                failures.append(f"pair {pair_index} {side}: corpus source tree was dirty")
+            for field in ("source_sha", "source_tree_sha", "production_source_sha", "corpus_source_sha", "corpus_source_tree_sha"):
+                value = meta.get(field)
+                if not isinstance(value, str) or not sha_pattern.fullmatch(value):
+                    failures.append(f"pair {pair_index} {side}: invalid {field}")
+            compiler = meta.get("compiler_version")
+            if not isinstance(compiler, str) or not compiler:
+                failures.append(f"pair {pair_index} {side}: compiler_version missing")
+            else:
+                compilers.add(compiler)
+            compiler_hash = meta.get("compiler_sha256")
+            if not isinstance(compiler_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", compiler_hash):
+                failures.append(f"pair {pair_index} {side}: invalid compiler_sha256")
+            else:
+                compiler_hashes.add(compiler_hash)
+            source_sha = meta.get("source_sha")
+            production_sha = meta.get("production_source_sha")
+            corpus_sha = meta.get("corpus_source_sha")
+            source_tree = meta.get("source_tree_sha")
+            corpus_tree = meta.get("corpus_source_tree_sha")
+            if isinstance(corpus_sha, str):
+                corpus_sources.add(corpus_sha)
+            if isinstance(corpus_tree, str):
+                corpus_trees.add(corpus_tree)
+            if source_sha in PINNED_COMMIT_TREES and source_tree != PINNED_COMMIT_TREES[source_sha]:
+                failures.append(f"pair {pair_index} {side}: source tree does not match pinned commit")
+            if corpus_sha in PINNED_COMMIT_TREES and corpus_tree != PINNED_COMMIT_TREES[corpus_sha]:
+                failures.append(f"pair {pair_index} {side}: corpus tree does not match pinned commit")
+            if side == "base":
+                if isinstance(source_sha, str):
+                    base_sources.add(source_sha)
+                if isinstance(source_tree, str):
+                    base_source_trees.add(source_tree)
+                if isinstance(production_sha, str):
+                    base_production_sources.add(production_sha)
+                expected_production = PINNED_BASELINE_HARNESSES.get(source_sha, source_sha)
+                if production_sha != expected_production:
+                    failures.append(f"pair {pair_index} base: unrecognized production/harness source mapping")
+            else:
+                if isinstance(source_sha, str):
+                    head_sources.add(source_sha)
+                if isinstance(source_tree, str):
+                    head_source_trees.add(source_tree)
+                if source_sha != production_sha:
+                    failures.append(f"pair {pair_index} head: production_source_sha differs from built source_sha")
+
+    for label, values in (
+        ("base harness source", base_sources),
+        ("base production source", base_production_sources),
+        ("base source tree", base_source_trees),
+        ("head source", head_sources),
+        ("head source tree", head_source_trees),
+        ("compiler version", compilers),
+        ("compiler executable hash", compiler_hashes),
+        ("corpus source", corpus_sources),
+        ("corpus source tree", corpus_trees),
+    ):
+        if len(values) != 1:
+            failures.append(f"{label} changed across samples: {sorted(values)}")
+    if len(base_production_sources) == 1 and corpus_sources != base_production_sources:
+        failures.append("corpus source does not match the production baseline source")
+
+    if failures:
+        return failures, None
+    summary = (
+        f"base={next(iter(base_production_sources))[:12]} "
+        f"harness={next(iter(base_sources))[:12]} "
+        f"head={next(iter(head_sources))[:12]} "
+        f"compiler={next(iter(compilers))}/{next(iter(compiler_hashes))[:12]}"
+    )
+    return [], summary
+
+
+def compare(
+    samples: list[tuple[dict, dict]],
+    threshold_pct: float,
+    min_abs_ns: int,
+    require_parity: bool,
+    bootstrap_samples: int,
+    require_provenance: bool = False,
+    allowed_parity_skips: set[str] | None = None,
+) -> tuple[str, list[str]]:
     failures: list[str] = []
     parity_failures: list[str] = []
     corpus_hashes: list[str] = []
+    allowed_parity_skips = allowed_parity_skips or set()
+    provenance_failures, provenance_summary = validate_provenance(samples) if require_provenance else ([], None)
 
     mapped: list[tuple[dict[str, dict], dict[str, dict]]] = []
     expected_tools: set[str] | None = None
@@ -104,7 +233,11 @@ def compare(samples: list[tuple[dict, dict]], threshold_pct: float, min_abs_ns: 
         wins = sum(h < b for b, h in zip(base_ns, head_ns))
         ties = sum(h == b for b, h in zip(base_ns, head_ns))
 
-        parity_enabled = all(bool(base[tool].get("parity", False)) and bool(head[tool].get("parity", False)) for base, head in mapped)
+        parity_policies = {
+            (bool(base[tool].get("parity", False)), bool(head[tool].get("parity", False)))
+            for base, head in mapped
+        }
+        parity_enabled = parity_policies == {(True, True)}
         parity_status = "SKIP"
         if parity_enabled:
             missing = any("response_hash" not in base[tool] or "response_hash" not in head[tool] for base, head in mapped)
@@ -122,8 +255,11 @@ def compare(samples: list[tuple[dict, dict]], threshold_pct: float, min_abs_ns: 
                 parity_failures.append(f"{tool}: output hash differs in pairs {mismatches}")
             else:
                 parity_status = "PASS"
-        elif require_parity and any(bool(base[tool].get("parity", False)) or bool(head[tool].get("parity", False)) for base, head in mapped):
-            parity_failures.append(f"{tool}: parity policy differs between base and head")
+        elif require_parity:
+            if parity_policies != {(False, False)}:
+                parity_failures.append(f"{tool}: parity policy differs between revisions or samples")
+            elif tool not in allowed_parity_skips:
+                parity_failures.append(f"{tool}: parity disabled without an explicit comparator allowlist entry")
 
         status = "OK"
         if pct_median > threshold_pct and delta_median > min_abs_ns:
@@ -133,15 +269,23 @@ def compare(samples: list[tuple[dict, dict]], threshold_pct: float, min_abs_ns: 
             status = "NOISE"
         rows.append((tool, base_median, head_median, pct_median, delta_median, ci_low, ci_high, wins, ties, parity_status, status))
 
+    actual_parity_skips = {row[0] for row in rows if row[9] == "SKIP"}
+    if require_parity:
+        for tool in sorted(allowed_parity_skips - actual_parity_skips):
+            parity_failures.append(f"{tool}: parity skip allowlist entry was not used")
     if parity_failures:
         failures.extend(parity_failures)
+    if provenance_failures:
+        failures.extend(provenance_failures)
 
+    counterbalance = "verified" if require_provenance and not provenance_failures else "not provenance-verified"
     lines = [
         "## Paired Benchmark Report",
         "",
-        f"Pairs: {len(samples)} (counterbalanced by the runner)",
+        f"Pairs: {len(samples)} (counterbalance {counterbalance})",
         f"Regression gate: median paired delta > {threshold_pct:.2f}% and > {min_abs_ns:,} ns",
-        f"Corpus parity: {'PASS' if not parity_failures and corpus_hashes else 'FAIL' if parity_failures else 'UNAVAILABLE'}",
+        f"Corpus parity: {'PASS' if corpus_hashes and not any('corpus' in failure for failure in parity_failures) else 'FAIL' if parity_failures else 'UNAVAILABLE'}",
+        f"Provenance: {'PASS (' + provenance_summary + ')' if provenance_summary else 'FAIL' if require_provenance else 'NOT REQUIRED'}",
         "",
         "No single-run minima are used. CI is a deterministic bootstrap 95% interval for the paired percentage median.",
         "",
@@ -154,6 +298,8 @@ def compare(samples: list[tuple[dict, dict]], threshold_pct: float, min_abs_ns: 
         )
     if parity_failures:
         lines.extend(["", "### Parity failures", ""] + [f"- {failure}" for failure in parity_failures])
+    if provenance_failures:
+        lines.extend(["", "### Provenance failures", ""] + [f"- {failure}" for failure in provenance_failures])
     return "\n".join(lines) + "\n", failures
 
 
@@ -162,7 +308,15 @@ def main() -> int:
     try:
         files = paired_files(Path(args.samples))
         samples = [(load(base), load(head)) for base, head in files]
-        report, failures = compare(samples, args.threshold_pct, args.min_abs_ns, args.require_parity, args.bootstrap_samples)
+        report, failures = compare(
+            samples,
+            args.threshold_pct,
+            args.min_abs_ns,
+            args.require_parity,
+            args.bootstrap_samples,
+            require_provenance=args.require_provenance,
+            allowed_parity_skips=set(args.allow_parity_skip),
+        )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
