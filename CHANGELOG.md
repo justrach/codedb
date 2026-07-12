@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Preallocate each retained per-file trigram list once at its exact final count
+  and use capacity-proven appends. This removes geometric growth, intermediate
+  copying, and long-lived capacity slack without reducing caches, workers,
+  warmup, retained data, result limits, or query features. On an immutable
+  641-file corpus, 20 counterbalanced pairs measured initial indexing at
+  137 ms → 136 ms (0.73% faster paired median, 95% CI 0.36%-1.46%, 14/20 wins).
+- Add Raspberry Pi 4 full-performance guidance, a Cortex-A72 `ReleaseFast` build
+  recipe, and an on-device generic-versus-tuned benchmark with output parity.
 
 ## 0.2.5830 - 2026-07-12
 

@@ -121,6 +121,7 @@ This replaces the `codedb` binary with the latest GitHub Release and keeps your 
 - **[CLI reference](docs/cli.md)** — every command, every flag
 - **[Architecture](docs/architecture.md)** — engine internals, index layout
 - **[Benchmarks](docs/benchmarks.md)** — micro-benchmarks + agentic-eval results vs codegraph, FTS5, lean-ctx
+- **[Raspberry Pi 4](docs/raspberry-pi.md)** — full-performance ARM64 setup, Cortex-A72 build, and on-device benchmark
 - **[Zig 0.17.0-dev migration guide](docs/zig-0.17-migration.md)** — repeatable zigup workflow and API change recipes
 
 | Platform | Binary | Signed |
