@@ -857,19 +857,21 @@ fn extractTrigramMasks(
 ) !void {
     if (content.len < 3) return;
     const index_m = @import("index.zig");
-    var n0 = index_m.normalizeChar(content[0]);
-    var n1 = index_m.normalizeChar(content[1]);
-    var n2 = index_m.normalizeChar(content[2]);
-    var ws0 = index_m.isTrigramWhitespace(content[0]);
-    var ws1 = index_m.isTrigramWhitespace(content[1]);
-    var ws2 = index_m.isTrigramWhitespace(content[2]);
+    var c0 = content[0];
+    var c1 = content[1];
+    var c2 = content[2];
+    var n0 = index_m.normalizeChar(c0);
+    var n1 = index_m.normalizeChar(c1);
+    var n2 = index_m.normalizeChar(c2);
 
     for (0..content.len - 2) |i| {
         const has_next = i + 3 < content.len;
         const c3 = if (has_next) content[i + 3] else 0;
         const n3 = if (has_next) index_m.normalizeChar(c3) else 0;
-        const ws3 = has_next and index_m.isTrigramWhitespace(c3);
-        if (!(ws0 and ws1 and ws2)) {
+        if (!((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
+            (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
+            (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')))
+        {
             const tri = index_m.packTrigram(n0, n1, n2);
             const gop = try local.getOrPut(tri);
             if (!gop.found_existing) gop.value_ptr.* = index_m.PostingMask{};
@@ -878,12 +880,12 @@ fn extractTrigramMasks(
                 gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(n3 & 7);
             }
         }
+        c0 = c1;
+        c1 = c2;
+        c2 = c3;
         n0 = n1;
         n1 = n2;
         n2 = n3;
-        ws0 = ws1;
-        ws1 = ws2;
-        ws2 = ws3;
     }
 }
 
