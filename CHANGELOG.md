@@ -1,6 +1,33 @@
 # Changelog
 
 
+## 0.2.5830 - 2026-07-12
+
+The first performance batch for this release accelerates steady-state MCP and
+core read-only tools while preserving response and retrieval parity. Measured
+MCP round trips improve from **2.16x to 99.11x** across tree, outline, symbol,
+read, find, word, search, and bundle workloads. Large synthetic handler cases
+improve **12.8x-109.7x** for outlines, deep reads, trees, fuzzy file lookup, and
+word output; exact symbols improve **22.4x** through direct hash-index lookup.
+
+The implementation adds bounded, mutation-generation-validated render/score
+caches, cached content hashes and line offsets, offset-based context body
+extraction, a compact JSON-RPC framing fast path, and rolling generic trigram
+construction. Ranking, parser, path-security, telemetry, and MCP schema behavior
+are unchanged. Baseline/candidate MCP responses were byte-identical after ID
+normalization, and the full suite, WASM build, and MCP E2E (20/20) pass.
+
+Detailed methodology, per-tool tables, memory bounds, limitations, and follow-up
+targets are in [`docs/performance-0.2.5830.md`](docs/performance-0.2.5830.md).
+The release gate ran 20 counterbalanced AB/BA pairs against the immutable
+0.2.5829 source plus a pinned harness-only parity backport. Every parity-enabled
+tool matched across every measured iteration after normalizing only response
+duration, and no benchmark crossed the 10% plus 50us regression threshold. The
+runner enforces a shared corpus fingerprint, full JSON-RPC response hashes,
+commit/tree/compiler/corpus/order provenance, paired medians, and bootstrap
+intervals; single-run minima are diagnostic only.
+
+
 ## 0.2.5829 - 2026-07-11
 
 The release toolchain moves to pinned Zig `0.17.0-dev.813+2153f8143` without

@@ -2568,3 +2568,207 @@ test "issue-656: call graph is stale and dangling after a file edit" {
     defer if (after) |steps| testing.allocator.free(steps);
     try testing.expect(after != null);
 }
+
+test "render caches preserve output and invalidate on mutation" {
+    var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer ex.deinit();
+    try ex.indexFile("src/alpha.zig", "pub fn alpha() void {}\nconst cached_word = 1;\n");
+
+    var tree_first: std.ArrayList(u8) = .empty;
+    defer tree_first.deinit(testing.allocator);
+    var tree_cached: std.ArrayList(u8) = .empty;
+    defer tree_cached.deinit(testing.allocator);
+    try ex.renderTree(testing.allocator, &tree_first, false);
+    try ex.renderTree(testing.allocator, &tree_cached, false);
+    try testing.expectEqualSlices(u8, tree_first.items, tree_cached.items);
+
+    var outline_first: std.ArrayList(u8) = .empty;
+    defer outline_first.deinit(testing.allocator);
+    var outline_cached: std.ArrayList(u8) = .empty;
+    defer outline_cached.deinit(testing.allocator);
+    try testing.expect(try ex.renderOutline("src/alpha.zig", testing.allocator, &outline_first, false));
+    try testing.expect(try ex.renderOutline("src/alpha.zig", testing.allocator, &outline_cached, false));
+    try testing.expectEqualSlices(u8, outline_first.items, outline_cached.items);
+
+    var word_first: std.ArrayList(u8) = .empty;
+    defer word_first.deinit(testing.allocator);
+    var word_cached: std.ArrayList(u8) = .empty;
+    defer word_cached.deinit(testing.allocator);
+    try ex.renderWord("cached_word", testing.allocator, &word_first);
+    try ex.renderWord("cached_word", testing.allocator, &word_cached);
+    try testing.expectEqualSlices(u8, word_first.items, word_cached.items);
+
+    try ex.indexFile("src/beta.zig", "pub fn beta() void {}\nconst cached_word = 2;\n");
+    var tree_after: std.ArrayList(u8) = .empty;
+    defer tree_after.deinit(testing.allocator);
+    try ex.renderTree(testing.allocator, &tree_after, false);
+    try testing.expect(std.mem.indexOf(u8, tree_after.items, "beta.zig") != null);
+
+    var word_after: std.ArrayList(u8) = .empty;
+    defer word_after.deinit(testing.allocator);
+    try ex.renderWord("cached_word", testing.allocator, &word_after);
+    try testing.expect(std.mem.indexOf(u8, word_after.items, "src/beta.zig") != null);
+
+    try ex.indexFile("src/alpha.zig", "pub fn renamedAlpha() void {}\n");
+    var outline_after: std.ArrayList(u8) = .empty;
+    defer outline_after.deinit(testing.allocator);
+    try testing.expect(try ex.renderOutline("src/alpha.zig", testing.allocator, &outline_after, false));
+    try testing.expect(std.mem.indexOf(u8, outline_after.items, "renamedAlpha") != null);
+    try testing.expect(std.mem.indexOf(u8, outline_after.items, "function alpha") == null);
+}
+
+test "render cache hits wait for Explorer mutation lock" {
+    var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer ex.deinit();
+    try ex.indexFile("src/alpha.zig", "pub fn alpha() void {}\n");
+
+    var tree_prime: std.ArrayList(u8) = .empty;
+    defer tree_prime.deinit(testing.allocator);
+    try ex.renderTree(testing.allocator, &tree_prime, false);
+    var outline_prime: std.ArrayList(u8) = .empty;
+    defer outline_prime.deinit(testing.allocator);
+    try testing.expect(try ex.renderOutline("src/alpha.zig", testing.allocator, &outline_prime, false));
+
+    const ReadCtx = struct {
+        ex: *Explorer,
+        outline: bool,
+        started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        finished: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+        fn run(ctx: *@This()) void {
+            var out: std.ArrayList(u8) = .empty;
+            defer out.deinit(std.heap.page_allocator);
+            ctx.started.store(true, .release);
+            if (ctx.outline) {
+                const found = ctx.ex.renderOutline("src/alpha.zig", std.heap.page_allocator, &out, false) catch {
+                    ctx.failed.store(true, .release);
+                    return;
+                };
+                if (!found) ctx.failed.store(true, .release);
+            } else {
+                ctx.ex.renderTree(std.heap.page_allocator, &out, false) catch {
+                    ctx.failed.store(true, .release);
+                    return;
+                };
+            }
+            ctx.finished.store(true, .release);
+        }
+    };
+
+    var tree_ctx = ReadCtx{ .ex = &ex, .outline = false };
+    var outline_ctx = ReadCtx{ .ex = &ex, .outline = true };
+    ex.mu.lock();
+    const tree_thread = std.Thread.spawn(.{}, ReadCtx.run, .{&tree_ctx}) catch |err| {
+        ex.mu.unlock();
+        return err;
+    };
+    const outline_thread = std.Thread.spawn(.{}, ReadCtx.run, .{&outline_ctx}) catch |err| {
+        ex.mu.unlock();
+        tree_thread.join();
+        return err;
+    };
+    while (!tree_ctx.started.load(.acquire) or !outline_ctx.started.load(.acquire)) cio.sleepMs(1);
+    cio.sleepMs(20);
+    const tree_blocked = !tree_ctx.finished.load(.acquire);
+    const outline_blocked = !outline_ctx.finished.load(.acquire);
+    ex.mu.unlock();
+    tree_thread.join();
+    outline_thread.join();
+
+    try testing.expect(tree_blocked);
+    try testing.expect(outline_blocked);
+    try testing.expect(!tree_ctx.failed.load(.acquire));
+    try testing.expect(!outline_ctx.failed.load(.acquire));
+}
+
+test "cached deep reads and fuzzy finds invalidate exactly" {
+    var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer ex.deinit();
+
+    var content: std.ArrayList(u8) = .empty;
+    defer content.deinit(testing.allocator);
+    const content_writer = cio.listWriter(&content, testing.allocator);
+    for (1..121) |line| try content_writer.print("line-{d}\n", .{line});
+    try ex.indexFile("deep-alpha.zig", content.items);
+
+    const opts = Explorer.ReadRenderOptions{ .line_start = 100, .line_end = 102 };
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(testing.allocator);
+    var cached: std.ArrayList(u8) = .empty;
+    defer cached.deinit(testing.allocator);
+    try testing.expect(try ex.renderCachedRead("deep-alpha.zig", testing.allocator, &first, opts));
+    try testing.expect(try ex.renderCachedRead("deep-alpha.zig", testing.allocator, &cached, opts));
+    try testing.expectEqualSlices(u8, first.items, cached.items);
+    try testing.expect(std.mem.indexOf(u8, cached.items, "  100 | line-100") != null);
+    try testing.expect(std.mem.indexOf(u8, cached.items, "  103 |") == null);
+
+    const fuzzy_first = try ex.fuzzyFindFiles("deep alfa", testing.allocator, 10);
+    defer testing.allocator.free(fuzzy_first);
+    const fuzzy_cached = try ex.fuzzyFindFiles("deep alfa", testing.allocator, 10);
+    defer testing.allocator.free(fuzzy_cached);
+    try testing.expectEqual(fuzzy_first.len, fuzzy_cached.len);
+    for (fuzzy_first, fuzzy_cached) |a, b| {
+        try testing.expectEqualStrings(a.path, b.path);
+        try testing.expectEqual(a.score, b.score);
+    }
+
+    try ex.indexFile("deep-alfa-extra.zig", "pub fn extra() void {}\n");
+    const fuzzy_after = try ex.fuzzyFindFiles("deep alfa", testing.allocator, 10);
+    defer testing.allocator.free(fuzzy_after);
+    try testing.expect(fuzzy_after.len > fuzzy_cached.len);
+
+    content.clearRetainingCapacity();
+    for (1..121) |line| try content_writer.print("changed-{d}\n", .{line});
+    try ex.indexFile("deep-alpha.zig", content.items);
+    var changed: std.ArrayList(u8) = .empty;
+    defer changed.deinit(testing.allocator);
+    try testing.expect(try ex.renderCachedRead("deep-alpha.zig", testing.allocator, &changed, opts));
+    try testing.expect(std.mem.indexOf(u8, changed.items, "changed-100") != null);
+    try testing.expect(std.mem.indexOf(u8, changed.items, "line-100") == null);
+}
+
+test "content hashes are recomputed for mutable borrowed storage" {
+    var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer ex.deinit();
+
+    var content = "const a = 1;\n".*;
+    try ex.contents.putBorrowed("hash.zig", content[0..]);
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(testing.allocator);
+    try testing.expect(try ex.renderCachedRead("hash.zig", testing.allocator, &first, .{}));
+    const hash_end = std.mem.indexOfScalar(u8, first.items, '\n').?;
+    const first_hash = first.items["hash:".len..hash_end];
+
+    @memcpy(content[0..], "const b = 2;\n");
+    var changed: std.ArrayList(u8) = .empty;
+    defer changed.deinit(testing.allocator);
+    try testing.expect(try ex.renderCachedRead("hash.zig", testing.allocator, &changed, .{ .if_hash = first_hash }));
+    try testing.expect(!std.mem.startsWith(u8, changed.items, "unchanged:"));
+    try testing.expect(std.mem.indexOf(u8, changed.items, "const b = 2;") != null);
+}
+
+test "disk-backed line ranges do not reuse offsets for changed content" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "fallback.zig", .data = "aa\nbb\ncc\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer ex.deinit();
+    ex.setRoot(io, root_buf[0..root_len]);
+
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(testing.allocator);
+    try testing.expect(try ex.appendLineRange("fallback.zig", 2, 3, "       ", testing.allocator, &first));
+    try testing.expectEqualStrings("           2 | bb\n           3 | cc\n", first.items);
+
+    // Keep the byte length constant while moving newline offsets. Temporary
+    // disk-read allocations may reuse the same address between calls.
+    try tmp.dir.writeFile(io, .{ .sub_path = "fallback.zig", .data = "a\nbbbb\nc\n" });
+    var changed: std.ArrayList(u8) = .empty;
+    defer changed.deinit(testing.allocator);
+    try testing.expect(try ex.appendLineRange("fallback.zig", 2, 3, "       ", testing.allocator, &changed));
+    try testing.expectEqualStrings("           2 | bbbb\n           3 | c\n", changed.items);
+}

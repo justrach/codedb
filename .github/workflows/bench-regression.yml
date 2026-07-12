@@ -5,13 +5,14 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 env:
   ZIG_VERSION: 0.17.0-dev.813+2153f8143
   ZIG_SHA256: b0d46ffc4587b9e8dd0b524ee5bc4da1e67f28bba55e7c534cec64af2f2d7a74
   LEGACY_ZIG_VERSION: 0.16.0
   LEGACY_ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+  PAIRED_5829_BASE_SHA: dd36e9431925014ee2bed80346669a4afee7e42e
+  PAIRED_5829_SHA: 24e89c70d4f9cdaf5542a78d83d1890a42b4a046
 
 jobs:
   bench:
@@ -20,6 +21,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Test paired benchmark comparator
+        run: python3 -m unittest scripts/test_compare_bench_paired.py
 
       - name: Install pinned Zig toolchains
         run: |
@@ -47,12 +51,14 @@ jobs:
         run: python3 scripts/run-bench-json.py bench-head.json
 
       - name: Benchmark base with its declared compiler
+        id: base_bench
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          git fetch origin "$BASE_REF" --depth=1
-          git worktree add ../codedb-base FETCH_HEAD
+          git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || git fetch origin "$BASE_SHA" --depth=1
+          git worktree add ../codedb-base "$BASE_SHA"
+          test "$(git -C ../codedb-base rev-parse HEAD)" = "$BASE_SHA"
           cd ../codedb-base
 
           base_zig_version=$(sed -n 's/.*\.minimum_zig_version = "\([^"]*\)".*/\1/p' build.zig.zon)
@@ -69,8 +75,83 @@ jobs:
               ;;
           esac
           test "$("$base_zig_dir/zig" version)" = "$base_zig_version"
+          echo "zig_version=$base_zig_version" >> "$GITHUB_OUTPUT"
+          echo "zig_dir=$base_zig_dir" >> "$GITHUB_OUTPUT"
           PATH="$base_zig_dir:$PATH" \
             python3 "$GITHUB_WORKSPACE/scripts/run-bench-json.py" "$GITHUB_WORKSPACE/bench-base.json"
+
+      - name: Paired counterbalanced benchmark with parity gate
+        env:
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_ZIG_VERSION: ${{ steps.base_bench.outputs.zig_version }}
+          BASE_ZIG_DIR: ${{ steps.base_bench.outputs.zig_dir }}
+          PAIRS: 5
+        run: |
+          set -euo pipefail
+          if [[ "$BASE_ZIG_VERSION" != "$ZIG_VERSION" ]]; then
+            echo "Paired parity requires a pinned same-compiler baseline harness; refusing to skip the gate." >&2
+            exit 1
+          fi
+
+          paired_base="../codedb-base"
+          if ! grep -q corpus_hash "$paired_base/src/bench.zig"; then
+            if [[ "$EVENT_BASE_SHA" != "$PAIRED_5829_BASE_SHA" ]]; then
+              echo "No pinned parity harness exists for base $EVENT_BASE_SHA" >&2
+              exit 1
+            fi
+            git cat-file -e "$PAIRED_5829_SHA^{commit}" 2>/dev/null || {
+              git fetch origin bench/v0.2.5829-paired-baseline --depth=1
+              test "$(git rev-parse FETCH_HEAD)" = "$PAIRED_5829_SHA"
+            }
+            git merge-base --is-ancestor "$EVENT_BASE_SHA" "$PAIRED_5829_SHA"
+            test "$(git diff --name-only "$EVENT_BASE_SHA..$PAIRED_5829_SHA")" = $'src/bench.zig\nsrc/mcp.zig'
+            git worktree add ../codedb-paired-base "$PAIRED_5829_SHA"
+            paired_base="../codedb-paired-base"
+          fi
+
+          mkdir -p bench-paired
+          corpus_source=$(realpath ../codedb-base)
+          head_source_sha=$(git rev-parse HEAD)
+          head_tree_sha=$(git rev-parse 'HEAD^{tree}')
+          git worktree add ../codedb-paired-head "$head_source_sha"
+          head_cwd=$(realpath ../codedb-paired-head)
+          run_sample() {
+            side="$1"
+            pair="$2"
+            order="$3"
+            sequence="$4"
+            if [[ "$side" == base ]]; then
+              cwd="$paired_base"
+              zig_dir="$BASE_ZIG_DIR"
+              production_sha="$EVENT_BASE_SHA"
+            else
+              cwd="$head_cwd"
+              zig_dir="$GITHUB_WORKSPACE/zig-x86_64-linux-${ZIG_VERSION}"
+              production_sha="$head_source_sha"
+            fi
+            (
+              cd "$cwd"
+              PATH="$zig_dir:$PATH" python3 "$head_cwd/scripts/run-bench-json.py" \
+                --bench-side "$side" --bench-pair "$pair" --bench-order "$order" --bench-sequence "$sequence" \
+                --production-source-sha "$production_sha" --corpus-source-sha "$EVENT_BASE_SHA" \
+                "$GITHUB_WORKSPACE/bench-paired/$side-$(printf '%02d' "$pair").json" \
+                --corpus-source "$corpus_source"
+            )
+          }
+
+          for ((pair = 1; pair <= PAIRS; pair++)); do
+            if (( pair % 2 == 1 )); then
+              run_sample base "$pair" AB 1
+              run_sample head "$pair" AB 2
+            else
+              run_sample head "$pair" BA 1
+              run_sample base "$pair" BA 2
+            fi
+          done
+          python3 "$head_cwd/scripts/compare-bench-paired.py" bench-paired --require-parity --require-provenance \
+            --allow-parity-skip codedb_snapshot --allow-parity-skip codedb_status \
+            --expected-head-sha "$head_source_sha" --expected-head-tree-sha "$head_tree_sha" \
+            --threshold-pct 10 --min-abs-ns 50000 --markdown-out bench-paired-report.md
 
       - name: Compare
         run: |
@@ -84,25 +165,12 @@ jobs:
             bench-base.json
             bench-head.json
             bench-report.md
+            bench-paired/
+            bench-paired-report.md
 
-      - name: Comment PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync('bench-report.md', 'utf8');
-            try {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            } catch (err) {
-              if (err.status === 403) {
-                core.warning('Skipping benchmark PR comment because this run token cannot write comments.');
-              } else {
-                throw err;
-              }
-            }
+      - name: Publish benchmark summary
+        if: always()
+        run: |
+          report=bench-paired-report.md
+          [[ -f "$report" ]] || report=bench-report.md
+          [[ -f "$report" ]] && cat "$report" >> "$GITHUB_STEP_SUMMARY"

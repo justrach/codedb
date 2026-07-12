@@ -4,6 +4,8 @@ const builtin = @import("builtin");
 const AtomicCounter = if (builtin.cpu.arch == .wasm32) u32 else u64;
 
 /// Fixed-capacity CLOCK eviction cache for file contents.
+/// Callers must provide external synchronization around get/put/remove/clear;
+/// Explorer uses its shared/exclusive mutex for that contract.
 /// Keys are always owned (duped on put, freed on eviction/remove/clear/deinit).
 /// Values are owned by default (duped on put), but `putBorrowed` stores a value
 /// that aliases externally-owned memory (e.g. a retained mmap of the snapshot
@@ -15,6 +17,7 @@ pub const ContentCache = struct {
     slots: []Slot,
     capacity: u32,
     count_: u32,
+    next_generation: u64,
     allocator: std.mem.Allocator,
     hits_: std.atomic.Value(AtomicCounter),
     misses_: std.atomic.Value(AtomicCounter),
@@ -40,6 +43,7 @@ pub const ContentCache = struct {
         key_hash: u64,
         key: []const u8,
         value: []const u8,
+        generation: u64,
         ref_bit: bool,
         present: bool,
         /// When false, `value` aliases externally-owned memory and the cache
@@ -51,6 +55,7 @@ pub const ContentCache = struct {
         .key_hash = 0,
         .key = &.{},
         .value = &.{},
+        .generation = 0,
         .ref_bit = false,
         .present = false,
         .value_owned = false,
@@ -76,6 +81,7 @@ pub const ContentCache = struct {
             .slots = slots,
             .capacity = capacity,
             .count_ = 0,
+            .next_generation = 1,
             .allocator = allocator,
             .hits_ = std.atomic.Value(AtomicCounter).init(0),
             .misses_ = std.atomic.Value(AtomicCounter).init(0),
@@ -95,6 +101,7 @@ pub const ContentCache = struct {
             .slots = slots,
             .capacity = capacity,
             .count_ = 0,
+            .next_generation = 1,
             .allocator = allocator,
             .hits_ = std.atomic.Value(AtomicCounter).init(0),
             .misses_ = std.atomic.Value(AtomicCounter).init(0),
@@ -116,7 +123,13 @@ pub const ContentCache = struct {
         self.allocator.free(self.slots);
     }
 
-    pub fn get(self: *ContentCache, key: []const u8) ?[]const u8 {
+    pub const ValueRef = struct {
+        value: []const u8,
+        generation: u64,
+        value_owned: bool,
+    };
+
+    pub fn getWithGeneration(self: *ContentCache, key: []const u8) ?ValueRef {
         const h = hashKey(key);
         const base = @as(u32, @truncate(h)) % self.capacity;
         var i: u32 = 0;
@@ -126,11 +139,16 @@ pub const ContentCache = struct {
             if (slot.present and slot.key_hash == h and std.mem.eql(u8, slot.key, key)) {
                 slot.ref_bit = true;
                 _ = self.hits_.fetchAdd(1, .monotonic);
-                return slot.value;
+                return .{ .value = slot.value, .generation = slot.generation, .value_owned = slot.value_owned };
             }
         }
         _ = self.misses_.fetchAdd(1, .monotonic);
         return null;
+    }
+
+    pub fn get(self: *ContentCache, key: []const u8) ?[]const u8 {
+        const ref = self.getWithGeneration(key) orelse return null;
+        return ref.value;
     }
 
     /// Insert key/value, duping both into the cache allocator. On collision past
@@ -149,6 +167,13 @@ pub const ContentCache = struct {
     /// Borrowed values are exempt from the byte budget.
     pub fn putBorrowed(self: *ContentCache, key: []const u8, value: []const u8) !void {
         return self.putImpl(key, value, false);
+    }
+
+    fn takeGeneration(self: *ContentCache) u64 {
+        const generation = self.next_generation;
+        if (generation == std.math.maxInt(u64)) @panic("ContentCache generation exhausted");
+        self.next_generation = generation + 1;
+        return generation;
     }
 
     fn putImpl(self: *ContentCache, key: []const u8, value: []const u8, own: bool) !void {
@@ -180,6 +205,7 @@ pub const ContentCache = struct {
                     }
                     slot.value = new_value;
                     slot.value_owned = own;
+                    slot.generation = self.takeGeneration();
                     if (own) self.owned_bytes += value.len;
                     slot.ref_bit = true;
                     return;
@@ -227,6 +253,7 @@ pub const ContentCache = struct {
         slot.key = duped_key;
         slot.value = new_value;
         slot.value_owned = own;
+        slot.generation = self.takeGeneration();
         slot.ref_bit = true;
         slot.present = true;
         if (own) self.owned_bytes += value.len;
@@ -379,6 +406,29 @@ test "ContentCache: put updates existing key in place" {
     try cache.put("key", "v2");
     try std.testing.expectEqualStrings("v2", cache.get("key").?);
     try std.testing.expectEqual(@as(u32, 1), cache.len());
+}
+
+test "ContentCache: generations change when storage is replaced" {
+    var cache = try ContentCache.initAlloc(std.testing.allocator, 64);
+    defer cache.deinit();
+
+    try cache.put("key", "same");
+    const first = cache.getWithGeneration("key").?;
+    try std.testing.expect(first.value_owned);
+    try cache.put("key", "size");
+    const second = cache.getWithGeneration("key").?;
+    try std.testing.expect(first.generation != second.generation);
+    try std.testing.expectEqualStrings("size", second.value);
+
+    cache.remove("key");
+    try cache.put("key", "same");
+    const third = cache.getWithGeneration("key").?;
+    try std.testing.expect(second.generation != third.generation);
+
+    cache.clear();
+    try cache.put("key", "same");
+    const fourth = cache.getWithGeneration("key").?;
+    try std.testing.expect(third.generation != fourth.generation);
 }
 
 test "ContentCache: clear drops all entries" {

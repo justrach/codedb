@@ -42,6 +42,11 @@ jobs:
             zig_sha256: b0d46ffc4587b9e8dd0b524ee5bc4da1e67f28bba55e7c534cec64af2f2d7a74
             zig_target: aarch64-linux
             asset_name: codedb-linux-arm64
+          - runner: ubuntu-24.04
+            zig_host: x86_64-linux
+            zig_sha256: b0d46ffc4587b9e8dd0b524ee5bc4da1e67f28bba55e7c534cec64af2f2d7a74
+            zig_target: x86_64-windows
+            asset_name: codedb-windows-x86_64.exe
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
       APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -106,7 +111,10 @@ jobs:
           else
             zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
           fi
-          cp zig-out/bin/codedb "${{ matrix.asset_name }}"
+          binary=zig-out/bin/codedb
+          [[ -f "$binary" ]] || binary=zig-out/bin/codedb.exe
+          test -f "$binary"
+          cp "$binary" "${{ matrix.asset_name }}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7

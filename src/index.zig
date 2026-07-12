@@ -1262,28 +1262,41 @@ pub const TrigramIndex = struct {
         local.ensureTotalCapacity(estimated_unique) catch {};
 
         if (content.len >= 3) {
+            // Keep overlapping raw and normalized windows as rolling locals. The
+            // old loop requested three loads and up to four normalizations at every
+            // position; rolling advances each value once without changing masks.
+            var c0 = content[0];
+            var c1 = content[1];
+            var c2 = content[2];
+            var n0 = normalizeChar(c0);
+            var n1 = normalizeChar(c1);
+            var n2 = normalizeChar(c2);
             for (0..content.len - 2) |i| {
-                // Skip trigrams that are pure whitespace (terrible filters, ~12% of all occurrences)
-                const c0 = content[i];
-                const c1 = content[i + 1];
-                const c2 = content[i + 2];
-                if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
-                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
-                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
+                const has_next = i + 3 < content.len;
+                const c3 = if (has_next) content[i + 3] else 0;
+                const n3 = if (has_next) normalizeChar(c3) else 0;
 
-                const tri = packTrigram(
-                    normalizeChar(c0),
-                    normalizeChar(c1),
-                    normalizeChar(c2),
-                );
-                const gop = try local.getOrPut(tri);
-                if (!gop.found_existing) {
-                    gop.value_ptr.* = PostingMask{};
+                // Skip trigrams that are pure whitespace (terrible filters,
+                // ~12% of all occurrences).
+                if (!((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
+                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
+                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')))
+                {
+                    const tri = packTrigram(n0, n1, n2);
+                    const gop = try local.getOrPut(tri);
+                    if (!gop.found_existing) gop.value_ptr.* = PostingMask{};
+                    gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i & 7);
+                    if (has_next) {
+                        gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(n3 & 7);
+                    }
                 }
-                gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
-                if (i + 3 < content.len) {
-                    gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(normalizeChar(content[i + 3]) % 8);
-                }
+
+                c0 = c1;
+                c1 = c2;
+                c2 = c3;
+                n0 = n1;
+                n1 = n2;
+                n2 = n3;
             }
         }
 
