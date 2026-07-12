@@ -673,6 +673,10 @@ test "rolling trigram indexes match scalar masks exactly" {
     defer source.deinit();
     var canonical = TrigramIndex.init(testing.allocator);
     defer canonical.deinit();
+    var reused = TrigramIndex.init(testing.allocator);
+    defer reused.deinit();
+    var reusable_masks = std.AutoHashMap(Trigram, PostingMask).init(testing.allocator);
+    defer reusable_masks.deinit();
 
     const fixtures = [_]struct { path: []const u8, content: []const u8 }{
         .{ .path = "edge/empty.txt", .content = "" },
@@ -688,6 +692,7 @@ test "rolling trigram indexes match scalar masks exactly" {
     for (fixtures) |fixture| {
         try source.indexFile(fixture.path, fixture.content);
         try canonical.indexFile(fixture.path, fixture.content);
+        try reused.indexFileReuse(fixture.path, fixture.content, &reusable_masks);
     }
 
     // Keep a deliberately scalar reference independent from both rolling
@@ -697,6 +702,16 @@ test "rolling trigram indexes match scalar masks exactly" {
         defer expected.deinit();
         try buildScalarTrigramMasks(fixture.content, &expected);
 
+        var extracted = TrigramIndex.extractTrigrams(fixture.content, testing.allocator);
+        defer extracted.deinit();
+        try testing.expectEqual(expected.count(), extracted.count());
+        var extracted_iter = extracted.iterator();
+        while (extracted_iter.next()) |entry| {
+            const expected_mask = expected.get(entry.key_ptr.*) orelse return error.TestUnexpectedResult;
+            try testing.expectEqual(expected_mask.loc_mask, entry.value_ptr.loc_mask);
+            try testing.expectEqual(expected_mask.next_mask, entry.value_ptr.next_mask);
+        }
+
         var actual_count: usize = 0;
         var actual_iter = canonical.index.iterator();
         while (actual_iter.next()) |entry| {
@@ -705,10 +720,15 @@ test "rolling trigram indexes match scalar masks exactly" {
                 const expected_mask = expected.get(entry.key_ptr.*) orelse return error.TestUnexpectedResult;
                 try testing.expectEqual(expected_mask.loc_mask, actual_mask.loc_mask);
                 try testing.expectEqual(expected_mask.next_mask, actual_mask.next_mask);
+                const reused_postings = reused.index.get(entry.key_ptr.*) orelse return error.TestUnexpectedResult;
+                const reused_mask = reused_postings.get(fixture.path) orelse return error.TestUnexpectedResult;
+                try testing.expectEqual(expected_mask.loc_mask, reused_mask.loc_mask);
+                try testing.expectEqual(expected_mask.next_mask, reused_mask.next_mask);
             }
         }
         try testing.expectEqual(expected.count(), actual_count);
     }
+    try testing.expectEqual(canonical.index.count(), reused.index.count());
 
     const sharded = try watcher.buildTrigramsFromCache(
         &source.contents,

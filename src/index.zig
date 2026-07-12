@@ -1262,26 +1262,24 @@ pub const TrigramIndex = struct {
         local.ensureTotalCapacity(estimated_unique) catch {};
 
         if (content.len >= 3) {
-            // Keep overlapping raw and normalized windows as rolling locals. The
-            // old loop requested three loads and up to four normalizations at every
-            // position; rolling advances each value once without changing masks.
-            var c0 = content[0];
-            var c1 = content[1];
-            var c2 = content[2];
-            var n0 = normalizeChar(c0);
-            var n1 = normalizeChar(c1);
-            var n2 = normalizeChar(c2);
+            // Keep overlapping normalized and whitespace windows as rolling
+            // locals. Each incoming byte is loaded, normalized, and classified
+            // once without changing posting masks.
+            var n0 = normalizeChar(content[0]);
+            var n1 = normalizeChar(content[1]);
+            var n2 = normalizeChar(content[2]);
+            var ws0 = isTrigramWhitespace(content[0]);
+            var ws1 = isTrigramWhitespace(content[1]);
+            var ws2 = isTrigramWhitespace(content[2]);
             for (0..content.len - 2) |i| {
                 const has_next = i + 3 < content.len;
                 const c3 = if (has_next) content[i + 3] else 0;
                 const n3 = if (has_next) normalizeChar(c3) else 0;
+                const ws3 = has_next and isTrigramWhitespace(c3);
 
                 // Skip trigrams that are pure whitespace (terrible filters,
                 // ~12% of all occurrences).
-                if (!((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
-                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
-                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')))
-                {
+                if (!(ws0 and ws1 and ws2)) {
                     const tri = packTrigram(n0, n1, n2);
                     const gop = try local.getOrPut(tri);
                     if (!gop.found_existing) gop.value_ptr.* = PostingMask{};
@@ -1291,18 +1289,19 @@ pub const TrigramIndex = struct {
                     }
                 }
 
-                c0 = c1;
-                c1 = c2;
-                c2 = c3;
                 n0 = n1;
                 n1 = n2;
                 n2 = n3;
+                ws0 = ws1;
+                ws1 = ws2;
+                ws2 = ws3;
             }
         }
 
         // Phase 2: bulk-insert one posting per trigram into global index
         var tri_list: std.ArrayList(Trigram) = .empty;
         errdefer tri_list.deinit(self.allocator);
+        try tri_list.ensureTotalCapacity(self.allocator, local.count());
 
         var local_iter = local.iterator();
         while (local_iter.next()) |entry| {
@@ -1343,26 +1342,39 @@ pub const TrigramIndex = struct {
         // Phase 1: accumulate masks in reusable local map
         local.clearRetainingCapacity();
         if (content.len >= 3) {
+            var n0 = normalizeChar(content[0]);
+            var n1 = normalizeChar(content[1]);
+            var n2 = normalizeChar(content[2]);
+            var ws0 = isTrigramWhitespace(content[0]);
+            var ws1 = isTrigramWhitespace(content[1]);
+            var ws2 = isTrigramWhitespace(content[2]);
             for (0..content.len - 2) |i| {
-                const c0 = content[i];
-                const c1 = content[i + 1];
-                const c2 = content[i + 2];
-                if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
-                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
-                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
-                const tri = packTrigram(normalizeChar(c0), normalizeChar(c1), normalizeChar(c2));
-                const gop = try local.getOrPut(tri);
-                if (!gop.found_existing) gop.value_ptr.* = PostingMask{};
-                gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
-                if (i + 3 < content.len) {
-                    gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(normalizeChar(content[i + 3]) % 8);
+                const has_next = i + 3 < content.len;
+                const c3 = if (has_next) content[i + 3] else 0;
+                const n3 = if (has_next) normalizeChar(c3) else 0;
+                const ws3 = has_next and isTrigramWhitespace(c3);
+                if (!(ws0 and ws1 and ws2)) {
+                    const tri = packTrigram(n0, n1, n2);
+                    const gop = try local.getOrPut(tri);
+                    if (!gop.found_existing) gop.value_ptr.* = PostingMask{};
+                    gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i & 7);
+                    if (has_next) {
+                        gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(n3 & 7);
+                    }
                 }
+                n0 = n1;
+                n1 = n2;
+                n2 = n3;
+                ws0 = ws1;
+                ws1 = ws2;
+                ws2 = ws3;
             }
         }
 
         // Phase 2: bulk-insert
         var tri_list: std.ArrayList(Trigram) = .empty;
         errdefer tri_list.deinit(self.allocator);
+        try tri_list.ensureTotalCapacity(self.allocator, local.count());
         var local_iter = local.iterator();
         while (local_iter.next()) |entry| {
             const tri = entry.key_ptr.*;
@@ -1393,20 +1405,33 @@ pub const TrigramIndex = struct {
         const estimated = @max(@as(u32, 64), @as(u32, @intCast(@min(content.len / 4, 65536))));
         local.ensureTotalCapacity(estimated) catch {};
         if (content.len >= 3) {
+            var n0 = normalizeChar(content[0]);
+            var n1 = normalizeChar(content[1]);
+            var n2 = normalizeChar(content[2]);
+            var ws0 = isTrigramWhitespace(content[0]);
+            var ws1 = isTrigramWhitespace(content[1]);
+            var ws2 = isTrigramWhitespace(content[2]);
             for (0..content.len - 2) |i| {
-                const c0 = content[i];
-                const c1 = content[i + 1];
-                const c2 = content[i + 2];
-                if ((c0 == ' ' or c0 == '\t' or c0 == '\n' or c0 == '\r') and
-                    (c1 == ' ' or c1 == '\t' or c1 == '\n' or c1 == '\r') and
-                    (c2 == ' ' or c2 == '\t' or c2 == '\n' or c2 == '\r')) continue;
-                const tri = packTrigram(normalizeChar(c0), normalizeChar(c1), normalizeChar(c2));
-                const gop = local.getOrPut(tri) catch continue;
-                if (!gop.found_existing) gop.value_ptr.* = PostingMask{};
-                gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i % 8);
-                if (i + 3 < content.len) {
-                    gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(normalizeChar(content[i + 3]) % 8);
+                const has_next = i + 3 < content.len;
+                const c3 = if (has_next) content[i + 3] else 0;
+                const n3 = if (has_next) normalizeChar(c3) else 0;
+                const ws3 = has_next and isTrigramWhitespace(c3);
+                if (!(ws0 and ws1 and ws2)) {
+                    const tri = packTrigram(n0, n1, n2);
+                    if (local.getOrPut(tri) catch null) |gop| {
+                        if (!gop.found_existing) gop.value_ptr.* = PostingMask{};
+                        gop.value_ptr.loc_mask |= @as(u8, 1) << @intCast(i & 7);
+                        if (has_next) {
+                            gop.value_ptr.next_mask |= @as(u8, 1) << @intCast(n3 & 7);
+                        }
+                    }
                 }
+                n0 = n1;
+                n1 = n2;
+                n2 = n3;
+                ws0 = ws1;
+                ws1 = ws2;
+                ws2 = ws3;
             }
         }
         return local;
@@ -1418,6 +1443,7 @@ pub const TrigramIndex = struct {
         const doc_id = try self.getOrCreateDocId(path);
         var tri_list: std.ArrayList(Trigram) = .empty;
         errdefer tri_list.deinit(self.allocator);
+        try tri_list.ensureTotalCapacity(self.allocator, local.count());
         var iter = local.iterator();
         while (iter.next()) |entry| {
             const tri = entry.key_ptr.*;
@@ -3097,6 +3123,10 @@ fn isWordChar(c: u8) bool {
 pub fn normalizeChar(c: u8) u8 {
     // Lowercase for case-insensitive trigram matching
     return if (c >= 'A' and c <= 'Z') c + 32 else c;
+}
+
+pub inline fn isTrigramWhitespace(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
 }
 
 fn emitSubToken(seg: []const u8, out: *std.ArrayList([]const u8), arena: std.mem.Allocator) !void {
