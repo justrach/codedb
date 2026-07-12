@@ -2617,6 +2617,71 @@ test "render caches preserve output and invalidate on mutation" {
     try testing.expect(std.mem.indexOf(u8, outline_after.items, "function alpha") == null);
 }
 
+test "render cache hits wait for Explorer mutation lock" {
+    var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer ex.deinit();
+    try ex.indexFile("src/alpha.zig", "pub fn alpha() void {}\n");
+
+    var tree_prime: std.ArrayList(u8) = .empty;
+    defer tree_prime.deinit(testing.allocator);
+    try ex.renderTree(testing.allocator, &tree_prime, false);
+    var outline_prime: std.ArrayList(u8) = .empty;
+    defer outline_prime.deinit(testing.allocator);
+    try testing.expect(try ex.renderOutline("src/alpha.zig", testing.allocator, &outline_prime, false));
+
+    const ReadCtx = struct {
+        ex: *Explorer,
+        outline: bool,
+        started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        finished: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+        fn run(ctx: *@This()) void {
+            var out: std.ArrayList(u8) = .empty;
+            defer out.deinit(std.heap.page_allocator);
+            ctx.started.store(true, .release);
+            if (ctx.outline) {
+                const found = ctx.ex.renderOutline("src/alpha.zig", std.heap.page_allocator, &out, false) catch {
+                    ctx.failed.store(true, .release);
+                    return;
+                };
+                if (!found) ctx.failed.store(true, .release);
+            } else {
+                ctx.ex.renderTree(std.heap.page_allocator, &out, false) catch {
+                    ctx.failed.store(true, .release);
+                    return;
+                };
+            }
+            ctx.finished.store(true, .release);
+        }
+    };
+
+    var tree_ctx = ReadCtx{ .ex = &ex, .outline = false };
+    var outline_ctx = ReadCtx{ .ex = &ex, .outline = true };
+    ex.mu.lock();
+    const tree_thread = std.Thread.spawn(.{}, ReadCtx.run, .{&tree_ctx}) catch |err| {
+        ex.mu.unlock();
+        return err;
+    };
+    const outline_thread = std.Thread.spawn(.{}, ReadCtx.run, .{&outline_ctx}) catch |err| {
+        ex.mu.unlock();
+        tree_thread.join();
+        return err;
+    };
+    while (!tree_ctx.started.load(.acquire) or !outline_ctx.started.load(.acquire)) cio.sleepMs(1);
+    cio.sleepMs(20);
+    const tree_blocked = !tree_ctx.finished.load(.acquire);
+    const outline_blocked = !outline_ctx.finished.load(.acquire);
+    ex.mu.unlock();
+    tree_thread.join();
+    outline_thread.join();
+
+    try testing.expect(tree_blocked);
+    try testing.expect(outline_blocked);
+    try testing.expect(!tree_ctx.failed.load(.acquire));
+    try testing.expect(!outline_ctx.failed.load(.acquire));
+}
+
 test "cached deep reads and fuzzy finds invalidate exactly" {
     var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer ex.deinit();
@@ -2661,4 +2726,29 @@ test "cached deep reads and fuzzy finds invalidate exactly" {
     try testing.expect(try ex.renderCachedRead("deep-alpha.zig", testing.allocator, &changed, opts));
     try testing.expect(std.mem.indexOf(u8, changed.items, "changed-100") != null);
     try testing.expect(std.mem.indexOf(u8, changed.items, "line-100") == null);
+}
+
+test "disk-backed line ranges do not reuse offsets for changed content" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "fallback.zig", .data = "aa\nbb\ncc\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer ex.deinit();
+    ex.setRoot(io, root_buf[0..root_len]);
+
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(testing.allocator);
+    try testing.expect(try ex.appendLineRange("fallback.zig", 2, 3, "       ", testing.allocator, &first));
+    try testing.expectEqualStrings("           2 | bb\n           3 | cc\n", first.items);
+
+    // Keep the byte length constant while moving newline offsets. Temporary
+    // disk-read allocations may reuse the same address between calls.
+    try tmp.dir.writeFile(io, .{ .sub_path = "fallback.zig", .data = "a\nbbbb\nc\n" });
+    var changed: std.ArrayList(u8) = .empty;
+    defer changed.deinit(testing.allocator);
+    try testing.expect(try ex.appendLineRange("fallback.zig", 2, 3, "       ", testing.allocator, &changed));
+    try testing.expectEqualStrings("           2 | bbbb\n           3 | c\n", changed.items);
 }

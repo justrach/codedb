@@ -2680,12 +2680,12 @@ pub const Explorer = struct {
         out: *std.ArrayList(u8),
         compact: bool,
     ) !bool {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
         const gen = self.search_gen.load(.acquire);
         if (self.outline_render_cache.render(path, compact, gen, alloc, out)) return true;
         const render_start = out.items.len;
-
-        self.mu.lockShared();
-        defer self.mu.unlockShared();
 
         const outline = self.outlines.getPtr(path) orelse return false;
         try out.ensureUnusedCapacity(alloc, 128 + outline.symbols.items.len * 128);
@@ -2829,6 +2829,10 @@ pub const Explorer = struct {
         defer self.mu.unlockShared();
         const content_ref = self.readContentForSearch(path, allocator) orelse return false;
         defer content_ref.deinit();
+        if (content_ref.owned) {
+            try appendExtractedLines(content_ref.data, start, end, true, false, .unknown, line_prefix, allocator, out);
+            return true;
+        }
         return self.line_offsets.appendRange(path, content_ref.data, start, end, false, .unknown, line_prefix, allocator, out);
     }
 
@@ -2928,7 +2932,7 @@ pub const Explorer = struct {
             const end: u32 = if (opts.line_end) |n| @intCast(@min(@max(1, n), std.math.maxInt(u32))) else std.math.maxInt(u32);
             const lang = detectLanguage(path);
             if (!try self.line_offsets.appendRange(path, content, start, end, opts.compact, lang, "", allocator, out)) {
-                try appendExtractedLines(content, start, end, true, opts.compact, lang, allocator, out);
+                try appendExtractedLines(content, start, end, true, opts.compact, lang, "", allocator, out);
             }
         } else {
             if (fullFileReadHint(content)) |hint| try out.appendSlice(allocator, hint);
@@ -3062,13 +3066,13 @@ pub const Explorer = struct {
     /// into the caller's buffer. Halves the allocation churn on the
     /// MCP codedb_tree path.
     pub fn renderTree(self: *Explorer, allocator: std.mem.Allocator, out: *std.ArrayList(u8), use_color: bool) !void {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
         const gen = self.search_gen.load(.acquire);
         if (self.tree_render_cache.render(gen, use_color, allocator, out)) return;
         const render_start = out.items.len;
         const s = @import("style.zig").style(use_color);
-
-        self.mu.lockShared();
-        defer self.mu.unlockShared();
 
         const writer = cio.listWriter(out, allocator);
 
@@ -7661,6 +7665,7 @@ fn appendExtractedLines(
     line_numbers: bool,
     compact: bool,
     language: Language,
+    line_prefix: []const u8,
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
 ) !void {
@@ -7673,7 +7678,7 @@ fn appendExtractedLines(
         if (line_num > end) break;
         if (compact and isCommentOrBlank(line, language)) continue;
         if (line_numbers) {
-            try w.print("{d:>5} | {s}\n", .{ line_num, line });
+            try w.print("{s}{d:>5} | {s}\n", .{ line_prefix, line_num, line });
         } else {
             try w.print("{s}\n", .{line});
         }

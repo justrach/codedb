@@ -188,7 +188,8 @@ fn runCase(
         const r = bench_ctx.runToolCall(io, allocator, case.name, case.tool, args, store, explorer, agents, telem);
         total_ns +|= r.dispatch_ns;
         response_bytes = r.response_bytes;
-        response_hash = r.response_hash;
+        var iteration_hash = r.response_hash;
+        response_hash = std.hash.Wyhash.hash(response_hash, std.mem.asBytes(&iteration_hash));
     }
 
     return .{
