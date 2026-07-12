@@ -735,6 +735,33 @@ test "rolling trigram indexes match scalar masks exactly" {
     }
 }
 
+test "trigram per-file lists use exact final capacity" {
+    const content = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda";
+
+    var direct = TrigramIndex.init(testing.allocator);
+    defer direct.deinit();
+    try direct.indexFile("direct.zig", content);
+    const direct_list = direct.file_trigrams.get("direct.zig") orelse return error.TestUnexpectedResult;
+    try testing.expect(direct_list.items.len > 0);
+    try testing.expectEqual(direct_list.items.len, direct_list.capacity);
+
+    var reused = TrigramIndex.init(testing.allocator);
+    defer reused.deinit();
+    var scratch = std.AutoHashMap(Trigram, PostingMask).init(testing.allocator);
+    defer scratch.deinit();
+    try reused.indexFileReuse("reused.zig", content, &scratch);
+    const reused_list = reused.file_trigrams.get("reused.zig") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(reused_list.items.len, reused_list.capacity);
+
+    var extracted = TrigramIndex.extractTrigrams(content, testing.allocator);
+    defer extracted.deinit();
+    var inserted = TrigramIndex.init(testing.allocator);
+    defer inserted.deinit();
+    try inserted.insertExtracted("inserted.zig", &extracted);
+    const inserted_list = inserted.file_trigrams.get("inserted.zig") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(inserted_list.items.len, inserted_list.capacity);
+}
+
 test "watcher: parallel word-index shards match sequential (skip_file_words)" {
     // Exercises the per-worker WordIndex shard + serial mergeShard path
     // (use_shards requires word_index.enabled and skip_file_words). Asserts the

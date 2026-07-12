@@ -1303,7 +1303,7 @@ pub const TrigramIndex = struct {
         // Phase 2: bulk-insert one posting per trigram into global index
         var tri_list: std.ArrayList(Trigram) = .empty;
         errdefer tri_list.deinit(self.allocator);
-        try tri_list.ensureTotalCapacity(self.allocator, local.count());
+        try tri_list.ensureTotalCapacityPrecise(self.allocator, local.count());
 
         var local_iter = local.iterator();
         while (local_iter.next()) |entry| {
@@ -1364,7 +1364,7 @@ pub const TrigramIndex = struct {
         // Phase 2: bulk-insert
         var tri_list: std.ArrayList(Trigram) = .empty;
         errdefer tri_list.deinit(self.allocator);
-        try tri_list.ensureTotalCapacity(self.allocator, local.count());
+        try tri_list.ensureTotalCapacityPrecise(self.allocator, local.count());
         var local_iter = local.iterator();
         while (local_iter.next()) |entry| {
             const tri = entry.key_ptr.*;
@@ -1420,7 +1420,7 @@ pub const TrigramIndex = struct {
         const doc_id = try self.getOrCreateDocId(path);
         var tri_list: std.ArrayList(Trigram) = .empty;
         errdefer tri_list.deinit(self.allocator);
-        try tri_list.ensureTotalCapacity(self.allocator, local.count());
+        try tri_list.ensureTotalCapacityPrecise(self.allocator, local.count());
         var iter = local.iterator();
         while (iter.next()) |entry| {
             const tri = entry.key_ptr.*;
