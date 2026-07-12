@@ -19,11 +19,11 @@ No ranking formula, result cap, parser behavior, path-security policy, telemetry
 The final release gate uses 20 counterbalanced AB/BA pairs against production baseline `v0.2.5829`, with a pinned harness-only backport, the same fixed 21-file benchmark corpus, and pinned Zig `0.17.0-dev.813+2153f8143` for both binaries.
 
 - shared corpus fingerprint: **PASS**
-- auditable source/compiler/order provenance: **PASS**
+- auditable source/tree/compiler/corpus/pair/order/sequence provenance: **PASS**
 - duration-normalized full JSON-RPC response parity across every measured iteration: **PASS** for every parity-enabled tool
 - paired regression gate (>10% and >50us): **PASS**
 
-The largest in-process paired-median improvements are exact symbol **81.63%**, tree **66.03%**, outline **60.39%**, word **37.54%**, bundle **25.26%**, and hot-file lookup **19.18%**. Full methodology, transport-level measurements, limitations, and the persisted paired report are in [`docs/performance-0.2.5830.md`](https://github.com/justrach/codedb/blob/v0.2.5830/docs/performance-0.2.5830.md).
+The largest in-process paired-median improvements are exact symbol **81.97%**, tree **67.55%**, outline **60.75%**, word **36.89%**, bundle **28.42%**, and hot-file lookup **22.15%**. Full methodology, transport-level measurements, limitations, and the persisted paired report are in [`docs/performance-0.2.5830.md`](https://github.com/justrach/codedb/blob/v0.2.5830/docs/performance-0.2.5830.md).
 
 ## Verification
 

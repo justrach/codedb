@@ -22,6 +22,7 @@ fi
 BASE_SHA="$(git -C "$REPO_ROOT" rev-parse --short "$BASE_REF")"
 BASE_FULL_SHA="$(git -C "$REPO_ROOT" rev-parse "$BASE_REF")"
 HEAD_FULL_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+HEAD_TREE_SHA="$(git -C "$REPO_ROOT" rev-parse 'HEAD^{tree}')"
 PAIRED_5829_BASE_SHA="dd36e9431925014ee2bed80346669a4afee7e42e"
 PAIRED_5829_SHA="24e89c70d4f9cdaf5542a78d83d1890a42b4a046"
 WT="$HOME/.cache/codedb-bench-ab-$$"
@@ -105,6 +106,7 @@ done
 
 python3 "$HEAD_WT/scripts/compare-bench-paired.py" "$OUT" \
   --require-parity --require-provenance --allow-parity-skip codedb_snapshot --allow-parity-skip codedb_status \
+  --expected-head-sha "$HEAD_FULL_SHA" --expected-head-tree-sha "$HEAD_TREE_SHA" \
   --threshold-pct 10 --min-abs-ns 50000 --markdown-out "$OUT/report.md"
 
 if (( KEEP_OUT == 1 )); then echo "raw samples: $OUT"; fi

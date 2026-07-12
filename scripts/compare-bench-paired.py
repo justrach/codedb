@@ -28,6 +28,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-parity", action="store_true")
     parser.add_argument("--require-provenance", action="store_true")
     parser.add_argument("--allow-parity-skip", action="append", default=[], metavar="TOOL")
+    parser.add_argument("--expected-head-sha")
+    parser.add_argument("--expected-head-tree-sha")
     parser.add_argument("--markdown-out")
     parser.add_argument("--bootstrap-samples", type=int, default=20_000)
     return parser.parse_args()
@@ -65,10 +67,18 @@ def bootstrap_median_ci(values: list[float], samples: int, seed: int = 0xC0DE) -
 
 
 def tool_map(data: dict) -> dict[str, dict]:
-    return {tool["tool"]: tool for tool in data["tools"]}
+    tools = data["tools"]
+    mapped = {tool["tool"]: tool for tool in tools}
+    if len(mapped) != len(tools):
+        raise ValueError("duplicate tool records in benchmark sample")
+    return mapped
 
 
-def validate_provenance(samples: list[tuple[dict, dict]]) -> tuple[list[str], str | None]:
+def validate_provenance(
+    samples: list[tuple[dict, dict]],
+    expected_head_sha: str | None = None,
+    expected_head_tree_sha: str | None = None,
+) -> tuple[list[str], str | None]:
     failures: list[str] = []
     base_sources: set[str] = set()
     head_sources: set[str] = set()
@@ -163,6 +173,15 @@ def validate_provenance(samples: list[tuple[dict, dict]]) -> tuple[list[str], st
             failures.append(f"{label} changed across samples: {sorted(values)}")
     if len(base_production_sources) == 1 and corpus_sources != base_production_sources:
         failures.append("corpus source does not match the production baseline source")
+    if (expected_head_sha is None) != (expected_head_tree_sha is None):
+        failures.append("expected head SHA and tree SHA must be provided together")
+    if expected_head_sha is not None:
+        if not sha_pattern.fullmatch(expected_head_sha) or not sha_pattern.fullmatch(expected_head_tree_sha or ""):
+            failures.append("expected head SHA/tree is invalid")
+        if head_sources != {expected_head_sha}:
+            failures.append(f"head source does not match expected {expected_head_sha}")
+        if head_source_trees != {expected_head_tree_sha}:
+            failures.append(f"head source tree does not match expected {expected_head_tree_sha}")
 
     if failures:
         return failures, None
@@ -183,12 +202,18 @@ def compare(
     bootstrap_samples: int,
     require_provenance: bool = False,
     allowed_parity_skips: set[str] | None = None,
+    expected_head_sha: str | None = None,
+    expected_head_tree_sha: str | None = None,
 ) -> tuple[str, list[str]]:
     failures: list[str] = []
     parity_failures: list[str] = []
     corpus_hashes: list[str] = []
     allowed_parity_skips = allowed_parity_skips or set()
-    provenance_failures, provenance_summary = validate_provenance(samples) if require_provenance else ([], None)
+    provenance_failures, provenance_summary = (
+        validate_provenance(samples, expected_head_sha, expected_head_tree_sha)
+        if require_provenance
+        else ([], None)
+    )
 
     mapped: list[tuple[dict[str, dict], dict[str, dict]]] = []
     expected_tools: set[str] | None = None
@@ -316,6 +341,8 @@ def main() -> int:
             args.bootstrap_samples,
             require_provenance=args.require_provenance,
             allowed_parity_skips=set(args.allow_parity_skip),
+            expected_head_sha=args.expected_head_sha,
+            expected_head_tree_sha=args.expected_head_tree_sha,
         )
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

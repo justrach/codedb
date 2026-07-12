@@ -60,16 +60,18 @@ Normalized MCP responses were byte-identical between baseline and candidate for
 
 The final source-attribution gate used production baseline `dd36e94`
 (`v0.2.5829`) with pinned harness-only descendant `24e89c7`, and performance
-candidate `33ea66c`. Both binaries used the same Zig compiler and the same fixed
-21-file benchmark corpus copied from `dd36e94`. Twenty AB/BA-counterbalanced
-pairs passed:
+candidate `91ecd6e`. Both binaries used the same pinned Zig compiler and the same
+fixed 21-file benchmark corpus copied from `dd36e94`. Twenty
+AB/BA-counterbalanced pairs passed:
 
 - shared corpus fingerprint: **PASS** in all pairs;
+- source commit/tree, clean-worktree, compiler executable, corpus source, pair,
+  order, and sequence provenance: **PASS** in all samples;
 - duration-normalized, full JSON-RPC response hash across every measured
   iteration: **PASS** for every parity-enabled tool in all pairs;
 - paired-median regression gate (>10% and >50us): **PASS**;
-- tree, outline, symbol, word, hot, and bundle improved by 19.18%-81.63%;
-- context and read improved by 7.06% and 2.75%;
+- tree, outline, symbol, word, hot, and bundle improved by 22.15%-81.97%;
+- context, read, and search improved by 11.68%, 6.29%, and 1.41%;
 - no parity-enabled tool had a material regression.
 
 The complete persisted report is
@@ -176,7 +178,8 @@ base and published its report and raw samples as workflow artifacts.
 
 ## Required protocol for follow-up performance changes
 
-Further optimization commits on this branch use the automated paired gate:
+Further optimization commits on this branch use the automated paired gate from
+a clean committed head:
 
 ```bash
 CODEDB_BENCH_PAIRS=10 CODEDB_BENCH_OUT=zig-out/bench-ab \
@@ -185,15 +188,18 @@ CODEDB_BENCH_PAIRS=10 CODEDB_BENCH_OUT=zig-out/bench-ab \
 
 For release claims, use at least 20 pairs. The runner:
 
-1. builds the base ref in a throwaway worktree;
-2. gives base and head the exact same base-worktree corpus;
+1. builds base and committed head in clean throwaway worktrees;
+2. gives both binaries the same fixed 21-file corpus copied from the base;
 3. verifies the corpus fingerprint for every pair;
-4. alternates `base -> head` and `head -> base` order;
-5. requires duration-normalized full JSON-RPC response-hash parity across every
-   measured iteration for parity-enabled tools;
-6. reports paired medians, head win counts, and a deterministic bootstrap 95%
+4. records and validates commit/tree, compiler executable, corpus source, side,
+   pair, order, and sequence provenance;
+5. alternates `base -> head` and `head -> base` order;
+6. requires duration-normalized full JSON-RPC response-hash parity across every
+   measured iteration for parity-enabled tools, with explicit comparator-owned
+   exemptions only;
+7. reports paired medians, head win counts, and a deterministic bootstrap 95%
    interval;
-7. rejects regressions from the paired median rather than a single-run minimum.
+8. rejects regressions from the paired median rather than a single-run minimum.
 
 Raw samples and the Markdown report remain in `CODEDB_BENCH_OUT` when it is set.
 Cross-compiler release-outcome comparisons remain separate from same-compiler

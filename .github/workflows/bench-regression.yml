@@ -112,6 +112,7 @@ jobs:
           mkdir -p bench-paired
           corpus_source=$(realpath ../codedb-base)
           head_source_sha=$(git rev-parse HEAD)
+          head_tree_sha=$(git rev-parse 'HEAD^{tree}')
           git worktree add ../codedb-paired-head "$head_source_sha"
           head_cwd=$(realpath ../codedb-paired-head)
           run_sample() {
@@ -149,6 +150,7 @@ jobs:
           done
           python3 "$head_cwd/scripts/compare-bench-paired.py" bench-paired --require-parity --require-provenance \
             --allow-parity-skip codedb_snapshot --allow-parity-skip codedb_status \
+            --expected-head-sha "$head_source_sha" --expected-head-tree-sha "$head_tree_sha" \
             --threshold-pct 10 --min-abs-ns 50000 --markdown-out bench-paired-report.md
 
       - name: Compare

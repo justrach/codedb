@@ -24,7 +24,8 @@ The release gate ran 20 counterbalanced AB/BA pairs against the immutable
 tool matched across every measured iteration after normalizing only response
 duration, and no benchmark crossed the 10% plus 50us regression threshold. The
 runner enforces a shared corpus fingerprint, full JSON-RPC response hashes,
-paired medians, and bootstrap intervals; single-run minima are diagnostic only.
+commit/tree/compiler/corpus/order provenance, paired medians, and bootstrap
+intervals; single-run minima are diagnostic only.
 
 
 ## 0.2.5829 - 2026-07-11

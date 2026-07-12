@@ -154,18 +154,20 @@ Benchmark-related PRs must say:
 - whether base and head used the same compiler (source attribution) or each
   revision's declared compiler (release-outcome comparison)
 
-Performance claims must use output/hit parity on an identical corpus. For the
-gated MCP benchmark, run:
+Performance claims must use output/hit parity on an identical corpus. Commit the
+candidate so the runner can attest a clean source tree, then run:
 
 ```bash
 CODEDB_BENCH_PAIRS=10 scripts/bench-ab.sh <base-ref>
 ```
 
-The runner gives both revisions the same corpus, alternates `base → head` and
-`head → base`, requires response-hash parity for parity-enabled tools, and
-reports paired medians with a deterministic bootstrap interval. Increase to 20
-or more pairs for release claims. A parity exemption must be explicit in the
-benchmark case and justified by genuinely nondeterministic output.
+The runner gives both revisions the same fixed corpus, alternates `base → head`
+and `head → base`, validates source/compiler/corpus/order provenance, requires
+full normalized JSON-RPC response parity for parity-enabled tools, and reports
+paired medians with a deterministic bootstrap interval. Increase to 20 or more
+pairs for release claims. A parity exemption must be explicit in the benchmark
+case, justified by genuinely nondeterministic output, and included in the
+comparator's explicit allowlist.
 
 Single-run minima may be shown as diagnostics, but they are not acceptable
 performance evidence and must not drive an acceptance claim. Do not publish

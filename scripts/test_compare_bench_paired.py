@@ -155,6 +155,8 @@ class PairedComparisonTests(unittest.TestCase):
             require_parity=True,
             bootstrap_samples=100,
             require_provenance=True,
+            expected_head_sha="c" * 40,
+            expected_head_tree_sha="e" * 40,
         )
         self.assertIn("Provenance: PASS", report)
         self.assertEqual([], failures)
@@ -175,6 +177,37 @@ class PairedComparisonTests(unittest.TestCase):
             require_provenance=True,
         )
         self.assertTrue(any("order='BA', expected 'AB'" in failure for failure in failures))
+
+    def test_expected_head_identity_mismatch_fails(self) -> None:
+        samples = [
+            (
+                add_provenance(payload(100), "base", 1, "AB", 1),
+                add_provenance(payload(90), "head", 1, "AB", 2),
+            )
+        ]
+        _, failures = paired.compare(
+            samples,
+            threshold_pct=10,
+            min_abs_ns=0,
+            require_parity=True,
+            bootstrap_samples=100,
+            require_provenance=True,
+            expected_head_sha="f" * 40,
+            expected_head_tree_sha="e" * 40,
+        )
+        self.assertTrue(any("head source does not match expected" in failure for failure in failures))
+
+    def test_duplicate_tool_records_are_rejected(self) -> None:
+        duplicate = payload(100)
+        duplicate["tools"].append(dict(duplicate["tools"][0]))
+        with self.assertRaisesRegex(ValueError, "duplicate tool records"):
+            paired.compare(
+                [(duplicate, payload(90))],
+                threshold_pct=10,
+                min_abs_ns=0,
+                require_parity=True,
+                bootstrap_samples=100,
+            )
 
     def test_unpaired_sample_files_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
