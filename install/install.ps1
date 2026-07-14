@@ -109,7 +109,12 @@ try {
   }
   try {
     Move-Item -LiteralPath $stagedPath -Destination $targetPath -Force
+    & $targetPath --version
+    if ($LASTEXITCODE -ne 0) {
+      throw "Installed codedb failed its version check"
+    }
   } catch {
+    Remove-Item -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue
     if ($previousPath -and
         (Test-Path -LiteralPath $previousPath -PathType Leaf) -and
         -not (Test-Path -LiteralPath $targetPath)) {
@@ -120,6 +125,9 @@ try {
   }
   if ($previousPath) {
     Remove-Item -LiteralPath $previousPath -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $previousPath)) {
+      $previousPath = $null
+    }
   }
 
   if (-not $NoPath) {
@@ -147,18 +155,10 @@ try {
     $env:PATH = "$InstallDir;$env:PATH"
   }
 
-  & $targetPath --version
-  if ($LASTEXITCODE -ne 0) {
-    throw "Installed codedb failed its version check"
-  }
-
   Write-Host ""
   Write-Host "Installed: $targetPath"
   Write-Host "MCP command: $targetPath mcp"
 } finally {
   Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
-  if ($previousPath) {
-    Remove-Item -LiteralPath $previousPath -Force -ErrorAction SilentlyContinue
-  }
   Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue
 }
