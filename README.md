@@ -145,7 +145,7 @@ On native Windows, self-update is not yet supported. Rerun the PowerShell instal
 | macOS x86_64 (Intel) | `codedb-darwin-x86_64` | temporarily unsigned |
 | Linux ARM64 | `codedb-linux-arm64` | — |
 | Linux x86_64 | `codedb-linux-x86_64` | — |
-| Windows x86_64 | `codedb-windows-x86_64.exe` | — (verify SHA256) |
+| Windows x86_64 | `codedb-windows-x86_64.exe` | SHA256 verified automatically |
 
 Or install manually from [GitHub Releases](https://github.com/justrach/codedb/releases/latest). Always verify the binary against the attached `checksums.sha256` before running it.
 
