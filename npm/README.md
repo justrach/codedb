@@ -74,7 +74,7 @@ On Windows:
 
 On Windows, the package downloads `codedb-windows-x86_64.exe`, installs it as `vendor/codedb.exe`, and launches it through the same `codedb` command used on other platforms.
 
-Windows support begins with `codedeebee` 0.2.5830. If `npm view codedeebee version` reports an older release, use the checksum-verified direct Windows installation in the root [README](../README.md#windows) until the current package is published.
+Windows support begins with `codedeebee` 0.2.5830. If `npm view codedeebee version` reports an older release, use the checksum-verified direct Windows installation in the root [README](https://github.com/justrach/codedb#windows) until the current package is published.
 
 ## Updating on Windows
 

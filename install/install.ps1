@@ -59,9 +59,12 @@ $releaseUrl = "https://github.com/$repo/releases/download/v$Version"
 $downloadDir = Join-Path ([IO.Path]::GetTempPath()) ("codedb-install-" + [guid]::NewGuid().ToString("N"))
 $targetPath = Join-Path $InstallDir "codedb.exe"
 $stagedPath = Join-Path $InstallDir ("codedb.exe.new." + $PID)
+$previousPath = $null
 
 try {
   New-Item -ItemType Directory -Force -Path $downloadDir, $InstallDir | Out-Null
+  Get-ChildItem -LiteralPath $InstallDir -Filter "codedb.exe.old.*" -File -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
   $downloadedBinary = Join-Path $downloadDir $assetName
   $downloadedChecksums = Join-Path $downloadDir "checksums.sha256"
@@ -100,7 +103,24 @@ try {
 
   Copy-Item -LiteralPath $downloadedBinary -Destination $stagedPath -Force
   Unblock-File -LiteralPath $stagedPath -ErrorAction SilentlyContinue
-  Move-Item -LiteralPath $stagedPath -Destination $targetPath -Force
+  if (Test-Path -LiteralPath $targetPath -PathType Leaf) {
+    $previousPath = Join-Path $InstallDir ("codedb.exe.old." + [guid]::NewGuid().ToString("N"))
+    Move-Item -LiteralPath $targetPath -Destination $previousPath
+  }
+  try {
+    Move-Item -LiteralPath $stagedPath -Destination $targetPath -Force
+  } catch {
+    if ($previousPath -and
+        (Test-Path -LiteralPath $previousPath -PathType Leaf) -and
+        -not (Test-Path -LiteralPath $targetPath)) {
+      Move-Item -LiteralPath $previousPath -Destination $targetPath
+      $previousPath = $null
+    }
+    throw
+  }
+  if ($previousPath) {
+    Remove-Item -LiteralPath $previousPath -Force -ErrorAction SilentlyContinue
+  }
 
   if (-not $NoPath) {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -137,5 +157,8 @@ try {
   Write-Host "MCP command: $targetPath mcp"
 } finally {
   Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
+  if ($previousPath) {
+    Remove-Item -LiteralPath $previousPath -Force -ErrorAction SilentlyContinue
+  }
   Remove-Item -LiteralPath $downloadDir -Recurse -Force -ErrorAction SilentlyContinue
 }
