@@ -63,12 +63,14 @@
 | Singleton MCP with PID lock + 1h idle timeout          |                                          |
 | Sensitive file blocking (.env, credentials, keys)      |                                          |
 | Codesigned macOS ARM64 binary; Intel slice temporarily unsigned |                                          |
-| SHA256 checksum verification in installer              |                                          |
-| Cross-platform: macOS (ARM/x86), Linux (ARM/x86)      |                                          |
+| SHA256-verified release downloads and npm packages     |                                          |
+| Cross-platform: macOS (ARM/x86), Linux (ARM/x86), Windows (x86_64) |                              |
 
 ---
 
 ## ⚡ Install
+
+### macOS and Linux
 
 ```bash
 curl -fsSL https://codedb.codegraff.com/install.sh | bash
@@ -76,7 +78,19 @@ curl -fsSL https://codedb.codegraff.com/install.sh | bash
 
 Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, and **Devin** — each written directly and additively into that tool's config (only when the tool is present). The installer prints the exact `codedb mcp` command it registered plus hook setup pointers for Codex and Claude Code.
 
-### Or via npm/npx (zero-install for MCP clients)
+On Windows, run this command inside WSL only if you want the Linux binary inside WSL. For the native Windows binary, use PowerShell below.
+
+### Windows
+
+Run in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/justrach/codedb/main/install/install.ps1 | iex
+```
+
+Run the same command again to update codedb.
+
+### npm/npx on macOS and Linux
 
 ```bash
 npx -y codedeebee mcp
@@ -106,13 +120,15 @@ Useful for MCP clients (Claude Code, Cursor, opencode, Claude Desktop) that alre
 
 ### Updating or repairing an older install
 
-If `codedb update` fails on an older release, rerun the installer:
+On macOS or Linux, if `codedb update` fails on an older release, rerun the installer:
 
 ```bash
 curl -fsSL https://codedb.codegraff.com/install.sh | bash
 ```
 
 This replaces the `codedb` binary with the latest GitHub Release and keeps your existing MCP registrations, config, caches, and snapshots. Use this path for any release whose built-in updater cannot fetch release checksums.
+
+On native Windows, self-update is not yet supported. Rerun the PowerShell installer above to update or repair the binary.
 
 ## Documentation
 
@@ -129,8 +145,9 @@ This replaces the `codedb` binary with the latest GitHub Release and keeps your 
 | macOS x86_64 (Intel) | `codedb-darwin-x86_64` | temporarily unsigned |
 | Linux ARM64 | `codedb-linux-arm64` | — |
 | Linux x86_64 | `codedb-linux-x86_64` | — |
+| Windows x86_64 | `codedb-windows-x86_64.exe` | — (verify SHA256) |
 
-Or install manually from [GitHub Releases](https://github.com/justrach/codedb/releases/latest).
+Or install manually from [GitHub Releases](https://github.com/justrach/codedb/releases/latest). Always verify the binary against the attached `checksums.sha256` before running it.
 
 ---
 
@@ -138,7 +155,7 @@ Or install manually from [GitHub Releases](https://github.com/justrach/codedb/re
 
 ### As an MCP server (recommended)
 
-After installing, codedb is automatically registered. Just open a project and the 21 MCP tools are available to your AI agent.
+The macOS/Linux shell installer registers codedb automatically. For npm/npx installs on macOS/Linux and manual Windows installs, use the MCP configuration above or the client-specific examples in [docs/mcp.md](docs/mcp.md). Then open a project and the 21 MCP tools are available to your AI agent.
 
 ```bash
 # Manual MCP start (auto-configured by install script)
@@ -244,7 +261,7 @@ For Codex and Claude Code hook examples around `codedb_remote`, see [`docs/hooks
 | `codedb snapshot` | Write codedb.snapshot to project root |
 | `codedb serve` | HTTP daemon on :7719 |
 | `codedb mcp [path]` | JSON-RPC/MCP server over stdio |
-| `codedb update` | Self-update to the latest release; if it fails on an older build, rerun the curl installer above |
+| `codedb update` | Self-update to the latest release on macOS/Linux; on Windows rerun the PowerShell installer |
 | `codedb nuke` | Uninstall codedb, remove caches/snapshots, and deregister MCP integrations |
 | `codedb --version` | Print version |
 
@@ -474,6 +491,7 @@ Binary: `zig-out/bin/codedb`
 zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux
 zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux
 zig build -Doptimize=ReleaseFast -Dtarget=x86_64-macos
+zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows
 ```
 
 ### Releasing

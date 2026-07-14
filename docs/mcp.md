@@ -16,17 +16,29 @@ scan, and the most common failure modes.
 
 ---
 
-## 1. Quick install (auto-configures all detected clients)
+## 1. Quick install
+
+### macOS and Linux (auto-configures detected clients)
 
 ```bash
 curl -fsSL https://codedb.codegraff.com/install.sh | bash
 ```
 
-The installer downloads the binary for your platform, drops it in
-`~/.local/bin/` (or `/usr/local/bin/` on root installs), and auto-registers
+The installer downloads the binary for your platform, drops it in `~/bin`
+(or `$CODEDB_DIR` when set), and auto-registers
 codedb as an MCP server in every client it can find — Claude Code, Codex,
-Gemini CLI, Cursor, opencode. It prints the exact `codedb mcp` command it
+Gemini CLI, Cursor, Windsurf, and Devin. It prints the exact `codedb mcp` command it
 registered.
+
+### Windows x86_64 (native)
+
+Run in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/justrach/codedb/main/install/install.ps1 | iex
+```
+
+The shell installer is for macOS/Linux; running it in WSL installs the Linux binary inside WSL, not the native Windows binary.
 
 If you prefer to wire it up by hand, the client-specific snippets below
 all work directly.
@@ -35,13 +47,17 @@ all work directly.
 
 ## 2. Client-specific configuration
 
-All clients launch `codedb mcp` as a stdio child process. Replace
-`/usr/local/bin/codedb` with `which codedb` output on your system.
+All clients launch `codedb mcp` as a stdio child process. Find a global install with `command -v codedb` on macOS/Linux. On Windows, the default path is `C:\Users\<you>\AppData\Local\Programs\codedb\codedb.exe`.
+
+The examples below use `/absolute/path/to/codedb`; replace it with the path for your installation. In JSON on Windows, escape backslashes, for example `C:\\Users\\you\\AppData\\Local\\Programs\\codedb\\codedb.exe`.
 
 ### Claude Code
 
 ```bash
-claude mcp add codedb -s user -- /usr/local/bin/codedb mcp
+claude mcp add codedb -s user -- /absolute/path/to/codedb mcp
+
+# Windows PowerShell
+claude mcp add codedb -s user -- "$env:LOCALAPPDATA\Programs\codedb\codedb.exe" mcp
 ```
 
 Or edit `~/.claude.json` directly:
@@ -50,14 +66,14 @@ Or edit `~/.claude.json` directly:
 {
   "mcpServers": {
     "codedb": {
-      "command": "/usr/local/bin/codedb",
+      "command": "/absolute/path/to/codedb",
       "args": ["mcp"]
     }
   }
 }
 ```
 
-Verify: `claude mcp list` should show `codedb: /usr/local/bin/codedb mcp - ✓ Connected`.
+Verify with `claude mcp list`; the `codedb` entry should report `Connected`.
 
 ### Claude Desktop
 
@@ -68,7 +84,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`
 {
   "mcpServers": {
     "codedb": {
-      "command": "/usr/local/bin/codedb",
+      "command": "/absolute/path/to/codedb",
       "args": ["mcp"]
     }
   }
@@ -86,7 +102,7 @@ Edit `~/.cursor/mcp.json` (per-user) or `<project>/.cursor/mcp.json`
 {
   "mcpServers": {
     "codedb": {
-      "command": "/usr/local/bin/codedb",
+      "command": "/absolute/path/to/codedb",
       "args": ["mcp"]
     }
   }
@@ -104,7 +120,10 @@ Same `mcpServers` block as Cursor, scoped to whichever extension you use.
 ### Codex CLI
 
 ```bash
-codex mcp add codedb -- /usr/local/bin/codedb mcp
+codex mcp add codedb -- /absolute/path/to/codedb mcp
+
+# Windows PowerShell
+codex mcp add codedb -- "$env:LOCALAPPDATA\Programs\codedb\codedb.exe" mcp
 ```
 
 ### Gemini CLI / opencode
@@ -116,7 +135,7 @@ Both read MCP configuration from `~/.gemini/mcp.json` (Gemini) and
 {
   "mcpServers": {
     "codedb": {
-      "command": "/usr/local/bin/codedb",
+      "command": "/absolute/path/to/codedb",
       "args": ["mcp"]
     }
   }
@@ -213,8 +232,7 @@ Fixed in v0.2.5815 — `codedb_find` now accepts `query`, `name`, `path`,
 ### Tools list looks short / `codedb_context` is missing
 
 `codedb_context` was added in **v0.2.5815**. Older binaries expose only
-20 tools. Upgrade with `codedb update` (or the installer one-liner above)
-and verify with `codedb --version`.
+20 tools. On macOS/Linux, upgrade with `codedb update` (or the installer one-liner above). On Windows, rerun the verified PowerShell installer and verify with `codedb --version`.
 
 ### Snapshot indexer keeps re-scanning
 

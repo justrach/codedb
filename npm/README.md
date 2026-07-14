@@ -34,11 +34,26 @@ codedb mcp
 
 ### Claude Desktop
 
+On macOS/Linux:
+
 ```json
 {
   "mcpServers": {
     "codedb": {
       "command": "npx",
+      "args": ["-y", "codedeebee", "mcp"]
+    }
+  }
+}
+```
+
+On Windows:
+
+```json
+{
+  "mcpServers": {
+    "codedb": {
+      "command": "npx.cmd",
       "args": ["-y", "codedeebee", "mcp"]
     }
   }
@@ -55,12 +70,24 @@ codedb mcp
 |--------|----------------------|
 | macOS  | arm64, x64 (Intel)   |
 | Linux  | arm64, x64           |
+| Windows | x64                 |
 
-Windows is not yet supported. Comment on [issue #501](https://github.com/justrach/codedb/issues/501) if you need it.
+On Windows, the package downloads `codedb-windows-x86_64.exe`, installs it as `vendor/codedb.exe`, and launches it through the same `codedb` command used on other platforms.
+
+Windows support begins with `codedeebee` 0.2.5830. If `npm view codedeebee version` reports an older release, use the checksum-verified direct Windows installation in the root [README](../README.md#windows) until the current package is published.
+
+## Updating on Windows
+
+The native Windows binary cannot self-update yet. Update the npm package instead:
+
+```powershell
+npm install -g codedeebee@latest
+codedb --version
+```
 
 ## Skipping the binary download
 
-For sandboxed installs (or environments without GitHub access), set `CODEDEEBEE_SKIP_POSTINSTALL=1`. The package will install successfully but `codedb` will exit until a binary is placed at `node_modules/codedeebee/vendor/codedb`.
+For sandboxed installs (or environments without GitHub access), set `CODEDEEBEE_SKIP_POSTINSTALL=1`. The package will install successfully but `codedb` will exit until a binary is placed at `node_modules/codedeebee/vendor/codedb` (`codedb.exe` on Windows).
 
 ## Links
 

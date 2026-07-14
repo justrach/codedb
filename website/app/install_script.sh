@@ -16,15 +16,19 @@ detect_platform() {
     Darwin) os="darwin" ;;
     Linux)  os="linux" ;;
     MINGW*|MSYS*|CYGWIN*)
-      echo ""
-      printf "  ${W}codedb installer${N}\n"
-      echo ""
-      printf "  ${Y}Windows detected${N} — codedb is a native Linux/macOS binary.\n"
-      printf "  Run this inside ${G}WSL2${N} instead:\n"
-      echo ""
-      printf "    ${C}wsl curl -fsSL https://codedb.codegraff.com/install.sh | bash${N}\n"
-      echo ""
-      exit 0
+      {
+        echo ""
+        printf "  ${W}codedb installer${N}\n"
+        echo ""
+        printf "  ${Y}Windows detected${N} — codedb has a native Windows x86_64 binary.\n"
+        printf "  This Bash installer is for macOS/Linux. Run this in PowerShell:\n"
+        echo ""
+        printf "    ${C}irm https://raw.githubusercontent.com/justrach/codedb/main/install/install.ps1 | iex${N}\n"
+        echo ""
+        printf "  Use ${G}WSL2${N} only if you want the Linux binary inside WSL.\n"
+        echo ""
+      } >&2
+      return 10
       ;;
     *) printf "  ${R}Unsupported OS: $os${N}\n" >&2; exit 1 ;;
   esac
@@ -165,8 +169,14 @@ print_hook_notes() {
 }
 
 main() {
-  local platform version ext=""
-  platform="$(detect_platform)"
+  local platform version ext="" detect_status
+  if platform="$(detect_platform)"; then
+    :
+  else
+    detect_status=$?
+    [[ "$detect_status" -eq 10 ]] && return 0
+    exit "$detect_status"
+  fi
 
   echo ""
   printf "  ${W}codedb${N} ${D}installer${N}\n"
