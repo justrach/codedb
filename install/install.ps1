@@ -29,6 +29,14 @@ if ($env:CODEDB_NO_PATH) {
   $NoPath = $true
 }
 
+# Windows PowerShell 5.1 may otherwise negotiate an obsolete TLS version.
+if ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12) {
+  # TLS 1.2 is already enabled.
+} else {
+  [Net.ServicePointManager]::SecurityProtocol = `
+    [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+}
+
 if (-not $Version) {
   try {
     $release = Invoke-RestMethod `
@@ -45,14 +53,6 @@ if (-not $Version) {
 $Version = $Version.TrimStart("v", "V")
 if ($Version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
   throw "Invalid codedb version: $Version"
-}
-
-# Windows PowerShell 5.1 may otherwise negotiate an obsolete TLS version.
-if ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12) {
-  # TLS 1.2 is already enabled.
-} else {
-  [Net.ServicePointManager]::SecurityProtocol = `
-    [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
 
 $releaseUrl = "https://github.com/$repo/releases/download/v$Version"
