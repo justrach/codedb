@@ -126,7 +126,8 @@ are changed by this rebuild.
 - **[Skill base & context files](docs/skills.md)** — `agents.md` / `CLAUDE.md` / `GEMINI.md`, `.codedbrc`, per-developer memory
 - **[CLI reference](docs/cli.md)** — every command, every flag
 - **[Architecture](docs/architecture.md)** — engine internals, index layout
-- **[Benchmarks](docs/benchmarks.md)** — micro-benchmarks + agentic-eval results vs codegraph, FTS5, lean-ctx
+- **[Benchmarks](docs/benchmarks.md)** — verified token, recall, latency, and output-size results plus historical comparisons
+- **[0.2.5831 performance report](docs/performance-0.2.5831.md)** — full methodology, provenance, regressions, and machine-readable evidence
 - **[Raspberry Pi 4](docs/raspberry-pi.md)** — full-performance ARM64 setup, Cortex-A72 build, and on-device benchmark
 - **[Zig 0.17.0-dev migration guide](docs/zig-0.17-migration.md)** — repeatable zigup workflow and API change recipes
 
@@ -295,6 +296,32 @@ curl "localhost:7719/changes?since=42"
 ---
 
 ## 📊 Benchmarks
+
+### 0.2.5831 performance and retrieval audit
+
+The 0.2.5831 release-line audit measured response size and latency while gating
+`codedb_context` changes on the same 10-task intent-anchor suite:
+
+| Measurement | Baseline | Candidate | Result |
+|---|---:|---:|---:|
+| `codedb_context` core tokens | 13,288 | 4,848 | **63.52% fewer** |
+| Anchor recall | 14 / 29 (48.28% micro; 54.17% macro) | same | **10 / 10 tasks preserved** |
+| Hot-word output | 611,915 B | 371 B | **99.94% smaller** |
+| Common-search output | 1,324,470 B | 1,766 B | **99.87% smaller** |
+| Huge-outline output | 291,056 B | 16,152 B | **94.45% smaller** |
+| Generated-fixture cold scan | 123.299 ms | 87.092 ms | **29.37% faster** |
+
+Anchor recall is a deterministic check for named intent markers in returned
+context, not semantic answer accuracy. The absolute recall values are published
+alongside parity so quality tradeoffs stay visible. The audit also records two
+remaining latency regressions rather than averaging them away.
+
+See the [full performance and recall report](docs/performance-0.2.5831.md) and
+[machine-readable results](bench/results/0.2.5831/results.json) for all 10
+context tasks, all 22 edge cases, methodology, provenance, and the directional
+three-engine sandbox trial.
+
+### Historical cross-tool benchmarks
 
 Measured on Apple M4 Pro, 48GB RAM. MCP = pre-indexed warm queries (20 iterations avg). CLI/external tools include process startup (3 iterations avg). Ground truth verified against Python reference implementation.
 

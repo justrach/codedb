@@ -1,0 +1,277 @@
+{
+  "schema_version": 1,
+  "release_line": "0.2.5831",
+  "branch": "release/0.2.5831",
+  "code_candidate_commit": "0478eff8dbef2cd2daa6cbd7413d4529ba932d1d",
+  "generated_corpus": {
+    "files": 3005,
+    "bytes": 4519505
+  },
+  "environment": {
+    "machine": "Apple M4 Pro",
+    "model": "Mac16,8",
+    "architecture": "arm64",
+    "physical_cores": 14,
+    "memory_bytes": 51539607552,
+    "os": "macOS 26.5.1 (25F80)"
+  },
+  "context_token_recall": {
+    "metric_notes": {
+      "core_tokens": "Tokens in the MCP result content, encoded with tiktoken o200k_base.",
+      "visible_tokens": "Tokens in the complete client-visible response envelope.",
+      "anchor_recall": "Deterministic presence of task-specific intent anchors; it is not semantic answer-accuracy evaluation."
+    },
+    "tasks_sha256": "e9f7d748a563de4ff95db91f66e821d81cdb1cada19bb3c3a7389279282bea02",
+    "tasks_file": "context-tasks.json",
+    "tokenizer": "tiktoken 0.13.0 / o200k_base",
+    "baseline": {
+      "created_at": "2026-07-18T22:21:36.895176+00:00",
+      "summary_sha256": "2f13b5a9f55e3808e245c9ed7fd2de06364fc6e1eb1fa2385342b1ede0beed64",
+      "binary_sha256": "2e2306722bec0b6f97b2596bca028c78d1d24d1040fdc6d5d60d59d3b5768c04",
+      "reported_server_version": "0.2.5828"
+    },
+    "candidate": {
+      "created_at": "2026-07-19T00:25:53.884142+00:00",
+      "summary_sha256": "f7d8dc9907fae3f384adf2bedac19ed9a101b234718a143b9f86fe64da542dea",
+      "binary_sha256": "b1138c22fbb9e6136d4eb72c9f75e391792003fdfe5c99e6689cd07e2f5f778b",
+      "reported_server_version": "0.2.5828",
+      "provenance": "Pre-port audit binary whose measured context behavior was ported to code_candidate_commit; this binary was not built from the final release commit."
+    },
+    "aggregate": {
+      "task_count": 10,
+      "core_tokens": { "baseline": 13288, "candidate": 4848, "change_percent": -63.5160 },
+      "visible_tokens": { "baseline": 13763, "candidate": 4975, "change_percent": -63.8524 },
+      "wire_bytes": { "baseline": 51973, "candidate": 18130, "change_percent": -65.1165 },
+      "measured_elapsed_us": { "baseline": 40337.291, "candidate": 9109.916, "change_percent": -77.4156 },
+      "anchor_hits": { "baseline": 14, "candidate": 14, "possible": 29 },
+      "micro_anchor_recall": { "baseline": 0.48275862068965517, "candidate": 0.48275862068965517 },
+      "macro_task_recall": { "baseline": 0.5416666666666667, "candidate": 0.5416666666666667 },
+      "tasks_with_unchanged_recall": 10
+    },
+    "tasks": [
+      {
+        "id": "symbol_1",
+        "task": "\"handleContext\"",
+        "anchors": ["handleContext"],
+        "hits": ["handleContext"],
+        "recall": { "baseline": 1.0, "candidate": 1.0 },
+        "core_tokens": { "baseline": 1462, "candidate": 556 },
+        "visible_tokens": { "baseline": 1506, "candidate": 568 },
+        "wire_bytes": { "baseline": 5438, "candidate": 1946 },
+        "elapsed_us": { "baseline": 37043.417, "candidate": 4214.083 }
+      },
+      {
+        "id": "symbol_2",
+        "task": "\"handleContext\" \"extractContextCandidates\"",
+        "anchors": ["handleContext", "extractContextCandidates"],
+        "hits": ["handleContext", "extractContextCandidates"],
+        "recall": { "baseline": 1.0, "candidate": 1.0 },
+        "core_tokens": { "baseline": 2304, "candidate": 876 },
+        "visible_tokens": { "baseline": 2351, "candidate": 888 },
+        "wire_bytes": { "baseline": 8543, "candidate": 3065 },
+        "elapsed_us": { "baseline": 1526.291, "candidate": 1834.709 }
+      },
+      {
+        "id": "symbol_3",
+        "task": "\"handleContext\" \"extractContextCandidates\" \"extractContextFallbackWords\"",
+        "anchors": ["handleContext", "extractContextCandidates", "extractContextFallbackWords"],
+        "hits": ["handleContext", "extractContextCandidates", "extractContextFallbackWords"],
+        "recall": { "baseline": 1.0, "candidate": 1.0 },
+        "core_tokens": { "baseline": 3429, "candidate": 1305 },
+        "visible_tokens": { "baseline": 3477, "candidate": 1317 },
+        "wire_bytes": { "baseline": 12683, "candidate": 4481 },
+        "elapsed_us": { "baseline": 689.625, "candidate": 1256.166 }
+      },
+      {
+        "id": "natural_perf",
+        "task": "optimize codedb context rendering performance without changing output",
+        "anchors": ["handleContext", "codedb_context", "render"],
+        "hits": ["render"],
+        "recall": { "baseline": 0.3333333333333333, "candidate": 0.3333333333333333 },
+        "core_tokens": { "baseline": 497, "candidate": 280 },
+        "visible_tokens": { "baseline": 545, "candidate": 293 },
+        "wire_bytes": { "baseline": 2265, "candidate": 1289 },
+        "elapsed_us": { "baseline": 201.833, "candidate": 234.708 }
+      },
+      {
+        "id": "natural_security",
+        "task": "find security risks in mcp path handling and prevent traversal outside the project root",
+        "anchors": ["isPathSafe", "projectRelPath", "root_policy", "traversal"],
+        "hits": ["isPathSafe", "traversal"],
+        "recall": { "baseline": 0.5, "candidate": 0.5 },
+        "core_tokens": { "baseline": 743, "candidate": 248 },
+        "visible_tokens": { "baseline": 791, "candidate": 261 },
+        "wire_bytes": { "baseline": 3255, "candidate": 1099 },
+        "elapsed_us": { "baseline": 218.125, "candidate": 211.791 }
+      },
+      {
+        "id": "natural_startup",
+        "task": "understand how snapshot loading rebuilds indexes and warms search at startup",
+        "anchors": ["loadBestSnapshot", "ensureSymbolIndex", "spawnWarmup", "snapshot"],
+        "hits": ["snapshot"],
+        "recall": { "baseline": 0.25, "candidate": 0.25 },
+        "core_tokens": { "baseline": 895, "candidate": 50 },
+        "visible_tokens": { "baseline": 943, "candidate": 63 },
+        "wire_bytes": { "baseline": 3878, "candidate": 410 },
+        "elapsed_us": { "baseline": 174.333, "candidate": 295.458 }
+      },
+      {
+        "id": "natural_symbol_bug",
+        "task": "debug why exact symbol lookup can miss definitions after reindexing a file",
+        "anchors": ["symbol_index", "rebuildSymbolIndexFor", "findAllSymbols"],
+        "hits": [],
+        "recall": { "baseline": 0.0, "candidate": 0.0 },
+        "core_tokens": { "baseline": 885, "candidate": 443 },
+        "visible_tokens": { "baseline": 933, "candidate": 456 },
+        "wire_bytes": { "baseline": 3647, "candidate": 1859 },
+        "elapsed_us": { "baseline": 119.041, "candidate": 140.209 }
+      },
+      {
+        "id": "natural_memory",
+        "task": "reduce memory used by the word index while preserving ranked search quality",
+        "anchors": ["word_index", "releaseSecondaryIndexes", "compactMcpReadyMemory"],
+        "hits": [],
+        "recall": { "baseline": 0.0, "candidate": 0.0 },
+        "core_tokens": { "baseline": 850, "candidate": 433 },
+        "visible_tokens": { "baseline": 898, "candidate": 446 },
+        "wire_bytes": { "baseline": 3416, "candidate": 1442 },
+        "elapsed_us": { "baseline": 148.417, "candidate": 666.875 }
+      },
+      {
+        "id": "natural_watcher",
+        "task": "trace how file watcher updates flow into snapshot persistence and mcp results",
+        "anchors": ["watcher", "saveSnapshot", "commitParsedFile"],
+        "hits": ["watcher"],
+        "recall": { "baseline": 0.3333333333333333, "candidate": 0.3333333333333333 },
+        "core_tokens": { "baseline": 752, "candidate": 101 },
+        "visible_tokens": { "baseline": 800, "candidate": 114 },
+        "wire_bytes": { "baseline": 3348, "candidate": 590 },
+        "elapsed_us": { "baseline": 143.25, "candidate": 170.917 }
+      },
+      {
+        "id": "natural_with_symbol",
+        "task": "speed up handleContext while keeping its response byte for byte identical",
+        "anchors": ["handleContext", "codedb_context", "render"],
+        "hits": ["handleContext", "codedb_context", "render"],
+        "recall": { "baseline": 1.0, "candidate": 1.0 },
+        "core_tokens": { "baseline": 1471, "candidate": 556 },
+        "visible_tokens": { "baseline": 1519, "candidate": 569 },
+        "wire_bytes": { "baseline": 5500, "candidate": 1949 },
+        "elapsed_us": { "baseline": 72.959, "candidate": 85.0 }
+      }
+    ]
+  },
+  "edge_benchmark": {
+    "command": "zig build bench-edge -- --json",
+    "comparison_scope": "Release-line outcome. Output bytes are directly comparable; latency also includes the Zig 0.16.0 to Zig 0.17.0-dev compiler change.",
+    "baseline": {
+      "commit": "296e2abdfbde72ec5b26a781acdc8f35a065522a",
+      "zig": "0.16.0",
+      "initial_scan_ns": 123299000
+    },
+    "candidate": {
+      "commit": "0478eff8dbef2cd2daa6cbd7413d4529ba932d1d",
+      "zig": "0.17.0-dev.813+2153f8143",
+      "initial_scan_ns": 87092000
+    },
+    "initial_scan_change_percent": -29.3652,
+    "cases": [
+      ["search_common", 845640, 738000, 1324470, 110160, 97000, 1766],
+      ["search_offset", 869760, 789000, 691, 269720, 246000, 519],
+      ["search_scope", 887560, 811000, 1325343, 110320, 94000, 2690],
+      ["search_glob", 1331360, 1210000, 1744, 250920, 225000, 1667],
+      ["search_regex", 2383066, 2272000, 839, 2226600, 2164000, 684],
+      ["search_ranked", 996040, 915000, 1823, 7668280, 7425000, 1810],
+      ["search_longline", 2079066, 1988000, 2107709, 921400, 878000, 623],
+      ["search_miss", 420720, 396000, 223, 365280, 342000, 166],
+      ["symbol_exact", 37360, 30000, 444, 2240, 1000, 387],
+      ["symbol_fuzzy", 3326720, 3109000, 6108, 3304680, 3144000, 6053],
+      ["symbol_glob", 306600, 278000, 6143, 273440, 262000, 6086],
+      ["callers_hot", 29533, 26000, 5400, 66733, 38000, 5148],
+      ["callpath_deep", 17900, 16000, 283, 16300, 14000, 225],
+      ["outline_huge", 130400, 123000, 291056, 7900, 6000, 16152],
+      ["read_deep", 304733, 298000, 1984, 18866, 17000, 1929],
+      ["tree_many", 764633, 680000, 122531, 6866, 6000, 122476],
+      ["ls_dir", 25380, 20000, 3097, 21280, 17000, 3046],
+      ["glob_many", 653480, 604000, 5860, 573440, 534000, 5805],
+      ["find_fuzzy", 2073533, 1972000, 659, 39466, 37000, 606],
+      ["word_hot", 480400, 454000, 611915, 80, 0, 371],
+      ["deps_trans", 4440, 3000, 265, 200, 0, 211],
+      ["edit_huge", 5789400, 1240000, 244, 5247800, 1289000, 192]
+    ],
+    "case_columns": [
+      "name",
+      "baseline_avg_ns",
+      "baseline_min_ns",
+      "baseline_output_bytes",
+      "candidate_avg_ns",
+      "candidate_min_ns",
+      "candidate_output_bytes"
+    ],
+    "known_regressions": [
+      "search_ranked average latency increased from 0.996 ms to 7.668 ms.",
+      "callers_hot average latency increased from 0.030 ms to 0.067 ms."
+    ]
+  },
+  "outline_pagination_attribution": {
+    "scope": "Same source tree and compiler, immediately before and after bounded outline pagination.",
+    "before": { "avg_ns": 131800, "output_bytes": 290982 },
+    "after": { "avg_ns": 8166, "output_bytes": 16134 },
+    "change_percent": { "avg_ns": -93.8042, "output_bytes": -94.4553 }
+  },
+  "sandbox_comparison": {
+    "status": "directional_only",
+    "fixture": {
+      "repository": "justrach/smolify",
+      "commit": "835070d0826ab581f7efb564a1457b72c2bbe3da",
+      "blobs": 96,
+      "bytes_approx": 1320000,
+      "query_symbol": "toFtsMatch"
+    },
+    "environment": "Separate Linux x86_64 sandboxes, 2 vCPU and 2048 MB each, on one gateway node.",
+    "tools": [
+      {
+        "name": "codedb",
+        "version": "0.2.5830",
+        "cold_index_process_ms": 178,
+        "cold_index_internal_ms": 74.7,
+        "sampled_cgroup_peak_kib": 41972,
+        "cache_kib": 4916,
+        "warm_cli_process_ms_three_runs": {
+          "search": [18, 3, 3],
+          "callers": [54, 3, 3],
+          "context": [18, 3, 3]
+        },
+        "result": "Found the definition, eight search sites, seven caller sites, and context narrowed to two non-test callers plus callee terms."
+      },
+      {
+        "name": "codebase-memory-mcp",
+        "version": "0.9.0",
+        "cold_index_process_ms": 430,
+        "sampled_cgroup_peak_kib": 6068,
+        "cache_kib": 4648,
+        "graph": { "nodes": 1717, "edges": 3408, "skipped": 0 },
+        "warm_cli_process_ms_three_run_ranges": {
+          "search_graph": [16, 17],
+          "trace_path": [18, 23],
+          "architecture": [17, 23]
+        },
+        "result": "Found the exact symbol and inbound graph."
+      },
+      {
+        "name": "GitNexus",
+        "version": "1.6.9",
+        "status": "not_measured",
+        "reason": "The tagged CLI rejected --skip-embeddings; the newer README and tagged CLI differed, so the trial stopped rather than changing the protocol.",
+        "license_note": "PolyForm Noncommercial 1.0; commercial company use requires license review."
+      }
+    ],
+    "limitations": [
+      "Warm CLI timings include process startup and cache loading.",
+      "Graph traversal and architecture output are not semantically identical to textual callers and context output.",
+      "Sampled cgroup peaks are directional; short-lived processes can complete between samples or report zero.",
+      "The codedb sandbox used the latest published 0.2.5830 binary, not the unreleased 0.2.5831 branch.",
+      "This comparison is not a winner table."
+    ]
+  }
+}

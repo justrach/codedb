@@ -1,0 +1,62 @@
+[
+  {
+    "id": "symbol_1",
+    "kind": "symbol",
+    "task": "\"handleContext\"",
+    "intent_anchors": ["handleContext"]
+  },
+  {
+    "id": "symbol_2",
+    "kind": "symbol",
+    "task": "\"handleContext\" \"extractContextCandidates\"",
+    "intent_anchors": ["handleContext", "extractContextCandidates"]
+  },
+  {
+    "id": "symbol_3",
+    "kind": "symbol",
+    "task": "\"handleContext\" \"extractContextCandidates\" \"extractContextFallbackWords\"",
+    "intent_anchors": ["handleContext", "extractContextCandidates", "extractContextFallbackWords"]
+  },
+  {
+    "id": "natural_perf",
+    "kind": "natural_language",
+    "task": "optimize codedb context rendering performance without changing output",
+    "intent_anchors": ["handleContext", "codedb_context", "render"]
+  },
+  {
+    "id": "natural_security",
+    "kind": "natural_language",
+    "task": "find security risks in mcp path handling and prevent traversal outside the project root",
+    "intent_anchors": ["isPathSafe", "projectRelPath", "root_policy", "traversal"]
+  },
+  {
+    "id": "natural_startup",
+    "kind": "natural_language",
+    "task": "understand how snapshot loading rebuilds indexes and warms search at startup",
+    "intent_anchors": ["loadBestSnapshot", "ensureSymbolIndex", "spawnWarmup", "snapshot"]
+  },
+  {
+    "id": "natural_symbol_bug",
+    "kind": "natural_language",
+    "task": "debug why exact symbol lookup can miss definitions after reindexing a file",
+    "intent_anchors": ["symbol_index", "rebuildSymbolIndexFor", "findAllSymbols"]
+  },
+  {
+    "id": "natural_memory",
+    "kind": "natural_language",
+    "task": "reduce memory used by the word index while preserving ranked search quality",
+    "intent_anchors": ["word_index", "releaseSecondaryIndexes", "compactMcpReadyMemory"]
+  },
+  {
+    "id": "natural_watcher",
+    "kind": "natural_language",
+    "task": "trace how file watcher updates flow into snapshot persistence and mcp results",
+    "intent_anchors": ["watcher", "saveSnapshot", "commitParsedFile"]
+  },
+  {
+    "id": "natural_with_symbol",
+    "kind": "natural_language",
+    "task": "speed up handleContext while keeping its response byte for byte identical",
+    "intent_anchors": ["handleContext", "codedb_context", "render"]
+  }
+]

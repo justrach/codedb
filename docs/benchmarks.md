@@ -1,6 +1,44 @@
 # codedb Benchmarks
 
-Benchmarked on Apple Silicon (M-series), Zig 0.15.1, macOS.
+## 0.2.5831 verified output, latency, and recall audit
+
+The 0.2.5831 audit adds machine-readable evidence and an explicit retrieval
+recall gate. The code candidate is
+`0478eff8dbef2cd2daa6cbd7413d4529ba932d1d`; measurements were taken on an
+Apple M4 Pro with 48 GB RAM and macOS 26.5.1.
+
+| Measurement | Baseline | Candidate | Change |
+|---|---:|---:|---:|
+| `codedb_context` core tokens, 10 tasks | 13,288 | 4,848 | **−63.52%** |
+| Context anchor recall, micro | 14 / 29 (48.28%) | 14 / 29 (48.28%) | unchanged |
+| Context anchor recall, macro | 54.17% | 54.17% | unchanged |
+| Tasks preserving recall | — | 10 / 10 | parity gate passed |
+| Generated-fixture cold scan | 123.299 ms | 87.092 ms | **−29.37%** |
+| Hot-word output | 611,915 B | 371 B | **−99.94%** |
+| Common-search output | 1,324,470 B | 1,766 B | **−99.87%** |
+| Huge-outline output | 291,056 B | 16,152 B | **−94.45%** |
+
+Anchor recall measures whether named task-intent markers appear in returned
+context. It is a deterministic retrieval regression check, not a semantic
+answer-accuracy score. The suite's absolute micro recall is 48.28% and its macro
+per-task recall is 54.17%; both are published so “unchanged recall” has a clear
+denominator.
+
+The edge suite includes all 22 cases, including two remaining latency
+regressions: uncached ranked search (0.996 ms → 7.668 ms) and the hot-callers
+case (0.030 ms → 0.067 ms). The full report explains compiler and binary
+provenance, exact methodology, the paired outline measurement, exploratory
+trigram observations, and the directional three-engine sandbox trial.
+
+- [Full 0.2.5831 performance and recall report](performance-0.2.5831.md)
+- [Machine-readable 0.2.5831 results](../bench/results/0.2.5831/results.json)
+
+## Historical benchmarks
+
+The remaining measurements on this page predate the 0.2.5831 audit. They were
+benchmarked on Apple Silicon (M-series), Zig 0.15.1, and macOS; treat their
+hardware, compiler, fixture, and methodology as separate from the release gate
+above.
 
 ## Cold Start (Indexing)
 
