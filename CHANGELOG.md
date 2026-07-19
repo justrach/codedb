@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.2.5831 - 2026-07-19
+
+- Bound and group large MCP word, search, outline, and context responses to cut
+  output and token use while preserving the published 10-task anchor-recall
+  gate.
+- Retain zero-copy mmap snapshot content for large projects, reduce trigram
+  posting overhead, and add paired-cache generation validation.
+- Anchor project reads and edits with no-follow filesystem access and sanitize
+  repository-controlled terminal output.
+- Restore Linux x86_64 builds under the pinned Zig 0.17 toolchain by using the
+  Linux `statx` path for notify-file ownership checks.
+- Publish the full methodology, raw results, remaining regressions, and
+  normalized sandbox comparison in
+  [`docs/performance-0.2.5831.md`](docs/performance-0.2.5831.md).
+
 - Preallocate each retained per-file trigram list once at its exact final count
   and use capacity-proven appends. This removes geometric growth, intermediate
   copying, and long-lived capacity slack without reducing caches, workers,

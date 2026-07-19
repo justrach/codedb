@@ -1767,6 +1767,13 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
 /// also prevents another local user from feeding paths to this process.
 fn notifyFileOwnedByCurrentUser(file: std.Io.File) bool {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return true;
+    if (comptime builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        var statx = std.mem.zeroes(linux.Statx);
+        const result = linux.statx(file.handle, "", linux.AT.EMPTY_PATH, .{ .UID = true }, &statx);
+        if (linux.errno(result) != .SUCCESS or !statx.mask.UID) return false;
+        return statx.uid == linux.geteuid();
+    }
     var stat: std.c.Stat = undefined;
     if (std.c.fstat(file.handle, &stat) != 0) return false;
     return stat.uid == std.c.geteuid();
