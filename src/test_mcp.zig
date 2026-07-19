@@ -1828,6 +1828,51 @@ test "issue-443: codedb_bundle is advertised when CODEDB_BUNDLE_ENABLED=1" {
     try testing.expect(saw_bundle);
 }
 
+test "tools list: compact agent surface advertises only task-critical tools" {
+    const response = try mcp_mod.buildToolsListResponse(testing.allocator, .{
+        // The compact allowlist wins even when optional full-profile tools are
+        // enabled. Their handlers remain available to cached direct callers.
+        .bundle_enabled = true,
+        .discriminated_opt_in = true,
+        .compact_agent_surface = true,
+    });
+    defer testing.allocator.free(response);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+    defer parsed.deinit();
+
+    const expected = [_][]const u8{
+        "codedb_outline",
+        "codedb_symbol",
+        "codedb_search",
+        "codedb_word",
+        "codedb_callers",
+        "codedb_callpath",
+        "codedb_context",
+        "codedb_deps",
+        "codedb_read",
+        "codedb_find",
+    };
+    const tools = parsed.value.object.get("tools").?.array;
+    try testing.expectEqual(expected.len, tools.items.len);
+    for (tools.items) |tool| {
+        const name = tool.object.get("name").?.string;
+        var expected_tool = false;
+        for (expected) |candidate| {
+            if (std.mem.eql(u8, name, candidate)) {
+                expected_tool = true;
+                break;
+            }
+        }
+        try testing.expect(expected_tool);
+    }
+
+    // Exposure filtering must not remove dispatcher compatibility.
+    try testing.expect(std.meta.stringToEnum(mcp_mod.Tool, "codedb_status") != null);
+    try testing.expect(std.meta.stringToEnum(mcp_mod.Tool, "codedb_edit") != null);
+    try testing.expect(std.meta.stringToEnum(mcp_mod.Tool, "codedb_remote") != null);
+}
+
 test "issue-434: codedb_bundle ops items schema requires arguments field" {
     // The codedb_bundle inputSchema in tools_list advertises ops items as
     // {required: ["tool"]} with arguments as a bare {type: "object"} that
@@ -3209,22 +3254,6 @@ test "codedb_context detail full retains legacy framing" {
     try testing.expect(std.mem.indexOf(u8, out.items, "## Symbol definitions") != null);
 }
 
-// Issue #626: structural-tool steering. The search nudge only fires for bare
-// identifiers; the read nudge only for large whole-file reads.
-test "issue-626: isBareIdentifier gates the search nudge" {
-    try testing.expect(mcp_mod.isBareIdentifier("make_bytes"));
-    try testing.expect(mcp_mod.isBareIdentifier("HttpResponse"));
-    try testing.expect(mcp_mod.isBareIdentifier("_private"));
-    try testing.expect(mcp_mod.isBareIdentifier("parse2"));
-
-    // Anything that isn't a single identifier is left to plain substring search.
-    try testing.expect(!mcp_mod.isBareIdentifier(""));
-    try testing.expect(!mcp_mod.isBareIdentifier("def content"));
-    try testing.expect(!mcp_mod.isBareIdentifier("make_bytes("));
-    try testing.expect(!mcp_mod.isBareIdentifier("obj.method"));
-    try testing.expect(!mcp_mod.isBareIdentifier("2fast"));
-}
-
 test "issue-626: fullFileReadHint only nudges on large whole-file reads" {
     try testing.expect(Explorer.fullFileReadHint("one\ntwo\nthree\n") == null);
 
@@ -3686,10 +3715,9 @@ test "windows: spawnDetached command line round-trips argv with trailing backsla
     try testing.expect(it.next() == null);
 }
 
-test "search: exact-symbol query surfaces the definition site inline (fewer round-trips, #1)" {
-    // codedb_search for a bare identifier that is an indexed symbol should lead
-    // with the def location, so the agent doesn't have to make a 2nd
-    // codedb_symbol call just to learn where it is defined.
+test "search: exact-symbol query surfaces one definition without a duplicate nudge" {
+    // Def-first rendering already returns the definition path, line, and
+    // declaration. A separate nudge repeated the same evidence before it.
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try explorer.indexFile("src/thing.zig", "pub fn parseThing() void {}\n");
@@ -3713,8 +3741,9 @@ test "search: exact-symbol query surfaces the definition site inline (fewer roun
     defer out.deinit(testing.allocator);
     bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
 
-    try testing.expect(std.mem.indexOf(u8, out.items, "is defined at") != null);
-    try testing.expect(std.mem.indexOf(u8, out.items, "src/thing.zig:1") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "is defined at") == null);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out.items, "src/thing.zig"));
+    try testing.expect(std.mem.indexOf(u8, out.items, "1: pub fn parseThing") != null);
 }
 
 test "mcp: emit-rich-blocks defaults lean for agent clients, rich for GUI panels" {
@@ -3729,4 +3758,14 @@ test "mcp: emit-rich-blocks defaults lean for agent clients, rich for GUI panels
     // matched case-insensitively.
     try testing.expect(mcp_mod.mcpEmitRichBlocks("claude-ai"));
     try testing.expect(mcp_mod.mcpEmitRichBlocks("Claude-AI"));
+}
+
+test "mcp: agent clients get compact tools while GUI clients get full discovery" {
+    // Assumes a clean CODEDB_MCP_TOOL_PROFILE env, as under `zig build test`.
+    try testing.expect(mcp_mod.mcpUseCompactToolSurface(null));
+    try testing.expect(mcp_mod.mcpUseCompactToolSurface("codex"));
+    try testing.expect(mcp_mod.mcpUseCompactToolSurface("claude-code"));
+    try testing.expect(mcp_mod.mcpUseCompactToolSurface("cursor"));
+    try testing.expect(!mcp_mod.mcpUseCompactToolSurface("claude-ai"));
+    try testing.expect(!mcp_mod.mcpUseCompactToolSurface("Claude-AI"));
 }

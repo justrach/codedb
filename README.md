@@ -175,7 +175,17 @@ codedb hot                            # recently modified files
 
 ## 🔧 MCP Tools
 
-21 tools over the Model Context Protocol (JSON-RPC 2.0 over stdio). codedb's job is to **give agents context** — fast structural search, symbols, callers, dependencies, and outlines — **not** to be your editor. Editing is intentionally a fallback (`codedb_edit`); prefer your client's native edit tools.
+Coding-agent clients load a focused 10-tool surface over the Model Context
+Protocol (JSON-RPC 2.0 over stdio): `outline`, `symbol`, `search`, `word`,
+`callers`, `callpath`, `context`, `deps`, `read`, and `find`. This keeps unused
+schemas out of model context. All 23 operational tools remain implemented;
+human-facing GUI clients discover the full surface, and any client can opt in
+with `CODEDB_MCP_TOOL_PROFILE=full`.
+
+codedb's job is to **give agents context** — fast structural search, symbols,
+callers, dependencies, and outlines — **not** to be your editor. Editing is
+intentionally a fallback (`codedb_edit`); prefer your client's native edit
+tools. The table below documents the full profile.
 
 | Tool | Description |
 |------|-------------|
@@ -185,7 +195,9 @@ codedb hot                            # recently modified files
 | `codedb_search` | Trigram-accelerated full-text search, grouped by path and paginated with `more: offset=N` (supports regex and scoped results) |
 | `codedb_word` | O(1) exact-identifier lookup, grouped by path and paginated by occurrence (`max_results=50` by default, `offset` for the next page); pass `all=true` explicitly only when every occurrence is required |
 | `codedb_callers` | Every call site of a symbol — word index ∩ outline scope, in one round-trip |
+| `codedb_callpath` | Shortest resolved call chain between two symbols |
 | `codedb_context` | Task-shaped composer — compact by default, returning focused definitions, bodies, graph neighbors, ranked files, and sites in one block (replaces 3–5 sequential calls); use `detail=full` for the legacy-style verbose view |
+| `codedb_diagnostics` | Latest external-linter diagnostics after a fallback `codedb_edit` |
 | `codedb_hot` | Most recently modified files |
 | `codedb_deps` | Dependency graph: `imported_by` (default) or `depends_on`; `transitive=true` for full BFS |
 | `codedb_read` | Read file content (line ranges, `if_hash` skip-unchanged, `compact` mode) |
@@ -209,6 +221,9 @@ overflowing the request with lower-priority sections.
 MCP responses are plain text by default, without ANSI styling. Set
 `CODEDB_MCP_ANSI=1` in the MCP server environment to opt into ANSI-colored
 summary and guidance blocks for clients that render terminal colors.
+Set `CODEDB_MCP_TOOL_PROFILE=compact` or `full` to override client-based tool
+surface detection. Hiding a tool only removes its schema from `tools/list`; it
+does not remove the handler, so clients with a cached schema keep working.
 
 ### `codedb_remote` — Cloud Intelligence
 

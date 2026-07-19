@@ -151,6 +151,19 @@ class MCPProcess:
                 return msg
         return None
 
+    def list_tools(self, timeout: float = 10.0) -> dict[str, Any] | None:
+        """Request the client-aware advertised tool surface."""
+        req_id = self.next_id()
+        self.send({"jsonrpc": "2.0", "id": req_id, "method": "tools/list", "params": {}})
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            msg = self.recv(timeout=1.0)
+            if msg is None:
+                continue
+            if msg.get("id") == req_id:
+                return msg
+        return None
+
     def stderr_lines(self) -> list[str]:
         with self._lock:
             return list(self._stderr_lines)
@@ -359,6 +372,29 @@ def run_scenario_2_normal_mode(binary: str, project: str) -> list[TestResult]:
             r.fail("no initialize response")
             return results
         r.ok()
+
+        r = t("agent tools/list exposes the compact 10-tool surface")
+        tools_resp = p.list_tools()
+        tool_names = {
+            tool.get("name")
+            for tool in (tools_resp or {}).get("result", {}).get("tools", [])
+        }
+        expected_tools = {
+            "codedb_outline",
+            "codedb_symbol",
+            "codedb_search",
+            "codedb_word",
+            "codedb_callers",
+            "codedb_callpath",
+            "codedb_context",
+            "codedb_deps",
+            "codedb_read",
+            "codedb_find",
+        }
+        if tool_names != expected_tools:
+            r.fail(f"advertised tools: {sorted(tool_names)}")
+        else:
+            r.ok()
 
         r = t("server does NOT send roots/list (scan is immediate)")
         # Give 2 seconds — if no roots/list arrives, that's correct for explicit-root mode

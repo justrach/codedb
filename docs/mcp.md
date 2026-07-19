@@ -1,9 +1,10 @@
 # codedb MCP Setup
 
 `codedb mcp` runs as a stdio JSON-RPC server speaking the
-[Model Context Protocol](https://spec.modelcontextprotocol.io/). It exposes
-21 tools for code intelligence — search, outline, callers, deps, edit,
-context, etc. — backed by the indexes in `~/.codedb/projects/<hash>/`.
+[Model Context Protocol](https://spec.modelcontextprotocol.io/). Coding-agent
+clients are advertised a focused 10-tool code-intelligence surface; 23 tools
+remain available in the full profile. Both are backed by the indexes in
+`~/.codedb/projects/<hash>/`.
 
 This guide covers per-client setup, how codedb decides which project to
 scan, and the most common failure modes.
@@ -187,8 +188,9 @@ codedb --version          # codedb 0.2.5815 (or later)
 codedb status             # one-line: indexed file count + scan phase
 ```
 
-In a client, the simplest tool to smoke-test is `codedb_status` — it
-takes no arguments and returns `files: N, seq: N, scan: ready` in <50 ms.
+In an agent client, smoke-test with `codedb_search` or `codedb_outline`, which
+are part of the compact surface. `codedb_status` remains available in the full
+profile for protocol and index diagnostics.
 
 ---
 
@@ -210,7 +212,20 @@ Fixed in v0.2.5815 — `codedb_find` now accepts `query`, `name`, `path`,
 `pattern`, and `q` as aliases. If you're still seeing this error,
 `codedb --version` will show < 0.2.5815; rerun the installer.
 
-### Tools list looks short / `codedb_context` is missing
+### Tools list looks shorter than the full profile
+
+This is intentional for coding agents. Their default `tools/list` contains the
+10 task-critical tools: `codedb_outline`, `codedb_symbol`, `codedb_search`,
+`codedb_word`, `codedb_callers`, `codedb_callpath`, `codedb_context`,
+`codedb_deps`, `codedb_read`, and `codedb_find`. Removing unused schemas saves
+model context and reduces tool-selection ambiguity; the handlers are not
+deleted.
+
+Set `CODEDB_MCP_TOOL_PROFILE=full` in the MCP server environment and restart
+the client to advertise all 23 operational tools. Use
+`CODEDB_MCP_TOOL_PROFILE=compact` to force the focused surface in a GUI client.
+
+If `codedb_context` itself is missing, the binary is old:
 
 `codedb_context` was added in **v0.2.5815**. Older binaries expose only
 20 tools. Upgrade with `codedb update` (or the installer one-liner above)
@@ -284,6 +299,8 @@ Override the default:
 | `CODEDB_MCP_LEAN=1` | Force lean for every client (data block only). |
 | `CODEDB_MCP_RICH=1` | Force rich for every client. |
 | `CODEDB_MCP_RICH_CLIENTS=name1,name2` | Add clients (by `clientInfo.name`, case-insensitive) to the rich allowlist. |
+| `CODEDB_MCP_TOOL_PROFILE=compact` | Advertise only the 10 task-critical tools. |
+| `CODEDB_MCP_TOOL_PROFILE=full` | Advertise all 23 operational tools. |
 
 `CODEDB_MCP_LEAN` takes precedence over `CODEDB_MCP_RICH`.
 

@@ -8,8 +8,8 @@
 //! the project's queries.log WAL so cross-restart repeats hit at ~µs.
 //!
 //! Replay deliberately mirrors the MCP codedb_search handler's default path
-//! (renderPlainSearch with max_results=20, falling back to searchContentAuto
-//! with 21) so the cache keys match what real calls will look up.
+//! (renderPlainSearch with max_results=10, falling back to searchContentAuto
+//! with 11) so the cache keys match what real calls will look up.
 
 const std = @import("std");
 const explore = @import("explore.zig");
@@ -21,8 +21,8 @@ pub const max_log_tail_bytes: usize = 256 * 1024;
 
 /// The MCP search handler's defaults (mcp.zig handleSearch): cache keys
 /// include max_results, so replay must use the same numbers.
-const default_max_results: usize = 20;
-const fallback_fetch_count: usize = 21; // offset 0 + max_results + 1
+const default_max_results: usize = 10;
+const fallback_fetch_count: usize = 11; // offset 0 + max_results + 1
 
 /// Extract the most frequently repeated codedb_search queries from a
 /// queries.log tail (JSONL, one event per line). Malformed lines are

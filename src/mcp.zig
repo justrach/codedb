@@ -696,7 +696,7 @@ pub const tools_list =
     \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_outline","description":"Replaces reading a whole file with cat/head/tail: symbol outline of one file — functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Results are bounded and paginated for generated or declaration-dense files. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view with bodies elided.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"max_results":{"type":"integer","description":"Symbols per page (default: 200, cap: 10000)"},"offset":{"type":"integer","description":"Symbol offset for the next page (default: 0)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_symbol","description":"Replaces grepping for a definition: PRIMARY tool for locating a definition — reach for this FIRST when you know or can guess a symbol name, instead of codedb_search. Finds symbol definitions across the index — exact name, prefix, glob pattern, fuzzy match, or kind filter. Returns file, line, kind, and score. Pass format=json for structured output.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"prefix":{"type":"string","description":"Prefix match (e.g. parse_)"},"pattern":{"type":"string","description":"Glob pattern on symbol name (e.g. *Manager)"},"kind":{"type":"string","description":"Filter by kind: function, struct, interface, class, method, enum"},"fuzzy":{"type":"boolean","description":"Fuzzy/typo-tolerant match when name is set (default: false)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"max_results":{"type":"integer","description":"Max results (default: 50, cap 200)"},"format":{"type":"string","description":"Set to json for structured JSON output"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with 'more: offset=N'; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return grouped path + line results without matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+    \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 10, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with 'more: offset=N'; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return grouped path + line results without matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
     \\{"name":"codedb_word","description":"Exact-identifier lookup via inverted index — every occurrence of one word, O(1). Results are grouped by path and paginated to prevent hot identifiers from flooding context. Use for single identifiers; use codedb_search for substrings or phrases.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"max_results":{"type":"integer","description":"Occurrences per page (default: 50, cap: 1000)"},"offset":{"type":"integer","description":"Occurrence offset for the next page (default: 0)"},"all":{"type":"boolean","description":"Explicitly return every occurrence; may be very large (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
     \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
     \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Use after codedb_callers when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]}},
@@ -735,13 +735,30 @@ pub const tools_list =
 pub const ToolsListOpts = struct {
     bundle_enabled: bool = false,
     discriminated_opt_in: bool = false,
+    compact_agent_surface: bool = false,
 };
+
+/// Tools worth paying schema tokens for in coding-agent clients. Everything
+/// else remains dispatchable for cached schemas and can be re-advertised with
+/// the full profile; this is exposure filtering, not feature deletion.
+fn isCompactAgentTool(name: []const u8) bool {
+    return std.mem.eql(u8, name, "codedb_outline") or
+        std.mem.eql(u8, name, "codedb_symbol") or
+        std.mem.eql(u8, name, "codedb_search") or
+        std.mem.eql(u8, name, "codedb_word") or
+        std.mem.eql(u8, name, "codedb_callers") or
+        std.mem.eql(u8, name, "codedb_callpath") or
+        std.mem.eql(u8, name, "codedb_context") or
+        std.mem.eql(u8, name, "codedb_deps") or
+        std.mem.eql(u8, name, "codedb_read") or
+        std.mem.eql(u8, name, "codedb_find");
+}
 
 /// Build the runtime `tools/list` response. Honors the bundle and
 /// discriminated-schema env-var gates that run() reads. Always returns an
 /// allocator-owned slice the caller must free.
 pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]u8 {
-    if (opts.bundle_enabled and opts.discriminated_opt_in) {
+    if (!opts.compact_agent_surface and opts.bundle_enabled and opts.discriminated_opt_in) {
         return buildAugmentedToolsList(alloc);
     }
 
@@ -755,18 +772,19 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
     const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
     if (tools_val.* != .array) return error.MalformedToolsList;
 
-    if (!opts.bundle_enabled) {
-        var filtered: std.json.Array = .init(a);
-        for (tools_val.array.items) |t| {
-            if (t == .object) {
-                if (t.object.get("name")) |n| {
-                    if (n == .string and std.mem.eql(u8, n.string, "codedb_bundle")) continue;
+    var filtered: std.json.Array = .init(a);
+    for (tools_val.array.items) |t| {
+        if (t == .object) {
+            if (t.object.get("name")) |n| {
+                if (n == .string) {
+                    if (!opts.bundle_enabled and std.mem.eql(u8, n.string, "codedb_bundle")) continue;
+                    if (opts.compact_agent_surface and !isCompactAgentTool(n.string)) continue;
                 }
             }
-            try filtered.append(t);
         }
-        tools_val.* = .{ .array = filtered };
+        try filtered.append(t);
     }
+    tools_val.* = .{ .array = filtered };
 
     const out_in_arena = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
     return try alloc.dupe(u8, out_in_arena);
@@ -984,8 +1002,8 @@ fn isGovernedNavTool(name: []const u8) bool {
 /// should be surfaced. Pure + unit-tested (mirrors depsHint/fullFileReadHint).
 ///
 /// Suppressed for `format=json` even at the loop threshold: the nudge is plain
-/// text and appending it to a JSON payload corrupts it — the #626 nudges
-/// (appendSearchSymbolNudge, depsHint) guard the same way. #624 shipped without
+/// text and appending it to a JSON payload corrupts it — depsHint guards the
+/// same way. #624 shipped without
 /// this guard, so a looping `codedb_search format=json` returned invalid JSON.
 pub fn convergenceNudge(occurrences: usize, json_fmt: bool) ?[]const u8 {
     if (occurrences < ConvergenceGovernor.WARN_AT) return null;
@@ -1038,11 +1056,17 @@ pub fn run(
         const v = cio.posixGetenv("CODEDB_BUNDLE_ENABLED") orelse break :blk_be false;
         break :blk_be std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
     };
-    const tools_list_response: []const u8 = buildToolsListResponse(alloc, .{
+    const full_tools_list_response: []const u8 = buildToolsListResponse(alloc, .{
         .bundle_enabled = bundle_enabled,
         .discriminated_opt_in = discriminated_opt_in,
     }) catch tools_list;
-    defer if (tools_list_response.ptr != tools_list.ptr) alloc.free(tools_list_response);
+    defer if (full_tools_list_response.ptr != tools_list.ptr) alloc.free(full_tools_list_response);
+    const compact_tools_list_response: []const u8 = buildToolsListResponse(alloc, .{
+        .bundle_enabled = bundle_enabled,
+        .discriminated_opt_in = discriminated_opt_in,
+        .compact_agent_surface = true,
+    }) catch full_tools_list_response;
+    defer if (compact_tools_list_response.ptr != tools_list.ptr and compact_tools_list_response.ptr != full_tools_list_response.ptr) alloc.free(compact_tools_list_response);
     var session = Session{
         .alloc = alloc,
         .stdout = stdout,
@@ -1109,7 +1133,10 @@ pub fn run(
                 requestRoots(&session);
             }
         } else if (mcpj.eql(method, "tools/list")) {
-            if (!is_notification) writeResult(alloc, stdout, id, tools_list_response);
+            if (!is_notification) {
+                const response = if (mcpUseCompactToolSurface(session.client_name)) compact_tools_list_response else full_tools_list_response;
+                writeResult(alloc, stdout, id, response);
+            }
         } else if (mcpj.eql(method, "tools/call")) {
             handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id, &session.governor, session.client_name);
         } else if (mcpj.eql(method, "ping")) {
@@ -1782,63 +1809,6 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
     if (depsHint(results.len)) |h| out.appendSlice(alloc, h) catch {};
 }
 
-// Issue #626: agents reach for codedb_search with a bare symbol name and skip
-// the structural tools entirely. When the query is a single identifier the index
-// already knows as a symbol, prepend a one-line nudge toward codedb_symbol /
-// codedb_callers — fired in-context, exactly at the grep-style call.
-pub fn isBareIdentifier(s: []const u8) bool {
-    if (s.len == 0 or s.len > 128) return false;
-    if (std.ascii.isDigit(s[0])) return false;
-    for (s) |c| {
-        if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
-    }
-    return true;
-}
-
-fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query: []const u8, out: *std.ArrayList(u8)) void {
-    if (!isBareIdentifier(query)) return;
-    const results = explorer.findAllSymbols(query, alloc) catch return;
-    defer {
-        for (results) |r| {
-            alloc.free(r.path);
-            alloc.free(r.symbol.name);
-            if (r.symbol.detail) |d| alloc.free(d);
-        }
-        alloc.free(results);
-    }
-    if (results.len == 0) return;
-
-    // Fewer round-trips: `query` is an indexed symbol, so instead of nudging the
-    // agent to make a *second* codedb_symbol call, surface the definition site(s)
-    // inline. Prefer real definitions over import/comment matches (same filter as
-    // renderSymbolDefsFast). One call now answers "where is X defined?".
-    var has_def = false;
-    for (results) |r| {
-        if (r.symbol.kind != .import and r.symbol.kind != .comment_block) {
-            has_def = true;
-            break;
-        }
-    }
-    var total_defs: usize = 0;
-    for (results) |r| {
-        const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
-        if (!has_def or is_def) total_defs += 1;
-    }
-    const w = cio.listWriter(out, alloc);
-    const cap: usize = 3;
-    var shown: usize = 0;
-    for (results) |r| {
-        if (shown >= cap) break;
-        const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
-        if (has_def and !is_def) continue;
-        if (shown == 0) w.print("↪ '{s}' is defined at (codedb_symbol for bodies):\n", .{query}) catch {};
-        w.print("  {s}:{d} ({s})\n", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind) }) catch {};
-        shown += 1;
-    }
-    if (shown == 0) return;
-    if (total_defs > shown) w.print("  (+{d} more — codedb_symbol '{s}')\n", .{ total_defs - shown, query }) catch {};
-}
-
 // Issue #626 follow-up: codedb_deps is the one structural tool nothing points
 // at — mcpGenerateGuidance already steers callers->callpath, edit->changes, hot.
 // Nudge toward deps right after a single-definition codedb_symbol hit, the
@@ -1942,10 +1912,10 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             return;
         }
     }
-    // Default trimmed from 50 -> 20 (Nov 2026). Bench data showed the
-    // median answer needed <10 results; the extra 40 were paid in tokens
-    // every call. Agents that want more can pass max_results explicitly.
-    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 20;
+    // Keep the default page at the measured median answer size. Every result
+    // remains reachable through offset pagination, while broad searches no
+    // longer charge agents for a second, usually-unused block of ten snippets.
+    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 10;
     const offset_n: usize = if (getInt(args, "offset")) |n| @intCast(@max(0, @min(n, 100000))) else 0;
     const scope = getBool(args, "scope");
     const compact = getBool(args, "compact");
@@ -1970,9 +1940,6 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         writeJsonToolError(out, alloc, "codedb_search", "unsupported", "format=json does not support scope=true yet");
         return;
     }
-    // Issue #626: nudge toward the structural tools when the query is a bare
-    // symbol name. Text output only — would corrupt the format=json payload.
-    if (!json_fmt) appendSearchSymbolNudge(alloc, explorer, query, out);
     if (scope and is_regex) {
         const results = explorer.searchContentRegexWithScope(query, alloc, max_results) catch |e| {
             out.appendSlice(alloc, if (e == error.InvalidRegex) "error: invalid regex" else "error: scoped regex search failed") catch {};
@@ -6620,6 +6587,18 @@ fn mcpEnvPolicy() McpBlockPolicy {
 /// into model context, so they default lean to save output tokens.
 fn mcpBuiltinRichClient(name: []const u8) bool {
     return std.ascii.eqlIgnoreCase(name, "claude-ai");
+}
+
+/// Keep coding-agent tool schemas focused. Human-facing GUI clients retain the
+/// full discovery surface, and any client can override detection with
+/// CODEDB_MCP_TOOL_PROFILE=compact|full. Hidden tools remain dispatchable.
+pub fn mcpUseCompactToolSurface(client_name: ?[]const u8) bool {
+    if (cio.posixGetenv("CODEDB_MCP_TOOL_PROFILE")) |profile| {
+        if (std.ascii.eqlIgnoreCase(profile, "compact")) return true;
+        if (std.ascii.eqlIgnoreCase(profile, "full")) return false;
+    }
+    const name = client_name orelse return true;
+    return !mcpBuiltinRichClient(name);
 }
 
 /// Decide whether to emit Block 1 (colored summary) + Block 3 (guidance).

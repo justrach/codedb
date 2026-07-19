@@ -212,6 +212,48 @@ test "codedb_search groups repeated paths and emits a compact page cursor" {
     try testing.expect(std.mem.indexOf(u8, next.items, "more: offset=") == null);
 }
 
+test "codedb_search defaults to ten results and keeps the rest pageable" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    var content: std.ArrayList(u8) = .empty;
+    defer content.deinit(testing.allocator);
+    const writer = cio.listWriter(&content, testing.allocator);
+    for (1..13) |i| try writer.print("const item{d} = defaultPageNeedle;\n", .{i});
+    try explorer.indexFile("src/page.zig", content.items);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"query":"defaultPageNeedle"}
+    , .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "10 results for 'defaultPageNeedle'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "more: offset=10") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "    11:") == null);
+
+    const next_parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"query":"defaultPageNeedle","offset":10}
+    , .{});
+    defer next_parsed.deinit();
+    var next: std.ArrayList(u8) = .empty;
+    defer next.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &next_parsed.value.object, &next, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, next.items, "    11: const item11 = defaultPageNeedle;") != null);
+    try testing.expect(std.mem.indexOf(u8, next.items, "    12: const item12 = defaultPageNeedle;") != null);
+    try testing.expect(std.mem.indexOf(u8, next.items, "more: offset=") == null);
+}
+
 test "issue-363b: fuzzyFindFiles ranks exact basename match above unrelated lib.rs" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -3011,8 +3053,8 @@ test "warmup: topQueries respects the max cap" {
 test "warmup: replay pre-fills the result caches so real calls hit" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    // 20+ matching lines so the MCP fast path (renderPlainSearch with the
-    // default max_results=20) renders from Tier 0 and fills the render cache.
+    // 10+ matching lines so the MCP fast path (renderPlainSearch with the
+    // default max_results=10) renders from Tier 0 and fills the render cache.
     var content: std.ArrayList(u8) = .empty;
     defer content.deinit(testing.allocator);
     const cw = cio.listWriter(&content, testing.allocator);
@@ -3032,14 +3074,14 @@ test "warmup: replay pre-fills the result caches so real calls hit" {
     // Real MCP-handler-shaped calls must now be cache hits.
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
-    try testing.expect(try explorer.renderPlainSearch("warmtok", testing.allocator, &out, 20, false));
+    try testing.expect(try explorer.renderPlainSearch("warmtok", testing.allocator, &out, 10, false));
     try testing.expectEqual(@as(u64, 1), explorer.plain_render_cache.hits);
 
-    const r = try explorer.searchContent("raretok", testing.allocator, 21);
+    const r = try explorer.searchContent("raretok", testing.allocator, 11);
     defer freeSearchResults(r);
     try testing.expectEqual(@as(u64, 1), explorer.search_cache.hits);
 
-    const rr = try explorer.searchContentRanked("raretok warmtok", testing.allocator, 21);
+    const rr = try explorer.searchContentRanked("raretok warmtok", testing.allocator, 11);
     defer freeSearchResults(rr);
     try testing.expectEqual(@as(u64, 1), explorer.ranked_cache.hits);
 }
