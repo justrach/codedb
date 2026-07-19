@@ -37,6 +37,7 @@ pub fn loadUserConfig(io: std.Io, alloc: std.mem.Allocator, explicit: ?[]const u
 fn loadSnapshotIfHeadMatches(
     io: std.Io,
     snapshot_path: []const u8,
+    expected_root: []const u8,
     explorer: *Explorer,
     store: *Store,
     current_git_head: ?[40]u8,
@@ -46,11 +47,11 @@ fn loadSnapshotIfHeadMatches(
         // No git HEAD in snapshot (non-git project or legacy snapshot) — load
         // only when the current project also has no git HEAD.
         if (current_git_head != null) return false;
-        return snapshot_mod.loadSnapshot(io, snapshot_path, explorer, store, allocator);
+        return snapshot_mod.loadSnapshotValidated(io, snapshot_path, expected_root, explorer, store, allocator);
     };
     const cur_head = current_git_head orelse return false;
     if (!std.mem.eql(u8, &snap_head, &cur_head)) return false;
-    return snapshot_mod.loadSnapshot(io, snapshot_path, explorer, store, allocator);
+    return snapshot_mod.loadSnapshotValidated(io, snapshot_path, expected_root, explorer, store, allocator);
 }
 
 pub fn loadBestSnapshot(
@@ -65,13 +66,13 @@ pub fn loadBestSnapshot(
     const root_snapshot = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
     defer if (root_snapshot) |p| allocator.free(p);
     const first_snapshot = root_snapshot orelse "codedb.snapshot";
-    if (loadSnapshotIfHeadMatches(io, first_snapshot, explorer, store, current_git_head, allocator)) {
+    if (loadSnapshotIfHeadMatches(io, first_snapshot, abs_root, explorer, store, current_git_head, allocator)) {
         return true;
     }
 
     const central_snapshot = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{data_dir}) catch return false;
     defer allocator.free(central_snapshot);
-    return loadSnapshotIfHeadMatches(io, central_snapshot, explorer, store, current_git_head, allocator);
+    return loadSnapshotIfHeadMatches(io, central_snapshot, abs_root, explorer, store, current_git_head, allocator);
 }
 
 pub fn getDataDir(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {
@@ -88,7 +89,13 @@ pub fn getDataDir(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8
     return dir;
 }
 
-pub fn loadTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, data_dir: []const u8, allocator: std.mem.Allocator) void {
+pub fn loadTrigramFromDiskIfPresent(
+    io: std.Io,
+    explorer: *Explorer,
+    data_dir: []const u8,
+    current_git_head: ?[40]u8,
+    allocator: std.mem.Allocator,
+) void {
     explorer.mu.lockShared();
     const disk_backed = explorer.trigram_index != .heap;
     const heap_files = explorer.trigram_index.fileCount();
@@ -99,6 +106,19 @@ pub fn loadTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, data_dir: [
     // touches a few changed files before this runs) must not block the
     // load — adoptTrigramBase keeps those files as a masking overlay.
     if (disk_backed or (heap_files > 0 and heap_files >= total_files)) return;
+
+    const header = TrigramIndex.readDiskHeader(io, data_dir, allocator) catch null orelse return;
+    if (header.format_version != TrigramIndex.FORMAT_VERSION) return;
+    // Startup admission is intentionally exact. A same-version cache can still
+    // be stale (including the equal-count/path-replacement case), and adopting
+    // it may let compact mode release the only authoritative file contents.
+    if (@as(usize, header.file_count) != total_files) return;
+    const heads_match = blk: {
+        if (current_git_head == null and header.git_head == null) break :blk true;
+        if (current_git_head == null or header.git_head == null) break :blk false;
+        break :blk std.mem.eql(u8, &current_git_head.?, &header.git_head.?);
+    };
+    if (!heads_match) return;
 
     if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
         explorer.adoptTrigramBase(loaded);
@@ -116,6 +136,8 @@ pub fn loadWordIndexFromDiskIfPresent(
     current_git_head: ?[40]u8,
     allocator: std.mem.Allocator,
 ) void {
+    explorer.lockWordIndexBuild();
+    defer explorer.unlockWordIndexBuild();
     if (!explorer.wordIndexCanLoadFromDisk()) return;
 
     // Each disable below logs WHY at debug level: a silent fallback here means
@@ -148,7 +170,7 @@ pub fn loadWordIndexFromDiskIfPresent(
     }
 
     if (WordIndex.mmapFromDisk(io, data_dir, allocator) orelse WordIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
-        explorer.replaceWordIndex(loaded);
+        _ = explorer.tryReplaceWordIndexFromDisk(loaded);
     } else {
         std.log.debug("word.index disk load skipped: mmap and heap read both failed", .{});
         explorer.disableWordIndexDiskLoad();
@@ -160,9 +182,10 @@ pub fn loadWordIndexFromDiskIfPresent(
 /// (word-index rebuild after a snapshot fast-load: 50ms–2s), and 62% of
 /// calls are exact repeats that the result caches can serve at µs — but only
 /// if something fills them. The thread waits for the scan to be ready, then
-/// (1) loads-or-rebuilds + persists the word index, and (2) replays the most
-/// repeated recent queries from queries.log through the same entry points
-/// real codedb_search calls use. CODEDB_NO_WARMUP=1 disables it.
+/// (1) loads-or-rebuilds + persists the word index, (2) materializes the
+/// deferred symbol index, and (3) replays the most repeated recent queries
+/// from queries.log through the same entry points real codedb_search calls
+/// use. CODEDB_NO_WARMUP=1 disables it.
 const WarmupCtx = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -204,7 +227,14 @@ fn warmupThreadMain(ctx: *WarmupCtx) void {
     }
     if (ctx.shutdown.load(.acquire)) return;
 
-    // (2) Result-cache warmup: replay the most repeated recent queries. The
+    // Snapshot fast-load intentionally defers the global symbol index, but
+    // context/symbol/callers otherwise charge its full build to the first
+    // agent request. Materialize it on this existing background thread even
+    // when there is no queries.log to trigger replay below.
+    ctx.explorer.ensureSymbolIndex();
+    if (ctx.shutdown.load(.acquire)) return;
+
+    // (3) Result-cache warmup: replay the most repeated recent queries. The
     // searches also trigger the lazy ranking builds (symbol index, call
     // graph, co-change) so no real query pays for those either.
     if (cio.posixGetenv("CODEDB_NO_SEARCH_CACHE") != null) return;
@@ -217,20 +247,22 @@ fn warmupThreadMain(ctx: *WarmupCtx) void {
     warmup_mod.replay(ctx.explorer, allocator, queries, ctx.shutdown);
 }
 
-pub fn spawnWarmup(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, data_dir: []const u8, abs_root: []const u8, shutdown: *std.atomic.Value(bool)) void {
-    if (cio.posixGetenv("CODEDB_NO_WARMUP") != null) return;
+/// Start background warmup. The caller owns the returned thread and must set
+/// `shutdown` then join it before `explorer` or `shutdown` leave scope.
+pub fn spawnWarmup(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, data_dir: []const u8, abs_root: []const u8, shutdown: *std.atomic.Value(bool)) ?std.Thread {
+    if (cio.posixGetenv("CODEDB_NO_WARMUP") != null) return null;
     // Low-memory mode trades latency for RSS everywhere else (see
     // compactMcpReadyMemory); don't pre-pay index builds + caches there.
-    if (cio.posixGetenv("CODEDB_LOW_MEMORY") != null) return;
-    const ctx = allocator.create(WarmupCtx) catch return;
+    if (cio.posixGetenv("CODEDB_LOW_MEMORY") != null) return null;
+    const ctx = allocator.create(WarmupCtx) catch return null;
     const data_dir_copy = allocator.dupe(u8, data_dir) catch {
         allocator.destroy(ctx);
-        return;
+        return null;
     };
     const abs_root_copy = allocator.dupe(u8, abs_root) catch {
         allocator.free(data_dir_copy);
         allocator.destroy(ctx);
-        return;
+        return null;
     };
     ctx.* = .{
         .io = io,
@@ -240,14 +272,13 @@ pub fn spawnWarmup(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer
         .abs_root = abs_root_copy,
         .shutdown = shutdown,
     };
-    if (std.Thread.spawn(.{}, warmupThreadMain, .{ctx})) |t| {
-        t.detach();
-    } else |err| {
+    return std.Thread.spawn(.{}, warmupThreadMain, .{ctx}) catch |err| {
         std.log.debug("warmup: could not start thread: {s}", .{@errorName(err)});
         allocator.free(ctx.data_dir);
         allocator.free(ctx.abs_root);
         allocator.destroy(ctx);
-    }
+        return null;
+    };
 }
 
 fn wordIndexDiskMatches(
@@ -286,7 +317,8 @@ pub fn compactMcpReadyMemory(
         explorer.wordIndexIsComplete() or
         (explorer.wordIndexCanLoadFromDisk() and wordIndexDiskMatches(io, explorer, data_dir, current_git_head, allocator));
 
-    if (can_release_contents) {
+    const low_memory = cio.posixGetenv("CODEDB_LOW_MEMORY") != null;
+    if (can_release_contents and (explorer.hasCompleteTrigramCoverage() or low_memory)) {
         explorer.releaseContents();
     }
     explorer.releaseSecondaryIndexes();
@@ -402,7 +434,7 @@ pub fn coldLoadOrScan(
             // The cli-daemon serves proxied `search`/`callers`; warm the
             // trigram up front (mmap-backed — cheap RSS) so it doesn't scan
             // all content per query. Matches the serve/mcp daemon.
-            loadTrigramFromDiskIfPresent(io, explorer, data_dir, allocator);
+            loadTrigramFromDiskIfPresent(io, explorer, data_dir, git_head, allocator);
         }
         if (std.mem.eql(u8, cmd, "search")) {
             // #547: searchContent's Tier 0 recall is the word inverted index,
@@ -437,7 +469,9 @@ pub fn coldLoadOrScan(
         const disk_hdr = TrigramIndex.readDiskHeader(io, data_dir, allocator) catch null;
         const heads_match = blk2: {
             const a = git_head orelse break :blk2 false;
-            const b = (disk_hdr orelse break :blk2 false).git_head orelse break :blk2 false;
+            const hdr = disk_hdr orelse break :blk2 false;
+            if (hdr.format_version != TrigramIndex.FORMAT_VERSION) break :blk2 false;
+            const b = hdr.git_head orelse break :blk2 false;
             break :blk2 std.mem.eql(u8, &a, &b);
         };
         // Load per-project freq table before scan so pairWeight is project-aware.

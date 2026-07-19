@@ -738,6 +738,117 @@ test "edit-create: op=create refuses to clobber an existing file" {
     try testing.expectEqualStrings("keep = 1\n", after);
 }
 
+test "edit-security: final and parent symlinks cannot escape project root" {
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+
+    const secret = "outside must remain unchanged\n";
+    try outside.dir.writeFile(io, .{ .sub_path = "secret.zig", .data = secret });
+    var outside_file_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_file_len = try outside.dir.realPathFile(io, "secret.zig", &outside_file_buf);
+    project.dir.symLink(io, outside_file_buf[0..outside_file_len], "alias.zig", .{}) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var outside_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_dir_len = try outside.dir.realPathFile(io, ".", &outside_dir_buf);
+    project.dir.symLink(io, outside_dir_buf[0..outside_dir_len], "linked", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var project_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_len = try project.dir.realPathFile(io, ".", &project_buf);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, project_buf[0..project_len]);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    const agent_id = try agents.register("edit-symlink-security");
+
+    const requests = [_]edit_mod.EditRequest{
+        .{
+            .path = "alias.zig",
+            .agent_id = agent_id,
+            .op = .replace,
+            .range = .{ 1, 1 },
+            .content = "overwritten",
+        },
+        .{
+            .path = "linked/secret.zig",
+            .agent_id = agent_id,
+            .op = .replace,
+            .range = .{ 1, 1 },
+            .content = "overwritten",
+        },
+    };
+    for (requests) |request| {
+        if (edit_mod.applyEdit(io, testing.allocator, &store, &agents, &explorer, request)) |unexpected| {
+            defer if (unexpected.preview) |preview| testing.allocator.free(preview);
+            defer if (unexpected.health) |health| testing.allocator.free(health);
+            return error.TestUnexpectedResult;
+        } else |_| {}
+    }
+
+    const unchanged = try outside.dir.readFileAlloc(io, "secret.zig", testing.allocator, .limited(1024));
+    defer testing.allocator.free(unchanged);
+    try testing.expectEqualStrings(secret, unchanged);
+    try testing.expectEqual(@as(u64, 0), store.currentSeq());
+}
+
+test "edit-security: precreated codedb_tmp symlink is never opened" {
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+
+    try project.dir.createDirPath(io, "src");
+    try project.dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = "before\n" });
+    const outside_original = "outside must remain unchanged\n";
+    try outside.dir.writeFile(io, .{ .sub_path = "victim.txt", .data = outside_original });
+    var outside_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_len = try outside.dir.realPathFile(io, "victim.txt", &outside_buf);
+    project.dir.symLink(io, outside_buf[0..outside_len], "src/main.zig.codedb_tmp", .{}) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var project_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_len = try project.dir.realPathFile(io, ".", &project_buf);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, project_buf[0..project_len]);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    const agent_id = try agents.register("edit-atomic-security");
+
+    const result = try edit_mod.applyEdit(io, testing.allocator, &store, &agents, &explorer, .{
+        .path = "src/main.zig",
+        .agent_id = agent_id,
+        .op = .replace,
+        .range = .{ 1, 1 },
+        .content = "after",
+    });
+    defer if (result.preview) |preview| testing.allocator.free(preview);
+    defer if (result.health) |health| testing.allocator.free(health);
+
+    const edited = try project.dir.readFileAlloc(io, "src/main.zig", testing.allocator, .limited(1024));
+    defer testing.allocator.free(edited);
+    try testing.expectEqualStrings("after", edited);
+    const outside_after = try outside.dir.readFileAlloc(io, "victim.txt", testing.allocator, .limited(1024));
+    defer testing.allocator.free(outside_after);
+    try testing.expectEqualStrings(outside_original, outside_after);
+    const temp_stat = try project.dir.statFile(io, "src/main.zig.codedb_tmp", .{ .follow_symlinks = false });
+    try testing.expectEqual(std.Io.File.Kind.sym_link, temp_stat.kind);
+}
+
 // ── Tier-1 linter registry + session policy (trial/graph-based-codedb) ────
 
 fn argsHaveFileToken(args: []const []const u8) bool {

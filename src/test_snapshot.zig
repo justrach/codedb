@@ -155,17 +155,14 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
 
     const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/test.snapshot", .{dir_path});
     defer testing.allocator.free(snap_path);
-    const file_abs = try std.fmt.allocPrint(testing.allocator, "{s}/stale.zig", .{dir_path});
-    defer testing.allocator.free(file_abs);
-
     // Step 1: write file with old content, index it, write snapshot.
     try tmp.dir.writeFile(io, .{ .sub_path = "stale.zig", .data = "pub fn oldFunc() void {}" });
     {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
         var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-        try exp.indexFile(file_abs, "pub fn oldFunc() void {}");
-        try snapshot_mod.writeSnapshot(io, &exp, ".", snap_path, arena.allocator());
+        try exp.indexFile("stale.zig", "pub fn oldFunc() void {}");
+        try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, arena.allocator());
     }
 
     // Step 2: modify file AFTER snapshot creation (simulating uncommitted working tree change).
@@ -183,7 +180,7 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
 
-    const loaded = snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store2, arena2.allocator());
+    const loaded = snapshot_mod.loadSnapshotValidated(io, snap_path, dir_path, &exp2, &store2, arena2.allocator());
     try testing.expect(loaded);
 
     // Step 4: after the fix, loadSnapshot should detect that the disk file's
@@ -200,6 +197,153 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
         testing.allocator.free(results);
     }
     try testing.expect(results.len == 1);
+}
+
+test "snapshot freshness never follows a file symlink outside the project" {
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+    try project.dir.createDirPath(io, "src");
+    const old_content = "pub const SAFE_SNAPSHOT_CONTENT = true;\n";
+    const outside_content = "pub const OUTSIDE_FRESHNESS_SECRET = true;\n";
+    try project.dir.writeFile(io, .{ .sub_path = "src/item.zig", .data = old_content });
+    try outside.dir.writeFile(io, .{ .sub_path = "secret.zig", .data = outside_content });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try project.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/safe.codedb", .{root});
+    defer testing.allocator.free(snap_path);
+    var source = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer source.deinit();
+    try source.indexFile("src/item.zig", old_content);
+    try snapshot_mod.writeSnapshot(io, &source, root, snap_path, testing.allocator);
+
+    cio.sleepMs(10);
+    try project.dir.deleteFile(io, "src/item.zig");
+    var outside_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_len = try outside.dir.realPathFile(io, "secret.zig", &outside_buf);
+    var src_dir = try project.dir.openDir(io, "src", .{});
+    defer src_dir.close(io);
+    src_dir.symLink(io, outside_buf[0..outside_len], "item.zig", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var restored = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer restored.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try testing.expect(snapshot_mod.loadSnapshotValidated(io, snap_path, root, &restored, &store, testing.allocator));
+    const got = restored.contents.get("src/item.zig") orelse return error.MissingContent;
+    try testing.expectEqualStrings(old_content, got);
+    try testing.expect(std.mem.indexOf(u8, got, "OUTSIDE_FRESHNESS_SECRET") == null);
+}
+
+test "snapshot writer uses one validated source set for every section" {
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+    try project.dir.createDir(io, ".engram", .default_dir);
+    try project.dir.writeFile(io, .{ .sub_path = "safe.zig", .data = "pub const SAFE_ONLY = true;\n" });
+    try project.dir.writeFile(io, .{ .sub_path = ".engram/secret.zig", .data = "pub const INTERNAL_SECRET = true;\n" });
+    try outside.dir.writeFile(io, .{ .sub_path = "outside.zig", .data = "pub const OUTSIDE_SECRET = true;\n" });
+
+    var outside_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_len = try outside.dir.realPathFile(io, "outside.zig", &outside_buf);
+    project.dir.symLink(io, outside_buf[0..outside_len], "outside_alias.zig", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    try project.dir.symLink(io, ".engram/secret.zig", "artifact_alias.zig", .{});
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try project.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/validated.codedb", .{root});
+    defer testing.allocator.free(snap_path);
+
+    var source = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer source.deinit();
+    try source.indexFile("safe.zig", "pub const SAFE_ONLY = true;\n");
+    try source.indexFile("outside_alias.zig", "pub const OUTSIDE_SECRET = true;\n");
+    try source.indexFile("artifact_alias.zig", "pub const INTERNAL_SECRET = true;\n");
+    try snapshot_mod.writeSnapshot(io, &source, root, snap_path, testing.allocator);
+
+    const tree = (try snapshot_mod.readSectionBytes(io, snap_path, .tree, testing.allocator)).?;
+    defer testing.allocator.free(tree);
+    const content = (try snapshot_mod.readSectionBytes(io, snap_path, .content, testing.allocator)).?;
+    defer testing.allocator.free(content);
+    try testing.expect(std.mem.indexOf(u8, tree, "safe.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, tree, "outside_alias.zig") == null);
+    try testing.expect(std.mem.indexOf(u8, tree, "artifact_alias.zig") == null);
+    try testing.expect(std.mem.indexOf(u8, content, "SAFE_ONLY") != null);
+    try testing.expect(std.mem.indexOf(u8, content, "OUTSIDE_SECRET") == null);
+    try testing.expect(std.mem.indexOf(u8, content, "INTERNAL_SECRET") == null);
+}
+
+test "snapshot writer serializes live disk bytes instead of stale cached content" {
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    const old_content = "pub const SNAPSHOT_VALUE = 111;\n";
+    const new_content = "pub const SNAPSHOT_VALUE = 222;\n";
+    try testing.expectEqual(old_content.len, new_content.len);
+    try project.dir.writeFile(io, .{ .sub_path = "value.zig", .data = old_content });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try project.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/live.codedb", .{root});
+    defer testing.allocator.free(snap_path);
+
+    var source = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer source.deinit();
+    try source.indexFile("value.zig", old_content);
+    try project.dir.writeFile(io, .{ .sub_path = "value.zig", .data = new_content });
+    try snapshot_mod.writeSnapshot(io, &source, root, snap_path, testing.allocator);
+
+    const content = (try snapshot_mod.readSectionBytes(io, snap_path, .content, testing.allocator)).?;
+    defer testing.allocator.free(content);
+    try testing.expect(std.mem.indexOf(u8, content, new_content) != null);
+    try testing.expect(std.mem.indexOf(u8, content, old_content) == null);
+}
+
+test "mmap snapshot restore grows content slots instead of evicting borrowed files" {
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try project.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/bulk.codedb", .{root});
+    defer testing.allocator.free(snap_path);
+
+    var source = Explorer.init(testing.allocator, 8);
+    defer source.deinit();
+    try project.dir.createDirPath(io, "bulk");
+    for (0..64) |i| {
+        var path_buf: [64]u8 = undefined;
+        var content_buf: [96]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "bulk/file-{d}.zig", .{i});
+        const content = try std.fmt.bufPrint(&content_buf, "pub const bulk_value_{d} = {d};\n", .{ i, i });
+        try project.dir.writeFile(io, .{ .sub_path = path, .data = content });
+        try source.indexFileOutlineOnly(path, content);
+    }
+    try snapshot_mod.writeSnapshot(io, &source, root, snap_path, testing.allocator);
+
+    var restored = Explorer.init(testing.allocator, 8);
+    defer restored.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try testing.expect(snapshot_mod.loadSnapshotValidated(io, snap_path, root, &restored, &store, testing.allocator));
+    if (restored.content_section_maps.items.len == 0) return error.SkipZigTest;
+    const stats = restored.contents.stats();
+    try testing.expect(stats.capacity >= 256);
+    try testing.expectEqual(@as(u64, 0), stats.evictions);
+    try testing.expectEqual(@as(u32, 64), stats.count);
+    try testing.expect(restored.contents.get("bulk/file-0.zig") != null);
+    try testing.expect(restored.contents.get("bulk/file-63.zig") != null);
 }
 
 test "issue-46: empty-repo snapshot rejected on load" {
@@ -496,16 +640,16 @@ test "snapshot: parallel freshness load re-indexes changed files, restores the r
 
     const total = snapshot_mod.FRESHNESS_PARALLEL_THRESHOLD + 32;
 
-    // Build `total` files on disk, indexing each by ABSOLUTE path so the load's
-    // cwd-relative statFile resolves them regardless of the test's working dir.
+    // Build `total` project-relative files; the validated loader resolves them
+    // through `dir_path` and refuses symlink escapes.
     var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    const abs_paths = try aa.alloc([]const u8, total);
+    const rel_paths = try aa.alloc([]const u8, total);
     for (0..total) |i| {
         const rel = try std.fmt.allocPrint(aa, "f{d}.zig", .{i});
         const content = try std.fmt.allocPrint(aa, "pub fn oldfn_{d}() void {{}}\n", .{i});
         try tmp.dir.writeFile(io, .{ .sub_path = rel, .data = content });
-        abs_paths[i] = try std.fmt.allocPrint(aa, "{s}/{s}", .{ dir_path, rel });
-        try exp.indexFileOutlineOnly(abs_paths[i], content);
+        rel_paths[i] = rel;
+        try exp.indexFileOutlineOnly(rel, content);
     }
 
     const snap_path = try std.fmt.allocPrint(aa, "{s}/parallel.codedb", .{dir_path});
@@ -527,7 +671,7 @@ test "snapshot: parallel freshness load re-indexes changed files, restores the r
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
-    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &exp2, &store, arena2.allocator()));
+    try testing.expect(snapshot_mod.loadSnapshotValidated(io, snap_path, dir_path, &exp2, &store, arena2.allocator()));
     try testing.expectEqual(total, exp2.outlines.count());
 
     var is_changed: [total]bool = @splat(false);
@@ -539,10 +683,10 @@ test "snapshot: parallel freshness load re-indexes changed files, restores the r
     // all outlines present; 0/25 repro in isolation) — on failure, dump which
     // file and what state survived so the next occurrence localizes the branch.
     for (0..total) |i| {
-        const cached = exp2.contents.get(abs_paths[i]) orelse {
+        const cached = exp2.contents.get(rel_paths[i]) orelse {
             std.debug.print(
                 "MissingContent: i={d} changed={} outline_present={} contents_cached={d}/{d}\n",
-                .{ i, is_changed[i], exp2.outlines.contains(abs_paths[i]), exp2.contents.len(), total },
+                .{ i, is_changed[i], exp2.outlines.contains(rel_paths[i]), exp2.contents.len(), total },
             );
             return error.MissingContent;
         };
@@ -609,6 +753,70 @@ test "snapshot: writer streams uncached file contents for large repos" {
     try testing.expectEqual(@as(usize, 1), hits.len);
     try testing.expectEqualStrings("src/file_1001.zig", loaded.word_index.hitPath(hits[0]));
     try testing.expect(loaded.wordIndexIsComplete());
+}
+
+test "snapshot: tree and outline state stream within bounded scratch memory" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    // Make OUTLINE_STATE larger than the allocator passed to writeSnapshot.
+    // The explorer and generated source deliberately use testing.allocator;
+    // only snapshot scratch allocations are bounded below.
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    const writer = cio.listWriter(&source, testing.allocator);
+    const long_suffix: [192]u8 = @splat('x');
+    for (0..600) |i| {
+        try writer.print("pub fn streamed_{d}_{s}() void {{}}\n", .{ i, &long_suffix });
+    }
+
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer exp.deinit();
+    try exp.indexFileOutlineOnly("huge_symbols.zig", source.items);
+    const outline = exp.outlines.get("huge_symbols.zig") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 600), outline.symbols.items.len);
+
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/streamed-sections.codedb", .{root});
+    defer testing.allocator.free(snap_path);
+
+    var scratch: [96 * 1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    try snapshot_mod.writeSnapshot(io, &exp, root, snap_path, fba.allocator());
+
+    const outline_bytes = try snapshot_mod.readSectionBytes(io, snap_path, .outline_state, testing.allocator) orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(outline_bytes);
+    try testing.expect(outline_bytes.len > scratch.len);
+}
+
+test "snapshot: failed streamed write removes its partial temp file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer exp.deinit();
+    try exp.indexFile("only.zig", "pub fn only() void {}\n");
+
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/must-not-exist.codedb", .{root});
+    defer testing.allocator.free(snap_path);
+
+    // allocPrint(tmp_path) succeeds, then the first section-buffer allocation
+    // fails after createFile. The error path must close and unlink the unique
+    // partial file rather than leaking it beside the intended snapshot.
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
+    try testing.expectError(error.OutOfMemory, snapshot_mod.writeSnapshot(io, &exp, root, snap_path, failing.allocator()));
+
+    var iter_dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer iter_dir.close(io);
+    var iter = iter_dir.iterate();
+    try testing.expect((try iter.next(io)) == null);
 }
 
 test "issue-220: partial word index state rebuilds before search" {
@@ -1009,20 +1217,24 @@ test "issue-528: isSensitivePath parity between snapshot.zig and watcher.zig" {
     // one path but not the other.
     const cases = [_][]const u8{
         // secrets — both copies must block
-        ".env",                         ".env.local",         ".env.production",
-        ".env.development",             ".env.staging",       ".env.test",
-        ".dev.vars",                    ".npmrc",             ".pypirc",
-        ".netrc",                       "credentials.json",   "service-account.json",
-        "secrets.json",                 "secrets.yaml",       "secrets.yml",
-        "id_rsa",                       "id_ed25519",         "server.key",
-        "cert.pem",                     "keystore.jks",       "identity.pfx",
-        "bundle.p12",                   "config/.env.local",  "a/b/secrets.yaml",
-        "deep/nested/.ssh/known_hosts", ".gnupg/secring.gpg", "x/.aws/credentials",
+        ".env",                         ".env.local",               ".env.production",
+        ".env.development",             ".env.staging",             ".env.test",
+        ".dev.vars",                    ".npmrc",                   ".pypirc",
+        ".netrc",                       "credentials.json",         "service-account.json",
+        "secrets.json",                 "secrets.yaml",             "secrets.yml",
+        "id_rsa",                       "id_ed25519",               "server.key",
+        "cert.pem",                     "keystore.jks",             "identity.pfx",
+        "bundle.p12",                   "config/.env.local",        "a/b/secrets.yaml",
+        "deep/nested/.ssh/known_hosts", ".gnupg/secring.gpg",       "x/.aws/credentials",
+        ".engram/traces.json",          "work/.graff/copy.zig",     ".harness/settings.json",
+        "runs/last.session.json",       "logs/harness.trace.jsonl",
         // non-secrets — both copies must allow (esp. the .env-prefix edge cases)
-        ".envoy.json",                  ".environment",       ".envrc",
-        ".envconfig.yaml",              "main.zig",           "src/server.zig",
-        "README.md",                    "package.json",       "id_rsa.pub",
-        "envvars.ts",                   "Makefile",           "Dockerfile",
+        ".envoy.json",
+        ".environment",                 ".envrc",                   ".envconfig.yaml",
+        "main.zig",                     "src/server.zig",           "README.md",
+        "package.json",                 "id_rsa.pub",               "envvars.ts",
+        "Makefile",                     "Dockerfile",               ".codex/config.toml",
+        ".engrammatic/file.zig",        "tools/graffiti/file.zig",
     };
     for (cases) |p| {
         try testing.expectEqual(watcher.isSensitivePath(p), snapshot_mod.isSensitivePath(p));
@@ -1037,6 +1249,124 @@ test "issue-528: isSensitivePath parity between snapshot.zig and watcher.zig" {
     try testing.expect(!snapshot_mod.isSensitivePath(".environment"));
     try testing.expect(!snapshot_mod.isSensitivePath("main.zig"));
     try testing.expect(!snapshot_mod.isSensitivePath("package.json"));
+}
+
+test "snapshot omits generated agent artifacts but preserves project Codex files" {
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer exp.deinit();
+
+    const File = struct { path: []const u8, body: []const u8 };
+    const files = [_]File{
+        .{ .path = "src/keep.zig", .body = "pub const KEEP_SOURCE_MARKER = true;\n" },
+        .{ .path = ".codex/hooks/keep.zig", .body = "pub const KEEP_CODEX_MARKER = true;\n" },
+        .{ .path = ".engram/traces.json", .body = "ENGRAM_SECRET_MARKER" },
+        .{ .path = ".graff/worktrees/copy.zig", .body = "GRAFF_SECRET_MARKER" },
+        .{ .path = ".harness/settings.json", .body = "HARNESS_SECRET_MARKER" },
+        .{ .path = "runs/last.session.json", .body = "SESSION_SECRET_MARKER" },
+        .{ .path = "logs/harness.trace.jsonl", .body = "TRACE_SECRET_MARKER" },
+    };
+    for (files) |item| try exp.indexFile(item.path, item.body);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const root = path_buf[0..root_len];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/artifact-policy.codedb", .{root});
+    defer testing.allocator.free(snap_path);
+    try snapshot_mod.writeSnapshot(io, &exp, root, snap_path, testing.allocator);
+
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, snap_path, testing.allocator, .limited(1024 * 1024));
+    defer testing.allocator.free(bytes);
+    try testing.expect(std.mem.indexOf(u8, bytes, "src/keep.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, bytes, "KEEP_SOURCE_MARKER") != null);
+    try testing.expect(std.mem.indexOf(u8, bytes, ".codex/hooks/keep.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, bytes, "KEEP_CODEX_MARKER") != null);
+
+    const excluded = [_][]const u8{
+        ".engram/traces.json",       "ENGRAM_SECRET_MARKER",
+        ".graff/worktrees/copy.zig", "GRAFF_SECRET_MARKER",
+        ".harness/settings.json",    "HARNESS_SECRET_MARKER",
+        "runs/last.session.json",    "SESSION_SECRET_MARKER",
+        "logs/harness.trace.jsonl",  "TRACE_SECRET_MARKER",
+    };
+    for (excluded) |needle| try testing.expect(std.mem.indexOf(u8, bytes, needle) == null);
+}
+
+test "snapshot rejects a pre-artifact-policy format version" {
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer exp.deinit();
+    try exp.indexFile("src/current.zig", "pub fn currentSnapshot() void {}\n");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const root = path_buf[0..root_len];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/old-version.codedb", .{root});
+    defer testing.allocator.free(snap_path);
+    try snapshot_mod.writeSnapshot(io, &exp, root, snap_path, testing.allocator);
+
+    var sections = (try snapshot_mod.readSections(io, snap_path, testing.allocator)) orelse return error.MissingSections;
+    sections.deinit();
+    {
+        const file = try std.Io.Dir.cwd().openFile(io, snap_path, .{ .mode = .read_write });
+        defer file.close(io);
+        var old_version: [2]u8 = undefined;
+        std.mem.writeInt(u16, &old_version, 2, .little);
+        try file.writePositionalAll(io, &old_version, 4);
+    }
+    try testing.expect((try snapshot_mod.readSections(io, snap_path, testing.allocator)) == null);
+
+    var restored = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer restored.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try testing.expect(!snapshot_mod.loadSnapshot(io, snap_path, &restored, &store, testing.allocator));
+    try testing.expectEqual(@as(usize, 0), restored.outlines.count());
+}
+
+test "snapshot rejects crafted sensitive and traversal records before indexing" {
+    const safe_path = "src/keepx.zig";
+    const unsafe_paths = [_][]const u8{ ".engram/a.zig", "../secret.zig" };
+    for (unsafe_paths) |unsafe_path| {
+        try testing.expectEqual(safe_path.len, unsafe_path.len);
+        var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+        defer exp.deinit();
+        try exp.indexFile(safe_path, "pub const CRAFTED_SNAPSHOT_MARKER = true;\n");
+
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const root_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+        const root = path_buf[0..root_len];
+        const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/crafted.codedb", .{root});
+        defer testing.allocator.free(snap_path);
+        try snapshot_mod.writeSnapshot(io, &exp, root, snap_path, testing.allocator);
+
+        // Replace every serialized occurrence without changing section lengths,
+        // leaving a structurally valid current-format cache with a hostile path.
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, snap_path, testing.allocator, .limited(1024 * 1024));
+        defer testing.allocator.free(bytes);
+        const file = try std.Io.Dir.cwd().openFile(io, snap_path, .{ .mode = .read_write });
+        defer file.close(io);
+        var cursor: usize = 0;
+        var replaced: usize = 0;
+        while (std.mem.indexOfPos(u8, bytes, cursor, safe_path)) |at| {
+            try file.writePositionalAll(io, unsafe_path, at);
+            cursor = at + safe_path.len;
+            replaced += 1;
+        }
+        try testing.expect(replaced >= 2); // OUTLINE_STATE + CONTENT (and usually TREE)
+
+        var restored = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+        defer restored.deinit();
+        var store = Store.init(testing.allocator);
+        defer store.deinit();
+        try testing.expect(!snapshot_mod.loadSnapshotValidated(io, snap_path, root, &restored, &store, testing.allocator));
+        try testing.expectEqual(@as(usize, 0), restored.outlines.count());
+        try testing.expect(store.getLatest(unsafe_path) == null);
+    }
 }
 
 test "issue-528: codedb_edit applies via a per-session agent id (not the first/__filesystem__ agent)" {

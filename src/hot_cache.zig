@@ -11,8 +11,9 @@ const AtomicCounter = if (builtin.cpu.arch == .wasm32) u32 else u64;
 /// that aliases externally-owned memory (e.g. a retained mmap of the snapshot
 /// content section): `value_owned=false` so it is never freed by the cache —
 /// the borrowed bytes must outlive the cache (the Explorer munmaps at deinit).
-/// Zero dynamic allocation past init (for owned-value puts; borrowed puts don't
-/// allocate the value at all).
+/// No slot-array allocation past init unless `ensureCapacity` is explicitly
+/// used before a bulk restore. Owned puts still allocate their key/value and
+/// borrowed puts allocate only their key.
 pub const ContentCache = struct {
     slots: []Slot,
     capacity: u32,
@@ -121,6 +122,51 @@ pub const ContentCache = struct {
             }
         }
         self.allocator.free(self.slots);
+    }
+
+    /// Grow and rehash the slot table without duplicating or freeing any stored
+    /// keys/values. Bulk snapshot restore uses this before inserting mmap-backed
+    /// values so a project larger than the daemon's small default cache does not
+    /// immediately evict zero-copy content and fall back to disk on searches.
+    pub fn ensureCapacity(self: *ContentCache, min_capacity: u32) !void {
+        if (min_capacity <= self.capacity) return;
+
+        var candidate_capacity = @max(min_capacity, self.capacity *| 2);
+        while (true) {
+            const candidate = try self.allocator.alloc(Slot, candidate_capacity);
+            @memset(candidate, empty_slot);
+            var complete = true;
+
+            for (self.slots) |slot| {
+                if (!slot.present) continue;
+                const base = @as(u32, @truncate(slot.key_hash)) % candidate_capacity;
+                var placed = false;
+                var probe: u32 = 0;
+                while (probe < PROBE_LIMIT) : (probe += 1) {
+                    const idx = (base +% probe) % candidate_capacity;
+                    if (!candidate[idx].present) {
+                        candidate[idx] = slot;
+                        placed = true;
+                        break;
+                    }
+                }
+                if (!placed) {
+                    complete = false;
+                    break;
+                }
+            }
+
+            if (complete) {
+                self.allocator.free(self.slots);
+                self.slots = candidate;
+                self.capacity = candidate_capacity;
+                self.sweep_hand = 0;
+                return;
+            }
+            self.allocator.free(candidate);
+            if (candidate_capacity > std.math.maxInt(u32) / 2) return error.CapacityOverflow;
+            candidate_capacity *= 2;
+        }
     }
 
     pub const ValueRef = struct {
@@ -489,6 +535,27 @@ test "ContentCache: putBorrowed is zero-copy and never frees the value" {
     // remove frees the owned key but must leave the borrowed value alone.
     cache.remove("k");
     try std.testing.expect(cache.get("k") == null);
+}
+
+test "ContentCache: ensureCapacity preserves entries and prevents bulk borrowed eviction" {
+    var cache = try ContentCache.initAlloc(std.testing.allocator, 16);
+    defer cache.deinit();
+
+    try cache.put("owned", "value");
+    const borrowed: []const u8 = "mmap-backed";
+    try cache.putBorrowed("borrowed", borrowed);
+    try cache.ensureCapacity(512);
+    try std.testing.expectEqual(@as(u32, 512), cache.stats().capacity);
+    try std.testing.expectEqualStrings("value", cache.get("owned").?);
+    try std.testing.expectEqual(borrowed.ptr, cache.get("borrowed").?.ptr);
+
+    var key_buf: [32]u8 = undefined;
+    for (0..100) |i| {
+        const key = try std.fmt.bufPrint(&key_buf, "snapshot-{d}.zig", .{i});
+        try cache.putBorrowed(key, borrowed);
+    }
+    try std.testing.expectEqual(@as(u64, 0), cache.stats().evictions);
+    try std.testing.expectEqual(@as(u32, 102), cache.len());
 }
 
 test "ContentCache: mixed owned/borrowed — transitions and eviction free correctly" {

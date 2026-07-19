@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ContentCache = @import("hot_cache.zig").ContentCache;
 const cio = @import("cio.zig");
 const Store = @import("store.zig").Store;
@@ -187,7 +188,12 @@ fn readIndexableFile(
             std.log.warn("codedb: not indexing {s} ({d} bytes > {d} cap) — reachable only via codedb_read", .{ path, size, max_indexed_file_bytes });
         return null;
     }
-    const content = try dir.readFileAlloc(io, path, alloc, .limited(max_indexed_file_bytes));
+    const content = dir.readFileAlloc(io, path, alloc, .limited(max_indexed_file_bytes)) catch |err| switch (err) {
+        // The file may grow after the walker's stat. Keep the hard cap without
+        // turning that ordinary scan race into a whole-scan failure.
+        error.StreamTooLong => return null,
+        else => return err,
+    };
     // Skip binary content (null byte within the first 512 bytes).
     const check_len = @min(content.len, 512);
     if (std.mem.indexOfScalar(u8, content[0..check_len], 0) != null) {
@@ -196,10 +202,26 @@ fn readIndexableFile(
     }
     return content;
 }
+
+/// The walker's stat is authoritative for the common path. Re-stat only files
+/// that were initially over the index cap so a concurrent shrink can make them
+/// eligible, preserving the old stat-at-read behavior without paying a syscall
+/// for every normal file. A concurrent growth is still bounded by readFileAlloc.
+fn scanEntrySize(io: std.Io, dir: std.Io.Dir, entry: InitialScanEntry) u64 {
+    if (entry.size <= max_indexed_file_bytes) return entry.size;
+    const stat = dir.statFile(io, entry.path, .{}) catch return entry.size;
+    return stat.size;
+}
 const skip_dirs = [_][]const u8{
     ".git",
     ".claude",
     ".codedb",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".engram",
+    ".graff",
+    ".harness",
     "node_modules",
     ".zig-cache",
     "zig-out",
@@ -425,6 +447,19 @@ const FilteredWalker = struct {
                 if (entry.kind != .file) {
                     if (entry.kind != .sym_link) continue;
                     const target_stat = top.dir_handle.statFile(self.io, entry.name, .{}) catch continue;
+                    // A symlink is only indexable when its resolved target is
+                    // inside this project and independently passes the same
+                    // exclusion policy. Checking only the alias path can leak
+                    // an outside file or re-enter `.git`/agent state through a
+                    // harmless-looking name.
+                    var rt_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    const rt_len = top.dir_handle.realPathFile(self.io, entry.name, &rt_buf) catch continue;
+                    const real_target = rt_buf[0..rt_len];
+                    if (self.real_root.len == 0) continue;
+                    if (!std.mem.startsWith(u8, real_target, self.real_root)) continue;
+                    if (real_target.len != self.real_root.len and real_target[self.real_root.len] != '/') continue;
+                    const target_rel = std.mem.trimStart(u8, real_target[self.real_root.len..], "/");
+                    if (target_rel.len > 0 and shouldSkipFile(target_rel)) continue;
                     if (target_stat.kind == .directory) {
                         if (shouldSkipDir(entry.name)) continue;
                         if (self.ignore_patterns.items.len > 0) {
@@ -435,12 +470,6 @@ const FilteredWalker = struct {
                                 entry.name;
                             if (self.isIgnored(entry.name, check_path)) continue;
                         }
-                        var rt_buf: [std.fs.max_path_bytes]u8 = undefined;
-                        const rt_len = top.dir_handle.realPathFile(self.io, entry.name, &rt_buf) catch continue;
-                        const real_target = rt_buf[0..rt_len];
-                        if (self.real_root.len == 0) continue;
-                        if (!std.mem.startsWith(u8, real_target, self.real_root)) continue;
-                        if (real_target.len != self.real_root.len and real_target[self.real_root.len] != '/') continue;
                         const gop = self.visited_real_paths.getOrPut(self.allocator, real_target) catch continue;
                         if (gop.found_existing) continue;
                         const dup = self.allocator.dupe(u8, real_target) catch {
@@ -533,6 +562,9 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
     const max_trigram_files = trigramFileCap();
     // Paths collected serially first (via FilteredWalker, pure walk no stats).
     while (try walker.next()) |entry| {
+        // Filter before stat/store bookkeeping so excluded files never enter
+        // the version ledger or consume the trigram-file budget.
+        if (shouldSkipFile(entry.path)) continue;
         try entries.append(allocator, .{
             .path = try allocator.dupe(u8, entry.path),
             .size = 0,
@@ -611,7 +643,7 @@ fn parseInitialScanEntry(
     parse_alloc: std.mem.Allocator,
 ) !?ParsedScanFile {
     if (shouldSkipFile(entry.path)) return null;
-    const content = (try readIndexableFile(io, dir, entry.path, content_alloc, entry.size, true)) orelse return null;
+    const content = (try readIndexableFile(io, dir, entry.path, content_alloc, scanEntrySize(io, dir, entry), true)) orelse return null;
     errdefer content_alloc.free(content);
     // Threshold for including a file in the trigram index. Bumped from 64KB to
     // 1MB after the search-shootout bench (issue: large code files like
@@ -663,7 +695,8 @@ fn parseInitialScanWorkerEntry(
 }
 
 fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry, word_shard: ?*WordIndex, trigram_shard: ?*TrigramIndex) void {
-    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch {
+    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch |err| {
+        results.word_index_error = err;
         for (0..entries.len) |index| results.publish(io, index, null);
         return;
     };
@@ -905,7 +938,7 @@ fn readAndBuildTrigramShardWorker(io: std.Io, shard: *TrigramIndex, root: []cons
     local.ensureTotalCapacity(4096) catch {};
     for (entries) |entry| {
         if (shouldSkipFile(entry.path)) continue;
-        const content = (readIndexableFile(io, dir, entry.path, std.heap.c_allocator, entry.size, false) catch continue) orelse continue;
+        const content = (readIndexableFile(io, dir, entry.path, std.heap.c_allocator, scanEntrySize(io, dir, entry), false) catch continue) orelse continue;
         defer std.heap.c_allocator.free(content);
         if (content.len > max_trigram_file_bytes) continue;
         local.clearRetainingCapacity();
@@ -1247,6 +1280,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
         var walker = FilteredWalker.init(io, dir, tmp) catch return;
         defer walker.deinit();
         while (walker.next() catch null) |entry| {
+            if (shouldSkipFile(entry.path)) continue;
             const stat = dir.statFile(io, entry.path, .{}) catch continue;
             const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
             const duped = backing.dupe(u8, entry.path) catch continue;
@@ -1320,6 +1354,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
             const max_trigram_files = trigramFileCap();
             var file_count: usize = 0;
             while (walker.next() catch null) |entry| {
+                if (shouldSkipFile(entry.path)) continue;
                 const stat = dir.statFile(io, entry.path, .{}) catch continue;
                 _ = store.recordSnapshot(entry.path, stat.size, 0) catch {};
                 file_count += 1;
@@ -1396,6 +1431,10 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
     defer walker.deinit();
 
     while (try walker.next()) |entry| {
+        // Filter before Store/known bookkeeping, not only before parsing. This
+        // keeps generated agent sessions and other excluded files out of the
+        // version ledger, event stream, and trigram-cap accounting too.
+        if (shouldSkipFile(entry.path)) continue;
         const stat = dir.statFile(io, entry.path, .{}) catch continue;
         const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
 
@@ -1480,6 +1519,9 @@ const skip_extensions = [_][]const u8{
 };
 
 fn shouldSkipFile(path: []const u8) bool {
+    // The recursive walker prunes these directories, but notify/incremental
+    // entry points can receive an arbitrary relative path directly.
+    if (shouldSkip(path)) return true;
     for (skip_extensions) |ext| {
         if (std.mem.endsWith(u8, path, ext)) return true;
     }
@@ -1497,9 +1539,115 @@ pub fn isSensitivePath(path: []const u8) bool {
     return @import("snapshot.zig").isSensitivePath(path);
 }
 
+test "agent artifacts are skipped at every direct file ingress" {
+    const testing = std.testing;
+
+    try testing.expect(shouldSkipFile(".engram/traces.json"));
+    try testing.expect(shouldSkipFile("work/.graff/worktrees/copy.zig"));
+    try testing.expect(shouldSkipFile(".harness/settings.json"));
+    try testing.expect(shouldSkipFile("runs/last.session.json"));
+    try testing.expect(shouldSkipFile("logs/harness.trace.jsonl"));
+
+    // Project-authored Codex files and lookalike names remain searchable.
+    try testing.expect(!shouldSkipFile(".codex/hooks/keep.zig"));
+    try testing.expect(!shouldSkipFile(".engrammatic/keep.zig"));
+    try testing.expect(!shouldSkipFile("tools/graffiti/keep.zig"));
+}
+
+test "initial scan excludes agent artifacts from explorer and version ledger" {
+    const testing = std.testing;
+    const test_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dirs = [_][]const u8{
+        "src",          ".codex/hooks", ".engram", ".graff/worktrees", ".harness",
+        ".engrammatic",
+    };
+    for (dirs) |dir_name| try tmp.dir.createDirPath(test_io, dir_name);
+
+    const File = struct { path: []const u8, body: []const u8 };
+    const files = [_]File{
+        .{ .path = "src/keep.zig", .body = "pub fn keepSource() void {}\n" },
+        .{ .path = ".codex/hooks/keep.zig", .body = "pub fn keepCodexHook() void {}\n" },
+        .{ .path = ".engrammatic/keep.zig", .body = "pub fn keepLookalike() void {}\n" },
+        .{ .path = ".engram/traces.json", .body = "{\"secret\":\"ENGRAM_MARKER\"}\n" },
+        .{ .path = ".graff/worktrees/copy.zig", .body = "pub fn duplicatedWorktree() void {}\n" },
+        .{ .path = ".harness/settings.json", .body = "{\"prompt\":\"HARNESS_MARKER\"}\n" },
+        .{ .path = "last.session.json", .body = "{\"tool_result\":\"SESSION_MARKER\"}\n" },
+        .{ .path = "harness.trace.jsonl", .body = "{\"output\":\"TRACE_MARKER\"}\n" },
+    };
+    for (files) |item| try tmp.dir.writeFile(test_io, .{ .sub_path = item.path, .data = item.body });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(test_io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try initialScanWithWorkerCount(test_io, &store, &explorer, root, testing.allocator, false, 1);
+
+    const kept = [_][]const u8{ "src/keep.zig", ".codex/hooks/keep.zig", ".engrammatic/keep.zig" };
+    for (kept) |path| {
+        try testing.expect(explorer.outlines.contains(path));
+        try testing.expect(store.getLatest(path) != null);
+    }
+    const excluded = [_][]const u8{
+        ".engram/traces.json", ".graff/worktrees/copy.zig", ".harness/settings.json",
+        "last.session.json",   "harness.trace.jsonl",
+    };
+    for (excluded) |path| {
+        try testing.expect(!explorer.outlines.contains(path));
+        try testing.expect(store.getLatest(path) == null);
+    }
+}
+
+test "initial scan rechecks files that shrink below the size cap" {
+    const testing = std.testing;
+    const test_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var file = try tmp.dir.createFile(test_io, "shrunk.zig", .{});
+    try file.setLength(test_io, max_indexed_file_bytes + 1);
+    file.close(test_io);
+
+    const path = try testing.allocator.dupe(u8, "shrunk.zig");
+    defer testing.allocator.free(path);
+    const entry = InitialScanEntry{
+        .path = path,
+        .size = max_indexed_file_bytes + 1,
+        .stat_succeeded = true,
+        .skip_trigram = true,
+    };
+
+    const small = "pub fn nowIndexable() void {}\n";
+    try tmp.dir.writeFile(test_io, .{ .sub_path = entry.path, .data = small });
+    try testing.expectEqual(@as(u64, small.len), scanEntrySize(test_io, tmp.dir, entry));
+}
+
+test "initial scan skips files that grow beyond the size cap" {
+    const testing = std.testing;
+    const test_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var file = try tmp.dir.createFile(test_io, "grown.zig", .{});
+    try file.setLength(test_io, max_indexed_file_bytes + 1);
+    file.close(test_io);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const content = try readIndexableFile(test_io, tmp.dir, "grown.zig", arena.allocator(), 1, false);
+    try testing.expect(content == null);
+}
+
 fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
     _ = allocator;
     if (shouldSkipFile(path)) return;
+    if (!resolvedIndexPathIsSafe(io, dir, path)) return;
     const stat = try dir.statFile(io, path, .{});
     // Use page_allocator arena for content — pages returned to OS immediately
     // via munmap on deinit, eliminating GPA page retention from content churn.
@@ -1509,17 +1657,58 @@ fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []co
     try indexContentBuffer(explorer, path, content, skip_trigram);
 }
 
+/// Incremental and notify paths receive names rather than iterator entries,
+/// so independently resolve them before every read. This rejects aliases that
+/// leave the project and aliases whose in-project target is excluded.
+fn resolvedIndexPathIsSafe(io: std.Io, dir: std.Io.Dir, path: []const u8) bool {
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = dir.realPathFile(io, ".", &root_buf) catch return false;
+    const root = root_buf[0..root_len];
+    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_len = dir.realPathFile(io, path, &target_buf) catch return false;
+    const target = target_buf[0..target_len];
+    if (target.len <= root.len or !std.mem.startsWith(u8, target, root) or target[root.len] != '/') return false;
+    return !shouldSkipFile(target[root.len + 1 ..]);
+}
+
 // ── muonry interop ───────────────────────────────────────────────────────────
 //
 // muonry appends changed file paths to /tmp/codedb-notify after each edit.
 // We drain this file on every poll cycle and re-index the listed files
 // immediately, eliminating the 2s polling delay for muonry-sourced edits.
 
+/// Convert a global notify-file entry to a project-relative path without ever
+/// permitting a prefix collision (`/repo-other`), traversal, or foreign
+/// absolute path. The returned slice aliases `path`.
+fn relativeNotifyPath(path: []const u8, root: []const u8) ?[]const u8 {
+    if (path.len == 0 or root.len == 0) return null;
+    const rel = if (std.fs.path.isAbsolute(path)) blk: {
+        if (std.mem.eql(u8, root, "/")) {
+            break :blk std.mem.trimStart(u8, path, "/");
+        }
+        if (path.len <= root.len or !std.mem.startsWith(u8, path, root) or path[root.len] != '/') return null;
+        break :blk path[root.len + 1 ..];
+    } else path;
+    if (rel.len == 0 or rel[0] == '/' or std.mem.indexOfScalar(u8, rel, '\\') != null) return null;
+
+    var components = std.mem.splitScalar(u8, rel, '/');
+    while (components.next()) |component| {
+        if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return null;
+    }
+    return rel;
+}
+
 fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, alloc: std.mem.Allocator) void {
     // Atomically read + truncate
     const notify_path = "/tmp/codedb-notify";
-    const file = std.Io.Dir.cwd().openFile(io, notify_path, .{ .mode = .read_write }) catch return;
+    const file = std.Io.Dir.cwd().openFile(io, notify_path, .{
+        .mode = .read_write,
+        .allow_directory = false,
+        .follow_symlinks = false,
+    }) catch return;
     defer file.close(io);
+    const notify_stat = file.stat(io) catch return;
+    if (notify_stat.kind != .file or notify_stat.nlink != 1 or !notifyFileOwnedByCurrentUser(file)) return;
 
     const file_len = file.length(io) catch return;
     if (file_len == 0) return;
@@ -1543,11 +1732,9 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
         const path = std.mem.trim(u8, line, " \t\r");
         if (path.len == 0) continue;
 
-        // Make path relative to root if it's absolute
-        const rel = if (std.mem.startsWith(u8, path, root))
-            std.mem.trimStart(u8, path[root.len..], "/")
-        else
-            path;
+        const rel = relativeNotifyPath(path, root) orelse continue;
+        if (shouldSkipFile(rel)) continue;
+        if (!resolvedIndexPathIsSafe(io, dir, rel)) continue;
 
         // Skip re-indexing if file hasn't changed since last known state (#228)
         const stat = dir.statFile(io, rel, .{}) catch continue;
@@ -1573,4 +1760,54 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
             _ = queue.push(ev);
         }
     }
+}
+
+/// The notify file lives in a shared directory. `O_NOFOLLOW` plus the single
+/// link requirement prevents symlink/hardlink truncation; the ownership check
+/// also prevents another local user from feeding paths to this process.
+fn notifyFileOwnedByCurrentUser(file: std.Io.File) bool {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return true;
+    var stat: std.c.Stat = undefined;
+    if (std.c.fstat(file.handle, &stat) != 0) return false;
+    return stat.uid == std.c.geteuid();
+}
+
+test "global notify paths cannot escape or cross project roots" {
+    const testing = std.testing;
+    try testing.expectEqualStrings("src/main.zig", relativeNotifyPath("/workspace/repo/src/main.zig", "/workspace/repo").?);
+    try testing.expectEqualStrings("src/main.zig", relativeNotifyPath("src/main.zig", "/workspace/repo").?);
+
+    try testing.expect(relativeNotifyPath("/workspace/repo-other/src/main.zig", "/workspace/repo") == null);
+    try testing.expect(relativeNotifyPath("/workspace/other/src/main.zig", "/workspace/repo") == null);
+    try testing.expect(relativeNotifyPath("/workspace/repo", "/workspace/repo") == null);
+    try testing.expect(relativeNotifyPath("../outside.zig", "/workspace/repo") == null);
+    try testing.expect(relativeNotifyPath("src/../../outside.zig", "/workspace/repo") == null);
+    try testing.expect(relativeNotifyPath("/workspace/repo/../outside.zig", "/workspace/repo") == null);
+    try testing.expect(relativeNotifyPath("src\\..\\outside.zig", "/workspace/repo") == null);
+}
+
+test "incremental paths reject outside and excluded symlink targets" {
+    const testing = std.testing;
+    const test_io = testing.io;
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+
+    try project.dir.createDir(test_io, ".engram", .default_dir);
+    try project.dir.writeFile(test_io, .{ .sub_path = "ok.zig", .data = "pub const ok = true;\n" });
+    try project.dir.writeFile(test_io, .{ .sub_path = ".engram/secret.zig", .data = "pub const secret = true;\n" });
+    try outside.dir.writeFile(test_io, .{ .sub_path = "outside.zig", .data = "pub const outside = true;\n" });
+
+    var outside_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_len = try outside.dir.realPathFile(test_io, "outside.zig", &outside_buf);
+    project.dir.symLink(test_io, outside_buf[0..outside_len], "outside_alias.zig", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    try project.dir.symLink(test_io, ".engram/secret.zig", "artifact_alias.zig", .{});
+
+    try testing.expect(resolvedIndexPathIsSafe(test_io, project.dir, "ok.zig"));
+    try testing.expect(!resolvedIndexPathIsSafe(test_io, project.dir, "outside_alias.zig"));
+    try testing.expect(!resolvedIndexPathIsSafe(test_io, project.dir, "artifact_alias.zig"));
 }

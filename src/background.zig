@@ -37,7 +37,9 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     const disk_hdr = TrigramIndex.readDiskHeader(io, data_dir, allocator) catch null;
     const heads_match = blk: {
         const a = git_head orelse break :blk false;
-        const b = (disk_hdr orelse break :blk false).git_head orelse break :blk false;
+        const hdr = disk_hdr orelse break :blk false;
+        if (hdr.format_version != TrigramIndex.FORMAT_VERSION) break :blk false;
+        const b = hdr.git_head orelse break :blk false;
         break :blk std.mem.eql(u8, &a, &b);
     };
 
@@ -218,7 +220,7 @@ pub fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8)
         ctx.scan_thread = scan_thread;
     } else {
         const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - ctx.startup_t0, 0));
-        loadTrigramFromDiskIfPresent(ctx.io, ctx.explorer, data_dir, ctx.allocator);
+        loadTrigramFromDiskIfPresent(ctx.io, ctx.explorer, data_dir, git_head, ctx.allocator);
         ctx.telem.recordCodebaseStats(ctx.explorer, startup_time_ms);
         compactMcpReadyMemory(ctx.io, ctx.explorer, data_dir, git_head, ctx.allocator);
         mcp_server.setScanState(.ready);

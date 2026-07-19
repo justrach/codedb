@@ -59,49 +59,75 @@ inline fn isIdentChar(c: u8) bool {
 /// in a function body. The identifier immediately preceding an unmatched `(` is
 /// the candidate callee (`obj.foo(` yields `foo`; `a[i](` yields nothing). Items
 /// are slices into `body`; caller frees the returned array.
+pub const CalleeIterator = struct {
+    allocator: std.mem.Allocator,
+    body: []const u8,
+    search_from: usize = 0,
+    seen: std.StringHashMap(void),
+
+    pub fn init(allocator: std.mem.Allocator, body: []const u8) CalleeIterator {
+        return .{ .allocator = allocator, .body = body, .seen = std.StringHashMap(void).init(allocator) };
+    }
+
+    pub fn deinit(self: *CalleeIterator) void {
+        self.seen.deinit();
+    }
+
+    /// Yield deduped call identifiers in source order. The cursor is lazy so a
+    /// consumer with a result cap can stop without scanning the unused tail.
+    pub fn next(self: *CalleeIterator) !?[]const u8 {
+        while (self.search_from < self.body.len) {
+            const i = self.search_from;
+            const c = self.body[i];
+            self.search_from = i + 1;
+            // Skip line comments, block comments, and string/char literals so an identifier
+            // mentioned only inside one is not mistaken for a call site (#548 family).
+            if (c == '/' and i + 1 < self.body.len and self.body[i + 1] == '/') {
+                var end = i + 2;
+                while (end < self.body.len and self.body[end] != '\n') end += 1;
+                self.search_from = if (end < self.body.len) end + 1 else self.body.len;
+                continue;
+            }
+            if (c == '/' and i + 1 < self.body.len and self.body[i + 1] == '*') {
+                var end = i + 2;
+                while (end + 1 < self.body.len and !(self.body[end] == '*' and self.body[end + 1] == '/')) end += 1;
+                self.search_from = if (end + 1 < self.body.len) end + 2 else self.body.len;
+                continue;
+            }
+            if (c == '"' or c == '\'') {
+                var end_quote = i + 1;
+                while (end_quote < self.body.len and self.body[end_quote] != c) {
+                    if (self.body[end_quote] == '\\' and end_quote + 1 < self.body.len) end_quote += 1; // skip an escaped char
+                    end_quote += 1;
+                }
+                self.search_from = if (end_quote < self.body.len) end_quote + 1 else self.body.len;
+                continue;
+            }
+            if (c != '(') continue;
+            // Skip spaces/tabs between the identifier and the '('.
+            var end = i;
+            while (end > 0 and (self.body[end - 1] == ' ' or self.body[end - 1] == '\t')) end -= 1;
+            // Walk back over identifier characters.
+            var start = end;
+            while (start > 0 and isIdentChar(self.body[start - 1])) start -= 1;
+            if (start == end) continue; // nothing before '(' (e.g. `(expr)`, `)(`)
+            const name = self.body[start..end];
+            if (!isIdentStart(name[0])) continue; // started on a digit → not an ident
+            if (isCallKeyword(name)) continue;
+            const g = try self.seen.getOrPut(name);
+            if (!g.found_existing) return name;
+        }
+        return null;
+    }
+};
+
 pub fn extractCallees(allocator: std.mem.Allocator, body: []const u8) ![][]const u8 {
-    var seen = std.StringHashMap(void).init(allocator);
-    defer seen.deinit();
+    var iter = CalleeIterator.init(allocator, body);
+    defer iter.deinit();
     var out: std.ArrayList([]const u8) = .empty;
     errdefer out.deinit(allocator);
-
-    var i: usize = 0;
-    while (i < body.len) : (i += 1) {
-        const c = body[i];
-        // Skip line comments, block comments, and string/char literals so an identifier
-        // mentioned only inside one is not mistaken for a call site (#548 family).
-        if (c == '/' and i + 1 < body.len and body[i + 1] == '/') {
-            i += 2;
-            while (i < body.len and body[i] != '\n') i += 1;
-            continue;
-        }
-        if (c == '/' and i + 1 < body.len and body[i + 1] == '*') {
-            i += 2;
-            while (i + 1 < body.len and !(body[i] == '*' and body[i + 1] == '/')) i += 1;
-            i += 1; // land on '/' of '*/'; the loop's i += 1 then moves past it
-            continue;
-        }
-        if (c == '"' or c == '\'') {
-            i += 1;
-            while (i < body.len and body[i] != c) {
-                if (body[i] == '\\') i += 1; // skip an escaped char
-                i += 1;
-            }
-            continue;
-        }
-        if (c != '(') continue;
-        // Skip spaces/tabs between the identifier and the '('.
-        var end = i;
-        while (end > 0 and (body[end - 1] == ' ' or body[end - 1] == '\t')) end -= 1;
-        // Walk back over identifier characters.
-        var start = end;
-        while (start > 0 and isIdentChar(body[start - 1])) start -= 1;
-        if (start == end) continue; // nothing before '(' (e.g. `(expr)`, `)(`)
-        const name = body[start..end];
-        if (!isIdentStart(name[0])) continue; // started on a digit → not an ident
-        if (isCallKeyword(name)) continue;
-        const g = try seen.getOrPut(name);
-        if (!g.found_existing) try out.append(allocator, name);
+    while (try iter.next()) |name| {
+        try out.append(allocator, name);
     }
     return out.toOwnedSlice(allocator);
 }

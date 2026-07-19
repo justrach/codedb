@@ -307,13 +307,14 @@ pub fn runCliDaemon(ctx: *RunCtx) !void {
     // Warm the word index + result caches in the background so the first
     // proxied CLI queries hit a fully warm explorer (the daemon used to
     // stay lean and charge the first `word`/`context` query the rebuild).
-    spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
+    const warmup_thread = spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
 
     // Block here until idle (or a bind-race shutdown). On return the process
     // exits immediately — std.process.exit reclaims everything and avoids
     // racing the detached listener thread against freed explorer/store.
     const idle_exit = cliIdleWatchdog(&shutdown, &last_activity_ms, idle_ms);
     shutdown.store(true, .release);
+    if (warmup_thread) |t| t.join();
     // If WE owned the socket (exited on idle, not a bind-race loss), unlink
     // it on the way out. The listener thread's own `defer unlink` never runs
     // because std.process.exit kills it mid-accept; do it here so we don't
@@ -356,10 +357,16 @@ pub fn runServe(ctx: *RunCtx) !void {
     defer allocator.destroy(queue);
     queue.* = watcher.EventQueue{};
     const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_already_done });
-    defer watch_thread.join();
+    defer {
+        shutdown.store(true, .release);
+        watch_thread.join();
+    }
 
     const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
-    defer reap_thread.join();
+    defer {
+        shutdown.store(true, .release);
+        reap_thread.join();
+    }
 
     std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
 
@@ -377,7 +384,11 @@ pub fn runServe(ctx: *RunCtx) !void {
     } else |err| {
         std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
     }
-    spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
+    const warmup_thread = spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
+    defer {
+        shutdown.store(true, .release);
+        if (warmup_thread) |t| t.join();
+    }
     try server.serve(io, allocator, store, &agents, explorer, queue, port);
 }
 
@@ -459,7 +470,7 @@ pub fn runMcp(ctx: *RunCtx) !void {
             scan_thread = try std.Thread.spawn(.{}, scanBg, .{ io, store, explorer, root, allocator, &scan_done, &shutdown, data_dir, abs_root, &telem, startup_t0 });
         } else {
             const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - startup_t0, 0));
-            loadTrigramFromDiskIfPresent(io, explorer, data_dir, allocator);
+            loadTrigramFromDiskIfPresent(io, explorer, data_dir, git_head, allocator);
             telem.recordCodebaseStats(explorer, startup_time_ms);
             compactMcpReadyMemory(io, explorer, data_dir, git_head, allocator);
             mcp_server.setScanState(.ready);
@@ -485,10 +496,11 @@ pub fn runMcp(ctx: *RunCtx) !void {
     } else |err| {
         std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
     }
-    spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
+    const warmup_thread = spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
     mcp_server.run(io, allocator, store, explorer, &agents, abs_root, cfg.max_cached, &telem, maybe_deferred, &shutdown);
 
     shutdown.store(true, .release);
+    if (warmup_thread) |t| t.join();
     if (scan_thread) |st| st.join();
     if (maybe_deferred) |d| {
         if (d.scan_thread) |st| st.join();

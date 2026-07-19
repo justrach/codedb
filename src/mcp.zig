@@ -27,6 +27,7 @@ const telemetry_mod = @import("telemetry.zig");
 const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
 const release_info = @import("release_info.zig");
+const project_fs = @import("project_fs.zig");
 pub const DeferredScan = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -217,7 +218,7 @@ fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]
     return std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch null;
 }
 
-fn loadProjectTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
+pub fn loadProjectTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
     explorer.mu.lockShared();
     const disk_backed = explorer.trigram_index != .heap;
     const heap_files = explorer.trigram_index.fileCount();
@@ -230,6 +231,20 @@ fn loadProjectTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_
     const data_dir = getProjectDataDir(allocator, project_path) orelse return;
     defer allocator.free(data_dir);
 
+    const header = idx.TrigramIndex.readDiskHeader(io, data_dir, allocator) catch null orelse return;
+    if (header.format_version != idx.TrigramIndex.FORMAT_VERSION) return;
+    if (@as(usize, header.file_count) > total_files) return;
+
+    // Tool-time retries make a cache that appeared after startup self-healing,
+    // so admission must be stricter than the old one-shot best effort.
+    const current_git_head = git_mod.getGitHead(project_path, allocator) catch null;
+    const heads_match = blk: {
+        if (current_git_head == null and header.git_head == null) break :blk true;
+        if (current_git_head == null or header.git_head == null) break :blk false;
+        break :blk std.mem.eql(u8, &current_git_head.?, &header.git_head.?);
+    };
+    if (!heads_match) return;
+
     if (idx.MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
         explorer.adoptTrigramBase(loaded);
     } else if (heap_files == 0) {
@@ -240,6 +255,8 @@ fn loadProjectTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_
 }
 
 fn loadProjectWordIndexFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
+    explorer.lockWordIndexBuild();
+    defer explorer.unlockWordIndexBuild();
     if (!explorer.wordIndexCanLoadFromDisk()) return;
 
     const data_dir = getProjectDataDir(allocator, project_path) orelse {
@@ -273,7 +290,7 @@ fn loadProjectWordIndexFromDiskIfPresent(io: std.Io, explorer: *Explorer, projec
     }
 
     if (idx.WordIndex.mmapFromDisk(io, data_dir, allocator) orelse idx.WordIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
-        explorer.replaceWordIndex(loaded);
+        _ = explorer.tryReplaceWordIndexFromDisk(loaded);
     } else {
         explorer.disableWordIndexDiskLoad();
     }
@@ -424,14 +441,14 @@ const ProjectCache = struct {
             return error.PathTooLong;
         };
 
-        if (!snapshot_mod.loadSnapshot(io, snap_path, &new_entry.explorer, &new_entry.store, self.alloc)) {
+        if (!snapshot_mod.loadSnapshotValidated(io, snap_path, p, &new_entry.explorer, &new_entry.store, self.alloc)) {
             // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
             const hash = std.hash.Wyhash.hash(0, p);
             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
             const loaded_central = blk: {
                 const home = cio.homeDir() orelse break :blk false;
                 const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
-                break :blk snapshot_mod.loadSnapshot(io, central, &new_entry.explorer, &new_entry.store, self.alloc);
+                break :blk snapshot_mod.loadSnapshotValidated(io, central, p, &new_entry.explorer, &new_entry.store, self.alloc);
             };
             if (!loaded_central) {
                 new_entry.store.deinit();
@@ -450,7 +467,7 @@ const ProjectCache = struct {
         // Release raw file contents retained by the snapshot load — outlines,
         // trigram index, and word index are sufficient for all query tools.
         const fc = new_entry.explorer.outlines.count();
-        if (fc > 1000) {
+        if (fc > 1000 and (new_entry.explorer.hasCompleteTrigramCoverage() or cio.posixGetenv("CODEDB_LOW_MEMORY") != null)) {
             new_entry.explorer.releaseContents();
             new_entry.explorer.releaseSecondaryIndexes();
         }
@@ -576,30 +593,42 @@ pub const BenchContext = struct {
         dispatch(io, alloc, tool, args, &out, store, explorer, agents, &self.cache, null, 1);
         const elapsed = cio.nanoTimestamp() - t0;
 
+        // Repository paths/content and tool arguments are untrusted terminal
+        // data. Never let them carry OSC/CSI/control sequences into a client,
+        // even when human-facing color is explicitly enabled for our own UI.
+        stripTerminalControlsInPlace(&out);
+
         const is_error = std.mem.startsWith(u8, out.items, "error:");
         telem.recordToolCall(name, elapsed, is_error, out.items.len);
 
+        const lean = !mcpEmitRichBlocks(null) or (tool == .codedb_context and getInt(args, "max_tokens") != null);
         var summary: std.ArrayList(u8) = .empty;
         defer summary.deinit(alloc);
-        summary.ensureTotalCapacity(alloc, 256) catch {};
-        summary.appendSlice(alloc, if (is_error) MCP_RED ++ MCP_CROSS ++ " " ++ MCP_RESET else MCP_GREEN ++ MCP_CHECK ++ " " ++ MCP_RESET) catch {};
-        summary.appendSlice(alloc, mcpToolIcon(name)) catch {};
-        mcpGenerateSummary(alloc, name, args, out.items, is_error, &summary);
-
-        // Normalize only the nondeterministic duration. Everything else in the
-        // client-visible MCP envelope participates in response parity.
         var parity_summary: std.ArrayList(u8) = .empty;
         defer parity_summary.deinit(alloc);
-        parity_summary.appendSlice(alloc, summary.items) catch {};
-        var parity_dur_buf: [96]u8 = undefined;
-        parity_summary.appendSlice(alloc, mcpFormatDuration(&parity_dur_buf, 0)) catch {};
+        if (!lean) {
+            summary.ensureTotalCapacity(alloc, 256) catch {};
+            summary.appendSlice(alloc, if (is_error) MCP_RED ++ MCP_CROSS ++ " " ++ MCP_RESET else MCP_GREEN ++ MCP_CHECK ++ " " ++ MCP_RESET) catch {};
+            summary.appendSlice(alloc, mcpToolIcon(name)) catch {};
+            mcpGenerateSummary(alloc, name, args, out.items, is_error, &summary);
 
-        var dur_buf: [96]u8 = undefined;
-        summary.appendSlice(alloc, mcpFormatDuration(&dur_buf, elapsed)) catch {};
+            // Normalize only the nondeterministic duration. Everything else in
+            // the client-visible MCP envelope participates in response parity.
+            parity_summary.appendSlice(alloc, summary.items) catch {};
+            var parity_dur_buf: [96]u8 = undefined;
+            parity_summary.appendSlice(alloc, mcpFormatDuration(&parity_dur_buf, 0)) catch {};
+
+            var dur_buf: [96]u8 = undefined;
+            summary.appendSlice(alloc, mcpFormatDuration(&dur_buf, elapsed)) catch {};
+        }
 
         var guidance: std.ArrayList(u8) = .empty;
         defer guidance.deinit(alloc);
-        mcpGenerateGuidance(alloc, name, args, out.items, is_error, &guidance);
+        if (!lean) mcpGenerateGuidance(alloc, name, args, out.items, is_error, &guidance);
+        if (!mcpAnsiMode()) {
+            stripTerminalControlsInPlace(&summary);
+            stripTerminalControlsInPlace(&guidance);
+        }
 
         var result: std.ArrayList(u8) = .empty;
         defer result.deinit(alloc);
@@ -665,13 +694,13 @@ pub const Tool = enum {
 pub const tools_list =
     \\{"tools":[
     \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_outline","description":"Replaces reading a whole file with cat/head/tail: symbol outline of one file — functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view — each symbol's declaration line with its body elided as '{ … N lines }', so a 2,000-line file collapses to ~one line per symbol.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_outline","description":"Replaces reading a whole file with cat/head/tail: symbol outline of one file — functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Results are bounded and paginated for generated or declaration-dense files. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view with bodies elided.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"max_results":{"type":"integer","description":"Symbols per page (default: 200, cap: 10000)"},"offset":{"type":"integer","description":"Symbol offset for the next page (default: 0)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_symbol","description":"Replaces grepping for a definition: PRIMARY tool for locating a definition — reach for this FIRST when you know or can guess a symbol name, instead of codedb_search. Finds symbol definitions across the index — exact name, prefix, glob pattern, fuzzy match, or kind filter. Returns file, line, kind, and score. Pass format=json for structured output.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"prefix":{"type":"string","description":"Prefix match (e.g. parse_)"},"pattern":{"type":"string","description":"Glob pattern on symbol name (e.g. *Manager)"},"kind":{"type":"string","description":"Filter by kind: function, struct, interface, class, method, enum"},"fuzzy":{"type":"boolean","description":"Fuzzy/typo-tolerant match when name is set (default: false)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"max_results":{"type":"integer","description":"Max results (default: 50, cap 200)"},"format":{"type":"string","description":"Set to json for structured JSON output"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
-    \\{"name":"codedb_word","description":"Exact-identifier lookup via inverted index — every occurrence of one word, O(1). Use for single identifiers; use codedb_search for substrings or phrases.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
+    \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with 'more: offset=N'; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return grouped path + line results without matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+    \\{"name":"codedb_word","description":"Exact-identifier lookup via inverted index — every occurrence of one word, O(1). Results are grouped by path and paginated to prevent hot identifiers from flooding context. Use for single identifiers; use codedb_search for substrings or phrases.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"max_results":{"type":"integer","description":"Occurrences per page (default: 50, cap: 1000)"},"offset":{"type":"integer","description":"Occurrence offset for the next page (default: 0)"},"all":{"type":"boolean","description":"Explicitly return every occurrence; may be very large (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
     \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
     \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Use after codedb_callers when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]}},
-    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE tight block (keywords used + symbol definitions + ranked files + top file:line snippets). Replaces 3-5 sequential search/word/symbol calls — use for first-touch orientation on a new task. For narrow follow-ups stick with codedb_search/codedb_symbol.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (~4 chars/token, min 256). Sections are packed by value — files, symbol definitions, callers, calls, snippets — and omitted ones leave a one-line marker."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]}},
+    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Replaces 3-5 sequential search/word/symbol calls — use for first-touch orientation on a new task. For narrow follow-ups stick with codedb_search/codedb_symbol.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]}},
     \\{"name":"codedb_diagnostics","description":"Fetch the latest linter diagnostics for a file, produced off the edit path (ruff/biome/etc.) after a recent codedb_edit. Call right after an edit to surface real errors the change may have introduced (undefined names, type/lint issues) on top of codedb's built-in checks. Returns 'no diagnostics available yet' when none are cached or external linters are disabled.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to fetch diagnostics for"}},"required":["path"]}},
     \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_deps","description":"Replaces grepping import lines: PRIMARY tool for impact/blast-radius — use this instead. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set transitive=true for the full BFS blast radius.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
@@ -1329,11 +1358,14 @@ fn handleCall(
     }
     if (is_notification) return;
 
-    const lean = !mcpEmitRichBlocks(client_name);
+    // Raw tool output may reflect repository filenames, source, or arguments.
+    // Sanitize it unconditionally; CODEDB_MCP_ANSI only opts into the trusted
+    // color sequences generated in summary/guidance blocks below.
+    stripTerminalControlsInPlace(&out);
+    const lean = !mcpEmitRichBlocks(client_name) or (tool == .codedb_context and getInt(args, "max_tokens") != null);
 
-    // Block 1: Human-readable colored summary (ANSI — preview pane always
-    // renders it). Skipped in lean mode (agents don't render ANSI; the
-    // summary duplicates info that's already in Block 2).
+    // Block 1: Human-readable summary. Color is opt-in; bounded context calls
+    // are always lean so summary/guidance cannot escape max_tokens.
     var summary: std.ArrayList(u8) = .empty;
     defer summary.deinit(alloc);
     if (!lean) {
@@ -1350,6 +1382,10 @@ fn handleCall(
     defer guidance.deinit(alloc);
     if (!lean) {
         mcpGenerateGuidance(alloc, name, args, out.items, is_error, &guidance);
+    }
+    if (!mcpAnsiMode()) {
+        stripTerminalControlsInPlace(&summary);
+        stripTerminalControlsInPlace(&guidance);
     }
 
     // Assemble MCP content envelope (1 block in lean mode, up to 3 otherwise).
@@ -1460,7 +1496,13 @@ fn dispatch(
     }
 
     if (toolDependsOnScannedIndex(tool) and project_path == null) {
-        waitForScanReady(scan_wait_timeout_ms);
+        // Context should not confidently compose over an empty/partial index,
+        // but a full two-second cold wait is too expensive for first touch.
+        waitForScanReady(if (tool == .codedb_context) @min(scan_wait_timeout_ms, 250) else scan_wait_timeout_ms);
+    }
+
+    if (toolUsesTrigram(tool)) {
+        loadProjectTrigramFromDiskIfPresent(io, ctx.explorer, project_path orelse cache.default_path, alloc);
     }
     // Mutations must not race the cold-scan shard publication: a worker shard
     // represents the file contents observed at scan start and is merged as one
@@ -1516,6 +1558,12 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
     const state = getScanState();
     if (state == .ready) return;
     if (!toolDependsOnScannedIndex(tool)) return;
+    if (tool == .codedb_context) {
+        out.appendSlice(alloc, "\nnote: scan still in progress (state=") catch return;
+        out.appendSlice(alloc, state.name()) catch return;
+        out.appendSlice(alloc, "); context is partial — retry shortly") catch return;
+        return;
+    }
     const looks_empty =
         std.mem.indexOf(u8, out.items, "0 results for ") != null or
         std.mem.indexOf(u8, out.items, "0 hits for ") != null or
@@ -1529,7 +1577,14 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
 
 fn toolDependsOnScannedIndex(tool: Tool) bool {
     return switch (tool) {
-        .codedb_search, .codedb_word, .codedb_callers, .codedb_callpath, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => true,
+        .codedb_search, .codedb_word, .codedb_callers, .codedb_callpath, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps, .codedb_context => true,
+        else => false,
+    };
+}
+
+fn toolUsesTrigram(tool: Tool) bool {
+    return switch (tool) {
+        .codedb_search, .codedb_callers, .codedb_context, .codedb_query => true,
         else => false,
     };
 }
@@ -1550,22 +1605,50 @@ fn handleOutline(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     };
     const compact = getBool(args, "compact");
     const skeleton = getBool(args, "skeleton");
-    const found = if (skeleton)
-        explorer.renderSkeleton(path, alloc, out) catch {
+    if (getInt(args, "max_results")) |n| {
+        if (n <= 0) {
+            const w = cio.listWriter(out, alloc);
+            w.print("error: max_results ({d}) must be >= 1", .{n}) catch {};
+            return;
+        }
+    }
+    if (getInt(args, "offset")) |n| {
+        if (n < 0) {
+            const w = cio.listWriter(out, alloc);
+            w.print("error: offset ({d}) must be >= 0", .{n}) catch {};
+            return;
+        }
+    }
+    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@min(n, 10_000)) else 200;
+    const offset: usize = if (getInt(args, "offset")) |n| @intCast(@min(n, 1_000_000)) else 0;
+    const page = if (skeleton)
+        explorer.renderSkeletonPage(path, alloc, out, offset, max_results) catch {
             out.appendSlice(alloc, "error: outline retrieval failed") catch {};
             return;
         }
     else
-        explorer.renderOutline(path, alloc, out, compact) catch {
+        explorer.renderOutlinePage(path, alloc, out, compact, offset, max_results) catch {
             out.appendSlice(alloc, "error: outline retrieval failed") catch {};
             return;
         };
-    if (!found) {
+    if (page == null) {
         out.appendSlice(alloc, "error: file not indexed: ") catch {};
         out.appendSlice(alloc, path) catch {};
         appendFuzzyPathSuggestions(alloc, out, explorer, path);
         out.appendSlice(alloc, "\nhint: try codedb_index if the file was added recently\n") catch {};
         return;
+    }
+    const p = page.?;
+    if (p.start > 0 or p.end < p.total) {
+        const w = cio.listWriter(out, alloc);
+        w.print("showing symbols {d}-{d} of {d}\n", .{
+            if (p.start < p.end) p.start + 1 else 0,
+            if (p.start < p.end) p.end else 0,
+            p.total,
+        }) catch {};
+        if (p.end < p.total) {
+            w.print("more: {d} symbols; offset={d}\n", .{ p.total - p.end, p.end }) catch {};
+        }
     }
 }
 
@@ -1807,6 +1890,38 @@ fn appendMatchLine(w: anytype, prefix: []const u8, path: []const u8, line_num: u
     }
 }
 
+fn ensureGroupedSearchPath(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    current_path: *?[]const u8,
+    path: []const u8,
+) void {
+    if (current_path.*) |current| {
+        if (std.mem.eql(u8, current, path)) return;
+    }
+    const w = cio.listWriter(out, alloc);
+    w.print("  {s}:\n", .{path}) catch {};
+    current_path.* = path;
+}
+
+fn appendGroupedMatchLineNoNL(w: anytype, line_num: u32, line_text: []const u8) void {
+    const trimmed = trimMatchText(line_text);
+    if (trimmed.truncated) {
+        w.print("    {d}: {s}…", .{ line_num, trimmed.text }) catch {};
+    } else {
+        w.print("    {d}: {s}", .{ line_num, trimmed.text }) catch {};
+    }
+}
+
+fn appendGroupedMatchLine(w: anytype, line_num: u32, line_text: ?[]const u8) void {
+    if (line_text) |text| {
+        appendGroupedMatchLineNoNL(w, line_num, text);
+        w.writeByte('\n') catch {};
+    } else {
+        w.print("    {d}\n", .{line_num}) catch {};
+    }
+}
+
 fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const query = getStr(args, "query") orelse {
         out.appendSlice(alloc, "error: missing 'query' argument") catch {};
@@ -1883,16 +1998,18 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
 
         const w = cio.listWriter(out, alloc);
         w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
+        var current_path: ?[]const u8 = null;
         for (results) |r| {
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+            ensureGroupedSearchPath(alloc, out, &current_path, r.path);
             if (paths_only) {
-                appendMatchLine(w, "  ", r.path, r.line_num, null);
+                appendGroupedMatchLine(w, r.line_num, null);
             } else if (r.scope_name) |sn| {
-                appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+                appendGroupedMatchLineNoNL(w, r.line_num, r.line_text);
                 w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
             } else {
-                appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
+                appendGroupedMatchLine(w, r.line_num, r.line_text);
             }
         }
     } else if (scope) {
@@ -1925,6 +2042,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         defer file_counts.deinit();
         const max_per_file: u8 = 5;
         var shown: usize = 0;
+        var current_path: ?[]const u8 = null;
         for (results) |r| {
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
@@ -1933,17 +2051,19 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             gop.value_ptr.* += 1;
             if (gop.value_ptr.* > max_per_file) {
                 if (gop.value_ptr.* == max_per_file + 1) {
-                    w.print("  {s} ... (more matches truncated)\n", .{r.path}) catch {};
+                    ensureGroupedSearchPath(alloc, out, &current_path, r.path);
+                    w.print("    ... (more matches truncated)\n", .{}) catch {};
                 }
                 continue;
             }
+            ensureGroupedSearchPath(alloc, out, &current_path, r.path);
             if (paths_only) {
-                appendMatchLine(w, "  ", r.path, r.line_num, null);
+                appendGroupedMatchLine(w, r.line_num, null);
             } else if (r.scope_name) |sn| {
-                appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+                appendGroupedMatchLineNoNL(w, r.line_num, r.line_text);
                 w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
             } else {
-                appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
+                appendGroupedMatchLine(w, r.line_num, r.line_text);
             }
             shown += 1;
         }
@@ -1982,6 +2102,7 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         defer file_counts.deinit();
         const max_per_file: u8 = 5;
         var shown: usize = 0;
+        var current_path: ?[]const u8 = null;
         for (results) |r| {
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
@@ -1990,18 +2111,20 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             gop.value_ptr.* += 1;
             if (gop.value_ptr.* > max_per_file) {
                 if (gop.value_ptr.* == max_per_file + 1) {
-                    w.print("  {s}: ... (more matches truncated)\n", .{r.path}) catch {};
+                    ensureGroupedSearchPath(alloc, out, &current_path, r.path);
+                    w.print("    ... (more matches truncated)\n", .{}) catch {};
                 }
                 continue;
             }
-            appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
+            ensureGroupedSearchPath(alloc, out, &current_path, r.path);
+            appendGroupedMatchLine(w, r.line_num, if (paths_only) null else r.line_text);
             shown += 1;
         }
         if (shown < visible_total) {
             w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
         }
     } else {
-        if (path_glob == null and !compact) {
+        if (path_glob == null and !compact and offset_n == 0) {
             const rendered = explorer.renderPlainSearch(query, alloc, out, max_results, paths_only) catch {
                 out.appendSlice(alloc, "error: search failed") catch {};
                 return;
@@ -2088,15 +2211,13 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         out.ensureUnusedCapacity(alloc, 2048) catch {};
         const w = cio.listWriter(out, alloc);
         w.print("{d} results for '{s}':\n", .{ visible_total, query }) catch {};
-        if (has_more) {
-            w.print("  (more results — codedb_search query='{s}' offset={d} for the next page)\n", .{ query, page_hi }) catch {};
-        }
         if (simple_unfiltered and results.len <= 64) {
             const CountEntry = struct { path: []const u8, count: u8 };
             var counts: [64]CountEntry = undefined;
             var counts_len: usize = 0;
             const max_per_file: u8 = 5;
             var shown: usize = 0;
+            var current_path: ?[]const u8 = null;
             for (results) |r| {
                 var idx_opt: ?usize = null;
                 for (counts[0..counts_len], 0..) |entry, idx_i| {
@@ -2113,22 +2234,26 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
                 counts[count_idx].count += 1;
                 if (counts[count_idx].count > max_per_file) {
                     if (counts[count_idx].count == max_per_file + 1) {
-                        w.print("  {s}: ... (more matches truncated)\n", .{r.path}) catch {};
+                        ensureGroupedSearchPath(alloc, out, &current_path, r.path);
+                        w.print("    ... (more matches truncated)\n", .{}) catch {};
                     }
                     continue;
                 }
-                appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
+                ensureGroupedSearchPath(alloc, out, &current_path, r.path);
+                appendGroupedMatchLine(w, r.line_num, if (paths_only) null else r.line_text);
                 shown += 1;
             }
             if (shown < visible_total) {
                 w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
             }
+            if (has_more) w.print("more: offset={d}\n", .{page_hi}) catch {};
             return;
         }
         var file_counts = std.StringHashMap(u8).init(alloc);
         defer file_counts.deinit();
         const max_per_file: u8 = 5;
         var shown: usize = 0;
+        var current_path: ?[]const u8 = null;
         for (results) |r| {
             if (path_glob) |g| if (!globMatch(g, r.path)) continue;
             if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
@@ -2137,16 +2262,19 @@ fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             gop.value_ptr.* += 1;
             if (gop.value_ptr.* > max_per_file) {
                 if (gop.value_ptr.* == max_per_file + 1) {
-                    w.print("  {s}: ... (more matches truncated)\n", .{r.path}) catch {};
+                    ensureGroupedSearchPath(alloc, out, &current_path, r.path);
+                    w.print("    ... (more matches truncated)\n", .{}) catch {};
                 }
                 continue;
             }
-            appendMatchLine(w, "  ", r.path, r.line_num, if (paths_only) null else r.line_text);
+            ensureGroupedSearchPath(alloc, out, &current_path, r.path);
+            appendGroupedMatchLine(w, r.line_num, if (paths_only) null else r.line_text);
             shown += 1;
         }
         if (shown < visible_total) {
             w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, visible_total - shown }) catch {};
         }
+        if (has_more) w.print("more: offset={d}\n", .{page_hi}) catch {};
     }
 }
 
@@ -2156,7 +2284,13 @@ fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
         appendBundleArgKeysDiagnostic(alloc, out, args);
         return;
     };
-    explorer.renderWord(word, alloc, out) catch {
+    if (word.len == 0 or word.len > 256) {
+        out.appendSlice(alloc, "error: word must be 1-256 bytes") catch {};
+        return;
+    }
+    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@min(@max(1, n), 1000)) else 50;
+    const offset: usize = if (getInt(args, "offset")) |n| @intCast(@max(0, n)) else 0;
+    explorer.renderWord(word, alloc, out, max_results, offset, getBool(args, "all")) catch {
         out.appendSlice(alloc, "error: word search failed") catch {};
         return;
     };
@@ -2316,6 +2450,13 @@ fn langHasCallSites(lang: explore_mod.Language) bool {
     };
 }
 
+fn langHasReferenceSites(lang: explore_mod.Language) bool {
+    return switch (lang) {
+        .markdown, .json, .yaml, .unknown => false,
+        else => true,
+    };
+}
+
 // ── codedb_context ──────────────────────────────────────────────────────────
 // Task-shaped composer. Takes a natural-language task, extracts candidate
 // identifiers (camelCase / snake_case / "quoted strings"), and returns ONE
@@ -2364,6 +2505,9 @@ fn looksLikeContextIdentifier(tok: []const u8) bool {
 // the first 1–2 high-quality identifiers. End-to-end this drops
 // codedb_context from ~330µs → ~220µs on the standard bench task.
 const CONTEXT_MAX_CANDIDATES: usize = 3;
+// Fallback shares the same hard cap. Five broad nouns measurably inflated
+// natural-language responses and often displaced the task's real anchor.
+const CONTEXT_MAX_FALLBACK_CANDIDATES: usize = CONTEXT_MAX_CANDIDATES;
 // 20 was the original tier-search cap, but only CONTEXT_TOP_LINES_PER_FILE
 // (3) hits per file are ever kept after ranking — every additional result
 // is wasted work in search-content + per-file map churn. Empirically 8
@@ -2372,13 +2516,118 @@ const CONTEXT_MAX_RESULTS_PER_KW: usize = 8;
 const CONTEXT_TOP_FILES: usize = 5;
 const CONTEXT_TOP_LINES_PER_FILE: usize = 3;
 
+fn isContextTestPath(path: []const u8) bool {
+    return std.mem.startsWith(u8, path, "tests/") or
+        std.mem.startsWith(u8, path, "test/") or
+        std.mem.indexOf(u8, path, "/test") != null or
+        std.mem.indexOf(u8, path, "_test.") != null or
+        std.mem.indexOf(u8, path, ".test.") != null or
+        std.mem.indexOf(u8, path, "/__tests__/") != null or
+        std.mem.indexOf(u8, path, "/spec/") != null or
+        std.mem.indexOf(u8, path, "/fixtures/") != null;
+}
+
+fn appendContextCandidate(
+    candidate: []const u8,
+    alloc: std.mem.Allocator,
+    seen: *std.StringHashMap(void),
+    out: *std.ArrayList([]const u8),
+) bool {
+    if (candidate.len < 3 or candidate.len > 64 or seen.contains(candidate)) return false;
+    seen.put(candidate, {}) catch return false;
+    out.append(alloc, candidate) catch return false;
+    return true;
+}
+
+/// Backticks frequently contain an expression rather than one identifier
+/// (`@app.route('/foo')`, `Regex::new(pattern)`, `c.JSON(...)`). Searching the
+/// whole expression produces no definition and wastes one of only three
+/// candidates. Pick its most definition-shaped identifier instead.
+fn appendContextCodeCandidate(
+    expression: []const u8,
+    alloc: std.mem.Allocator,
+    seen: *std.StringHashMap(void),
+    out: *std.ArrayList([]const u8),
+) void {
+    var simple = expression.len >= 3 and expression.len <= 64 and isContextIdentStart(expression[0]);
+    if (simple) {
+        for (expression[1..]) |c| {
+            if (!isContextIdentCont(c)) {
+                simple = false;
+                break;
+            }
+        }
+    }
+    if (simple) {
+        _ = appendContextCandidate(expression, alloc, seen, out);
+        return;
+    }
+
+    var best: ?[]const u8 = null;
+    var best_score: i32 = -1000;
+    var i: usize = 0;
+    var quote: ?u8 = null;
+    while (i < expression.len) {
+        const c = expression[i];
+        if (quote) |q| {
+            if (c == '\\' and i + 1 < expression.len) {
+                i += 2;
+                continue;
+            }
+            if (c == q) quote = null;
+            i += 1;
+            continue;
+        }
+        if (c == '\'' or c == '"') {
+            quote = c;
+            i += 1;
+            continue;
+        }
+        if (!isContextIdentStart(c)) {
+            i += 1;
+            continue;
+        }
+
+        const start = i;
+        i += 1;
+        while (i < expression.len and isContextIdentCont(expression[i])) : (i += 1) {}
+        const tok = expression[start..i];
+        if (tok.len < 3 or tok.len > 64) continue;
+
+        var before = start;
+        while (before > 0 and std.ascii.isWhitespace(expression[before - 1])) before -= 1;
+        var after = i;
+        while (after < expression.len and std.ascii.isWhitespace(expression[after])) after += 1;
+
+        var score: i32 = 0;
+        if (before > 0 and expression[before - 1] == '.') score += 120;
+        if (before >= 2 and expression[before - 1] == ':' and expression[before - 2] == ':') score += 120;
+        if (after < expression.len and expression[after] == '(') score += 30;
+        if (looksLikeContextIdentifier(tok)) score += 50;
+        if (tok[0] >= 'A' and tok[0] <= 'Z') score += 20;
+        if (after + 1 < expression.len and expression[after] == ':' and expression[after + 1] == ':') score += 100;
+        if (std.mem.eql(u8, tok, "app") or std.mem.eql(u8, tok, "self") or
+            std.mem.eql(u8, tok, "this") or std.mem.eql(u8, tok, "ctx") or
+            std.mem.eql(u8, tok, "obj")) score -= 100;
+        if (std.mem.eql(u8, tok, "new")) score -= 60;
+
+        if (score > best_score) {
+            best = tok;
+            best_score = score;
+        }
+    }
+    if (best) |candidate| _ = appendContextCandidate(candidate, alloc, seen, out);
+}
+
 fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
     var seen = std.StringHashMap(void).init(alloc);
     defer seen.deinit();
     var i: usize = 0;
     while (i < task.len) {
         const c = task[i];
-        // Quoted strings — taken literally as identifiers.
+        // Double-quoted strings are literal search phrases. Backticks are code:
+        // keep a simple identifier, but reduce a composite expression to its
+        // most useful member/function identifier.
         if (c == '"' or c == '`') {
             const q = c;
             const start = i + 1;
@@ -2386,11 +2635,12 @@ fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *st
             while (j < task.len and task[j] != q) : (j += 1) {}
             if (j > start and j - start <= 64 and j - start >= 3) {
                 const slice = task[start..j];
-                if (!seen.contains(slice)) {
-                    seen.put(slice, {}) catch {};
-                    out.append(alloc, slice) catch {};
-                    if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
+                if (q == '`') {
+                    appendContextCodeCandidate(slice, alloc, &seen, out);
+                } else {
+                    _ = appendContextCandidate(slice, alloc, &seen, out);
                 }
+                if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
             }
             i = j + 1;
             continue;
@@ -2401,8 +2651,7 @@ fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *st
             while (i < task.len and isContextIdentCont(task[i])) : (i += 1) {}
             const tok = task[start..i];
             if (tok.len >= 3 and tok.len <= 64 and looksLikeContextIdentifier(tok) and !seen.contains(tok)) {
-                seen.put(tok, {}) catch {};
-                out.append(alloc, tok) catch {};
+                _ = appendContextCandidate(tok, alloc, &seen, out);
                 if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
             }
             continue;
@@ -2416,26 +2665,34 @@ fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *st
 // are more specific ("ranking" beats "fix") — capped like the identifier pass.
 fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
     const stop = [_][]const u8{
-        "that",   "this",   "with",    "from",    "into",      "when",   "where",
-        "what",   "which",  "then",    "them",    "they",      "have",   "will",
-        "should", "would",  "could",   "make",    "makes",     "using",  "used",
-        "does",   "like",   "also",    "than",    "each",      "more",   "most",
-        "some",   "such",   "very",    "just",    "been",      "being",  "about",
-        "after",  "before", "while",   "there",   "their",     "other",  "only",
-        "over",   "under",  "between", "improve", "implement", "ensure", "change",
-        "update",
+        "the",        "and",         "for",        "you",         "our",      "are",       "not",
+        "can",        "fix",         "that",       "this",        "with",     "from",      "into",
+        "when",       "where",       "what",       "which",       "then",     "them",      "they",
+        "have",       "will",        "should",     "would",       "could",    "make",      "makes",
+        "using",      "used",        "does",       "like",        "also",     "than",      "each",
+        "more",       "most",        "some",       "such",        "very",     "just",      "been",
+        "being",      "about",       "after",      "before",      "while",    "there",     "their",
+        "other",      "only",        "over",       "under",       "between",  "improve",   "implement",
+        "ensure",     "change",      "update",     "find",        "debug",    "reduce",    "speed",
+        "optimize",   "understand",  "preserving", "changing",    "prevent",  "handling",  "without",
+        "quality",    "usage",       "usages",     "use",         "uses",     "reference", "references",
+        "occurrence", "occurrences", "call",       "calls",       "site",     "sites",     "trace",
+        "through",    "flow",        "inspect",    "investigate", "compare",  "code",      "function",
+        "functions",  "method",      "methods",    "symbol",      "symbols",  "called",    "else",
+        "here",       "see",         "please",     "help",        "anything", "whether",   "around",
     };
     var words: std.ArrayList([]const u8) = .empty;
     defer words.deinit(alloc);
     var seen = std.StringHashMap(void).init(alloc);
     defer seen.deinit();
+    for (out.items) |existing| seen.put(existing, {}) catch {};
     var i: usize = 0;
     while (i < task.len) {
         if (isContextIdentStart(task[i])) {
             const start = i;
             while (i < task.len and isContextIdentCont(task[i])) : (i += 1) {}
             const tok = task[start..i];
-            if (tok.len >= 4 and tok.len <= 64 and !seen.contains(tok)) {
+            if (tok.len >= 3 and tok.len <= 64 and !seen.contains(tok)) {
                 var is_stop = false;
                 for (stop) |s| {
                     if (std.ascii.eqlIgnoreCase(tok, s)) {
@@ -2452,16 +2709,284 @@ fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: 
         }
         i += 1;
     }
-    std.sort.block([]const u8, words.items, {}, struct {
+    // Stable insertion sort preserves task order for equal-length nouns
+    // (`watcher` before `updates` before `results`). Lists are tiny.
+    std.sort.insertion([]const u8, words.items, {}, struct {
         pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            if (a.len != b.len) return a.len > b.len;
-            return std.mem.lessThan(u8, a, b);
+            return a.len > b.len;
         }
     }.lessThan);
     for (words.items) |w| {
         out.append(alloc, w) catch {};
-        if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
+        if (out.items.len >= CONTEXT_MAX_FALLBACK_CANDIDATES) return;
     }
+}
+
+fn isContextAcronym(candidate: []const u8) bool {
+    if (candidate.len < 2 or candidate.len > 12) return false;
+    var upper: usize = 0;
+    for (candidate) |c| {
+        if (c >= 'a' and c <= 'z') return false;
+        if (c >= 'A' and c <= 'Z') upper += 1;
+    }
+    return upper >= 2;
+}
+
+const CONTEXT_COMPACT_LINE_BYTES: usize = 384;
+const CONTEXT_COMPACT_BODY_BYTES: usize = 4096;
+const CONTEXT_BODY_CAP_MARKER = "... body byte cap reached\n";
+
+fn utf8PrefixLen(bytes: []const u8, max_len: usize) usize {
+    if (bytes.len <= max_len) return bytes.len;
+    var end = max_len;
+    while (end > 0 and end < bytes.len and bytes[end] & 0xc0 == 0x80) end -= 1;
+    return end;
+}
+
+fn indexOfAsciiIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
+    if (needle.len == 0 or needle.len > haystack.len) return null;
+    var start: usize = 0;
+    while (start + needle.len <= haystack.len) : (start += 1) {
+        var matches = true;
+        for (needle, 0..) |c, i| {
+            if (std.ascii.toLower(haystack[start + i]) != std.ascii.toLower(c)) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) return start;
+    }
+    return null;
+}
+
+/// Ranked content search may match a punctuation-delimited component of a
+/// quoted query (for example, `Precedence` for `Precedence-aware`). Prefer the
+/// whole query, then its longest matching identifier component, before using
+/// the neutral midpoint fallback.
+fn indexOfContextKeyword(haystack: []const u8, keyword: []const u8) ?usize {
+    if (indexOfAsciiIgnoreCase(haystack, keyword)) |at| return at;
+
+    var best_at: ?usize = null;
+    var best_len: usize = 0;
+    var start: usize = 0;
+    while (start < keyword.len) {
+        while (start < keyword.len and !isContextIdentCont(keyword[start])) start += 1;
+        if (start == keyword.len) break;
+        var end = start + 1;
+        while (end < keyword.len and isContextIdentCont(keyword[end])) end += 1;
+        const component = keyword[start..end];
+        if (component.len > best_len) {
+            if (indexOfAsciiIgnoreCase(haystack, component)) |at| {
+                best_at = at;
+                best_len = component.len;
+            }
+        }
+        start = end;
+    }
+    return best_at;
+}
+
+/// Emit a bounded site excerpt centered on the exact term that caused the
+/// hit. The old `slice[0..cap]` shape silently returned the beginning of a
+/// long previous line, which could omit the match entirely. Byte-window edges
+/// are moved to UTF-8 boundaries and every truncation is explicit.
+fn appendContextSiteSnippet(
+    alloc: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    path: []const u8,
+    line: u32,
+    text: []const u8,
+    keyword: []const u8,
+    cap: usize,
+) void {
+    const w = cio.listWriter(out, alloc);
+    w.print("\n{s}:{d}\n```\n", .{ path, line }) catch {};
+    if (text.len <= cap) {
+        w.print("{s}", .{text}) catch {};
+    } else {
+        const match_at = indexOfContextKeyword(text, keyword) orelse text.len / 2;
+        const centered = match_at -| (cap / 2);
+        var start = @min(centered, text.len - cap);
+        var end = @min(text.len, start + cap);
+        while (start < end and text[start] & 0xc0 == 0x80) start += 1;
+        while (end > start and end < text.len and text[end] & 0xc0 == 0x80) end -= 1;
+        if (start > 0) w.print("...[{d}B elided] ", .{start}) catch {};
+        w.print("{s}", .{text[start..end]}) catch {};
+        if (end < text.len) w.print(" [{d}B elided]...", .{text.len - end}) catch {};
+    }
+    w.print("\n```\n", .{}) catch {};
+}
+
+fn appendCompactContextBody(alloc: std.mem.Allocator, out: *std.ArrayList(u8), body: []const u8, body_start: usize) bool {
+    const data_cap = CONTEXT_COMPACT_BODY_BYTES - CONTEXT_BODY_CAP_MARKER.len;
+    var pos: usize = 0;
+    while (pos < body.len) {
+        const end = std.mem.indexOfScalarPos(u8, body, pos, '\n') orelse body.len;
+        const line = body[pos..end];
+        var rendered: std.ArrayList(u8) = .empty;
+        const rw = cio.listWriter(&rendered, alloc);
+        if (std.mem.indexOf(u8, line, " | ")) |bar| {
+            const number = std.mem.trimStart(u8, line[0..bar], " ");
+            const source = line[bar + 3 ..];
+            const keep = utf8PrefixLen(source, CONTEXT_COMPACT_LINE_BYTES);
+            rw.print("{s}|{s}", .{ number, source[0..keep] }) catch {};
+            if (keep < source.len) rw.print(" ... [{d} bytes omitted]", .{source.len - keep}) catch {};
+            rw.writeByte('\n') catch {};
+        } else if (line.len > 0) {
+            const keep = utf8PrefixLen(line, CONTEXT_COMPACT_LINE_BYTES);
+            rw.print("{s}", .{line[0..keep]}) catch {};
+            if (keep < line.len) rw.print(" ... [{d} bytes omitted]", .{line.len - keep}) catch {};
+            rw.writeByte('\n') catch {};
+        }
+        if (out.items.len - body_start + rendered.items.len > data_cap) {
+            out.appendSlice(alloc, CONTEXT_BODY_CAP_MARKER) catch {};
+            return false;
+        }
+        out.appendSlice(alloc, rendered.items) catch {};
+        if (end == body.len) break;
+        pos = end + 1;
+    }
+    return true;
+}
+
+fn containsContextPhrase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or needle.len > haystack.len) return false;
+    var start: usize = 0;
+    while (start + needle.len <= haystack.len) : (start += 1) {
+        var matches = true;
+        for (needle, 0..) |c, i| {
+            if (std.ascii.toLower(haystack[start + i]) != std.ascii.toLower(c)) {
+                matches = false;
+                break;
+            }
+        }
+        if (!matches) continue;
+        const before_ok = start == 0 or !isIdentChar(haystack[start - 1]);
+        const end = start + needle.len;
+        const after_ok = end == haystack.len or !isIdentChar(haystack[end]);
+        if (before_ok and after_ok) return true;
+    }
+    return false;
+}
+
+fn hasContextCodeReference(line: []const u8, name: []const u8, call_only: bool) bool {
+    var i: usize = 0;
+    var quote: u8 = 0;
+    var escaped = false;
+    var block_comment = false;
+    while (i < line.len) {
+        const c = line[i];
+        if (block_comment) {
+            if (c == '*' and i + 1 < line.len and line[i + 1] == '/') {
+                block_comment = false;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if (quote != 0) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == quote) {
+                quote = 0;
+            }
+            i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < line.len and line[i + 1] == '/') return false;
+        if (c == '/' and i + 1 < line.len and line[i + 1] == '*') {
+            block_comment = true;
+            i += 2;
+            continue;
+        }
+        // Inline # comments do not require preceding whitespace (`x=1# note`).
+        if (c == '#') return false;
+        if (c == '\'' or c == '"' or c == '`') {
+            quote = c;
+            i += 1;
+            continue;
+        }
+        if (i + name.len <= line.len and std.mem.eql(u8, line[i .. i + name.len], name)) {
+            const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+            var after = i + name.len;
+            const after_word_ok = after == line.len or !isIdentChar(line[after]);
+            if (before_ok and after_word_ok) {
+                if (!call_only) return true;
+                while (after < line.len and (line[after] == ' ' or line[after] == '\t')) after += 1;
+                if (after < line.len and line[after] == '(') return true;
+            }
+        }
+        i += 1;
+    }
+    return false;
+}
+
+fn hasContextCallSyntax(line: []const u8, name: []const u8) bool {
+    return hasContextCodeReference(line, name, true);
+}
+
+fn hasContextUsageSyntax(line: []const u8, name: []const u8, call_only: bool) bool {
+    return hasContextCodeReference(line, name, call_only);
+}
+
+fn taskHasQuotedLiteral(task: []const u8, candidate: []const u8) bool {
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, task, pos, candidate)) |at| {
+        const after = at + candidate.len;
+        if (at > 0 and task[at - 1] == '"' and after < task.len and task[after] == '"') return true;
+        pos = at + 1;
+    }
+    return false;
+}
+
+fn hasContextStringLiteralReference(line: []const u8, name: []const u8) bool {
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == '/' and i + 1 < line.len and line[i + 1] == '/') return false;
+        if (line[i] == '#') return false;
+        if (line[i] != '\'' and line[i] != '"' and line[i] != '`') {
+            i += 1;
+            continue;
+        }
+        const quote = line[i];
+        const start = i + 1;
+        i = start;
+        while (i < line.len and line[i] != quote) {
+            if (line[i] == '\\' and i + 1 < line.len) {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        const end = @min(i, line.len);
+        if (std.mem.indexOf(u8, line[start..end], name) != null) return true;
+        if (i < line.len) i += 1;
+    }
+    return false;
+}
+
+/// Search rows intentionally clamp pathological lines. Lexical validation
+/// must not run on a query-centered window whose opening quote/comment may
+/// have been elided, or text inside a long string can masquerade as code.
+fn contextValidationLine(explorer: *Explorer, row: Explorer.ScopedSearchResult, alloc: std.mem.Allocator) []const u8 {
+    if (std.mem.indexOf(u8, row.line_text, "B elided]") == null) return row.line_text;
+    const content_opt = explorer.getContent(row.path, alloc) catch return row.line_text;
+    const content = content_opt orelse return row.line_text;
+    var line_num: u32 = 1;
+    var start: usize = 0;
+    for (content, 0..) |c, i| {
+        if (line_num == row.line_num and c == '\n') return content[start..i];
+        if (c == '\n') {
+            line_num += 1;
+            start = i + 1;
+            if (line_num > row.line_num) break;
+        }
+    }
+    if (line_num == row.line_num) return content[start..];
+    return row.line_text;
 }
 
 fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
@@ -2476,6 +3001,25 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     }
 
     const max_tokens: ?u32 = if (getInt(args, "max_tokens")) |n| @intCast(@max(256, @min(n, 1_000_000))) else null;
+    const detail = getStr(args, "detail") orelse "compact";
+    if (!std.mem.eql(u8, detail, "compact") and !std.mem.eql(u8, detail, "full")) {
+        out.appendSlice(alloc, "error: detail must be 'compact' or 'full'") catch {};
+        return;
+    }
+    const compact = std.mem.eql(u8, detail, "compact");
+    const trace_task = containsContextPhrase(task, "trace") or
+        containsContextPhrase(task, "through") or
+        containsContextPhrase(task, "call path") or
+        containsContextPhrase(task, "flow");
+    const requests_call_sites = containsContextPhrase(task, "call site") or containsContextPhrase(task, "call sites");
+    const requests_references = containsContextPhrase(task, "usage") or
+        containsContextPhrase(task, "usages") or containsContextPhrase(task, "uses") or
+        containsContextPhrase(task, "used") or containsContextPhrase(task, "using") or
+        containsContextPhrase(task, "reference") or
+        containsContextPhrase(task, "references") or containsContextPhrase(task, "occurrence") or
+        containsContextPhrase(task, "occurrences") or containsContextPhrase(task, "places");
+    const requests_sites = requests_call_sites or requests_references or
+        containsContextPhrase(task, "site") or containsContextPhrase(task, "sites");
 
     // Arena: every transient string in this handler lives here, no per-result
     // free bookkeeping. Released at function exit.
@@ -2484,12 +3028,10 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     const A = arena.allocator();
     const pf_t0 = cio.nanoTimestamp();
 
-    // #531 pick 5 — two-step packing: step 1 renders every section into its
-    // own arena buffer; step 2 admits sections by VALUE order under the byte
-    // budget (max_tokens × 4, the ~4-chars-per-token estimate) and emits the
-    // admitted ones in DOCUMENT order, leaving a one-line marker per omitted
-    // section. Without max_tokens everything is admitted, so the output is
-    // unchanged.
+    // Two-step packing: first render each section into its own arena buffer,
+    // then admit a monotonic prefix in value order under the byte budget and
+    // emit admitted sections in document order. Without max_tokens every
+    // section is admitted.
     var sec_reader: std.ArrayList(u8) = .empty;
     var sec_head: std.ArrayList(u8) = .empty;
     var sec_syms_rich: std.ArrayList(u8) = .empty;
@@ -2498,6 +3040,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     var sec_calls: std.ArrayList(u8) = .empty;
     var sec_files: std.ArrayList(u8) = .empty;
     var sec_sites: std.ArrayList(u8) = .empty;
+    var sec_body_items = [_]std.ArrayList(u8){ .empty, .empty, .empty };
 
     // reader.md prepend (experimental): if .codedb/reader.md exists and its
     // declared source_hash matches the current source files, prepend its body
@@ -2514,7 +3057,10 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     // exploration rather than a narrow lookup. 80 chars is the inflection
     // point in the eval — T1's "find before_request decorator" is 28 chars,
     // T2/T3 are 230+ chars.
-    const reader_md_gate = task.len > 80;
+    // reader.md is a useful but fixed 3-5 KiB orientation cost. Compact mode
+    // is specifically the retrieval fast path, so keep that optional context
+    // in the legacy full view rather than charging every long narrow task.
+    const reader_md_gate = !compact and task.len > 80;
     if (reader_md_gate) {
         var reader_state = reader_md.load(io, alloc, project_root) catch null;
         if (reader_state) |*r| {
@@ -2539,11 +3085,12 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
 
     var candidates: std.ArrayList([]const u8) = .empty;
     extractContextCandidates(task, A, &candidates);
-    if (candidates.items.len == 0) {
-        // #570: all-lowercase tasks ("fix search ranking") carry no
-        // identifier-shaped token. Fall back to the task's plain words so the
-        // composer orients instead of dead-ending — natural language is the
-        // documented input shape.
+    if (candidates.items.len == 0 or
+        (candidates.items.len == 1 and isContextAcronym(candidates.items[0])))
+    {
+        // Fill acronym-only extraction (e.g. "MCP" or "HTTP") with task
+        // nouns, and handle all-lowercase tasks. A concrete code identifier
+        // is already a stronger anchor than extra generic task prose.
         extractContextFallbackWords(task, A, &candidates);
     }
     const pf_cand = cio.nanoTimestamp();
@@ -2553,7 +3100,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         return;
     }
 
-    const PerFileHit = struct { line: u32, text: []const u8 };
+    const PerFileHit = struct { line: u32, text: []const u8, keyword: []const u8 };
     const PerFile = struct {
         total: u32 = 0,
         bm25: f32 = 0,
@@ -2561,25 +3108,64 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     };
     var by_file = std.StringHashMap(PerFile).init(A);
 
-    const SymRef = struct { kw: []const u8, kind: []const u8, path: []const u8, line: u32, line_end: u32 };
+    const SymRef = struct {
+        kw: []const u8,
+        kind: []const u8,
+        path: []const u8,
+        line: u32,
+        line_end: u32,
+        primary: bool,
+    };
+    const BodyPlan = struct {
+        sym_index: usize,
+        ranges: [2]Explorer.LineRange,
+        parts: [2]?[]const u8,
+        range_count: usize,
+        omitted: ?Explorer.LineRange,
+        emit_body: bool,
+    };
     var sym_refs: std.ArrayList(SymRef) = .empty;
     var seen_syms = std.StringHashMap(void).init(A);
+    var all_definition_sites = std.StringHashMap(void).init(A);
+    var body_plans: [3]BodyPlan = undefined;
+    var body_plan_count: usize = 0;
 
     for (candidates.items) |kw| {
         // Symbol definitions (best-effort; ignore failures).
         if (explorer.findAllSymbols(kw, A)) |defs| {
-            const take = @min(defs.len, 3);
-            for (defs[0..take]) |d| {
-                const key = std.fmt.allocPrint(A, "{s}|{s}|{d}", .{ d.path, kw, d.symbol.line_start }) catch continue;
-                if (seen_syms.contains(key)) continue;
-                seen_syms.put(key, {}) catch continue;
-                sym_refs.append(A, .{
-                    .kw = kw,
-                    .kind = @tagName(d.symbol.kind),
-                    .path = d.path,
-                    .line = d.symbol.line_start,
-                    .line_end = d.symbol.line_end,
-                }) catch break;
+            for (defs) |d| {
+                const site_key = std.fmt.allocPrint(A, "{s}:{d}", .{ d.path, d.symbol.line_start }) catch continue;
+                all_definition_sites.put(site_key, {}) catch {};
+            }
+            var selected: usize = 0;
+            // Compact mode spends bodies on implementation code, not test
+            // duplicates. Keep two source definitions per candidate (enough
+            // for base + concrete implementations), falling back to one test
+            // definition only when no production definition exists.
+            const passes: usize = if (compact) 2 else 1;
+            var pass: usize = 0;
+            while (pass < passes) : (pass += 1) {
+                for (defs) |d| {
+                    if (compact) {
+                        const is_test = isContextTestPath(d.path);
+                        if ((pass == 0 and is_test) or (pass == 1 and !is_test)) continue;
+                        if (pass == 1 and selected > 0) break;
+                        if (selected >= 2) break;
+                    } else if (selected >= 3) break;
+
+                    const key = std.fmt.allocPrint(A, "{s}|{s}|{d}", .{ d.path, kw, d.symbol.line_start }) catch continue;
+                    if (seen_syms.contains(key)) continue;
+                    seen_syms.put(key, {}) catch continue;
+                    sym_refs.append(A, .{
+                        .kw = kw,
+                        .kind = @tagName(d.symbol.kind),
+                        .path = d.path,
+                        .line = d.symbol.line_start,
+                        .line_end = d.symbol.line_end,
+                        .primary = selected == 0,
+                    }) catch break;
+                    selected += 1;
+                }
             }
         } else |_| {}
 
@@ -2590,8 +3176,17 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             if (!gop.found_existing) gop.value_ptr.* = .{};
             gop.value_ptr.total += 1;
             gop.value_ptr.bm25 += h.score;
-            if (gop.value_ptr.top.items.len < CONTEXT_TOP_LINES_PER_FILE) {
-                gop.value_ptr.top.append(A, .{ .line = h.line_num, .text = h.line_text }) catch {};
+            var duplicate_line = false;
+            if (compact) {
+                for (gop.value_ptr.top.items) |existing| {
+                    if (existing.line == h.line_num) {
+                        duplicate_line = true;
+                        break;
+                    }
+                }
+            }
+            if (!duplicate_line and gop.value_ptr.top.items.len < CONTEXT_TOP_LINES_PER_FILE) {
+                gop.value_ptr.top.append(A, .{ .line = h.line_num, .text = h.line_text, .keyword = kw }) catch {};
             }
         }
     }
@@ -2625,77 +3220,238 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     std.mem.sort(FileRank, ranked.items, {}, struct {
         fn lt(_: void, a: FileRank, b: FileRank) bool {
             if (a.score != b.score) return a.score > b.score;
-            return a.hits > b.hits;
+            if (a.hits != b.hits) return a.hits > b.hits;
+            return std.mem.lessThan(u8, a.path, b.path);
         }
     }.lt);
+
+    if (compact) {
+        // Pick each keyword's body from its highest-ranked file instead of
+        // trusting symbol-index insertion order. This selects the top-level
+        // helper for `url_for`, while trace tasks may still admit a secondary
+        // concrete implementation below.
+        for (sym_refs.items) |*sr| sr.primary = false;
+        for (candidates.items) |kw| {
+            var best: ?usize = null;
+            var best_rank: usize = std.math.maxInt(usize);
+            for (sym_refs.items, 0..) |sr, sym_i| {
+                if (!std.mem.eql(u8, sr.kw, kw)) continue;
+                var file_rank = ranked.items.len;
+                for (ranked.items, 0..) |file, rank_i| {
+                    if (std.mem.eql(u8, file.path, sr.path)) {
+                        file_rank = rank_i;
+                        break;
+                    }
+                }
+                if (best == null or file_rank < best_rank) {
+                    best = sym_i;
+                    best_rank = file_rank;
+                }
+            }
+            if (best) |sym_i| sym_refs.items[sym_i].primary = true;
+        }
+    }
     const top_n = @min(ranked.items.len, CONTEXT_TOP_FILES);
     const pf_rank = cio.nanoTimestamp();
 
     {
         const wh = cio.listWriter(&sec_head, A);
-        wh.print("# Task\n{s}\n\n## Keywords used\n", .{task}) catch {};
-        for (candidates.items) |k| wh.print("- {s}\n", .{k}) catch {};
+        if (compact) {
+            wh.print("keywords: ", .{}) catch {};
+            for (candidates.items, 0..) |k, i| {
+                if (i > 0) wh.print(", ", .{}) catch {};
+                wh.print("{s}", .{k}) catch {};
+            }
+            wh.print("\n", .{}) catch {};
+        } else {
+            wh.print("# Task\n{s}\n\n## Keywords used\n", .{task}) catch {};
+            for (candidates.items) |k| wh.print("- {s}\n", .{k}) catch {};
+        }
     }
 
     if (sym_refs.items.len > 0) {
-        const wsr = cio.listWriter(&sec_syms_rich, A);
-        const wsl = cio.listWriter(&sec_syms_lean, A);
-        wsr.print("\n## Symbol definitions\n", .{}) catch {};
-        wsl.print("\n## Symbol definitions\n", .{}) catch {};
-        // Enhancement (closes T1 flask variance gap): when there are ≤3
-        // symbol definitions, inline each symbol's FULL body (capped at 40
-        // lines) so the agent doesn't need a follow-up `codedb_read`. For wider
-        // result sets this would bloat the response, so cap at 3. The lean
-        // variant (def lines only) is the budget fallback.
-        const inline_bodies = sym_refs.items.len <= 3;
-        for (sym_refs.items) |sr| {
-            wsr.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
-            wsl.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
-            if (inline_bodies) {
-                const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line + 39) else sr.line;
-                _ = explorer.appendLineRange(sr.path, sr.line, body_end, "       ", A, &sec_syms_rich) catch false;
+        // Full mode retains the legacy all-or-nothing ≤3 behavior. Compact
+        // mode instead guarantees one primary body per candidate, then uses
+        // spare capacity for a secondary implementation.
+        if (compact) {
+            for (sym_refs.items, 0..) |sr, i| {
+                if (!sr.primary or body_plan_count >= body_plans.len) continue;
+                body_plans[body_plan_count].sym_index = i;
+                body_plan_count += 1;
+            }
+            for (sym_refs.items, 0..) |sr, i| {
+                if (!trace_task or sr.primary or body_plan_count >= body_plans.len) continue;
+                if (!std.mem.eql(u8, sr.kind, "function") and !std.mem.eql(u8, sr.kind, "method")) continue;
+                body_plans[body_plan_count].sym_index = i;
+                body_plan_count += 1;
+            }
+        } else if (sym_refs.items.len <= body_plans.len) {
+            for (sym_refs.items, 0..) |_, i| {
+                body_plans[body_plan_count].sym_index = i;
+                body_plan_count += 1;
             }
         }
 
-        // Callers section (closes the T1 flask agent-mean gap):
-        // For each ≤3 symbol_definitions, surface up to 2 non-definition,
-        // non-test, non-import call sites with their enclosing scope. The
-        // whole point of this section is to pre-resolve "where is this called
-        // from" so the agent doesn't need codedb_callers / outline / read
-        // follow-ups. Examples this targets directly:
-        //   T1 flask: before_request → preprocess_request in app.py
-        //   T2 regex: Builder::build → meta::Regex::new in regex.rs
-        if (inline_bodies) {
+        // Compact bodies are complete up to 16 lines. Longer symbols retain
+        // their signature/setup and executable tail, with an explicit gap.
+        // This fixes the old silent first-40-lines truncation and catches the
+        // registration/return logic commonly found at a function's end.
+        for (body_plans[0..body_plan_count]) |*plan| {
+            const sr = sym_refs.items[plan.sym_index];
+            const body_end = @max(sr.line, sr.line_end);
+            plan.parts = .{ null, null };
+            plan.omitted = null;
+            plan.emit_body = true;
+            const is_type = std.mem.eql(u8, sr.kind, "class_def") or
+                std.mem.eql(u8, sr.kind, "struct_def") or
+                std.mem.eql(u8, sr.kind, "interface_def");
+            if (compact and is_type and body_end - sr.line + 1 > 8) {
+                plan.ranges[0] = .{ .start = sr.line, .end = @min(body_end, sr.line + 7) };
+                plan.omitted = .{ .start = plan.ranges[0].end + 1, .end = body_end };
+                plan.range_count = 1;
+            } else if (compact and body_end - sr.line + 1 > 16) {
+                plan.ranges[0] = .{ .start = sr.line, .end = @min(body_end, sr.line + 6) };
+                plan.ranges[1] = .{ .start = @max(plan.ranges[0].end + 1, body_end - 8), .end = body_end };
+                plan.omitted = .{ .start = plan.ranges[0].end + 1, .end = plan.ranges[1].start - 1 };
+                plan.range_count = 2;
+            } else {
+                plan.ranges[0] = .{
+                    .start = sr.line,
+                    .end = if (compact) body_end else @min(body_end, sr.line + 39),
+                };
+                plan.range_count = 1;
+            }
+        }
+
+        // Batch all selected ranges sharing a file. Compact mode can request
+        // two short ranges for each of three symbols (six total).
+        var resolved: [3]bool = @splat(false);
+        for (body_plans[0..body_plan_count], 0..) |plan, plan_i| {
+            if (resolved[plan_i]) continue;
+            const sr = sym_refs.items[plan.sym_index];
+            var ranges: [6]Explorer.LineRange = undefined;
+            var plan_indices: [6]usize = undefined;
+            var part_indices: [6]usize = undefined;
+            var range_count: usize = 0;
+            for (body_plans[0..body_plan_count], 0..) |candidate, candidate_i| {
+                if (resolved[candidate_i]) continue;
+                const candidate_sr = sym_refs.items[candidate.sym_index];
+                if (!std.mem.eql(u8, candidate_sr.path, sr.path)) continue;
+                for (candidate.ranges[0..candidate.range_count], 0..) |range, part_i| {
+                    ranges[range_count] = range;
+                    plan_indices[range_count] = candidate_i;
+                    part_indices[range_count] = part_i;
+                    range_count += 1;
+                }
+                resolved[candidate_i] = true;
+            }
+            if (explorer.getContextSymbolBodies(sr.path, ranges[0..range_count], A) catch null) |group| {
+                defer A.free(group);
+                for (group, 0..) |body, group_i| {
+                    body_plans[plan_indices[group_i]].parts[part_indices[group_i]] = body;
+                }
+            }
+        }
+        if (compact) {
+            for (body_plans[0..body_plan_count], 0..) |*plan, plan_i| {
+                var is_abstract = false;
+                for (plan.parts[0..plan.range_count]) |part| {
+                    if (part) |body| {
+                        if (std.mem.indexOf(u8, body, "NotImplementedError") != null) is_abstract = true;
+                    }
+                }
+                if (!is_abstract) continue;
+                const sr = sym_refs.items[plan.sym_index];
+                for (body_plans[0..body_plan_count], 0..) |other, other_i| {
+                    if (other_i == plan_i) continue;
+                    const other_sr = sym_refs.items[other.sym_index];
+                    if (std.mem.eql(u8, sr.kw, other_sr.kw)) {
+                        plan.emit_body = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        const wsr = cio.listWriter(&sec_syms_rich, A);
+        const wsl = cio.listWriter(&sec_syms_lean, A);
+        if (compact) {
+            wsl.print("\n## Definitions\n", .{}) catch {};
+        } else {
+            wsr.print("\n## Symbol definitions\n", .{}) catch {};
+            wsl.print("\n## Symbol definitions\n", .{}) catch {};
+        }
+        for (sym_refs.items, 0..) |sr, symbol_i| {
+            if (compact) {
+                wsl.print("- {s} {s} {s}:{d}-{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line, @max(sr.line, sr.line_end) }) catch {};
+                continue;
+            }
+            wsr.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
+            wsl.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
+            for (body_plans[0..body_plan_count]) |plan| {
+                if (plan.sym_index != symbol_i) continue;
+                if (plan.parts[0]) |body| {
+                    var body_pos: usize = 0;
+                    while (std.mem.indexOfScalarPos(u8, body, body_pos, '\n')) |nl| {
+                        wsr.print("       {s}\n", .{body[body_pos..nl]}) catch {};
+                        body_pos = nl + 1;
+                    }
+                    if (body_pos < body.len) wsr.print("       {s}", .{body[body_pos..]}) catch {};
+                }
+                break;
+            }
+        }
+
+        if (compact) {
+            for (body_plans[0..body_plan_count], 0..) |plan, body_i| {
+                if (!plan.emit_body) continue;
+                const sr = sym_refs.items[plan.sym_index];
+                const wb = cio.listWriter(&sec_body_items[body_i], A);
+                wb.print("\n## Body {s} — {s}:{d}-{d}\n", .{ sr.kw, sr.path, sr.line, @max(sr.line, sr.line_end) }) catch {};
+                const body_start = sec_body_items[body_i].items.len;
+                var has_room = true;
+                if (plan.parts[0]) |body| has_room = appendCompactContextBody(A, &sec_body_items[body_i], body, body_start);
+                if (has_room and plan.omitted != null) {
+                    const gap = plan.omitted.?;
+                    wb.print("… L{d}-L{d} omitted\n", .{ gap.start, gap.end }) catch {};
+                }
+                if (has_room and plan.range_count == 2) {
+                    if (plan.parts[1]) |body| _ = appendCompactContextBody(A, &sec_body_items[body_i], body, body_start);
+                }
+            }
+        }
+
+        // Pre-resolve a small caller neighborhood for the selected bodies.
+        if (body_plan_count > 0 and (!compact or !requests_sites or trace_task)) {
             const wc = cio.listWriter(&sec_callers, A);
             var any_callers = false;
             var seen_caller = std.StringHashMap(void).init(A);
-            var total_shown: u32 = 0;
-            // Dedupe scoped searches by keyword — multiple sym_refs often
-            // share the same kw (same symbol defined in multiple files);
-            // running searchContentWithScope per sym_ref was 30 µs × 6
-            // searches = 180 µs of redundant work on the bench task.
             var searched_kw = std.StringHashMap(void).init(A);
-            for (sym_refs.items) |sr| {
-                if (total_shown >= 6) break;
+            var total_shown: u32 = 0;
+            const total_cap: u32 = if (compact) 3 else 6;
+            const per_symbol_cap: u32 = if (compact) 1 else 2;
+            for (body_plans[0..body_plan_count]) |plan| {
+                const sr = sym_refs.items[plan.sym_index];
+                if (total_shown >= total_cap) break;
                 if (searched_kw.contains(sr.kw)) continue;
                 searched_kw.put(sr.kw, {}) catch {};
                 const scoped = explorer.searchContentWithScope(sr.kw, A, 30) catch continue;
                 var shown_for_sym: u32 = 0;
                 for (scoped) |r| {
-                    if (shown_for_sym >= 2 or total_shown >= 6) break;
-                    if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
-                    // Skip the definition site itself
-                    if (r.line_num == sr.line and std.mem.eql(u8, r.path, sr.path)) continue;
-                    // Skip test/spec/fixture paths
-                    const is_test = std.mem.startsWith(u8, r.path, "tests/") or
-                        std.mem.startsWith(u8, r.path, "test/") or
-                        std.mem.indexOf(u8, r.path, "/test") != null or
-                        std.mem.indexOf(u8, r.path, "_test.") != null or
-                        std.mem.indexOf(u8, r.path, ".test.") != null or
-                        std.mem.indexOf(u8, r.path, "/__tests__/") != null or
-                        std.mem.indexOf(u8, r.path, "/spec/") != null or
-                        std.mem.indexOf(u8, r.path, "/fixtures/") != null;
-                    if (is_test) continue;
+                    if (shown_for_sym >= per_symbol_cap or total_shown >= total_cap) break;
+                    const language = explore_mod.detectLanguage(r.path);
+                    if (!langHasCallSites(language) or isContextTestPath(r.path)) continue;
+                    const validation_line = contextValidationLine(explorer, r, A);
+                    if (explore_mod.isCommentOrBlank(validation_line, language)) continue;
+                    if (!hasWholeWordMatch(validation_line, sr.kw)) continue;
+                    if (compact and !hasContextCallSyntax(validation_line, sr.kw)) continue;
+                    if (compact) {
+                        if (r.scope_name) |scope_name| {
+                            if (std.mem.eql(u8, scope_name, sr.kw)) continue;
+                        }
+                    }
+                    const definition_key = std.fmt.allocPrint(A, "{s}:{d}", .{ r.path, r.line_num }) catch continue;
+                    if (all_definition_sites.contains(definition_key)) continue;
                     if (r.scope_kind) |sk| {
                         if (sk == .import or sk == .type_alias or sk == .constant) continue;
                     }
@@ -2703,12 +3459,26 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                     if (seen_caller.contains(dedup_key)) continue;
                     seen_caller.put(dedup_key, {}) catch {};
                     if (!any_callers) {
-                        wc.print("\n## Callers (top non-test, non-import usages of these symbols)\n", .{}) catch {};
+                        if (compact) {
+                            wc.print("\n## Callers\n", .{}) catch {};
+                        } else {
+                            wc.print("\n## Callers (top non-test, non-import usages of these symbols)\n", .{}) catch {};
+                        }
                         any_callers = true;
                     }
                     if (r.scope_name) |sn| {
-                        appendMatchLineNoNL(wc, "- ", r.path, r.line_num, r.line_text);
-                        wc.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
+                        const trimmed = trimMatchText(r.line_text);
+                        if (compact) {
+                            wc.print("- {s}:{d} {s}{s} [{s} {s} L{d}-{d}]\n", .{
+                                r.path,      r.line_num,               trimmed.text,
+                                if (trimmed.truncated) "…" else "",
+                                sn,          @tagName(r.scope_kind.?), r.scope_start,
+                                r.scope_end,
+                            }) catch {};
+                        } else {
+                            appendMatchLineNoNL(wc, "- ", r.path, r.line_num, r.line_text);
+                            wc.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
+                        }
                     } else {
                         appendMatchLine(wc, "- ", r.path, r.line_num, r.line_text);
                     }
@@ -2718,45 +3488,143 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             }
         }
 
-        // Callees section (graph-resolved): walk each ≤3 key symbol's call sites
-        // through the resolved call graph and surface where each callee is
-        // defined. This is the dependency side of the neighborhood — pairs with
-        // the Callers section above so the agent sees both who calls a symbol and
-        // what it calls, without a follow-up codedb_outline/read on the callees.
-        if (inline_bodies) {
+        // Resolve a bounded callee neighborhood for the same selected bodies.
+        if (body_plan_count > 0 and (!compact or !requests_sites or trace_task)) {
             const wcal = cio.listWriter(&sec_calls, A);
             var any_callees = false;
             var done_sym = std.StringHashMap(void).init(A);
-            for (sym_refs.items) |sr| {
+            for (body_plans[0..body_plan_count]) |plan| {
+                const sr = sym_refs.items[plan.sym_index];
+                if (compact and (std.mem.eql(u8, sr.kind, "class_def") or
+                    std.mem.eql(u8, sr.kind, "struct_def") or
+                    std.mem.eql(u8, sr.kind, "interface_def"))) continue;
                 const sym_key = std.fmt.allocPrint(A, "{s}:{d}", .{ sr.path, sr.line }) catch continue;
                 if (done_sym.contains(sym_key)) continue;
                 done_sym.put(sym_key, {}) catch {};
-                const callees = explorer.resolveCallees(sr.path, sr.line, sr.line_end, A, 6) catch continue;
+                const callees = explorer.resolveCallees(sr.path, sr.line, sr.line_end, A, if (compact) 3 else 6) catch continue;
                 if (callees.len == 0) continue;
                 if (!any_callees) {
-                    wcal.print("\n## Calls (graph-resolved callees of these symbols)\n", .{}) catch {};
+                    if (compact) {
+                        wcal.print("\n## Callees\n", .{}) catch {};
+                    } else {
+                        wcal.print("\n## Calls (graph-resolved callees of these symbols)\n", .{}) catch {};
+                    }
                     any_callees = true;
                 }
                 wcal.print("- {s} ({s}) calls:\n", .{ sr.kw, sr.kind }) catch {};
                 for (callees) |c| {
-                    wcal.print("    \xe2\x86\x92 {s} ({s})  {s}:{d}\n", .{ c.name, @tagName(c.kind), c.path, c.line }) catch {};
+                    if (compact) {
+                        wcal.print("  → {s} {s}:{d}\n", .{ c.name, c.path, c.line }) catch {};
+                    } else {
+                        wcal.print("    → {s} ({s})  {s}:{d}\n", .{ c.name, @tagName(c.kind), c.path, c.line }) catch {};
+                    }
                 }
             }
         }
     }
+
+    // Usage-shaped tasks need literal call/decorator sites, not BM25's one
+    // representative line per file. Emit three scoped, exact-identifier rows
+    // directly; this replaces a much larger set of often unrelated ±N windows.
+    if (compact and requests_sites) {
+        const ws = cio.listWriter(&sec_sites, A);
+        var any_sites = false;
+        var shown: u32 = 0;
+        var seen_site = std.StringHashMap(void).init(A);
+        var scoped_by_candidate: [CONTEXT_MAX_FALLBACK_CANDIDATES][]const Explorer.ScopedSearchResult = @splat(&.{});
+        var site_cursors: [CONTEXT_MAX_FALLBACK_CANDIDATES]usize = @splat(0);
+        const call_only = requests_call_sites and !requests_references;
+        for (candidates.items, 0..) |kw, candidate_i| {
+            scoped_by_candidate[candidate_i] = explorer.searchContentWithScope(kw, A, 40) catch &.{};
+        }
+        var round: usize = 0;
+        while (shown < 3 and round < 3) : (round += 1) {
+            var progressed = false;
+            for (candidates.items, 0..) |kw, candidate_i| {
+                if (shown >= 3) break;
+                const scoped = scoped_by_candidate[candidate_i];
+                while (site_cursors[candidate_i] < scoped.len) {
+                    const r = scoped[site_cursors[candidate_i]];
+                    site_cursors[candidate_i] += 1;
+                    const language = explore_mod.detectLanguage(r.path);
+                    if (call_only) {
+                        if (!langHasCallSites(language)) continue;
+                    } else if (!langHasReferenceSites(language)) continue;
+                    const validation_line = contextValidationLine(explorer, r, A);
+                    if (explore_mod.isCommentOrBlank(validation_line, language)) continue;
+                    if (taskHasQuotedLiteral(task, kw)) {
+                        if (!hasContextStringLiteralReference(validation_line, kw)) continue;
+                    } else if (!hasContextUsageSyntax(validation_line, kw, call_only)) continue;
+                    const site_key = std.fmt.allocPrint(A, "{s}:{d}", .{ r.path, r.line_num }) catch continue;
+                    if (all_definition_sites.contains(site_key) or seen_site.contains(site_key)) continue;
+                    var inside_own_definition = false;
+                    if (r.scope_name) |scope_name| {
+                        if (std.mem.eql(u8, scope_name, kw)) {
+                            for (sym_refs.items) |definition| {
+                                if (std.mem.eql(u8, definition.path, r.path) and
+                                    r.line_num >= definition.line and r.line_num <= @max(definition.line, definition.line_end))
+                                {
+                                    inside_own_definition = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (inside_own_definition) continue;
+                    seen_site.put(site_key, {}) catch {};
+                    if (!any_sites) {
+                        ws.print("\n## Sites\n", .{}) catch {};
+                        any_sites = true;
+                    }
+                    if (r.scope_name) |scope_name| {
+                        ws.print("- {s}:{d} {s} [{s} {s} L{d}-{d}]\n", .{
+                            r.path, r.line_num, r.line_text, scope_name, @tagName(r.scope_kind.?), r.scope_start, r.scope_end,
+                        }) catch {};
+                    } else {
+                        ws.print("- {s}:{d} {s}\n", .{ r.path, r.line_num, r.line_text }) catch {};
+                    }
+                    shown += 1;
+                    progressed = true;
+                    break;
+                }
+            }
+            if (!progressed) break;
+        }
+    }
     const pf_render = cio.nanoTimestamp();
 
-    if (top_n > 0) {
+    // Exact-symbol definitions/bodies already carry their paths. The token
+    // audit found zero requested anchors in 23 such Top-site snippets, so only
+    // pay for ranked files/sites when the task asks for usages or retrieval
+    // has no definitions to stand on.
+    if (top_n > 0 and (!compact or (sym_refs.items.len == 0 and !requests_sites))) {
+        const render_top_n = if (compact) @min(top_n, 3) else top_n;
         const wf = cio.listWriter(&sec_files, A);
-        wf.print("\n## Most-relevant files\n", .{}) catch {};
-        for (ranked.items[0..top_n]) |f| {
-            wf.print("- {s}  ({d} matches)\n", .{ f.path, f.hits }) catch {};
+        if (compact) {
+            wf.print("\n## Files\n", .{}) catch {};
+        } else {
+            wf.print("\n## Most-relevant files\n", .{}) catch {};
+        }
+        for (ranked.items[0..render_top_n]) |f| {
+            if (compact) {
+                wf.print("- {s}\n", .{f.path}) catch {};
+            } else {
+                wf.print("- {s}  ({d} matches)\n", .{ f.path, f.hits }) catch {};
+            }
         }
         const wts = cio.listWriter(&sec_sites, A);
-        wts.print("\n## Top sites (with ±2 lines of context)\n", .{}) catch {};
+        if (compact) {
+            wts.print("\n## Sites\n", .{}) catch {};
+        } else {
+            wts.print("\n## Top sites (with ±2 lines of context)\n", .{}) catch {};
+        }
+        const ShownSite = struct { path: []const u8, line: u32 };
+        var shown_sites: [6]ShownSite = undefined;
+        var shown_site_count: usize = 0;
         explorer.mu.lockShared();
         defer explorer.mu.unlockShared();
-        for (ranked.items[0..top_n]) |f| {
+        for (ranked.items[0..render_top_n]) |f| {
+            if (compact and shown_site_count >= shown_sites.len) break;
             // Fast path: borrow the canonical cached bytes (stable pointer,
             // no copy) and resolve each hit's [line-2 .. line+2] window via
             // the line-offset cache (#611) — O(log n) per hit instead of a
@@ -2765,8 +3633,28 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             // take the scanning fallback below.
             if (explorer.cachedContentLocked(f.path)) |content| {
                 for (f.top) |h| {
-                    const want_start: u32 = if (h.line > 2) h.line - 2 else 1;
-                    const want_end: u32 = h.line + 2;
+                    if (compact) {
+                        if (shown_site_count >= shown_sites.len) break;
+                        var redundant = false;
+                        for (body_plans[0..body_plan_count]) |plan| {
+                            const sr = sym_refs.items[plan.sym_index];
+                            if (!std.mem.eql(u8, sr.path, f.path)) continue;
+                            for (plan.ranges[0..plan.range_count]) |range| {
+                                if (h.line >= range.start and h.line <= range.end) redundant = true;
+                            }
+                        }
+                        for (shown_sites[0..shown_site_count]) |shown| {
+                            if (!std.mem.eql(u8, shown.path, f.path)) continue;
+                            const distance = if (shown.line > h.line) shown.line - h.line else h.line - shown.line;
+                            if (distance <= 2) redundant = true;
+                        }
+                        if (redundant) continue;
+                        shown_sites[shown_site_count] = .{ .path = f.path, .line = h.line };
+                        shown_site_count += 1;
+                    }
+                    const radius: u32 = if (compact) 1 else 2;
+                    const want_start: u32 = if (h.line > radius) h.line - radius else 1;
+                    const want_end: u32 = h.line + radius;
                     var lines2 = [2]u32{ want_start, want_end };
                     var spans2: [2]explore_mod.Explorer.LineSpan = undefined;
                     const n = explorer.lineSpansFor(f.path, content, lines2[0..], spans2[0..]) orelse 0;
@@ -2776,12 +3664,14 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                         // window runs to end of file.
                         const end_off = if (n == 2) spans2[1].end else content.len;
                         const slice = content[start_off..end_off];
-                        // Cap per-snippet length to keep output bounded.
-                        const cap = @min(slice.len, 480);
-                        wts.print("\n{s}:{d}\n```\n{s}\n```\n", .{ f.path, h.line, slice[0..cap] }) catch {};
+                        // The query-centered clamp below guarantees the anchor
+                        // survives even when an adjacent line is huge, so keep
+                        // the small neighborhood: it often carries the enclosing
+                        // condition/symbol that makes a matching line useful.
+                        appendContextSiteSnippet(A, &sec_sites, f.path, h.line, slice, h.keyword, if (compact) 320 else 480);
                         continue;
                     }
-                    wts.print("{s}:{d}  {s}\n", .{ f.path, h.line, h.text }) catch {};
+                    appendContextSiteSnippet(A, &sec_sites, f.path, h.line, h.text, h.keyword, if (compact) 320 else 480);
                 }
                 continue;
             }
@@ -2793,10 +3683,30 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                 break :blk got;
             };
             for (f.top) |h| {
+                if (compact) {
+                    if (shown_site_count >= shown_sites.len) break;
+                    var redundant = false;
+                    for (body_plans[0..body_plan_count]) |plan| {
+                        const sr = sym_refs.items[plan.sym_index];
+                        if (!std.mem.eql(u8, sr.path, f.path)) continue;
+                        for (plan.ranges[0..plan.range_count]) |range| {
+                            if (h.line >= range.start and h.line <= range.end) redundant = true;
+                        }
+                    }
+                    for (shown_sites[0..shown_site_count]) |shown| {
+                        if (!std.mem.eql(u8, shown.path, f.path)) continue;
+                        const distance = if (shown.line > h.line) shown.line - h.line else h.line - shown.line;
+                        if (distance <= 2) redundant = true;
+                    }
+                    if (redundant) continue;
+                    shown_sites[shown_site_count] = .{ .path = f.path, .line = h.line };
+                    shown_site_count += 1;
+                }
                 if (file_content) |content| {
                     // Find the start/end byte offsets of [line-2 .. line+2].
-                    const want_start: u32 = if (h.line > 2) h.line - 2 else 1;
-                    const want_end: u32 = h.line + 2;
+                    const radius: u32 = if (compact) 1 else 2;
+                    const want_start: u32 = if (h.line > radius) h.line - radius else 1;
+                    const want_end: u32 = h.line + radius;
                     var cur_line: u32 = 1;
                     var i: usize = 0;
                     var captured_start: ?usize = null;
@@ -2818,23 +3728,27 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                     if (captured_start) |start_off| {
                         const end_off = captured_end.?;
                         const slice = content[start_off..end_off];
-                        // Cap per-snippet length to keep output bounded.
-                        const cap = @min(slice.len, 480);
-                        wts.print("\n{s}:{d}\n```\n{s}\n```\n", .{ f.path, h.line, slice[0..cap] }) catch {};
+                        appendContextSiteSnippet(A, &sec_sites, f.path, h.line, slice, h.keyword, if (compact) 320 else 480);
                         continue;
                     }
                 }
                 // Fallback: single-line hit when we couldn't expand.
-                wts.print("{s}:{d}  {s}\n", .{ f.path, h.line, h.text }) catch {};
+                appendContextSiteSnippet(A, &sec_sites, f.path, h.line, h.text, h.keyword, if (compact) 320 else 480);
             }
         }
     }
+    if (top_n == 0) {
+        sec_sites.appendSlice(A, "\n(no content matches — try codedb_search or codedb_word for narrower queries)\n") catch {};
+    }
     const pf_sites = cio.nanoTimestamp();
 
-    // Step 2: admit by value order — head (always), files, symbols
-    // (rich, falling back to lean), reader.md, callers, calls, snippets —
-    // then emit admitted sections in document order.
-    const budget: ?usize = if (max_tokens) |mt| @as(usize, mt) * 4 else null;
+    // Step 2: admit evidence by value. Compact mode reserves only 2.5 bytes
+    // per requested token: intentionally conservative for code-heavy o200k
+    // payloads and enough room for the single omission marker.
+    const budget: ?usize = if (max_tokens) |mt|
+        if (compact) (@as(usize, mt) * 5) / 2 else @as(usize, mt) * 4
+    else
+        null;
     var spent: usize = sec_head.items.len;
     const fits = struct {
         fn f(lim: ?usize, spent_: *usize, cost: usize) bool {
@@ -2845,53 +3759,123 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             return true;
         }
     }.f;
-    const inc_files = fits(budget, &spent, sec_files.items.len);
-    var syms: []const u8 = &.{};
-    var syms_lean_fallback = false;
-    if (fits(budget, &spent, sec_syms_rich.items.len)) {
-        syms = sec_syms_rich.items;
-    } else if (fits(budget, &spent, sec_syms_lean.items.len)) {
-        syms = sec_syms_lean.items;
-        syms_lean_fallback = true;
-    }
-    const inc_reader = fits(budget, &spent, sec_reader.items.len);
-    const inc_callers = fits(budget, &spent, sec_callers.items.len);
-    const inc_calls = fits(budget, &spent, sec_calls.items.len);
-    const inc_sites = fits(budget, &spent, sec_sites.items.len);
-
     const w = cio.listWriter(out, alloc);
-    if (inc_reader) out.appendSlice(alloc, sec_reader.items) catch {};
-    out.appendSlice(alloc, sec_head.items) catch {};
-    if (syms.len > 0) {
-        out.appendSlice(alloc, syms) catch {};
-        if (syms_lean_fallback) {
-            w.print("\n[max_tokens: symbol bodies omitted (~{d} tokens) — raise max_tokens or codedb_read the definitions]\n", .{(sec_syms_rich.items.len - sec_syms_lean.items.len) / 4}) catch {};
+    if (compact) {
+        const omission_reserve: usize = 160;
+        const admission_budget: ?usize = if (budget) |b| b -| @min(b, omission_reserve) else null;
+        var blocked = false;
+        const admit = struct {
+            fn f(lim: ?usize, spent_: *usize, blocked_: *bool, cost: usize) bool {
+                if (cost == 0) return true;
+                if (blocked_.*) return false;
+                const b = lim orelse {
+                    spent_.* += cost;
+                    return true;
+                };
+                if (spent_.* + cost > b) {
+                    blocked_.* = true;
+                    return false;
+                }
+                spent_.* += cost;
+                return true;
+            }
+        }.f;
+
+        // A prefix admission policy makes budgets monotonic: increasing the
+        // limit can only add evidence and never swaps a later small section
+        // for an earlier large one.
+        const inc_syms = admit(admission_budget, &spent, &blocked, sec_syms_lean.items.len);
+        const sites_first = requests_sites and !trace_task;
+        var inc_sites = false;
+        if (sites_first) inc_sites = admit(admission_budget, &spent, &blocked, sec_sites.items.len);
+        var inc_bodies: [3]bool = @splat(false);
+        if (inc_syms and body_plan_count > 0) inc_bodies[0] = admit(admission_budget, &spent, &blocked, sec_body_items[0].items.len);
+        const inc_callers = admit(admission_budget, &spent, &blocked, sec_callers.items.len);
+        const inc_calls = admit(admission_budget, &spent, &blocked, sec_calls.items.len);
+        var body_i: usize = 1;
+        while (inc_syms and body_i < body_plan_count) : (body_i += 1) {
+            inc_bodies[body_i] = admit(admission_budget, &spent, &blocked, sec_body_items[body_i].items.len);
         }
-    } else if (sec_syms_rich.items.len > 0) {
-        w.print("\n[max_tokens: omitted Symbol definitions (~{d} tokens)]\n", .{sec_syms_rich.items.len / 4}) catch {};
-    }
-    if (inc_callers) {
-        out.appendSlice(alloc, sec_callers.items) catch {};
-    } else if (sec_callers.items.len > 0) {
-        w.print("\n[max_tokens: omitted Callers (~{d} tokens)]\n", .{sec_callers.items.len / 4}) catch {};
-    }
-    if (inc_calls) {
-        out.appendSlice(alloc, sec_calls.items) catch {};
-    } else if (sec_calls.items.len > 0) {
-        w.print("\n[max_tokens: omitted Calls (~{d} tokens)]\n", .{sec_calls.items.len / 4}) catch {};
-    }
-    if (inc_files) {
-        out.appendSlice(alloc, sec_files.items) catch {};
-    } else if (sec_files.items.len > 0) {
-        w.print("\n[max_tokens: omitted Most-relevant files (~{d} tokens)]\n", .{sec_files.items.len / 4}) catch {};
-    }
-    if (inc_sites) {
-        out.appendSlice(alloc, sec_sites.items) catch {};
-    } else if (sec_sites.items.len > 0) {
-        w.print("\n[max_tokens: omitted Top sites (~{d} tokens)]\n", .{sec_sites.items.len / 4}) catch {};
-    }
-    if (top_n == 0) {
-        out.appendSlice(alloc, "\n(no content matches — try codedb_search or codedb_word for narrower queries)\n") catch {};
+        const inc_files = admit(admission_budget, &spent, &blocked, sec_files.items.len);
+        if (!sites_first) inc_sites = admit(admission_budget, &spent, &blocked, sec_sites.items.len);
+
+        out.appendSlice(alloc, sec_head.items) catch {};
+        if (inc_syms) out.appendSlice(alloc, sec_syms_lean.items) catch {};
+        for (inc_bodies[0..body_plan_count], 0..) |include, i| {
+            if (include) out.appendSlice(alloc, sec_body_items[i].items) catch {};
+        }
+        if (inc_callers) out.appendSlice(alloc, sec_callers.items) catch {};
+        if (inc_calls) out.appendSlice(alloc, sec_calls.items) catch {};
+        if (inc_files) out.appendSlice(alloc, sec_files.items) catch {};
+        if (inc_sites) out.appendSlice(alloc, sec_sites.items) catch {};
+
+        if (budget != null) {
+            var omitted_bodies: usize = 0;
+            for (inc_bodies[0..body_plan_count]) |include| if (!include) {
+                omitted_bodies += 1;
+            };
+            const omit_syms = !inc_syms and sec_syms_lean.items.len > 0;
+            const omit_callers = !inc_callers and sec_callers.items.len > 0;
+            const omit_calls = !inc_calls and sec_calls.items.len > 0;
+            const omit_files = !inc_files and sec_files.items.len > 0;
+            const omit_sites = !inc_sites and sec_sites.items.len > 0;
+            if (omit_syms or omitted_bodies > 0 or omit_callers or omit_calls or omit_files or omit_sites) {
+                w.print("\nomitted(max_tokens):", .{}) catch {};
+                if (omit_syms) w.print(" definitions", .{}) catch {};
+                if (omitted_bodies > 0) w.print(" {d} bodies", .{omitted_bodies}) catch {};
+                if (omit_callers) w.print(" callers", .{}) catch {};
+                if (omit_calls) w.print(" callees", .{}) catch {};
+                if (omit_files) w.print(" files", .{}) catch {};
+                if (omit_sites) w.print(" sites", .{}) catch {};
+                w.print("\n", .{}) catch {};
+            }
+        }
+    } else {
+        // Verbose legacy-style renderer and section packing.
+        const inc_files = fits(budget, &spent, sec_files.items.len);
+        var syms: []const u8 = &.{};
+        var syms_lean_fallback = false;
+        if (fits(budget, &spent, sec_syms_rich.items.len)) {
+            syms = sec_syms_rich.items;
+        } else if (fits(budget, &spent, sec_syms_lean.items.len)) {
+            syms = sec_syms_lean.items;
+            syms_lean_fallback = true;
+        }
+        const inc_reader = fits(budget, &spent, sec_reader.items.len);
+        const inc_callers = fits(budget, &spent, sec_callers.items.len);
+        const inc_calls = fits(budget, &spent, sec_calls.items.len);
+        const inc_sites = fits(budget, &spent, sec_sites.items.len);
+
+        if (inc_reader) out.appendSlice(alloc, sec_reader.items) catch {};
+        out.appendSlice(alloc, sec_head.items) catch {};
+        if (syms.len > 0) {
+            out.appendSlice(alloc, syms) catch {};
+            if (syms_lean_fallback) {
+                w.print("\n[max_tokens: symbol bodies omitted (~{d} tokens) — raise max_tokens or codedb_read the definitions]\n", .{(sec_syms_rich.items.len - sec_syms_lean.items.len) / 4}) catch {};
+            }
+        } else if (sec_syms_rich.items.len > 0) {
+            w.print("\n[max_tokens: omitted Symbol definitions (~{d} tokens)]\n", .{sec_syms_rich.items.len / 4}) catch {};
+        }
+        if (inc_callers) {
+            out.appendSlice(alloc, sec_callers.items) catch {};
+        } else if (sec_callers.items.len > 0) {
+            w.print("\n[max_tokens: omitted Callers (~{d} tokens)]\n", .{sec_callers.items.len / 4}) catch {};
+        }
+        if (inc_calls) {
+            out.appendSlice(alloc, sec_calls.items) catch {};
+        } else if (sec_calls.items.len > 0) {
+            w.print("\n[max_tokens: omitted Calls (~{d} tokens)]\n", .{sec_calls.items.len / 4}) catch {};
+        }
+        if (inc_files) {
+            out.appendSlice(alloc, sec_files.items) catch {};
+        } else if (sec_files.items.len > 0) {
+            w.print("\n[max_tokens: omitted Most-relevant files (~{d} tokens)]\n", .{sec_files.items.len / 4}) catch {};
+        }
+        if (inc_sites) {
+            out.appendSlice(alloc, sec_sites.items) catch {};
+        } else if (sec_sites.items.len > 0) {
+            w.print("\n[max_tokens: omitted Top sites (~{d} tokens)]\n", .{sec_sites.items.len / 4}) catch {};
+        }
     }
     if (cio.posixGetenv("CODEDB_CONTEXT_PROFILE") != null) {
         std.log.info("ctx-prof ns: reader={d} cand={d} kwloop={d} rank={d} render={d} sites={d} emit={d} total={d}", .{
@@ -3036,13 +4020,17 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         return;
     };
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, ".", &root_buf)) |n| root_buf[0..n] else |_| "";
+    const root = canonicalExplorerRoot(io, explorer, &root_buf) orelse "";
     const path = projectRelPath(path_arg, root) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
     };
     if (watcher.isSensitivePath(path)) {
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
+        return;
+    }
+    if (projectTargetSafety(io, explorer, path) == .unsafe) {
+        out.appendSlice(alloc, "error: resolved path leaves project or targets sensitive state") catch {};
         return;
     }
 
@@ -3100,7 +4088,8 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         owned_content
     else blk: {
         // Fall back to disk read
-        break :blk std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch {
+        const read_dir = explorer.root_dir orelse std.Io.Dir.cwd();
+        break :blk project_fs.readFileAlloc(io, read_dir, path, alloc, .limited(10 * 1024 * 1024)) catch {
             out.appendSlice(alloc, "error: failed to read file: ") catch {};
             out.appendSlice(alloc, path) catch {};
             // Issue #356-p3: fuzzy fallback so a mistyped path is recoverable
@@ -3166,7 +4155,7 @@ fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         return;
     };
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, ".", &root_buf)) |n| root_buf[0..n] else |_| "";
+    const root = canonicalExplorerRoot(io, explorer, &root_buf) orelse "";
     const path = projectRelPath(path_arg, root) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
@@ -3187,6 +4176,14 @@ fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         out.appendSlice(alloc, "error: unknown op, must be 'create', 'replace', 'str_replace', 'insert', or 'delete'") catch {};
         return;
     };
+    const safety = if (is_create)
+        projectCreateTargetSafety(io, explorer, path)
+    else
+        projectTargetSafety(io, explorer, path);
+    if (safety == .unsafe or (is_create and safety != .safe)) {
+        out.appendSlice(alloc, "error: resolved path leaves project or targets sensitive state") catch {};
+        return;
+    }
 
     const content = getStr(args, "content");
     const range_start = getInt(args, "range_start");
@@ -3231,7 +4228,7 @@ fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
             // Include the file's current hex hash so the agent can re-read with if_hash
             // to verify it has the latest content, then retry the edit.
             const edit_dir = explorer.root_dir orelse std.Io.Dir.cwd();
-            if (edit_dir.readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024))) |bytes| {
+            if (project_fs.readFileAlloc(io, edit_dir, path, alloc, .limited(10 * 1024 * 1024))) |bytes| {
                 defer alloc.free(bytes);
                 const w = cio.listWriter(out, alloc);
                 w.print(" (current hash: {x})", .{std.hash.Wyhash.hash(0, bytes)}) catch {};
@@ -3242,7 +4239,7 @@ fn handleEdit(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
             // Tell the agent how many times old_string matched so it knows how much
             // surrounding context to add to make the anchor unique.
             const edit_dir = explorer.root_dir orelse std.Io.Dir.cwd();
-            if (edit_dir.readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024))) |bytes| {
+            if (project_fs.readFileAlloc(io, edit_dir, path, alloc, .limited(10 * 1024 * 1024))) |bytes| {
                 defer alloc.free(bytes);
                 const old = getStr(args, "old_string") orelse "";
                 var count: usize = 0;
@@ -4222,9 +5219,11 @@ fn handleIndex(
         getScanState() == .loading_snapshot)
     {
         default_explorer.setRoot(io, abs_path);
-        if (snapshot_mod.loadSnapshot(io, snapshot_path, default_explorer, default_store, alloc)) {
+        if (snapshot_mod.loadSnapshotValidated(io, snapshot_path, abs_path, default_explorer, default_store, alloc)) {
             loadProjectTrigramFromDiskIfPresent(io, default_explorer, abs_path, alloc);
-            if (default_explorer.outlines.count() > 1000) {
+            if (default_explorer.outlines.count() > 1000 and
+                (default_explorer.hasCompleteTrigramCoverage() or cio.posixGetenv("CODEDB_LOW_MEMORY") != null))
+            {
                 default_explorer.releaseContents();
                 default_explorer.releaseSecondaryIndexes();
             }
@@ -5265,6 +6264,40 @@ pub fn globMatch(pattern: []const u8, path: []const u8) bool {
     return explore_mod.matchGlob(pattern, path);
 }
 
+const ProjectTargetSafety = enum { safe, missing, unsafe };
+
+fn canonicalExplorerRoot(io: std.Io, explorer: *const Explorer, buf: []u8) ?[]const u8 {
+    const configured = explorer.root_path orelse ".";
+    const n = std.Io.Dir.cwd().realPathFile(io, configured, buf) catch return null;
+    return buf[0..n];
+}
+
+/// Verify the actual file open relative to the Explorer's held project handle.
+/// This is intentionally no-follow rather than a realpath check followed by a
+/// separate open: keeping resolution anchored closes the symlink-swap race.
+fn projectTargetSafety(io: std.Io, explorer: *const Explorer, path: []const u8) ProjectTargetSafety {
+    const dir = explorer.root_dir orelse std.Io.Dir.cwd();
+    var file = project_fs.openFileReadNoFollow(io, dir, path) catch |err| return switch (err) {
+        error.FileNotFound => .missing,
+        else => .unsafe,
+    };
+    file.close(io);
+    return .safe;
+}
+
+/// For a create, verify and hold-open every existing parent component without
+/// following symlinks. applyEdit repeats this check and keeps the parent handle
+/// through the atomic link, so this preflight is only for a clear MCP error.
+fn projectCreateTargetSafety(io: std.Io, explorer: *const Explorer, path: []const u8) ProjectTargetSafety {
+    const dir = explorer.root_dir orelse std.Io.Dir.cwd();
+    var parent = project_fs.openParentNoFollow(io, dir, path) catch |err| return switch (err) {
+        error.FileNotFound => .missing,
+        else => .unsafe,
+    };
+    parent.deinit(io);
+    return .safe;
+}
+
 pub fn isPathSafe(path: []const u8) bool {
     if (path.len == 0) return false;
     if (path[0] == '/') return false;
@@ -5557,10 +6590,10 @@ pub fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json
 }
 
 // ── MCP UX: 3-block response helpers ────────────────────────────────────────
-// Colors are always on — MCP preview pane always renders ANSI. No TTY check.
 
 const McpBlockPolicy = enum { default, lean, rich };
 var mcp_env_policy_cached: ?McpBlockPolicy = null;
+var mcp_ansi_mode_cached: ?bool = null;
 
 fn mcpEnvTruthy(v: []const u8) bool {
     return v.len > 0 and !std.mem.eql(u8, v, "0") and !std.mem.eql(u8, v, "false");
@@ -5609,6 +6642,89 @@ pub fn mcpEmitRichBlocks(client_name: ?[]const u8) bool {
         }
     }
     return mcpBuiltinRichClient(name);
+}
+
+/// ANSI carries no model-visible semantics and measured as 14.6% of response
+/// tokens across stored SWE traces. Plain text is the default; human preview
+/// clients can opt into color with CODEDB_MCP_ANSI=1.
+fn mcpAnsiMode() bool {
+    if (mcp_ansi_mode_cached) |v| return v;
+    const raw = cio.posixGetenv("CODEDB_MCP_ANSI") orelse {
+        mcp_ansi_mode_cached = false;
+        return false;
+    };
+    const enabled = raw.len > 0 and !std.mem.eql(u8, raw, "0") and !std.mem.eql(u8, raw, "false");
+    mcp_ansi_mode_cached = enabled;
+    return enabled;
+}
+
+fn stripTerminalControlsInPlace(buf: *std.ArrayList(u8)) void {
+    var read: usize = 0;
+    var write: usize = 0;
+    while (read < buf.items.len) {
+        const byte = buf.items[read];
+        if (byte == 0x1b) {
+            if (read + 1 >= buf.items.len) break;
+            const kind = buf.items[read + 1];
+            if (kind == '[') {
+                // CSI: parameters/intermediates followed by a final byte.
+                read += 2;
+                while (read < buf.items.len) : (read += 1) {
+                    const c = buf.items[read];
+                    if (c >= 0x40 and c <= 0x7e) {
+                        read += 1;
+                        break;
+                    }
+                }
+                continue;
+            }
+            if (kind == ']' or kind == 'P' or kind == 'X' or kind == '^' or kind == '_') {
+                // OSC/DCS/SOS/PM/APC strings terminate with BEL or ST (ESC \).
+                // Unterminated strings consume the remainder rather than letting
+                // attacker-controlled terminal payload leak into the response.
+                read += 2;
+                while (read < buf.items.len) {
+                    if (buf.items[read] == 0x07) {
+                        read += 1;
+                        break;
+                    }
+                    if (buf.items[read] == 0x1b and read + 1 < buf.items.len and buf.items[read + 1] == '\\') {
+                        read += 2;
+                        break;
+                    }
+                    read += 1;
+                }
+                continue;
+            }
+            // Other ISO-2022 escape sequences: optional intermediate bytes and
+            // one final byte. This covers two-byte sequences such as ESC 7 too.
+            read += 1;
+            while (read < buf.items.len and buf.items[read] >= 0x20 and buf.items[read] <= 0x2f) read += 1;
+            if (read < buf.items.len) read += 1;
+            continue;
+        }
+        if ((byte < 0x20 and byte != '\t' and byte != '\n' and byte != '\r') or byte == 0x7f) {
+            read += 1;
+            continue;
+        }
+        buf.items[write] = byte;
+        write += 1;
+        read += 1;
+    }
+    buf.items.len = write;
+}
+
+test "MCP terminal sanitizer removes CSI OSC string controls and C0 bytes" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try buf.appendSlice(std.testing.allocator, "ok\x1b]0;owned\x07path\x1b[31mred\x1b[0m\x08x\x1bPpayload\x1b\\done\tline\n");
+    stripTerminalControlsInPlace(&buf);
+    try std.testing.expectEqualStrings("okpathredxdone\tline\n", buf.items);
+
+    buf.clearRetainingCapacity();
+    try buf.appendSlice(std.testing.allocator, "safe\x1b]8;;unterminated");
+    stripTerminalControlsInPlace(&buf);
+    try std.testing.expectEqualStrings("safe", buf.items);
 }
 
 const MCP_RESET = "\x1b[0m";
@@ -5727,13 +6843,11 @@ pub fn mcpGenerateSummary(
     }
 
     if (eql(tool_name, "codedb_search") or eql(tool_name, "codedb_word")) {
-        const q = getStr(args, "query") orelse getStr(args, "word") orelse "";
-        // First line: "N results for 'q':\n" or "N hits for 'w':\n"
+        // The raw data already carries the query. Keep the user-only summary to
+        // the count so long queries are not charged twice.
         const nl = std.mem.indexOfScalar(u8, output, '\n') orelse output.len;
         const sp = std.mem.indexOfScalar(u8, output[0..nl], ' ') orelse nl;
-        buf.appendSlice(alloc, "  " ++ MCP_BOLD ++ "'") catch {};
-        buf.appendSlice(alloc, q) catch {};
-        buf.appendSlice(alloc, "'" ++ MCP_RESET ++ MCP_DASH ++ MCP_CYAN ++ MCP_BOLD) catch {};
+        buf.appendSlice(alloc, "  " ++ MCP_CYAN ++ MCP_BOLD) catch {};
         buf.appendSlice(alloc, output[0..sp]) catch {};
         buf.appendSlice(alloc, MCP_RESET) catch {};
         buf.appendSlice(alloc, if (eql(tool_name, "codedb_search")) " results" else " hits") catch {};
@@ -5835,6 +6949,13 @@ pub fn mcpGenerateGuidance(
         }
         return;
     }
+    // A next-step that assumes a result file/function exists is both wrong and
+    // larger than the useful payload on an empty lookup. Zero-hit searches
+    // should end cleanly so the caller can choose a broader query itself.
+    const zero_search = std.mem.startsWith(u8, output, "0 results for '");
+    const zero_word = std.mem.startsWith(u8, output, "0 hits for '");
+    if ((eql(tool_name, "codedb_search") and zero_search) or
+        (eql(tool_name, "codedb_word") and zero_word)) return;
     if (eql(tool_name, "codedb_tree")) {
         buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_outline path=<file> to inspect symbols" ++ MCP_RESET) catch {};
     } else if (eql(tool_name, "codedb_outline")) {
@@ -5927,6 +7048,59 @@ test "issue-258: cached project reads use the project root after contents are re
     handleRead(io, testing.allocator, &parsed.value.object, &out, ctx.explorer);
 
     try testing.expect(std.mem.indexOf(u8, out.items, "const project = \"secondary\";") != null);
+}
+
+test "codedb_read and codedb_edit reject symlink targets outside the project" {
+    const io = testing.io;
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+
+    const secret = "OUTSIDE_SYMLINK_SECRET_MARKER\n";
+    try outside.dir.writeFile(io, .{ .sub_path = "secret.zig", .data = secret });
+    var outside_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_len = try outside.dir.realPathFile(io, "secret.zig", &outside_buf);
+    project.dir.symLink(io, outside_buf[0..outside_len], "alias.zig", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var project_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_len = try project.dir.realPathFile(io, ".", &project_buf);
+    const project_root = project_buf[0..project_len];
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, project_root);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    const agent_id = try agents.register("symlink-safety-test");
+    var cache = ProjectCache.init(testing.allocator, project_root, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer cache.deinit();
+
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"alias.zig\",\"raw\":true}", .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        handleRead(io, testing.allocator, &parsed.value.object, &out, &explorer);
+        try testing.expect(std.mem.indexOf(u8, out.items, "resolved path leaves project") != null);
+        try testing.expect(std.mem.indexOf(u8, out.items, "OUTSIDE_SYMLINK_SECRET_MARKER") == null);
+    }
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"alias.zig\",\"op\":\"replace\",\"range_start\":1,\"range_end\":1,\"content\":\"overwritten\"}", .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        handleEdit(io, testing.allocator, &parsed.value.object, &out, &store, &explorer, &agents, &cache, agent_id);
+        try testing.expect(std.mem.indexOf(u8, out.items, "resolved path leaves project") != null);
+    }
+
+    const unchanged = try outside.dir.readFileAlloc(io, "secret.zig", testing.allocator, .limited(1024));
+    defer testing.allocator.free(unchanged);
+    try testing.expectEqualStrings(secret, unchanged);
 }
 
 test "ProjectCache loads project from central snapshot cache" {

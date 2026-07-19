@@ -1132,6 +1132,37 @@ test "issue-378: search waits briefly for scan to reach ready instead of returni
     try testing.expect(std.mem.indexOf(u8, out.items, "scan still in progress") == null);
 }
 
+test "bootstrap warmup is joinable before Explorer teardown" {
+    const no_warmup = EnvVarGuard.save("CODEDB_NO_WARMUP");
+    defer no_warmup.restore();
+    const low_memory = EnvVarGuard.save("CODEDB_LOW_MEMORY");
+    defer low_memory.restore();
+    cio.posixUnsetenv("CODEDB_NO_WARMUP");
+    cio.posixUnsetenv("CODEDB_LOW_MEMORY");
+
+    const prev_state = mcp_mod.getScanState();
+    defer mcp_mod.setScanState(prev_state);
+    mcp_mod.setScanState(.walking);
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    var shutdown = std.atomic.Value(bool).init(false);
+    const warmup = bootstrap_mod.spawnWarmup(io, testing.allocator, &explorer, ".", ".", &shutdown) orelse return error.TestUnexpectedResult;
+    shutdown.store(true, .release);
+    warmup.join();
+}
+
+test "bootstrap warmup disabled mode does not spawn a thread" {
+    const no_warmup = EnvVarGuard.save("CODEDB_NO_WARMUP");
+    defer no_warmup.restore();
+    cio.posixSetenv("CODEDB_NO_WARMUP", "1");
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    var shutdown = std.atomic.Value(bool).init(false);
+    try testing.expect(bootstrap_mod.spawnWarmup(io, testing.allocator, &explorer, ".", ".", &shutdown) == null);
+}
+
 test "issue-bug5: codedb_read returns binary stub instead of dumping bytes" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1263,6 +1294,59 @@ test "issue-bug7: codedb_search rejects negative max_results" {
 
     try testing.expect(std.mem.startsWith(u8, out.items, "error:"));
     try testing.expect(std.mem.indexOf(u8, out.items, "max_results") != null);
+}
+
+test "codedb_outline paginates declaration-dense files" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("dense.zig",
+        \\pub fn firstDense() void {}
+        \\pub fn secondDense() void {}
+        \\pub fn thirdDense() void {}
+        \\pub fn fourthDense() void {}
+        \\pub fn fifthDense() void {}
+    );
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const first_args = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"dense.zig\",\"max_results\":2}", .{});
+    defer first_args.deinit();
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_outline, &first_args.value.object, &first, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, first.items, "firstDense") != null);
+    try testing.expect(std.mem.indexOf(u8, first.items, "secondDense") != null);
+    try testing.expect(std.mem.indexOf(u8, first.items, "thirdDense") == null);
+    try testing.expect(std.mem.indexOf(u8, first.items, "more: 3 symbols; offset=2") != null);
+
+    const next_args = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"dense.zig\",\"max_results\":2,\"offset\":2}", .{});
+    defer next_args.deinit();
+    var next: std.ArrayList(u8) = .empty;
+    defer next.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_outline, &next_args.value.object, &next, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, next.items, "firstDense") == null);
+    try testing.expect(std.mem.indexOf(u8, next.items, "thirdDense") != null);
+    try testing.expect(std.mem.indexOf(u8, next.items, "fourthDense") != null);
+    try testing.expect(std.mem.indexOf(u8, next.items, "more: 1 symbols; offset=4") != null);
+
+    const bad_args = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"dense.zig\",\"offset\":-1}", .{});
+    defer bad_args.deinit();
+    var bad: std.ArrayList(u8) = .empty;
+    defer bad.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_outline, &bad_args.value.object, &bad, &store, &explorer, &agents);
+    try testing.expect(std.mem.startsWith(u8, bad.items, "error: offset"));
+
+    const past_args = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"dense.zig\",\"offset\":99}", .{});
+    defer past_args.deinit();
+    var past: std.ArrayList(u8) = .empty;
+    defer past.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_outline, &past_args.value.object, &past, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, past.items, "showing symbols 0-0 of 5") != null);
 }
 
 test "issue-bug11: codedb_bundle marks isError when all ops fail" {
@@ -2701,7 +2785,7 @@ test "issue-531: codedb_context max_tokens packs sections by value under the bud
     defer bench_ctx.deinit();
 
     const args_full =
-        \\{"task":"investigate widgetFrobnicate"}
+        \\{"task":"investigate widgetFrobnicate","detail":"full"}
     ;
     const parsed_full = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_full, .{});
     defer parsed_full.deinit();
@@ -2710,7 +2794,7 @@ test "issue-531: codedb_context max_tokens packs sections by value under the bud
     bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed_full.value.object, &out_full, &store, &explorer, &agents);
 
     const args_budget =
-        \\{"task":"investigate widgetFrobnicate","max_tokens":256}
+        \\{"task":"investigate widgetFrobnicate","max_tokens":256,"detail":"full"}
     ;
     const parsed_budget = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_budget, .{});
     defer parsed_budget.deinit();
@@ -2732,6 +2816,397 @@ test "issue-531: codedb_context max_tokens packs sections by value under the bud
     try testing.expect(std.mem.indexOf(u8, out_budget.items, "# Task") != null);
     try testing.expect(std.mem.indexOf(u8, out_budget.items, "## Most-relevant files") != null);
     try testing.expect(std.mem.indexOf(u8, out_budget.items, "## Top sites") == null);
+}
+
+test "codedb_context batches same-file symbol bodies without changing formatting" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/batched.zig",
+        \\pub fn alphaBody() void {
+        \\    const value = "alpha";
+        \\    _ = value;
+        \\}
+        \\pub fn betaBody() void {
+        \\    const value = "beta";
+        \\    _ = value;
+        \\}
+        \\pub fn gammaBody() void {
+        \\    const value = "gamma";
+        \\    _ = value;
+        \\}
+    );
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{"task":"inspect `alphaBody` `betaBody` `gammaBody`","detail":"full"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "- alphaBody (function) — src/batched.zig:1\n           1 | pub fn alphaBody() void {\n           2 |     const value = \"alpha\";\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "- betaBody (function) — src/batched.zig:5\n           5 | pub fn betaBody() void {\n           6 |     const value = \"beta\";\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "- gammaBody (function) — src/batched.zig:9\n           9 | pub fn gammaBody() void {\n          10 |     const value = \"gamma\";\n") != null);
+}
+
+test "codedb_context compact extracts the member from a backtick expression" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/routes.zig",
+        \\pub fn route() void {
+        \\    registerRule();
+        \\}
+        \\fn registerRule() void {}
+    );
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"trace `@app.route('/foo')` registration"}
+    , .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.startsWith(u8, out.items, "keywords: route"));
+    try testing.expect(std.mem.indexOf(u8, out.items, "## Body route — src/routes.zig:1-3") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "@app.route('/foo')") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "1|pub fn route() void {") != null);
+}
+
+test "codedb_context compact prioritizes production definitions and bodies per candidate" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("tests/alpha.zig", "pub fn alphaFocus() void { testOnly(); }\n");
+    try explorer.indexFile("src/alpha_a.zig", "pub fn alphaFocus() void { alphaPrimary(); }\n");
+    try explorer.indexFile("src/alpha_b.zig", "pub fn alphaFocus() void { alphaSecondary(); }\n");
+    try explorer.indexFile("src/beta_a.zig", "pub fn betaFocus() void { betaPrimary(); }\n");
+    try explorer.indexFile("src/beta_b.zig", "pub fn betaFocus() void { betaSecondary(); }\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"compare `alphaFocus` and `betaFocus`"}
+    , .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Four source definitions no longer disable every body, and the test
+    // duplicate does not consume either of alphaFocus's two definition slots.
+    try testing.expect(std.mem.indexOf(u8, out.items, "alphaFocus function tests/alpha.zig") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "## Body alphaFocus") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "## Body betaFocus") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "alphaPrimary") != null or std.mem.indexOf(u8, out.items, "alphaSecondary") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "betaPrimary") != null or std.mem.indexOf(u8, out.items, "betaSecondary") != null);
+}
+
+test "codedb_context compact keeps a long symbol's executable tail with an explicit gap" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    try source.appendSlice(testing.allocator, "pub fn longHandler() void {\n");
+    for (1..28) |i| {
+        const w = cio.listWriter(&source, testing.allocator);
+        try w.print("    const filler_{d}: u32 = {d};\n", .{ i, i });
+    }
+    try source.appendSlice(testing.allocator, "    registerFinalRule();\n}\n");
+    try explorer.indexFile("src/long.zig", source.items);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"inspect `longHandler`"}
+    , .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, " omitted\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "registerFinalRule();") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "       1 |") == null);
+}
+
+test "codedb_context site excerpts stay query-centered, marked, and valid UTF-8" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // The old prefix clamp spent the entire 320-byte snippet on line 1 and
+    // silently omitted the actual hit on line 2. Off-boundary emoji bytes also
+    // exercise both UTF-8 window edges.
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    for (0..200) |_| try source.appendSlice(testing.allocator, "🙂");
+    try source.append(testing.allocator, '\n');
+    try source.appendSlice(testing.allocator, "12345678uniqueAnchor");
+    for (0..200) |_| try source.appendSlice(testing.allocator, "🙂");
+    try source.append(testing.allocator, '\n');
+    try explorer.indexFile("notes/long.txt", source.items);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"investigate \"uniqueAnchor-suffix\""}
+    , .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "notes/long.txt:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "uniqueAnchor") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "B elided") != null);
+    try testing.expect(std.unicode.utf8ValidateSlice(out.items));
+}
+
+test "codedb_context usage sites are fair, lexical, and distinct from call sites" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/targets.zig",
+        \\pub fn alphaNeedle() void { alphaHelper(); }
+        \\fn alphaHelper() void {}
+        \\pub fn betaNeedle() void {}
+        \\pub const SearchResult = struct { value: u8 };
+    );
+    try explorer.indexFile("src/alpha_calls.zig",
+        \\pub fn alphaCallerA() void { alphaNeedle(); }
+        \\pub fn alphaCallerB() void { alphaNeedle(); }
+        \\pub fn alphaCallerC() void { alphaNeedle(); }
+    );
+    try explorer.indexFile("src/beta_calls.zig", "pub fn betaCaller() void { betaNeedle(); }\n");
+    try explorer.indexFile("src/references.zig",
+        \\pub fn keepReference() void {
+        \\    const typed: SearchResult = .{ .value = 1 };
+        \\    const quoted = "SearchResult";
+        \\    // SearchResult is documentation, not a usage site.
+        \\    _ = typed;
+        \\    _ = quoted;
+        \\}
+    );
+    try explorer.indexFile("schema/search.proto",
+        \\message SearchResult {}
+        \\message Envelope { SearchResult child = 1; }
+    );
+    try explorer.indexFile("src/flags.py", "enabled(\"feature_flag\")\n");
+
+    var long_decoy: std.ArrayList(u8) = .empty;
+    defer long_decoy.deinit(testing.allocator);
+    try long_decoy.appendSlice(testing.allocator, "const decoy = \"");
+    try long_decoy.appendNTimes(testing.allocator, 'x', 1200);
+    try long_decoy.appendSlice(testing.allocator, "alphaNeedle()\";\n");
+    try explorer.indexFile("src/decoy.js", long_decoy.items);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const fair_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"find usages of `alphaNeedle` and `betaNeedle`"}
+    , .{});
+    defer fair_args.deinit();
+    var fair: std.ArrayList(u8) = .empty;
+    defer fair.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &fair_args.value.object, &fair, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, fair.items, "alphaCallerA") != null);
+    try testing.expect(std.mem.indexOf(u8, fair.items, "betaCaller") != null);
+
+    const refs_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"find references to `SearchResult`"}
+    , .{});
+    defer refs_args.deinit();
+    var refs: std.ArrayList(u8) = .empty;
+    defer refs.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &refs_args.value.object, &refs, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, refs.items, "typed: SearchResult") != null);
+    try testing.expect(std.mem.indexOf(u8, refs.items, "quoted = \"SearchResult\"") == null);
+    try testing.expect(std.mem.indexOf(u8, refs.items, "SearchResult is documentation") == null);
+    try testing.expect(std.mem.indexOf(u8, refs.items, "SearchResult child") != null);
+
+    const literal_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"find occurrences of \"feature_flag\""}
+    , .{});
+    defer literal_args.deinit();
+    var literal: std.ArrayList(u8) = .empty;
+    defer literal.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &literal_args.value.object, &literal, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, literal.items, "enabled(\"feature_flag\")") != null);
+
+    const calls_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"find call sites for `SearchResult`"}
+    , .{});
+    defer calls_args.deinit();
+    var calls: std.ArrayList(u8) = .empty;
+    defer calls.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &calls_args.value.object, &calls, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, calls.items, "typed: SearchResult") == null);
+
+    const trace_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"trace call sites for `alphaNeedle`"}
+    , .{});
+    defer trace_args.deinit();
+    var trace: std.ArrayList(u8) = .empty;
+    defer trace.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &trace_args.value.object, &trace, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, trace.items, "## Callees") != null);
+    try testing.expect(std.mem.indexOf(u8, trace.items, "alphaHelper") != null);
+    try testing.expect(std.mem.indexOf(u8, trace.items, "## Sites") != null);
+    try testing.expect(std.mem.indexOf(u8, trace.items, "src/decoy.js") == null);
+}
+
+test "codedb_context compact shares one hard byte cap across body head and tail" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    try source.appendSlice(testing.allocator, "pub fn giantBody() void {\n");
+    for (0..30) |line_i| {
+        const w = cio.listWriter(&source, testing.allocator);
+        try w.print("    const filler_{d} = \"", .{line_i});
+        try source.appendNTimes(testing.allocator, 'x', 340);
+        try source.appendSlice(testing.allocator, "\";\n");
+    }
+    try source.appendSlice(testing.allocator, "}\n");
+    try explorer.indexFile("src/giant.zig", source.items);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"inspect `giantBody`"}
+    , .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    const body_start = std.mem.indexOf(u8, out.items, "## Body giantBody") orelse return error.TestUnexpectedResult;
+    const body_end = std.mem.indexOfPos(u8, out.items, body_start + 1, "\n## ") orelse out.items.len;
+    try testing.expect(body_end - body_start < 4300);
+    try testing.expect(std.mem.indexOfPos(u8, out.items, body_start, "body byte cap reached") != null);
+}
+
+test "codedb_context compact budgets are monotonic and prioritize requested sites" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    try source.appendSlice(testing.allocator, "pub fn targetFn() void {\n");
+    for (0..24) |line_i| {
+        const w = cio.listWriter(&source, testing.allocator);
+        try w.print("    const filler_{d}: u64 = {d};\n", .{ line_i, line_i });
+    }
+    try source.appendSlice(testing.allocator, "}\n");
+    try explorer.indexFile("src/target.zig", source.items);
+    try explorer.indexFile("src/use.zig", "pub const callback = targetFn;\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const stop_words = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"find code using `targetFn`"}
+    , .{});
+    defer stop_words.deinit();
+    var stop_out: std.ArrayList(u8) = .empty;
+    defer stop_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &stop_words.value.object, &stop_out, &store, &explorer, &agents);
+    try testing.expect(std.mem.startsWith(u8, stop_out.items, "keywords: targetFn\n"));
+
+    const budgets = [_]u32{ 256, 320, 400, 512, 700, 1000 };
+    const section_names = [_][]const u8{ "## Definitions", "## Body", "## Callers", "## Callees", "## Files", "## Sites" };
+    var previous_sections: [section_names.len]bool = @splat(false);
+    var previous_len: usize = 0;
+    for (budgets) |budget| {
+        var json_buf: [160]u8 = undefined;
+        const args_json = try std.fmt.bufPrint(&json_buf, "{{\"task\":\"find usages of `targetFn`\",\"max_tokens\":{d}}}", .{budget});
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+        try testing.expect(out.items.len <= @as(usize, budget) * 5 / 2);
+        try testing.expect(out.items.len >= previous_len);
+        for (section_names, 0..) |section, section_i| {
+            const present = std.mem.indexOf(u8, out.items, section) != null;
+            if (previous_sections[section_i]) try testing.expect(present);
+            previous_sections[section_i] = present;
+        }
+        if (budget == 256) {
+            try testing.expect(std.mem.indexOf(u8, out.items, "## Sites") != null);
+            try testing.expect(std.mem.indexOf(u8, out.items, "callback = targetFn") != null);
+        }
+        previous_len = out.items.len;
+    }
+}
+
+test "codedb_context detail full retains legacy framing" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/item.zig", "pub fn itemLookup() void {}\n");
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"inspect itemLookup","detail":"full"}
+    , .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+    try testing.expect(std.mem.startsWith(u8, out.items, "# Task\ninspect itemLookup\n"));
+    try testing.expect(std.mem.indexOf(u8, out.items, "## Symbol definitions") != null);
 }
 
 // Issue #626: structural-tool steering. The search nudge only fires for bare

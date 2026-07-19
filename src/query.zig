@@ -25,6 +25,12 @@ const hasExtraCliArgs = cli_args.hasExtraCliArgs;
 /// word, read, hot. Unknown commands return 1.
 pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, root: []const u8, cmd: []const u8, args: []const []const u8, cmd_args_start: usize, out: *Out, s: sty.Style) u8 {
     const use_color = s.reset.len != 0;
+    // A daemon can start before the current trigram cache exists. Retry at
+    // query time so a later index build heals the long-lived process instead
+    // of leaving every search on the O(total source bytes) fallback forever.
+    if (std.mem.eql(u8, cmd, "search")) {
+        mcp_server.loadProjectTrigramFromDiskIfPresent(io, explorer, root, allocator);
+    }
     if (std.mem.eql(u8, cmd, "tree")) {
         if (hasExtraCliArgs(args, cmd_args_start)) {
             out.p("{s}\xe2\x9c\x97{s} unexpected extra argument: {s}{s}{s}  (usage: codedb [root] {s}tree{s})\n", .{

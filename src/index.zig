@@ -1,4 +1,5 @@
 const std = @import("std");
+const path_policy = @import("path_policy.zig");
 const cio = @import("cio.zig");
 const ContentCache = @import("hot_cache.zig").ContentCache;
 
@@ -45,6 +46,17 @@ pub const WordIndex = struct {
     pub fn hitPath(self: *const WordIndex, hit: WordHit) []const u8 {
         if (hit.doc_id < self.id_to_path.items.len) return self.id_to_path.items[hit.doc_id];
         return "";
+    }
+
+    /// True when every file carried by this index is still part of the
+    /// authoritative project outline set. Disk-cache admission uses this in
+    /// addition to the header count: equal counts alone do not catch a stale
+    /// cache where one old path replaced one current path.
+    pub fn allFilesPresentIn(self: *const WordIndex, files: anytype) bool {
+        for (self.id_to_path.items) |path| {
+            if (path.len == 0 or !files.contains(path)) return false;
+        }
+        return true;
     }
 
     fn getOrCreateDocId(self: *WordIndex, path: []const u8) !u32 {
@@ -667,7 +679,10 @@ pub const WordIndex = struct {
     };
 
     const DISK_MAGIC = [4]u8{ 'C', 'D', 'B', 'W' };
-    const DISK_FORMAT_VERSION: u16 = 3;
+    // v4 invalidates pre agent-artifact-policy file tables. The serialized
+    // layout is unchanged; one rebuild removes paths that must no longer be
+    // searchable.
+    const DISK_FORMAT_VERSION: u16 = 4;
 
     pub fn writeToDisk(self: *WordIndex, io: std.Io, dir_path: []const u8, git_head: ?[40]u8) !void {
         var file_table: std.ArrayList([]const u8) = .empty;
@@ -680,6 +695,7 @@ pub const WordIndex = struct {
         // covers incrementally indexed files once bulk-loaded docs exist.
         for (self.id_to_path.items, 0..) |path, doc_idx| {
             if (path.len == 0) continue;
+            if (!path_policy.isSafeIndexedPath(path)) return error.InvalidData;
             if (path.len > std.math.maxInt(u16)) return error.NameTooLong;
             const id: u32 = @intCast(file_table.items.len);
             try file_table.append(self.allocator, path);
@@ -825,7 +841,9 @@ pub const WordIndex = struct {
             const path_len = std.mem.readInt(u16, data[pos..][0..2], .little);
             pos += 2;
             if (path_len == 0 or pos + path_len > data.len) return null;
-            file_paths[i] = try allocator.dupe(u8, data[pos .. pos + path_len]);
+            const path = data[pos .. pos + path_len];
+            if (!path_policy.isSafeIndexedPath(path)) return error.InvalidData;
+            file_paths[i] = try allocator.dupe(u8, path);
             pos += path_len;
             parsed_files += 1;
         }
@@ -897,7 +915,9 @@ pub const WordIndex = struct {
         try result.id_to_path.ensureTotalCapacity(allocator, file_count);
         for (0..file_count) |i| {
             result.id_to_path.appendAssumeCapacity(file_paths[i]);
-            try result.path_to_id.put(file_paths[i], @intCast(i));
+            const path_gop = try result.path_to_id.getOrPut(file_paths[i]);
+            if (path_gop.found_existing) return error.InvalidData;
+            path_gop.value_ptr.* = @intCast(i);
             if (dl_values[i] > 0) {
                 try result.doc_lengths.put(@intCast(i), dl_values[i]);
             }
@@ -944,13 +964,20 @@ pub const WordIndex = struct {
         errdefer result.deinit();
 
         try result.id_to_path.ensureTotalCapacity(allocator, file_count);
+        var seen_paths = std.StringHashMap(void).init(allocator);
+        defer seen_paths.deinit();
+        try seen_paths.ensureTotalCapacity(file_count);
         var pos: usize = 51;
         for (0..file_count) |_| {
             if (pos + 2 > data.len) return null;
             const plen = std.mem.readInt(u16, data[pos..][0..2], .little);
             pos += 2;
             if (plen == 0 or pos + plen > data.len) return null;
-            const path = try allocator.dupe(u8, data[pos .. pos + plen]);
+            const raw_path = data[pos .. pos + plen];
+            if (!path_policy.isSafeIndexedPath(raw_path)) return error.InvalidData;
+            const seen = try seen_paths.getOrPut(raw_path);
+            if (seen.found_existing) return error.InvalidData;
+            const path = try allocator.dupe(u8, raw_path);
             result.id_to_path.appendAssumeCapacity(path);
             pos += plen;
         }
@@ -1001,7 +1028,7 @@ pub const WordIndex = struct {
         if (n < 51) return null;
         if (!std.mem.eql(u8, buf[0..4], &DISK_MAGIC)) return null;
         const version = std.mem.readInt(u16, buf[4..6], .little);
-        if (version < 1 or version > DISK_FORMAT_VERSION) return null;
+        if (version != DISK_FORMAT_VERSION) return null;
 
         const file_count = std.mem.readInt(u32, buf[6..10], .little);
         var git_head: ?[40]u8 = null;
@@ -1046,7 +1073,6 @@ pub const DocPosting = struct {
 
 pub const PostingList = struct {
     items: std.ArrayList(DocPosting) = .empty,
-    path_to_id: ?*const std.StringHashMap(u32) = null,
 
     pub fn deinit(self: *PostingList, allocator: std.mem.Allocator) void {
         self.items.deinit(allocator);
@@ -1054,16 +1080,6 @@ pub const PostingList = struct {
 
     pub fn count(self: *const PostingList) usize {
         return self.items.items.len;
-    }
-
-    pub fn get(self: *const PostingList, path: []const u8) ?PostingMask {
-        const p2id = self.path_to_id orelse return null;
-        const doc_id = p2id.get(path) orelse return null;
-        return self.getByDocId(doc_id);
-    }
-
-    pub fn contains(self: *const PostingList, path: []const u8) bool {
-        return self.get(path) != null;
     }
 
     pub fn getByDocId(self: *const PostingList, doc_id: u32) ?PostingMask {
@@ -1244,6 +1260,16 @@ pub const TrigramIndex = struct {
         self.id_to_path.items[doc_id] = "";
     }
 
+    /// Path-oriented posting lookup belongs on the owning index: keeping a
+    /// pointer to `path_to_id` inside every PostingList made returned/moved
+    /// TrigramIndex values retain a dangling pointer to their old stack frame.
+    /// Centralizing the translation also removes one pointer per trigram.
+    pub fn postingMask(self: *const TrigramIndex, tri: Trigram, path: []const u8) ?PostingMask {
+        const doc_id = self.path_to_id.get(path) orelse return null;
+        const posting_list = self.index.getPtr(tri) orelse return null;
+        return posting_list.getByDocId(doc_id);
+    }
+
     pub fn indexFile(self: *TrigramIndex, path: []const u8, content: []const u8) !void {
         const id_count_before = self.id_to_path.items.len;
         self.removeFile(path);
@@ -1312,7 +1338,7 @@ pub const TrigramIndex = struct {
 
             const idx_gop = try self.index.getOrPut(tri);
             if (!idx_gop.found_existing) {
-                idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
+                idx_gop.value_ptr.* = .{};
             }
             if (is_new_doc) {
                 // New doc_id is always max: append maintains sorted PostingList order.
@@ -1371,7 +1397,7 @@ pub const TrigramIndex = struct {
             const mask = entry.value_ptr.*;
             const idx_gop = try self.index.getOrPut(tri);
             if (!idx_gop.found_existing) {
-                idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
+                idx_gop.value_ptr.* = .{};
             }
             if (is_new_doc) {
                 try idx_gop.value_ptr.items.append(self.allocator, .{
@@ -1427,7 +1453,7 @@ pub const TrigramIndex = struct {
             const mask = entry.value_ptr.*;
             const idx_gop = try self.index.getOrPut(tri);
             if (!idx_gop.found_existing) {
-                idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
+                idx_gop.value_ptr.* = .{};
             }
             // removeFile can free and then reuse a lower doc_id, so append
             // would violate PostingList's sorted-doc-ID invariant. Mmap-backed
@@ -1449,7 +1475,7 @@ pub const TrigramIndex = struct {
         for (trigrams) |te| {
             const idx_gop = try self.index.getOrPut(te.tri);
             if (!idx_gop.found_existing) {
-                idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
+                idx_gop.value_ptr.* = .{};
             }
             try idx_gop.value_ptr.items.append(self.allocator, .{
                 .doc_id = doc_id,
@@ -1467,7 +1493,7 @@ pub const TrigramIndex = struct {
         while (iter.next()) |entry| {
             const idx_gop = try self.index.getOrPut(entry.key_ptr.*);
             if (!idx_gop.found_existing) {
-                idx_gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
+                idx_gop.value_ptr.* = .{};
             }
             try idx_gop.value_ptr.items.append(self.allocator, .{
                 .doc_id = doc_id,
@@ -1506,7 +1532,7 @@ pub const TrigramIndex = struct {
 
             const gop = try self.index.getOrPut(entry.key_ptr.*);
             if (!gop.found_existing) {
-                gop.value_ptr.* = .{ .path_to_id = &self.path_to_id };
+                gop.value_ptr.* = .{};
                 if (can_transfer) {
                     gop.value_ptr.items = entry.value_ptr.items;
                     entry.value_ptr.items = .empty;
@@ -1721,7 +1747,20 @@ pub const TrigramIndex = struct {
 
     pub const POSTINGS_MAGIC = [4]u8{ 'C', 'D', 'B', 'T' };
     pub const LOOKUP_MAGIC = [4]u8{ 'C', 'D', 'B', 'L' };
-    pub const FORMAT_VERSION: u16 = 3;
+    // v5 adds a shared generation nonce to both files. The pair is published
+    // with two renames, so version equality alone cannot distinguish a crash-
+    // mixed old lookup from a new postings file built by the same binary.
+    pub const FORMAT_VERSION: u16 = 5;
+    pub const POSTINGS_HEADER_SIZE: usize = 67;
+    pub const LOOKUP_HEADER_SIZE: usize = 28;
+
+    fn postingsHeaderSize(version: u16) usize {
+        return if (version >= 5) POSTINGS_HEADER_SIZE else if (version >= 3) 51 else if (version >= 2) 49 else 8;
+    }
+
+    fn lookupHeaderSize(version: u16) usize {
+        return if (version >= 5) LOOKUP_HEADER_SIZE else 12;
+    }
 
     /// Posting entry for v3+: file_id (u32) + next_mask (u8) + loc_mask (u8) + pad (2 bytes) = 8 bytes
     pub const DiskPosting = extern struct {
@@ -1748,6 +1787,10 @@ pub const TrigramIndex = struct {
     /// Write the current in-memory index to disk in a two-file format.
     /// Each file is replaced via tmp + rename; publishing the pair is not transactional.
     pub fn writeToDisk(self: *TrigramIndex, io: std.Io, dir_path: []const u8, git_head: ?[40]u8) !void {
+        var generation: [16]u8 = undefined;
+        std.mem.writeInt(u64, generation[0..8], cio.randU64(), .little);
+        std.mem.writeInt(u64, generation[8..16], cio.randU64(), .little);
+
         // Step 1: Build the file table in ascending in-memory doc_id order. Posting
         // lists are sorted by doc_id, so this makes their remapped disk file_ids
         // sorted too — an invariant required by the mmap merge and binary searches.
@@ -1762,6 +1805,7 @@ pub const TrigramIndex = struct {
         for (self.id_to_path.items, 0..) |path, doc_idx| {
             if (path.len == 0) continue;
             if (use_tracked_files and !self.file_trigrams.contains(path)) continue;
+            if (!path_policy.isSafeIndexedPath(path)) return error.InvalidData;
             if (path.len > std.math.maxInt(u16)) return error.NameTooLong;
             if (file_table.items.len >= std.math.maxInt(u32)) return error.IndexTooLarge;
             const disk_id: u32 = @intCast(file_table.items.len);
@@ -1815,7 +1859,7 @@ pub const TrigramIndex = struct {
             var lw_buf: [64 * 1024]u8 = undefined;
             var lw = lookup_file.writer(io, &lw_buf);
 
-            // Lookup header: magic(4) + version(2) + pad(2) + entry_count(4) = 12 bytes
+            // Lookup header v5: legacy 12-byte header + shared generation.
             try lw.interface.writeAll(&LOOKUP_MAGIC);
             var lookup_version_buf: [2]u8 = undefined;
             std.mem.writeInt(u16, &lookup_version_buf, FORMAT_VERSION, .little);
@@ -1824,8 +1868,9 @@ pub const TrigramIndex = struct {
             var lookup_count_buf: [4]u8 = undefined;
             std.mem.writeInt(u32, &lookup_count_buf, lookup_entry_count, .little);
             try lw.interface.writeAll(&lookup_count_buf);
+            try lw.interface.writeAll(&generation);
 
-            // Postings header v3: magic(4) + version(2) + file_count(4) + head_len(1) + head(40) = 51 bytes
+            // Postings header v5: v3's 51-byte header + shared generation.
             try pw.interface.writeAll(&POSTINGS_MAGIC);
             var ver_buf: [2]u8 = undefined;
             std.mem.writeInt(u16, &ver_buf, FORMAT_VERSION, .little);
@@ -1841,6 +1886,7 @@ pub const TrigramIndex = struct {
                 try pw.interface.writeAll(&.{0});
                 try pw.interface.writeAll(&@as([40]u8, @splat(0)));
             }
+            try pw.interface.writeAll(&generation);
 
             // File table: for each file, path_len(u16) + path bytes
             for (file_table.items) |path| {
@@ -1926,23 +1972,19 @@ pub const TrigramIndex = struct {
         const lookup_data = std.Io.Dir.cwd().readFileAlloc(io, lookup_path, allocator, .limited(64 * 1024 * 1024)) catch return null;
         defer allocator.free(lookup_data);
 
-        // Validate postings header (v1: 8 bytes, v2: 49 bytes, v3: 51 bytes)
+        // Validate postings header (v1: 8, v2: 49, v3/v4: 51, v5: 67).
         if (postings_data.len < 8) return null;
         if (!std.mem.eql(u8, postings_data[0..4], &POSTINGS_MAGIC)) return null;
         const post_version = std.mem.readInt(u16, postings_data[4..6], .little);
         if (post_version < 1 or post_version > FORMAT_VERSION) return null;
+        const minimum_post_header = postingsHeaderSize(post_version);
+        if (postings_data.len < minimum_post_header) return null;
         const file_count: u32 = if (post_version >= 3)
             std.mem.readInt(u32, postings_data[6..10], .little)
         else
             std.mem.readInt(u16, postings_data[6..8], .little);
 
-        const file_table_start: usize = if (post_version >= 3) blk: {
-            if (postings_data.len < 51) return null;
-            break :blk 51;
-        } else if (post_version >= 2) blk: {
-            if (postings_data.len < 49) return null;
-            break :blk 49;
-        } else 8;
+        const file_table_start = minimum_post_header;
 
         // Parse file table
         var file_paths = try allocator.alloc([]u8, file_count);
@@ -1956,8 +1998,10 @@ pub const TrigramIndex = struct {
             if (pos + 2 > postings_data.len) return null;
             const path_len = std.mem.readInt(u16, postings_data[pos..][0..2], .little);
             pos += 2;
-            if (pos + path_len > postings_data.len) return null;
-            file_paths[i] = try allocator.dupe(u8, postings_data[pos .. pos + path_len]);
+            if (path_len == 0 or pos + path_len > postings_data.len) return null;
+            const path = postings_data[pos .. pos + path_len];
+            if (!path_policy.isSafeIndexedPath(path)) return error.InvalidData;
+            file_paths[i] = try allocator.dupe(u8, path);
             parsed_files += 1;
             pos += path_len;
         }
@@ -1974,8 +2018,12 @@ pub const TrigramIndex = struct {
         if (!std.mem.eql(u8, lookup_data[0..4], &LOOKUP_MAGIC)) return null;
         const lk_version = std.mem.readInt(u16, lookup_data[4..6], .little);
         if (lk_version < 1 or lk_version > FORMAT_VERSION) return null;
+        if (lk_version != post_version) return null;
+        const lookup_header_size = lookupHeaderSize(lk_version);
+        if (lookup_data.len < lookup_header_size) return null;
+        if (post_version >= 5 and !std.mem.eql(u8, postings_data[51..67], lookup_data[12..28])) return null;
         const entry_count = std.mem.readInt(u32, lookup_data[8..12], .little);
-        if (lookup_data.len < 12 + entry_count * @sizeOf(LookupEntry)) return null;
+        if (lookup_data.len < lookup_header_size + entry_count * @sizeOf(LookupEntry)) return null;
 
         // Build in-memory index
         var result = TrigramIndex.init(allocator);
@@ -1989,14 +2037,18 @@ pub const TrigramIndex = struct {
             const duped = try allocator.dupe(u8, file_paths[i]);
             errdefer allocator.free(duped);
             stable_paths[i] = duped;
-            try result.file_trigrams.put(duped, .empty);
-            try result.path_to_id.put(duped, @intCast(i));
+            const file_gop = try result.file_trigrams.getOrPut(duped);
+            if (file_gop.found_existing) return error.InvalidData;
+            file_gop.value_ptr.* = .empty;
+            const path_gop = try result.path_to_id.getOrPut(duped);
+            if (path_gop.found_existing) return error.InvalidData;
+            path_gop.value_ptr.* = @intCast(i);
             try result.id_to_path.append(allocator, duped);
         }
 
         // Parse lookup entries and populate index + file_trigrams
         for (0..entry_count) |e| {
-            const entry_off = 12 + e * @sizeOf(LookupEntry);
+            const entry_off = lookup_header_size + e * @sizeOf(LookupEntry);
             const raw = lookup_data[entry_off..][0..@sizeOf(LookupEntry)];
             const entry: *align(1) const LookupEntry = @ptrCast(raw.ptr);
 
@@ -2006,7 +2058,7 @@ pub const TrigramIndex = struct {
 
             if (@as(u64, p_off) + @as(u64, p_count) > @as(u64, total_postings)) return error.InvalidData;
 
-            var posting_list: PostingList = .{ .path_to_id = &result.path_to_id };
+            var posting_list: PostingList = .{};
             errdefer posting_list.deinit(allocator);
 
             for (0..p_count) |pi| {
@@ -2051,6 +2103,14 @@ pub const TrigramIndex = struct {
         return @intCast(self.file_trigrams.count());
     }
 
+    pub fn allFilesPresentIn(self: *const TrigramIndex, files: anytype) bool {
+        var it = self.file_trigrams.keyIterator();
+        while (it.next()) |path| {
+            if (!files.contains(path.*)) return false;
+        }
+        return true;
+    }
+
     /// Shrink all posting lists to their actual length, releasing excess capacity.
     /// Call after bulk indexing to reclaim ArrayList over-allocation (~50% savings).
     pub fn shrinkPostingLists(self: *TrigramIndex) void {
@@ -2073,6 +2133,7 @@ pub const TrigramIndex = struct {
     pub const DiskHeader = struct {
         file_count: u32,
         git_head: ?[40]u8,
+        format_version: u16,
     };
 
     /// Read just the postings file header — fast, no full file load.
@@ -2084,12 +2145,14 @@ pub const TrigramIndex = struct {
         const file = std.Io.Dir.cwd().openFile(io, postings_path, .{}) catch return null;
         defer file.close(io);
 
-        var buf: [51]u8 = undefined;
+        var buf: [POSTINGS_HEADER_SIZE]u8 = undefined;
         const n = file.readPositionalAll(io, &buf, 0) catch return null;
         if (n < 8) return null;
         if (!std.mem.eql(u8, buf[0..4], &POSTINGS_MAGIC)) return null;
         const version = std.mem.readInt(u16, buf[4..6], .little);
         if (version < 1 or version > FORMAT_VERSION) return null;
+        const minimum_header = postingsHeaderSize(version);
+        if (n < minimum_header) return null;
         const file_count: u32 = if (version >= 3)
             std.mem.readInt(u32, buf[6..10], .little)
         else
@@ -2111,7 +2174,7 @@ pub const TrigramIndex = struct {
                 git_head = head;
             }
         }
-        return DiskHeader{ .file_count = file_count, .git_head = git_head };
+        return DiskHeader{ .file_count = file_count, .git_head = git_head, .format_version = version };
     }
 
     /// Read the git HEAD stored in the disk index header.
@@ -2139,6 +2202,8 @@ pub const StatusMeta = struct {
 pub fn readStatusMeta(io: std.Io, data_dir: []const u8, allocator: std.mem.Allocator) StatusMeta {
     const hdr = (TrigramIndex.readDiskHeader(io, data_dir, allocator) catch null) orelse
         return .{ .indexed = false, .file_count = 0, .git_head = null };
+    if (hdr.format_version != TrigramIndex.FORMAT_VERSION)
+        return .{ .indexed = false, .file_count = 0, .git_head = null };
     return .{ .indexed = true, .file_count = hdr.file_count, .git_head = hdr.git_head };
 }
 
@@ -2154,6 +2219,7 @@ pub const MmapTrigramIndex = struct {
     file_table: []const []const u8,
     file_set: std.StringHashMap(void),
     postings_start: usize,
+    lookup_start: usize,
     lookup_entries: usize,
     post_version: u16,
     allocator: std.mem.Allocator,
@@ -2174,85 +2240,88 @@ pub const MmapTrigramIndex = struct {
         const post_size = post_file.length(io) catch return null;
         if (post_size < 8) return null;
         const postings_data = cio.mmapReadonly(post_file.handle, post_size) catch return null;
-        errdefer cio.munmap(postings_data);
+        var transfer_postings = false;
+        defer if (!transfer_postings) cio.munmap(postings_data);
 
         // mmap lookup file
-        const lk_file = std.Io.Dir.cwd().openFile(io, lookup_path, .{}) catch {
-            cio.munmap(postings_data);
-            return null;
-        };
+        const lk_file = std.Io.Dir.cwd().openFile(io, lookup_path, .{}) catch return null;
         defer lk_file.close(io);
-        const lk_size = lk_file.length(io) catch {
-            cio.munmap(postings_data);
-            return null;
-        };
-        if (lk_size < 12) {
-            cio.munmap(postings_data);
-            return null;
-        }
-        const lookup_data = cio.mmapReadonly(lk_file.handle, lk_size) catch {
-            cio.munmap(postings_data);
-            return null;
-        };
-        errdefer cio.munmap(lookup_data);
+        const lk_size = lk_file.length(io) catch return null;
+        if (lk_size < 12) return null;
+        const lookup_data = cio.mmapReadonly(lk_file.handle, lk_size) catch return null;
+        var transfer_lookup = false;
+        defer if (!transfer_lookup) cio.munmap(lookup_data);
 
         // Validate postings header
         if (!std.mem.eql(u8, postings_data[0..4], &TrigramIndex.POSTINGS_MAGIC)) return null;
         const post_version = std.mem.readInt(u16, postings_data[4..6], .little);
         if (post_version < 1 or post_version > TrigramIndex.FORMAT_VERSION) return null;
+        const minimum_post_header = TrigramIndex.postingsHeaderSize(post_version);
+        if (postings_data.len < minimum_post_header) return null;
         const file_count: u32 = if (post_version >= 3)
             std.mem.readInt(u32, postings_data[6..10], .little)
         else
             std.mem.readInt(u16, postings_data[6..8], .little);
 
-        const file_table_start: usize = if (post_version >= 3) blk: {
-            if (postings_data.len < 51) return null;
-            break :blk 51;
-        } else if (post_version >= 2) blk: {
-            if (postings_data.len < 49) return null;
-            break :blk 49;
-        } else 8;
+        const file_table_start = minimum_post_header;
+
+        // Validate the pair before allocating path tables. A crash can leave a
+        // newly-renamed postings file beside an older lookup file; accepting
+        // independent versions would silently pair unrelated offsets.
+        if (!std.mem.eql(u8, lookup_data[0..4], &TrigramIndex.LOOKUP_MAGIC)) return null;
+        const lk_version = std.mem.readInt(u16, lookup_data[4..6], .little);
+        if (lk_version < 1 or lk_version > TrigramIndex.FORMAT_VERSION) return null;
+        if (lk_version != post_version) return null;
+        const lookup_header_size = TrigramIndex.lookupHeaderSize(lk_version);
+        if (lookup_data.len < lookup_header_size) return null;
+        if (post_version >= 5 and !std.mem.eql(u8, postings_data[51..67], lookup_data[12..28])) return null;
+        const entry_count = std.mem.readInt(u32, lookup_data[8..12], .little);
+        if (lookup_data.len < lookup_header_size + entry_count * @sizeOf(TrigramIndex.LookupEntry)) return null;
 
         // Parse file table (we need owned path strings for lookups)
         var file_table = try allocator.alloc([]const u8, file_count);
         var parsed: u32 = 0;
-        errdefer {
+        var transfer_file_table = false;
+        defer if (!transfer_file_table) {
             for (0..parsed) |i| allocator.free(file_table[i]);
             allocator.free(file_table);
-        }
+        };
         var pos: usize = file_table_start;
         for (0..file_count) |i| {
             if (pos + 2 > postings_data.len) return null;
             const path_len = std.mem.readInt(u16, postings_data[pos..][0..2], .little);
             pos += 2;
-            if (pos + path_len > postings_data.len) return null;
-            file_table[i] = try allocator.dupe(u8, postings_data[pos .. pos + path_len]);
+            if (path_len == 0 or pos + path_len > postings_data.len) return null;
+            const raw_path = postings_data[pos .. pos + path_len];
+            if (!path_policy.isSafeIndexedPath(raw_path)) return error.InvalidData;
+            file_table[i] = try allocator.dupe(u8, raw_path);
             parsed += 1;
             pos += path_len;
         }
 
         // Build file_set for containsFile queries
         var file_set = std.StringHashMap(void).init(allocator);
-        errdefer file_set.deinit();
+        var transfer_file_set = false;
+        defer if (!transfer_file_set) file_set.deinit();
         for (file_table[0..parsed]) |p| {
-            try file_set.put(p, {});
+            const gop = try file_set.getOrPut(p);
+            if (gop.found_existing) return error.InvalidData;
+            gop.value_ptr.* = {};
         }
 
         const postings_start = pos;
 
-        // Validate lookup header
-        if (!std.mem.eql(u8, lookup_data[0..4], &TrigramIndex.LOOKUP_MAGIC)) return null;
-        const lk_version = std.mem.readInt(u16, lookup_data[4..6], .little);
-        if (lk_version < 1 or lk_version > TrigramIndex.FORMAT_VERSION) return null;
-        const entry_count = std.mem.readInt(u32, lookup_data[8..12], .little);
-        if (lookup_data.len < 12 + entry_count * @sizeOf(TrigramIndex.LookupEntry)) return null;
-
+        transfer_postings = true;
+        transfer_lookup = true;
+        transfer_file_table = true;
+        transfer_file_set = true;
         return MmapTrigramIndex{
             .postings_data = postings_data,
             .lookup_data = lookup_data,
             .file_table = file_table,
             .file_set = file_set,
             .postings_start = postings_start,
+            .lookup_start = lookup_header_size,
             .lookup_entries = entry_count,
             .post_version = post_version,
             .allocator = allocator,
@@ -2275,6 +2344,13 @@ pub const MmapTrigramIndex = struct {
         return self.file_set.contains(path);
     }
 
+    pub fn allFilesPresentIn(self: *const MmapTrigramIndex, files: anytype) bool {
+        for (self.file_table) |path| {
+            if (!files.contains(path)) return false;
+        }
+        return true;
+    }
+
     fn lookupTrigram(self: *const MmapTrigramIndex, tri_val: u32) ?struct { offset: u32, count: u32 } {
         const entries = self.lookup_entries;
         if (entries == 0) return null;
@@ -2282,7 +2358,7 @@ pub const MmapTrigramIndex = struct {
         var hi: usize = entries;
         while (lo < hi) {
             const mid = lo + (hi - lo) / 2;
-            const entry_off = 12 + mid * @sizeOf(TrigramIndex.LookupEntry);
+            const entry_off = self.lookup_start + mid * @sizeOf(TrigramIndex.LookupEntry);
             const entry_tri = std.mem.readInt(u32, self.lookup_data[entry_off..][0..4], .little);
             if (entry_tri == tri_val) {
                 const offset = std.mem.readInt(u32, self.lookup_data[entry_off + 4 ..][0..4], .little);
@@ -2299,7 +2375,7 @@ pub const MmapTrigramIndex = struct {
     }
 
     fn lookupEntryAt(self: *const MmapTrigramIndex, idx: usize) TrigramIndex.LookupEntry {
-        const entry_off = 12 + idx * @sizeOf(TrigramIndex.LookupEntry);
+        const entry_off = self.lookup_start + idx * @sizeOf(TrigramIndex.LookupEntry);
         return .{
             .trigram = std.mem.readInt(u32, self.lookup_data[entry_off..][0..4], .little),
             .offset = std.mem.readInt(u32, self.lookup_data[entry_off + 4 ..][0..4], .little),
@@ -2654,6 +2730,15 @@ pub const AnyTrigramIndex = union(enum) {
         };
     }
 
+    pub fn allFilesPresentIn(self: *const AnyTrigramIndex, files: anytype) bool {
+        return switch (self.*) {
+            .heap => |*h| h.allFilesPresentIn(files),
+            .mmap => |*m| m.allFilesPresentIn(files),
+            .mmap_overlay => |*mo| mo.base.allFilesPresentIn(files) and
+                mo.overlay.allFilesPresentIn(files),
+        };
+    }
+
     pub fn indexFile(self: *AnyTrigramIndex, path: []const u8, content: []const u8) !void {
         switch (self.*) {
             .heap => |*h| try h.indexFile(path, content),
@@ -2768,7 +2853,7 @@ pub const AnyTrigramIndex = union(enum) {
         const doc_id = merged.path_to_id.get(path) orelse return;
         const gop = try merged.index.getOrPut(tri);
         if (!gop.found_existing) {
-            gop.value_ptr.* = .{ .path_to_id = &merged.path_to_id };
+            gop.value_ptr.* = .{};
         }
         const posting = try gop.value_ptr.getOrAddPosting(merged.allocator, doc_id);
         posting.next_mask |= next_mask;

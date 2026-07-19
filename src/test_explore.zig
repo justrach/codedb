@@ -208,6 +208,73 @@ test "word index: deduped search" {
     try testing.expect(hits.len == 1);
 }
 
+test "explorer: concurrent word-index rebuild is single-flight" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("single.zig", "pub fn singleFlightToken() void {}");
+    explorer.markWordIndexIncomplete(false);
+    const generation_before = explorer.word_index_generation;
+
+    var failures = std.atomic.Value(u32).init(0);
+    const Worker = struct {
+        fn run(exp: *Explorer, failed: *std.atomic.Value(u32)) void {
+            exp.rebuildWordIndex() catch {
+                _ = failed.fetchAdd(1, .monotonic);
+            };
+        }
+    };
+
+    explorer.lockWordIndexBuild();
+    const first = try std.Thread.spawn(.{}, Worker.run, .{ &explorer, &failures });
+    const second = try std.Thread.spawn(.{}, Worker.run, .{ &explorer, &failures });
+    explorer.unlockWordIndexBuild();
+    first.join();
+    second.join();
+
+    try testing.expectEqual(@as(u32, 0), failures.load(.monotonic));
+    try testing.expect(explorer.wordIndexIsComplete());
+    try testing.expectEqual(generation_before +% 1, explorer.word_index_generation);
+    try testing.expect(explorer.word_index.search("singleflighttoken").len > 0);
+}
+
+test "explorer: stale disk word index is rejected after loadability changes" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.markWordIndexIncomplete(true);
+
+    var loaded = WordIndex.init(testing.allocator);
+    try loaded.indexFile("stale.zig", "staleDiskToken");
+    explorer.disableWordIndexDiskLoad();
+    explorer.lockWordIndexBuild();
+    defer explorer.unlockWordIndexBuild();
+    try testing.expect(!explorer.tryReplaceWordIndexFromDisk(loaded));
+    try testing.expect(!explorer.wordIndexIsComplete());
+}
+
+test "explorer: stale rebuilt word index is rejected after a source mutation" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("moving.zig", "pub fn oldEpochToken() void {}");
+    explorer.markWordIndexIncomplete(false);
+    const source_epoch = explorer.word_index_source_epoch;
+    const generation_before = explorer.word_index_generation;
+
+    var stale = WordIndex.init(testing.allocator);
+    try stale.indexFile("moving.zig", "pub fn oldEpochToken() void {}");
+    try explorer.indexFile("moving.zig", "pub fn newEpochToken() void {}");
+
+    explorer.lockWordIndexBuild();
+    const install = explorer.tryReplaceWordIndexFromRebuild(stale, source_epoch);
+    explorer.unlockWordIndexBuild();
+    try testing.expectEqual(Explorer.WordIndexInstallResult.source_changed, install);
+    try testing.expect(!explorer.wordIndexIsComplete());
+    try testing.expectEqual(generation_before, explorer.word_index_generation);
+
+    try explorer.rebuildWordIndex();
+    try testing.expect(explorer.word_index.search("newepochtoken").len > 0);
+    try testing.expectEqual(@as(usize, 0), explorer.word_index.search("oldepochtoken").len);
+}
+
 test "explorer: sparse ngram index integrated into searchContent" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -649,6 +716,53 @@ test "explorer: getSymbolBody returns null for unknown file" {
 
     const body = try exp.getSymbolBody("nonexistent.zig", 1, 5, testing.allocator);
     try testing.expect(body == null);
+}
+
+test "explorer: getContextSymbolBodies is byte-identical to extractLines for mixed ranges" {
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer exp.deinit();
+
+    const content = "zero\r\none\n\nthree\r\nlast";
+    try exp.indexFile("mixed.txt", content);
+    const ranges = [_]Explorer.LineRange{
+        .{ .start = 2, .end = 5 },
+        .{ .start = 3, .end = 30 },
+        .{ .start = 0, .end = 2 },
+    };
+
+    const bodies = (try exp.getContextSymbolBodies("mixed.txt", &ranges, testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer {
+        for (bodies) |body| testing.allocator.free(body);
+        testing.allocator.free(bodies);
+    }
+    try testing.expectEqual(ranges.len, bodies.len);
+    for (ranges, bodies) |range, body| {
+        const expected = try extractLines(content, range.start, range.end, true, false, .unknown, testing.allocator);
+        defer testing.allocator.free(expected);
+        try testing.expectEqualStrings(expected, body);
+    }
+}
+
+test "explorer: getContextSymbolBodies invalidates offsets after same-size reindex" {
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer exp.deinit();
+
+    const range = [_]Explorer.LineRange{.{ .start = 2, .end = 2 }};
+    try exp.indexFile("moving.txt", "aa\nbb\ncc");
+    const before = (try exp.getContextSymbolBodies("moving.txt", &range, testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer {
+        for (before) |body| testing.allocator.free(body);
+        testing.allocator.free(before);
+    }
+    try testing.expectEqualStrings("    2 | bb\n", before[0]);
+
+    try exp.indexFile("moving.txt", "a\nbbb\ncc");
+    const after = (try exp.getContextSymbolBodies("moving.txt", &range, testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer {
+        for (after) |body| testing.allocator.free(body);
+        testing.allocator.free(after);
+    }
+    try testing.expectEqualStrings("    2 | bbb\n", after[0]);
 }
 
 test "explorer: searchContentWithScope annotates results" {
@@ -1248,6 +1362,53 @@ test "issue-224: Python def line_end covers full body" {
     const sym = results[0].symbol;
     try testing.expectEqual(@as(u32, 1), sym.line_start);
     try testing.expectEqual(@as(u32, 3), sym.line_end);
+}
+
+test "python multiline signature ignores annotation and string colons when finding body end" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    try explorer.indexFile("typed.py",
+        \\def add_rule(
+        \\    rule: str,
+        \\    callback: Callable[[str], None] = lambda value: value,
+        \\    label: str = "kind:value",
+        \\) -> dict[str, str]:
+        \\    mapped = {"rule": rule}
+        \\    callback(rule)
+        \\    return mapped
+        \\def after() -> None:
+        \\    pass
+    );
+
+    const results = try explorer.findAllSymbols("add_rule", alloc);
+    defer alloc.free(results);
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_start);
+    try testing.expectEqual(@as(u32, 8), results[0].symbol.line_end);
+
+    const body = (try explorer.getSymbolBody("typed.py", 1, results[0].symbol.line_end, alloc)) orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, body, "return mapped") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "def after") == null);
+}
+
+test "python malformed multiline signature remains bounded" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    try explorer.indexFile("broken.py",
+        \\def broken(
+        \\    value: str
+        \\unrelated = {"later": True}
+    );
+    const results = try explorer.findAllSymbols("broken", alloc);
+    defer alloc.free(results);
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqual(@as(u32, 1), results[0].symbol.line_end);
 }
 
 test "issue-108: detectLanguage handles .tf and .tfvars" {
@@ -1856,6 +2017,50 @@ test "issue-389: FilteredWalker yields symlinked source files" {
     try testing.expect(explorer.contents.contains("src/alias.zig"));
 }
 
+test "FilteredWalker rejects outside and excluded-state symlink aliases" {
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+
+    try project.dir.createDirPath(io, ".engram");
+    try project.dir.writeFile(io, .{ .sub_path = ".engram/secret.zig", .data = "pub const AGENT_SECRET = true;\n" });
+    try outside.dir.writeFile(io, .{ .sub_path = "outside.zig", .data = "pub const OUTSIDE_SECRET = true;\n" });
+
+    var outside_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_len = try outside.dir.realPathFile(io, "outside.zig", &outside_buf);
+    project.dir.symLink(io, outside_buf[0..outside_len], "outside_alias.zig", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    project.dir.symLink(io, ".engram/secret.zig", "agent_alias.zig", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    project.dir.symLink(io, ".engram", "agent_dir_alias", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try project.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    const blocked = [_][]const u8{
+        ".engram/secret.zig", "outside_alias.zig", "agent_alias.zig", "agent_dir_alias/secret.zig",
+    };
+    for (blocked) |path| {
+        try testing.expect(!explorer.contents.contains(path));
+        try testing.expect(store.getLatest(path) == null);
+    }
+}
+
 test "issue-405: FilteredWalker walks directory symlinks safely (cycle + escape)" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
@@ -2102,6 +2307,49 @@ test "explorer: renderSkeleton elides bodies, keeps signatures" {
     // Escalation footer points the model to the fallback tools when skeleton isn't enough.
     try testing.expect(std.mem.indexOf(u8, s, "codedb_read sk.zig") != null);
     try testing.expect(std.mem.indexOf(u8, s, "codedb_outline sk.zig") != null);
+}
+
+test "explorer: outline and skeleton pages are bounded in source order" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    try explorer.indexFile("page.zig",
+        \\pub fn first() void {}
+        \\pub fn second() void {}
+        \\pub fn third() void {}
+        \\pub const LAST = 1;
+    );
+    try explorer.indexFile("skeleton.zig",
+        \\pub fn first() void {
+        \\    const nested = 1;
+        \\    _ = nested;
+        \\}
+        \\pub fn second() void {}
+        \\pub fn third() void {}
+        \\pub const LAST = 1;
+    );
+
+    var outline_out: std.ArrayList(u8) = .empty;
+    defer outline_out.deinit(testing.allocator);
+    const outline_page = (try explorer.renderOutlinePage("page.zig", testing.allocator, &outline_out, true, 1, 2)).?;
+    try testing.expect(outline_page.total >= 4);
+    try testing.expectEqual(@as(usize, 1), outline_page.start);
+    try testing.expectEqual(@as(usize, 3), outline_page.end);
+    try testing.expect(std.mem.indexOf(u8, outline_out.items, "second") != null);
+    try testing.expect(std.mem.indexOf(u8, outline_out.items, "third") != null);
+    try testing.expect(std.mem.indexOf(u8, outline_out.items, "first") == null);
+    try testing.expect(std.mem.indexOf(u8, outline_out.items, "LAST") == null);
+
+    var skeleton_out: std.ArrayList(u8) = .empty;
+    defer skeleton_out.deinit(testing.allocator);
+    const skeleton_page = (try explorer.renderSkeletonPage("skeleton.zig", testing.allocator, &skeleton_out, 1, 1)).?;
+    try testing.expectEqual(@as(usize, 4), skeleton_page.total);
+    try testing.expectEqual(@as(usize, 1), skeleton_page.start);
+    try testing.expectEqual(@as(usize, 2), skeleton_page.end);
+    try testing.expect(std.mem.indexOf(u8, skeleton_out.items, "second") != null);
+    try testing.expect(std.mem.indexOf(u8, skeleton_out.items, "nested") == null);
+    try testing.expect(std.mem.indexOf(u8, skeleton_out.items, "first") == null);
+    try testing.expect(std.mem.indexOf(u8, skeleton_out.items, "third") == null);
 }
 
 test "explorer: multi-line signature gets correct line_end (findBraceEnd paren-awareness)" {
@@ -2358,6 +2606,22 @@ test "audit: extractCallees ignores comment/string mentions" {
     try testing.expect(saw_real); // real call in code is still captured
 }
 
+test "codegraph: callee iterator preserves escapes, comments, and malformed tails" {
+    const body =
+        "realOne();\n" ++
+        "\"escaped \\\" ghostString()\"; realTwo();\n" ++
+        "'\\''; realThree();\n" ++
+        "/* blockGhost() */ realFour();\n" ++
+        "value / divisor; realFive();\n" ++
+        "// lineGhost()\n" ++
+        "realSix(); /* unterminated ghostTail()";
+    const callees = try codegraph.extractCallees(testing.allocator, body);
+    defer testing.allocator.free(callees);
+    const expected = [_][]const u8{ "realOne", "realTwo", "realThree", "realFour", "realFive", "realSix" };
+    try testing.expectEqual(expected.len, callees.len);
+    for (expected, callees) |want, got| try testing.expectEqualStrings(want, got);
+}
+
 test "issue-586: symbol_index keys must survive re-index of the file that first inserted them" {
     // rebuildSymbolIndexFor keys the global symbol index with sym.name slices
     // OWNED BY THE FILE'S OUTLINE. Re-indexing that file deinits the old
@@ -2594,8 +2858,8 @@ test "render caches preserve output and invalidate on mutation" {
     defer word_first.deinit(testing.allocator);
     var word_cached: std.ArrayList(u8) = .empty;
     defer word_cached.deinit(testing.allocator);
-    try ex.renderWord("cached_word", testing.allocator, &word_first);
-    try ex.renderWord("cached_word", testing.allocator, &word_cached);
+    try ex.renderWord("cached_word", testing.allocator, &word_first, 50, 0, false);
+    try ex.renderWord("cached_word", testing.allocator, &word_cached, 50, 0, false);
     try testing.expectEqualSlices(u8, word_first.items, word_cached.items);
 
     try ex.indexFile("src/beta.zig", "pub fn beta() void {}\nconst cached_word = 2;\n");
@@ -2606,7 +2870,7 @@ test "render caches preserve output and invalidate on mutation" {
 
     var word_after: std.ArrayList(u8) = .empty;
     defer word_after.deinit(testing.allocator);
-    try ex.renderWord("cached_word", testing.allocator, &word_after);
+    try ex.renderWord("cached_word", testing.allocator, &word_after, 50, 0, false);
     try testing.expect(std.mem.indexOf(u8, word_after.items, "src/beta.zig") != null);
 
     try ex.indexFile("src/alpha.zig", "pub fn renamedAlpha() void {}\n");

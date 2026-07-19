@@ -6,6 +6,7 @@ const Explorer = @import("explore.zig").Explorer;
 const Op = @import("version.zig").Op;
 const Language = @import("explore.zig").Language;
 const detectLanguage = @import("explore.zig").detectLanguage;
+const project_fs = @import("project_fs.zig");
 
 pub const EditRequest = struct {
     path: []const u8,
@@ -55,20 +56,16 @@ pub fn applyEdit(
     errdefer agents.releaseLock(req.agent_id, req.path);
 
     const edit_dir = if (explorer) |exp| exp.root_dir orelse std.Io.Dir.cwd() else std.Io.Dir.cwd();
+    var target_parent = try project_fs.openParentNoFollow(io, edit_dir, req.path);
+    defer target_parent.deinit(io);
 
     // Create op (trial/graph-based-codedb): author a NEW file. The write path in
     // finalizeEdit already handles a nonexistent path, so create just skips the
     // read and feeds an empty source. Refuse to clobber an existing file.
     if (req.create) {
         const new_content = req.content orelse return error.MissingContent;
-        if (edit_dir.readFileAlloc(io, req.path, allocator, .limited(10 * 1024 * 1024))) |existing| {
-            allocator.free(existing);
-            return error.FileExists;
-        } else |err| switch (err) {
-            error.FileNotFound => {},
-            else => return err,
-        }
-        return try finalizeEdit(io, allocator, edit_dir, store, agents, explorer, req, "", new_content);
+        if (try project_fs.entryExistsNoFollow(io, target_parent.dir, target_parent.basename)) return error.FileExists;
+        return try finalizeEdit(io, allocator, target_parent.dir, target_parent.basename, store, agents, explorer, req, "", new_content);
     }
 
     // Validate required op-specific args BEFORE doing any work that
@@ -84,7 +81,7 @@ pub fn applyEdit(
         return error.MissingContent;
     }
 
-    const source = try edit_dir.readFileAlloc(io, req.path, allocator, .limited(10 * 1024 * 1024));
+    const source = try project_fs.readFileAllocFromParent(io, target_parent.dir, target_parent.basename, allocator, .limited(10 * 1024 * 1024));
     defer allocator.free(source);
 
     if (req.if_hash) |expected_hex| {
@@ -109,7 +106,7 @@ pub fn applyEdit(
         try b.appendSlice(allocator, source[first + old.len ..]);
         const result = try b.toOwnedSlice(allocator);
         defer allocator.free(result);
-        return try finalizeEdit(io, allocator, edit_dir, store, agents, explorer, req, source, result);
+        return try finalizeEdit(io, allocator, target_parent.dir, target_parent.basename, store, agents, explorer, req, source, result);
     }
 
     // Fast path #1 (origin/main): a full-file replace with identical content is a no-op.
@@ -150,7 +147,7 @@ pub fn applyEdit(
                 };
             }
 
-            return try finalizeEdit(io, allocator, edit_dir, store, agents, explorer, req, source, fast_result);
+            return try finalizeEdit(io, allocator, target_parent.dir, target_parent.basename, store, agents, explorer, req, source, fast_result);
         }
     }
 
@@ -220,7 +217,7 @@ pub fn applyEdit(
         try std.mem.join(allocator, sep, lines.items);
     defer allocator.free(result);
 
-    return try finalizeEdit(io, allocator, edit_dir, store, agents, explorer, req, source, result);
+    return try finalizeEdit(io, allocator, target_parent.dir, target_parent.basename, store, agents, explorer, req, source, result);
 }
 
 /// Common tail for applyEdit: hash + post-edit health, then either a dry-run
@@ -229,7 +226,8 @@ pub fn applyEdit(
 fn finalizeEdit(
     io: std.Io,
     allocator: std.mem.Allocator,
-    edit_dir: std.Io.Dir,
+    target_dir: std.Io.Dir,
+    target_basename: []const u8,
     store: *Store,
     agents: *AgentRegistry,
     explorer: ?*Explorer,
@@ -241,7 +239,7 @@ fn finalizeEdit(
 
     // No-op short-circuit (origin/main): the edit produced identical content,
     // so nothing is written and there is nothing to syntax-check.
-    if (!req.dry_run and std.mem.eql(u8, source, result)) {
+    if (!req.dry_run and !req.create and std.mem.eql(u8, source, result)) {
         const seq = store.currentSeq();
         agents.releaseLock(req.agent_id, req.path);
         return .{
@@ -271,21 +269,20 @@ fn finalizeEdit(
         };
     }
 
-    // Atomic write: write to temp file then rename to prevent corruption on crash
-    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.codedb_tmp", .{req.path});
-    defer allocator.free(tmp_path);
-
-    {
-        const tmp_file = try edit_dir.createFile(io, tmp_path, .{});
-        defer tmp_file.close(io);
-        try tmp_file.writeStreamingAll(io, result);
+    // Use the platform atomic-file primitive rather than a predictable sibling
+    // name. A pre-created `<path>.codedb_tmp` symlink could otherwise redirect
+    // the write outside the project before the final rename.
+    var atomic_file = try target_dir.createFileAtomic(io, target_basename, .{ .replace = !req.create });
+    defer atomic_file.deinit(io);
+    try atomic_file.file.writeStreamingAll(io, result);
+    if (req.create) {
+        atomic_file.link(io) catch |err| switch (err) {
+            error.PathAlreadyExists => return error.FileExists,
+            else => return err,
+        };
+    } else {
+        try atomic_file.replace(io);
     }
-
-    std.Io.Dir.rename(edit_dir, tmp_path, edit_dir, req.path, io) catch |err| {
-        // Clean up temp file on rename failure
-        edit_dir.deleteFile(io, tmp_path) catch {};
-        return err;
-    };
 
     // KNOWN LIMITATION: if recordEdit fails here, the file is already on disk but not
     // in the store. This leaves the disk and store inconsistent. Recovery would require

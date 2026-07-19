@@ -141,6 +141,77 @@ test "issue-290: codedb_search guidance does not warn on plain hyphen" {
     try testing.expect(std.mem.indexOf(u8, buf.items, "regex=true") == null);
 }
 
+test "zero-hit search and word omit impossible next-step guidance" {
+    const search_args = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"query\":\"missingThing\"}", .{});
+    defer search_args.deinit();
+    var search_buf: std.ArrayList(u8) = .empty;
+    defer search_buf.deinit(testing.allocator);
+    mcp_mod.mcpGenerateGuidance(
+        testing.allocator,
+        "codedb_search",
+        &search_args.value.object,
+        "0 results for 'missingThing':\n",
+        false,
+        &search_buf,
+    );
+    try testing.expectEqual(@as(usize, 0), search_buf.items.len);
+
+    const word_args = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"word\":\"missingThing\"}", .{});
+    defer word_args.deinit();
+    var word_buf: std.ArrayList(u8) = .empty;
+    defer word_buf.deinit(testing.allocator);
+    mcp_mod.mcpGenerateGuidance(
+        testing.allocator,
+        "codedb_word",
+        &word_args.value.object,
+        "0 hits for 'missingThing' in 0 files (showing 0-0):\n",
+        false,
+        &word_buf,
+    );
+    try testing.expectEqual(@as(usize, 0), word_buf.items.len);
+}
+
+test "codedb_search groups repeated paths and emits a compact page cursor" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile(
+        "src/repeated.zig",
+        "const a = groupNeedle;\nconst b = groupNeedle;\nconst c = groupNeedle;\n",
+    );
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const first_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"query":"groupNeedle","max_results":2}
+    , .{});
+    defer first_args.deinit();
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &first_args.value.object, &first, &store, &explorer, &agents);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, first.items, "  src/repeated.zig:\n"));
+    try testing.expect(std.mem.indexOf(u8, first.items, "    1: const a = groupNeedle;") != null);
+    try testing.expect(std.mem.indexOf(u8, first.items, "    2: const b = groupNeedle;") != null);
+    try testing.expect(std.mem.indexOf(u8, first.items, "src/repeated.zig:1") == null);
+    try testing.expect(std.mem.endsWith(u8, first.items, "more: offset=2\n"));
+    try testing.expect(std.mem.indexOf(u8, first.items, "codedb_search query=") == null);
+
+    const next_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"query":"groupNeedle","max_results":2,"offset":2}
+    , .{});
+    defer next_args.deinit();
+    var next: std.ArrayList(u8) = .empty;
+    defer next.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &next_args.value.object, &next, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, next.items, "    3: const c = groupNeedle;") != null);
+    try testing.expect(std.mem.indexOf(u8, next.items, "more: offset=") == null);
+}
+
 test "issue-363b: fuzzyFindFiles ranks exact basename match above unrelated lib.rs" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
@@ -300,7 +371,7 @@ test "issue-422: search header count must reflect post-filter visible results" {
 
     // The actionable hit must be visible (path + line number).
     try testing.expect(std.mem.indexOf(u8, out.items, "crates/forge_api/src/forge_api.rs") != null);
-    try testing.expect(std.mem.indexOf(u8, out.items, ":24:") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "    24:") != null);
     // Out-of-glob decoy must be excluded from the rendered output.
     try testing.expect(std.mem.indexOf(u8, out.items, "docs/forge_api.md") == null);
     // The misleading "(N shown, M truncated)" footer must NOT fire when M
@@ -709,6 +780,31 @@ test "issue-400-bug1: searchContentRanked returns ranked results when skip_file_
         testing.allocator.free(results);
     }
     try testing.expect(results.len > 0);
+}
+
+test "ranked search representative line prefers the exact compound identifier" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("hooks.py",
+        \\T_after_request = Callable[..., Response]
+        \\# many generic request mentions used to win by term frequency
+        \\request = request
+        \\request = request
+        \\@app.before_request
+        \\def load_user(): pass
+    );
+
+    const results = try explorer.searchContentRanked("before_request", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqual(@as(u32, 5), results[0].line_num);
+    try testing.expectEqualStrings("@app.before_request", results[0].line_text);
 }
 
 test "issue-400-bug2: total_tokens stays consistent across re-index when skip_file_words=true" {
@@ -1970,9 +2066,11 @@ test "def-first: renderPlainSearch surfaces the definition line before mentions 
     const rendered = try explorer.renderPlainSearch("gadget", testing.allocator, &out, 6, false);
     try testing.expect(rendered);
 
-    // the def line (`pub fn gadget`, line 4) must render before the comment mention (line 1)
-    const def_i = std.mem.indexOf(u8, out.items, "src/g.zig:4:");
-    const com_i = std.mem.indexOf(u8, out.items, "src/g.zig:1:");
+    // Search output is grouped under one path header. The def line (`pub fn
+    // gadget`, line 4) must still render before the comment mention (line 1).
+    try testing.expect(std.mem.indexOf(u8, out.items, "  src/g.zig:\n") != null);
+    const def_i = std.mem.indexOf(u8, out.items, "    4: pub fn gadget");
+    const com_i = std.mem.indexOf(u8, out.items, "    1: // gadget helper");
     try testing.expect(def_i != null and com_i != null);
     try testing.expect(def_i.? < com_i.?);
 }
@@ -2136,9 +2234,38 @@ test "issue-569: multi-word word query falls back to per-token matching" {
     // renderWord powers MCP codedb_word — same files, with the mode noted.
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
-    try explorer.renderWord("gateway websocket", testing.allocator, &out);
+    try explorer.renderWord("gateway websocket", testing.allocator, &out, 50, 0, false);
     try testing.expect(std.mem.indexOf(u8, out.items, "src/both.zig") != null);
-    try testing.expect(std.mem.indexOf(u8, out.items, "(tokenized)") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "tokenized") != null);
+}
+
+test "codedb_word groups paths and paginates hot identifiers deterministically" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("zeta.zig", "const hotWord = 1;\nconst hotWord = 2;\n");
+    try explorer.indexFile("alpha.zig", "const hotWord = 3;\nconst hotWord = 4;\n");
+
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(testing.allocator);
+    try explorer.renderWord("hotWord", testing.allocator, &first, 3, 0, false);
+    try testing.expect(std.mem.indexOf(u8, first.items, "4 hits for 'hotWord' in 2 files") != null);
+    try testing.expect(std.mem.indexOf(u8, first.items, "alpha.zig:1,2") != null);
+    try testing.expect(std.mem.indexOf(u8, first.items, "zeta.zig:1") != null);
+    try testing.expect(std.mem.indexOf(u8, first.items, "zeta.zig:2") == null);
+    try testing.expect(std.mem.indexOf(u8, first.items, "more: 1 hits; offset=3") != null);
+
+    var second: std.ArrayList(u8) = .empty;
+    defer second.deinit(testing.allocator);
+    try explorer.renderWord("hotWord", testing.allocator, &second, 3, 3, false);
+    try testing.expect(std.mem.indexOf(u8, second.items, "zeta.zig:2") != null);
+    try testing.expect(std.mem.indexOf(u8, second.items, "more:") == null);
+
+    var all: std.ArrayList(u8) = .empty;
+    defer all.deinit(testing.allocator);
+    try explorer.renderWord("hotWord", testing.allocator, &all, 1, 0, true);
+    try testing.expect(std.mem.indexOf(u8, all.items, "alpha.zig:1,2") != null);
+    try testing.expect(std.mem.indexOf(u8, all.items, "zeta.zig:1,2") != null);
+    try testing.expect(std.mem.indexOf(u8, all.items, "more:") == null);
 }
 
 test "fuzzy SIMD batch scorer matches scalar fuzzyScore exactly" {
@@ -2951,4 +3078,85 @@ test "search-cache: renderPlainSearch hit restores the producing search's breakd
     try testing.expectEqual(fresh.tier_reached, restored.tier_reached);
     try testing.expectEqual(fresh.result_count, restored.result_count);
     try testing.expectEqual(@as(i128, 0), restored.tier0_ns);
+}
+
+test "search: pathological single-line file is clamped with elision markers" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    const total = 64 * 1024;
+    const content = try testing.allocator.alloc(u8, total);
+    defer testing.allocator.free(content);
+    @memset(content, 'x');
+    const needle = "zz_clamp_needle_zz";
+    std.mem.copyForwards(u8, content[total / 2 ..], needle);
+    try explorer.indexFile("longline.js", content);
+
+    const results = try explorer.searchContent(needle, testing.allocator, 5);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len >= 1);
+    const r = results[0];
+    try testing.expect(r.line_text.len < explore.MAX_RESULT_LINE_BYTES);
+    try testing.expect(std.mem.indexOf(u8, r.line_text, needle) != null);
+    try testing.expect(std.mem.indexOf(u8, r.line_text, "B elided]") != null);
+}
+
+test "search: long-line clamp preserves UTF-8 at byte-window boundaries" {
+    var content: std.ArrayList(u8) = .empty;
+    defer content.deinit(testing.allocator);
+    try content.appendNTimes(testing.allocator, 'a', 2048);
+    try content.appendSlice(testing.allocator, "🙂");
+    try content.appendNTimes(testing.allocator, 'b', 1021);
+    const match_off = content.items.len;
+    try content.appendSlice(testing.allocator, "utf8ClampNeedle");
+    try content.appendNTimes(testing.allocator, 'c', 3000);
+
+    const clamped = try explore.dupeClampedLine(testing.allocator, content.items, match_off);
+    defer testing.allocator.free(clamped);
+    try testing.expect(std.unicode.utf8ValidateSlice(clamped));
+    try testing.expect(std.mem.indexOf(u8, clamped, "utf8ClampNeedle") != null);
+}
+
+test "search: long-line clamp stays query-centered near start middle and end" {
+    const needle = "centeredClampNeedle";
+    const positions = [_]usize{ 32, 4096, 8160 };
+    for (positions) |match_off| {
+        var content: std.ArrayList(u8) = .empty;
+        defer content.deinit(testing.allocator);
+        try content.appendNTimes(testing.allocator, 'x', 8192);
+        std.mem.copyForwards(u8, content.items[match_off..], needle);
+
+        const clamped = try explore.dupeClampedLine(testing.allocator, content.items, match_off);
+        defer testing.allocator.free(clamped);
+        try testing.expect(std.mem.indexOf(u8, clamped, needle) != null);
+        // The pathological line was already explicitly elided. A focused
+        // excerpt should remain far below the normal 4 KiB line cap.
+        try testing.expect(clamped.len < 640);
+        try testing.expect(std.mem.indexOf(u8, clamped, "B elided]") != null);
+    }
+}
+
+test "search: lines at or below the clamp cap stay byte-exact" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    try explorer.indexFile("normal.zig", "const zz_exact_line_zz = 1;\n");
+    const results = try explorer.searchContent("zz_exact_line_zz", testing.allocator, 5);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len == 1);
+    try testing.expectEqualStrings("const zz_exact_line_zz = 1;", results[0].line_text);
 }

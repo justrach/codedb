@@ -36,6 +36,7 @@ const mcp_mod = @import("mcp.zig");
 const SearchResult = @import("explore.zig").SearchResult;
 const SymbolKind = explore.SymbolKind;
 const edit_mod = @import("edit.zig");
+const bootstrap_mod = @import("bootstrap.zig");
 
 test "trigram index: index and candidate lookup" {
     var ti = TrigramIndex.init(testing.allocator);
@@ -700,7 +701,7 @@ test "rolling trigram indexes match scalar masks exactly" {
         var actual_count: usize = 0;
         var actual_iter = canonical.index.iterator();
         while (actual_iter.next()) |entry| {
-            if (entry.value_ptr.get(fixture.path)) |actual_mask| {
+            if (canonical.postingMask(entry.key_ptr.*, fixture.path)) |actual_mask| {
                 actual_count += 1;
                 const expected_mask = expected.get(entry.key_ptr.*) orelse return error.TestUnexpectedResult;
                 try testing.expectEqual(expected_mask.loc_mask, actual_mask.loc_mask);
@@ -728,7 +729,7 @@ test "rolling trigram indexes match scalar masks exactly" {
         try testing.expectEqual(entry.value_ptr.count(), actual_postings.count());
         for (entry.value_ptr.items.items) |expected_posting| {
             const path = canonical.id_to_path.items[expected_posting.doc_id];
-            const actual_mask = actual_postings.get(path) orelse return error.TestUnexpectedResult;
+            const actual_mask = sharded.postingMask(entry.key_ptr.*, path) orelse return error.TestUnexpectedResult;
             try testing.expectEqual(expected_posting.loc_mask, actual_mask.loc_mask);
             try testing.expectEqual(expected_posting.next_mask, actual_mask.next_mask);
         }
@@ -1586,7 +1587,7 @@ test "bloom: PostingMask is populated during indexing" {
     const file_set = ti.index.getPtr(tri_pub);
     try testing.expect(file_set != null);
 
-    const mask = file_set.?.get("a.zig");
+    const mask = ti.postingMask(tri_pub, "a.zig");
     try testing.expect(mask != null);
     // loc_mask must have at least one bit set (position 0)
     try testing.expect(mask.?.loc_mask != 0);
@@ -1603,8 +1604,7 @@ test "bloom: loc_mask records correct position bits" {
     try ti.indexFile("pos.zig", "abcXXXXXabcYYYYY");
 
     const tri_abc = packTrigram('a', 'b', 'c');
-    const file_set = ti.index.getPtr(tri_abc).?;
-    const mask = file_set.get("pos.zig").?;
+    const mask = ti.postingMask(tri_abc, "pos.zig").?;
 
     // pos 0 → bit 0, pos 8 → bit 0 (8 % 8 = 0)
     try testing.expect(mask.loc_mask & 1 != 0); // bit 0 set
@@ -1618,8 +1618,7 @@ test "bloom: next_mask records the following character" {
 
     // For trigram "abc" at position 0, next char is 'd'
     const tri_abc = packTrigram('a', 'b', 'c');
-    const file_set = ti.index.getPtr(tri_abc).?;
-    const mask = file_set.get("next.zig").?;
+    const mask = ti.postingMask(tri_abc, "next.zig").?;
 
     const expected_bit: u8 = @as(u8, 1) << @intCast(normalizeChar('d') % 8);
     try testing.expect(mask.next_mask & expected_bit != 0);
@@ -1734,8 +1733,7 @@ test "bloom: masks accumulate across multiple positions" {
     try ti.indexFile("repeat.zig", "the_______the_______the_______the_______the_______the_______the_______the_______");
 
     const tri_the = packTrigram('t', 'h', 'e');
-    const file_set = ti.index.getPtr(tri_the).?;
-    const mask = file_set.get("repeat.zig").?;
+    const mask = ti.postingMask(tri_the, "repeat.zig").?;
 
     // With 8+ occurrences at varying positions, loc_mask should have many bits set
     try testing.expect(@popCount(mask.loc_mask) >= 3);
@@ -2134,6 +2132,102 @@ test "disk word index: skip_file_words still writes file table" {
     try testing.expectEqualStrings("src/a.zig", loaded_wi.hitPath(hits[0]));
 }
 
+test "disk word index rejects pre-artifact-policy cache versions" {
+    const alloc = testing.allocator;
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+    try wi.indexFile("src/current.zig", "pub fn currentWordCache() void {}\n");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir = path_buf[0..dir_len];
+    try wi.writeToDisk(io, dir, null);
+
+    const index_path = try std.fmt.allocPrint(alloc, "{s}/word.index", .{dir});
+    defer alloc.free(index_path);
+    {
+        const file = try std.Io.Dir.cwd().openFile(io, index_path, .{ .mode = .read_write });
+        defer file.close(io);
+        var old_version: [2]u8 = undefined;
+        std.mem.writeInt(u16, &old_version, 3, .little);
+        try file.writePositionalAll(io, &old_version, 4);
+    }
+
+    try testing.expect((try WordIndex.readDiskHeader(io, dir, alloc)) == null);
+    if (WordIndex.readFromDisk(io, dir, alloc)) |value| {
+        var loaded = value;
+        loaded.deinit();
+        return error.TestUnexpectedResult;
+    }
+    if (WordIndex.mmapFromDisk(io, dir, alloc)) |value| {
+        var loaded = value;
+        loaded.deinit();
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "word and trigram disk caches reject sensitive file-table paths" {
+    const alloc = testing.allocator;
+    const safe_path = "src/a.zig";
+    const unsafe_path = ".ssh/keyx";
+    try testing.expectEqual(safe_path.len, unsafe_path.len);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir = path_buf[0..dir_len];
+
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+    try wi.indexFile(safe_path, "pub fn secretWordNeedle() void {}\n");
+    try wi.writeToDisk(io, dir, null);
+    const word_path = try std.fmt.allocPrint(alloc, "{s}/word.index", .{dir});
+    defer alloc.free(word_path);
+    {
+        const file = try std.Io.Dir.cwd().openFile(io, word_path, .{ .mode = .read_write });
+        defer file.close(io);
+        // v4 header (51) + first path length (2).
+        try file.writePositionalAll(io, unsafe_path, 53);
+    }
+    if (WordIndex.readFromDisk(io, dir, alloc)) |value| {
+        var loaded = value;
+        loaded.deinit();
+        return error.TestUnexpectedResult;
+    }
+    if (WordIndex.mmapFromDisk(io, dir, alloc)) |value| {
+        var loaded = value;
+        loaded.deinit();
+        return error.TestUnexpectedResult;
+    }
+
+    var unsafe_wi = WordIndex.init(alloc);
+    defer unsafe_wi.deinit();
+    try unsafe_wi.indexFile(unsafe_path, "pub fn mustNotPersistWord() void {}\n");
+    try testing.expectError(error.InvalidData, unsafe_wi.writeToDisk(io, dir, null));
+
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+    try ti.indexFile(safe_path, "pub fn secretTrigramNeedle() void {}\n");
+    try ti.writeToDisk(io, dir, null);
+    const postings_path = try std.fmt.allocPrint(alloc, "{s}/trigram.postings", .{dir});
+    defer alloc.free(postings_path);
+    {
+        const file = try std.Io.Dir.cwd().openFile(io, postings_path, .{ .mode = .read_write });
+        defer file.close(io);
+        try file.writePositionalAll(io, unsafe_path, TrigramIndex.POSTINGS_HEADER_SIZE + 2);
+    }
+    try testing.expect(TrigramIndex.readFromDisk(io, dir, alloc) == null);
+    try testing.expect(MmapTrigramIndex.initFromDisk(io, dir, alloc) == null);
+
+    var unsafe_ti = TrigramIndex.init(alloc);
+    defer unsafe_ti.deinit();
+    try unsafe_ti.indexFile(unsafe_path, "pub fn mustNotPersistTrigram() void {}\n");
+    try testing.expectError(error.InvalidData, unsafe_ti.writeToDisk(io, dir, null));
+}
+
 test "disk index: round-trip write and read preserves candidates" {
     const alloc = testing.allocator;
     var ti = TrigramIndex.init(alloc);
@@ -2381,6 +2475,102 @@ test "disk index: readFromDisk returns null for corrupt magic" {
     try testing.expect(loaded == null);
 }
 
+test "trigram cache rejects mixed versions and truncated current headers" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+    try ti.indexFile("src/current.zig", "pub fn currentTrigramCache() void {}\n");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir = path_buf[0..dir_len];
+    try ti.writeToDisk(io, dir, null);
+
+    const lookup_path = try std.fmt.allocPrint(alloc, "{s}/trigram.lookup", .{dir});
+    defer alloc.free(lookup_path);
+    {
+        const file = try std.Io.Dir.cwd().openFile(io, lookup_path, .{ .mode = .read_write });
+        defer file.close(io);
+        var old_version: [2]u8 = undefined;
+        std.mem.writeInt(u16, &old_version, 3, .little);
+        try file.writePositionalAll(io, &old_version, 4);
+    }
+    try testing.expect(TrigramIndex.readFromDisk(io, dir, alloc) == null);
+    try testing.expect(MmapTrigramIndex.initFromDisk(io, dir, alloc) == null);
+
+    // Restore a matching pair, then truncate the postings file after the
+    // version field. readDiskHeader must not read uninitialized header bytes.
+    try ti.writeToDisk(io, dir, null);
+    const postings_path = try std.fmt.allocPrint(alloc, "{s}/trigram.postings", .{dir});
+    defer alloc.free(postings_path);
+    {
+        const file = try std.Io.Dir.cwd().openFile(io, postings_path, .{ .mode = .read_write });
+        defer file.close(io);
+        try file.setLength(io, 8);
+    }
+    try testing.expect((try TrigramIndex.readDiskHeader(io, dir, alloc)) == null);
+    try testing.expect(TrigramIndex.readFromDisk(io, dir, alloc) == null);
+    try testing.expect(MmapTrigramIndex.initFromDisk(io, dir, alloc) == null);
+}
+
+test "trigram cache rejects a same-version mixed generation pair" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+    try ti.indexFile("src/current.zig", "pub fn currentTrigramGeneration() void {}\n");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir = path_buf[0..dir_len];
+    try ti.writeToDisk(io, dir, null);
+
+    const lookup_path = try std.fmt.allocPrint(alloc, "{s}/trigram.lookup", .{dir});
+    defer alloc.free(lookup_path);
+    const file = try std.Io.Dir.cwd().openFile(io, lookup_path, .{ .mode = .read_write });
+    defer file.close(io);
+    var byte: [1]u8 = undefined;
+    try testing.expectEqual(@as(usize, 1), try file.readPositionalAll(io, &byte, 12));
+    byte[0] ^= 0xff;
+    try file.writePositionalAll(io, &byte, 12);
+
+    try testing.expect(TrigramIndex.readFromDisk(io, dir, alloc) == null);
+    try testing.expect(MmapTrigramIndex.initFromDisk(io, dir, alloc) == null);
+}
+
+test "trigram production metadata invalidates pre-artifact-policy version" {
+    const alloc = testing.allocator;
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+    try ti.indexFile("src/current.zig", "pub fn currentTrigramCache() void {}\n");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir = path_buf[0..dir_len];
+    try ti.writeToDisk(io, dir, null);
+
+    const names = [_][]const u8{ "trigram.postings", "trigram.lookup" };
+    for (names) |name| {
+        const cache_path = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ dir, name });
+        defer alloc.free(cache_path);
+        const file = try std.Io.Dir.cwd().openFile(io, cache_path, .{ .mode = .read_write });
+        defer file.close(io);
+        var old_version: [2]u8 = undefined;
+        std.mem.writeInt(u16, &old_version, 3, .little);
+        try file.writePositionalAll(io, &old_version, 4);
+    }
+
+    const header = (try TrigramIndex.readDiskHeader(io, dir, alloc)) orelse return error.MissingHeader;
+    try testing.expectEqual(@as(u16, 3), header.format_version);
+    const meta = @import("index.zig").readStatusMeta(io, dir, alloc);
+    try testing.expect(!meta.indexed);
+}
+
 test "disk index: empty index round-trips correctly" {
     const alloc = testing.allocator;
     var ti = TrigramIndex.init(alloc);
@@ -2411,8 +2601,7 @@ test "disk index: bloom masks preserved after round-trip" {
 
     // Get original masks
     const tri = packTrigram('h', 'a', 'n');
-    const orig_set = ti.index.getPtr(tri).?;
-    const orig_mask = orig_set.get("bloom.zig").?;
+    const orig_mask = ti.postingMask(tri, "bloom.zig").?;
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2428,8 +2617,7 @@ test "disk index: bloom masks preserved after round-trip" {
     defer loaded_ti.deinit();
 
     // Check masks match
-    const loaded_set = loaded_ti.index.getPtr(tri).?;
-    const loaded_mask = loaded_set.get("bloom.zig").?;
+    const loaded_mask = loaded_ti.postingMask(tri, "bloom.zig").?;
     try testing.expectEqual(orig_mask.next_mask, loaded_mask.next_mask);
     try testing.expectEqual(orig_mask.loc_mask, loaded_mask.loc_mask);
 }
@@ -2870,6 +3058,129 @@ test "issue-164: mmap trigram index returns same candidates as heap index" {
     try testing.expect(mmap_idx.containsFile("src/auth.zig"));
     try testing.expect(mmap_idx.containsFile("src/gate.zig"));
     try testing.expect(!mmap_idx.containsFile("nonexistent.zig"));
+}
+
+test "trigram disk load retries after an initial miss and removes tier3 fallback" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path_len = try tmp_dir.dir.realPathFile(io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_path_len];
+
+    const path = "src/self_heal.zig";
+    const content = "pub fn selfHealingNeedle() void {}\n";
+    var restored = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer restored.deinit();
+    try restored.indexFileSkipTrigram(path, content);
+    try testing.expect(!restored.hasCompleteTrigramCoverage());
+
+    // Startup miss: no files exist yet, so the loader leaves the partial
+    // snapshot-style state intact.
+    bootstrap_mod.loadTrigramFromDiskIfPresent(io, &restored, tmp_path, null, testing.allocator);
+    try testing.expect(!restored.hasCompleteTrigramCoverage());
+
+    var producer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer producer.deinit();
+    try producer.indexFile(path, content);
+    try producer.trigram_index.writeToDisk(io, tmp_path, null);
+
+    // A later retry adopts the newly available cache and prunes the restored
+    // path from Tier 3 rather than requiring a server restart.
+    bootstrap_mod.loadTrigramFromDiskIfPresent(io, &restored, tmp_path, null, testing.allocator);
+    try testing.expect(restored.hasCompleteTrigramCoverage());
+    try testing.expectEqual(@as(usize, 0), restored.skipTrigramFileCount());
+
+    const results = try restored.searchContent("selfHealingNeedle", testing.allocator, 10);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+        }
+        testing.allocator.free(results);
+    }
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqual(@as(u64, 0), restored.search_tier3_scan_count);
+}
+
+test "startup trigram load rejects git-head and file-count mismatches" {
+    const alloc = testing.allocator;
+    const cache_head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".*;
+    const other_head = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".*;
+    const path = "src/current.zig";
+    const content = "pub fn currentStartupNeedle() void {}\n";
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir = path_buf[0..dir_len];
+
+    var producer = TrigramIndex.init(alloc);
+    defer producer.deinit();
+    try producer.indexFile(path, content);
+    try producer.writeToDisk(io, dir, cache_head);
+
+    var wrong_head = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer wrong_head.deinit();
+    try wrong_head.indexFileSkipTrigram(path, content);
+    bootstrap_mod.loadTrigramFromDiskIfPresent(io, &wrong_head, dir, other_head, alloc);
+    try testing.expect(!wrong_head.trigram_index.containsFile(path));
+    try testing.expectEqual(@as(usize, 1), wrong_head.skipTrigramFileCount());
+
+    var wrong_count = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer wrong_count.deinit();
+    try wrong_count.indexFileSkipTrigram(path, content);
+    try wrong_count.indexFileSkipTrigram("src/new.zig", "pub fn newFile() void {}\n");
+    bootstrap_mod.loadTrigramFromDiskIfPresent(io, &wrong_count, dir, cache_head, alloc);
+    try testing.expect(!wrong_count.trigram_index.containsFile(path));
+    try testing.expectEqual(@as(usize, 2), wrong_count.skipTrigramFileCount());
+
+    var matching = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer matching.deinit();
+    try matching.indexFileSkipTrigram(path, content);
+    bootstrap_mod.loadTrigramFromDiskIfPresent(io, &matching, dir, cache_head, alloc);
+    try testing.expect(matching.trigram_index.containsFile(path));
+    try testing.expectEqual(@as(usize, 0), matching.skipTrigramFileCount());
+}
+
+test "disk index adoption rejects cache paths absent from current outlines" {
+    const alloc = testing.allocator;
+    const stale_path = "src/stale.zig";
+    const live_path = "src/live_.zig";
+    const head = "cccccccccccccccccccccccccccccccccccccccc".*;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir = path_buf[0..dir_len];
+
+    var ti = TrigramIndex.init(alloc);
+    defer ti.deinit();
+    try ti.indexFile(stale_path, "pub fn staleTrigramPath() void {}\n");
+    try ti.writeToDisk(io, dir, head);
+
+    var trigram_target = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer trigram_target.deinit();
+    try trigram_target.indexFileSkipTrigram(live_path, "pub fn liveTrigramPath() void {}\n");
+    // Count and HEAD both match; only the authoritative outline-set check can
+    // distinguish this stale equal-count cache.
+    bootstrap_mod.loadTrigramFromDiskIfPresent(io, &trigram_target, dir, head, alloc);
+    try testing.expect(!trigram_target.trigram_index.containsFile(stale_path));
+    try testing.expectEqual(@as(usize, 1), trigram_target.skipTrigramFileCount());
+
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+    try wi.indexFile(stale_path, "pub fn staleWordPath() void {}\n");
+    try wi.writeToDisk(io, dir, head);
+
+    var word_target = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer word_target.deinit();
+    try word_target.indexFileOutlineOnly(live_path, "pub fn liveWordPath() void {}\n");
+    word_target.markWordIndexIncomplete(true);
+    bootstrap_mod.loadWordIndexFromDiskIfPresent(io, &word_target, dir, head, alloc);
+    try testing.expect(!word_target.wordIndexIsComplete());
+    try testing.expect(!word_target.wordIndexCanLoadFromDisk());
 }
 
 test "issue-164: mmap binary search on sorted lookup table" {

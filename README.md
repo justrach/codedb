@@ -114,6 +114,12 @@ curl -fsSL https://codedb.codegraff.com/install.sh | bash
 
 This replaces the `codedb` binary with the latest GitHub Release and keeps your existing MCP registrations, config, caches, and snapshots. Use this path for any release whose built-in updater cannot fetch release checksums.
 
+After an update that bumps codedb's on-disk index format, older snapshots and
+word/trigram caches are rejected instead of being reused. codedb rebuilds them
+from the project files automatically, so the first start for each project may
+take longer once; later starts use the newly generated cache. No source files
+are changed by this rebuild.
+
 ## Documentation
 
 - **[MCP setup](docs/mcp.md)** — per-client configurations (Claude Desktop, Cursor, VS Code, Claude Code, Codex CLI, Gemini CLI), root resolution, troubleshooting
@@ -175,10 +181,10 @@ codedb hot                            # recently modified files
 | `codedb_tree` | Full file tree with language, line counts, symbol counts |
 | `codedb_outline` | Symbols in a file: functions, structs, imports, with line numbers |
 | `codedb_symbol` | Find where a symbol is defined across the codebase |
-| `codedb_search` | Trigram-accelerated full-text search (supports regex, scoped results) |
-| `codedb_word` | O(1) inverted index word lookup |
+| `codedb_search` | Trigram-accelerated full-text search, grouped by path and paginated with `more: offset=N` (supports regex and scoped results) |
+| `codedb_word` | O(1) exact-identifier lookup, grouped by path and paginated by occurrence (`max_results=50` by default, `offset` for the next page); pass `all=true` explicitly only when every occurrence is required |
 | `codedb_callers` | Every call site of a symbol — word index ∩ outline scope, in one round-trip |
-| `codedb_context` | Task-shaped composer — pass a NL task, get keywords + symbol defs + ranked files + top snippets in one block (replaces 3–5 sequential calls) |
+| `codedb_context` | Task-shaped composer — compact by default, returning focused definitions, bodies, graph neighbors, ranked files, and sites in one block (replaces 3–5 sequential calls); use `detail=full` for the legacy-style verbose view |
 | `codedb_hot` | Most recently modified files |
 | `codedb_deps` | Dependency graph: `imported_by` (default) or `depends_on`; `transitive=true` for full BFS |
 | `codedb_read` | Read file content (line ranges, `if_hash` skip-unchanged, `compact` mode) |
@@ -193,6 +199,15 @@ codedb hot                            # recently modified files
 | `codedb_glob` | Match indexed paths against a glob pattern (`src/**/*.zig`, `*.md`, …) |
 | `codedb_ls` | List immediate children of a directory — dirs first, then files with language + counts |
 | `codedb_query` | Composable pipeline — chain `find`, `search`, `filter`, `deps`, `outline`, `read`, `sort`, `limit` in one request |
+
+`codedb_context` accepts `max_tokens` as a conservative approximate response
+budget. Compact evidence is admitted progressively; when the remaining
+evidence does not fit, the response reports the omission once instead of
+overflowing the request with lower-priority sections.
+
+MCP responses are plain text by default, without ANSI styling. Set
+`CODEDB_MCP_ANSI=1` in the MCP server environment to opt into ANSI-colored
+summary and guidance blocks for clients that render terminal colors.
 
 ### `codedb_remote` — Cloud Intelligence
 

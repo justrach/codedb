@@ -12,6 +12,7 @@ const AnyTrigramIndex = idx.AnyTrigramIndex;
 const SparseNgramIndex = idx.SparseNgramIndex;
 const codegraph = @import("codegraph.zig");
 const git = @import("git.zig");
+const project_fs = @import("project_fs.zig");
 
 const SearchGeneration = if (builtin.cpu.arch == .wasm32) u32 else u64;
 
@@ -266,6 +267,54 @@ pub const SearchResult = struct {
     line_text: []const u8,
     score: f32 = 0.0,
 };
+
+/// Cap on the bytes of one result line copied into a SearchResult.
+/// Lines at or below the cap are duped byte-exact — normal code lines must
+/// stay literal so emitted match text can anchor follow-up edits. Beyond it
+/// (minified JS, single-line JSON: one line used to put megabytes into a
+/// single result row) the line is clamped to a window centered on the
+/// match, with explicit byte-count elision markers so clamped output is
+/// visibly not literal file content.
+pub const MAX_RESULT_LINE_BYTES: usize = 1024;
+// A pathological one-line JSON/minified file is already explicitly marked as
+// elided. Keep only enough query-centered evidence to identify the match; the
+// old 2 KiB window let one irrelevant agent-state row dominate a search call.
+const CLAMP_WINDOW_BYTES: usize = 512;
+
+inline fn isUtf8Continuation(byte: u8) bool {
+    return byte & 0xc0 == 0x80;
+}
+
+pub fn dupeClampedLine(allocator: std.mem.Allocator, line: []const u8, match_off: usize) ![]u8 {
+    if (line.len <= MAX_RESULT_LINE_BYTES) return allocator.dupe(u8, line);
+    const off = @min(match_off, line.len - 1);
+    var win_end = @min((off -| (CLAMP_WINDOW_BYTES / 2)) + CLAMP_WINDOW_BYTES, line.len);
+    var win_start = win_end -| CLAMP_WINDOW_BYTES;
+    // Preserve valid UTF-8 when either arbitrary byte window edge lands in a
+    // multibyte code point. Invalid source stays best-effort, as before.
+    while (win_start < win_end and isUtf8Continuation(line[win_start])) win_start += 1;
+    while (win_end > win_start and win_end < line.len and isUtf8Continuation(line[win_end])) win_end -= 1;
+    const pre = win_start;
+    const post = line.len - win_end;
+    const window = line[win_start..win_end];
+    if (pre > 0 and post > 0)
+        return std.fmt.allocPrint(allocator, "...[{d}B elided] {s} [{d}B elided]...", .{ pre, window, post });
+    if (pre > 0)
+        return std.fmt.allocPrint(allocator, "...[{d}B elided] {s}", .{ pre, window });
+    return std.fmt.allocPrint(allocator, "{s} [{d}B elided]...", .{ window, post });
+}
+
+fn dupeClampedLineQuery(allocator: std.mem.Allocator, line: []const u8, query: []const u8) ![]u8 {
+    if (line.len <= MAX_RESULT_LINE_BYTES) return allocator.dupe(u8, line);
+    const off = indexOfCaseInsensitive(line, query) orelse blk: {
+        var it = std.mem.tokenizeScalar(u8, query, ' ');
+        while (it.next()) |t| {
+            if (indexOfCaseInsensitive(line, t)) |o| break :blk o;
+        }
+        break :blk 0;
+    };
+    return dupeClampedLine(allocator, line, off);
+}
 
 pub const SearchBreakdown = struct {
     tier0_ns: i128 = 0,
@@ -752,7 +801,6 @@ fn matchGlobRec(pattern: []const u8, gi_start: usize, path: []const u8, ti_start
 }
 
 /// Resolved call graph retained for path queries (#531). Node metadata slices
-
 /// Resolved call graph retained for path queries (#531). Node metadata slices
 /// borrow stable outline/symbol strings; edges and adjacency are owned.
 pub const CallGraph = struct {
@@ -943,6 +991,11 @@ const LineOffsetCache = struct {
         end: usize,
     };
 
+    pub const Range = struct {
+        start: u32,
+        end: u32,
+    };
+
     map: std.StringHashMap(Entry),
     mu: cio.Mutex = .{},
     total_bytes: usize = 0,
@@ -1092,7 +1145,97 @@ const LineOffsetCache = struct {
         if (self.total_bytes > MAX_BYTES) self.clearLocked();
         return true;
     }
+
+    /// Render several numbered line ranges while the cached offset table is
+    /// pinned. All ranges share one table lookup/build, which matters for
+    /// same-file symbol batches and for newline-dense files whose table is too
+    /// large to retain past this call.
+    fn extractRanges(
+        self: *LineOffsetCache,
+        path: []const u8,
+        content: []const u8,
+        ranges: []const Range,
+        allocator: std.mem.Allocator,
+    ) !?[][]u8 {
+        self.mu.lock();
+        defer self.mu.unlock();
+        const offsets = self.offsetsForLocked(path, content) orelse return null;
+        defer if (self.total_bytes > MAX_BYTES) self.clearLocked();
+        return try renderNumberedLineRanges(content, offsets, ranges, allocator);
+    }
 };
+
+fn renderNumberedLineRanges(
+    content: []const u8,
+    offsets: []const u32,
+    ranges: []const LineOffsetCache.Range,
+    allocator: std.mem.Allocator,
+) ![][]u8 {
+    const bodies = try allocator.alloc([]u8, ranges.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (bodies[0..initialized]) |body| allocator.free(body);
+        allocator.free(bodies);
+    }
+
+    for (ranges, 0..) |range, i| {
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        errdefer aw.deinit();
+        const first = @max(range.start, 1);
+        if (range.end >= first and first <= offsets.len) {
+            const last: u32 = @min(range.end, @as(u32, @intCast(offsets.len)));
+            var line = first;
+            while (line <= last) : (line += 1) {
+                const start: usize = offsets[line - 1];
+                const end: usize = if (line < offsets.len) offsets[line] - 1 else content.len;
+                try aw.writer.print("{d:>5} | {s}\n", .{ line, content[start..end] });
+            }
+        }
+        bodies[i] = try aw.toOwnedSlice();
+        initialized += 1;
+    }
+    return bodies;
+}
+
+fn renderNumberedLineRangesScanning(
+    content: []const u8,
+    ranges: []const LineOffsetCache.Range,
+    allocator: std.mem.Allocator,
+) ![][]u8 {
+    const builders = try allocator.alloc(std.ArrayList(u8), ranges.len);
+    for (builders) |*builder| builder.* = .empty;
+    errdefer {
+        for (builders) |*builder| builder.deinit(allocator);
+        allocator.free(builders);
+    }
+
+    var max_end: u32 = 0;
+    for (ranges) |range| max_end = @max(max_end, range.end);
+    var line_num: u32 = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        line_num += 1;
+        if (line_num > max_end) break;
+        for (ranges, builders) |range, *builder| {
+            const first = @max(range.start, 1);
+            if (range.end < first or line_num < first or line_num > range.end) continue;
+            const w = cio.listWriter(builder, allocator);
+            try w.print("{d:>5} | {s}\n", .{ line_num, line });
+        }
+    }
+
+    const bodies = try allocator.alloc([]u8, ranges.len);
+    errdefer allocator.free(bodies);
+    var completed: usize = 0;
+    errdefer for (bodies[0..completed]) |body| allocator.free(body);
+    for (builders, 0..) |*builder, i| {
+        bodies[i] = try builder.toOwnedSlice(allocator);
+        completed += 1;
+    }
+    for (builders) |*builder| builder.deinit(allocator);
+    allocator.free(builders);
+    return bodies;
+}
 
 /// Whole-query result cache for searchContent: agents re-issue identical
 /// searches constantly, and a hit copies the cached results into the
@@ -1690,6 +1833,9 @@ pub const Explorer = struct {
     word_index_can_load_from_disk: bool = false,
     word_index_generation: u64 = 0,
     word_index_persisted_generation: u64 = 0,
+    /// Single-flight guard for disk load / heap rebuild. Lock order is always
+    /// word_index_build_mu -> mu; callers must not hold mu while acquiring it.
+    word_index_build_mu: cio.Mutex = .{},
     /// When true, commitParsedFileOwnedOutline skips word_index.indexFile — the
     /// caller is building the word index in parallel per-worker shards and will
     /// merge them after the commit loop (see watcher.initialScanWithWorkerCount).
@@ -1750,6 +1896,10 @@ pub const Explorer = struct {
     /// Bumped (atomically — searches run under the SHARED lock) by every
     /// mutation that can change search results; see bumpSearchGen callers.
     search_gen: std.atomic.Value(SearchGeneration) = std.atomic.Value(SearchGeneration).init(0),
+    /// Bumped under `mu` whenever the source set/content used to build the word
+    /// index changes. A slow rebuild validates this epoch before publishing so
+    /// watcher commits cannot be overwritten by a stale snapshot.
+    word_index_source_epoch: u64 = 0,
     /// Buffers adopted from snapshot loads (the raw outline_state section).
     /// Restored FileOutlines borrow their import/symbol strings as slices into
     /// these (see FileOutline.borrows_strings), so they must outlive every
@@ -1880,9 +2030,20 @@ pub const Explorer = struct {
             else => 0,
         };
     }
+
+    /// Raw contents may be dropped only when every outlined path is covered
+    /// by the active trigram index. Otherwise fall-through search needs those
+    /// bytes and releasing them turns each miss into project-wide disk I/O.
+    pub fn hasCompleteTrigramCoverage(self: *Explorer) bool {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        return self.trigram_index.fileCount() >= self.outlines.count();
+    }
+
     pub fn releaseContents(self: *Explorer) void {
         self.mu.lock();
         defer self.mu.unlock();
+        self.word_index_source_epoch +%= 1;
         self.contents.clear();
         self.content_hashes.clear();
         self.line_offsets.clear();
@@ -1934,6 +2095,7 @@ pub const Explorer = struct {
             cc.deinit();
             self.call_centrality = null;
         }
+        self.word_index_source_epoch +%= 1;
 
         const outline_gop = try self.outlines.getOrPut(path);
         const is_new = !outline_gop.found_existing;
@@ -2192,28 +2354,14 @@ pub const Explorer = struct {
         const sig_offset = line_offsets[line_start - 1];
         const sig_indent = countIndent(content, sig_offset);
 
-        // Find the colon-terminated signature (may span multiple lines)
-        var body_start = line_start + 1;
-        // Check if signature line itself has the colon
-        {
-            const line_end_offset = if (line_start < total_lines) line_offsets[line_start] else content.len;
-            const sig_line = content[sig_offset..line_end_offset];
-            if (std.mem.indexOf(u8, sig_line, ":") == null) {
-                // Multi-line signature — skip ahead to find the colon
-                var ln = line_start + 1;
-                while (ln <= total_lines) : (ln += 1) {
-                    const lo = line_offsets[ln - 1];
-                    const le = if (ln < total_lines) line_offsets[ln] else content.len;
-                    const line = content[lo..le];
-                    if (std.mem.indexOf(u8, line, ":") != null) {
-                        body_start = ln + 1;
-                        break;
-                    }
-                }
-            }
-        }
+        // Find the colon that TERMINATES the signature. A raw substring search
+        // stops on the first annotation (`rule: str`) in a multiline def,
+        // truncating the symbol before its body. Track delimiters and strings
+        // so only a depth-zero colon ends the signature.
+        const signature_end = findPythonSignatureEnd(content, line_offsets, line_start, total_lines) orelse return line_start;
+        const body_start = signature_end + 1;
 
-        var last_body_line = line_start;
+        var last_body_line = signature_end;
         var ln = body_start;
         while (ln <= total_lines) : (ln += 1) {
             const lo = line_offsets[ln - 1];
@@ -2231,7 +2379,71 @@ pub const Explorer = struct {
             last_body_line = ln;
         }
 
-        return if (last_body_line > line_start) last_body_line else line_start;
+        return last_body_line;
+    }
+
+    fn findPythonSignatureEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) ?u32 {
+        var paren_depth: u32 = 0;
+        var bracket_depth: u32 = 0;
+        var brace_depth: u32 = 0;
+        var quote: u8 = 0;
+        var triple = false;
+        var escaped = false;
+
+        // A valid signature is short. The bound makes malformed input degrade
+        // to a one-line symbol instead of scanning an entire file for a colon.
+        const last_line = @min(total_lines, line_start + 63);
+        var ln = line_start;
+        while (ln <= last_line) : (ln += 1) {
+            const lo = line_offsets[ln - 1];
+            const le = if (ln < total_lines) line_offsets[ln] else content.len;
+            var i = lo;
+            while (i < le) : (i += 1) {
+                const c = content[i];
+                if (quote != 0) {
+                    if (escaped) {
+                        escaped = false;
+                        continue;
+                    }
+                    if (c == '\\') {
+                        escaped = true;
+                        continue;
+                    }
+                    if (c == quote) {
+                        if (triple) {
+                            if (i + 2 < le and content[i + 1] == quote and content[i + 2] == quote) {
+                                quote = 0;
+                                triple = false;
+                                i += 2;
+                            }
+                        } else {
+                            quote = 0;
+                        }
+                    }
+                    continue;
+                }
+
+                if (c == '#') break;
+                if (c == '\'' or c == '"') {
+                    quote = c;
+                    triple = i + 2 < le and content[i + 1] == c and content[i + 2] == c;
+                    if (triple) i += 2;
+                    continue;
+                }
+                switch (c) {
+                    '(' => paren_depth += 1,
+                    ')' => paren_depth -|= 1,
+                    '[' => bracket_depth += 1,
+                    ']' => bracket_depth -|= 1,
+                    '{' => brace_depth += 1,
+                    '}' => brace_depth -|= 1,
+                    ':' => if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) return ln,
+                    else => {},
+                }
+            }
+            escaped = false;
+        }
+        return null;
     }
 
     fn findRubyEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32) u32 {
@@ -2484,6 +2696,11 @@ pub const Explorer = struct {
     pub fn adoptTrigramIndex(self: *Explorer, new_index: AnyTrigramIndex) void {
         self.mu.lock();
         defer self.mu.unlock();
+        if (!new_index.allFilesPresentIn(&self.outlines)) {
+            var rejected = new_index;
+            rejected.deinit();
+            return;
+        }
         self.bumpSearchGen();
         self.trigram_index.deinit();
         self.trigram_index = new_index;
@@ -2500,6 +2717,11 @@ pub const Explorer = struct {
     pub fn adoptTrigramBase(self: *Explorer, base: idx.MmapTrigramIndex) void {
         self.mu.lock();
         defer self.mu.unlock();
+        if (!base.allFilesPresentIn(&self.outlines)) {
+            var rejected = base;
+            rejected.deinit();
+            return;
+        }
         self.bumpSearchGen();
         switch (self.trigram_index) {
             .heap => |heap_copy| {
@@ -2551,6 +2773,31 @@ pub const Explorer = struct {
     /// by streaming source files from the project root when the content cache
     /// was capped during fast snapshot restore.
     pub fn rebuildWordIndex(self: *Explorer) !void {
+        self.word_index_build_mu.lock();
+        defer self.word_index_build_mu.unlock();
+
+        // A watcher can commit while a disk-backed rebuild reads files. Retry
+        // once from a fresh source snapshot, but never publish stale postings.
+        var attempt: u8 = 0;
+        while (attempt < 2) : (attempt += 1) {
+            switch (try self.rebuildWordIndexAttempt()) {
+                .installed, .already_complete => return,
+                .source_changed => continue,
+            }
+        }
+        return error.WordIndexChangedDuringRebuild;
+    }
+
+    pub const WordIndexInstallResult = enum { installed, already_complete, source_changed };
+
+    fn rebuildWordIndexAttempt(self: *Explorer) !WordIndexInstallResult {
+        self.mu.lockShared();
+        const needs_rebuild = !self.word_index_complete and
+            (self.contents.len() > 0 or (self.io != null and self.root_dir != null));
+        const source_epoch = self.word_index_source_epoch;
+        self.mu.unlockShared();
+        if (!needs_rebuild) return .already_complete;
+
         const source_paths = blk: {
             self.mu.lockShared();
             defer self.mu.unlockShared();
@@ -2582,7 +2829,7 @@ pub const Explorer = struct {
             const io = self.io orelse return error.WordIndexIncomplete;
             const dir = self.root_dir orelse return error.WordIndexIncomplete;
             for (paths) |path| {
-                const content = try dir.readFileAlloc(io, path, self.allocator, .limited(64 * 1024 * 1024));
+                const content = try project_fs.readFileAlloc(io, dir, path, self.allocator, .limited(64 * 1024 * 1024));
                 errdefer self.allocator.free(content);
                 try rebuilt.indexFile(path, content);
                 self.allocator.free(content);
@@ -2596,19 +2843,36 @@ pub const Explorer = struct {
             }
         }
 
+        return self.tryReplaceWordIndexFromRebuild(rebuilt, source_epoch);
+    }
+
+    /// Internal single-flight handoff, public for deterministic regression
+    /// tests. Consumes `rebuilt` in every outcome.
+    pub fn tryReplaceWordIndexFromRebuild(self: *Explorer, rebuilt: WordIndex, source_epoch: u64) WordIndexInstallResult {
         self.mu.lock();
         defer self.mu.unlock();
+        var candidate = rebuilt;
+        if (self.word_index_complete) {
+            candidate.deinit();
+            return .already_complete;
+        }
+        if (self.word_index_source_epoch != source_epoch) {
+            candidate.deinit();
+            return .source_changed;
+        }
         self.bumpSearchGen();
         self.word_index.deinit();
-        self.word_index = rebuilt;
+        self.word_index = candidate;
         self.word_index_generation +%= 1;
         self.word_index_complete = true;
         self.word_index_can_load_from_disk = false;
+        return .installed;
     }
 
     pub fn markWordIndexIncomplete(self: *Explorer, can_load_from_disk: bool) void {
         self.mu.lock();
         defer self.mu.unlock();
+        self.word_index_source_epoch +%= 1;
         self.word_index.deinit();
         self.word_index = WordIndex.init(self.allocator);
         self.word_index_complete = false;
@@ -2686,6 +2950,39 @@ pub const Explorer = struct {
         return self.word_index_complete;
     }
 
+    pub fn lockWordIndexBuild(self: *Explorer) void {
+        self.word_index_build_mu.lock();
+    }
+
+    pub fn unlockWordIndexBuild(self: *Explorer) void {
+        self.word_index_build_mu.unlock();
+    }
+
+    /// Conditionally install a disk-loaded index while the caller holds
+    /// word_index_build_mu. Consumes `loaded` in both success and rejection.
+    pub fn tryReplaceWordIndexFromDisk(self: *Explorer, loaded: WordIndex) bool {
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (self.word_index_complete or !self.word_index_can_load_from_disk) {
+            var rejected = loaded;
+            rejected.deinit();
+            return false;
+        }
+        if (!loaded.allFilesPresentIn(&self.outlines)) {
+            var rejected = loaded;
+            rejected.deinit();
+            self.word_index_can_load_from_disk = false;
+            return false;
+        }
+        self.word_index.deinit();
+        self.word_index = loaded;
+        self.word_index_generation +%= 1;
+        self.word_index_complete = true;
+        self.word_index_can_load_from_disk = false;
+        self.word_index_persisted_generation = self.word_index_generation;
+        return true;
+    }
+
     pub fn wordIndexNeedsPersist(self: *Explorer) bool {
         self.mu.lockShared();
         defer self.mu.unlockShared();
@@ -2723,6 +3020,7 @@ pub const Explorer = struct {
         self.mu.lock();
         defer self.mu.unlock();
         self.bumpSearchGen();
+        self.word_index_source_epoch +%= 1;
         if (!self.word_index_complete) {
             self.word_index_can_load_from_disk = false;
         } else {
@@ -2751,6 +3049,12 @@ pub const Explorer = struct {
         const outline = self.outlines.getPtr(path) orelse return null;
         return try cloneOutline(outline, allocator);
     }
+
+    pub const OutlinePage = struct {
+        total: usize,
+        start: usize,
+        end: usize,
+    };
 
     /// Render the outline for `path` directly into `out` without cloning.
     /// Returns false if the file isn't indexed. Holds the read lock for
@@ -2789,6 +3093,42 @@ pub const Explorer = struct {
         }
         self.outline_render_cache.put(path, compact, gen, out.items[render_start..]);
         return true;
+    }
+
+    /// Paginated outline renderer for bounded MCP responses. `start`/`end`
+    /// are symbol offsets in source order; the unbounded wrapper above keeps
+    /// the original Explorer API behavior for CLI and library callers.
+    pub fn renderOutlinePage(
+        self: *Explorer,
+        path: []const u8,
+        alloc: std.mem.Allocator,
+        out: *std.ArrayList(u8),
+        compact: bool,
+        offset: usize,
+        max_symbols: usize,
+    ) !?OutlinePage {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        const outline = self.outlines.getPtr(path) orelse return null;
+        const total = outline.symbols.items.len;
+        const start = @min(offset, total);
+        const end = @min(total, start +| max_symbols);
+        try out.ensureUnusedCapacity(alloc, 128 + (end - start) * 128);
+        const w = cio.listWriter(out, alloc);
+        w.print("{s} ({s}, {d} lines, {d} bytes)\n", .{
+            outline.path, @tagName(outline.language), outline.line_count, outline.byte_size,
+        }) catch {};
+        for (outline.symbols.items[start..end]) |sym| {
+            if (compact) {
+                w.print("  L{d}: {s} {s}\n", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
+            } else {
+                w.print("  L{d}: {s} {s}", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
+                if (sym.detail) |d| w.print("  // {s}", .{d}) catch {};
+                w.writeAll("\n") catch {};
+            }
+        }
+        return .{ .total = total, .start = start, .end = end };
     }
 
     /// Signature-only "skeleton" view: each symbol's declaration line with its
@@ -2869,6 +3209,94 @@ pub const Explorer = struct {
         return true;
     }
 
+    /// Paginate the top-level declarations emitted by renderSkeleton. Nested
+    /// symbols are still walked so an offset can never promote a member inside
+    /// an elided parent body into a false top-level declaration.
+    pub fn renderSkeletonPage(
+        self: *Explorer,
+        path: []const u8,
+        alloc: std.mem.Allocator,
+        out: *std.ArrayList(u8),
+        offset: usize,
+        max_symbols: usize,
+    ) !?OutlinePage {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        const outline = self.outlines.getPtr(path) orelse return null;
+        const ref_opt = self.readContentForSearch(path, alloc);
+        defer if (ref_opt) |r| r.deinit();
+        const content: []const u8 = if (ref_opt) |r| r.data else "";
+
+        // One pass to record the byte offset of each line start (line 1 → offsets[0]).
+        var offsets: std.ArrayList(usize) = .empty;
+        defer offsets.deinit(alloc);
+        try offsets.append(alloc, 0);
+        for (content, 0..) |ch, i| {
+            if (ch == '\n') try offsets.append(alloc, i + 1);
+        }
+
+        try out.ensureUnusedCapacity(alloc, 128 + @min(outline.symbols.items.len, max_symbols) * 96);
+        const w = cio.listWriter(out, alloc);
+        w.print("{s} ({s}, {d} lines, {d} bytes)\n", .{
+            outline.path, @tagName(outline.language), outline.line_count, outline.byte_size,
+        }) catch {};
+
+        const body_start = out.items.len;
+        var covered_until: u32 = 0;
+        var elided: u32 = 0;
+        var total: usize = 0;
+        var emitted: usize = 0;
+        const limit_end = offset +| max_symbols;
+        for (outline.symbols.items) |sym| {
+            // Skip symbols nested inside an already-emitted symbol's body — a
+            // skeleton shows the file's top-level shape, with bodies (and the
+            // local declarations inside them) elided.
+            if (sym.line_start <= covered_until) continue;
+            covered_until = @max(covered_until, sym.line_end);
+            const symbol_offset = total;
+            total += 1;
+            if (symbol_offset < offset or symbol_offset >= limit_end) continue;
+            emitted += 1;
+            const first = lineSlice(content, offsets.items, sym.line_start);
+            const sig = std.mem.trim(u8, first, " \t\r");
+            // Single-line symbol (imports, consts, one-liners) or no source: keep verbatim.
+            if (sym.line_end <= sym.line_start or sig.len == 0) {
+                if (sig.len == 0) {
+                    w.print("  L{d}: {s} {s}\n", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
+                } else {
+                    w.print("  L{d}: {s}\n", .{ sym.line_start, sig }) catch {};
+                }
+                continue;
+            }
+            const hidden = sym.line_end - sym.line_start;
+            elided += 1;
+            if (std.mem.indexOfScalar(u8, sig, '{')) |bpos| {
+                // Brace body opens on the declaration line: keep up to and including '{', stub the rest.
+                w.print("  L{d}: {s} … {d} lines }}\n", .{ sym.line_start, sig[0 .. bpos + 1], hidden }) catch {};
+            } else {
+                // No brace on the first line (Python ':' / multi-line signature).
+                w.print("  L{d}: {s} … {d} lines\n", .{ sym.line_start, sig, hidden }) catch {};
+            }
+        }
+        // Escalation footer — skeleton fails safe by eliding bodies, so tell
+        // the model exactly how to recover when it isn't enough.
+        const skel_bytes = out.items.len - body_start;
+        const full_bytes: usize = @intCast(outline.byte_size);
+        if (emitted == 0 and total != 0) {
+            // The pagination footer added by the MCP handler is sufficient.
+        } else if (elided == 0) {
+            w.print("— skeleton: all symbols shown inline · codedb_read {s} for source · codedb_outline {s} for members\n", .{ outline.path, outline.path }) catch {};
+        } else if (full_bytes == 0 or skel_bytes * 2 >= full_bytes) {
+            w.print("— skeleton: {d} bodies elided; small file ({d}B) · codedb_read {s} for full source · codedb_outline {s} for members\n", .{ elided, full_bytes, outline.path, outline.path }) catch {};
+        } else {
+            const saved = 100 - (skel_bytes * 100 / full_bytes);
+            w.print("— skeleton: {d} bodies elided (~{d}% smaller than {d}B) · expand a body: codedb_read {s} -L <start>-<end> · members: codedb_outline {s}\n", .{ elided, saved, full_bytes, outline.path, outline.path }) catch {};
+        }
+        const start = @min(offset, total);
+        return .{ .total = total, .start = start, .end = start + emitted };
+    }
+
     /// Byte slice of 1-indexed `line` from `content`, given precomputed line
     /// start offsets. Returns empty when out of range.
     fn lineSlice(content: []const u8, offsets: []const usize, line: u32) []const u8 {
@@ -2891,6 +3319,7 @@ pub const Explorer = struct {
     }
 
     pub const LineSpan = LineOffsetCache.Span;
+    pub const LineRange = LineOffsetCache.Range;
 
     /// Borrow the canonical cached bytes for `path`. Caller must hold `mu`
     /// (shared) — the slice is only valid while the lock is held.
@@ -2919,6 +3348,23 @@ pub const Explorer = struct {
             return true;
         }
         return self.line_offsets.appendRange(path, content_ref.data, start, end, false, .unknown, line_prefix, allocator, out);
+    }
+
+    /// Copy one raw cached line range without duplicating or scanning the
+    /// entire file. Returns null only when the path is not cached or the offset
+    /// table cannot be built, so callers can retain their disk/scanning path.
+    fn copyCachedLineRange(self: *Explorer, path: []const u8, line_start: u32, line_end: u32, allocator: std.mem.Allocator) !?[]u8 {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        const content = self.cachedContentLocked(path) orelse return null;
+        if (line_start == 0 or line_end < line_start) return try allocator.dupe(u8, "");
+
+        var wanted = [2]u32{ line_start, line_end };
+        var spans: [2]LineSpan = undefined;
+        const filled = self.lineSpansFor(path, content, &wanted, &spans) orelse return null;
+        if (filled == 0 or spans[0].line != line_start) return try allocator.dupe(u8, "");
+        const end = if (filled == 2 and spans[1].line == line_end) spans[1].end else content.len;
+        return try allocator.dupe(u8, content[spans[0].start..end]);
     }
 
     pub const ReadRenderOptions = struct {
@@ -2965,7 +3411,7 @@ pub const Explorer = struct {
         if (builtin.os.tag == .freestanding) return null;
         const io = self.io orelse return null;
         const dir = self.root_dir orelse std.Io.Dir.cwd();
-        const data = dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch return null;
+        const data = project_fs.readFileAlloc(io, dir, path, allocator, .limited(64 * 1024 * 1024)) catch return null;
         return .{ .data = data, .owned = true, .allocator = allocator };
     }
 
@@ -3681,8 +4127,8 @@ pub const Explorer = struct {
         return n > 0;
     }
     pub const CalleeRef = struct {
-        name: []const u8, // callee identifier (borrows the resolved body content)
-        path: []const u8, // file the callee is defined in (borrows a stable outlines key)
+        name: []const u8, // owned by the caller's allocator
+        path: []const u8, // owned by the caller's allocator
         line: u32,
         kind: SymbolKind,
     };
@@ -3692,8 +4138,8 @@ pub const Explorer = struct {
     /// call-graph neighborhood, using the same extraction as centrality. Deduped
     /// by callee name, capped at `max`, function/method targets only, and the
     /// defining function itself is skipped. Best-effort. Everything is allocated
-    /// in / borrowed from `allocator` (intended to be a per-request arena); the
-    /// returned slice and each `.name` live as long as that allocator.
+    /// from `allocator` (intended to be a per-request arena); the returned slice,
+    /// each `.name`, and each `.path` live as long as that allocator.
     pub fn resolveCallees(
         self: *Explorer,
         path: []const u8,
@@ -3704,12 +4150,27 @@ pub const Explorer = struct {
     ) ![]CalleeRef {
         if (max == 0 or line_end < line_start) return &.{};
         self.ensureSymbolIndex();
-        const content = (self.getContent(path, allocator) catch return &.{}) orelse return &.{};
-        const body = sliceLineRange(content, line_start, line_end);
+        const cached_body = self.copyCachedLineRange(path, line_start, line_end, allocator) catch null;
+        defer if (cached_body) |body| allocator.free(body);
+        var fallback_content: ?[]u8 = null;
+        defer if (fallback_content) |content| allocator.free(content);
+        const body = cached_body orelse blk: {
+            const content = (self.getContent(path, allocator) catch return &.{}) orelse return &.{};
+            fallback_content = content;
+            break :blk sliceLineRange(content, line_start, line_end);
+        };
         if (body.len == 0) return &.{};
-        const callees = codegraph.extractCallees(allocator, body) catch return &.{};
+        var callee_iter = codegraph.CalleeIterator.init(allocator, body);
+        defer callee_iter.deinit();
 
         var refs: std.ArrayList(CalleeRef) = .empty;
+        errdefer {
+            for (refs.items) |ref| {
+                allocator.free(ref.name);
+                allocator.free(ref.path);
+            }
+            refs.deinit(allocator);
+        }
         // Resolve each callee straight off the symbol index: we only need to know
         // whether exactly one non-test function/method defines the name, which is
         // O(defs-of-that-name). findAllSymbols would instead run an O(all-symbols)
@@ -3717,40 +4178,67 @@ pub const Explorer = struct {
         // ~18 such scans per codedb_context made it ~20% slower on a multi-thousand-
         // file repo (the #524 bench regression). The index is rebuilt on every
         // commit, so for this high-precision/best-effort feature it is authoritative.
-        self.mu.lockShared();
-        defer self.mu.unlockShared();
-        for (callees) |name| {
-            if (refs.items.len >= max) break;
+        const ResolvedCallee = struct {
+            path: []u8,
+            line: u32,
+            kind: SymbolKind,
+        };
+        while (refs.items.len < max) {
+            const name = callee_iter.next() catch {
+                for (refs.items) |ref| {
+                    allocator.free(ref.name);
+                    allocator.free(ref.path);
+                }
+                refs.deinit(allocator);
+                return &.{};
+            } orelse break;
             // Skip ubiquitous std/container/builtin method names. They are almost
             // always calls on some receiver (ArrayList.append, HashMap.get, ...),
             // not the rare user-defined free function of the same name, so name-
             // based resolution would assert a false edge even when there's a
             // single user definition.
             if (isUbiquitousName(name)) continue;
-            const locs = self.symbol_index.get(name) orelse continue;
-            // Only surface UNAMBIGUOUS edges: a callee is shown only if exactly one
-            // non-test function/method defines that name. Resolution is name-based
-            // (no type info), so common method names (init, lock, get, next, ...)
-            // resolve to many candidates — guessing one would assert a false edge.
-            // Skipping them keeps this high-precision; ambiguous names are omitted.
-            var cand: ?SymbolLocation = null;
-            var n_cand: usize = 0;
-            for (locs.items) |loc| {
-                if (loc.kind != .function and loc.kind != .method) continue;
-                if (isLikelyTestPath(loc.path)) continue;
-                // Skip the defining function itself (self-edge / recursion).
-                if (loc.line_start == line_start and std.mem.eql(u8, loc.path, path)) continue;
-                n_cand += 1;
-                if (n_cand > 1) break; // ambiguous — stop, will be skipped
-                cand = loc;
-            }
-            if (n_cand == 1) {
+            // Scanning a malformed/huge body can walk to EOF. Keep that work
+            // outside Explorer's read lock so watcher commits are not blocked;
+            // lock only for the symbol-index lookup and copy the borrowed path
+            // before releasing it.
+            const resolved: ?ResolvedCallee = blk: {
+                self.mu.lockShared();
+                defer self.mu.unlockShared();
+                const locs = self.symbol_index.get(name) orelse break :blk null;
+                // Only surface UNAMBIGUOUS edges: a callee is shown only if exactly one
+                // non-test function/method defines that name. Resolution is name-based
+                // (no type info), so common method names (init, lock, get, next, ...)
+                // resolve to many candidates — guessing one would assert a false edge.
+                // Skipping them keeps this high-precision; ambiguous names are omitted.
+                var cand: ?SymbolLocation = null;
+                var n_cand: usize = 0;
+                for (locs.items) |loc| {
+                    if (loc.kind != .function and loc.kind != .method) continue;
+                    if (isLikelyTestPath(loc.path)) continue;
+                    // Skip the defining function itself (self-edge / recursion).
+                    if (loc.line_start == line_start and std.mem.eql(u8, loc.path, path)) continue;
+                    n_cand += 1;
+                    if (n_cand > 1) break; // ambiguous — stop, will be skipped
+                    cand = loc;
+                }
+                if (n_cand != 1) break :blk null;
                 const loc = cand.?;
-                try refs.append(allocator, .{
-                    .name = name,
+                break :blk .{
                     .path = try allocator.dupe(u8, loc.path),
                     .line = loc.line_start,
                     .kind = loc.kind,
+                };
+            };
+            if (resolved) |r| {
+                errdefer allocator.free(r.path);
+                const owned_name = try allocator.dupe(u8, name);
+                errdefer allocator.free(owned_name);
+                try refs.append(allocator, .{
+                    .name = owned_name,
+                    .path = r.path,
+                    .line = r.line,
+                    .kind = r.kind,
                 });
             }
         }
@@ -4131,14 +4619,14 @@ pub const Explorer = struct {
                         result_list.ensureUnusedCapacity(allocator, @min(n_spans, max_results - result_list.items.len)) catch {};
                         for (spans[0..n_spans]) |sp| {
                             if (result_list.items.len >= max_results) break;
-                            const line_text = try allocator.dupe(u8, ref.data[sp.start..sp.end]);
+                            const line_text = try dupeClampedLineQuery(allocator, ref.data[sp.start..sp.end], query);
                             errdefer allocator.free(line_text);
                             const path_copy = try allocator.dupe(u8, stats.path);
                             errdefer allocator.free(path_copy);
                             try result_list.append(allocator, .{ .path = path_copy, .line_num = sp.line, .line_text = line_text });
                         }
                     } else {
-                        try appendTargetLineHits(stats.path, ref.data, allocator, target_lines[0..target_count], max_results, &result_list);
+                        try appendTargetLineHits(stats.path, ref.data, query, allocator, target_lines[0..target_count], max_results, &result_list);
                     }
                     if (result_list.items.len < max_results) searched.put(stats.path, {}) catch {};
                 } else {
@@ -4168,8 +4656,8 @@ pub const Explorer = struct {
                 const ref = self.readContentForSearch(hit_path, allocator) orelse continue;
                 defer ref.deinit();
                 const line_text = extractLineByNumber(ref.data, hit.line_num) orelse continue;
-                if (indexOfCaseInsensitive(line_text, query) == null) continue;
-                const duped_text = try allocator.dupe(u8, line_text);
+                const q_off = indexOfCaseInsensitive(line_text, query) orelse continue;
+                const duped_text = try dupeClampedLine(allocator, line_text, q_off);
                 errdefer allocator.free(duped_text);
                 const duped_path = try allocator.dupe(u8, hit_path);
                 errdefer allocator.free(duped_path);
@@ -4582,11 +5070,12 @@ pub const Explorer = struct {
             }
 
             if (paths_only) {
+                if (target_count > 0) try w.print("  {s}:\n", .{stats.path});
                 for (target_lines[0..target_count]) |line_num| {
                     if (rendered >= max_results) break;
                     rendered += 1;
                     shown += 1;
-                    try w.print("  {s}:{d}\n", .{ stats.path, line_num });
+                    try w.print("    {d}\n", .{line_num});
                 }
                 continue;
             }
@@ -4621,6 +5110,7 @@ pub const Explorer = struct {
                     }
                 }
             }
+            var path_header_written = false;
             for (spans[0..n_spans]) |line_span| {
                 rendered += 1;
 
@@ -4640,15 +5130,23 @@ pub const Explorer = struct {
                 counts[count_slot].count += 1;
                 if (counts[count_slot].count > max_per_file) {
                     if (counts[count_slot].count == max_per_file + 1) {
-                        try w.print("  {s}: ... (more matches truncated)\n", .{counts[count_slot].path});
+                        if (!path_header_written) {
+                            try w.print("  {s}:\n", .{counts[count_slot].path});
+                            path_header_written = true;
+                        }
+                        try w.print("    ... (more matches truncated)\n", .{});
                     }
                 } else {
                     shown += 1;
                     const mt = trimSearchLine(content[line_span.start..line_span.end]);
+                    if (!path_header_written) {
+                        try w.print("  {s}:\n", .{stats.path});
+                        path_header_written = true;
+                    }
                     if (mt.truncated) {
-                        try w.print("  {s}:{d}: {s}…\n", .{ stats.path, line_span.line, mt.text });
+                        try w.print("    {d}: {s}…\n", .{ line_span.line, mt.text });
                     } else {
-                        try w.print("  {s}:{d}: {s}\n", .{ stats.path, line_span.line, mt.text });
+                        try w.print("    {d}: {s}\n", .{ line_span.line, mt.text });
                     }
                 }
                 if (rendered >= max_results) break;
@@ -4658,6 +5156,7 @@ pub const Explorer = struct {
         if (shown < max_results) {
             try w.print("({d} shown, {d} truncated by per-file cap)\n", .{ shown, max_results - shown });
         }
+        if (word_hits.len > max_results) try w.print("more: offset={d}\n", .{max_results});
 
         breakdown.tier0_ns = cio.nanoTimestamp() - t0_start;
         breakdown.tier_reached = 0;
@@ -5596,12 +6095,16 @@ pub const Explorer = struct {
         const ta = term_arena.allocator();
 
         var terms_set = std.StringHashMap(void).init(ta);
+        var primary_term: ?[]const u8 = null;
+        var raw_term_count: usize = 0;
         var raw_tok = idx.WordTokenizer{ .buf = query };
         while (raw_tok.next()) |word| {
             if (word.len < 2) continue;
             const lower = try ta.alloc(u8, word.len);
             for (word, 0..) |c, j| lower[j] = idx.normalizeChar(c);
             _ = try terms_set.getOrPut(lower);
+            raw_term_count += 1;
+            if (raw_term_count == 1) primary_term = lower else primary_term = null;
 
             var needs_split: bool = false;
             if (word.len >= 4) {
@@ -5669,7 +6172,7 @@ pub const Explorer = struct {
         const DocAgg = struct {
             score: f32,
             best_line: u32,
-            best_line_hits: u32,
+            best_line_priority: f32,
         };
         var per_doc = U32HashMap(DocAgg).init(ta);
 
@@ -5684,51 +6187,62 @@ pub const Explorer = struct {
             // df: distinct doc_ids in this posting list. tf: count of (term,doc)
             // entries (each entry is a distinct line per indexFile dedup).
             // line_hits: per-doc map of line_num → count for best-line picking.
-            var doc_best_line = U32HashMap(struct { line: u32, count: u32 }).init(ta);
+            var doc_tf = U32HashMap(u32).init(ta);
+            var doc_best_line = U32HashMap(u32).init(ta);
             for (hits) |h| {
+                const tf_gop = try doc_tf.getOrPut(h.doc_id);
+                if (!tf_gop.found_existing) tf_gop.value_ptr.* = 0;
+                tf_gop.value_ptr.* += 1;
+
                 const ln_gop = try doc_best_line.getOrPut(h.doc_id);
                 if (!ln_gop.found_existing) {
-                    ln_gop.value_ptr.* = .{ .line = h.line_num, .count = 1 };
+                    ln_gop.value_ptr.* = h.line_num;
                 } else {
-                    // Each posting is a distinct line; still, prefer the
-                    // smallest line_num as a deterministic representative.
-                    if (h.line_num < ln_gop.value_ptr.line) {
-                        ln_gop.value_ptr.line = h.line_num;
-                    }
-                    ln_gop.value_ptr.count += 1;
+                    // Each posting is a distinct line; prefer the smallest
+                    // line as a deterministic representative for THIS term.
+                    ln_gop.value_ptr.* = @min(ln_gop.value_ptr.*, h.line_num);
                 }
             }
-            const df: u32 = @intCast(doc_best_line.count());
+            const df: u32 = @intCast(doc_tf.count());
             // BM25 idf with the +1 smoothing variant: log(1 + (N - df + 0.5)/(df + 0.5))
             const num: f32 = @as(f32, @floatFromInt(N)) - @as(f32, @floatFromInt(df)) + 0.5;
             const den: f32 = @as(f32, @floatFromInt(df)) + 0.5;
             const idf: f32 = @log(1.0 + num / den);
 
-            var tf_iter = doc_best_line.iterator();
+            var tf_iter = doc_tf.iterator();
             while (tf_iter.next()) |entry| {
                 const doc_id = entry.key_ptr.*;
-                const tf: f32 = @floatFromInt(entry.value_ptr.count);
+                const tf: f32 = @floatFromInt(entry.value_ptr.*);
                 const dl_raw = self.word_index.docLength(doc_id);
                 const dl: f32 = if (dl_raw == 0) 1.0 else @floatFromInt(dl_raw);
                 const norm = 1.0 - b + b * (dl / avgdl);
                 const tf_sat = (tf * (k1 + 1.0)) / (tf + k1 * norm);
                 const term_score = idf * (tf_sat + bm25_plus_delta);
 
-                const ln_info = entry.value_ptr.*;
+                const best_term_line = doc_best_line.get(doc_id) orelse continue;
+                // `before_request` also expands to `before` + `request`.
+                // Occurrence count used to let a frequent generic subterm pick
+                // an unrelated earlier line (`T_after_request`). Prefer the
+                // unsplit exact query token; otherwise the rarer (higher-idf),
+                // longer term supplies the representative line.
+                const line_priority: f32 = if (primary_term) |primary|
+                    if (std.mem.eql(u8, primary, term)) 1_000_000.0 + idf else idf + @as(f32, @floatFromInt(term.len)) / 1000.0
+                else
+                    idf + @as(f32, @floatFromInt(term.len)) / 1000.0;
                 const agg_gop = try per_doc.getOrPut(doc_id);
                 if (!agg_gop.found_existing) {
                     agg_gop.value_ptr.* = .{
                         .score = term_score,
-                        .best_line = ln_info.line,
-                        .best_line_hits = ln_info.count,
+                        .best_line = best_term_line,
+                        .best_line_priority = line_priority,
                     };
                 } else {
                     agg_gop.value_ptr.score += term_score;
-                    if (ln_info.count > agg_gop.value_ptr.best_line_hits or
-                        (ln_info.count == agg_gop.value_ptr.best_line_hits and ln_info.line < agg_gop.value_ptr.best_line))
+                    if (line_priority > agg_gop.value_ptr.best_line_priority or
+                        (line_priority == agg_gop.value_ptr.best_line_priority and best_term_line < agg_gop.value_ptr.best_line))
                     {
-                        agg_gop.value_ptr.best_line = ln_info.line;
-                        agg_gop.value_ptr.best_line_hits = ln_info.count;
+                        agg_gop.value_ptr.best_line = best_term_line;
+                        agg_gop.value_ptr.best_line_priority = line_priority;
                     }
                 }
             }
@@ -5818,7 +6332,7 @@ pub const Explorer = struct {
                 }
                 break :blk extractLineByNumber(ref.data, c.best_line);
             } orelse continue;
-            const duped_text = try allocator.dupe(u8, line_text);
+            const duped_text = try dupeClampedLineQuery(allocator, line_text, query);
             errdefer allocator.free(duped_text);
             const duped_path = try allocator.dupe(u8, path);
             errdefer allocator.free(duped_path);
@@ -6003,7 +6517,15 @@ pub const Explorer = struct {
     /// Format a word-index lookup directly from the posting list. The indexer
     /// already stores at most one hit per (word, file, line), so the MCP word
     /// path does not need to allocate and dedupe a temporary result slice.
-    pub fn renderWord(self: *Explorer, word: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
+    pub fn renderWord(
+        self: *Explorer,
+        word: []const u8,
+        allocator: std.mem.Allocator,
+        out: *std.ArrayList(u8),
+        max_results: usize,
+        offset: usize,
+        all: bool,
+    ) !void {
         self.mu.lockShared();
         const needs_rebuild = !self.word_index_complete and
             (self.contents.len() > 0 or (self.io != null and self.root_dir != null));
@@ -6020,26 +6542,84 @@ pub const Explorer = struct {
         if (std.mem.indexOfScalar(u8, word, ' ') != null) {
             const hits = try self.searchWordTokensLocked(word, allocator);
             defer allocator.free(hits);
-            try out.ensureUnusedCapacity(allocator, 64 + hits.len * 48);
+            const start = if (all) 0 else @min(offset, hits.len);
+            const end = if (all) hits.len else @min(hits.len, start + max_results);
+            try out.ensureUnusedCapacity(allocator, 128 + (end - start) * 48);
             const w = cio.listWriter(out, allocator);
-            try w.print("{d} hits for '{s}' (tokenized):\n", .{ hits.len, word });
-            for (hits) |h| {
+            try w.print("{d} hits for '{s}' in {d} files (tokenized; showing {d}-{d}):\n", .{
+                hits.len,
+                word,
+                hits.len,
+                if (start < end) start + 1 else 0,
+                if (start < end) end else 0,
+            });
+            for (hits[start..end]) |h| {
                 try w.print("  {s}:{d}\n", .{ self.word_index.hitPath(h), h.line_num });
             }
+            if (end < hits.len) try w.print("more: {d} hits; offset={d}\n", .{ hits.len - end, end });
             return;
         }
 
         const gen = self.search_gen.load(.acquire);
-        if (self.word_render_cache.render(word, false, gen, allocator, out)) return;
+        const cacheable = !all and offset == 0 and max_results == 50;
+        if (cacheable and self.word_render_cache.render(word, false, gen, allocator, out)) return;
         const render_start = out.items.len;
         const hits = self.word_index.search(word);
-        try out.ensureUnusedCapacity(allocator, 64 + hits.len * 48);
-        const w = cio.listWriter(out, allocator);
-        try w.print("{d} hits for '{s}':\n", .{ hits.len, word });
-        for (hits) |h| {
-            try w.print("  {s}:{d}\n", .{ self.word_index.hitPath(h), h.line_num });
+        // Memory-mapped posting lists are packed (alignment 1), while sorting
+        // needs a naturally aligned mutable slice. Copy element-by-element so
+        // strict-alignment targets never receive an invalid slice cast.
+        const sorted = try allocator.alloc(idx.WordHit, hits.len);
+        defer allocator.free(sorted);
+        for (hits, 0..) |hit, hit_i| sorted[hit_i] = hit;
+        const SortContext = struct {
+            index: *const idx.WordIndex,
+            fn lessThan(ctx: @This(), a: idx.WordHit, b: idx.WordHit) bool {
+                const ap = ctx.index.hitPath(a);
+                const bp = ctx.index.hitPath(b);
+                const order = std.mem.order(u8, ap, bp);
+                if (order != .eq) return order == .lt;
+                return a.line_num < b.line_num;
+            }
+        };
+        std.mem.sort(idx.WordHit, sorted, SortContext{ .index = &self.word_index }, SortContext.lessThan);
+
+        var file_count: usize = 0;
+        var previous_path: ?[]const u8 = null;
+        for (sorted) |h| {
+            const path = self.word_index.hitPath(h);
+            if (previous_path == null or !std.mem.eql(u8, previous_path.?, path)) {
+                file_count += 1;
+                previous_path = path;
+            }
         }
-        self.word_render_cache.put(word, false, gen, out.items[render_start..]);
+        const start = if (all) 0 else @min(offset, sorted.len);
+        const end = if (all) sorted.len else @min(sorted.len, start + max_results);
+        try out.ensureUnusedCapacity(allocator, 128 + (end - start) * 24);
+        const w = cio.listWriter(out, allocator);
+        try w.print("{d} hits for '{s}' in {d} files (showing {d}-{d}):\n", .{
+            sorted.len,
+            word,
+            file_count,
+            if (start < end) start + 1 else 0,
+            if (start < end) end else 0,
+        });
+        var i = start;
+        while (i < end) {
+            const path = self.word_index.hitPath(sorted[i]);
+            try w.print("  {s}:", .{path});
+            var first = true;
+            while (i < end and std.mem.eql(u8, self.word_index.hitPath(sorted[i]), path)) : (i += 1) {
+                if (first) {
+                    try w.print("{d}", .{sorted[i].line_num});
+                } else {
+                    try w.print(",{d}", .{sorted[i].line_num});
+                }
+                first = false;
+            }
+            try w.writeByte('\n');
+        }
+        if (end < sorted.len) try w.print("more: {d} hits; offset={d}\n", .{ sorted.len - end, end });
+        if (cacheable) self.word_render_cache.put(word, false, gen, out.items[render_start..]);
     }
 
     pub const FuzzyMatch = FuzzyFileMatch;
@@ -7521,6 +8101,29 @@ pub const Explorer = struct {
         }
     }
 
+    /// Return up to six short, numbered context ranges from one file. Compact
+    /// context can request a head and tail for each of three symbols. Cached
+    /// content shares one line-offset lookup; uncached content is read once and
+    /// scanned once only as far as the latest requested line. The caller owns
+    /// the outer slice and every body in it.
+    pub fn getContextSymbolBodies(self: *Explorer, path: []const u8, ranges: []const LineRange, allocator: std.mem.Allocator) !?[][]u8 {
+        std.debug.assert(ranges.len <= 6);
+        for (ranges) |range| std.debug.assert(range.end < range.start or range.end - range.start < 40);
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        const ref = self.readContentForSearch(path, allocator) orelse return null;
+        defer ref.deinit();
+
+        if (!ref.owned) {
+            if (try self.line_offsets.extractRanges(path, ref.data, ranges, allocator)) |bodies| return bodies;
+        }
+
+        // Disk-backed/released content has no stable pointer, so never retain
+        // offsets for it. This bounded batch scan also avoids building a whole
+        // file table when the requested symbols are near the top.
+        return try renderNumberedLineRangesScanning(ref.data, ranges, allocator);
+    }
+
     /// Return the source body for a symbol given its file path and line range.
     /// Caller owns the returned slice.
     pub fn getSymbolBody(self: *Explorer, path: []const u8, line_start: u32, line_end: u32, allocator: std.mem.Allocator) !?[]u8 {
@@ -7712,8 +8315,8 @@ pub const Explorer = struct {
         var lines = std.mem.splitScalar(u8, content, '\n');
         while (lines.next()) |line| {
             line_num += 1;
-            if (indexOfCaseInsensitive(line, query) != null) {
-                const line_text = try allocator.dupe(u8, line);
+            if (indexOfCaseInsensitive(line, query)) |q_off| {
+                const line_text = try dupeClampedLine(allocator, line, q_off);
                 errdefer allocator.free(line_text);
                 const path_copy = try allocator.dupe(u8, path);
                 errdefer allocator.free(path_copy);
@@ -7744,8 +8347,9 @@ pub const Explorer = struct {
         while (lines.next()) |line| {
             line_num += 1;
             if (rx.search(allocator, line) catch null) |m| {
+                const match_off = m.span.start;
                 @constCast(&m).deinit(allocator);
-                const line_text = try allocator.dupe(u8, line);
+                const line_text = try dupeClampedLine(allocator, line, match_off);
                 errdefer allocator.free(line_text);
                 const path_copy = try allocator.dupe(u8, path);
                 errdefer allocator.free(path_copy);
@@ -7866,6 +8470,7 @@ pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
 fn appendTargetLineHits(
     path: []const u8,
     content: []const u8,
+    query: []const u8,
     allocator: std.mem.Allocator,
     target_lines: []const u32,
     max_results: usize,
@@ -7885,7 +8490,7 @@ fn appendTargetLineHits(
         if (target_lines[target_i] != line_num) continue;
         target_i += 1;
 
-        const line_text = try allocator.dupe(u8, line);
+        const line_text = try dupeClampedLineQuery(allocator, line, query);
         errdefer allocator.free(line_text);
         const path_copy = try allocator.dupe(u8, path);
         errdefer allocator.free(path_copy);
@@ -7974,7 +8579,7 @@ fn searchInContent(path: []const u8, content: []const u8, query: []const u8, all
                     const line_start = current_line_start;
                     const line_end = simdIndexOfNewline(content, start) orelse content.len;
 
-                    const line_text = try allocator.dupe(u8, content[line_start..line_end]);
+                    const line_text = try dupeClampedLine(allocator, content[line_start..line_end], start - line_start);
                     errdefer allocator.free(line_text);
                     const path_copy = try allocator.dupe(u8, path);
                     errdefer allocator.free(path_copy);
@@ -8012,7 +8617,7 @@ fn searchInContent(path: []const u8, content: []const u8, query: []const u8, all
                 const line_start = current_line_start;
                 const line_end = simdIndexOfNewline(content, start) orelse content.len;
 
-                const line_text = try allocator.dupe(u8, content[line_start..line_end]);
+                const line_text = try dupeClampedLine(allocator, content[line_start..line_end], start - line_start);
                 errdefer allocator.free(line_text);
                 const path_copy = try allocator.dupe(u8, path);
                 errdefer allocator.free(path_copy);
@@ -8125,8 +8730,9 @@ fn searchInContentRegex(path: []const u8, content: []const u8, pattern: []const 
     while (lines.next()) |line| {
         line_num += 1;
         if (rx.search(allocator, line) catch null) |m| {
+            const match_off = m.span.start;
             @constCast(&m).deinit(allocator);
-            const line_text = try allocator.dupe(u8, line);
+            const line_text = try dupeClampedLine(allocator, line, match_off);
             errdefer allocator.free(line_text);
             const path_copy = try allocator.dupe(u8, path);
             errdefer allocator.free(path_copy);
