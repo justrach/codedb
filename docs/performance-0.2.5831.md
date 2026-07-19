@@ -7,7 +7,8 @@ the `release/0.2.5831` line. The code candidate is commit
 The complete machine-readable measurements are in
 [`bench/results/0.2.5831/results.json`](../bench/results/0.2.5831/results.json).
 The JSON contains all 10 context tasks and all 22 edge-benchmark cases, including
-results that did not improve.
+results that did not improve. It also records the exploratory observations,
+implementation and security findings, verification matrix, and sandbox cleanup.
 
 ## Headline results
 
@@ -26,6 +27,23 @@ results that did not improve.
 These are reductions in measured output, not estimates derived from source
 line counts. The context benchmark uses token counts; the edge benchmark uses
 exact response bytes.
+
+## Audit coverage map
+
+| Area | Evidence | Status |
+|---|---|---|
+| Context token efficiency | 10 per-task rows plus aggregate core, visible, and wire measurements | release evidence |
+| Context retrieval recall | Exact task manifest, anchors, hits, micro/macro recall, and 10/10 parity | release gate passed |
+| Word, search, and outline output | All 22 edge cases with baseline/candidate latency and bytes | release evidence |
+| Outline attribution | Same-tree, same-compiler before/after pair | directly attributed |
+| Exploratory token and trigram results | Word/search tokens, warm latency, and cache speedup ranges | directional only |
+| Performance, correctness, and security fixes | Source-path inventory in this report and the results JSON | implemented and tested |
+| Other-engine comparison | Fixed fixture/protocol, per-engine results, limitations, and cleanup | directional only |
+| Regressions and verification | Ranked-search/callers regressions, commands, hashes, and artifact checks | explicitly published |
+
+“Release evidence” means the raw task rows or response bytes were retained and
+validated. “Directional only” means the result remains useful context but lacks
+enough retained provenance or semantic equivalence to support a release claim.
 
 ## Context token and recall gate
 
@@ -185,14 +203,23 @@ sandbox with 2 vCPU and 2,048 MB on one gateway node.
 | codebase-memory-mcp 0.9.0 | 430 ms | 6,068 KiB | graph operations 16–23 ms | Exact symbol and inbound graph |
 | GitNexus 1.6.9 | not measured | not measured | not measured | Tagged CLI rejected the documented `--skip-embeddings` flag |
 
+The codedb and codebase-memory-mcp downloads passed their published checksum
+verification. codedb produced a 4,916 KiB cache, and its final measured internal
+search was 5.7 µs; this internal timer excludes CLI startup. codebase-memory-mcp
+produced a 4,648 KiB cache and a graph with 1,717 nodes, 3,408 edges, and zero
+skipped items. GitNexus was installed under verified Node.js 22.23.1; embeddings
+are off by default in v1.6.9, but the trial retained the original protocol and
+did not silently remove the rejected flag.
+
 This is deliberately not a winner table. Warm CLI times include process startup
 and cache loading; graph traversal and textual callers/context are not
 semantically identical; and codedb used the latest published 0.2.5830 binary,
 not the unreleased branch. GitNexus 1.6.9 is PolyForm Noncommercial 1.0, so
 commercial company use also requires license review. Sampled cgroup peaks are
 directional because a short-lived process can finish between samples or report
-zero. All sandboxes created for the trial were deleted after measurement; no
-competing engine was installed locally.
+zero. All task-created sandboxes were deleted successfully with HTTP 204;
+preexisting sandboxes were left untouched, and no competing engine was
+installed locally.
 
 ## Verification
 
@@ -206,6 +233,11 @@ python3 scripts/e2e_mcp_test.py --binary zig-out/bin/codedb --project <codedb-ro
 
 The MCP suite passed all 20 scenarios. Formatting and diff checks also passed.
 No deployment is represented by this report.
+
+The documentation pass additionally verified that all 10 baseline rows and all
+10 candidate rows exactly match the source summaries, the committed task
+manifest matches its recorded SHA-256, and all 22 baseline and 22 candidate
+edge-response sizes reproduce. JSON validation and staged diff checks passed.
 
 ## Reproduction and interpretation rules
 

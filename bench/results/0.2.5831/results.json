@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "release_line": "0.2.5831",
   "branch": "release/0.2.5831",
   "code_candidate_commit": "0478eff8dbef2cd2daa6cbd7413d4529ba932d1d",
@@ -219,8 +219,87 @@
     "after": { "avg_ns": 8166, "output_bytes": 16134 },
     "change_percent": { "avg_ns": -93.8042, "output_bytes": -94.4553 }
   },
+  "exploratory_observations": {
+    "status": "directional_only",
+    "provenance": "Observed during the audit, but the original raw samples were not retained with enough provenance to make these release gates.",
+    "measurements": {
+      "grouped_word_token_reduction_percent": 99.67,
+      "grouped_search_token_reduction_percent_range": [14.7, 20.2],
+      "warm_word_and_search_latency_ms_range": [0.10, 0.69],
+      "recovered_trigram_cache_search_speedup_range": [5, 52]
+    }
+  },
+  "audit_findings": [
+    {
+      "id": "bounded_grouped_mcp_output",
+      "type": "performance_and_token_efficiency",
+      "paths": ["src/mcp.zig", "src/explore.zig"],
+      "status": "implemented_and_tested",
+      "summary": "Word and search results use grouped bounded pagination; outlines are bounded and paginated."
+    },
+    {
+      "id": "large_snapshot_zero_copy_retention",
+      "type": "performance_and_memory",
+      "paths": ["src/hot_cache.zig", "src/snapshot.zig"],
+      "status": "implemented_and_tested",
+      "summary": "Large mmap snapshots retain borrowed zero-copy content instead of evicting it after 4,096 files."
+    },
+    {
+      "id": "trigram_posting_pointer_removal",
+      "type": "correctness_and_memory",
+      "paths": ["src/index.zig"],
+      "status": "implemented_and_tested",
+      "summary": "Removed one dangling pointer and one pointer of overhead from each trigram posting list."
+    },
+    {
+      "id": "paired_trigram_generation_nonce",
+      "type": "cache_correctness",
+      "paths": ["src/index.zig"],
+      "status": "implemented_and_tested",
+      "summary": "Lookup and postings files share a generation nonce so an interrupted write cannot produce a mixed adopted cache pair."
+    },
+    {
+      "id": "anchored_no_follow_project_access",
+      "type": "security_and_correctness",
+      "paths": ["src/project_fs.zig", "src/snapshot.zig", "src/watcher.zig", "src/mcp.zig", "src/edit.zig"],
+      "status": "implemented_and_tested",
+      "summary": "Cache paths, snapshot sources, watcher notifications, MCP reads, and fallback edits use anchored no-follow project access."
+    },
+    {
+      "id": "terminal_control_sanitization",
+      "type": "security",
+      "paths": ["src/mcp.zig"],
+      "status": "implemented_and_tested",
+      "summary": "Raw repository output is stripped of terminal-control injection."
+    },
+    {
+      "id": "plain_mcp_and_zero_result_compaction",
+      "type": "performance_and_token_efficiency",
+      "paths": ["src/mcp.zig"],
+      "status": "implemented_and_tested",
+      "summary": "Plain MCP output avoids ANSI overhead and zero-result responses omit unusable guidance."
+    }
+  ],
+  "verification": {
+    "verified_code_commit": "0478eff8dbef2cd2daa6cbd7413d4529ba932d1d",
+    "commands": [
+      { "command": "zig build test", "status": "passed" },
+      { "command": "zig build -Doptimize=ReleaseFast", "status": "passed" },
+      { "command": "python3 scripts/e2e_mcp_test.py --binary zig-out/bin/codedb --project <codedb-root>", "status": "passed", "scenarios": 20 }
+    ],
+    "artifact_checks": {
+      "context_source_rows_matched": { "baseline": 10, "candidate": 10, "possible_each": 10 },
+      "task_manifest_sha256_matched": true,
+      "candidate_edge_response_sizes_reproduced": { "matched": 22, "possible": 22 },
+      "baseline_edge_response_sizes_reproduced": { "matched": 22, "possible": 22 },
+      "json_validation": "passed",
+      "format_and_diff_checks": "passed"
+    }
+  },
   "sandbox_comparison": {
     "status": "directional_only",
+    "issue_url": "https://github.com/justrach/codedb/issues/679",
+    "protocol_url": "https://github.com/justrach/sandbox-gateway/blob/main/docs.md",
     "fixture": {
       "repository": "justrach/smolify",
       "commit": "835070d0826ab581f7efb564a1457b72c2bbe3da",
@@ -237,6 +316,8 @@
         "cold_index_internal_ms": 74.7,
         "sampled_cgroup_peak_kib": 41972,
         "cache_kib": 4916,
+        "install_verification": "Published checksum verified.",
+        "final_internal_search_us": 5.7,
         "warm_cli_process_ms_three_runs": {
           "search": [18, 3, 3],
           "callers": [54, 3, 3],
@@ -250,6 +331,7 @@
         "cold_index_process_ms": 430,
         "sampled_cgroup_peak_kib": 6068,
         "cache_kib": 4648,
+        "install_verification": "Published checksum verified.",
         "graph": { "nodes": 1717, "edges": 3408, "skipped": 0 },
         "warm_cli_process_ms_three_run_ranges": {
           "search_graph": [16, 17],
@@ -261,6 +343,8 @@
       {
         "name": "GitNexus",
         "version": "1.6.9",
+        "runtime": "Node.js 22.23.1",
+        "embeddings_default": "off",
         "status": "not_measured",
         "reason": "The tagged CLI rejected --skip-embeddings; the newer README and tagged CLI differed, so the trial stopped rather than changing the protocol.",
         "license_note": "PolyForm Noncommercial 1.0; commercial company use requires license review."
@@ -272,6 +356,12 @@
       "Sampled cgroup peaks are directional; short-lived processes can complete between samples or report zero.",
       "The codedb sandbox used the latest published 0.2.5830 binary, not the unreleased 0.2.5831 branch.",
       "This comparison is not a winner table."
-    ]
+    ],
+    "cleanup": {
+      "task_created_sandboxes": "deleted",
+      "delete_http_status": 204,
+      "preexisting_sandboxes": "left untouched",
+      "local_competing_engine_install": false
+    }
   }
 }

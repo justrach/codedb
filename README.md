@@ -318,8 +318,9 @@ remaining latency regressions rather than averaging them away.
 
 See the [full performance and recall report](docs/performance-0.2.5831.md) and
 [machine-readable results](bench/results/0.2.5831/results.json) for all 10
-context tasks, all 22 edge cases, methodology, provenance, and the directional
-three-engine sandbox trial.
+context tasks, all 22 edge cases, exploratory observations, implementation and
+security findings, verification, provenance, and the directional three-engine
+sandbox trial.
 
 ### Directional engine comparison
 

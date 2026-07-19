@@ -28,7 +28,8 @@ The edge suite includes all 22 cases, including two remaining latency
 regressions: uncached ranked search (0.996 ms → 7.668 ms) and the hot-callers
 case (0.030 ms → 0.067 ms). The full report explains compiler and binary
 provenance, exact methodology, the paired outline measurement, exploratory
-trigram observations, and the directional three-engine sandbox trial.
+trigram observations, implementation and security findings, verification, and
+the directional three-engine sandbox trial.
 
 - [Full 0.2.5831 performance and recall report](performance-0.2.5831.md)
 - [Machine-readable 0.2.5831 results](../bench/results/0.2.5831/results.json)
