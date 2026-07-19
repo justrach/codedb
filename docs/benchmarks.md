@@ -33,6 +33,24 @@ trigram observations, and the directional three-engine sandbox trial.
 - [Full 0.2.5831 performance and recall report](performance-0.2.5831.md)
 - [Machine-readable 0.2.5831 results](../bench/results/0.2.5831/results.json)
 
+### Directional comparison with other engines
+
+The issue [#679](https://github.com/justrach/codedb/issues/679) trial used
+`justrach/smolify@835070d`, the exact symbol `toFtsMatch`, and separate Linux
+x86_64 sandboxes with 2 vCPU and 2 GB RAM on one gateway node.
+
+| Engine | Cold index process time | Cache | Warm CLI process measurements | Retrieved evidence |
+|---|---:|---:|---|---|
+| **codedb 0.2.5830** | **178 ms** (74.7 ms internal) | 4,916 KiB | search 18/3/3 ms; callers 54/3/3 ms; context 18/3/3 ms | Definition, 8 search sites, 7 caller sites, and narrowed context |
+| codebase-memory-mcp 0.9.0 | 430 ms | **4,648 KiB** | `search_graph`, `trace_path`, and `architecture`: 16–23 ms | Exact symbol and inbound graph |
+| GitNexus 1.6.9 | not measured | not measured | not measured | Tagged CLI rejected `--skip-embeddings`; the trial stopped rather than changing the protocol |
+
+Warm CLI measurements include process startup and cache loading. The tools do
+not return semantically identical evidence, and codedb used the published
+0.2.5830 binary rather than the unreleased branch, so this is a directional
+protocol record—not a winner table. See the
+[full sandbox methodology and limitations](performance-0.2.5831.md#directional-sandbox-comparison).
+
 ## Historical benchmarks
 
 The remaining measurements on this page predate the 0.2.5831 audit. They were

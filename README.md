@@ -321,6 +321,24 @@ See the [full performance and recall report](docs/performance-0.2.5831.md) and
 context tasks, all 22 edge cases, methodology, provenance, and the directional
 three-engine sandbox trial.
 
+### Directional engine comparison
+
+Issue [#679](https://github.com/justrach/codedb/issues/679) was explored on
+`justrach/smolify` at commit `835070d` using the exact symbol `toFtsMatch`.
+Each engine ran in its own Linux x86_64 sandbox with 2 vCPU and 2 GB RAM:
+
+| Engine | Cold index | Cache | Warm CLI process measurements | Retrieved evidence |
+|---|---:|---:|---|---|
+| **codedb 0.2.5830** | **178 ms** (74.7 ms internal) | 4,916 KiB | search 18/3/3 ms; callers 54/3/3 ms; context 18/3/3 ms | Definition, 8 search sites, 7 caller sites, narrowed context |
+| codebase-memory-mcp 0.9.0 | 430 ms | **4,648 KiB** | graph operations 16–23 ms | Exact symbol and inbound graph |
+| GitNexus 1.6.9 | not measured | not measured | not measured | Tagged CLI rejected the documented `--skip-embeddings` flag, so the run stopped |
+
+This is not a winner table: warm CLI timings include process startup and cache
+loading, and graph traversal is not semantically identical to codedb callers or
+context. The codedb row used the latest published 0.2.5830 binary, not the
+unreleased 0.2.5831 branch. See the
+[full comparison and limitations](docs/performance-0.2.5831.md#directional-sandbox-comparison).
+
 ### Historical cross-tool benchmarks
 
 Measured on Apple M4 Pro, 48GB RAM. MCP = pre-indexed warm queries (20 iterations avg). CLI/external tools include process startup (3 iterations avg). Ground truth verified against Python reference implementation.
