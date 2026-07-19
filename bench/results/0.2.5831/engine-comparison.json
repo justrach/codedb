@@ -1,0 +1,1096 @@
+{
+  "schema_version": 1,
+  "title": "codedb issue #679 normalized 1:1 engine comparison",
+  "created_at_utc": "2026-07-19T08:40:24Z",
+  "status": "completed",
+  "protocol": {
+    "fixture": {
+      "repository": "justrach/smolify",
+      "commit": "835070d0826ab581f7efb564a1457b72c2bbe3da",
+      "tar_sha256": "a2e3ba722bb8ab19d212ebca20a4d0f10b970ca6287a992da6e9201759cb9afb",
+      "files": 96,
+      "extracted_bytes": 1541092,
+      "raw_toFtsMatch_text_sites": 8
+    },
+    "environment": "Separate node-template Linux x86_64 sandboxes on the same gateway node; 2 vCPU and 2048 MB each.",
+    "timing": "Process-wall time. Cold index: one clean-cache run. Queries: one warmup followed by 10 separate CLI-process runs.",
+    "memory": "peak_child_rss_kib from getrusage(RUSAGE_CHILDREN) in the identical process runner.",
+    "output": "stdout bytes plus tiktoken 0.13.0 o200k_base tokens on the final deterministic response.",
+    "runner_files": [
+      "bench/process-bench.py",
+      "bench/sandbox-gateway-exec.py"
+    ]
+  },
+  "tools": {
+    "codedb": {
+      "version": "0.2.5831",
+      "source_commit": "05556e52218edc78a6ae75191f1b6579c612e7e0",
+      "binary_sha256": "069f39524fdb3a2c3aef18e7a45f92cd831443795dd4467095fd6fd802fccfcc",
+      "build": "Zig 0.17.0-dev.813+2153f8143, ReleaseFast, x86_64-linux-musl, statically linked",
+      "persistent_index_bytes": 5027199
+    },
+    "codebase-memory-mcp": {
+      "version": "0.9.0",
+      "asset": "codebase-memory-mcp-linux-amd64-portable.tar.gz",
+      "asset_sha256": "8459d5c9d1457f2c82de3de307ffc7641ecbba2dde893427be1e62eca8ef9b25",
+      "binary_sha256": "8d019ca9372e5e0d60650648f3740673db7f84d1e38fd14fa4b0e823ee7220dc",
+      "persistent_index_bytes": 4759552
+    },
+    "GitNexus": {
+      "version": "1.6.9",
+      "runtime": "Node.js 26.3.0 / npm 11.16.0",
+      "npm_integrity": "sha512-Rq5LXFygx7jjMp/YFsIAcnnzuKvvCsb4rxHFILnu05ZOqk7xNXTUSMRa968EOCbxcKFxnhKYaGXoabOUeGZX6A==",
+      "package_lock_sha256": "31b63a7b2497d6e8be91e85a8f90405da8b9603d986417b5c6ce49b56a5822bb",
+      "embeddings": "disabled by default; no embedding flag passed",
+      "persistent_index_bytes": 28815656
+    }
+  },
+  "cold_index": {
+    "codedb": {
+      "command": [
+        "/home/user/codedb",
+        "/home/user/fixture",
+        "index"
+      ],
+      "cwd": "/home/user/fixture",
+      "warmups": 0,
+      "iterations": 1,
+      "wall_ms": {
+        "min": 186.293472,
+        "p50": 186.293472,
+        "p95": 186.293472,
+        "max": 186.293472
+      },
+      "stdout_bytes": {
+        "min": 46,
+        "p50": 46,
+        "max": 46
+      },
+      "peak_child_rss_kib": 41360,
+      "runs": [
+        {
+          "wall_ms": 186.293472,
+          "stdout_bytes": 46,
+          "stderr_bytes": 0,
+          "stdout_sha256": "4e0f41f09203497a3aa3bc7bac006514950f363b03b5f3b3411b159afbf3162b"
+        }
+      ],
+      "last_stdout": "✓ indexed  65.3ms\n✓ index ready  93 files\n",
+      "last_stderr": ""
+    },
+    "codebase-memory-mcp": {
+      "command": [
+        "/home/user/cbm-dist/codebase-memory-mcp",
+        "cli",
+        "index_repository",
+        "--repo-path",
+        "/home/user/fixture"
+      ],
+      "cwd": "/home/user/fixture",
+      "warmups": 0,
+      "iterations": 1,
+      "wall_ms": {
+        "min": 422.518217,
+        "p50": 422.518217,
+        "p95": 422.518217,
+        "max": 422.518217
+      },
+      "stdout_bytes": {
+        "min": 412,
+        "p50": 412,
+        "max": 412
+      },
+      "peak_child_rss_kib": 85304,
+      "runs": [
+        {
+          "wall_ms": 422.518217,
+          "stdout_bytes": 412,
+          "stderr_bytes": 128,
+          "stdout_sha256": "1957a2ba80ff5982b1aebcd65e294ca3759c9a4cb1859084c936e4a13433b0be"
+        }
+      ],
+      "last_stdout": "{\"project\":\"home-user-fixture\",\"skipped_count\":0,\"nodes\":1717,\"edges\":3407,\"expected_nodes\":1717,\"expected_edges\":3407,\"adr_present\":false,\"adr_hint\":\"Project indexed. Consider creating an Architecture Decision Record: explore the codebase with get_architecture(aspects=['all']), then use manage_adr(mode='update') to persist architectural insights across sessions.\",\"artifact_present\":false,\"status\":\"indexed\"}\n",
+      "last_stderr": "level=info msg=mem.init budget_mb=482 total_ram_mb=1930\nlevel=info msg=index.supervisor.reap outcome=clean exit_code=0 signal=0\n"
+    },
+    "GitNexus": {
+      "command": [
+        "/home/user/gitnexus-dist/node_modules/.bin/gitnexus",
+        "analyze",
+        "/home/user/fixture",
+        "--skip-git",
+        "--skip-agents-md",
+        "--skip-skills"
+      ],
+      "cwd": "/home/user/fixture",
+      "warmups": 0,
+      "iterations": 1,
+      "wall_ms": {
+        "min": 8305.209147,
+        "p50": 8305.209147,
+        "p95": 8305.209147,
+        "max": 8305.209147
+      },
+      "stdout_bytes": {
+        "min": 228,
+        "p50": 228,
+        "max": 228
+      },
+      "peak_child_rss_kib": 709348,
+      "runs": [
+        {
+          "wall_ms": 8305.209147,
+          "stdout_bytes": 228,
+          "stderr_bytes": 491,
+          "stdout_sha256": "570c38f6ee0c60aa2fbcb68df9b9892eb764c9d2079122012278c10b52c569dc"
+        }
+      ],
+      "last_stdout": "\n  GitNexus Analyzer\n\n  Warning: no .git directory found — commit-tracking and incremental updates disabled.\n\n\n  Repository indexed successfully (7.2s)\n\n  524 nodes | 1,109 edges | 22 clusters | 40 flows\n  /home/user/fixture\n\n",
+      "last_stderr": "Warning: npm 11.x can crash while installing gitnexus via npx (npm/arborist \"node.target is null\"). Prefer: pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze or npm install -g gitnexus@latest. See https://github.com/abhigyanpatwari/GitNexus/issues/1939\n{\"level\":40,\"time\":1784449277028,\"name\":\"gitnexus\",\"msg\":\"GitNexus: FTS extension unavailable; continuing without FTS features. load-only policy: extension not pre-installed\"}\n"
+    }
+  },
+  "tasks": {
+    "definition": {
+      "objective": "Find the exact toFtsMatch definition.",
+      "required_anchors": [
+        "toFtsMatch",
+        "lib/docs/search.ts"
+      ],
+      "ground_truth": "lib/docs/search.ts:76 (GitNexus reports zero-based startLine 75).",
+      "results": {
+        "codedb": {
+          "recall": {
+            "hits": 2,
+            "possible": 2
+          },
+          "output_tokens": 74,
+          "measurement": {
+            "command": [
+              "/home/user/codedb",
+              "/home/user/fixture",
+              "symbol",
+              "toFtsMatch"
+            ],
+            "cwd": "/home/user/fixture",
+            "warmups": 1,
+            "iterations": 10,
+            "wall_ms": {
+              "min": 0.64652,
+              "p50": 0.71082,
+              "p95": 0.74136895,
+              "max": 0.74662
+            },
+            "stdout_bytes": {
+              "min": 250,
+              "p50": 250,
+              "max": 250
+            },
+            "peak_child_rss_kib": 6272,
+            "runs": [
+              {
+                "wall_ms": 0.730971,
+                "stdout_bytes": 250,
+                "stderr_bytes": 0,
+                "stdout_sha256": "af54e9088ad8131fe53fd4bf0e2d3d6e26ad7d13e49ed623909c0b2644ad4b75"
+              },
+              {
+                "wall_ms": 0.72561,
+                "stdout_bytes": 250,
+                "stderr_bytes": 0,
+                "stdout_sha256": "af54e9088ad8131fe53fd4bf0e2d3d6e26ad7d13e49ed623909c0b2644ad4b75"
+              },
+              {
+                "wall_ms": 0.66178,
+                "stdout_bytes": 250,
+                "stderr_bytes": 0,
+                "stdout_sha256": "af54e9088ad8131fe53fd4bf0e2d3d6e26ad7d13e49ed623909c0b2644ad4b75"
+              },
+              {
+                "wall_ms": 0.71935,
+                "stdout_bytes": 250,
+                "stderr_bytes": 0,
+                "stdout_sha256": "af54e9088ad8131fe53fd4bf0e2d3d6e26ad7d13e49ed623909c0b2644ad4b75"
+              },
+              {
+                "wall_ms": 0.65946,
+                "stdout_bytes": 250,
+                "stderr_bytes": 0,
+                "stdout_sha256": "af54e9088ad8131fe53fd4bf0e2d3d6e26ad7d13e49ed623909c0b2644ad4b75"
+              },
+              {
+                "wall_ms": 0.734951,
+                "stdout_bytes": 250,
+                "stderr_bytes": 0,
+                "stdout_sha256": "af54e9088ad8131fe53fd4bf0e2d3d6e26ad7d13e49ed623909c0b2644ad4b75"
+              },
+              {
+                "wall_ms": 0.74662,
+                "stdout_bytes": 250,
+                "stderr_bytes": 0,
+                "stdout_sha256": "af54e9088ad8131fe53fd4bf0e2d3d6e26ad7d13e49ed623909c0b2644ad4b75"
+              },
+              {
+                "wall_ms": 0.64652,
+                "stdout_bytes": 250,
+                "stderr_bytes": 0,
+                "stdout_sha256": "af54e9088ad8131fe53fd4bf0e2d3d6e26ad7d13e49ed623909c0b2644ad4b75"
+              },
+              {
+                "wall_ms": 0.70229,
+                "stdout_bytes": 250,
+                "stderr_bytes": 0,
+                "stdout_sha256": "af54e9088ad8131fe53fd4bf0e2d3d6e26ad7d13e49ed623909c0b2644ad4b75"
+              },
+              {
+                "wall_ms": 0.69998,
+                "stdout_bytes": 250,
+                "stderr_bytes": 0,
+                "stdout_sha256": "af54e9088ad8131fe53fd4bf0e2d3d6e26ad7d13e49ed623909c0b2644ad4b75"
+              }
+            ],
+            "last_stdout": "1 results for 'toFtsMatch':\n  lib/docs/search.ts:76 (function) toFtsMatch  // export function toFtsMatch(query: string, mode: \"all\" | \"any\" = \"all\"): string {\n↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.\n",
+            "last_stderr": ""
+          }
+        },
+        "codebase-memory-mcp": {
+          "recall": {
+            "hits": 2,
+            "possible": 2
+          },
+          "output_tokens": 515,
+          "measurement": {
+            "command": [
+              "/home/user/cbm-dist/codebase-memory-mcp",
+              "cli",
+              "search_graph",
+              "--project",
+              "home-user-fixture",
+              "--name-pattern",
+              "^toFtsMatch$",
+              "--limit",
+              "20"
+            ],
+            "cwd": "/home/user/fixture",
+            "warmups": 1,
+            "iterations": 10,
+            "wall_ms": {
+              "min": 6.726412,
+              "p50": 11.814782999999998,
+              "p95": 15.351217,
+              "max": 15.366634
+            },
+            "stdout_bytes": {
+              "min": 1273,
+              "p50": 1273,
+              "max": 1273
+            },
+            "peak_child_rss_kib": 7644,
+            "runs": [
+              {
+                "wall_ms": 15.332374,
+                "stdout_bytes": 1273,
+                "stderr_bytes": 56,
+                "stdout_sha256": "e3678eb344cca38cb5188072a98d27aec2d97ef652ab28b1c24d9646410a1447"
+              },
+              {
+                "wall_ms": 14.814604,
+                "stdout_bytes": 1273,
+                "stderr_bytes": 56,
+                "stdout_sha256": "e3678eb344cca38cb5188072a98d27aec2d97ef652ab28b1c24d9646410a1447"
+              },
+              {
+                "wall_ms": 15.366634,
+                "stdout_bytes": 1273,
+                "stderr_bytes": 56,
+                "stdout_sha256": "e3678eb344cca38cb5188072a98d27aec2d97ef652ab28b1c24d9646410a1447"
+              },
+              {
+                "wall_ms": 14.828115,
+                "stdout_bytes": 1273,
+                "stderr_bytes": 56,
+                "stdout_sha256": "e3678eb344cca38cb5188072a98d27aec2d97ef652ab28b1c24d9646410a1447"
+              },
+              {
+                "wall_ms": 13.423343,
+                "stdout_bytes": 1273,
+                "stderr_bytes": 56,
+                "stdout_sha256": "e3678eb344cca38cb5188072a98d27aec2d97ef652ab28b1c24d9646410a1447"
+              },
+              {
+                "wall_ms": 9.928913,
+                "stdout_bytes": 1273,
+                "stderr_bytes": 56,
+                "stdout_sha256": "e3678eb344cca38cb5188072a98d27aec2d97ef652ab28b1c24d9646410a1447"
+              },
+              {
+                "wall_ms": 10.154733,
+                "stdout_bytes": 1273,
+                "stderr_bytes": 56,
+                "stdout_sha256": "e3678eb344cca38cb5188072a98d27aec2d97ef652ab28b1c24d9646410a1447"
+              },
+              {
+                "wall_ms": 10.206223,
+                "stdout_bytes": 1273,
+                "stderr_bytes": 56,
+                "stdout_sha256": "e3678eb344cca38cb5188072a98d27aec2d97ef652ab28b1c24d9646410a1447"
+              },
+              {
+                "wall_ms": 7.062022,
+                "stdout_bytes": 1273,
+                "stderr_bytes": 56,
+                "stdout_sha256": "e3678eb344cca38cb5188072a98d27aec2d97ef652ab28b1c24d9646410a1447"
+              },
+              {
+                "wall_ms": 6.726412,
+                "stdout_bytes": 1273,
+                "stderr_bytes": 56,
+                "stdout_sha256": "e3678eb344cca38cb5188072a98d27aec2d97ef652ab28b1c24d9646410a1447"
+              }
+            ],
+            "last_stdout": "{\"total\":1,\"results\":[{\"name\":\"toFtsMatch\",\"qualified_name\":\"home-user-fixture.lib.docs.search.toFtsMatch\",\"label\":\"Function\",\"file_path\":\"lib/docs/search.ts\",\"in_degree\":2,\"out_degree\":1,\"complexity\":1,\"cognitive\":1,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":2,\"max_access_depth\":1,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":5,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(query: string, mode: \\\"all\\\" | \\\"any\\\" = \\\"all\\\")\",\"return_type\":\": string\",\"fp\":\"02501a8b0099a0bb01c5c8f9002173b20324b043045ca18300ec3e1a0093520a07a4b98c00d4a3c400999ec0032d5d1302247b4603e292ce00a14b9802fd3611035216040575087d003a2f8901f681850392c85200df5c280004e834002909d2034a2b8601601f4001dd260500a5d9c70591ca9e00af3452003c1b3201c874ab00c71d0d0144f706004eeede0414049500edd1890103b0120028319f0099a0e4043a2610006b51020318436601f2cdc300c595a200190aee0077241901600d9e013362a60288c0e700a00f83047cc71104885f30027e837a00279b61026eef380085e1db010e50a401905ed7001b07ac03fe465c002063b5022ea062003cdcb2\",\"sp\":\"1,0,0,0,0,2,9,44,1,1,0,0,4,0,0,2,0,0,0,6,2,11,11,5,11\",\"bt\":\"queryTerms Set terms query length map quotedPrefix join mode\",\"transitive_loop_depth\":0,\"recursive\":false}],\"has_more\":false}\n",
+            "last_stderr": "level=info msg=mem.init budget_mb=482 total_ram_mb=1930\n"
+          }
+        },
+        "GitNexus": {
+          "recall": {
+            "hits": 2,
+            "possible": 2
+          },
+          "output_tokens": 274,
+          "measurement": {
+            "command": [
+              "/home/user/gitnexus-dist/node_modules/.bin/gitnexus",
+              "context",
+              "toFtsMatch",
+              "--repo",
+              "fixture",
+              "--limit",
+              "20"
+            ],
+            "cwd": "/home/user/fixture",
+            "warmups": 1,
+            "iterations": 10,
+            "wall_ms": {
+              "min": 1702.228303,
+              "p50": 1729.866465,
+              "p95": 1770.5554399999999,
+              "max": 1770.773852
+            },
+            "stdout_bytes": {
+              "min": 889,
+              "p50": 889,
+              "max": 889
+            },
+            "peak_child_rss_kib": 370312,
+            "runs": [
+              {
+                "wall_ms": 1753.375977,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1702.228303,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1718.608037,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1729.40685,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1770.773852,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1711.493826,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1764.85885,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1770.288492,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1702.654873,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1730.32608,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              }
+            ],
+            "last_stdout": "{\n  \"status\": \"found\",\n  \"symbol\": {\n    \"uid\": \"Function:lib/docs/search.ts:toFtsMatch\",\n    \"name\": \"toFtsMatch\",\n    \"kind\": \"Function\",\n    \"filePath\": \"lib/docs/search.ts\",\n    \"startLine\": 75,\n    \"endLine\": 79\n  },\n  \"epistemic\": \"exact\",\n  \"incoming\": {\n    \"calls\": [\n      {\n        \"uid\": \"File:lib/docs/search.test.ts\",\n        \"name\": \"search.test.ts\",\n        \"filePath\": \"lib/docs/search.test.ts\"\n      },\n      {\n        \"uid\": \"File:lib/docs/search.test.ts\",\n        \"name\": \"search.test.ts\",\n        \"filePath\": \"lib/docs/search.test.ts\"\n      }\n    ]\n  },\n  \"outgoing\": {\n    \"calls\": [\n      {\n        \"uid\": \"Function:lib/docs/search.ts:terms\",\n        \"name\": \"terms\",\n        \"filePath\": \"lib/docs/search.ts\"\n      }\n    ]\n  },\n  \"processes\": [\n    {\n      \"id\": \"proc_11_get\",\n      \"name\": \"GET → Terms\",\n      \"step_index\": 3,\n      \"step_count\": 4\n    }\n  ]\n}\n",
+            "last_stderr": ""
+          }
+        }
+      }
+    },
+    "callers": {
+      "objective": "Find the direct non-test caller symbol of toFtsMatch.",
+      "required_anchors": [
+        "searchActiveDocs"
+      ],
+      "ground_truth": "searchActiveDocs, containing production call sites at lib/docs/search-repository.ts:33 and :38.",
+      "results": {
+        "codedb": {
+          "recall": {
+            "hits": 1,
+            "possible": 1
+          },
+          "output_tokens": 299,
+          "measurement": {
+            "command": [
+              "/home/user/codedb",
+              "/home/user/fixture",
+              "callers",
+              "toFtsMatch"
+            ],
+            "cwd": "/home/user/fixture",
+            "warmups": 1,
+            "iterations": 10,
+            "wall_ms": {
+              "min": 0.44809,
+              "p50": 0.479595,
+              "p95": 0.5217555,
+              "max": 0.52743
+            },
+            "stdout_bytes": {
+              "min": 951,
+              "p50": 951,
+              "max": 951
+            },
+            "peak_child_rss_kib": 6272,
+            "runs": [
+              {
+                "wall_ms": 0.51482,
+                "stdout_bytes": 951,
+                "stderr_bytes": 0,
+                "stdout_sha256": "b7bf96b87ab515a0d2a403ed0d4630798b9ae1363e8ac6e6ab13a9b2ab690d38"
+              },
+              {
+                "wall_ms": 0.52743,
+                "stdout_bytes": 951,
+                "stderr_bytes": 0,
+                "stdout_sha256": "b7bf96b87ab515a0d2a403ed0d4630798b9ae1363e8ac6e6ab13a9b2ab690d38"
+              },
+              {
+                "wall_ms": 0.47692,
+                "stdout_bytes": 951,
+                "stderr_bytes": 0,
+                "stdout_sha256": "b7bf96b87ab515a0d2a403ed0d4630798b9ae1363e8ac6e6ab13a9b2ab690d38"
+              },
+              {
+                "wall_ms": 0.47123,
+                "stdout_bytes": 951,
+                "stderr_bytes": 0,
+                "stdout_sha256": "b7bf96b87ab515a0d2a403ed0d4630798b9ae1363e8ac6e6ab13a9b2ab690d38"
+              },
+              {
+                "wall_ms": 0.459431,
+                "stdout_bytes": 951,
+                "stderr_bytes": 0,
+                "stdout_sha256": "b7bf96b87ab515a0d2a403ed0d4630798b9ae1363e8ac6e6ab13a9b2ab690d38"
+              },
+              {
+                "wall_ms": 0.50494,
+                "stdout_bytes": 951,
+                "stderr_bytes": 0,
+                "stdout_sha256": "b7bf96b87ab515a0d2a403ed0d4630798b9ae1363e8ac6e6ab13a9b2ab690d38"
+              },
+              {
+                "wall_ms": 0.44809,
+                "stdout_bytes": 951,
+                "stderr_bytes": 0,
+                "stdout_sha256": "b7bf96b87ab515a0d2a403ed0d4630798b9ae1363e8ac6e6ab13a9b2ab690d38"
+              },
+              {
+                "wall_ms": 0.50567,
+                "stdout_bytes": 951,
+                "stderr_bytes": 0,
+                "stdout_sha256": "b7bf96b87ab515a0d2a403ed0d4630798b9ae1363e8ac6e6ab13a9b2ab690d38"
+              },
+              {
+                "wall_ms": 0.481,
+                "stdout_bytes": 951,
+                "stderr_bytes": 0,
+                "stdout_sha256": "b7bf96b87ab515a0d2a403ed0d4630798b9ae1363e8ac6e6ab13a9b2ab690d38"
+              },
+              {
+                "wall_ms": 0.47819,
+                "stdout_bytes": 951,
+                "stderr_bytes": 0,
+                "stdout_sha256": "b7bf96b87ab515a0d2a403ed0d4630798b9ae1363e8ac6e6ab13a9b2ab690d38"
+              }
+            ],
+            "last_stdout": "7 call sites for 'toFtsMatch':\n  lib/docs/search-repository.ts:1: import { toFtsMatch } from \"./search\";  [in import { toFtsMatch } from \"./search\"; (import, L1-L1)]\n  lib/docs/search-repository.ts:33: .bind(toFtsMatch(query), project, limit)  [in searchActiveDocs (function, L25-L42)]\n  lib/docs/search-repository.ts:38: .bind(toFtsMatch(query, \"any\"), project, limit)  [in searchActiveDocs (function, L25-L42)]\n  lib/docs/search.test.ts:2: import { pageToSearchDocument, toFtsMatch } from \"./search\";  [in import { pageToSearchDocument, toFtsMatch } from \"./search\"; (import, L2-L2)]\n  lib/docs/search.test.ts:19: expect(toFtsMatch('title:x OR \"oops\"')).not.toContain(\" OR \");  [in indexed (constant, L6-L6)]\n  lib/docs/search.test.ts:20: expect(toFtsMatch(\"getUserById\")).toContain('\"get\" *');  [in indexed (constant, L6-L6)]\n  lib/docs/search.test.ts:21: expect(toFtsMatch(\"getUserById\", \"any\")).toContain(\" OR \");  [in indexed (constant, L6-L6)]\n",
+            "last_stderr": ""
+          }
+        },
+        "codebase-memory-mcp": {
+          "recall": {
+            "hits": 1,
+            "possible": 1
+          },
+          "output_tokens": 44,
+          "measurement": {
+            "command": [
+              "/home/user/cbm-dist/codebase-memory-mcp",
+              "cli",
+              "trace_path",
+              "--project",
+              "home-user-fixture",
+              "--function-name",
+              "toFtsMatch",
+              "--direction",
+              "inbound",
+              "--depth",
+              "1",
+              "--include-tests",
+              "false"
+            ],
+            "cwd": "/home/user/fixture",
+            "warmups": 1,
+            "iterations": 10,
+            "wall_ms": {
+              "min": 6.314642,
+              "p50": 6.730271999999999,
+              "p95": 9.251688549999999,
+              "max": 9.626683
+            },
+            "stdout_bytes": {
+              "min": 177,
+              "p50": 177,
+              "max": 177
+            },
+            "peak_child_rss_kib": 7900,
+            "runs": [
+              {
+                "wall_ms": 6.402401,
+                "stdout_bytes": 177,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4affa9561cad1e381e4d85eb7e304354dfb30893280c77cbc69739114424f50c"
+              },
+              {
+                "wall_ms": 6.680012,
+                "stdout_bytes": 177,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4affa9561cad1e381e4d85eb7e304354dfb30893280c77cbc69739114424f50c"
+              },
+              {
+                "wall_ms": 6.607882,
+                "stdout_bytes": 177,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4affa9561cad1e381e4d85eb7e304354dfb30893280c77cbc69739114424f50c"
+              },
+              {
+                "wall_ms": 7.091952,
+                "stdout_bytes": 177,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4affa9561cad1e381e4d85eb7e304354dfb30893280c77cbc69739114424f50c"
+              },
+              {
+                "wall_ms": 7.624022,
+                "stdout_bytes": 177,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4affa9561cad1e381e4d85eb7e304354dfb30893280c77cbc69739114424f50c"
+              },
+              {
+                "wall_ms": 6.780532,
+                "stdout_bytes": 177,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4affa9561cad1e381e4d85eb7e304354dfb30893280c77cbc69739114424f50c"
+              },
+              {
+                "wall_ms": 6.632522,
+                "stdout_bytes": 177,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4affa9561cad1e381e4d85eb7e304354dfb30893280c77cbc69739114424f50c"
+              },
+              {
+                "wall_ms": 6.314642,
+                "stdout_bytes": 177,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4affa9561cad1e381e4d85eb7e304354dfb30893280c77cbc69739114424f50c"
+              },
+              {
+                "wall_ms": 8.793362,
+                "stdout_bytes": 177,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4affa9561cad1e381e4d85eb7e304354dfb30893280c77cbc69739114424f50c"
+              },
+              {
+                "wall_ms": 9.626683,
+                "stdout_bytes": 177,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4affa9561cad1e381e4d85eb7e304354dfb30893280c77cbc69739114424f50c"
+              }
+            ],
+            "last_stdout": "{\"function\":\"toFtsMatch\",\"direction\":\"inbound\",\"callers\":[{\"name\":\"searchActiveDocs\",\"qualified_name\":\"home-user-fixture.lib.docs.search-repository.searchActiveDocs\",\"hop\":1}]}\n",
+            "last_stderr": "level=info msg=mem.init budget_mb=482 total_ram_mb=1930\n"
+          }
+        },
+        "GitNexus": {
+          "recall": {
+            "hits": 0,
+            "possible": 1
+          },
+          "output_tokens": 274,
+          "measurement": {
+            "command": [
+              "/home/user/gitnexus-dist/node_modules/.bin/gitnexus",
+              "context",
+              "toFtsMatch",
+              "--repo",
+              "fixture",
+              "--limit",
+              "20"
+            ],
+            "cwd": "/home/user/fixture",
+            "warmups": 1,
+            "iterations": 10,
+            "wall_ms": {
+              "min": 1685.086528,
+              "p50": 1712.237541,
+              "p95": 1741.5766744500002,
+              "max": 1755.791058
+            },
+            "stdout_bytes": {
+              "min": 889,
+              "p50": 889,
+              "max": 889
+            },
+            "peak_child_rss_kib": 373492,
+            "runs": [
+              {
+                "wall_ms": 1724.203539,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1685.086528,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1709.323115,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1712.104706,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1712.370376,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1720.086017,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1705.505254,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1755.791058,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1721.716388,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              },
+              {
+                "wall_ms": 1685.122538,
+                "stdout_bytes": 889,
+                "stderr_bytes": 0,
+                "stdout_sha256": "da33d38351b316f12dcd03516ec8b6787183629447a0210226370b727cfe5a0c"
+              }
+            ],
+            "last_stdout": "{\n  \"status\": \"found\",\n  \"symbol\": {\n    \"uid\": \"Function:lib/docs/search.ts:toFtsMatch\",\n    \"name\": \"toFtsMatch\",\n    \"kind\": \"Function\",\n    \"filePath\": \"lib/docs/search.ts\",\n    \"startLine\": 75,\n    \"endLine\": 79\n  },\n  \"epistemic\": \"exact\",\n  \"incoming\": {\n    \"calls\": [\n      {\n        \"uid\": \"File:lib/docs/search.test.ts\",\n        \"name\": \"search.test.ts\",\n        \"filePath\": \"lib/docs/search.test.ts\"\n      },\n      {\n        \"uid\": \"File:lib/docs/search.test.ts\",\n        \"name\": \"search.test.ts\",\n        \"filePath\": \"lib/docs/search.test.ts\"\n      }\n    ]\n  },\n  \"outgoing\": {\n    \"calls\": [\n      {\n        \"uid\": \"Function:lib/docs/search.ts:terms\",\n        \"name\": \"terms\",\n        \"filePath\": \"lib/docs/search.ts\"\n      }\n    ]\n  },\n  \"processes\": [\n    {\n      \"id\": \"proc_11_get\",\n      \"name\": \"GET → Terms\",\n      \"step_index\": 3,\n      \"step_count\": 4\n    }\n  ]\n}\n",
+            "last_stderr": ""
+          }
+        }
+      }
+    },
+    "neighborhood": {
+      "objective": "Return the definition, direct production caller, and direct callee in one tool call.",
+      "required_anchors": [
+        "toFtsMatch",
+        "searchActiveDocs",
+        "terms"
+      ],
+      "ground_truth": "toFtsMatch is called by searchActiveDocs and calls terms.",
+      "results": {
+        "codedb": {
+          "recall": {
+            "hits": 3,
+            "possible": 3
+          },
+          "output_tokens": 182,
+          "measurement": {
+            "command": [
+              "/home/user/codedb",
+              "/home/user/fixture",
+              "context",
+              "\"toFtsMatch\""
+            ],
+            "cwd": "/home/user/fixture",
+            "warmups": 1,
+            "iterations": 10,
+            "wall_ms": {
+              "min": 0.469721,
+              "p50": 0.49365499999999995,
+              "p95": 0.53546,
+              "max": 0.53717
+            },
+            "stdout_bytes": {
+              "min": 594,
+              "p50": 594,
+              "max": 594
+            },
+            "peak_child_rss_kib": 6272,
+            "runs": [
+              {
+                "wall_ms": 0.53337,
+                "stdout_bytes": 594,
+                "stderr_bytes": 0,
+                "stdout_sha256": "658e3673cf9889979b28d77300bb3b5960fe2a7a9ae55265117d91ed0dce801d"
+              },
+              {
+                "wall_ms": 0.53717,
+                "stdout_bytes": 594,
+                "stderr_bytes": 0,
+                "stdout_sha256": "658e3673cf9889979b28d77300bb3b5960fe2a7a9ae55265117d91ed0dce801d"
+              },
+              {
+                "wall_ms": 0.48611,
+                "stdout_bytes": 594,
+                "stderr_bytes": 0,
+                "stdout_sha256": "658e3673cf9889979b28d77300bb3b5960fe2a7a9ae55265117d91ed0dce801d"
+              },
+              {
+                "wall_ms": 0.50334,
+                "stdout_bytes": 594,
+                "stderr_bytes": 0,
+                "stdout_sha256": "658e3673cf9889979b28d77300bb3b5960fe2a7a9ae55265117d91ed0dce801d"
+              },
+              {
+                "wall_ms": 0.47246,
+                "stdout_bytes": 594,
+                "stderr_bytes": 0,
+                "stdout_sha256": "658e3673cf9889979b28d77300bb3b5960fe2a7a9ae55265117d91ed0dce801d"
+              },
+              {
+                "wall_ms": 0.49465,
+                "stdout_bytes": 594,
+                "stderr_bytes": 0,
+                "stdout_sha256": "658e3673cf9889979b28d77300bb3b5960fe2a7a9ae55265117d91ed0dce801d"
+              },
+              {
+                "wall_ms": 0.469721,
+                "stdout_bytes": 594,
+                "stderr_bytes": 0,
+                "stdout_sha256": "658e3673cf9889979b28d77300bb3b5960fe2a7a9ae55265117d91ed0dce801d"
+              },
+              {
+                "wall_ms": 0.48396,
+                "stdout_bytes": 594,
+                "stderr_bytes": 0,
+                "stdout_sha256": "658e3673cf9889979b28d77300bb3b5960fe2a7a9ae55265117d91ed0dce801d"
+              },
+              {
+                "wall_ms": 0.49266,
+                "stdout_bytes": 594,
+                "stderr_bytes": 0,
+                "stdout_sha256": "658e3673cf9889979b28d77300bb3b5960fe2a7a9ae55265117d91ed0dce801d"
+              },
+              {
+                "wall_ms": 0.49572,
+                "stdout_bytes": 594,
+                "stderr_bytes": 0,
+                "stdout_sha256": "658e3673cf9889979b28d77300bb3b5960fe2a7a9ae55265117d91ed0dce801d"
+              }
+            ],
+            "last_stdout": "keywords: toFtsMatch\n\n## Definitions\n- toFtsMatch function lib/docs/search.ts:76-80\n\n## Body toFtsMatch — lib/docs/search.ts:76-80\n76|export function toFtsMatch(query: string, mode: \"all\" | \"any\" = \"all\"): string {\n77|  const queryTerms = [...new Set(terms(query))];\n78|  if (!queryTerms.length) return '\"\"';\n79|  return queryTerms.map(quotedPrefix).join(mode === \"all\" ? \" \" : \" OR \");\n80|}\n\n## Callers\n- lib/docs/search-repository.ts:33 .bind(toFtsMatch(query), project, limit) [searchActiveDocs function L25-42]\n\n## Callees\n- toFtsMatch (function) calls:\n  → terms lib/docs/search.ts:62\n",
+            "last_stderr": ""
+          }
+        },
+        "codebase-memory-mcp": {
+          "recall": {
+            "hits": 3,
+            "possible": 3
+          },
+          "output_tokens": 627,
+          "measurement": {
+            "command": [
+              "/home/user/cbm-dist/codebase-memory-mcp",
+              "cli",
+              "get_code_snippet",
+              "--project",
+              "home-user-fixture",
+              "--qualified-name",
+              "toFtsMatch",
+              "--include-neighbors",
+              "true"
+            ],
+            "cwd": "/home/user/fixture",
+            "warmups": 1,
+            "iterations": 10,
+            "wall_ms": {
+              "min": 6.430392,
+              "p50": 8.1564775,
+              "p95": 11.335376499999999,
+              "max": 11.424373
+            },
+            "stdout_bytes": {
+              "min": 1664,
+              "p50": 1664,
+              "max": 1664
+            },
+            "peak_child_rss_kib": 8412,
+            "runs": [
+              {
+                "wall_ms": 11.194373,
+                "stdout_bytes": 1664,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4187df0a083f708e00f70382908aa7ca706a4d1637b6774f2b090b8ec2fd8f09"
+              },
+              {
+                "wall_ms": 11.226603,
+                "stdout_bytes": 1664,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4187df0a083f708e00f70382908aa7ca706a4d1637b6774f2b090b8ec2fd8f09"
+              },
+              {
+                "wall_ms": 11.424373,
+                "stdout_bytes": 1664,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4187df0a083f708e00f70382908aa7ca706a4d1637b6774f2b090b8ec2fd8f09"
+              },
+              {
+                "wall_ms": 11.030073,
+                "stdout_bytes": 1664,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4187df0a083f708e00f70382908aa7ca706a4d1637b6774f2b090b8ec2fd8f09"
+              },
+              {
+                "wall_ms": 9.524263,
+                "stdout_bytes": 1664,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4187df0a083f708e00f70382908aa7ca706a4d1637b6774f2b090b8ec2fd8f09"
+              },
+              {
+                "wall_ms": 6.660242,
+                "stdout_bytes": 1664,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4187df0a083f708e00f70382908aa7ca706a4d1637b6774f2b090b8ec2fd8f09"
+              },
+              {
+                "wall_ms": 6.516071,
+                "stdout_bytes": 1664,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4187df0a083f708e00f70382908aa7ca706a4d1637b6774f2b090b8ec2fd8f09"
+              },
+              {
+                "wall_ms": 6.430392,
+                "stdout_bytes": 1664,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4187df0a083f708e00f70382908aa7ca706a4d1637b6774f2b090b8ec2fd8f09"
+              },
+              {
+                "wall_ms": 6.654772,
+                "stdout_bytes": 1664,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4187df0a083f708e00f70382908aa7ca706a4d1637b6774f2b090b8ec2fd8f09"
+              },
+              {
+                "wall_ms": 6.788692,
+                "stdout_bytes": 1664,
+                "stderr_bytes": 56,
+                "stdout_sha256": "4187df0a083f708e00f70382908aa7ca706a4d1637b6774f2b090b8ec2fd8f09"
+              }
+            ],
+            "last_stdout": "{\"name\":\"toFtsMatch\",\"qualified_name\":\"home-user-fixture.lib.docs.search.toFtsMatch\",\"label\":\"Function\",\"file_path\":\"/home/user/fixture/lib/docs/search.ts\",\"start_line\":76,\"end_line\":80,\"source\":\"export function toFtsMatch(query: string, mode: \\\"all\\\" | \\\"any\\\" = \\\"all\\\"): string {\\n  const queryTerms = [...new Set(terms(query))];\\n  if (!queryTerms.length) return '\\\"\\\"';\\n  return queryTerms.map(quotedPrefix).join(mode === \\\"all\\\" ? \\\" \\\" : \\\" OR \\\");\\n}\\n\",\"match_method\":\"suffix\",\"complexity\":1,\"cognitive\":1,\"loop_count\":0,\"loop_depth\":0,\"self_recursive\":false,\"param_count\":2,\"max_access_depth\":1,\"linear_scan_in_loop\":0,\"alloc_in_loop\":0,\"recursion_in_loop\":false,\"unguarded_recursion\":false,\"lines\":5,\"is_exported\":true,\"is_test\":false,\"is_entry_point\":true,\"signature\":\"(query: string, mode: \\\"all\\\" | \\\"any\\\" = \\\"all\\\")\",\"return_type\":\": string\",\"fp\":\"02501a8b0099a0bb01c5c8f9002173b20324b043045ca18300ec3e1a0093520a07a4b98c00d4a3c400999ec0032d5d1302247b4603e292ce00a14b9802fd3611035216040575087d003a2f8901f681850392c85200df5c280004e834002909d2034a2b8601601f4001dd260500a5d9c70591ca9e00af3452003c1b3201c874ab00c71d0d0144f706004eeede0414049500edd1890103b0120028319f0099a0e4043a2610006b51020318436601f2cdc300c595a200190aee0077241901600d9e013362a60288c0e700a00f83047cc71104885f30027e837a00279b61026eef380085e1db010e50a401905ed7001b07ac03fe465c002063b5022ea062003cdcb2\",\"sp\":\"1,0,0,0,0,2,9,44,1,1,0,0,4,0,0,2,0,0,0,6,2,11,11,5,11\",\"bt\":\"queryTerms Set terms query length map quotedPrefix join mode\",\"transitive_loop_depth\":0,\"recursive\":false,\"callers\":2,\"callees\":1,\"caller_names\":[\"lib/docs/search.test.ts\",\"searchActiveDocs\"],\"callee_names\":[\"terms\"]}\n",
+            "last_stderr": "level=info msg=mem.init budget_mb=482 total_ram_mb=1930\n"
+          }
+        },
+        "GitNexus": {
+          "recall": {
+            "hits": 2,
+            "possible": 3
+          },
+          "output_tokens": 355,
+          "measurement": {
+            "command": [
+              "/home/user/gitnexus-dist/node_modules/.bin/gitnexus",
+              "context",
+              "toFtsMatch",
+              "--repo",
+              "fixture",
+              "--limit",
+              "20",
+              "--content"
+            ],
+            "cwd": "/home/user/fixture",
+            "warmups": 1,
+            "iterations": 10,
+            "wall_ms": {
+              "min": 1689.032499,
+              "p50": 1720.325053,
+              "p95": 1755.4860064999998,
+              "max": 1755.854588
+            },
+            "stdout_bytes": {
+              "min": 1170,
+              "p50": 1170,
+              "max": 1170
+            },
+            "peak_child_rss_kib": 374376,
+            "runs": [
+              {
+                "wall_ms": 1696.641541,
+                "stdout_bytes": 1170,
+                "stderr_bytes": 0,
+                "stdout_sha256": "dedf9ed3bfdde611361eb322893a1292d7f8691bf47f6bafb813ebeb2d042d6e"
+              },
+              {
+                "wall_ms": 1704.951914,
+                "stdout_bytes": 1170,
+                "stderr_bytes": 0,
+                "stdout_sha256": "dedf9ed3bfdde611361eb322893a1292d7f8691bf47f6bafb813ebeb2d042d6e"
+              },
+              {
+                "wall_ms": 1755.020887,
+                "stdout_bytes": 1170,
+                "stderr_bytes": 0,
+                "stdout_sha256": "dedf9ed3bfdde611361eb322893a1292d7f8691bf47f6bafb813ebeb2d042d6e"
+              },
+              {
+                "wall_ms": 1755.854588,
+                "stdout_bytes": 1170,
+                "stderr_bytes": 0,
+                "stdout_sha256": "dedf9ed3bfdde611361eb322893a1292d7f8691bf47f6bafb813ebeb2d042d6e"
+              },
+              {
+                "wall_ms": 1755.035518,
+                "stdout_bytes": 1170,
+                "stderr_bytes": 0,
+                "stdout_sha256": "dedf9ed3bfdde611361eb322893a1292d7f8691bf47f6bafb813ebeb2d042d6e"
+              },
+              {
+                "wall_ms": 1697.707221,
+                "stdout_bytes": 1170,
+                "stderr_bytes": 0,
+                "stdout_sha256": "dedf9ed3bfdde611361eb322893a1292d7f8691bf47f6bafb813ebeb2d042d6e"
+              },
+              {
+                "wall_ms": 1689.032499,
+                "stdout_bytes": 1170,
+                "stderr_bytes": 0,
+                "stdout_sha256": "dedf9ed3bfdde611361eb322893a1292d7f8691bf47f6bafb813ebeb2d042d6e"
+              },
+              {
+                "wall_ms": 1733.605962,
+                "stdout_bytes": 1170,
+                "stderr_bytes": 0,
+                "stdout_sha256": "dedf9ed3bfdde611361eb322893a1292d7f8691bf47f6bafb813ebeb2d042d6e"
+              },
+              {
+                "wall_ms": 1735.287392,
+                "stdout_bytes": 1170,
+                "stderr_bytes": 0,
+                "stdout_sha256": "dedf9ed3bfdde611361eb322893a1292d7f8691bf47f6bafb813ebeb2d042d6e"
+              },
+              {
+                "wall_ms": 1707.044144,
+                "stdout_bytes": 1170,
+                "stderr_bytes": 0,
+                "stdout_sha256": "dedf9ed3bfdde611361eb322893a1292d7f8691bf47f6bafb813ebeb2d042d6e"
+              }
+            ],
+            "last_stdout": "{\n  \"status\": \"found\",\n  \"symbol\": {\n    \"uid\": \"Function:lib/docs/search.ts:toFtsMatch\",\n    \"name\": \"toFtsMatch\",\n    \"kind\": \"Function\",\n    \"filePath\": \"lib/docs/search.ts\",\n    \"startLine\": 75,\n    \"endLine\": 79,\n    \"content\": \"} export function toFtsMatch(query: string, mode: \\\"all\\\" | \\\"any\\\" = \\\"all\\\"): string {   const queryTerms = [...new Set(terms(query))];   if (!queryTerms.length) return '\\\"\\\"';   return queryTerms.map(quotedPrefix).join(mode === \\\"all\\\" ? \\\" \\\" : \\\" OR \\\"); } \"\n  },\n  \"epistemic\": \"exact\",\n  \"incoming\": {\n    \"calls\": [\n      {\n        \"uid\": \"File:lib/docs/search.test.ts\",\n        \"name\": \"search.test.ts\",\n        \"filePath\": \"lib/docs/search.test.ts\"\n      },\n      {\n        \"uid\": \"File:lib/docs/search.test.ts\",\n        \"name\": \"search.test.ts\",\n        \"filePath\": \"lib/docs/search.test.ts\"\n      }\n    ]\n  },\n  \"outgoing\": {\n    \"calls\": [\n      {\n        \"uid\": \"Function:lib/docs/search.ts:terms\",\n        \"name\": \"terms\",\n        \"filePath\": \"lib/docs/search.ts\"\n      }\n    ]\n  },\n  \"processes\": [\n    {\n      \"id\": \"proc_11_get\",\n      \"name\": \"GET → Terms\",\n      \"step_index\": 3,\n      \"step_count\": 4\n    }\n  ]\n}\n",
+            "last_stderr": ""
+          }
+        }
+      }
+    }
+  },
+  "outcome_summary": {
+    "definition": "All three engines returned 2/2 required anchors.",
+    "callers": "codedb and codebase-memory-mcp returned 1/1; GitNexus returned 0/1.",
+    "neighborhood": "codedb and codebase-memory-mcp returned 3/3; GitNexus returned 2/3.",
+    "codedb_wins": "Lowest cold wall time, cold peak RSS, every warm p50/p95, definition tokens, and neighborhood tokens.",
+    "codebase_memory_wins": "Smallest persistent index and caller response.",
+    "gitnexus_note": "GitNexus exposes clusters, process graphs, and other capabilities outside these normalized outcomes."
+  },
+  "derived_comparison": {
+    "codedb_cold_index_speedup_x": { "vs_codebase_memory_mcp": 2.268, "vs_GitNexus": 44.581 },
+    "codedb_warm_p50_speedup_x": {
+      "definition": { "vs_codebase_memory_mcp": 16.621, "vs_GitNexus": 2433.621 },
+      "callers": { "vs_codebase_memory_mcp": 14.033, "vs_GitNexus": 3570.174 },
+      "neighborhood": { "vs_codebase_memory_mcp": 16.523, "vs_GitNexus": 3484.873 }
+    },
+    "codedb_cold_peak_rss_reduction_percent": { "vs_codebase_memory_mcp": 51.51, "vs_GitNexus": 94.17 },
+    "codedb_persistent_index_change_percent": { "vs_codebase_memory_mcp": 5.62, "vs_GitNexus": -82.55 }
+  },
+  "scoring_notes": [
+    "Recall is exact required-anchor presence against the hand-verified fixture ground truth.",
+    "Each tool receives its closest documented one-call operation for the same outcome.",
+    "codedb callers intentionally returns test and import sites too; codebase-memory-mcp was asked to exclude tests.",
+    "GitNexus context is its documented 360-degree callers/callees operation. It returned duplicate test-file incoming edges and missed searchActiveDocs.",
+    "The GitNexus FTS extension was unavailable in this sandbox, but these context graph tasks do not use FTS."
+  ],
+  "limitations": [
+    "One small TypeScript repository and one symbol do not establish whole-product quality.",
+    "CLI measurements include process startup and index loading; long-running MCP latency will differ.",
+    "The engines expose different graph models and broader feature sets; this protocol compares only the three stated outcomes.",
+    "Cold indexing is one run per tool, not a statistical distribution."
+  ],
+  "cleanup": {
+    "task_created_sandboxes": "deleted",
+    "delete_http_status": 204,
+    "post_delete_listing": "all three task-created sandbox IDs absent",
+    "preexisting_sandboxes": "left untouched",
+    "local_competing_engine_install": false
+  }
+}

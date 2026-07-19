@@ -29,28 +29,38 @@ regressions: uncached ranked search (0.996 ms → 7.668 ms) and the hot-callers
 case (0.030 ms → 0.067 ms). The full report explains compiler and binary
 provenance, exact methodology, the paired outline measurement, exploratory
 trigram observations, implementation and security findings, verification, and
-the directional three-engine sandbox trial.
+the normalized three-engine sandbox comparison.
 
 - [Full 0.2.5831 performance and recall report](performance-0.2.5831.md)
 - [Machine-readable 0.2.5831 results](../bench/results/0.2.5831/results.json)
+- [Raw normalized engine-comparison runs](../bench/results/0.2.5831/engine-comparison.json)
 
-### Directional comparison with other engines
+### Normalized 1:1 comparison with other engines
 
 The issue [#679](https://github.com/justrach/codedb/issues/679) trial used
 `justrach/smolify@835070d`, the exact symbol `toFtsMatch`, and separate Linux
-x86_64 sandboxes with 2 vCPU and 2 GB RAM on one gateway node.
+x86_64 sandboxes with 2 vCPU and 2 GB RAM on one gateway node. Cold indexing
+used a clean cache. Warm tasks used one warmup plus 10 separate CLI-process
+runs. Results are **p50 / p95 process wall time · output bytes / tokens · anchor
+recall**.
 
-| Engine | Cold index process time | Cache | Warm CLI process measurements | Retrieved evidence |
-|---|---:|---:|---|---|
-| **codedb 0.2.5830** | **178 ms** (74.7 ms internal) | 4,916 KiB | search 18/3/3 ms; callers 54/3/3 ms; context 18/3/3 ms | Definition, 8 search sites, 7 caller sites, and narrowed context |
-| codebase-memory-mcp 0.9.0 | 430 ms | **4,648 KiB** | `search_graph`, `trace_path`, and `architecture`: 16–23 ms | Exact symbol and inbound graph |
-| GitNexus 1.6.9 | not measured | not measured | not measured | Tagged CLI rejected `--skip-embeddings`; the trial stopped rather than changing the protocol |
+| Same outcome | **codedb 0.2.5831** | [codebase-memory-mcp 0.9.0](https://github.com/DeusData/codebase-memory-mcp) | [GitNexus 1.6.9](https://github.com/abhigyanpatwari/GitNexus) |
+|---|---:|---:|---:|
+| Exact definition | **0.711 / 0.741 ms · 250 B / 74 tok · 2/2** | 11.815 / 15.351 ms · 1,273 B / 515 tok · 2/2 | 1,729.866 / 1,770.555 ms · 889 B / 274 tok · 2/2 |
+| Direct production caller | **0.480 / 0.522 ms** · 951 B / 299 tok · 1/1 | 6.730 / 9.252 ms · **177 B / 44 tok** · 1/1 | 1,712.238 / 1,741.577 ms · 889 B / 274 tok · **0/1** |
+| Definition + caller + callee | **0.494 / 0.535 ms · 594 B / 182 tok · 3/3** | 8.156 / 11.335 ms · 1,664 B / 627 tok · 3/3 | 1,720.325 / 1,755.486 ms · 1,170 B / 355 tok · **2/3** |
 
-Warm CLI measurements include process startup and cache loading. The tools do
-not return semantically identical evidence, and codedb used the published
-0.2.5830 binary rather than the unreleased branch, so this is a directional
-protocol record—not a winner table. See the
-[full sandbox methodology and limitations](performance-0.2.5831.md#directional-sandbox-comparison).
+| Cold metric | **codedb 0.2.5831** | [codebase-memory-mcp 0.9.0](https://github.com/DeusData/codebase-memory-mcp) | [GitNexus 1.6.9](https://github.com/abhigyanpatwari/GitNexus) |
+|---|---:|---:|---:|
+| Index wall time | **186.293 ms** | 422.518 ms | 8,305.209 ms |
+| Peak child RSS | **41,360 KiB** | 85,304 KiB | 709,348 KiB |
+| Persistent index | 5,027,199 B | **4,759,552 B** | 28,815,656 B |
+
+Each engine received its closest documented one-call operation for the same
+outcome. GitNexus missed the production caller in that operation;
+codebase-memory produced the smallest caller response and persistent index.
+Warm CLI results include process startup and index loading. See the
+[full protocol, ground truth, and limitations](performance-0.2.5831.md#normalized-11-sandbox-comparison).
 
 ## Historical benchmarks
 

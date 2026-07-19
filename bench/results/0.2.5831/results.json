@@ -282,9 +282,11 @@
   ],
   "verification": {
     "verified_code_commit": "0478eff8dbef2cd2daa6cbd7413d4529ba932d1d",
+    "normalized_engine_source_commit": "05556e52218edc78a6ae75191f1b6579c612e7e0",
     "commands": [
       { "command": "zig build test", "status": "passed" },
       { "command": "zig build -Doptimize=ReleaseFast", "status": "passed" },
+      { "command": "zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseFast", "status": "passed" },
       { "command": "python3 scripts/e2e_mcp_test.py --binary zig-out/bin/codedb --project <codedb-root>", "status": "passed", "scenarios": 20 }
     ],
     "artifact_checks": {
@@ -292,74 +294,112 @@
       "task_manifest_sha256_matched": true,
       "candidate_edge_response_sizes_reproduced": { "matched": 22, "possible": 22 },
       "baseline_edge_response_sizes_reproduced": { "matched": 22, "possible": 22 },
+      "engine_comparison_measurement_groups_reproduced": { "matched": 12, "possible": 12 },
+      "engine_comparison_recall_scores_reproduced": { "matched": 9, "possible": 9 },
+      "engine_comparison_token_counts_reproduced": { "matched": 9, "possible": 9, "tokenizer": "tiktoken 0.13.0 o200k_base" },
+      "duplicate_json_object_keys": 0,
+      "public_artifact_credential_markers": 0,
+      "local_markdown_links": "passed",
       "json_validation": "passed",
       "format_and_diff_checks": "passed"
     }
   },
-  "sandbox_comparison": {
-    "status": "directional_only",
+  "normalized_engine_comparison": {
+    "status": "retained_benchmark_evidence",
+    "raw_artifact": "engine-comparison.json",
     "issue_url": "https://github.com/justrach/codedb/issues/679",
     "protocol_url": "https://github.com/justrach/sandbox-gateway/blob/main/docs.md",
     "fixture": {
       "repository": "justrach/smolify",
       "commit": "835070d0826ab581f7efb564a1457b72c2bbe3da",
-      "blobs": 96,
-      "bytes_approx": 1320000,
+      "files": 96,
+      "extracted_bytes": 1541092,
+      "tar_sha256": "a2e3ba722bb8ab19d212ebca20a4d0f10b970ca6287a992da6e9201759cb9afb",
       "query_symbol": "toFtsMatch"
     },
-    "environment": "Separate Linux x86_64 sandboxes, 2 vCPU and 2048 MB each, on one gateway node.",
+    "environment": "Separate node-template Linux x86_64 sandboxes, 2 vCPU and 2048 MB each, on the same gateway node.",
+    "protocol": {
+      "cold_index": "One clean-cache process per engine.",
+      "warm_tasks": "One warmup followed by 10 separate CLI-process runs per engine and outcome.",
+      "timing": "Process wall time.",
+      "memory": "Peak child RSS from getrusage(RUSAGE_CHILDREN).",
+      "tokens": "tiktoken 0.13.0 o200k_base on the final deterministic stdout.",
+      "recall": "Exact required-anchor presence against hand-verified fixture ground truth."
+    },
     "tools": [
       {
         "name": "codedb",
-        "version": "0.2.5830",
-        "cold_index_process_ms": 178,
-        "cold_index_internal_ms": 74.7,
-        "sampled_cgroup_peak_kib": 41972,
-        "cache_kib": 4916,
-        "install_verification": "Published checksum verified.",
-        "final_internal_search_us": 5.7,
-        "warm_cli_process_ms_three_runs": {
-          "search": [18, 3, 3],
-          "callers": [54, 3, 3],
-          "context": [18, 3, 3]
+        "version": "0.2.5831",
+        "source_commit": "05556e52218edc78a6ae75191f1b6579c612e7e0",
+        "binary_sha256": "069f39524fdb3a2c3aef18e7a45f92cd831443795dd4467095fd6fd802fccfcc",
+        "cold": {
+          "index_process_ms": 186.293472,
+          "peak_child_rss_kib": 41360,
+          "persistent_index_bytes": 5027199
         },
-        "result": "Found the definition, eight search sites, seven caller sites, and context narrowed to two non-test callers plus callee terms."
+        "tasks": {
+          "definition": { "p50_ms": 0.71082, "p95_ms": 0.741369, "output_bytes": 250, "output_tokens": 74, "recall": "2/2" },
+          "callers": { "p50_ms": 0.479595, "p95_ms": 0.521756, "output_bytes": 951, "output_tokens": 299, "recall": "1/1" },
+          "neighborhood": { "p50_ms": 0.493655, "p95_ms": 0.53546, "output_bytes": 594, "output_tokens": 182, "recall": "3/3" }
+        }
       },
       {
         "name": "codebase-memory-mcp",
         "version": "0.9.0",
-        "cold_index_process_ms": 430,
-        "sampled_cgroup_peak_kib": 6068,
-        "cache_kib": 4648,
-        "install_verification": "Published checksum verified.",
-        "graph": { "nodes": 1717, "edges": 3408, "skipped": 0 },
-        "warm_cli_process_ms_three_run_ranges": {
-          "search_graph": [16, 17],
-          "trace_path": [18, 23],
-          "architecture": [17, 23]
+        "binary_sha256": "8d019ca9372e5e0d60650648f3740673db7f84d1e38fd14fa4b0e823ee7220dc",
+        "cold": {
+          "index_process_ms": 422.518217,
+          "peak_child_rss_kib": 85304,
+          "persistent_index_bytes": 4759552,
+          "nodes": 1717,
+          "edges": 3407,
+          "skipped": 0
         },
-        "result": "Found the exact symbol and inbound graph."
+        "tasks": {
+          "definition": { "p50_ms": 11.814783, "p95_ms": 15.351217, "output_bytes": 1273, "output_tokens": 515, "recall": "2/2" },
+          "callers": { "p50_ms": 6.730272, "p95_ms": 9.251689, "output_bytes": 177, "output_tokens": 44, "recall": "1/1" },
+          "neighborhood": { "p50_ms": 8.156478, "p95_ms": 11.335377, "output_bytes": 1664, "output_tokens": 627, "recall": "3/3" }
+        }
       },
       {
         "name": "GitNexus",
         "version": "1.6.9",
-        "runtime": "Node.js 22.23.1",
-        "embeddings_default": "off",
-        "status": "not_measured",
-        "reason": "The tagged CLI rejected --skip-embeddings; the newer README and tagged CLI differed, so the trial stopped rather than changing the protocol.",
-        "license_note": "PolyForm Noncommercial 1.0; commercial company use requires license review."
+        "runtime": "Node.js 26.3.0 / npm 11.16.0",
+        "npm_integrity": "sha512-Rq5LXFygx7jjMp/YFsIAcnnzuKvvCsb4rxHFILnu05ZOqk7xNXTUSMRa968EOCbxcKFxnhKYaGXoabOUeGZX6A==",
+        "cold": {
+          "index_process_ms": 8305.209147,
+          "peak_child_rss_kib": 709348,
+          "persistent_index_bytes": 28815656,
+          "nodes": 524,
+          "edges": 1109,
+          "clusters": 22,
+          "flows": 40
+        },
+        "tasks": {
+          "definition": { "p50_ms": 1729.866465, "p95_ms": 1770.55544, "output_bytes": 889, "output_tokens": 274, "recall": "2/2" },
+          "callers": { "p50_ms": 1712.237541, "p95_ms": 1741.576674, "output_bytes": 889, "output_tokens": 274, "recall": "0/1" },
+          "neighborhood": { "p50_ms": 1720.325053, "p95_ms": 1755.486007, "output_bytes": 1170, "output_tokens": 355, "recall": "2/3" }
+        }
       }
     ],
+    "outcome_summary": {
+      "definition": "All three engines returned 2/2 anchors.",
+      "callers": "codedb and codebase-memory returned 1/1; GitNexus context returned 0/1 and duplicated test-file incoming edges.",
+      "neighborhood": "codedb and codebase-memory returned 3/3; GitNexus returned the definition and callee but missed the production caller for 2/3.",
+      "codedb_wins": "Lowest cold wall time, cold peak RSS, every warm p50/p95, definition tokens, and neighborhood tokens.",
+      "codebase_memory_wins": "Smallest persistent index and caller response.",
+      "gitnexus_note": "Its output includes clusters, process graphs, and other capabilities outside these three normalized outcomes."
+    },
     "limitations": [
       "Warm CLI timings include process startup and cache loading.",
-      "Graph traversal and architecture output are not semantically identical to textual callers and context output.",
-      "Sampled cgroup peaks are directional; short-lived processes can complete between samples or report zero.",
-      "The codedb sandbox used the latest published 0.2.5830 binary, not the unreleased 0.2.5831 branch.",
-      "This comparison is not a winner table."
+      "Each engine receives its closest documented one-call operation; internal graph models are not identical.",
+      "One small TypeScript repository and one symbol do not establish whole-product quality.",
+      "Cold indexing is one run per tool, not a statistical distribution."
     ],
     "cleanup": {
       "task_created_sandboxes": "deleted",
       "delete_http_status": 204,
+      "post_delete_listing": "all three task-created sandbox IDs absent",
       "preexisting_sandboxes": "left untouched",
       "local_competing_engine_install": false
     }

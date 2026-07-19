@@ -319,26 +319,38 @@ remaining latency regressions rather than averaging them away.
 See the [full performance and recall report](docs/performance-0.2.5831.md) and
 [machine-readable results](bench/results/0.2.5831/results.json) for all 10
 context tasks, all 22 edge cases, exploratory observations, implementation and
-security findings, verification, provenance, and the directional three-engine
-sandbox trial.
+security findings, verification, and provenance. The separate
+[raw engine-comparison artifact](bench/results/0.2.5831/engine-comparison.json)
+retains every timed run, response, checksum, token count, and recall score.
 
-### Directional engine comparison
+### Normalized 1:1 engine comparison
 
 Issue [#679](https://github.com/justrach/codedb/issues/679) was explored on
-`justrach/smolify` at commit `835070d` using the exact symbol `toFtsMatch`.
-Each engine ran in its own Linux x86_64 sandbox with 2 vCPU and 2 GB RAM:
+`justrach/smolify@835070d` using `toFtsMatch`. Each engine ran in a separate,
+identical Linux x86_64 sandbox with 2 vCPU and 2 GB RAM. Cold indexing used a
+clean cache. Each warm task used one warmup and 10 separate CLI processes;
+cells below are **p50 / p95 wall time · output bytes / tokens · exact anchor
+recall**.
 
-| Engine | Cold index | Cache | Warm CLI process measurements | Retrieved evidence |
-|---|---:|---:|---|---|
-| **codedb 0.2.5830** | **178 ms** (74.7 ms internal) | 4,916 KiB | search 18/3/3 ms; callers 54/3/3 ms; context 18/3/3 ms | Definition, 8 search sites, 7 caller sites, narrowed context |
-| codebase-memory-mcp 0.9.0 | 430 ms | **4,648 KiB** | graph operations 16–23 ms | Exact symbol and inbound graph |
-| GitNexus 1.6.9 | not measured | not measured | not measured | Tagged CLI rejected the documented `--skip-embeddings` flag, so the run stopped |
+| Same outcome | **codedb 0.2.5831** | [codebase-memory-mcp 0.9.0](https://github.com/DeusData/codebase-memory-mcp) | [GitNexus 1.6.9](https://github.com/abhigyanpatwari/GitNexus) |
+|---|---:|---:|---:|
+| Exact definition | **0.711 / 0.741 ms · 250 B / 74 tok · 2/2** | 11.815 / 15.351 ms · 1,273 B / 515 tok · 2/2 | 1,729.866 / 1,770.555 ms · 889 B / 274 tok · 2/2 |
+| Direct production caller | **0.480 / 0.522 ms** · 951 B / 299 tok · 1/1 | 6.730 / 9.252 ms · **177 B / 44 tok** · 1/1 | 1,712.238 / 1,741.577 ms · 889 B / 274 tok · **0/1** |
+| Definition + caller + callee | **0.494 / 0.535 ms · 594 B / 182 tok · 3/3** | 8.156 / 11.335 ms · 1,664 B / 627 tok · 3/3 | 1,720.325 / 1,755.486 ms · 1,170 B / 355 tok · **2/3** |
 
-This is not a winner table: warm CLI timings include process startup and cache
-loading, and graph traversal is not semantically identical to codedb callers or
-context. The codedb row used the latest published 0.2.5830 binary, not the
-unreleased 0.2.5831 branch. See the
-[full comparison and limitations](docs/performance-0.2.5831.md#directional-sandbox-comparison).
+| Cold metric | **codedb 0.2.5831** | [codebase-memory-mcp 0.9.0](https://github.com/DeusData/codebase-memory-mcp) | [GitNexus 1.6.9](https://github.com/abhigyanpatwari/GitNexus) |
+|---|---:|---:|---:|
+| Index wall time | **186.293 ms** | 422.518 ms | 8,305.209 ms |
+| Peak child RSS | **41,360 KiB** | 85,304 KiB | 709,348 KiB |
+| Persistent index | 5,027,199 B | **4,759,552 B** | 28,815,656 B |
+
+This is a normalized outcome comparison, not a claim that the internal
+operations are identical. Each tool received its closest documented one-call
+operation. GitNexus returned the definition and callee but duplicated test-file
+incoming edges and missed the production caller; codebase-memory was explicitly
+asked to exclude tests, while codedb callers intentionally includes test and
+import sites. One TypeScript fixture and one symbol do not establish total
+product quality. See the [full protocol and limitations](docs/performance-0.2.5831.md#normalized-11-sandbox-comparison).
 
 ### Historical cross-tool benchmarks
 

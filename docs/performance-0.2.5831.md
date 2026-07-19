@@ -9,6 +9,8 @@ The complete machine-readable measurements are in
 The JSON contains all 10 context tasks and all 22 edge-benchmark cases, including
 results that did not improve. It also records the exploratory observations,
 implementation and security findings, verification matrix, and sandbox cleanup.
+Every raw run and response from the normalized three-engine comparison is in
+[`engine-comparison.json`](../bench/results/0.2.5831/engine-comparison.json).
 
 ## Headline results
 
@@ -38,7 +40,7 @@ exact response bytes.
 | Outline attribution | Same-tree, same-compiler before/after pair | directly attributed |
 | Exploratory token and trigram results | Word/search tokens, warm latency, and cache speedup ranges | directional only |
 | Performance, correctness, and security fixes | Source-path inventory in this report and the results JSON | implemented and tested |
-| Other-engine comparison | Fixed fixture/protocol, per-engine results, limitations, and cleanup | directional only |
+| Other-engine comparison | Same fixture/resources/outcomes, all raw runs and outputs, exact checksums, recall, limitations, and cleanup | retained benchmark evidence |
 | Regressions and verification | Ranked-search/callers regressions, commands, hashes, and artifact checks | explicitly published |
 
 “Release evidence” means the raw task rows or response bytes were retained and
@@ -186,40 +188,92 @@ raw samples were not retained with sufficient provenance. They are directional,
 not release gates. The reproducible response-byte and context-token results are
 the numbers used for release claims.
 
-## Directional sandbox comparison
+## Normalized 1:1 sandbox comparison
 
 A separate trial explored
 [`codedb` issue #679](https://github.com/justrach/codedb/issues/679) without
 installing the competing engines into the workstation. It used the
 [`sandbox-gateway` protocol](https://github.com/justrach/sandbox-gateway/blob/main/docs.md)
 with `justrach/smolify` at commit
-`835070d0826ab581f7efb564a1457b72c2bbe3da` (96 blobs, approximately 1.32 MB)
-and the exact symbol `toFtsMatch`. Each tool ran in a separate Linux x86_64
-sandbox with 2 vCPU and 2,048 MB on one gateway node.
+`835070d0826ab581f7efb564a1457b72c2bbe3da`. The extracted fixture has 96
+files and 1,541,092 bytes; its tar SHA-256 is
+`a2e3ba722bb8ab19d212ebca20a4d0f10b970ca6287a992da6e9201759cb9afb`.
+Each tool ran in a separate `node`-template Linux x86_64 sandbox with 2 vCPU and
+2,048 MB on the same gateway node.
 
-| Tool | Cold index process time | Sampled cgroup peak | Warm CLI process measurements | Result |
-|---|---:|---:|---:|---|
-| codedb 0.2.5830 | 178 ms (74.7 ms internal) | 41,972 KiB | search 18/3/3 ms; callers 54/3/3 ms; context 18/3/3 ms | Definition, 8 search sites, 7 caller sites, narrowed context |
-| codebase-memory-mcp 0.9.0 | 430 ms | 6,068 KiB | graph operations 16–23 ms | Exact symbol and inbound graph |
-| GitNexus 1.6.9 | not measured | not measured | not measured | Tagged CLI rejected the documented `--skip-embeddings` flag |
+The protocol normalizes outcomes rather than pretending the engines expose the
+same command. Each engine receives its closest documented one-call operation:
 
-The codedb and codebase-memory-mcp downloads passed their published checksum
-verification. codedb produced a 4,916 KiB cache, and its final measured internal
-search was 5.7 µs; this internal timer excludes CLI startup. codebase-memory-mcp
-produced a 4,648 KiB cache and a graph with 1,717 nodes, 3,408 edges, and zero
-skipped items. GitNexus was installed under verified Node.js 22.23.1; embeddings
-are off by default in v1.6.9, but the trial retained the original protocol and
-did not silently remove the rejected flag.
+1. Find the exact `toFtsMatch` definition (`toFtsMatch` and
+   `lib/docs/search.ts` are required anchors).
+2. Find its direct non-test caller (`searchActiveDocs`).
+3. Return the definition, direct production caller, and direct callee in one
+   call (`toFtsMatch`, `searchActiveDocs`, and `terms`).
 
-This is deliberately not a winner table. Warm CLI times include process startup
-and cache loading; graph traversal and textual callers/context are not
-semantically identical; and codedb used the latest published 0.2.5830 binary,
-not the unreleased branch. GitNexus 1.6.9 is PolyForm Noncommercial 1.0, so
-commercial company use also requires license review. Sampled cgroup peaks are
-directional because a short-lived process can finish between samples or report
-zero. All task-created sandboxes were deleted successfully with HTTP 204;
-preexisting sandboxes were left untouched, and no competing engine was
-installed locally.
+| Outcome | codedb operation | codebase-memory operation | GitNexus operation |
+|---|---|---|---|
+| Definition | `symbol toFtsMatch` | `search_graph --name-pattern ^toFtsMatch$` | `context toFtsMatch` |
+| Direct caller | `callers toFtsMatch` | `trace_path --direction inbound --depth 1 --include-tests false` | `context toFtsMatch` |
+| One-call neighborhood | `context "toFtsMatch"` | `get_code_snippet --include-neighbors true` | `context toFtsMatch --content` |
+
+Ground truth was checked directly in the fixture: the definition is
+`lib/docs/search.ts:76`, and the production calls are at lines 33 and 38. Cold
+indexing is one clean-cache run. Warm tasks use one warmup followed by 10
+separate CLI processes. Time is process wall time, peak RSS is
+`getrusage(RUSAGE_CHILDREN)`, and output tokens use tiktoken 0.13.0 with
+`o200k_base`.
+
+| Same outcome | **codedb 0.2.5831** | [codebase-memory-mcp 0.9.0](https://github.com/DeusData/codebase-memory-mcp) | [GitNexus 1.6.9](https://github.com/abhigyanpatwari/GitNexus) |
+|---|---:|---:|---:|
+| Exact definition, p50 / p95 | **0.711 / 0.741 ms** | 11.815 / 15.351 ms | 1,729.866 / 1,770.555 ms |
+| Definition output / recall | **250 B / 74 tokens · 2/2** | 1,273 B / 515 tokens · 2/2 | 889 B / 274 tokens · 2/2 |
+| Production caller, p50 / p95 | **0.480 / 0.522 ms** | 6.730 / 9.252 ms | 1,712.238 / 1,741.577 ms |
+| Caller output / recall | 951 B / 299 tokens · 1/1 | **177 B / 44 tokens** · 1/1 | 889 B / 274 tokens · **0/1** |
+| One-call neighborhood, p50 / p95 | **0.494 / 0.535 ms** | 8.156 / 11.335 ms | 1,720.325 / 1,755.486 ms |
+| Neighborhood output / recall | **594 B / 182 tokens · 3/3** | 1,664 B / 627 tokens · 3/3 | 1,170 B / 355 tokens · **2/3** |
+
+| Cold metric | **codedb 0.2.5831** | [codebase-memory-mcp 0.9.0](https://github.com/DeusData/codebase-memory-mcp) | [GitNexus 1.6.9](https://github.com/abhigyanpatwari/GitNexus) |
+|---|---:|---:|---:|
+| Index process wall | **186.293 ms** | 422.518 ms | 8,305.209 ms |
+| Peak child RSS | **41,360 KiB** | 85,304 KiB | 709,348 KiB |
+| Persistent index | 5,027,199 B | **4,759,552 B** | 28,815,656 B |
+
+| Warm peak child RSS | **codedb 0.2.5831** | codebase-memory-mcp 0.9.0 | GitNexus 1.6.9 |
+|---|---:|---:|---:|
+| Definition | **6,272 KiB** | 7,644 KiB | 370,312 KiB |
+| Direct caller | **6,272 KiB** | 7,900 KiB | 373,492 KiB |
+| One-call neighborhood | **6,272 KiB** | 8,412 KiB | 374,376 KiB |
+
+codedb was 2.27× faster than codebase-memory and 44.58× faster than GitNexus
+for the single cold-index run. Across the three warm outcomes its p50 process
+latency was 14.03–16.62× lower than codebase-memory and 2,433.62–3,570.17×
+lower than GitNexus. Its cold peak RSS was 51.51% below codebase-memory and
+94.17% below GitNexus. codebase-memory's persistent index was 5.62% smaller
+than codedb's, and it produced the smallest caller response.
+
+All three engines found the exact definition. codedb and codebase-memory also
+returned full anchors for the caller and one-call neighborhood. GitNexus's
+documented `context` operation returned the definition and `terms`, but its
+incoming edges duplicated the test file and missed `searchActiveDocs`; a
+separate GitNexus query can surface that symbol, but using it would violate the
+one-call outcome. codedb callers intentionally includes test and import sites,
+whereas codebase-memory was asked to exclude tests, explaining part of their
+caller-output difference.
+
+The artifact pins codedb's exact source commit and binary SHA-256,
+codebase-memory's release asset and binary SHA-256, and GitNexus's npm integrity
+and lockfile SHA-256. The full per-run timings, response hashes, complete final
+outputs, and recall scores are retained in
+[`engine-comparison.json`](../bench/results/0.2.5831/engine-comparison.json).
+
+Limitations remain: this is one small TypeScript repository and one symbol;
+cold indexing has only one sample per tool; CLI timings include process startup
+and index loading; and the products expose broader, different feature sets.
+GitNexus's FTS extension was unavailable, but these graph-context tasks did not
+use FTS. No competing engine was installed locally. After the evidence was
+copied and validated, all three task-created sandboxes returned HTTP 204 on
+deletion and were absent from the follow-up listing; the preexisting sandbox
+was left untouched.
 
 ## Verification
 
@@ -228,6 +282,7 @@ The code candidate passed:
 ```text
 zig build test
 zig build -Doptimize=ReleaseFast
+zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseFast
 python3 scripts/e2e_mcp_test.py --binary zig-out/bin/codedb --project <codedb-root>
 ```
 
@@ -238,6 +293,12 @@ The documentation pass additionally verified that all 10 baseline rows and all
 10 candidate rows exactly match the source summaries, the committed task
 manifest matches its recorded SHA-256, and all 22 baseline and 22 candidate
 edge-response sizes reproduce. JSON validation and staged diff checks passed.
+For the normalized comparison, all 12 timing groups reproduced their retained
+p50/p95 values, response sizes, and SHA-256 hashes; all nine task/engine recall
+scores reproduced from the retained outputs; and all nine token counts
+reproduced with tiktoken 0.13.0 using `o200k_base`. Both JSON artifacts were
+also checked for duplicate object keys, credential markers, and broken local
+Markdown links.
 
 ## Reproduction and interpretation rules
 
