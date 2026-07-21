@@ -3082,3 +3082,122 @@ test "matchGlob: *, **, ?, and {a,b,c} semantics (golden baseline for iterative 
     try testing.expect(!explore.matchGlob("*a*a*a*a*a*a", "xxaxxaxxaxxaxxaxxb"));
     try testing.expect(!explore.matchGlob("*a*a*a*a*a*a", "bbbbbbbbbbbbbbbbbbbb"));
 }
+
+test "explorer: renderCachedRead memoizes the content hash across warm re-reads" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    const content = "line one\nline two\nline three\n";
+    try exp.indexFile("warm.zig", content);
+
+    var out1: std.ArrayList(u8) = .empty;
+    defer out1.deinit(testing.allocator);
+    try testing.expect(try exp.renderCachedRead("warm.zig", testing.allocator, &out1, .{}));
+
+    var out2: std.ArrayList(u8) = .empty;
+    defer out2.deinit(testing.allocator);
+    try testing.expect(try exp.renderCachedRead("warm.zig", testing.allocator, &out2, .{}));
+
+    try testing.expectEqualStrings(out1.items, out2.items);
+
+    const expected_hash = std.hash.Wyhash.hash(0, content);
+    var expected_buf: [32]u8 = undefined;
+    const expected_str = try std.fmt.bufPrint(&expected_buf, "hash:{x}\n", .{expected_hash});
+    try testing.expect(std.mem.startsWith(u8, out1.items, expected_str));
+}
+
+test "explorer: renderCachedRead hash changes after re-indexing with new content" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    const content1 = "version one\nsecond line\n";
+    try exp.indexFile("mut.zig", content1);
+
+    var out1: std.ArrayList(u8) = .empty;
+    defer out1.deinit(testing.allocator);
+    _ = try exp.renderCachedRead("mut.zig", testing.allocator, &out1, .{});
+    const hash1_line = out1.items[0..std.mem.indexOfScalar(u8, out1.items, '\n').?];
+
+    const content2 = "version two is longer than before\nsecond line\nthird line\n";
+    try exp.indexFile("mut.zig", content2);
+
+    var out2: std.ArrayList(u8) = .empty;
+    defer out2.deinit(testing.allocator);
+    _ = try exp.renderCachedRead("mut.zig", testing.allocator, &out2, .{});
+    const hash2_line = out2.items[0..std.mem.indexOfScalar(u8, out2.items, '\n').?];
+
+    try testing.expect(!std.mem.eql(u8, hash1_line, hash2_line));
+
+    const expected_hash2 = std.hash.Wyhash.hash(0, content2);
+    var expected_buf: [32]u8 = undefined;
+    const expected_str = try std.fmt.bufPrint(&expected_buf, "hash:{x}", .{expected_hash2});
+    try testing.expectEqualStrings(expected_str, hash2_line);
+}
+
+test "explorer: renderCachedRead if_hash short-circuits on match, full body on mismatch" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    const content = "alpha\nbeta\ngamma\n";
+    try exp.indexFile("etag.zig", content);
+
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(testing.allocator);
+    _ = try exp.renderCachedRead("etag.zig", testing.allocator, &first, .{});
+    const hash_line_end = std.mem.indexOfScalar(u8, first.items, '\n').?;
+    const hash_str = first.items[5..hash_line_end];
+
+    var matched: std.ArrayList(u8) = .empty;
+    defer matched.deinit(testing.allocator);
+    _ = try exp.renderCachedRead("etag.zig", testing.allocator, &matched, .{ .if_hash = hash_str });
+    var expected_unchanged_buf: [40]u8 = undefined;
+    const expected_unchanged = try std.fmt.bufPrint(&expected_unchanged_buf, "unchanged:{s}", .{hash_str});
+    try testing.expectEqualStrings(expected_unchanged, matched.items);
+
+    var mismatched: std.ArrayList(u8) = .empty;
+    defer mismatched.deinit(testing.allocator);
+    _ = try exp.renderCachedRead("etag.zig", testing.allocator, &mismatched, .{ .if_hash = "deadbeefdeadbeef" });
+    try testing.expect(std.mem.startsWith(u8, mismatched.items, "hash:"));
+    try testing.expect(std.mem.indexOf(u8, mismatched.items, "alpha") != null);
+    try testing.expect(std.mem.indexOf(u8, mismatched.items, "gamma") != null);
+}
+
+test "explorer: renderCachedRead deep ranged read matches the scanning ground truth" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    var builder: std.ArrayList(u8) = .empty;
+    const bw = cio.listWriter(&builder, testing.allocator);
+    var line_i: usize = 1;
+    while (line_i <= 500) : (line_i += 1) {
+        try bw.print("line number {d}\n", .{line_i});
+    }
+    const content = try builder.toOwnedSlice(testing.allocator);
+    defer testing.allocator.free(content);
+
+    try exp.indexFile("deep.zig", content);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    _ = try exp.renderCachedRead("deep.zig", testing.allocator, &out, .{ .line_start = 450, .line_end = 470 });
+    const nl = std.mem.indexOfScalar(u8, out.items, '\n').?;
+    const body = out.items[nl + 1 ..];
+
+    const expected = try extractLines(content, 450, 470, true, false, .unknown, testing.allocator);
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, body);
+
+    var out2: std.ArrayList(u8) = .empty;
+    defer out2.deinit(testing.allocator);
+    _ = try exp.renderCachedRead("deep.zig", testing.allocator, &out2, .{ .line_start = 10, .line_end = 15 });
+    const nl2 = std.mem.indexOfScalar(u8, out2.items, '\n').?;
+    const body2 = out2.items[nl2 + 1 ..];
+
+    const expected2 = try extractLines(content, 10, 15, true, false, .unknown, testing.allocator);
+    defer testing.allocator.free(expected2);
+    try testing.expectEqualStrings(expected2, body2);
+}

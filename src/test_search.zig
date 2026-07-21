@@ -2310,6 +2310,70 @@ test "codedb_word groups paths and paginates hot identifiers deterministically" 
     try testing.expect(std.mem.indexOf(u8, all.items, "more:") == null);
 }
 
+test "codedb_word run-based paging matches full-sort ground truth across interleaved insertion order" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    try explorer.indexFile("zebra.zig", "const targetword = 1;\nconst targetword = 2;\nconst targetword = 3;\nconst targetword = 4;\n");
+    try explorer.indexFile("mango.zig", "const targetword = 1;\n");
+    try explorer.indexFile("apple.zig", "const targetword = 1;\nconst targetword = 2;\nconst targetword = 3;\n");
+    try explorer.indexFile("banana.zig", "const targetword = 1;\nconst targetword = 2;\n");
+
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try explorer.renderWord("targetword", testing.allocator, &out, 5, 0, false);
+        try testing.expectEqualStrings(
+            "10 hits for 'targetword' in 4 files (showing 1-5):\n" ++
+                "  apple.zig:1,2,3\n" ++
+                "  banana.zig:1,2\n" ++
+                "more: 5 hits; offset=5\n",
+            out.items,
+        );
+    }
+
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try explorer.renderWord("targetword", testing.allocator, &out, 3, 4, false);
+        try testing.expectEqualStrings(
+            "10 hits for 'targetword' in 4 files (showing 5-7):\n" ++
+                "  banana.zig:2\n" ++
+                "  mango.zig:1\n" ++
+                "  zebra.zig:1\n" ++
+                "more: 3 hits; offset=7\n",
+            out.items,
+        );
+    }
+
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try explorer.renderWord("targetword", testing.allocator, &out, 5, 10, false);
+        try testing.expectEqualStrings("10 hits for 'targetword' in 4 files (showing 0-0):\n", out.items);
+    }
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try explorer.renderWord("targetword", testing.allocator, &out, 5, 15, false);
+        try testing.expectEqualStrings("10 hits for 'targetword' in 4 files (showing 0-0):\n", out.items);
+    }
+
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try explorer.renderWord("targetword", testing.allocator, &out, 1, 0, true);
+        try testing.expectEqualStrings(
+            "10 hits for 'targetword' in 4 files (showing 1-10):\n" ++
+                "  apple.zig:1,2,3\n" ++
+                "  banana.zig:1,2\n" ++
+                "  mango.zig:1\n" ++
+                "  zebra.zig:1,2,3,4\n",
+            out.items,
+        );
+    }
+}
+
 test "fuzzy SIMD batch scorer matches scalar fuzzyScore exactly" {
     // fuzzyFindFiles routes single-part queries through the SIMD-across-files
     // scorer (fuzzyScoreBatch); it must produce results identical to the scalar

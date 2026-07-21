@@ -6622,6 +6622,18 @@ pub const Explorer = struct {
         return out_hits;
     }
 
+    fn isSortedU32(items: []const u32) bool {
+        var k: usize = 1;
+        while (k < items.len) : (k += 1) {
+            if (items[k] < items[k - 1]) return false;
+        }
+        return true;
+    }
+
+    fn lessThanU32(_: void, a: u32, b: u32) bool {
+        return a < b;
+    }
+
     /// Format a word-index lookup directly from the posting list. The indexer
     /// already stores at most one hit per (word, file, line), so the MCP word
     /// path does not need to allocate and dedupe a temporary result slice.
@@ -6673,60 +6685,231 @@ pub const Explorer = struct {
         if (cacheable and self.word_render_cache.render(word, false, gen, allocator, out)) return;
         const render_start = out.items.len;
         const hits = self.word_index.search(word);
-        // Memory-mapped posting lists are packed (alignment 1), while sorting
-        // needs a naturally aligned mutable slice. Copy element-by-element so
-        // strict-alignment targets never receive an invalid slice cast.
-        const sorted = try allocator.alloc(idx.WordHit, hits.len);
-        defer allocator.free(sorted);
-        for (hits, 0..) |hit, hit_i| sorted[hit_i] = hit;
-        const SortContext = struct {
-            index: *const idx.WordIndex,
-            fn lessThan(ctx: @This(), a: idx.WordHit, b: idx.WordHit) bool {
-                const ap = ctx.index.hitPath(a);
-                const bp = ctx.index.hitPath(b);
-                const order = std.mem.order(u8, ap, bp);
-                if (order != .eq) return order == .lt;
-                return a.line_num < b.line_num;
-            }
-        };
-        std.mem.sort(idx.WordHit, sorted, SortContext{ .index = &self.word_index }, SortContext.lessThan);
+        if (all) {
+            // Memory-mapped posting lists are packed (alignment 1), while sorting
+            // needs a naturally aligned mutable slice. Copy element-by-element so
+            // strict-alignment targets never receive an invalid slice cast.
+            const sorted = try allocator.alloc(idx.WordHit, hits.len);
+            defer allocator.free(sorted);
+            for (hits, 0..) |hit, hit_i| sorted[hit_i] = hit;
+            const SortContext = struct {
+                index: *const idx.WordIndex,
+                fn lessThan(ctx: @This(), a: idx.WordHit, b: idx.WordHit) bool {
+                    const ap = ctx.index.hitPath(a);
+                    const bp = ctx.index.hitPath(b);
+                    const order = std.mem.order(u8, ap, bp);
+                    if (order != .eq) return order == .lt;
+                    return a.line_num < b.line_num;
+                }
+            };
+            std.mem.sort(idx.WordHit, sorted, SortContext{ .index = &self.word_index }, SortContext.lessThan);
 
+            var file_count: usize = 0;
+            var previous_path: ?[]const u8 = null;
+            for (sorted) |h| {
+                const path = self.word_index.hitPath(h);
+                if (previous_path == null or !std.mem.eql(u8, previous_path.?, path)) {
+                    file_count += 1;
+                    previous_path = path;
+                }
+            }
+            const start: usize = 0;
+            const end: usize = sorted.len;
+            try out.ensureUnusedCapacity(allocator, 128 + (end - start) * 24);
+            const w = cio.listWriter(out, allocator);
+            try w.print("{d} hits for '{s}' in {d} files (showing {d}-{d}):\n", .{
+                sorted.len,
+                word,
+                file_count,
+                if (start < end) start + 1 else 0,
+                if (start < end) end else 0,
+            });
+            var i = start;
+            while (i < end) {
+                const path = self.word_index.hitPath(sorted[i]);
+                try w.print("  {s}:", .{path});
+                var first = true;
+                while (i < end and std.mem.eql(u8, self.word_index.hitPath(sorted[i]), path)) : (i += 1) {
+                    if (first) {
+                        try w.print("{d}", .{sorted[i].line_num});
+                    } else {
+                        try w.print(",{d}", .{sorted[i].line_num});
+                    }
+                    first = false;
+                }
+                try w.writeByte('\n');
+            }
+            if (end < sorted.len) try w.print("more: {d} hits; offset={d}\n", .{ sorted.len - end, end });
+            return;
+        }
+
+        const Run = struct { doc_id: u32, start: usize, len: usize, path: []const u8 };
+        const Group = struct { path: []const u8, first_run: usize, run_count: usize, total_len: usize };
+
+        const start = @min(offset, hits.len);
+        const end = @min(hits.len, start + max_results);
+
+        const total_docs = self.word_index.id_to_path.items.len;
+        const seen_bytes = try allocator.alloc(u8, (total_docs + 7) / 8);
+        defer allocator.free(seen_bytes);
+        @memset(seen_bytes, 0);
         var file_count: usize = 0;
-        var previous_path: ?[]const u8 = null;
-        for (sorted) |h| {
-            const path = self.word_index.hitPath(h);
-            if (previous_path == null or !std.mem.eql(u8, previous_path.?, path)) {
-                file_count += 1;
-                previous_path = path;
+        var total_runs: usize = 0;
+
+        const k = end;
+        var top: std.ArrayList(Run) = .empty;
+        defer top.deinit(allocator);
+        if (k > 0) try top.ensureTotalCapacityPrecise(allocator, k);
+
+        {
+            var i: usize = 0;
+            while (i < hits.len) {
+                const doc_id = hits[i].doc_id;
+                var j = i + 1;
+                while (j < hits.len and hits[j].doc_id == doc_id) : (j += 1) {}
+                total_runs += 1;
+
+                const byte_idx = doc_id / 8;
+                const bit_idx: u3 = @intCast(doc_id % 8);
+                const mask: u8 = @as(u8, 1) << bit_idx;
+                if (seen_bytes[byte_idx] & mask == 0) {
+                    seen_bytes[byte_idx] |= mask;
+                    file_count += 1;
+                }
+
+                if (k > 0) {
+                    const r_path = self.word_index.hitPath(.{ .doc_id = doc_id, .line_num = 0 });
+                    if (top.items.len < k) {
+                        var lo: usize = 0;
+                        var hi: usize = top.items.len;
+                        while (lo < hi) {
+                            const mid = lo + (hi - lo) / 2;
+                            if (std.mem.order(u8, top.items[mid].path, r_path) == .lt) {
+                                lo = mid + 1;
+                            } else {
+                                hi = mid;
+                            }
+                        }
+                        top.appendAssumeCapacity(undefined);
+                        var ins_at = top.items.len - 1;
+                        while (ins_at > lo) : (ins_at -= 1) top.items[ins_at] = top.items[ins_at - 1];
+                        top.items[lo] = .{ .doc_id = doc_id, .start = i, .len = j - i, .path = r_path };
+                    } else if (std.mem.order(u8, r_path, top.items[k - 1].path) == .lt) {
+                        var lo: usize = 0;
+                        var hi: usize = k - 1;
+                        while (lo < hi) {
+                            const mid = lo + (hi - lo) / 2;
+                            if (std.mem.order(u8, top.items[mid].path, r_path) == .lt) {
+                                lo = mid + 1;
+                            } else {
+                                hi = mid;
+                            }
+                        }
+                        var ins_at = k - 1;
+                        while (ins_at > lo) : (ins_at -= 1) top.items[ins_at] = top.items[ins_at - 1];
+                        top.items[lo] = .{ .doc_id = doc_id, .start = i, .len = j - i, .path = r_path };
+                    }
+                }
+                i = j;
             }
         }
-        const start = if (all) 0 else @min(offset, sorted.len);
-        const end = if (all) sorted.len else @min(sorted.len, start + max_results);
+
+        var groups: std.ArrayList(Group) = .empty;
+        defer groups.deinit(allocator);
+        var runs: std.ArrayList(Run) = .empty;
+        defer runs.deinit(allocator);
+        const rendered_runs: []const Run = blk: {
+            if (total_runs == file_count) break :blk top.items;
+
+            try runs.ensureTotalCapacityPrecise(allocator, hits.len);
+            {
+                var i: usize = 0;
+                while (i < hits.len) {
+                    const doc_id = hits[i].doc_id;
+                    var j = i + 1;
+                    while (j < hits.len and hits[j].doc_id == doc_id) : (j += 1) {}
+                    runs.appendAssumeCapacity(.{ .doc_id = doc_id, .start = i, .len = j - i, .path = self.word_index.hitPath(.{ .doc_id = doc_id, .line_num = 0 }) });
+                    i = j;
+                }
+            }
+            const RunSortCtx = struct {
+                fn lessThan(_: void, a: Run, b: Run) bool {
+                    return std.mem.order(u8, a.path, b.path) == .lt;
+                }
+            };
+            std.sort.pdq(Run, runs.items, {}, RunSortCtx.lessThan);
+            break :blk runs.items;
+        };
+        if (rendered_runs.len > 0) try groups.ensureTotalCapacityPrecise(allocator, rendered_runs.len);
+        {
+            var i: usize = 0;
+            while (i < rendered_runs.len) {
+                const p = rendered_runs[i].path;
+                var total_len: usize = rendered_runs[i].len;
+                var j = i + 1;
+                while (j < rendered_runs.len and std.mem.eql(u8, rendered_runs[j].path, p)) : (j += 1) {
+                    total_len += rendered_runs[j].len;
+                }
+                groups.appendAssumeCapacity(.{ .path = p, .first_run = i, .run_count = j - i, .total_len = total_len });
+                i = j;
+            }
+        }
+
         try out.ensureUnusedCapacity(allocator, 128 + (end - start) * 24);
         const w = cio.listWriter(out, allocator);
         try w.print("{d} hits for '{s}' in {d} files (showing {d}-{d}):\n", .{
-            sorted.len,
+            hits.len,
             word,
             file_count,
             if (start < end) start + 1 else 0,
             if (start < end) end else 0,
         });
-        var i = start;
-        while (i < end) {
-            const path = self.word_index.hitPath(sorted[i]);
-            try w.print("  {s}:", .{path});
-            var first = true;
-            while (i < end and std.mem.eql(u8, self.word_index.hitPath(sorted[i]), path)) : (i += 1) {
-                if (first) {
-                    try w.print("{d}", .{sorted[i].line_num});
+
+        if (start < end) {
+            var scratch: std.ArrayList(u32) = .empty;
+            defer scratch.deinit(allocator);
+            var cum: usize = 0;
+            for (groups.items) |g| {
+                const g_start = cum;
+                cum += g.total_len;
+                if (cum <= start) continue;
+                if (g_start >= end) break;
+                const need_lo = if (start > g_start) start - g_start else 0;
+                const need_hi = @min(g.total_len, end - g_start);
+
+                try w.print("  {s}:", .{g.path});
+                var first = true;
+                if (g.run_count == 1) {
+                    const run = rendered_runs[g.first_run];
+                    const slice = hits[run.start .. run.start + run.len];
+                    for (slice[need_lo..need_hi]) |h| {
+                        if (first) {
+                            try w.print("{d}", .{h.line_num});
+                        } else {
+                            try w.print(",{d}", .{h.line_num});
+                        }
+                        first = false;
+                    }
                 } else {
-                    try w.print(",{d}", .{sorted[i].line_num});
+                    scratch.clearRetainingCapacity();
+                    try scratch.ensureUnusedCapacity(allocator, g.total_len);
+                    for (rendered_runs[g.first_run .. g.first_run + g.run_count]) |run| {
+                        for (hits[run.start .. run.start + run.len]) |h| scratch.appendAssumeCapacity(h.line_num);
+                    }
+                    if (!isSortedU32(scratch.items)) std.mem.sort(u32, scratch.items, {}, lessThanU32);
+                    for (scratch.items[need_lo..need_hi]) |ln| {
+                        if (first) {
+                            try w.print("{d}", .{ln});
+                        } else {
+                            try w.print(",{d}", .{ln});
+                        }
+                        first = false;
+                    }
                 }
-                first = false;
+                try w.writeByte('\n');
             }
-            try w.writeByte('\n');
         }
-        if (end < sorted.len) try w.print("more: {d} hits; offset={d}\n", .{ sorted.len - end, end });
+        if (end < hits.len) try w.print("more: {d} hits; offset={d}\n", .{ hits.len - end, end });
         if (cacheable) self.word_render_cache.put(word, false, gen, out.items[render_start..]);
     }
 
