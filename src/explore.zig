@@ -643,6 +643,53 @@ fn globIsPureSuffix(pattern: []const u8) ?[]const u8 {
     return tail;
 }
 
+/// Length of the literal (non-wildcard) prefix of `pattern` — the same rule
+/// as matchGlob's own fast-path above (`* ? {` end the literal run; this
+/// dialect has no `[...]` classes, so `[` is an ordinary character). Used by
+/// globPaths to narrow its scan of the sorted path list via binary search;
+/// matchGlob still validates every candidate, so this can only shrink the
+/// search space, never change results.
+fn globLiteralPrefixLen(pattern: []const u8) usize {
+    var i: usize = 0;
+    while (i < pattern.len) : (i += 1) {
+        const c = pattern[i];
+        if (c == '*' or c == '?' or c == '{') break;
+    }
+    return i;
+}
+
+const PrefixRange = struct { start: usize, end: usize };
+
+/// Binary-search `sorted` (ascending lexicographic) for the contiguous
+/// range of entries starting with `prefix`. Empty prefix matches
+/// everything.
+fn sortedPrefixRange(sorted: [][]const u8, prefix: []const u8) PrefixRange {
+    if (prefix.len == 0) return .{ .start = 0, .end = sorted.len };
+
+    var lo: usize = 0;
+    var hi: usize = sorted.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (std.mem.order(u8, sorted[mid], prefix) == .lt) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    const start = lo;
+
+    hi = sorted.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (std.mem.startsWith(u8, sorted[mid], prefix)) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return .{ .start = start, .end = lo };
+}
+
 fn findBraceAlternatives(pattern: []const u8, open: usize) ?usize {
     var i = open + 1;
     var has_comma = false;
@@ -1914,6 +1961,16 @@ pub const Explorer = struct {
     /// Bumped (atomically — searches run under the SHARED lock) by every
     /// mutation that can change search results; see bumpSearchGen callers.
     search_gen: std.atomic.Value(SearchGeneration) = std.atomic.Value(SearchGeneration).init(0),
+    /// Cached lexicographic sort of `outlines` keys (borrowed — the array
+    /// owns only its own backing storage, not the strings). Reused by
+    /// renderTree/getTree, renderTreeBounded, and globPaths so none of them
+    /// pay an O(n log n) re-sort per call; rebuilt lazily by
+    /// ensureSortedPaths on the first access after search_gen moves past
+    /// sorted_paths_gen.
+    sorted_paths: std.ArrayList([]const u8) = .empty,
+    /// Generation `sorted_paths` was last rebuilt at; maxInt sentinel forces
+    /// a build on first use. See ensureSortedPaths.
+    sorted_paths_gen: SearchGeneration = std.math.maxInt(SearchGeneration),
     /// Bumped under `mu` whenever the source set/content used to build the word
     /// index changes. A slow rebuild validates this epoch before publishing so
     /// watcher commits cannot be overwritten by a stale snapshot.
@@ -1978,6 +2035,9 @@ pub const Explorer = struct {
             entry.value_ptr.deinit();
         }
         self.outlines.deinit();
+        // Elements are borrowed from outlines' keys (freed above); only the
+        // array itself is owned here.
+        self.sorted_paths.deinit(self.allocator);
 
         self.dep_graph.deinit();
 
@@ -2997,6 +3057,39 @@ pub const Explorer = struct {
         }
     }
 
+    /// Rebuild `sorted_paths` from `outlines` if stale. Mirrors
+    /// ensureSymbolIndex's locking: a cheap check under the shared lock,
+    /// then rebuild under the exclusive lock with a re-check (never build
+    /// while holding only mu.lockShared() — see lock order notes at
+    /// L1502-1504). Validated against search_gen, same as ensureSymbolIndex;
+    /// coarser than strictly necessary (any bump invalidates it, not just
+    /// an outline add/remove) but outline mutations dominate in practice.
+    /// Callers (renderTree, renderTreeBounded, globPaths) must call this
+    /// BEFORE taking their own shared lock.
+    fn ensureSortedPaths(self: *Explorer) !void {
+        const gen = self.search_gen.load(.acquire);
+        self.mu.lockShared();
+        const stale = self.sorted_paths_gen != gen;
+        self.mu.unlockShared();
+        if (!stale) return;
+
+        self.mu.lock();
+        defer self.mu.unlock();
+        const gen_now = self.search_gen.load(.acquire);
+        if (self.sorted_paths_gen == gen_now) return;
+
+        self.sorted_paths.clearRetainingCapacity();
+        try self.sorted_paths.ensureTotalCapacity(self.allocator, self.outlines.count());
+        var it = self.outlines.keyIterator();
+        while (it.next()) |k| self.sorted_paths.appendAssumeCapacity(k.*);
+        std.mem.sort([]const u8, self.sorted_paths.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+        self.sorted_paths_gen = gen_now;
+    }
+
     pub fn disableWordIndexDiskLoad(self: *Explorer) void {
         self.mu.lock();
         defer self.mu.unlock();
@@ -3662,36 +3755,35 @@ pub const Explorer = struct {
     /// Stream the tree representation directly into `out` without going
     /// through an intermediate Allocating writer + toOwnedSlice + copy
     /// into the caller's buffer. Halves the allocation churn on the
-    /// MCP codedb_tree path.
+    /// MCP codedb_tree path. Unbounded — see renderTreeBounded for the
+    /// budget-collapsing variant the MCP handler actually calls.
     pub fn renderTree(self: *Explorer, allocator: std.mem.Allocator, out: *std.ArrayList(u8), use_color: bool) !void {
+        try self.ensureSortedPaths();
+
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
         const gen = self.search_gen.load(.acquire);
         if (self.tree_render_cache.render(gen, use_color, allocator, out)) return;
         const render_start = out.items.len;
+        try self.renderTreeLinesLocked(allocator, out, use_color);
+        self.tree_render_cache.put(gen, use_color, out.items[render_start..]);
+    }
+
+    /// Core streaming tree renderer: emits every directory/file line in
+    /// sorted order. Shared by the unbounded renderTree above and the
+    /// under-budget path of renderTreeBounded below — both must produce
+    /// byte-identical output, so this body is the single source of truth
+    /// for it. Caller must already hold mu.lockShared() and have a fresh
+    /// sorted_paths (see ensureSortedPaths).
+    fn renderTreeLinesLocked(self: *Explorer, allocator: std.mem.Allocator, out: *std.ArrayList(u8), use_color: bool) !void {
         const s = @import("style.zig").style(use_color);
-
         const writer = cio.listWriter(out, allocator);
-
-        var paths: std.ArrayList([]const u8) = .empty;
-        defer paths.deinit(allocator);
-
-        var iter = self.outlines.iterator();
-        while (iter.next()) |entry| {
-            try paths.append(allocator, entry.key_ptr.*);
-        }
-
-        std.mem.sort([]const u8, paths.items, {}, struct {
-            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.order(u8, a, b) == .lt;
-            }
-        }.lessThan);
 
         var seen_dirs = std.StringHashMap(void).init(allocator);
         defer seen_dirs.deinit();
 
-        for (paths.items) |path| {
+        for (self.sorted_paths.items) |path| {
             const outline = self.outlines.get(path) orelse continue;
 
             // Emit directory nodes we haven't seen yet
@@ -3724,7 +3816,227 @@ pub const Explorer = struct {
                 s.reset,
             });
         }
-        self.tree_render_cache.put(gen, use_color, out.items[render_start..]);
+    }
+
+    const TreeDirStat = struct {
+        prefix: []const u8,
+        name: []const u8,
+        depth: usize,
+        parent: ?usize,
+        direct_files: usize = 0,
+        total_files: usize = 0,
+        total_lines: u64 = 0,
+        total_syms: usize = 0,
+        total_subdirs: usize = 0,
+        collapsed: bool = false,
+        printed: bool = false,
+    };
+
+    const TreeStats = struct {
+        dirs: std.ArrayList(TreeDirStat) = .empty,
+        index: std.StringHashMap(usize),
+
+        fn deinit(self: *TreeStats, allocator: std.mem.Allocator) void {
+            self.dirs.deinit(allocator);
+            self.index.deinit();
+        }
+    };
+
+    const TreeCollapseSummary = struct {
+        collapsed_count: usize = 0,
+        hidden_files: usize = 0,
+        hidden_lines: u64 = 0,
+    };
+
+    /// Build per-directory aggregate stats (recursive file/line/symbol
+    /// counts, plus direct file counts) from sorted_paths in one linear
+    /// pass. Caller must hold mu.lockShared(). Only reached from
+    /// renderTreeBounded — small/typical trees resolve under budget and
+    /// never pay for this.
+    fn buildTreeStats(self: *Explorer, allocator: std.mem.Allocator) !TreeStats {
+        var dirs: std.ArrayList(TreeDirStat) = .empty;
+        errdefer dirs.deinit(allocator);
+        var index = std.StringHashMap(usize).init(allocator);
+        errdefer index.deinit();
+
+        for (self.sorted_paths.items) |path| {
+            const outline = self.outlines.get(path) orelse continue;
+
+            var prefix_end: usize = 0;
+            var parent: ?usize = null;
+            while (std.mem.indexOfScalarPos(u8, path, prefix_end, '/')) |sep| {
+                const dir = path[0 .. sep + 1];
+                const gop = try index.getOrPut(dir);
+                if (!gop.found_existing) {
+                    const depth = std.mem.count(u8, dir[0..sep], "/");
+                    const name = dir[if (depth > 0) std.mem.lastIndexOfScalar(u8, dir[0..sep], '/').? + 1 else 0..sep];
+                    gop.value_ptr.* = dirs.items.len;
+                    try dirs.append(allocator, .{ .prefix = dir, .name = name, .depth = depth, .parent = parent });
+                    // Recursive descendant-directory count on every ancestor.
+                    var anc = parent;
+                    while (anc) |a| {
+                        dirs.items[a].total_subdirs += 1;
+                        anc = dirs.items[a].parent;
+                    }
+                }
+                parent = gop.value_ptr.*;
+                prefix_end = sep + 1;
+            }
+
+            if (parent) |p| {
+                dirs.items[p].direct_files += 1;
+                var anc: ?usize = p;
+                while (anc) |a| {
+                    dirs.items[a].total_files += 1;
+                    dirs.items[a].total_lines += outline.line_count;
+                    dirs.items[a].total_syms += outline.symbols.items.len;
+                    anc = dirs.items[a].parent;
+                }
+            }
+        }
+
+        return .{ .dirs = dirs, .index = index };
+    }
+
+    /// Greedily mark directories collapsed, largest DIRECT file count
+    /// first — so heavy leaf directories collapse before a thin ancestor
+    /// that merely contains them — until files+dirs fits max_entries.
+    /// Skips any directory already nested inside one just collapsed, since
+    /// it is hidden as a side effect and would double-count the removal.
+    fn selectTreeCollapseTargets(stats: *TreeStats, allocator: std.mem.Allocator, num_files: usize, max_entries: usize) !TreeCollapseSummary {
+        if (stats.dirs.items.len == 0) return .{};
+
+        const order = try allocator.alloc(usize, stats.dirs.items.len);
+        defer allocator.free(order);
+        for (order, 0..) |*o, i| o.* = i;
+
+        std.mem.sort(usize, order, stats.dirs.items, struct {
+            fn lessThan(dirs: []TreeDirStat, a: usize, b: usize) bool {
+                if (dirs[a].direct_files != dirs[b].direct_files) return dirs[a].direct_files > dirs[b].direct_files;
+                if (dirs[a].total_files != dirs[b].total_files) return dirs[a].total_files > dirs[b].total_files;
+                return std.mem.order(u8, dirs[a].prefix, dirs[b].prefix) == .lt;
+            }
+        }.lessThan);
+
+        var total_entries = num_files + stats.dirs.items.len;
+        var summary = TreeCollapseSummary{};
+
+        for (order) |node_idx| {
+            if (total_entries <= max_entries) break;
+            const d = &stats.dirs.items[node_idx];
+            if (d.collapsed) continue;
+
+            var nested = false;
+            var anc = d.parent;
+            while (anc) |a| {
+                if (stats.dirs.items[a].collapsed) {
+                    nested = true;
+                    break;
+                }
+                anc = stats.dirs.items[a].parent;
+            }
+            if (nested) continue;
+
+            const removed = d.total_files + d.total_subdirs;
+            if (removed == 0) continue;
+            d.collapsed = true;
+            summary.collapsed_count += 1;
+            summary.hidden_files += d.total_files;
+            summary.hidden_lines += d.total_lines;
+            total_entries -= removed;
+        }
+
+        return summary;
+    }
+
+    /// Render with the largest directories collapsed to one rollup line
+    /// each, plus a trailer summarizing what was hidden. Caller must hold
+    /// mu.lockShared() and have already populated `stats` via
+    /// buildTreeStats + selectTreeCollapseTargets.
+    fn renderTreeCollapsedLocked(self: *Explorer, stats: *TreeStats, summary: TreeCollapseSummary, allocator: std.mem.Allocator, out: *std.ArrayList(u8), use_color: bool) !void {
+        const s = @import("style.zig").style(use_color);
+        const writer = cio.listWriter(out, allocator);
+
+        for (self.sorted_paths.items) |path| {
+            const outline = self.outlines.get(path) orelse continue;
+
+            var prefix_end: usize = 0;
+            var hidden = false;
+            while (std.mem.indexOfScalarPos(u8, path, prefix_end, '/')) |sep| {
+                const dir = path[0 .. sep + 1];
+                const node_idx = stats.index.get(dir).?;
+                const d = &stats.dirs.items[node_idx];
+                if (!d.printed) {
+                    d.printed = true;
+                    for (0..d.depth) |_| try writer.writeAll("  ");
+                    if (d.collapsed) {
+                        try writer.print("{s}{s}/{s}  {s}… {d} files, {d}L, {d} sym{s}\n", .{
+                            s.bold,       d.name,        s.reset,
+                            s.dim,        d.total_files, d.total_lines,
+                            d.total_syms, s.reset,
+                        });
+                    } else {
+                        try writer.print("{s}{s}/{s}\n", .{ s.bold, d.name, s.reset });
+                    }
+                }
+                if (d.collapsed) {
+                    hidden = true;
+                    break;
+                }
+                prefix_end = sep + 1;
+            }
+            if (hidden) continue;
+
+            const depth = std.mem.count(u8, path, "/");
+            for (0..depth) |_| try writer.writeAll("  ");
+            const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
+            const lang = @tagName(outline.language);
+            try writer.print("{s}  {s}{s}{s}  {s}{d}L  {d} sym{s}\n", .{
+                basename,
+                s.langColor(lang),
+                lang,
+                s.reset,
+                s.dim,
+                outline.line_count,
+                outline.symbols.items.len,
+                s.reset,
+            });
+        }
+
+        if (summary.collapsed_count > 0) {
+            try writer.writeAll("\n");
+            if (summary.collapsed_count == 1) {
+                try writer.print("{s}1 directory collapsed ({d} files, {d} lines hidden) — pass full:true (or a larger max_entries) for the complete tree{s}\n", .{ s.dim, summary.hidden_files, summary.hidden_lines, s.reset });
+            } else {
+                try writer.print("{s}{d} directories collapsed ({d} files, {d} lines hidden) — pass full:true (or a larger max_entries) for the complete tree{s}\n", .{ s.dim, summary.collapsed_count, summary.hidden_files, summary.hidden_lines, s.reset });
+            }
+        }
+    }
+
+    /// Bounded tree renderer for the MCP codedb_tree path: identical output
+    /// to renderTree while total entries (files+dirs) fit max_entries;
+    /// above it, collapses the largest directories into rollup lines (see
+    /// selectTreeCollapseTargets) plus one trailer line. Pass
+    /// std.math.maxInt(usize) for an explicit full-tree request.
+    pub fn renderTreeBounded(self: *Explorer, allocator: std.mem.Allocator, out: *std.ArrayList(u8), use_color: bool, max_entries: usize) !void {
+        try self.ensureSortedPaths();
+
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        if (self.sorted_paths.items.len == 0) return;
+
+        var stats = try self.buildTreeStats(allocator);
+        defer stats.deinit(allocator);
+
+        const total_entries = self.sorted_paths.items.len + stats.dirs.items.len;
+        if (total_entries <= max_entries) {
+            try self.renderTreeLinesLocked(allocator, out, use_color);
+            return;
+        }
+
+        const summary = try selectTreeCollapseTargets(&stats, allocator, self.sorted_paths.items.len, max_entries);
+        try self.renderTreeCollapsedLocked(&stats, summary, allocator, out, use_color);
     }
 
     pub fn findSymbol(self: *Explorer, name: []const u8, allocator: std.mem.Allocator) !?struct { path: []const u8, symbol: Symbol } {
@@ -7091,7 +7403,9 @@ pub const Explorer = struct {
     };
 
     pub fn globPaths(self: *Explorer, allocator: std.mem.Allocator, pattern: []const u8, max_results: usize) ![][]const u8 {
-        if (pattern.len == 0) return &.{};
+        if (pattern.len == 0 or max_results == 0) return &.{};
+
+        try self.ensureSortedPaths();
 
         self.mu.lockShared();
         defer self.mu.unlockShared();
@@ -7100,23 +7414,23 @@ pub const Explorer = struct {
         errdefer matches.deinit(allocator);
         // Reserve a guess so small/medium glob result sets don't trigger
         // multiple geometric reallocations.
-        matches.ensureTotalCapacity(allocator, @min(64, self.outlines.count())) catch {};
+        matches.ensureTotalCapacity(allocator, @min(64, self.sorted_paths.items.len)) catch {};
 
-        var iter = self.outlines.keyIterator();
-        while (iter.next()) |key_ptr| {
-            const path = key_ptr.*;
+        // Narrow the scan to the sorted sub-range sharing pattern's literal
+        // prefix (binary search), then walk it in ascending order so the
+        // first max_results matches found are already the correct sorted
+        // page — matchGlob still validates every candidate, so narrowing
+        // the range and stopping early cannot change the result set (see
+        // test "globPaths: prefix narrowing matches full-scan reference").
+        const prefix_len = globLiteralPrefixLen(pattern);
+        const range = sortedPrefixRange(self.sorted_paths.items, pattern[0..prefix_len]);
+
+        for (self.sorted_paths.items[range.start..range.end]) |path| {
             if (matchGlob(pattern, path)) {
                 try matches.append(allocator, path);
+                if (matches.items.len >= max_results) break;
             }
         }
-
-        std.mem.sort([]const u8, matches.items, {}, struct {
-            fn lt(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.order(u8, a, b) == .lt;
-            }
-        }.lt);
-
-        if (matches.items.len > max_results) matches.items.len = max_results;
 
         return matches.toOwnedSlice(allocator);
     }

@@ -3769,3 +3769,182 @@ test "mcp: agent clients get compact tools while GUI clients get full discovery"
     try testing.expect(!mcp_mod.mcpUseCompactToolSurface("claude-ai"));
     try testing.expect(!mcp_mod.mcpUseCompactToolSurface("Claude-AI"));
 }
+
+test "codedb_tree: under-budget output is byte-identical to the unbounded tree" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+    try explorer.indexFile("src/lib.zig", "pub fn init() void {}\n");
+    try explorer.indexFile("build.zig", "pub fn build() void {}\n");
+
+    const unbounded = try explorer.getTree(testing.allocator, false);
+    defer testing.allocator.free(unbounded);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_tree, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expectEqualStrings(unbounded, out.items);
+}
+
+test "codedb_tree: over-budget corpus collapses the largest directories" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // 10 dirs x 100 files = 1000 files + 11 dirs (many/ + d0..d9) = 1011
+    // entries, comfortably over the 700 default budget.
+    var path_buf: [64]u8 = undefined;
+    for (0..10) |d| {
+        for (0..100) |f| {
+            const path = try std.fmt.bufPrint(&path_buf, "many/d{d}/f{d}.zig", .{ d, f });
+            try explorer.indexFile(path, "pub fn x() void {}\n");
+        }
+    }
+
+    const unbounded = try explorer.getTree(testing.allocator, false);
+    defer testing.allocator.free(unbounded);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_tree, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Bounded output must be meaningfully smaller than the unbounded tree —
+    // proves collapsing actually shrank the response, not just reformatted it.
+    try testing.expect(out.items.len < unbounded.len);
+    try testing.expect(out.items.len < 25_000);
+
+    // Sensible rollup content, not a bare truncation notice: a collapsed
+    // directory line with counts, uncollapsed files still listed, and a
+    // trailer explaining how to get everything.
+    try testing.expect(std.mem.indexOf(u8, out.items, "files,") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, " sym\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "directories collapsed") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "full:true") != null);
+}
+
+test "codedb_tree: full:true returns the uncollapsed listing" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    var path_buf: [64]u8 = undefined;
+    for (0..10) |d| {
+        for (0..100) |f| {
+            const path = try std.fmt.bufPrint(&path_buf, "many/d{d}/f{d}.zig", .{ d, f });
+            try explorer.indexFile(path, "pub fn x() void {}\n");
+        }
+    }
+
+    const unbounded = try explorer.getTree(testing.allocator, false);
+    defer testing.allocator.free(unbounded);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{"full":true}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_tree, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expectEqualStrings(unbounded, out.items);
+}
+
+test "codedb_tree: max_entries overrides the default budget" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // Small corpus (well under the default 700 budget) that still exceeds
+    // a tight explicit max_entries.
+    var path_buf: [64]u8 = undefined;
+    for (0..3) |d| {
+        for (0..20) |f| {
+            const path = try std.fmt.bufPrint(&path_buf, "many/d{d}/f{d}.zig", .{ d, f });
+            try explorer.indexFile(path, "pub fn x() void {}\n");
+        }
+    }
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    // Default budget (700): 60 files + 4 dirs = 64 entries, well under —
+    // must stay uncollapsed.
+    {
+        const args_json =
+            \\{}
+        ;
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_tree, &parsed.value.object, &out, &store, &explorer, &agents);
+        try testing.expect(std.mem.indexOf(u8, out.items, "collapsed") == null);
+    }
+
+    // max_entries=10 forces collapsing even on this small corpus.
+    {
+        const args_json =
+            \\{"max_entries":10}
+        ;
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_tree, &parsed.value.object, &out, &store, &explorer, &agents);
+        try testing.expect(std.mem.indexOf(u8, out.items, "collapsed") != null);
+    }
+
+    // max_entries=0 is rejected the same way outline's max_results is.
+    {
+        const args_json =
+            \\{"max_entries":0}
+        ;
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_tree, &parsed.value.object, &out, &store, &explorer, &agents);
+        try testing.expect(std.mem.indexOf(u8, out.items, "error: max_entries") != null);
+    }
+}

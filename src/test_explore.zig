@@ -3309,3 +3309,94 @@ test "BitLcs gate: fuzzyFindFiles keeps exactly the LCS-floor survivors" {
     try testing.expectEqual(@as(usize, 1), matches.len);
     try testing.expectEqualStrings("111abcdefgh222.txt", matches[0].path);
 }
+
+test "sorted_paths cache: glob reflects file add/remove via search_gen invalidation" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/a.zig", "pub fn a() void {}");
+    try explorer.indexFile("src/b.zig", "pub fn b() void {}");
+    try explorer.indexFile("src/c.zig", "pub fn c() void {}");
+
+    // Prime the sorted_paths cache.
+    {
+        const first = try explorer.globPaths(testing.allocator, "src/*.zig", 100);
+        defer testing.allocator.free(first);
+        try testing.expectEqual(@as(usize, 3), first.len);
+    }
+
+    // A newly added matching file must appear on the very next call — proves
+    // the cache doesn't silently keep serving the pre-add snapshot.
+    try explorer.indexFile("src/d.zig", "pub fn d() void {}");
+    {
+        const after_add = try explorer.globPaths(testing.allocator, "src/*.zig", 100);
+        defer testing.allocator.free(after_add);
+        try testing.expectEqual(@as(usize, 4), after_add.len);
+        var saw_d = false;
+        for (after_add) |p| {
+            if (std.mem.eql(u8, p, "src/d.zig")) saw_d = true;
+        }
+        try testing.expect(saw_d);
+    }
+
+    // A removed file must disappear on the next call.
+    explorer.removeFile("src/b.zig");
+    {
+        const after_remove = try explorer.globPaths(testing.allocator, "src/*.zig", 100);
+        defer testing.allocator.free(after_remove);
+        try testing.expectEqual(@as(usize, 3), after_remove.len);
+        for (after_remove) |p| {
+            try testing.expect(!std.mem.eql(u8, p, "src/b.zig"));
+        }
+    }
+}
+
+test "globPaths: prefix narrowing matches a full-scan reference" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    const paths = [_][]const u8{
+        "auth.zig",
+        "auth_test.zig",
+        "authorize/handler.zig",
+        "src/a.zig",
+        "src/sub/b.zig",
+        "src/sub/deep/c.zig",
+        "tests/main.py",
+        "README.md",
+        "config.yaml",
+        "config.yml",
+    };
+    for (paths) |p| try explorer.indexFile(p, "pub fn x() void {}");
+
+    const patterns = [_][]const u8{
+        "auth*.zig", // non-empty literal prefix
+        "src/**/*.zig", // literal prefix, ** crosses /
+        "**/*.{yaml,yml}", // empty prefix (starts with *)
+        "*.md", // empty prefix, top-level only
+        "nomatch*.zig", // non-empty prefix, zero matches
+    };
+
+    for (patterns) |pattern| {
+        const got = try explorer.globPaths(testing.allocator, pattern, 100);
+        defer testing.allocator.free(got);
+
+        // Hand-rolled full-scan reference, independent of the sorted-list
+        // narrowing under test: check every known path, then sort.
+        var expected: std.ArrayList([]const u8) = .empty;
+        defer expected.deinit(testing.allocator);
+        for (paths) |p| {
+            if (explore.matchGlob(pattern, p)) try expected.append(testing.allocator, p);
+        }
+        std.mem.sort([]const u8, expected.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+
+        try testing.expectEqual(expected.items.len, got.len);
+        for (expected.items, got) |e, g| {
+            try testing.expectEqualStrings(e, g);
+        }
+    }
+}

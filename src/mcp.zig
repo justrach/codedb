@@ -693,7 +693,7 @@ pub const Tool = enum {
 
 pub const tools_list =
     \\{"tools":[
-    \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Large trees collapse their biggest directories into rollup lines by default (see the trailer line for how many). Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"full":{"type":"boolean","description":"Return the complete, uncollapsed tree regardless of size (default: false)"},"max_entries":{"type":"integer","description":"Entry (files+dirs) budget before directories start collapsing into rollup lines (default: 700)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_outline","description":"Replaces reading a whole file with cat/head/tail: symbol outline of one file — functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Results are bounded and paginated for generated or declaration-dense files. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view with bodies elided.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"max_results":{"type":"integer","description":"Symbols per page (default: 200, cap: 10000)"},"offset":{"type":"integer","description":"Symbol offset for the next page (default: 0)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_symbol","description":"Replaces grepping for a definition: PRIMARY tool for locating a definition — reach for this FIRST when you know or can guess a symbol name, instead of codedb_search. Finds symbol definitions across the index — exact name, prefix, glob pattern, fuzzy match, or kind filter. Returns file, line, kind, and score. Pass format=json for structured output.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"prefix":{"type":"string","description":"Prefix match (e.g. parse_)"},"pattern":{"type":"string","description":"Glob pattern on symbol name (e.g. *Manager)"},"kind":{"type":"string","description":"Filter by kind: function, struct, interface, class, method, enum"},"fuzzy":{"type":"boolean","description":"Fuzzy/typo-tolerant match when name is set (default: false)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"max_results":{"type":"integer","description":"Max results (default: 50, cap 200)"},"format":{"type":"string","description":"Set to json for structured JSON output"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 10, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with 'more: offset=N'; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return grouped path + line results without matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
@@ -1549,7 +1549,7 @@ fn dispatch(
     }
 
     switch (tool) {
-        .codedb_tree => handleTree(alloc, out, ctx.explorer),
+        .codedb_tree => handleTree(alloc, args, out, ctx.explorer),
         .codedb_outline => handleOutline(alloc, args, out, ctx.explorer),
         .codedb_symbol => handleSymbol(alloc, args, out, ctx.explorer),
         .codedb_search => handleSearch(alloc, args, out, ctx.explorer),
@@ -1618,8 +1618,28 @@ fn toolUsesTrigram(tool: Tool) bool {
 
 // ── Tool handlers ───────────────────────────────────────────────────────────
 
-fn handleTree(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer) void {
-    explorer.renderTree(alloc, out, false) catch {
+/// Conservative default entry (files+dirs emitted) budget for codedb_tree —
+/// small/typical repos never come close, so their output is byte-identical
+/// to the unbounded renderTree. Above it, renderTreeBounded collapses the
+/// largest directories into rollup lines (see explore.zig).
+const default_tree_entry_budget: usize = 700;
+
+fn handleTree(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    if (getInt(args, "max_entries")) |n| {
+        if (n <= 0) {
+            const w = cio.listWriter(out, alloc);
+            w.print("error: max_entries ({d}) must be >= 1", .{n}) catch {};
+            return;
+        }
+    }
+    const max_entries: usize = if (getBool(args, "full"))
+        std.math.maxInt(usize)
+    else if (getInt(args, "max_entries")) |n|
+        @intCast(@min(n, 1_000_000))
+    else
+        default_tree_entry_budget;
+
+    explorer.renderTreeBounded(alloc, out, false, max_entries) catch {
         out.appendSlice(alloc, "error: failed to get tree") catch {};
     };
 }
