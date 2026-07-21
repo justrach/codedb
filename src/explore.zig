@@ -2744,6 +2744,18 @@ pub const Explorer = struct {
         }
     }
 
+    /// True when path's skip_trigram bloom proves none of the regex's
+    /// required trigrams (bits) can appear in the file — see
+    /// regexRequiredBloomBits for how bits are derived and the soundness
+    /// argument. Paths absent from skip_trigram_files, or with a null
+    /// (unset) bloom, are never rejected; they fall through to a real scan.
+    fn regexBloomRejects(self: *Explorer, path: []const u8, bits: ?[]const u16) bool {
+        const qb = bits orelse return false;
+        const maybe_bloom = self.skip_trigram_files.get(path) orelse return false;
+        const bloom = maybe_bloom orelse return false;
+        return !skipBloomMayMatch(bloom, qb);
+    }
+
     /// Swap in a trigram index (disk mmap load / post-scan build) and
     /// reconcile the skip set with what it covers. Every external
     /// trigram_index replacement must go through here — a bare swap leaves
@@ -6456,18 +6468,17 @@ pub const Explorer = struct {
 
         // Surface invalid patterns as error.InvalidRegex instead of silently
         // returning zero results (#528 item 10). Compile once up front with the
-        // real matcher; the per-file scans below reuse the same engine.
-        {
-            var probe = nanoregex.Regex.compile(allocator, pattern) catch return error.InvalidRegex;
-            probe.deinit();
-        }
+        // real matcher; every per-file scan below reuses this same compiled
+        // regex instead of recompiling the pattern per file.
+        var rx = nanoregex.Regex.compile(allocator, pattern) catch return error.InvalidRegex;
+        defer rx.deinit();
 
         var query = idx.decomposeRegex(pattern, self.allocator) catch {
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try searchInContentRegex(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
             return result_list.toOwnedSlice(allocator);
@@ -6482,27 +6493,42 @@ pub const Explorer = struct {
             for (candidate_paths.?) |path| {
                 const ref = self.readContentForSearch(path, allocator) orelse continue;
                 defer ref.deinit();
-                try searchInContentRegex(path, ref.data, pattern, allocator, max_results, &result_list);
+                try searchInContentRegex(path, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
         } else {
+            // Folded-trigram prefilter over decomposeRegex's required (AND)
+            // trigrams, same fold+hash as skip_trigram_files' per-file
+            // blooms (tier 3; idx.normalizeChar folds identically to
+            // skipBloomFold). A bit's absence proves NO casing of that
+            // required fragment appears in the file, so the regex cannot
+            // match — sound whether the compiled pattern is case-sensitive
+            // or case-insensitive. Empty q_bits (alternation, short
+            // patterns) disables the prefilter; every file is scanned as
+            // before.
+            var q_bits_buf: [64]u16 = undefined;
+            const q_bits = regexRequiredBloomBits(&query, &q_bits_buf);
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
+                if (self.regexBloomRejects(key_ptr.*, q_bits)) continue;
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try searchInContentRegex(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
             return result_list.toOwnedSlice(allocator);
         }
 
         if (result_list.items.len < max_results) {
+            var q_bits_buf: [64]u16 = undefined;
+            const q_bits = regexRequiredBloomBits(&query, &q_bits_buf);
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
                 if (self.trigram_index.containsFile(key_ptr.*)) continue;
+                if (self.regexBloomRejects(key_ptr.*, q_bits)) continue;
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try searchInContentRegex(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
         }
@@ -8338,18 +8364,17 @@ pub const Explorer = struct {
 
         // Surface invalid patterns as error.InvalidRegex instead of silently
         // returning zero results (#528 item 10). Compile once up front with the
-        // real matcher; the per-file scans below reuse the same engine.
-        {
-            var probe = nanoregex.Regex.compile(allocator, pattern) catch return error.InvalidRegex;
-            probe.deinit();
-        }
+        // real matcher; every per-file scan below reuses this same compiled
+        // regex instead of recompiling the pattern per file.
+        var rx = nanoregex.Regex.compile(allocator, pattern) catch return error.InvalidRegex;
+        defer rx.deinit();
 
         var query = idx.decomposeRegex(pattern, self.allocator) catch {
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
             return result_list.toOwnedSlice(allocator);
@@ -8364,27 +8389,37 @@ pub const Explorer = struct {
             for (candidate_paths.?) |path| {
                 const ref = self.readContentForSearch(path, allocator) orelse continue;
                 defer ref.deinit();
-                try self.searchInContentRegexWithScope(path, ref.data, pattern, allocator, max_results, &result_list);
+                try self.searchInContentRegexWithScope(path, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
         } else {
+            // Folded-trigram prefilter — see regexRequiredBloomBits and the
+            // soundness comment in searchContentRegex. Empty q_bits
+            // (alternation, short patterns) disables it; every file is
+            // scanned exactly as before.
+            var q_bits_buf: [64]u16 = undefined;
+            const q_bits = regexRequiredBloomBits(&query, &q_bits_buf);
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
+                if (self.regexBloomRejects(key_ptr.*, q_bits)) continue;
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
             return result_list.toOwnedSlice(allocator);
         }
 
         if (result_list.items.len < max_results) {
+            var q_bits_buf: [64]u16 = undefined;
+            const q_bits = regexRequiredBloomBits(&query, &q_bits_buf);
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
                 if (self.trigram_index.containsFile(key_ptr.*)) continue;
+                if (self.regexBloomRejects(key_ptr.*, q_bits)) continue;
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
         }
@@ -8421,9 +8456,7 @@ pub const Explorer = struct {
         }
     }
 
-    fn searchInContentRegexWithScope(self: *Explorer, path: []const u8, content: []const u8, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(ScopedSearchResult)) !void {
-        var rx = nanoregex.Regex.compile(allocator, pattern) catch return;
-        defer rx.deinit();
+    fn searchInContentRegexWithScope(self: *Explorer, path: []const u8, content: []const u8, rx: *nanoregex.Regex, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(ScopedSearchResult)) !void {
         var line_num: u32 = 0;
         var lines = std.mem.splitScalar(u8, content, '\n');
         while (lines.next()) |line| {
@@ -8788,6 +8821,25 @@ fn skipBloomMayMatch(bloom: *const SkipBloom, bits: []const u16) bool {
     return true;
 }
 
+/// Folded-trigram bloom bits for a regex's required (AND) trigrams.
+/// idx.decomposeRegex already case-folds each byte via idx.normalizeChar —
+/// the same fold skipBloomFold applies to file content — so the packed
+/// Trigram bytes need no re-folding here. Null means there is no usable
+/// required fragment (short pattern or top-level alternation); callers
+/// must then skip the prefilter and scan unconditionally.
+fn regexRequiredBloomBits(query: *const idx.RegexQuery, buf: []u16) ?[]const u16 {
+    if (query.and_trigrams.len == 0) return null;
+    const n = @min(query.and_trigrams.len, buf.len);
+    for (query.and_trigrams[0..n], 0..) |tri, i| {
+        buf[i] = skipBloomBit(
+            @intCast((tri >> 16) & 0xff),
+            @intCast((tri >> 8) & 0xff),
+            @intCast(tri & 0xff),
+        );
+    }
+    return buf[0..n];
+}
+
 fn computeSkipBloom(allocator: std.mem.Allocator, content: []const u8) ?*SkipBloom {
     // Cap raised #635-adjacent 1<<21 -> 1<<23 (2MB -> 8MB): the index-time
     // cost is one linear pass already dominated by parsing, and a null
@@ -8809,9 +8861,7 @@ fn computeSkipBloom(allocator: std.mem.Allocator, content: []const u8) ?*SkipBlo
     return bloom;
 }
 
-fn searchInContentRegex(path: []const u8, content: []const u8, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(SearchResult)) !void {
-    var rx = nanoregex.Regex.compile(allocator, pattern) catch return;
-    defer rx.deinit();
+fn searchInContentRegex(path: []const u8, content: []const u8, rx: *nanoregex.Regex, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(SearchResult)) !void {
     var line_num: u32 = 0;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {

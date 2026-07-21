@@ -2873,6 +2873,93 @@ test "tier3: skip-file bloom prunes content scans without losing recall" {
     try testing.expectEqual(@as(u64, 2), explorer.search_tier3_scan_count);
 }
 
+test "regex bloom prefilter: same results as full scan, no false-skip on case" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // Bench-state corpus: every file lands in skip_trigram_files with a
+    // bloom and the real trigram index is never built (no rebuildTrigrams
+    // call) -- mirrors watcher.initialScan's fast path, which is what the
+    // no-candidates fallback loop in searchContentRegex must scan.
+    try explorer.indexFileSkipTrigram("hit1.zig", "pub fn edgeHandlerFoo_39_72() void {}\n");
+    try explorer.indexFileSkipTrigram("hit2.zig", "pub fn edgeHandlerBarBaz_39_70() void {}\n");
+    try explorer.indexFileSkipTrigram("miss_no_literal.zig", "pub fn unrelatedThing() void { return 0; }\n");
+    try explorer.indexFileSkipTrigram("miss_wrong_suffix.zig", "pub fn edgeHandlerQuxQuux_40_15() void {}\n");
+    // Case-sensitive pattern requires edgeHandler verbatim; this file only
+    // has EDGEHANDLER (uppercase). The bloom folds case like tier 3's does,
+    // so it must not be pruned on that basis alone -- it still needs a real
+    // scan to correctly come back empty, proving the fold never hides a
+    // real match.
+    try explorer.indexFileSkipTrigram("wrong_case.zig", "pub fn EDGEHANDLERFooBar_39_73() void {}\n");
+
+    const results = try explorer.searchContentRegex("edgeHandler[A-Za-z]+_39_7[0-4]", testing.allocator, 20);
+    defer freeSearchResults(results);
+
+    try testing.expectEqual(@as(usize, 2), results.len);
+    var found_hit1 = false;
+    var found_hit2 = false;
+    for (results) |r| {
+        try testing.expect(!std.mem.eql(u8, r.path, "miss_no_literal.zig"));
+        try testing.expect(!std.mem.eql(u8, r.path, "miss_wrong_suffix.zig"));
+        try testing.expect(!std.mem.eql(u8, r.path, "wrong_case.zig"));
+        if (std.mem.eql(u8, r.path, "hit1.zig")) found_hit1 = true;
+        if (std.mem.eql(u8, r.path, "hit2.zig")) found_hit2 = true;
+    }
+    try testing.expect(found_hit1);
+    try testing.expect(found_hit2);
+}
+
+test "regex bloom prefilter: invalid pattern still returns error.InvalidRegex" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFileSkipTrigram("only.zig", "const x = 42;\n");
+    try testing.expectError(error.InvalidRegex, explorer.searchContentRegex("[", testing.allocator, 50));
+}
+
+test "regex bloom prefilter: alternation pattern disables prefilter and still finds all branches" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFileSkipTrigram("left.zig", "const marker = zzzfooalpha;\n");
+    try explorer.indexFileSkipTrigram("right.zig", "const marker = zzzbarbeta;\n");
+    try explorer.indexFileSkipTrigram("neither.zig", "const marker = zzzquuxgamma;\n");
+
+    const results = try explorer.searchContentRegex("zzzfooalpha|zzzbarbeta", testing.allocator, 20);
+    defer freeSearchResults(results);
+
+    try testing.expectEqual(@as(usize, 2), results.len);
+    var found_left = false;
+    var found_right = false;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.path, "left.zig")) found_left = true;
+        if (std.mem.eql(u8, r.path, "right.zig")) found_right = true;
+    }
+    try testing.expect(found_left);
+    try testing.expect(found_right);
+}
+
+test "regex bloom prefilter: scoped search results unchanged (searchContentRegexWithScope)" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    try explorer.indexFileSkipTrigram("scoped_hit.zig", "fn canonicalHandler() void {\n    _ = edgeHandlerFoo_39_72;\n}\n");
+    try explorer.indexFileSkipTrigram("scoped_miss.zig", "fn other() void { _ = 1; }\n");
+
+    const results = try explorer.searchContentRegexWithScope("edgeHandler[A-Za-z]+_39_7[0-4]", testing.allocator, 20);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.path);
+            testing.allocator.free(r.line_text);
+            if (r.scope_name) |n| testing.allocator.free(n);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings("scoped_hit.zig", results[0].path);
+    try testing.expect(results[0].scope_name != null);
+    try testing.expectEqualStrings("canonicalHandler", results[0].scope_name.?);
+}
+
 test "skip-trigram: adoptTrigramBase keeps freshness-reindexed files as a masking overlay" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
