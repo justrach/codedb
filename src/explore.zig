@@ -1828,6 +1828,20 @@ pub const Explorer = struct {
     /// Paths indexed with skip_trigram=true (past 15k cap or excluded).
     /// Used to restrict the searchContent fallback to only these files.
     skip_trigram_files: std.StringHashMap(?*SkipBloom),
+    /// Union of every skip_trigram_files entry's folded-trigram bloom bits
+    /// (see putSkipTrigram / unionInSkipBloom). A query trigram bit absent
+    /// from the union is absent from every skip-set file's content, so
+    /// searchContentUncached can skip tiers 3 and 5 for that query without
+    /// touching skip_trigram_files at all. Null until the first skip-set
+    /// file is indexed. Stale ORed-in bits left by a later removal are
+    /// safe: they can only cause a spurious may-match (falling through to
+    /// the existing per-file checks), never a false negative.
+    skip_bloom_union: ?*SkipBloom = null,
+    /// Count of skip_trigram_files entries whose bloom is null (oversized
+    /// content, snapshot-parked entries, or a failed union allocation).
+    /// While nonzero, skip_bloom_union cannot prove those files don't
+    /// match, so the tier-3/tier-5 union short-circuit stays disabled.
+    skip_bloom_null_count: usize = 0,
     allocator: std.mem.Allocator,
     word_index_complete: bool = true,
     word_index_can_load_from_disk: bool = false,
@@ -1875,6 +1889,10 @@ pub const Explorer = struct {
     /// Test-only counter: tier 3 content scans actually performed (files
     /// the bloom prefilter did not rule out). Production code never reads it.
     search_tier3_scan_count: u64 = 0,
+    /// Test-only counter: tier 5 content scans actually performed (files
+    /// the skip-file bloom prefilter did not rule out). Mirrors
+    /// search_tier3_scan_count. Production code never reads it.
+    search_tier5_scan_count: u64 = 0,
     last_search_breakdown: SearchBreakdown = .{},
     /// Whole-query result cache for searchContent, validated against
     /// search_gen + the ranking-env fingerprint (see SearchResultCache).
@@ -1990,6 +2008,7 @@ pub const Explorer = struct {
         var skip_blooms = self.skip_trigram_files.valueIterator();
         while (skip_blooms.next()) |v| if (v.*) |b| self.allocator.destroy(b);
         self.skip_trigram_files.deinit();
+        if (self.skip_bloom_union) |u| self.allocator.destroy(u);
         // Freed after outlines (above) since restored outlines borrow into these.
         for (self.outline_section_bufs.items) |b| self.allocator.free(b);
         self.outline_section_bufs.deinit(self.allocator);
@@ -2677,16 +2696,52 @@ pub const Explorer = struct {
 
     fn removeSkipTrigram(self: *Explorer, path: []const u8) void {
         if (self.skip_trigram_files.fetchRemove(path)) |kv| {
-            if (kv.value) |b| self.allocator.destroy(b);
+            if (kv.value) |b| {
+                self.allocator.destroy(b);
+            } else {
+                // Removing the last unknown-content entry can make
+                // skip_bloom_null_count reach 0 again, re-arming the
+                // tier-3/tier-5 union short-circuit. skip_bloom_union
+                // itself is left untouched — see its doc comment.
+                self.skip_bloom_null_count -= 1;
+            }
         }
+    }
+
+    /// OR `bloom`'s bits into skip_bloom_union, allocating it on first use.
+    /// If the allocation fails, this file's bits are absent from the union,
+    /// so it is counted the same as a null bloom (skip_bloom_null_count) —
+    /// that keeps "null count == 0" an accurate precondition for the
+    /// tier-3/tier-5 union short-circuit instead of silently going unsound.
+    fn unionInSkipBloom(self: *Explorer, bloom: *const SkipBloom) void {
+        if (self.skip_bloom_union == null) {
+            const nb = self.allocator.create(SkipBloom) catch {
+                self.skip_bloom_null_count += 1;
+                return;
+            };
+            @memset(nb, 0);
+            self.skip_bloom_union = nb;
+        }
+        const u = self.skip_bloom_union.?;
+        for (0..u.len) |i| u[i] |= bloom[i];
     }
 
     fn putSkipTrigram(self: *Explorer, path: []const u8, content: []const u8) !void {
         const gop = try self.skip_trigram_files.getOrPut(path);
         if (gop.found_existing) {
-            if (gop.value_ptr.*) |b| self.allocator.destroy(b);
+            if (gop.value_ptr.*) |b| {
+                self.allocator.destroy(b);
+            } else {
+                self.skip_bloom_null_count -= 1;
+            }
         }
-        gop.value_ptr.* = computeSkipBloom(self.allocator, content);
+        const bloom = computeSkipBloom(self.allocator, content);
+        gop.value_ptr.* = bloom;
+        if (bloom) |b| {
+            self.unionInSkipBloom(b);
+        } else {
+            self.skip_bloom_null_count += 1;
+        }
     }
 
     /// Swap in a trigram index (disk mmap load / post-scan build) and
@@ -4764,24 +4819,38 @@ pub const Explorer = struct {
         breakdown.tier2_ns = cio.nanoTimestamp() - t2_start;
 
         const t3_start = cio.nanoTimestamp();
-        if (result_list.items.len < max_results) {
-            // Folded-trigram prefilter: any query trigram missing from a
-            // file's bloom proves the query can't match it — skip the read
-            // and scan. Null blooms (snapshot-parked entries, oversized
-            // files) always scan.
-            var q_bits_buf: [64]u16 = undefined;
-            const q_bits: ?[]const u16 = blk: {
-                if (query.len < 3) break :blk null;
-                const nq = @min(query.len - 2, q_bits_buf.len);
-                for (0..nq) |qi| {
-                    q_bits_buf[qi] = skipBloomBit(
-                        skipBloomFold(query[qi]),
-                        skipBloomFold(query[qi + 1]),
-                        skipBloomFold(query[qi + 2]),
-                    );
-                }
-                break :blk q_bits_buf[0..nq];
-            };
+        // Folded-trigram prefilter: any query trigram missing from a file's
+        // bloom proves the query can't match it — skip the read and scan.
+        // Null blooms (snapshot-parked entries, oversized files) always
+        // scan. Hoisted above the tier-3-only block so tier 5 (below) can
+        // reuse the same bits instead of recomputing them per file.
+        var q_bits_buf: [64]u16 = undefined;
+        const q_bits: ?[]const u16 = blk: {
+            if (query.len < 3) break :blk null;
+            const nq = @min(query.len - 2, q_bits_buf.len);
+            for (0..nq) |qi| {
+                q_bits_buf[qi] = skipBloomBit(
+                    skipBloomFold(query[qi]),
+                    skipBloomFold(query[qi + 1]),
+                    skipBloomFold(query[qi + 2]),
+                );
+            }
+            break :blk q_bits_buf[0..nq];
+        };
+        // skip_bloom_union is the OR of every skip_trigram_files bloom. When
+        // every entry has contributed a real bloom (skip_bloom_null_count ==
+        // 0) and the union itself is missing one of the query's trigram
+        // bits, no skip-set file can match — tier 3 AND tier 5 (which only
+        // covers skip-set / outline-only files once earlier tiers came up
+        // empty) can both be skipped without touching a single file. Stale
+        // bits left behind by a removal only widen the union, so this can
+        // under-reject but never produce a false negative.
+        const union_rules_out = if (q_bits) |qb| blk: {
+            if (self.skip_bloom_null_count != 0) break :blk false;
+            const u = self.skip_bloom_union orelse break :blk false;
+            break :blk !skipBloomMayMatch(u, qb);
+        } else false;
+        if (result_list.items.len < max_results and !union_rules_out) {
             var skip_iter = self.skip_trigram_files.iterator();
             while (skip_iter.next()) |entry| {
                 if (searched.contains(entry.key_ptr.*)) continue;
@@ -4824,13 +4893,26 @@ pub const Explorer = struct {
             (query.len >= 3)
         else
             false;
-        if (result_list.items.len == 0 and !trigram_ruled_out) {
+        if (result_list.items.len == 0 and !trigram_ruled_out and !union_rules_out) {
             self.search_tier5_count += 1;
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
                 if (searched.contains(key_ptr.*)) continue;
+                // Same folded-trigram prefilter as tier 3, keyed by the
+                // skip_trigram_files entry for this path (if any). A file
+                // with no entry (trigram-covered) or a null bloom (oversized
+                // / snapshot-parked) still scans; only a real bloom that
+                // rejects q_bits lets this file skip the read entirely.
+                if (q_bits) |qb| {
+                    if (self.skip_trigram_files.get(key_ptr.*)) |maybe_bloom| {
+                        if (maybe_bloom) |bloom| {
+                            if (!skipBloomMayMatch(bloom, qb)) continue;
+                        }
+                    }
+                }
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
+                self.search_tier5_scan_count += 1;
                 try searchInContent(key_ptr.*, ref.data, query, allocator, max_results, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
@@ -8707,7 +8789,12 @@ fn skipBloomMayMatch(bloom: *const SkipBloom, bits: []const u16) bool {
 }
 
 fn computeSkipBloom(allocator: std.mem.Allocator, content: []const u8) ?*SkipBloom {
-    if (content.len < 3 or content.len > (1 << 21)) return null;
+    // Cap raised #635-adjacent 1<<21 -> 1<<23 (2MB -> 8MB): the index-time
+    // cost is one linear pass already dominated by parsing, and a null
+    // bloom here forces every tier-3/tier-5 query to always-scan the file
+    // (see the callers' doc comments), which is exactly what this bloom
+    // exists to avoid for large-but-not-huge files.
+    if (content.len < 3 or content.len > (1 << 23)) return null;
     const bloom = allocator.create(SkipBloom) catch return null;
     @memset(bloom, 0);
     var f0 = skipBloomFold(content[0]);

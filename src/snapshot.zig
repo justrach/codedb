@@ -1105,7 +1105,13 @@ fn insertRestoredFile(
     // this the file falls out of every search tier the moment the trigram index
     // is non-empty (Tier 5's full scan is then ruled out). Mirrors the
     // outline-only branch of commitParsedFileOwnedOutline. See #507 / #537.
+    // Bypasses putSkipTrigram (no content-derived bloom is computed on this
+    // fast-load path), so its null-bloom bookkeeping is mirrored by hand:
+    // skip_bloom_null_count must count this entry or the tier-3/tier-5
+    // union short-circuit in searchContentUncached could wrongly treat a
+    // restored file's content as covered by the union.
     try explorer.skip_trigram_files.put(path, null);
+    explorer.skip_bloom_null_count += 1;
 }
 
 // Below this many files the per-file freshness stats run on the loading thread:

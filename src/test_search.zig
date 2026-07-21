@@ -3014,6 +3014,70 @@ test "perf/a2: parallel buildTrigramsFromCache is result-identical to serial reb
     }
 }
 
+test "skip-trigram: union bloom rules out a miss without any tier-3/tier-5 file scan" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    // No indexFile / rebuildTrigrams call anywhere: trigram_index stays
+    // empty and every file lands in skip_trigram_files, mirroring a
+    // snapshot fast-load before the background trigram rebuild runs.
+    try explorer.indexFileSkipTrigram("src/one.zig", "const a = 1; // hasfoxtrot\n");
+    try explorer.indexFileSkipTrigram("src/two.zig", "const b = 2; // hasgolfecho\n");
+    try explorer.indexFileSkipTrigram("src/three.zig", "const c = 3; // hasindiakilo\n");
+
+    const r = try explorer.searchContent("zzqqxxyynotfound", testing.allocator, 10);
+    defer freeSearchResults(r);
+    try testing.expectEqual(@as(usize, 0), r.len);
+    try testing.expectEqual(@as(u64, 0), explorer.search_tier5_scan_count);
+    try testing.expectEqual(@as(u64, 0), explorer.search_tier3_scan_count);
+}
+
+test "skip-trigram: case-folded query still finds a present term with no trigram index" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFileSkipTrigram("src/hot.zig", "const h = 1; // hotword\n");
+
+    // Uppercase query against lowercase content: guards against a wrong
+    // bloom fold (skipBloomFold / skipBloomMayMatch) making the union or
+    // the per-file bloom wrongly reject a real match.
+    const r = try explorer.searchContent("HOTWORD", testing.allocator, 10);
+    defer freeSearchResults(r);
+    try testing.expectEqual(@as(usize, 1), r.len);
+    try testing.expectEqualStrings("src/hot.zig", r[0].path);
+}
+
+test "skip-trigram: union bloom picks up a file indexed after the union already exists" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    // File A creates skip_bloom_union first; file B's unique term must
+    // still be ORed in when it is indexed afterward, not just captured at
+    // first-use.
+    try explorer.indexFileSkipTrigram("src/a.zig", "const a = 1; // plainfilea\n");
+    try explorer.indexFileSkipTrigram("src/b.zig", "const b = 2; // uniquetermlima\n");
+
+    const r = try explorer.searchContent("uniquetermlima", testing.allocator, 10);
+    defer freeSearchResults(r);
+    try testing.expectEqual(@as(usize, 1), r.len);
+    try testing.expectEqualStrings("src/b.zig", r[0].path);
+}
+
+test "skip-trigram: removing a file leaves stale union bits safe (no crash, no false hit)" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFileSkipTrigram("src/keep.zig", "const k = 1; // keeptermmike\n");
+    try explorer.indexFileSkipTrigram("src/gone.zig", "const g = 2; // goneturmnovem\n");
+
+    explorer.removeFile("src/gone.zig");
+    try testing.expectEqual(@as(usize, 1), explorer.skipTrigramFileCount());
+
+    // goneturmnovem's trigram bits are still ORed into skip_bloom_union
+    // (removal never clears union bits — only per-file blooms are freed),
+    // so this must fall through to the per-file checks rather than being
+    // wrongly served (or crashed) by the stale union alone.
+    const r = try explorer.searchContent("goneturmnovem", testing.allocator, 10);
+    defer freeSearchResults(r);
+    try testing.expectEqual(@as(usize, 0), r.len);
+}
+
 // ── warmup: queries.log replay ───────────────────────────────────────────────
 
 const warmup = @import("warmup.zig");
