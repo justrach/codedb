@@ -4030,16 +4030,41 @@ pub const Explorer = struct {
                 const FuzzCand = struct {
                     name: []const u8,
                     locs: []const SymbolLocation,
+                    lcs: usize,
                 };
                 var fuzz_cands: std.ArrayList(FuzzCand) = .empty;
                 defer fuzz_cands.deinit(allocator);
+                const bit_lcs = BitLcs.init(q);
                 var sym_iter = self.symbol_index.iterator();
                 while (sym_iter.next()) |entry| {
                     const sym_name = entry.key_ptr.*;
                     if (sym_name.len == 0 or sym_name.len > FUZZY_MAX_PATH) continue;
-                    if (fuzzyPresenceReject(q, sym_name)) continue;
-                    try fuzz_cands.append(allocator, .{ .name = sym_name, .locs = entry.value_ptr.items });
+                    // Exact LCS is a strictly tighter gate than fuzzyPresenceReject
+                    // (presence is only an upper bound on it — see fuzzyPresenceReject's
+                    // comment) and fuzzyFinalize rejects on this same threshold, so
+                    // gating on it here drops nothing new — it just precomputes the
+                    // LCS for survivors instead of recomputing it in fuzzyFinalize.
+                    const lcs_len = bit_lcs.lcs(sym_name);
+                    if (lcs_len * 5 < q.len * 3) continue;
+                    try fuzz_cands.append(allocator, .{ .name = sym_name, .locs = entry.value_ptr.items, .lcs = lcs_len });
                 }
+                // Cheap probe for appendOne's accept/reject decision (score vs. the
+                // current worst-of-top-K, plus dedup) — neither depends on detail, so
+                // candidates that can't make the top-K skip the O(symbols-in-file)
+                // detail scan below entirely instead of paying for it unconditionally.
+                const wouldAccept = struct {
+                    fn call(list_ptr: *std.ArrayList(Candidate), max_results: usize, path: []const u8, sym: Symbol, score: f32) bool {
+                        if (max_results == 0) return false;
+                        if (Dedup.contains(list_ptr.items, path, sym.line_start)) return false;
+                        const candidate: Candidate = .{ .path = path, .symbol = sym, .score = score };
+                        if (list_ptr.items.len >= max_results and
+                            !SortCtx.candidateBefore(candidate, list_ptr.items[list_ptr.items.len - 1]))
+                        {
+                            return false;
+                        }
+                        return true;
+                    }
+                }.call;
                 var off: usize = 0;
                 while (off < fuzz_cands.items.len) : (off += FZ_LANES) {
                     const slab = fuzz_cands.items[off..@min(off + FZ_LANES, fuzz_cands.items.len)];
@@ -4049,9 +4074,17 @@ pub const Explorer = struct {
                     var matched: [FZ_LANES]u32 = undefined;
                     fuzzyScoreBatch(q, names[0..slab.len], &best, &matched);
                     for (slab, 0..) |fc, l| {
-                        const score = fuzzyFinalize(q, fc.name, best[l], matched[l]) orelse continue;
+                        const score = fuzzyFinalizeWithLcs(q, fc.name, best[l], matched[l], fc.lcs) orelse continue;
                         for (fc.locs) |loc| {
                             if (spec.kind) |k| if (loc.kind != k) continue;
+                            const probe: Symbol = .{
+                                .name = fc.name,
+                                .kind = loc.kind,
+                                .line_start = loc.line_start,
+                                .line_end = loc.line_end,
+                                .detail = null,
+                            };
+                            if (!wouldAccept(&candidates, spec.max_results, loc.path, probe, score)) continue;
                             var detail: ?[]const u8 = null;
                             if (self.outlines.getPtr(loc.path)) |outline| {
                                 for (outline.symbols.items) |sym| {
@@ -6952,6 +6985,15 @@ pub const Explorer = struct {
             const q = parts.items[0];
             var cands: std.ArrayList([]const u8) = .empty;
             defer cands.deinit(allocator);
+            var cand_lcs: std.ArrayList(usize) = .empty;
+            defer cand_lcs.deinit(allocator);
+            // Best-effort capacity hint: the LCS gate can't prune common-prefix
+            // corpora (e.g. every path sharing a literal substring the query is
+            // already a subsequence of), so up to outlines.count() candidates may
+            // survive — avoid paying for incremental regrowth in that case.
+            cands.ensureTotalCapacity(allocator, self.outlines.count()) catch {};
+            cand_lcs.ensureTotalCapacity(allocator, self.outlines.count()) catch {};
+            const bit_lcs = BitLcs.init(q);
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
                 const path = key_ptr.*;
@@ -6959,17 +7001,26 @@ pub const Explorer = struct {
                     if (!std.mem.endsWith(u8, path, ext)) continue;
                 }
                 if (path.len == 0 or path.len > FUZZY_MAX_PATH) continue;
-                if (fuzzyPresenceReject(q, path)) continue;
+                // Exact LCS is a strictly tighter gate than fuzzyPresenceReject
+                // (presence is only an upper bound on it — see fuzzyPresenceReject's
+                // comment) and fuzzyFinalize rejects on this same threshold, so
+                // gating on it here drops nothing new — it just precomputes the
+                // LCS for survivors instead of recomputing it in fuzzyFinalize.
+                const lcs_len = bit_lcs.lcs(path);
+                if (lcs_len * 5 < q.len * 3) continue;
                 try cands.append(allocator, path);
+                try cand_lcs.append(allocator, lcs_len);
             }
             var off: usize = 0;
             while (off < cands.items.len) : (off += FZ_LANES) {
-                const slab = cands.items[off..@min(off + FZ_LANES, cands.items.len)];
+                const end = @min(off + FZ_LANES, cands.items.len);
+                const slab = cands.items[off..end];
+                const lslab = cand_lcs.items[off..end];
                 var best: [FZ_LANES]f32 = undefined;
                 var matched: [FZ_LANES]u32 = undefined;
                 fuzzyScoreBatch(q, slab, &best, &matched);
                 for (slab, 0..) |path, l| {
-                    if (fuzzyFinalize(q, path, best[l], matched[l])) |s| {
+                    if (fuzzyFinalizeWithLcs(q, path, best[l], matched[l], lslab[l])) |s| {
                         try matches.append(allocator, .{ .path = path, .score = s });
                     }
                 }
@@ -10094,7 +10145,7 @@ fn getFilename(path: []const u8) []const u8 {
 // Length of the longest common subsequence of two strings, case-insensitive.
 // Used as a fuzzy-match floor: how many of the query's characters actually align,
 // in order, somewhere in the path. See issue #518.
-fn lcsLenIgnoreCase(query: []const u8, path: []const u8) usize {
+pub fn lcsLenIgnoreCase(query: []const u8, path: []const u8) usize {
     const MAXB = 512;
     var row: [MAXB + 1]usize = undefined;
     const pn = @min(path.len, MAXB);
@@ -10113,6 +10164,87 @@ fn lcsLenIgnoreCase(query: []const u8, path: []const u8) usize {
         }
     }
     return row[pn];
+}
+
+// Bit-parallel exact LCS (Allison–Dix bit-vector recurrence), case-insensitive.
+// Builds per-query match masks once (one bit per query position, folded via
+// toLowerByte exactly like lcsLenIgnoreCase — non-ASCII bytes pass through
+// unfolded) and then scores each path in O(path.len) word ops instead of
+// lcsLenIgnoreCase's O(query.len * path.len) DP. Returns byte-identical LCS
+// lengths to lcsLenIgnoreCase for every input (see the equivalence test).
+pub const BitLcs = struct {
+    len: usize,
+    wide: bool,
+    // query.len <= 64: single-word masks (the common case).
+    mask64: [256]u64 = undefined,
+    // query.len in 65..=FUZZY_MAX_QUERY: masks need a second word; u128 gives
+    // that for free (native add/sub carry across the pair) without hand-rolled
+    // multi-word carry propagation.
+    mask128: [256]u128 = undefined,
+
+    pub fn init(query: []const u8) BitLcs {
+        std.debug.assert(query.len <= FUZZY_MAX_QUERY);
+        var self: BitLcs = .{ .len = query.len, .wide = query.len > 64 };
+        if (self.wide) {
+            @memset(&self.mask128, 0);
+            for (query, 0..) |c, i| {
+                const shift: u7 = @intCast(i);
+                self.mask128[toLowerByte(c)] |= @as(u128, 1) << shift;
+            }
+        } else {
+            @memset(&self.mask64, 0);
+            for (query, 0..) |c, i| {
+                const shift: u6 = @intCast(i);
+                self.mask64[toLowerByte(c)] |= @as(u64, 1) << shift;
+            }
+        }
+        return self;
+    }
+
+    // LCS length of the query this was built from vs `path` — identical result
+    // to lcsLenIgnoreCase(query, path) for every input, including the same
+    // FUZZY_MAX_PATH truncation.
+    pub fn lcs(self: *const BitLcs, path: []const u8) usize {
+        if (self.len == 0) return 0;
+        const pn = @min(path.len, FUZZY_MAX_PATH);
+        if (self.wide) {
+            // self.len == 128 fills every bit of the u128, and casting 128 to
+            // the u7 shift-amount type would itself overflow (u7 max is 127)
+            // before the shift ever runs — the all-ones case is special-cased
+            // separately so that @intCast only ever sees 65..127.
+            const all_ones: u128 = if (self.len == 128) ~@as(u128, 0) else blk: {
+                const shift: u7 = @intCast(self.len);
+                break :blk (@as(u128, 1) << shift) - 1;
+            };
+            var v: u128 = all_ones;
+            for (path[0..pn]) |c| {
+                const u = v & self.mask128[toLowerByte(c)];
+                v = ((v +% u) | (v -% u)) & all_ones;
+            }
+            return self.len - @as(usize, @popCount(v));
+        } else {
+            // Same overflow hazard at the narrow boundary: self.len == 64
+            // doesn't fit in the u6 shift-amount type (max 63).
+            const all_ones: u64 = if (self.len == 64) ~@as(u64, 0) else blk: {
+                const shift: u6 = @intCast(self.len);
+                break :blk (@as(u64, 1) << shift) - 1;
+            };
+            var v: u64 = all_ones;
+            for (path[0..pn]) |c| {
+                const u = v & self.mask64[toLowerByte(c)];
+                v = ((v +% u) | (v -% u)) & all_ones;
+            }
+            return self.len - @as(usize, @popCount(v));
+        }
+    }
+};
+
+// One-shot bit-parallel LCS for callers that don't reuse masks across many
+// candidates (tests, ad-hoc calls). Hot paths should build a BitLcs once per
+// query and call .lcs(path) per candidate instead — see searchSymbols/fuzzyFindFiles.
+pub fn bitLcsLen(query: []const u8, path: []const u8) usize {
+    const bl = BitLcs.init(query);
+    return bl.lcs(path);
 }
 
 // Score `path` against every space-separated query part (all must match, scores
@@ -10244,8 +10376,16 @@ fn fuzzyDP(query: []const u8, path: []const u8) FuzzyDPResult {
 }
 
 // Floor + issue-#518 LCS gate + special bonuses + length normalization, shared by
-// the scalar and SIMD scorers. Returns null if the path doesn't qualify.
+// the scalar and SIMD scorers. Returns null if the path doesn't qualify. Computes
+// the LCS itself; callers that already have it (the bit-parallel gate below)
+// should call fuzzyFinalizeWithLcs instead to avoid recomputing.
 pub fn fuzzyFinalize(query: []const u8, path: []const u8, best_in: f32, matched_chars: usize) ?f32 {
+    return fuzzyFinalizeWithLcs(query, path, best_in, matched_chars, lcsLenIgnoreCase(query, path));
+}
+
+// Same as fuzzyFinalize but takes a precomputed LCS length (e.g. from the
+// bit-parallel BitLcs gate) instead of recomputing it with the scalar DP.
+pub fn fuzzyFinalizeWithLcs(query: []const u8, path: []const u8, best_in: f32, matched_chars: usize, lcs_len: usize) ?f32 {
     var best_score = best_in;
     // Require at least 60% of query chars to contribute to score
     if (best_score <= 0 or matched_chars < (query.len + 1) / 2) return null;
@@ -10253,7 +10393,7 @@ pub fn fuzzyFinalize(query: []const u8, path: []const u8, best_in: f32, matched_
     const min_threshold = @as(f32, @floatFromInt(query.len)) * FZ_MATCH * 0.3;
     if (best_score < min_threshold) return null;
     // Issue #518: require a real >=60% in-order subsequence, not stray local hits.
-    if (lcsLenIgnoreCase(query, path) * 5 < query.len * 3) return null;
+    if (lcs_len * 5 < query.len * 3) return null;
     // Special entry point bonus (like fff: main.go, index.ts, lib.rs rank higher)
     const fname = getFilename(path);
     if (isSpecialEntryPoint(fname)) best_score += best_score * 0.05;

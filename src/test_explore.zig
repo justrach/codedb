@@ -3201,3 +3201,111 @@ test "explorer: renderCachedRead deep ranged read matches the scanning ground tr
     defer testing.allocator.free(expected2);
     try testing.expectEqualStrings(expected2, body2);
 }
+
+fn randTestByte(rand: std.Random) u8 {
+    return switch (rand.intRangeAtMost(u8, 0, 9)) {
+        0, 1, 2, 3 => 'a' + rand.intRangeAtMost(u8, 0, 25),
+        4, 5 => 'A' + rand.intRangeAtMost(u8, 0, 25),
+        6 => '0' + rand.intRangeAtMost(u8, 0, 9),
+        7 => '_',
+        else => 0x80 + rand.intRangeAtMost(u8, 0, 0x7F),
+    };
+}
+
+test "BitLcs: bit-parallel LCS matches scalar lcsLenIgnoreCase exactly" {
+    const Case = struct { q: []const u8, p: []const u8 };
+    const cases = [_]Case{
+        .{ .q = "", .p = "" },
+        .{ .q = "", .p = "abc" },
+        .{ .q = "a", .p = "" },
+        .{ .q = "a", .p = "a" },
+        .{ .q = "aaaa", .p = "aa" },
+        .{ .q = "aa", .p = "aaaa" },
+        .{ .q = "AbCdEf", .p = "abcdef" },
+        .{ .q = "ABCDEF", .p = "abcdef" },
+        .{ .q = "abcdef", .p = "ABCDEF" },
+        .{ .q = "xyz", .p = "abcdef" },
+        .{ .q = "abcdef", .p = "fedcba" },
+        .{ .q = "qwerty", .p = "12345" },
+        .{ .q = "edgeHandlerAlphaBata_20_50", .p = "many/d20/edge_file_20_50.zig" },
+    };
+    for (cases) |c| {
+        try testing.expectEqual(explore.lcsLenIgnoreCase(c.q, c.p), explore.bitLcsLen(c.q, c.p));
+    }
+
+    // Query-length boundaries around the 64-bit word split (63/64/65) and the
+    // FUZZY_MAX_QUERY ceiling (128), against both a full 512-byte path and a
+    // short one.
+    var pbuf: [512]u8 = undefined;
+    for (0..pbuf.len) |i| pbuf[i] = @intCast('a' + ((i * 7 + 3) % 26));
+    var qbuf: [128]u8 = undefined;
+    for ([_]usize{ 1, 2, 30, 63, 64, 65, 100, 127, 128 }) |qlen| {
+        for (0..qlen) |i| qbuf[i] = @intCast('a' + (i % 26));
+        const q = qbuf[0..qlen];
+        try testing.expectEqual(explore.lcsLenIgnoreCase(q, &pbuf), explore.bitLcsLen(q, &pbuf));
+        try testing.expectEqual(explore.lcsLenIgnoreCase(q, pbuf[0..30]), explore.bitLcsLen(q, pbuf[0..30]));
+    }
+
+    // Non-ASCII bytes (0x80+) pass through unfolded on both sides.
+    const hi_q = [_]u8{ 0x80, 0x81, 0xFF, 'a', 0x80 };
+    const hi_p = [_]u8{ 'z', 0x80, 'y', 0xFF, 0x81, 'x', 0x80 };
+    try testing.expectEqual(explore.lcsLenIgnoreCase(&hi_q, &hi_p), explore.bitLcsLen(&hi_q, &hi_p));
+
+    // Randomized fuzz: mixed-case letters, digits, underscore, and occasional
+    // high bytes, over varied lengths spanning both the narrow (<=64) and wide
+    // (>64) BitLcs paths.
+    var prng = std.Random.DefaultPrng.init(0xC0FFEE);
+    const rand = prng.random();
+    var qbuf2: [128]u8 = undefined;
+    var pbuf2: [512]u8 = undefined;
+    for (0..500) |_| {
+        const qlen = rand.intRangeAtMost(usize, 0, 128);
+        const plen = rand.intRangeAtMost(usize, 0, 512);
+        for (0..qlen) |i| qbuf2[i] = randTestByte(rand);
+        for (0..plen) |i| pbuf2[i] = randTestByte(rand);
+        const q = qbuf2[0..qlen];
+        const p = pbuf2[0..plen];
+        try testing.expectEqual(explore.lcsLenIgnoreCase(q, p), explore.bitLcsLen(q, p));
+    }
+}
+
+test "BitLcs gate: searchSymbols fuzzy keeps exactly the LCS-floor survivors" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    // "abcdefgh_zzz" contains the 8-char query as an exact ordered prefix
+    // (LCS = query.len, a sure match). "hgfedcba_zzz" has the exact SAME 8
+    // characters reversed plus a safe suffix ('z' never appears in the
+    // query), so unordered presence is 100% (it would sail through the
+    // weaker fuzzyPresenceReject check this gate replaced at this call site)
+    // while the in-order LCS against the query is only 1 (LCS of a distinct-
+    // character string and its exact reverse) — below the issue-#518 60%
+    // floor, so the bit-parallel pre-gate must prune it before fuzzyFinalize
+    // ever runs. "nopqrstu_zzz" shares no characters with the query at all.
+    try explorer.indexFile("hit.zig", "pub fn abcdefgh_zzz() void {}\n");
+    try explorer.indexFile("reversed.zig", "pub fn hgfedcba_zzz() void {}\n");
+    try explorer.indexFile("unrelated.zig", "pub fn nopqrstu_zzz() void {}\n");
+
+    const results = try explorer.searchSymbols(.{ .name = "abcdefgh", .fuzzy = true, .max_results = 10 }, arena.allocator());
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings("abcdefgh_zzz", results[0].symbol.name);
+    try testing.expectEqualStrings("hit.zig", results[0].path);
+}
+
+test "BitLcs gate: fuzzyFindFiles keeps exactly the LCS-floor survivors" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+
+    // Same shape as the searchSymbols case above, but as file paths, exercising
+    // fuzzyFindFiles' single-part branch's own BitLcs gate. Digits and ".txt"
+    // share no letters with the query, so they can't change the LCS.
+    try explorer.indexFile("111abcdefgh222.txt", "placeholder\n");
+    try explorer.indexFile("111hgfedcba222.txt", "placeholder\n");
+    try explorer.indexFile("999nopqrstu999.txt", "placeholder\n");
+
+    const matches = try explorer.fuzzyFindFiles("abcdefgh", arena.allocator(), 10);
+    try testing.expectEqual(@as(usize, 1), matches.len);
+    try testing.expectEqualStrings("111abcdefgh222.txt", matches[0].path);
+}
