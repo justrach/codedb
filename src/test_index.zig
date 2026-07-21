@@ -3732,6 +3732,159 @@ test "mmap word index: zero-copy load matches heap load and promotes on write" {
     try testing.expect(mm.search("alphaToken").len >= 1); // pre-promote postings survived
 }
 
+test "word-index: prefix bucket isolates candidates by first two bytes" {
+    const alloc = testing.allocator;
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+    // "alphaOne"/"alphaTwo" share the "al" bucket; "betaOne" shares "be"
+    // (and even shares an "one" sub-token with alphaOne). A 2-char prefix
+    // query for "al" must find only alpha-bucket words.
+    try wi.indexFile("src/a.zig", "fn alphaOne() void {}\nfn alphaTwo() void {}\n");
+    try wi.indexFile("src/b.zig", "fn betaOne() void {}\n");
+
+    const hits = try wi.searchPrefix("al", alloc, 32);
+    defer alloc.free(hits);
+    try testing.expect(hits.len >= 2);
+    for (hits) |h| {
+        try testing.expectEqualStrings("src/a.zig", wi.hitPath(h));
+    }
+}
+
+test "word-index: prefix query of length 1 still scans across buckets" {
+    const alloc = testing.allocator;
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+    // "alphaOne" buckets under "al"; "ampersandVal" buckets under "am" --
+    // different buckets, both sharing the 1-char prefix "a", so a correct
+    // fallback must not narrow to a single bucket.
+    try wi.indexFile("src/a.zig", "fn alphaOne() void {}\nfn ampersandVal() void {}\n");
+
+    const hits = try wi.searchPrefix("a", alloc, 32);
+    defer alloc.free(hits);
+    try testing.expect(hits.len >= 2);
+}
+
+test "word-index: prefix query with no matching bucket returns empty, no crash" {
+    const alloc = testing.allocator;
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+    try wi.indexFile("src/a.zig", "fn alphaOne() void {}\n");
+
+    // No indexed word starts with "zz".
+    const hits = try wi.searchPrefix("zznope", alloc, 32);
+    defer alloc.free(hits);
+    try testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "word-index: prefix bucket picks up a word indexed after an earlier lookup" {
+    const alloc = testing.allocator;
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+    try wi.indexFile("src/a.zig", "fn plainFn() void {}\n");
+
+    // Before betaLateArrival exists, its prefix must find nothing.
+    const before = try wi.searchPrefix("betala", alloc, 32);
+    defer alloc.free(before);
+    try testing.expectEqual(@as(usize, 0), before.len);
+
+    // Indexing a new file must extend the bucket incrementally, not just
+    // at first-load time.
+    try wi.indexFile("src/b.zig", "fn betaLateArrival() void {}\n");
+    const after = try wi.searchPrefix("betala", alloc, 32);
+    defer alloc.free(after);
+    try testing.expect(after.len >= 1);
+    try testing.expectEqualStrings("src/b.zig", wi.hitPath(after[0]));
+}
+
+test "word-index: prefix bucket tolerates a word pruned by removeFile" {
+    const alloc = testing.allocator;
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+    // "onlyHereToken" appears only in b.zig -- removing b.zig prunes its
+    // key (and its "only" sub-token) out of `index` entirely (removeFile
+    // frees keys whose posting list goes empty), leaving stale copies in
+    // the "on" bucket that searchPrefix must filter rather than use.
+    try wi.indexFile("src/a.zig", "fn otherFn() void {}\n");
+    try wi.indexFile("src/b.zig", "fn onlyHereToken() void {}\n");
+
+    const before = try wi.searchPrefix("onlyh", alloc, 32);
+    defer alloc.free(before);
+    try testing.expectEqual(@as(usize, 1), before.len);
+
+    wi.removeFile("src/b.zig");
+
+    const after = try wi.searchPrefix("onlyh", alloc, 32);
+    defer alloc.free(after);
+    try testing.expectEqual(@as(usize, 0), after.len);
+
+    // A fresh word landing in the SAME bucket ("on") alongside the stale
+    // entries must still resolve correctly.
+    try wi.indexFile("src/c.zig", "fn onceMoreToken() void {}\n");
+    const fresh = try wi.searchPrefix("oncem", alloc, 32);
+    defer alloc.free(fresh);
+    try testing.expectEqual(@as(usize, 1), fresh.len);
+    try testing.expectEqualStrings("src/c.zig", wi.hitPath(fresh[0]));
+}
+
+test "word-index: bucketed prefix results are lexicographically ordered" {
+    const alloc = testing.allocator;
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+    // Indexed in an order that is NOT already lexicographic, so this only
+    // passes if searchPrefix actually sorts rather than returning
+    // insertion (or hash-iteration) order.
+    try wi.indexFile("src/z.zig", "fn zetaZebra() void {}\n");
+    try wi.indexFile("src/a.zig", "fn zetaApple() void {}\n");
+    try wi.indexFile("src/m.zig", "fn zetaMango() void {}\n");
+
+    const hits = try wi.searchPrefix("zeta", alloc, 32);
+    defer alloc.free(hits);
+    try testing.expectEqual(@as(usize, 3), hits.len);
+    try testing.expectEqualStrings("src/a.zig", wi.hitPath(hits[0])); // zetaApple
+    try testing.expectEqualStrings("src/m.zig", wi.hitPath(hits[1])); // zetaMango
+    try testing.expectEqualStrings("src/z.zig", wi.hitPath(hits[2])); // zetaZebra
+}
+
+test "word-index: mergeShard extends prefix buckets from the shard's new words" {
+    // Arena, not testing.allocator: mergeShard's post-merge id_to_path
+    // entries for the SHARD's paths have no matching file_words entry (that
+    // key/free pairing is what a normal indexFile-populated entry relies
+    // on), so WordIndex.deinit() in the default (non-skip_file_words) mode
+    // never frees them -- a pre-existing leak in mergeShard, unrelated to
+    // the prefix-bucket change under test here. Confirmed by triggering it
+    // once with testing.allocator during development; using an arena here
+    // keeps this test about bucket correctness, not that separate bug.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var shard = WordIndex.init(alloc);
+    defer shard.deinit();
+    shard.skip_file_words = true;
+    try shard.indexFile("src/shard.zig", "fn shardOnlyToken() void {}\n");
+
+    var wi = WordIndex.init(alloc);
+    defer wi.deinit();
+    // mergeShard requires a populated destination to own its id_to_path
+    // strings. Bulk builders use skip_file_words=true for exactly this mode.
+    wi.skip_file_words = true;
+    try wi.indexFile("src/main.zig", "fn mainOnlyToken() void {}\n");
+
+    try wi.mergeShard(&shard);
+
+    // shardOnlyToken must be findable via the bucketed prefix path on the
+    // MERGED index -- mergeShard writes `index` entries directly (it does
+    // not go through indexOneToken), so it needs its own bucket hook.
+    const shard_hits = try wi.searchPrefix("shardo", alloc, 32);
+    try testing.expectEqual(@as(usize, 1), shard_hits.len);
+    try testing.expectEqualStrings("src/shard.zig", wi.hitPath(shard_hits[0]));
+
+    // Pre-existing buckets must survive the merge untouched.
+    const main_hits = try wi.searchPrefix("maino", alloc, 32);
+    try testing.expectEqual(@as(usize, 1), main_hits.len);
+    try testing.expectEqualStrings("src/main.zig", wi.hitPath(main_hits[0]));
+}
+
 test "issue-600: mmap_overlay writeToDisk persists overlay edits" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

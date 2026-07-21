@@ -42,6 +42,24 @@ pub const WordIndex = struct {
     mmap_data: ?[]align(std.heap.page_size_min) const u8 = null,
     /// Byte offset of each sorted word record in mmap_data, for binary search.
     word_dir: []u32 = &.{},
+    /// First-two-normalized-byte bucket index for the heap-resident prefix
+    /// scan (searchPrefix, query.len >= 2): maps a word's first two bytes
+    /// (see prefixBucketKey) to that bucket's vocabulary words, so a prefix
+    /// lookup scans one bucket instead of every word in `index`. Appended
+    /// to once per newly-created vocabulary key from every insertion path
+    /// (indexOneToken, mergeShard, promoteIfBorrowed, readFromDiskInner) —
+    /// O(1) amortized, no rebuild pass, since callers may re-index the same
+    /// file on every call (see bench-edge's cache-busting). Entries own an
+    /// independent copy of the word rather than aliasing `index`'s key,
+    /// because `index` frees a key's own memory the moment its posting list
+    /// empties (removeFile's "prune empty word entries" pass) and buckets
+    /// are never swept on removal — searchPrefix re-validates every
+    /// candidate against `index` before using it, so a stale bucket entry
+    /// (its word since fully removed from the vocabulary) is skipped,
+    /// never dereferenced past its own still-valid memory. Stays empty
+    /// while mmap_data is set — the mmap path has its own sorted binary
+    /// search and never touches this field.
+    prefix_buckets: std.AutoHashMap(u16, std.ArrayList([]const u8)),
 
     pub fn hitPath(self: *const WordIndex, hit: WordHit) []const u8 {
         if (hit.doc_id < self.id_to_path.items.len) return self.id_to_path.items[hit.doc_id];
@@ -87,7 +105,22 @@ pub const WordIndex = struct {
             .id_to_path = .empty,
             .doc_lengths = std.AutoHashMap(u32, u32).init(allocator),
             .total_tokens = 0,
+            .prefix_buckets = std.AutoHashMap(u16, std.ArrayList([]const u8)).init(allocator),
         };
+    }
+
+    /// Free every bucket's owned word copies + the bucket lists themselves,
+    /// then the outer map. Shared by both deinit branches below — in
+    /// mmap mode this is a no-op walk over an empty map (prefix_buckets is
+    /// only ever populated once the index is heap-resident), included for
+    /// safety rather than assumed.
+    fn deinitPrefixBuckets(self: *WordIndex) void {
+        var it = self.prefix_buckets.valueIterator();
+        while (it.next()) |list| {
+            for (list.items) |w| self.allocator.free(w);
+            list.deinit(self.allocator);
+        }
+        self.prefix_buckets.deinit();
     }
 
     pub fn deinit(self: *WordIndex) void {
@@ -98,6 +131,7 @@ pub const WordIndex = struct {
             self.index.deinit();
             self.path_to_id.deinit();
             self.file_words.deinit();
+            self.deinitPrefixBuckets();
             for (self.id_to_path.items) |path| {
                 if (path.len > 0) self.allocator.free(path);
             }
@@ -115,6 +149,7 @@ pub const WordIndex = struct {
             entry.value_ptr.deinit(self.allocator);
         }
         self.index.deinit();
+        self.deinitPrefixBuckets();
 
         // Free per-file word sets
         var fw_iter = self.file_words.iterator();
@@ -245,6 +280,29 @@ pub const WordIndex = struct {
             }
         }
     }
+
+    /// Pack a word's first two normalized bytes into a prefix_buckets key.
+    fn prefixBucketKey(b0: u8, b1: u8) u16 {
+        return (@as(u16, b0) << 8) | b1;
+    }
+
+    /// Append `word` (an `index`-owned key) to its first-two-byte bucket —
+    /// see prefix_buckets' doc comment for why entries are independent
+    /// copies rather than aliases of `word`. Called once per newly-created
+    /// vocabulary key, from every path that adds one (indexOneToken,
+    /// mergeShard, promoteIfBorrowed, readFromDiskInner). Best-effort: on
+    /// allocation failure this word just falls back to being invisible to
+    /// the bucketed searchPrefix path (query.len >= 2) until it is
+    /// re-indexed — `index` itself, and exact search, are unaffected.
+    fn addToPrefixBucket(self: *WordIndex, word: []const u8) void {
+        if (word.len < 2) return; // no current caller creates one, but don't assume
+        const key = prefixBucketKey(word[0], word[1]);
+        const gop = self.prefix_buckets.getOrPut(key) catch return;
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        const owned = self.allocator.dupe(u8, word) catch return;
+        gop.value_ptr.append(self.allocator, owned) catch self.allocator.free(owned);
+    }
+
     fn indexOneToken(
         self: *WordIndex,
         token: []const u8,
@@ -264,6 +322,7 @@ pub const WordIndex = struct {
             };
             gop.key_ptr.* = duped;
             gop.value_ptr.* = .empty;
+            self.addToPrefixBucket(duped);
         }
         if (gop.value_ptr.items.len > 0) {
             const last = gop.value_ptr.items[gop.value_ptr.items.len - 1];
@@ -436,6 +495,7 @@ pub const WordIndex = struct {
                 };
                 gop.key_ptr.* = dterm;
                 gop.value_ptr.* = .empty;
+                self.addToPrefixBucket(dterm);
             }
             try gop.value_ptr.ensureUnusedCapacity(self.allocator, shard_hits.len);
             for (shard_hits) |h| {
@@ -511,6 +571,7 @@ pub const WordIndex = struct {
             errdefer list.deinit(self.allocator);
             try list.appendUnalignedSlice(self.allocator, posts);
             try new_index.put(word, list);
+            self.addToPrefixBucket(word);
         }
         var new_p2i = std.StringHashMap(u32).init(self.allocator);
         errdefer new_p2i.deinit();
@@ -623,6 +684,52 @@ pub const WordIndex = struct {
             }
             return result.toOwnedSlice(allocator);
         }
+        // Heap-resident: query.len >= 2 can go straight to the single bucket
+        // that every word starting with `prefix` must live in (see
+        // prefix_buckets' doc comment) — any word NOT sharing prefix[0..2]
+        // provably can't satisfy startsWith(word, prefix) when prefix.len >=
+        // 2, so this visits the exact same candidate set the old full-index
+        // scan did, just without the other buckets. query.len == 1 can't
+        // narrow to one bucket (any of the 256 buckets starting with that
+        // byte could match), so it keeps the linear scan below — rare in
+        // practice, and behavior-identical to before.
+        if (prefix.len >= 2) {
+            const key = prefixBucketKey(prefix[0], prefix[1]);
+            if (self.prefix_buckets.getPtr(key)) |bucket| {
+                // Sorted lexicographically so this path's output order
+                // matches the mmap path's (and is deterministic run to run,
+                // unlike the hash-iteration order the old linear scan had).
+                // Bucket sizes are small (partitioned by 2-byte prefix), so
+                // re-sorting on each call is cheap; it also leaves the
+                // bucket sorted for the next query against it.
+                std.mem.sort([]const u8, bucket.items, {}, struct {
+                    fn lt(_: void, a: []const u8, b: []const u8) bool {
+                        return std.mem.order(u8, a, b) == .lt;
+                    }
+                }.lt);
+                outer_bucket: for (bucket.items) |word| {
+                    if (word.len <= prefix.len) continue; // strictly longer: exact match is Tier 0
+                    if (!std.mem.startsWith(u8, word, prefix)) continue;
+                    // Bucket entries are never pruned when a word's last
+                    // file is removed (removeFile frees the `index` key but
+                    // leaves the bucket copy in place) — index.get is the
+                    // liveness check that filters that stale case out,
+                    // exactly like the old scan iterating `index` directly
+                    // never saw removed words at all.
+                    const hits = self.index.get(word) orelse continue;
+                    for (hits.items) |hit| {
+                        const dk = DedupKey{ .doc_id = hit.doc_id, .line_num = hit.line_num };
+                        const gop = try seen.getOrPut(dk);
+                        if (!gop.found_existing) {
+                            result.appendAssumeCapacity(hit);
+                            if (result.items.len >= max_results) break :outer_bucket;
+                        }
+                    }
+                }
+            }
+            return result.toOwnedSlice(allocator);
+        }
+
         var key_iter = self.index.keyIterator();
         outer: while (key_iter.next()) |k| {
             if (k.len <= prefix.len) continue; // strictly longer: exact match is Tier 0
@@ -892,6 +999,7 @@ pub const WordIndex = struct {
             if (gop.found_existing) return error.InvalidData;
             gop.key_ptr.* = word;
             gop.value_ptr.* = hits;
+            result.addToPrefixBucket(word);
         }
 
         // v3 trailer: per-doc length table.
