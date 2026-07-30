@@ -20,14 +20,18 @@ fn page() h.Node {
         h.h1(.{ .class = "section-title" }, "Up and running in 60 seconds"),
 
         h.h2(.{}, "1. Install"),
-        h.p(.{}, "One command. Downloads the binary for your platform and auto-registers codedb as an MCP server in Claude Code, Codex, Gemini CLI, and Cursor."),
+        h.p(.{}, "On macOS and Linux, the installer downloads codedb and auto-registers detected MCP clients:"),
         h.pre(.{},
             \\curl -fsSL https://codedb.codegraff.com/install.sh | bash
         ),
-        h.p(.{}, "Supports macOS (ARM64, x86_64) and Linux (ARM64, x86_64). macOS binaries are codesigned and notarized."),
+        h.p(.{}, "On native Windows x86_64, run the checksum-verifying installer in PowerShell:"),
+        h.pre(.{},
+            \\irm https://raw.githubusercontent.com/justrach/codedb/main/install/install.ps1 | iex
+        ),
+        h.p(.{}, "Supports macOS (ARM64, x86_64), Linux (ARM64, x86_64), and Windows (x86_64). macOS ARM64 binaries are codesigned and notarized."),
 
         h.h2(.{}, "2. MCP server (recommended)"),
-        h.p(.{}, "After installing, codedb is automatically registered. Open any project and the 16 MCP tools are available to your AI agent."),
+        h.p(.{}, "The shell installer registers detected clients automatically. On Windows, configure the client with the absolute path to codedb.exe. Then open a project and the MCP tools are available to your AI agent."),
         h.pre(.{},
             \\# Manual MCP start (auto-configured by install script)
             \\codedb mcp /path/to/your/project
@@ -79,7 +83,7 @@ fn page() h.Node {
         ),
 
         h.h2(.{}, "MCP tools reference"),
-        h.p(.{}, "16 tools available over the Model Context Protocol:"),
+        h.p(.{}, "Core tools available over the Model Context Protocol:"),
         h.table(.{ .class = "status-table" }, .{
             h.tbody(.{}, .{
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_tree") }), h.td(.{}, "Full file tree with language, line counts, symbol counts") }),

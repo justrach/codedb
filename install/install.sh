@@ -408,10 +408,12 @@ main() {
     echo ""
     printf "  ${W}codedb installer${N}\n"
     echo ""
-    printf "  ${Y}Windows detected${N} — codedb is a native Linux/macOS binary.\n"
-    printf "  Run this inside ${G}WSL2${N} instead:\n"
+    printf "  ${Y}Windows detected${N} — codedb has a native Windows x86_64 binary.\n"
+    printf "  This Bash installer is for macOS/Linux. Run this in PowerShell:\n"
     echo ""
-    printf "    ${C}wsl curl -fsSL https://codedb.codegraff.com/install.sh | bash${N}\n"
+    printf "    ${C}irm https://raw.githubusercontent.com/justrach/codedb/main/install/install.ps1 | iex${N}\n"
+    echo ""
+    printf "  Use ${G}WSL2${N} only if you want the Linux binary inside WSL.\n"
     echo ""
     exit 0
   fi

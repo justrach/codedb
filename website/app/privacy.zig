@@ -44,7 +44,7 @@ fn page() h.Node {
 
         h.h2(.{}, "Network access"),
         h.p(.{}, "codedb makes zero network requests during normal operation. The MCP server communicates over stdio. The HTTP server binds to localhost only."),
-        h.p(.{}, "The only network activity is the install script, which downloads the binary from codedb.codegraff.com."),
+        h.p(.{}, "Installation and updates fetch release metadata, binaries, and checksums from codedb.codegraff.com or GitHub Releases."),
 
         h.h2(.{}, "Website telemetry"),
         h.p(.{}, "This website (codedb.codegraff.com) uses basic analytics to understand traffic patterns. No personal data is collected. No cookies are set. No third-party trackers are loaded."),

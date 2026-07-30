@@ -28,7 +28,7 @@ pub fn wrap(allocator: std.mem.Allocator, path: []const u8, body: []const u8, me
         \\  <meta property="og:site_name" content="codedb">
         \\  <meta name="twitter:card" content="summary_large_image">
         \\  <meta name="twitter:site" content="@justrach">
-        \\  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"codedb","description":"Code intelligence server for AI agents. Zig core. MCP native. Sub-millisecond queries.","applicationCategory":"DeveloperApplication","operatingSystem":"Linux, macOS","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"url":"https://codedb.codegraff.com"}</script>
+        \\  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"codedb","description":"Code intelligence server for AI agents. Zig core. MCP native. Sub-millisecond queries.","applicationCategory":"DeveloperApplication","operatingSystem":"Linux, macOS, Windows","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"url":"https://codedb.codegraff.com"}</script>
         \\
     ) catch return body;
 
