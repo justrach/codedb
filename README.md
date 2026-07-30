@@ -62,7 +62,7 @@
 | Portable snapshot for instant MCP startup              |                                          |
 | Singleton MCP with PID lock + 1h idle timeout          |                                          |
 | Sensitive file blocking (.env, credentials, keys)      |                                          |
-| Codesigned macOS ARM64 binary; Intel slice temporarily unsigned |                                          |
+| Codesigned + notarized macOS binaries — ARM64 and Intel (0.2.5833+) |                                          |
 | SHA256-verified release downloads and npm packages     |                                          |
 | Cross-platform: macOS (ARM/x86), Linux (ARM/x86), Windows (x86_64) |                              |
 
@@ -130,7 +130,7 @@ curl -fsSL https://codedb.codegraff.com/install.sh | bash
 
 This replaces the `codedb` binary with the latest GitHub Release and keeps your existing MCP registrations, config, caches, and snapshots. Use this path for any release whose built-in updater cannot fetch release checksums.
 
-On native Windows, self-update is not yet supported. Rerun the PowerShell installer above to update or repair the binary.
+Self-update works on native Windows from 0.2.5833 onward (`codedb update`). On older builds, rerun the PowerShell installer above to update or repair the binary.
 
 ## Documentation
 
@@ -145,7 +145,7 @@ On native Windows, self-update is not yet supported. Rerun the PowerShell instal
 | Platform | Binary | Signed |
 |----------|--------|--------|
 | macOS ARM64 (Apple Silicon) | `codedb-darwin-arm64` | ✅ codesigned + notarized |
-| macOS x86_64 (Intel) | `codedb-darwin-x86_64` | temporarily unsigned |
+| macOS x86_64 (Intel) | `codedb-darwin-x86_64` | codesigned + notarized (0.2.5833+) |
 | Linux ARM64 | `codedb-linux-arm64` | — |
 | Linux x86_64 | `codedb-linux-x86_64` | — |
 | Windows x86_64 | `codedb-windows-x86_64.exe` | SHA256 verified automatically |

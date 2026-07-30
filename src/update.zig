@@ -308,6 +308,15 @@ fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: [
         }
     }
 
+    if (@import("builtin").os.tag == .windows) {
+        // Windows refuses to rename over a running .exe, but renaming the
+        // running image aside is allowed. Slide the old binary to .old (best
+        // effort); a stale .old from a prior update is replaced first.
+        const old_path = try std.fmt.allocPrint(allocator, "{s}.old", .{dest_path});
+        defer allocator.free(old_path);
+        std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+        std.Io.Dir.renameAbsolute(dest_path, old_path, io) catch {};
+    }
     try std.Io.Dir.renameAbsolute(tmp_path, dest_path, io);
 }
 

@@ -21,6 +21,18 @@ pub const opt_out_marker_rel = ".codedb/no-codex-policy";
 pub const repo_opt_out_marker_name = ".codedb-no-codex-policy";
 pub const opt_out_env = "CODEDB_NO_CODEX_POLICY";
 
+/// Receipt recording that the GLOBAL policy block was written by codedb.
+/// Receipt present + block absent = the user deleted it — a deliberate
+/// removal that must stick across the installer's unattended re-runs.
+pub const receipt_rel = ".codedb/codex-policy-registered";
+
+/// Pure install-policy predicate, mirror of update.shouldRegisterHooks (#658).
+pub fn shouldWritePolicy(env_opt_out: bool, marker_exists: bool, receipt_exists: bool, block_present: bool) bool {
+    if (env_opt_out or marker_exists) return false;
+    if (receipt_exists and !block_present) return false;
+    return true;
+}
+
 pub const agents_file_name = "AGENTS.md";
 
 /// Routing policy handed to Codex agents. Same tool ordering as mcp.zig's
@@ -504,6 +516,30 @@ fn optedOut(io: std.Io, allocator: std.mem.Allocator, home: []const u8, target: 
     return true;
 }
 
+fn globalReceiptPath(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, receipt_rel });
+}
+
+fn globalReceiptExists(io: std.Io, allocator: std.mem.Allocator, home: []const u8) bool {
+    const p = globalReceiptPath(allocator, home) catch return false;
+    defer allocator.free(p);
+    _ = std.Io.Dir.cwd().statFile(io, p, .{}) catch return false;
+    return true;
+}
+
+fn writeMarkerFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) void {
+    if (std.mem.lastIndexOfScalar(u8, path, '/')) |slash| {
+        if (slash > 0) std.Io.Dir.cwd().createDirPath(io, path[0..slash]) catch {};
+    }
+    writeFileAtomic(io, allocator, path, "") catch {};
+}
+
+fn writeGlobalReceipt(io: std.Io, allocator: std.mem.Allocator, home: []const u8) void {
+    const p = globalReceiptPath(allocator, home) catch return;
+    defer allocator.free(p);
+    writeMarkerFile(io, allocator, p);
+}
+
 fn runInstall(io: std.Io, out: *Out, s: sty.Style, allocator: std.mem.Allocator, args: []const []const u8) noreturn {
     const target = parseTarget(out, s, args);
     const home = homeOrExit(out, s, allocator);
@@ -533,11 +569,28 @@ fn runInstall(io: std.Io, out: *Out, s: sty.Style, allocator: std.mem.Allocator,
     };
     defer if (existing) |e| allocator.free(e);
 
+    // Auto-install removal detection (global scope): the receipt says we
+    // wrote the block before and it is gone now — the user deleted it.
+    // Persist the opt-out marker instead of re-adding (#658 contract, #680).
+    if (target.scope == .global and
+        !shouldWritePolicy(false, false, globalReceiptExists(io, allocator, home), findPolicyBlock(existing orelse "") != null))
+    {
+        if (optOutMarkerPathFor(allocator, home, target) catch null) |marker| {
+            defer allocator.free(marker);
+            writeMarkerFile(io, allocator, marker);
+            out.p("{s}\xe2\x97\x8b{s} codedb policy was removed by the user \xe2\x80\x94 honoring the removal ({s}{s}{s} written)\n", .{ s.yellow, s.reset, s.dim, marker, s.reset });
+        } else {
+            out.p("{s}\xe2\x97\x8b{s} codedb policy was removed by the user \xe2\x80\x94 honoring the removal\n", .{ s.yellow, s.reset });
+        }
+        out.exitWithFlush(0);
+    }
+
     const updated = upsertPolicyBlock(allocator, existing orelse "", block) catch {
         out.p("{s}\xe2\x9c\x97{s} out of memory\n", .{ s.red, s.reset });
         out.exitWithFlush(1);
     };
     if (updated == null) {
+        if (target.scope == .global) writeGlobalReceipt(io, allocator, home);
         out.p("{s}\xe2\x9c\x93{s} codedb policy already current ({s}v{s}{s}) in {s}{s}{s}\n", .{
             s.green, s.reset, s.bold, release_info.semver, s.reset, s.cyan, path, s.reset,
         });
@@ -552,6 +605,7 @@ fn runInstall(io: std.Io, out: *Out, s: sty.Style, allocator: std.mem.Allocator,
         out.p("{s}\xe2\x9c\x97{s} cannot write {s}{s}{s}: {s}\n", .{ s.red, s.reset, s.bold, path, s.reset, @errorName(err) });
         out.exitWithFlush(1);
     };
+    if (target.scope == .global) writeGlobalReceipt(io, allocator, home);
 
     const scope_label: []const u8 = if (target.scope == .global) "global (every Codex session)" else "repo";
     out.p("{s}\xe2\x9c\x93{s} codedb policy {s}v{s}{s} \xe2\x86\x92 {s}{s}{s}\n", .{

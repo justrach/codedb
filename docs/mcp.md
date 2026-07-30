@@ -252,10 +252,11 @@ spctl -a -vv -t install /usr/local/bin/codedb
 # expected: accepted, source=Notarized Developer ID
 ```
 
-The Intel `codedb-darwin-x86_64` release slice is temporarily unsigned.
-Signed Zig 0.16 x86_64-macos binaries can segfault on macOS 26 and under
-Rosetta after codesign, so the release workflow leaves that artifact
-unsigned and relies on the published SHA256 checksum instead.
+From 0.2.5833 the Intel `codedb-darwin-x86_64` slice is codesigned and
+notarized again. Earlier releases shipped it unsigned: the pinned Zig
+toolchain reserved no Mach-O headerpad, so codesign's appended
+LC_CODE_SIGNATURE overwrote `__text` and signed binaries crashed on launch
+(#504, #618); the build now reserves headerpad explicitly.
 
 If you built from source on Apple Silicon, codesign the binary locally:
 

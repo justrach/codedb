@@ -2239,6 +2239,18 @@ test "issue-506: negotiateProtocolVersion returns latest for newer-than-known cl
     try testing.expectEqualStrings("2026-07-28", mcp_mod.negotiateProtocolVersion("2099-01-01").?);
 }
 
+test "mcp-2026-07-28: 2025-11-25 clients keep their revision instead of dropping to 2024-11-05" {
+    try testing.expectEqualStrings("2025-11-25", mcp_mod.negotiateProtocolVersion("2025-11-25").?);
+}
+
+test "issue-680: auto policy install respects a prior user removal" {
+    try testing.expect(codex_setup.shouldWritePolicy(false, false, false, false));
+    try testing.expect(codex_setup.shouldWritePolicy(false, false, true, true));
+    try testing.expect(!codex_setup.shouldWritePolicy(false, false, true, false));
+    try testing.expect(!codex_setup.shouldWritePolicy(true, false, false, false));
+    try testing.expect(!codex_setup.shouldWritePolicy(false, true, true, true));
+}
+
 test "issue-506: negotiateProtocolVersion returns oldest for ancient/unknown clients" {
     // A pre-2024-11-05 string lex-orders below SUPPORTED[0], so we serve
     // the oldest version we know; client decides whether to proceed.

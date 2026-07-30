@@ -85,7 +85,7 @@ npm install -g codedeebee@latest
 codedb --version
 ```
 
-Until then — and for non-npm Windows installs — the native Windows binary cannot self-update. Rerun the checksum-verifying PowerShell installer from the root [README](https://github.com/justrach/codedb#windows).
+Until then — and for non-npm Windows installs — binaries older than 0.2.5833 cannot self-update; rerun the checksum-verifying PowerShell installer from the root [README](https://github.com/justrach/codedb#windows). From 0.2.5833 onward `codedb update` works natively on Windows.
 
 ## Skipping the binary download
 

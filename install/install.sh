@@ -99,6 +99,17 @@ register_codex() {
   printf "  ${G}✓${N} codex        ${D}→ $config${N}\n"
 }
 
+register_codex_policy() {
+  local codedb_bin="$1"
+  # #680: auto-install the CodeDB-first AGENTS.md policy for Codex sessions.
+  # The binary owns the sticky opt-out (marker + removal receipt), so a user's
+  # removal survives re-runs and the 24h auto-update. Older binaries without
+  # the subcommand skip silently.
+  if "$codedb_bin" codex install >/dev/null 2>&1; then
+    printf "  ${G}✓${N} codex policy ${D}→ ~/.codex/AGENTS.md (remove: codedb codex uninstall)${N}\n"
+  fi
+}
+
 register_gemini() {
   local codedb_bin="$1"
   local config_dir="$HOME/.gemini"
@@ -503,6 +514,7 @@ main() {
   echo ""
   register_claude "$dest"
   register_codex "$dest"
+  register_codex_policy "$dest"
   register_gemini "$dest"
   register_cursor "$dest"
   register_windsurf_devin "$dest"

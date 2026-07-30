@@ -1168,6 +1168,7 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
 /// should still get our newest known version back, not an old one.
 const SUPPORTED_PROTOCOL_VERSIONS = [_][]const u8{
     "2026-07-28",
+    "2025-11-25",
     "2025-06-18",
     "2025-03-26",
     "2024-11-05",

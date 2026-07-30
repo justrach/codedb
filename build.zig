@@ -33,6 +33,14 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // #618/#504: reserve Mach-O header padding so codesign can append its
+    // LC_CODE_SIGNATURE load command without overwriting __text. The pinned
+    // toolchain leaves only 8 bytes of slack on x86_64-macos (fixed upstream
+    // on 0.17 master); 0x1000 matches the verified workaround.
+    if ((target.query.os_tag orelse target.result.os.tag) == .macos) {
+        exe.headerpad_size = 0x1000;
+    }
+
     // ── nanoregex dependency ──
     const nanoregex_dep = b.dependency("nanoregex", .{});
     exe.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
@@ -40,12 +48,12 @@ pub fn build(b: *std.Build) void {
     const install_exe = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install_exe.step);
 
-    // Zig 0.16 x86_64-macos binaries can segfault on macOS 26 after codesign
-    // (issue #504), including under Rosetta. Keep that release slice unsigned.
+    // #618: every macOS slice signs again. The x86_64 codesign crash (#504)
+    // was missing load-command headerpad — codesign's appended
+    // LC_CODE_SIGNATURE clobbered __text; the exe now reserves headerpad.
     if (codesign_identity) |identity| {
         const target_os = target.query.os_tag orelse target.result.os.tag;
-        const target_arch = target.query.cpu_arch orelse target.result.cpu.arch;
-        if (target_os == .macos and target_arch != .x86_64 and builtin.os.tag == .macos) {
+        if (target_os == .macos and builtin.os.tag == .macos) {
             const codesign = b.addSystemCommand(&.{
                 "codesign",
                 "-f",
