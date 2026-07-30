@@ -251,6 +251,8 @@ For Codex and Claude Code hook examples around `codedb_remote`, see [`docs/hooks
 
 **Options:** `--no-telemetry` (or set `CODEDB_NO_TELEMETRY` env var)
 
+**Claude Code hook opt-out:** the installer registers a PreToolUse hook that nudges agents from `grep`/`cat` to codedb inside indexed repos. Disable it with `CODEDB_NO_HOOKS=1` at install time or `touch ~/.codedb/no-hooks`. Deleting the hook entry from `~/.claude/settings.json` is also permanent — the installer records its registrations and treats a missing entry as a deliberate removal.
+
 ### Example: agent explores a codebase
 
 ```bash

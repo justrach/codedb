@@ -16,15 +16,10 @@ detect_platform() {
     Darwin) os="darwin" ;;
     Linux)  os="linux" ;;
     MINGW*|MSYS*|CYGWIN*)
-      echo ""
-      printf "  ${W}codedb installer${N}\n"
-      echo ""
-      printf "  ${Y}Windows detected${N} — codedb is a native Linux/macOS binary.\n"
-      printf "  Run this inside ${G}WSL2${N} instead:\n"
-      echo ""
-      printf "    ${C}wsl curl -fsSL https://codedb.codegraff.com/install.sh | bash${N}\n"
-      echo ""
-      exit 0
+      # #677: we are inside $(...) — printing guidance or exiting here is
+      # swallowed by the subshell. Emit a sentinel for main() instead.
+      echo "windows"
+      return 0
       ;;
     *) printf "  ${R}Unsupported OS: $os${N}\n" >&2; exit 1 ;;
   esac
@@ -167,6 +162,21 @@ print_hook_notes() {
 main() {
   local platform version ext=""
   platform="$(detect_platform)"
+
+  # #677: detect_platform runs in a command substitution, so it cannot print
+  # to the user or stop the script itself — handle Windows here, before any
+  # download is attempted.
+  if [ "$platform" = "windows" ]; then
+    echo ""
+    printf "  ${W}codedb installer${N}\n"
+    echo ""
+    printf "  ${Y}Windows detected${N} — codedb is a native Linux/macOS binary.\n"
+    printf "  Run this inside ${G}WSL2${N} instead:\n"
+    echo ""
+    printf "    ${C}wsl curl -fsSL https://codedb.codegraff.com/install.sh | bash${N}\n"
+    echo ""
+    exit 0
+  fi
 
   echo ""
   printf "  ${W}codedb${N} ${D}installer${N}\n"

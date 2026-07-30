@@ -546,7 +546,20 @@ test "update: asset names match published release naming" {
     try testing.expectEqualStrings("codedb-darwin-x86_64", update_mod.assetNameForTarget(.macos, .x86_64).?);
     try testing.expectEqualStrings("codedb-linux-arm64", update_mod.assetNameForTarget(.linux, .aarch64).?);
     try testing.expectEqualStrings("codedb-linux-x86_64", update_mod.assetNameForTarget(.linux, .x86_64).?);
-    try testing.expect(update_mod.assetNameForTarget(.windows, .x86_64) == null);
+    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+}
+
+test "issue-677: update resolves the published Windows x86_64 asset" {
+    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+    try testing.expect(update_mod.assetNameForTarget(.windows, .aarch64) == null);
+}
+
+test "issue-658: hook registration is skipped after a user removes the hook" {
+    try testing.expect(update_mod.shouldRegisterHooks(false, false, false, false));
+    try testing.expect(update_mod.shouldRegisterHooks(false, false, true, true));
+    try testing.expect(!update_mod.shouldRegisterHooks(false, false, true, false));
+    try testing.expect(!update_mod.shouldRegisterHooks(true, false, false, false));
+    try testing.expect(!update_mod.shouldRegisterHooks(false, true, true, true));
 }
 
 test "nuke: commandTargetsBinary only matches the current install path" {

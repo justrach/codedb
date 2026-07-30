@@ -34,15 +34,10 @@ detect_platform() {
     Darwin) os="darwin" ;;
     Linux)  os="linux" ;;
     MINGW*|MSYS*|CYGWIN*)
-      echo ""
-      printf "  ${W}codedb installer${N}\n"
-      echo ""
-      printf "  ${Y}Windows detected${N} — codedb is a native Linux/macOS binary.\n"
-      printf "  Run this inside ${G}WSL2${N} instead:\n"
-      echo ""
-      printf "    ${C}wsl curl -fsSL https://codedb.codegraff.com/install.sh | bash${N}\n"
-      echo ""
-      exit 0
+      # #677: we are inside $(...) — printing guidance or exiting here is
+      # swallowed by the subshell. Emit a sentinel for main() instead.
+      echo "windows"
+      return 0
       ;;
     *) printf "  ${R}Unsupported OS: $os${N}\n" >&2; exit 1 ;;
   esac
@@ -240,6 +235,7 @@ scripts = {
 # but ONLY inside a codedb-indexed repo, and never for paths outside it.
 # Fail-open by design (a nudge, not a wall). Disable entirely: CODEDB_NO_HOOKS=1.
 [ -n "$CODEDB_NO_HOOKS" ] && exit 0
+[ -f "$HOME/.codedb/no-hooks" ] && exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 command -v codedb >/dev/null 2>&1 || exit 0
 
@@ -303,6 +299,8 @@ exit 0
 }
 
 for name, content in scripts.items():
+    if name == "codedb-block-legacy.sh" and skip_pretooluse:
+        continue
     path = os.path.join(hooks_dir, name)
     with open(path, "w") as f:
         f.write(content)
@@ -315,6 +313,25 @@ except (FileNotFoundError, json.JSONDecodeError):
     data = {}
 
 hooks = data.setdefault("hooks", {})
+
+# #658: honor a deliberate removal. If a previous run registered the
+# PreToolUse hook (receipt exists) but its settings.json entry is gone, the
+# user deleted it — persist the opt-out marker instead of re-adding the hook
+# on the next unattended auto-update run.
+hooks_receipt = os.path.join(home, ".codedb", "hooks-registered")
+
+def pretooluse_entry_present():
+    for e in hooks.get("PreToolUse", []):
+        for h in e.get("hooks", []):
+            if "codedb-block-legacy.sh" in h.get("command", ""):
+                return True
+    return False
+
+if not skip_pretooluse and os.path.exists(hooks_receipt) and not pretooluse_entry_present():
+    os.makedirs(os.path.dirname(no_hooks_marker), exist_ok=True)
+    with open(no_hooks_marker, "w") as f:
+        f.write("")
+    skip_pretooluse = True
 
 # Merge codedb hooks without clobbering existing hooks from other tools.
 # If a competing legacy-tools hook is already registered for the same
@@ -351,6 +368,9 @@ def merge_hook(event, new_entry):
 
 if not skip_pretooluse:
     merge_hook("PreToolUse", {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-block-legacy.sh"}]})
+    os.makedirs(os.path.dirname(hooks_receipt), exist_ok=True)
+    with open(hooks_receipt, "w") as f:
+        f.write("")
 merge_hook("SessionStart", {"matcher": "", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-warmup.sh"}]})
 
 # Auto-allow codedb's own MCP tools so callers aren't prompted for every
@@ -380,6 +400,21 @@ print_hook_notes() {
 main() {
   local platform version ext=""
   platform="$(detect_platform)"
+
+  # #677: detect_platform runs in a command substitution, so it cannot print
+  # to the user or stop the script itself — handle Windows here, before any
+  # download is attempted.
+  if [ "$platform" = "windows" ]; then
+    echo ""
+    printf "  ${W}codedb installer${N}\n"
+    echo ""
+    printf "  ${Y}Windows detected${N} — codedb is a native Linux/macOS binary.\n"
+    printf "  Run this inside ${G}WSL2${N} instead:\n"
+    echo ""
+    printf "    ${C}wsl curl -fsSL https://codedb.codegraff.com/install.sh | bash${N}\n"
+    echo ""
+    exit 0
+  fi
 
   echo ""
   printf "  ${W}codedb${N} ${D}installer${N}\n"
@@ -447,6 +482,7 @@ main() {
   if [ -n "$checksum_notice" ]; then
     printf "$checksum_notice"
   fi
+  printf "  ${D}claude hook opt-out: CODEDB_NO_HOOKS=1 or touch ~/.codedb/no-hooks${N}\n"
 
   # Register MCP server in coding tools
   echo ""

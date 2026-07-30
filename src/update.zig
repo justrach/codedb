@@ -123,8 +123,22 @@ pub fn assetNameForTarget(os_tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) 
             .x86_64 => "codedb-linux-x86_64",
             else => null,
         },
+        .windows => switch (arch) {
+            .x86_64 => "codedb-windows-x86_64.exe",
+            else => null,
+        },
         else => null,
     };
+}
+
+/// Policy for (re-)registering the Claude Code PreToolUse hook (#658),
+/// mirrored by install.sh: explicit opt-outs always win, and a receipt from a
+/// previous registration with no surviving settings entry means the user
+/// removed the hook — a removal that must stick across unattended updates.
+pub fn shouldRegisterHooks(env_no_hooks: bool, marker_exists: bool, receipt_exists: bool, entry_present: bool) bool {
+    if (env_no_hooks or marker_exists) return false;
+    if (receipt_exists and !entry_present) return false;
+    return true;
 }
 
 pub fn compareVersions(current: []const u8, target: []const u8) !std.math.Order {
