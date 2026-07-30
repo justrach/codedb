@@ -2149,10 +2149,11 @@ test "issue-506: negotiateProtocolVersion echoes a recognized client version" {
     try testing.expectEqualStrings("2024-11-05", mcp_mod.negotiateProtocolVersion("2024-11-05").?);
     try testing.expectEqualStrings("2025-03-26", mcp_mod.negotiateProtocolVersion("2025-03-26").?);
     try testing.expectEqualStrings("2025-06-18", mcp_mod.negotiateProtocolVersion("2025-06-18").?);
+    try testing.expectEqualStrings("2026-07-28", mcp_mod.negotiateProtocolVersion("2026-07-28").?);
 }
 
 test "issue-506: negotiateProtocolVersion returns latest for newer-than-known clients" {
-    try testing.expectEqualStrings("2025-06-18", mcp_mod.negotiateProtocolVersion("2099-01-01").?);
+    try testing.expectEqualStrings("2026-07-28", mcp_mod.negotiateProtocolVersion("2099-01-01").?);
 }
 
 test "issue-506: negotiateProtocolVersion returns oldest for ancient/unknown clients" {
@@ -2163,6 +2164,87 @@ test "issue-506: negotiateProtocolVersion returns oldest for ancient/unknown cli
 
 test "issue-506: negotiateProtocolVersion returns null on empty input" {
     try testing.expect(mcp_mod.negotiateProtocolVersion("") == null);
+}
+
+test "mcp-2026-07-28: server/discover payload advertises versions, caching, and identity" {
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, mcp_mod.discover_result, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try testing.expectEqualStrings("complete", root.get("resultType").?.string);
+    const versions = root.get("supportedVersions").?.array;
+    try testing.expectEqualStrings("2026-07-28", versions.items[0].string);
+    try testing.expectEqualStrings("2024-11-05", versions.items[versions.items.len - 1].string);
+    try testing.expect(root.get("ttlMs").?.integer > 0);
+    try testing.expectEqualStrings("public", root.get("cacheScope").?.string);
+    try testing.expect(root.get("capabilities").?.object.get("extensions") != null);
+    const si = root.get("_meta").?.object.get("io.modelcontextprotocol/serverInfo").?.object;
+    try testing.expectEqualStrings("codedb", si.get("name").?.string);
+}
+
+test "mcp-2026-07-28: every result carries resultType and _meta serverInfo" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try testing.expect(mcp_mod.assembleJsonRpcResult(testing.allocator, null, "{}", &buf));
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, buf.items, .{});
+        defer parsed.deinit();
+        const result = parsed.value.object.get("result").?.object;
+        try testing.expectEqualStrings("complete", result.get("resultType").?.string);
+        const si = result.get("_meta").?.object.get("io.modelcontextprotocol/serverInfo").?.object;
+        try testing.expectEqualStrings("codedb", si.get("name").?.string);
+    }
+    buf.clearRetainingCapacity();
+    try testing.expect(mcp_mod.assembleJsonRpcResult(testing.allocator, null, "{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}],\"isError\":false}", &buf));
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, buf.items, .{});
+        defer parsed.deinit();
+        const result = parsed.value.object.get("result").?.object;
+        try testing.expectEqualStrings("complete", result.get("resultType").?.string);
+        try testing.expect(result.get("content").?.array.items.len == 1);
+        try testing.expect(result.get("isError").?.bool == false);
+    }
+}
+
+test "mcp-2026-07-28: payload declaring resultType is not double-wrapped" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try testing.expect(mcp_mod.assembleJsonRpcResult(testing.allocator, null, mcp_mod.discover_result, &buf));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, buf.items, "\"resultType\""));
+}
+
+test "mcp-2026-07-28: unsupported params._meta protocol version is flagged, supported ones pass" {
+    {
+        const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2030-01-01\"}}}";
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, req, .{});
+        defer parsed.deinit();
+        try testing.expectEqualStrings("2030-01-01", mcp_mod.unsupportedMetaProtocolVersion(&parsed.value.object).?);
+    }
+    {
+        const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"}}}";
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, req, .{});
+        defer parsed.deinit();
+        try testing.expect(mcp_mod.unsupportedMetaProtocolVersion(&parsed.value.object) == null);
+    }
+    {
+        const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}";
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, req, .{});
+        defer parsed.deinit();
+        try testing.expect(mcp_mod.unsupportedMetaProtocolVersion(&parsed.value.object) == null);
+    }
+}
+
+test "mcp-2026-07-28: tools/list result carries ttlMs and cacheScope" {
+    const response = try mcp_mod.buildToolsListResponse(testing.allocator, .{
+        .bundle_enabled = false,
+        .discriminated_opt_in = false,
+    });
+    defer testing.allocator.free(response);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try testing.expectEqual(@as(i64, 3600000), root.get("ttlMs").?.integer);
+    try testing.expectEqualStrings("public", root.get("cacheScope").?.string);
+    try testing.expect(root.get("tools").?.array.items.len > 0);
 }
 
 test "issue-508: appendRemoteErrorHint differentiates Cloudflare 530 from 404/429" {

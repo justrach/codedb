@@ -663,7 +663,7 @@ pub const Tool = enum {
 };
 
 pub const tools_list =
-    \\{"tools":[
+    \\{"ttlMs":3600000,"cacheScope":"public","tools":[
     \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts. Use to orient in an unfamiliar project.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_outline","description":"Replaces reading a whole file with cat/head/tail: symbol outline of one file — functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view — each symbol's declaration line with its body elided as '{ … N lines }', so a 2,000-line file collapses to ~one line per symbol.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_symbol","description":"Replaces grepping for a definition: PRIMARY tool for locating a definition — reach for this FIRST when you know or can guess a symbol name, instead of codedb_search. Finds symbol definitions across the index — exact name, prefix, glob pattern, fuzzy match, or kind filter. Returns file, line, kind, and score. Pass format=json for structured output.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"prefix":{"type":"string","description":"Prefix match (e.g. parse_)"},"pattern":{"type":"string","description":"Glob pattern on symbol name (e.g. *Manager)"},"kind":{"type":"string","description":"Filter by kind: function, struct, interface, class, method, enum"},"fuzzy":{"type":"boolean","description":"Fuzzy/typo-tolerant match when name is set (default: false)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"max_results":{"type":"integer","description":"Max results (default: 50, cap 200)"},"format":{"type":"string","description":"Set to json for structured JSON output"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
@@ -1062,6 +1062,16 @@ pub fn run(
         }
         const method = method_opt.?;
 
+        // MCP 2026-07-28 stateless mode: a request may pin its protocol
+        // version in params._meta; answer versions we do not support with
+        // UnsupportedProtocolVersionError instead of guessing.
+        if (!is_notification) {
+            if (unsupportedMetaProtocolVersion(root)) |requested| {
+                writeUnsupportedProtocolVersionError(alloc, stdout, id, requested);
+                continue;
+            }
+        }
+
         if (mcpj.eql(method, "initialize")) {
             handleInitialize(&session, root, id);
         } else if (mcpj.eql(method, "notifications/initialized")) {
@@ -1085,6 +1095,8 @@ pub fn run(
             handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, session.edit_agent_id, &session.governor, session.client_name);
         } else if (mcpj.eql(method, "ping")) {
             if (!is_notification) writeResult(alloc, stdout, id, "{}");
+        } else if (mcpj.eql(method, "server/discover")) {
+            if (!is_notification) writeResult(alloc, stdout, id, discover_result);
         } else {
             if (!is_notification) writeError(alloc, stdout, id, -32601, "Method not found");
         }
@@ -1128,8 +1140,8 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
         if (negotiateProtocolVersion(requested)) |v| negotiated = v;
     }
     const init_result = std.fmt.allocPrint(s.alloc,
-        \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"codedb is a code-intelligence and context tool — not your editor. Default to the structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline for a file's structure before codedb_read, and codedb_context to orient on a new task. Use codedb_search only for substrings or phrases when you do NOT know the exact symbol name — it is a fallback, not the default. Make edits with your own native file tools. codedb_edit is only a fallback for clients with no native editing."}}
-    , .{ negotiated, release_info.semver }) catch return;
+        \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}},"extensions":{{}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"{s}"}}
+    , .{ negotiated, release_info.semver, mcp_instructions }) catch return;
     defer s.alloc.free(init_result);
     writeResult(s.alloc, s.stdout, id, init_result);
 }
@@ -1138,6 +1150,7 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
 /// newest-first because clients that send a newer version than we know
 /// should still get our newest known version back, not an old one.
 const SUPPORTED_PROTOCOL_VERSIONS = [_][]const u8{
+    "2026-07-28",
     "2025-06-18",
     "2025-03-26",
     "2024-11-05",
@@ -1161,6 +1174,58 @@ pub fn negotiateProtocolVersion(requested: []const u8) ?[]const u8 {
         return SUPPORTED_PROTOCOL_VERSIONS[0];
     }
     return SUPPORTED_PROTOCOL_VERSIONS[SUPPORTED_PROTOCOL_VERSIONS.len - 1];
+}
+
+/// JSON array form of SUPPORTED_PROTOCOL_VERSIONS, built at comptime so
+/// server/discover and the -32022 error data can never drift from the
+/// negotiation list.
+pub const supported_versions_json = blk: {
+    var s: []const u8 = "[";
+    for (SUPPORTED_PROTOCOL_VERSIONS, 0..) |v, i| {
+        s = s ++ (if (i == 0) "\"" else ",\"") ++ v ++ "\"";
+    }
+    break :blk s ++ "]";
+};
+
+pub const mcp_instructions = "codedb is a code-intelligence and context tool — not your editor. Default to the structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline for a file's structure before codedb_read, and codedb_context to orient on a new task. Use codedb_search only for substrings or phrases when you do NOT know the exact symbol name — it is a fallback, not the default. Make edits with your own native file tools. codedb_edit is only a fallback for clients with no native editing.";
+
+/// MCP 2026-07-28 `server/discover` — the stateless-mode probe/identity RPC.
+/// Prebuilt at comptime; declares resultType itself so assembleJsonRpcResult
+/// passes it through without re-splicing.
+pub const discover_result = "{\"resultType\":\"complete\",\"supportedVersions\":" ++ supported_versions_json ++
+    ",\"capabilities\":{\"tools\":{\"listChanged\":false},\"extensions\":{}}" ++
+    ",\"instructions\":\"" ++ mcp_instructions ++ "\"" ++
+    ",\"ttlMs\":3600000,\"cacheScope\":\"public\"" ++
+    ",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"" ++ release_info.semver ++ "\"}}}";
+
+/// The version string from params._meta["io.modelcontextprotocol/protocolVersion"]
+/// when it names a revision we do not support; null when the key is absent or
+/// the version is supported. Legacy clients never send the key, so the classic
+/// initialize negotiation path is untouched.
+pub fn unsupportedMetaProtocolVersion(root: *const std.json.ObjectMap) ?[]const u8 {
+    const p = root.get("params") orelse return null;
+    if (p != .object) return null;
+    const m = p.object.get("_meta") orelse return null;
+    if (m != .object) return null;
+    const v = mcpj.getStr(&m.object, "io.modelcontextprotocol/protocolVersion") orelse return null;
+    for (SUPPORTED_PROTOCOL_VERSIONS) |s| {
+        if (std.mem.eql(u8, s, v)) return null;
+    }
+    return v;
+}
+
+fn writeUnsupportedProtocolVersionError(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, requested: []const u8) void {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
+    appendId(alloc, &buf, id);
+    buf.appendSlice(alloc, ",\"error\":{\"code\":-32022,\"message\":\"Unsupported protocol version\",\"data\":{\"requested\":\"") catch return;
+    mcpj.writeEscaped(alloc, &buf, requested);
+    buf.appendSlice(alloc, "\",\"supported\":" ++ supported_versions_json ++ "}}}\n") catch return;
+    stdout.writeAll(buf.items) catch {
+        stdout_broken.store(true, .release);
+        return;
+    };
 }
 
 fn requestRoots(s: *Session) void {
@@ -5303,23 +5368,41 @@ pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
     return rel;
 }
 
-fn assembleJsonRpcResult(alloc: std.mem.Allocator, id: ?std.json.Value, result: []const u8, buf: *std.ArrayList(u8)) bool {
-    buf.ensureTotalCapacity(alloc, result.len + 64) catch {};
+/// Every result object gains `resultType:"complete"` and `_meta` serverInfo
+/// here (MCP 2026-07-28) — one splice point covers initialize, tools/list,
+/// tools/call, and ping. Payloads that already declare resultType
+/// (server/discover) pass through unchanged; clients on older revisions
+/// ignore the extra members.
+pub const result_meta_prelude = "{\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"" ++ release_info.semver ++ "\"}}";
+
+pub fn assembleJsonRpcResult(alloc: std.mem.Allocator, id: ?std.json.Value, result: []const u8, buf: *std.ArrayList(u8)) bool {
+    buf.ensureTotalCapacity(alloc, result.len + 64 + result_meta_prelude.len) catch {};
     buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return false;
     appendId(alloc, buf, id);
     buf.appendSlice(alloc, ",\"result\":") catch return false;
+    var payload = result;
+    if (result.len >= 2 and result[0] == '{' and !std.mem.startsWith(u8, result, "{\"resultType\"")) {
+        buf.appendSlice(alloc, result_meta_prelude) catch return false;
+        if (std.mem.eql(u8, result, "{}")) {
+            buf.appendSlice(alloc, "}") catch return false;
+            payload = "";
+        } else {
+            buf.appendSlice(alloc, ",") catch return false;
+            payload = result[1..];
+        }
+    }
     // MCP responses are normally compact JSON with no raw line breaks. Let
     // std.mem's vectorized search prove that once, then copy the whole payload;
     // retain the sanitizing fallback for any non-canonical producer.
-    if (std.mem.indexOfAny(u8, result, "\n\r") == null) {
-        buf.appendSlice(alloc, result) catch return false;
+    if (std.mem.indexOfAny(u8, payload, "\n\r") == null) {
+        buf.appendSlice(alloc, payload) catch return false;
     } else {
         var i: usize = 0;
-        while (i < result.len) {
+        while (i < payload.len) {
             const start = i;
-            while (i < result.len and result[i] != '\n' and result[i] != '\r') : (i += 1) {}
-            if (i > start) buf.appendSlice(alloc, result[start..i]) catch return false;
-            if (i < result.len) i += 1;
+            while (i < payload.len and payload[i] != '\n' and payload[i] != '\r') : (i += 1) {}
+            if (i > start) buf.appendSlice(alloc, payload[start..i]) catch return false;
+            if (i < payload.len) i += 1;
         }
     }
     buf.appendSlice(alloc, "}\n") catch return false;
