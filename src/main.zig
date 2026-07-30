@@ -8,6 +8,7 @@ const index_mod = @import("index.zig");
 const root_policy = @import("root_policy.zig");
 const nuke_mod = @import("nuke.zig");
 const update_mod = @import("update.zig");
+const codex_mod = @import("codex_setup.zig");
 const release_info = @import("release_info.zig");
 const Config = @import("config.zig").Config;
 
@@ -284,6 +285,14 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
     // Handle nuke command early — before root resolution so it works from anywhere
     if (std.mem.eql(u8, cmd, "nuke")) {
         nuke_mod.run(io, stdout, s, allocator);
+        return;
+    }
+
+    // #680: `codedb codex install|uninstall|verify` — the CodeDB-first Codex
+    // setup. Handled here with nuke/update because it targets $HOME (or an
+    // explicit --repo path); it must not require a resolvable, indexable root.
+    if (std.mem.eql(u8, cmd, "codex")) {
+        codex_mod.run(io, &out, s, allocator, args[cmd_args_start..]);
         return;
     }
 

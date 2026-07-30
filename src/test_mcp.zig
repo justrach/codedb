@@ -11,6 +11,7 @@ const AgentRegistry = @import("agent.zig").AgentRegistry;
 const mcp_mod = @import("mcp.zig");
 const main_mod = @import("main.zig");
 const nuke_mod = @import("nuke.zig");
+const codex_setup = @import("codex_setup.zig");
 const update_mod = @import("update.zig");
 const Config = @import("config.zig").Config;
 const telemetry_mod = @import("telemetry.zig");
@@ -654,6 +655,75 @@ test "nuke: removeCodexMcpServerBlock matches indented header with inline commen
 
     try testing.expect(std.mem.indexOf(u8, output, "codedb") == null);
     try testing.expect(std.mem.indexOf(u8, output, "[mcp_servers.other]") != null);
+}
+
+test "issue-680: codex policy block upserts idempotently" {
+    const block = try codex_setup.buildPolicyBlock(testing.allocator);
+    defer testing.allocator.free(block);
+
+    const first = (try codex_setup.upsertPolicyBlock(testing.allocator, "# House rules\n\nbe nice.\n", block)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(first);
+
+    try testing.expect(std.mem.indexOf(u8, first, "# House rules") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "codedb_context") != null);
+    try testing.expectEqualStrings(release_info.semver, codex_setup.policyBlockVersion(first).?);
+
+    // Second apply must report "unchanged" so install never rewrites the file.
+    try testing.expect((try codex_setup.upsertPolicyBlock(testing.allocator, first, block)) == null);
+}
+
+test "issue-680: codex policy block replaces an older version in place" {
+    const stale =
+        \\# House rules
+        \\
+        \\<!-- codedb:begin v0.0.1 -->
+        \\## codedb — code intelligence policy
+        \\
+        \\ancient wording
+        \\<!-- codedb:end -->
+        \\
+        \\keep me
+        \\
+    ;
+
+    const block = try codex_setup.buildPolicyBlock(testing.allocator);
+    defer testing.allocator.free(block);
+
+    const updated = (try codex_setup.upsertPolicyBlock(testing.allocator, stale, block)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(updated);
+
+    try testing.expect(std.mem.indexOf(u8, updated, "ancient wording") == null);
+    try testing.expect(std.mem.indexOf(u8, updated, "v0.0.1") == null);
+    try testing.expectEqualStrings(release_info.semver, codex_setup.policyBlockVersion(updated).?);
+
+    // Replaced in place — user text keeps its position on both sides.
+    const begin_at = std.mem.indexOf(u8, updated, codex_setup.begin_marker_prefix).?;
+    const end_at = std.mem.indexOf(u8, updated, codex_setup.end_marker).?;
+    try testing.expect(std.mem.indexOf(u8, updated, "# House rules").? < begin_at);
+    try testing.expect(std.mem.indexOf(u8, updated, "keep me").? > end_at);
+    // Exactly one block survives.
+    try testing.expectEqual(end_at, std.mem.lastIndexOf(u8, updated, codex_setup.end_marker).?);
+}
+
+test "issue-680: codex policy removal preserves surrounding user text" {
+    const original = "# House rules\n\nbe nice.\n";
+
+    const block = try codex_setup.buildPolicyBlock(testing.allocator);
+    defer testing.allocator.free(block);
+
+    const installed = (try codex_setup.upsertPolicyBlock(testing.allocator, original, block)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(installed);
+
+    const removed = (try codex_setup.removePolicyBlock(testing.allocator, installed)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(removed);
+
+    try testing.expectEqualStrings(original, removed);
+    // null means "no block here" — nuke/uninstall skip the rewrite entirely.
+    try testing.expect((try codex_setup.removePolicyBlock(testing.allocator, removed)) == null);
 }
 
 test "nuke: deregisterJsonIntegrationFile handles configs larger than 64 KiB" {

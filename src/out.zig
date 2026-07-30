@@ -102,8 +102,10 @@ pub fn printUsage(out: *Out, s: sty.Style) void {
         \\    {s}mcp{s}                       JSON-RPC/MCP server over stdio
         \\    {s}update{s}                    self-update to the latest verified release
         \\    {s}nuke{s}                      uninstall codedb, clear caches, and deregister integrations
+        \\    {s}codex{s}                     CodeDB-first Codex setup (install|uninstall|verify)
         \\
     , .{
+        s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,

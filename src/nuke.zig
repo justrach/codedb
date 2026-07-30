@@ -2,6 +2,7 @@ const std = @import("std");
 const cio = @import("cio.zig");
 const sty = @import("style.zig");
 const builtin = @import("builtin");
+const codex_setup = @import("codex_setup.zig");
 const win = std.os.windows;
 
 const PROCESS_TERMINATE: u32 = 0x0001;
@@ -282,6 +283,13 @@ fn deregisterInstalledIntegrations(io: std.Io, allocator: std.mem.Allocator, hom
     const codex_config = std.fmt.allocPrint(allocator, "{s}/.codex/config.toml", .{home}) catch return removed;
     defer allocator.free(codex_config);
     if (deregisterCodexIntegrationFile(io, allocator, codex_config) catch false) removed += 1;
+
+    // #680: the managed policy block in the global Codex AGENTS.md is part of
+    // the same integration surface — drop it alongside the MCP registration so
+    // nuke leaves no codedb instructions behind.
+    const codex_agents = std.fmt.allocPrint(allocator, "{s}/.codex/{s}", .{ home, codex_setup.agents_file_name }) catch return removed;
+    defer allocator.free(codex_agents);
+    if (codex_setup.deregisterCodexPolicyFile(io, allocator, codex_agents) catch false) removed += 1;
 
     // Windsurf and Devin are registered via mcpsync; both store servers under a
     // standard `mcpServers` object, so the JSON deregister handles them too.
