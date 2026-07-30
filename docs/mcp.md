@@ -35,7 +35,7 @@ registered.
 Run in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/justrach/codedb/main/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5833/install/install.ps1 | iex
 ```
 
 The shell installer is for macOS/Linux; running it in WSL installs the Linux binary inside WSL, not the native Windows binary.

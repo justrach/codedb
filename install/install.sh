@@ -219,15 +219,50 @@ hooks_dir = os.path.join(home, ".claude", "hooks")
 settings_path = os.path.join(home, ".claude", "settings.json")
 os.makedirs(hooks_dir, exist_ok=True)
 
-# Opt-out: CODEDB_NO_HOOKS=1 at install time, or a persisted removal marker,
-# skips (re-)registering the PreToolUse block-legacy hook. Without this, any
-# reinstall/update silently re-adds a hook the user deliberately removed.
+# Opt-out: CODEDB_NO_HOOKS=1 skips (re-)registering the PreToolUse
+# block-legacy hook for THIS run only. It is deliberately NOT persisted: the
+# background auto-updater re-runs this installer with the environment it
+# inherited from the codedb process (src/update.zig), so a transient export
+# must never become a permanent on-disk opt-out. Persist it explicitly with
+# CODEDB_PERSIST_NO_HOOKS=1 or `touch ~/.codedb/no-hooks`; `rm` that file to
+# re-enable. A deliberate removal from settings.json also persists (#658).
 no_hooks_marker = os.path.join(home, ".codedb", "no-hooks")
-skip_pretooluse = bool(os.environ.get("CODEDB_NO_HOOKS")) or os.path.exists(no_hooks_marker)
-if os.environ.get("CODEDB_NO_HOOKS") and not os.path.exists(no_hooks_marker):
+
+def persist_no_hooks():
     os.makedirs(os.path.dirname(no_hooks_marker), exist_ok=True)
     with open(no_hooks_marker, "w") as f:
         f.write("")
+
+skip_pretooluse = bool(os.environ.get("CODEDB_NO_HOOKS")) or os.path.exists(no_hooks_marker)
+if os.environ.get("CODEDB_PERSIST_NO_HOOKS") and not os.path.exists(no_hooks_marker):
+    persist_no_hooks()
+    skip_pretooluse = True
+
+try:
+    with open(settings_path) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+
+hooks = data.setdefault("hooks", {})
+
+# #658: honor a deliberate removal. If a previous run registered the
+# PreToolUse hook (receipt exists) but its settings.json entry is gone, the
+# user deleted it — persist the opt-out marker instead of re-adding the hook
+# on the next unattended auto-update run. This runs BEFORE the scripts are
+# written so the removed hook script does not reappear on disk either.
+hooks_receipt = os.path.join(home, ".codedb", "hooks-registered")
+
+def pretooluse_entry_present():
+    for e in hooks.get("PreToolUse", []):
+        for h in e.get("hooks", []):
+            if "codedb-block-legacy.sh" in h.get("command", ""):
+                return True
+    return False
+
+if not skip_pretooluse and os.path.exists(hooks_receipt) and not pretooluse_entry_present():
+    persist_no_hooks()
+    skip_pretooluse = True
 
 scripts = {
     "codedb-block-legacy.sh": r'''#!/bin/bash
@@ -305,33 +340,6 @@ for name, content in scripts.items():
     with open(path, "w") as f:
         f.write(content)
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-try:
-    with open(settings_path) as f:
-        data = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    data = {}
-
-hooks = data.setdefault("hooks", {})
-
-# #658: honor a deliberate removal. If a previous run registered the
-# PreToolUse hook (receipt exists) but its settings.json entry is gone, the
-# user deleted it — persist the opt-out marker instead of re-adding the hook
-# on the next unattended auto-update run.
-hooks_receipt = os.path.join(home, ".codedb", "hooks-registered")
-
-def pretooluse_entry_present():
-    for e in hooks.get("PreToolUse", []):
-        for h in e.get("hooks", []):
-            if "codedb-block-legacy.sh" in h.get("command", ""):
-                return True
-    return False
-
-if not skip_pretooluse and os.path.exists(hooks_receipt) and not pretooluse_entry_present():
-    os.makedirs(os.path.dirname(no_hooks_marker), exist_ok=True)
-    with open(no_hooks_marker, "w") as f:
-        f.write("")
-    skip_pretooluse = True
 
 # Merge codedb hooks without clobbering existing hooks from other tools.
 # If a competing legacy-tools hook is already registered for the same
@@ -411,7 +419,7 @@ main() {
     printf "  ${Y}Windows detected${N} — codedb has a native Windows x86_64 binary.\n"
     printf "  This Bash installer is for macOS/Linux. Run this in PowerShell:\n"
     echo ""
-    printf "    ${C}irm https://raw.githubusercontent.com/justrach/codedb/main/install/install.ps1 | iex${N}\n"
+    printf "    ${C}irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5833/install/install.ps1 | iex${N}\n"
     echo ""
     printf "  Use ${G}WSL2${N} only if you want the Linux binary inside WSL.\n"
     echo ""
@@ -447,17 +455,20 @@ main() {
   local tmp="/tmp/codedb.tmp.$$"
   if curl -fsSL -A 'codedb-installer' "$url" -o "$tmp" 2>/dev/null; then
     # Verify checksum when the release publishes a checksum manifest.
-    local checksum_text expected_hash checksum_notice=""
+    local checksum_text expected_hash checksum_notice="" actual_hash=""
     checksum_text="$(curl -fsSL -A 'codedb-installer' "$checksum_url" 2>/dev/null || true)"
     expected_hash="$(printf '%s\n' "$checksum_text" | awk "/codedb-${platform}${ext}\$/ { print \$1 }")"
     if [ -n "$expected_hash" ]; then
-      local actual_hash
       if command -v sha256sum >/dev/null 2>&1; then
         actual_hash="$(sha256sum "$tmp" | awk '{print $1}')"
       elif command -v shasum >/dev/null 2>&1; then
         actual_hash="$(shasum -a 256 "$tmp" | awk '{print $1}')"
       fi
-      if [ -n "$actual_hash" ] && [ "$actual_hash" != "$expected_hash" ]; then
+      if [ -z "$actual_hash" ]; then
+        # No hashing tool on PATH. Never silently install an unverified
+        # binary — say so in the same place the skipped-manifest case does.
+        checksum_notice="  ${Y}warning:${N} checksum NOT verified — neither sha256sum nor shasum is on PATH\n"
+      elif [ "$actual_hash" != "$expected_hash" ]; then
         rm -f "$tmp"
         printf "${R}failed${N}\n"
         printf "\n  ${R}error: checksum mismatch — binary may be corrupted${N}\n" >&2
@@ -484,7 +495,7 @@ main() {
   if [ -n "$checksum_notice" ]; then
     printf "$checksum_notice"
   fi
-  printf "  ${D}claude hook opt-out: CODEDB_NO_HOOKS=1 or touch ~/.codedb/no-hooks${N}\n"
+  printf "  ${D}claude hook opt-out: CODEDB_NO_HOOKS=1 skips this run; CODEDB_PERSIST_NO_HOOKS=1 or touch ~/.codedb/no-hooks makes it permanent (rm ~/.codedb/no-hooks re-enables)${N}\n"
 
   # Register MCP server in coding tools
   echo ""

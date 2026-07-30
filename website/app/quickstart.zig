@@ -26,7 +26,7 @@ fn page() h.Node {
         ),
         h.p(.{}, "On native Windows x86_64, run the checksum-verifying installer in PowerShell:"),
         h.pre(.{},
-            \\irm https://raw.githubusercontent.com/justrach/codedb/main/install/install.ps1 | iex
+            \\irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5833/install/install.ps1 | iex
         ),
         h.p(.{}, "Supports macOS (ARM64, x86_64), Linux (ARM64, x86_64), and Windows (x86_64). macOS ARM64 binaries are codesigned and notarized."),
 

@@ -3523,3 +3523,156 @@ test "mcp: emit-rich-blocks defaults lean for agent clients, rich for GUI panels
     try testing.expect(mcp_mod.mcpEmitRichBlocks("claude-ai"));
     try testing.expect(mcp_mod.mcpEmitRichBlocks("Claude-AI"));
 }
+
+test "issue-680: policy upsert never splices on a marker-shaped string in user prose" {
+    const block = try codex_setup.buildPolicyBlock(testing.allocator);
+    defer testing.allocator.free(block);
+
+    const original =
+        \\# House rules
+        \\
+        \\Do not touch the `<!-- codedb:begin v` marker by hand.
+        \\
+        \\SECRET USER INSTRUCTIONS THAT MUST SURVIVE
+        \\
+    ;
+
+    const updated = (try codex_setup.upsertPolicyBlock(testing.allocator, original, block)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(updated);
+
+    // Every byte the user wrote survives, in order, ahead of the block.
+    try testing.expect(std.mem.startsWith(u8, updated, std.mem.trimEnd(u8, original, "\n")));
+    try testing.expect(std.mem.indexOf(u8, updated, "SECRET USER INSTRUCTIONS THAT MUST SURVIVE") != null);
+    try testing.expect(std.mem.indexOf(u8, updated, "Do not touch the `<!-- codedb:begin v` marker by hand.") != null);
+    try testing.expect(std.mem.indexOf(u8, updated, codex_setup.end_marker) != null);
+
+    // ...and a re-install is still a no-op.
+    try testing.expect((try codex_setup.upsertPolicyBlock(testing.allocator, updated, block)) == null);
+}
+
+test "issue-680: policy upsert repairs an unterminated block instead of appending a second one" {
+    const block = try codex_setup.buildPolicyBlock(testing.allocator);
+    defer testing.allocator.free(block);
+
+    const damaged = "# House rules\n\n<!-- codedb:begin v0.0.1 -->\nHALF WRITTEN\nKEEP THIS USER LINE\n";
+
+    const first = (try codex_setup.upsertPolicyBlock(testing.allocator, damaged, block)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(first);
+
+    try testing.expect(std.mem.indexOf(u8, first, "KEEP THIS USER LINE") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "HALF WRITTEN") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "v0.0.1") == null);
+    // Exactly one begin marker, and it is terminated.
+    try testing.expectEqual(
+        std.mem.indexOf(u8, first, codex_setup.begin_marker_prefix).?,
+        std.mem.lastIndexOf(u8, first, codex_setup.begin_marker_prefix).?,
+    );
+    try testing.expectEqualStrings(release_info.semver, codex_setup.policyBlockVersion(first).?);
+
+    // Install must be idempotent from the second run on.
+    try testing.expect((try codex_setup.upsertPolicyBlock(testing.allocator, first, block)) == null);
+}
+
+test "issue-680: uninstall strips every codedb policy block, install collapses to one" {
+    const two =
+        "# House rules\n\n" ++
+        "<!-- codedb:begin v0.0.1 -->\nold one\n<!-- codedb:end -->\n\n" ++
+        "middle user text\n\n" ++
+        "<!-- codedb:begin v0.0.2 -->\nold two\n<!-- codedb:end -->\n\n" ++
+        "tail user text\n";
+
+    const removed = (try codex_setup.removePolicyBlock(testing.allocator, two)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(removed);
+
+    try testing.expect(std.mem.indexOf(u8, removed, codex_setup.begin_marker_prefix) == null);
+    try testing.expect(std.mem.indexOf(u8, removed, "old one") == null);
+    try testing.expect(std.mem.indexOf(u8, removed, "old two") == null);
+    try testing.expect(std.mem.indexOf(u8, removed, "middle user text") != null);
+    try testing.expect(std.mem.indexOf(u8, removed, "tail user text") != null);
+
+    const block = try codex_setup.buildPolicyBlock(testing.allocator);
+    defer testing.allocator.free(block);
+
+    const collapsed = (try codex_setup.upsertPolicyBlock(testing.allocator, two, block)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(collapsed);
+
+    try testing.expectEqual(
+        std.mem.indexOf(u8, collapsed, codex_setup.begin_marker_prefix).?,
+        std.mem.lastIndexOf(u8, collapsed, codex_setup.begin_marker_prefix).?,
+    );
+    try testing.expect(std.mem.indexOf(u8, collapsed, "old two") == null);
+    try testing.expect(std.mem.indexOf(u8, collapsed, "middle user text") != null);
+    try testing.expect(std.mem.indexOf(u8, collapsed, "tail user text") != null);
+}
+
+test "issue-534: remote cache records which repo populated a slug dir" {
+    const remote_cache = @import("remote_cache.zig");
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const cache_dir = path_buf[0..dir_len];
+
+    // No recorded origin — a cache written by an older build is never trusted.
+    try testing.expect(!remote_cache.cachedOriginMatches(io, testing.allocator, cache_dir, "vercel/next.js"));
+
+    var origin_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const origin_path = try std.fmt.bufPrint(&origin_buf, "{s}/{s}", .{ cache_dir, remote_cache.origin_marker_name });
+    {
+        const file = try std.Io.Dir.cwd().createFile(io, origin_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "vercel/next.js");
+    }
+
+    try testing.expect(remote_cache.cachedOriginMatches(io, testing.allocator, cache_dir, "vercel/next.js"));
+    // wikiSlugForRepo collapses next.js and next-js onto one slug; the origin
+    // must not, or one repo's source gets served under the other's name.
+    try testing.expect(!remote_cache.cachedOriginMatches(io, testing.allocator, cache_dir, "vercel/next-js"));
+}
+
+test "issue-534: cache sweepers leave an in-flight temp clone alone" {
+    const remote_cache = @import("remote_cache.zig");
+
+    var name_buf: [64]u8 = undefined;
+    const fresh = try std.fmt.bufPrint(&name_buf, "vercel-next-js.tmp.{d}", .{@as(u64, @bitCast(cio.milliTimestamp()))});
+    try testing.expect(remote_cache.isActiveTempEntry(fresh));
+
+    // Finished entries and long-abandoned staging dirs are still sweepable.
+    try testing.expect(!remote_cache.isActiveTempEntry("vercel-next-js"));
+    try testing.expect(!remote_cache.isActiveTempEntry("vercel-next-js.tmp.1"));
+}
+
+test "issue-534: remote clone budget reads the GitHub-reported repo size" {
+    const remote_cache = @import("remote_cache.zig");
+
+    try testing.expectEqual(@as(u64, 12345), remote_cache.parseGithubRepoSizeKb(
+        "{\"id\":1,\"name\":\"x\",\"size\": 12345,\"stargazers_count\":2}",
+    ).?);
+    try testing.expect(remote_cache.parseGithubRepoSizeKb("{\"id\":1,\"name\":\"x\"}") == null);
+    // chromium-scale repos are past the budget; a normal repo is not.
+    try testing.expect(20_000_000 > remote_cache.MAX_CLONE_SIZE_KB);
+    try testing.expect(50_000 < remote_cache.MAX_CLONE_SIZE_KB);
+}
+
+test "installers: the website copies stay byte-identical to install/install.sh" {
+    const alloc = testing.allocator;
+    const canonical = std.Io.Dir.cwd().readFileAlloc(io, "install/install.sh", alloc, .limited(1 << 20)) catch
+        return error.SkipZigTest;
+    defer alloc.free(canonical);
+
+    // install/install.sh is the single source: the website copies are served
+    // from the same bytes, so a checksum-free or #658-free variant can never
+    // ship behind /install.sh.
+    const copies = [_][]const u8{ "website/app/install_script.sh", "website/dist/install.sh" };
+    for (copies) |rel| {
+        const copy = std.Io.Dir.cwd().readFileAlloc(io, rel, alloc, .limited(1 << 20)) catch
+            return error.SkipZigTest;
+        defer alloc.free(copy);
+        try testing.expectEqualStrings(canonical, copy);
+    }
+}

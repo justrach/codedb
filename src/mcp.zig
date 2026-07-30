@@ -379,6 +379,22 @@ const ProjectCache = struct {
         }
     }
 
+    /// Drop every entry whose path starts with `prefix` (used when a whole
+    /// cache root is deleted out from under the warm entries).
+    fn invalidatePrefix(self: *ProjectCache, prefix: []const u8) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+
+        for (&self.entries) |*slot| {
+            if (slot.*) |entry| {
+                if (std.mem.startsWith(u8, entry.path, prefix)) {
+                    self.destroyEntry(entry);
+                    slot.* = null;
+                }
+            }
+        }
+    }
+
     fn get(
         self: *ProjectCache,
         io: std.Io,
@@ -3165,8 +3181,12 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
     const content = if (cached) |owned_content|
         owned_content
     else blk: {
-        // Fall back to disk read
-        break :blk std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch {
+        // Fall back to a disk read rooted at the EXPLORER's root, not the
+        // server's cwd. For a project=/remote-cache explorer, cwd would serve
+        // the user's own file of the same relative path under the other
+        // project's label (mirrors explore.readContentForSearch).
+        const read_root = explorer.root_dir orelse std.Io.Dir.cwd();
+        break :blk read_root.readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch {
             out.appendSlice(alloc, "error: failed to read file: ") catch {};
             out.appendSlice(alloc, path) catch {};
             // Issue #356-p3: fuzzy fallback so a mistyped path is recoverable
@@ -3967,6 +3987,14 @@ fn handleRemote(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obje
     }
 
     if (std.mem.eql(u8, action, "clean_cache")) {
+        // Drop warm ProjectCache entries pointing into the cache first:
+        // ProjectCache.get matches on the path string and its mmapped
+        // snapshot stays valid after unlink, so a survivor would keep serving
+        // content this call just deleted.
+        if (remote_cache.getRemoteCacheDir(alloc, "")) |remote_root| {
+            defer alloc.free(remote_root);
+            cache.invalidatePrefix(remote_root);
+        }
         const count = remote_cache.cleanRemoteCache(io, alloc) catch {
             out.appendSlice(alloc, "error: failed to clean remote cache") catch {};
             return;
@@ -4119,8 +4147,11 @@ fn handleRemote(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obje
         return;
     }
 
-    // Remote returned an error — try local fallback
-    if (handleRemoteFallback(io, alloc, args, out, cache, repo, wiki_slug, action, default_explorer, default_store)) return;
+    // Remote returned an error — try local fallback. 429 is excluded: rate
+    // limiting is transient and retryable, and paying for a full clone+index
+    // because the wiki asked us to slow down is never the right trade.
+    if (remote.status != 429 and
+        handleRemoteFallback(io, alloc, args, out, cache, repo, wiki_slug, action, default_explorer, default_store)) return;
 
     out.appendSlice(alloc, "error: ") catch {};
     out.appendSlice(alloc, "api.wiki.codes") catch {};
@@ -4153,11 +4184,24 @@ fn handleRemote(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obje
 }
 
 fn isLocallyServiceable(action: []const u8) bool {
-    const local_actions = [_][]const u8{ "tree", "outline", "search", "read", "symbol", "deps" };
+    // "deps" is deliberately absent: the wiki's deps endpoint is repo-level
+    // (no path argument), while local handleDeps is per-file "imported by",
+    // so translateRemoteArgs has nothing to map. Listing it here only bought
+    // a full clone + index followed by "error: missing 'path' argument".
+    const local_actions = [_][]const u8{ "tree", "outline", "search", "read", "symbol" };
     for (&local_actions) |a| {
         if (std.mem.eql(u8, action, a)) return true;
     }
     return false;
+}
+
+/// Provenance: local-cache results are structurally different from the wiki
+/// JSON and can lag the live repo by up to REMOTE_CACHE_TTL_SECONDS. Say so
+/// explicitly rather than passing a stale clone off as a live remote answer.
+fn appendRemoteFallbackNote(alloc: std.mem.Allocator, out: *std.ArrayList(u8), wiki_slug: []const u8) void {
+    out.appendSlice(alloc, "note: api.wiki.codes could not answer \xe2\x80\x94 served from a local shallow clone under ~/.codedb/remote-cache/") catch {};
+    out.appendSlice(alloc, wiki_slug) catch {};
+    out.appendSlice(alloc, " (refreshed at most weekly, so it may lag the live repo).") catch {};
 }
 
 fn handleRemoteFallback(
@@ -4174,11 +4218,17 @@ fn handleRemoteFallback(
 ) bool {
     if (!isLocallyServiceable(action)) return false;
 
-    const ensure_result = remote_cache.ensureCached(io, alloc, repo, wiki_slug);
+    var refreshed = false;
+    const ensure_result = remote_cache.ensureCached(io, alloc, repo, wiki_slug, &refreshed);
     if (ensure_result != .ready) return false;
 
     const cache_dir = remote_cache.getRemoteCacheDir(alloc, wiki_slug) orelse return false;
     defer alloc.free(cache_dir);
+
+    // A re-clone replaced the directory a warm entry may still have mmapped;
+    // ProjectCache.get matches on the path string alone and would hand back
+    // the previous snapshot forever.
+    if (refreshed) cache.invalidate(cache_dir);
 
     const ctx = cache.get(io, cache_dir, default_explorer, default_store) catch return false;
 
@@ -4190,28 +4240,37 @@ fn handleRemoteFallback(
     defer translated_args.deinit(alloc);
     translateRemoteArgs(alloc, args, action, &translated_args);
 
-    // Provenance: local-cache results are structurally different from the wiki
-    // JSON and can lag the live repo by up to REMOTE_CACHE_TTL_SECONDS. Say so
-    // explicitly rather than passing a stale clone off as a live remote answer.
-    out.appendSlice(alloc, "note: api.wiki.codes was unreachable — served from a local shallow clone under ~/.codedb/remote-cache/") catch {};
-    out.appendSlice(alloc, wiki_slug) catch {};
-    out.appendSlice(alloc, " (refreshed at most weekly, so it may lag the live repo).\n\n") catch {};
+    // Run the local handler into a scratch buffer first. handleCall decides
+    // isError purely from a leading "error:" at byte 0, so writing the
+    // provenance note ahead of the handler would report every failed fallback
+    // to the client as a success with a green check.
+    var scratch: std.ArrayList(u8) = .empty;
+    defer scratch.deinit(alloc);
 
     if (std.mem.eql(u8, action, "tree")) {
-        handleTree(alloc, out, ctx.explorer);
+        handleTree(alloc, &scratch, ctx.explorer);
     } else if (std.mem.eql(u8, action, "outline")) {
-        handleOutline(alloc, &translated_args, out, ctx.explorer);
+        handleOutline(alloc, &translated_args, &scratch, ctx.explorer);
     } else if (std.mem.eql(u8, action, "search")) {
-        handleSearch(alloc, &translated_args, out, ctx.explorer);
+        handleSearch(alloc, &translated_args, &scratch, ctx.explorer);
     } else if (std.mem.eql(u8, action, "read")) {
-        handleRead(io, alloc, &translated_args, out, ctx.explorer);
+        handleRead(io, alloc, &translated_args, &scratch, ctx.explorer);
     } else if (std.mem.eql(u8, action, "symbol")) {
-        handleSymbol(alloc, &translated_args, out, ctx.explorer);
-    } else if (std.mem.eql(u8, action, "deps")) {
-        handleDeps(alloc, &translated_args, out, ctx.explorer);
+        handleSymbol(alloc, &translated_args, &scratch, ctx.explorer);
     } else {
         return false;
     }
+
+    if (std.mem.startsWith(u8, scratch.items, "error:")) {
+        out.appendSlice(alloc, scratch.items) catch {};
+        out.appendSlice(alloc, "\n\n") catch {};
+        appendRemoteFallbackNote(alloc, out, wiki_slug);
+        return true;
+    }
+
+    appendRemoteFallbackNote(alloc, out, wiki_slug);
+    out.appendSlice(alloc, "\n\n") catch {};
+    out.appendSlice(alloc, scratch.items) catch {};
     return true;
 }
 

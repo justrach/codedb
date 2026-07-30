@@ -131,22 +131,47 @@ try {
   }
 
   if (-not $NoPath) {
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $pathEntries = @($userPath -split ';' | Where-Object { $_ })
+    # HKCU\Environment\Path is REG_EXPAND_SZ by default and normally holds
+    # %USERPROFILE%-style references. [Environment]::GetEnvironmentVariable
+    # expands those, and SetEnvironmentVariable writes the result back as
+    # REG_SZ — permanently flattening the user's PATH and downgrading its
+    # value kind on every install/update. Read and write the registry
+    # directly instead, preserving both the unexpanded text and the kind.
+    $envKey = "HKCU:\Environment"
+    $rawUserPath = ""
+    $pathKind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+    try {
+      $envItem = Get-Item -LiteralPath $envKey -ErrorAction Stop
+      $rawUserPath = [string]$envItem.GetValue(
+        "Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+      try {
+        $existingKind = $envItem.GetValueKind("Path")
+        if ($existingKind -eq [Microsoft.Win32.RegistryValueKind]::String) {
+          $pathKind = [Microsoft.Win32.RegistryValueKind]::String
+        }
+      } catch {
+        # No user Path value yet — create it as REG_EXPAND_SZ.
+      }
+    } catch {
+      $rawUserPath = [string][Environment]::GetEnvironmentVariable("Path", "User")
+    }
+
+    $pathEntries = @($rawUserPath -split ';' | Where-Object { $_ })
     $alreadyOnPath = $false
     foreach ($entry in $pathEntries) {
-      if ($entry.TrimEnd("\") -ieq $InstallDir.TrimEnd("\")) {
+      $expanded = [Environment]::ExpandEnvironmentVariables($entry)
+      if ($expanded.TrimEnd("\") -ieq $InstallDir.TrimEnd("\")) {
         $alreadyOnPath = $true
         break
       }
     }
     if (-not $alreadyOnPath) {
-      $newUserPath = if ($userPath) {
-        $userPath.TrimEnd(';') + ';' + $InstallDir
+      $newUserPath = if ($rawUserPath) {
+        $rawUserPath.TrimEnd(';') + ';' + $InstallDir
       } else {
         $InstallDir
       }
-      [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+      Set-ItemProperty -LiteralPath $envKey -Name "Path" -Value $newUserPath -Type $pathKind
       Write-Host "  PATH      added for future terminals"
     }
   }

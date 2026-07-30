@@ -15,8 +15,10 @@ pub const begin_marker_suffix = " -->";
 pub const end_marker = "<!-- codedb:end -->";
 
 /// Opt-out marker written by `codedb codex uninstall`. Deleting it re-enables
-/// `codedb codex install`.
+/// `codedb codex install`. The global uninstall writes it under $HOME; a
+/// `--repo` uninstall writes repo_opt_out_marker_name inside that repo.
 pub const opt_out_marker_rel = ".codedb/no-codex-policy";
+pub const repo_opt_out_marker_name = ".codedb-no-codex-policy";
 pub const opt_out_env = "CODEDB_NO_CODEX_POLICY";
 
 pub const agents_file_name = "AGENTS.md";
@@ -55,69 +57,169 @@ pub fn buildPolicyBlock(allocator: std.mem.Allocator) ![]u8 {
     });
 }
 
-pub const BlockSpan = struct { start: usize, end: usize };
+pub const BlockSpan = struct {
+    start: usize,
+    end: usize,
+    /// False when a begin marker had no matching end marker before EOF or
+    /// before the next begin marker. The span then covers only the damaged
+    /// begin line, so a repair replaces that line instead of swallowing every
+    /// byte of user text after it.
+    terminated: bool = true,
+};
 
 /// Byte range of the managed block in `content`, for ANY version, or null.
+/// Markers must own a whole line and must not sit inside a fenced code block,
+/// so a marker-shaped string in the user's own prose (or in a documented
+/// sample) can never anchor a splice that deletes what surrounds it.
 pub fn findPolicyBlock(content: []const u8) ?BlockSpan {
-    const start = std.mem.indexOf(u8, content, begin_marker_prefix) orelse return null;
-    const close = std.mem.indexOfPos(u8, content, start + begin_marker_prefix.len, end_marker) orelse return null;
-    return .{ .start = start, .end = close + end_marker.len };
+    return findPolicyBlockFrom(content, 0);
+}
+
+/// Same as findPolicyBlock, starting the line scan at `from`.
+pub fn findPolicyBlockFrom(content: []const u8, from: usize) ?BlockSpan {
+    if (from > content.len) return null;
+
+    var fenced = false;
+    var begin: ?usize = null;
+    var begin_line_end: usize = 0;
+    var line_start: usize = from;
+    while (true) {
+        const nl = std.mem.indexOfScalarPos(u8, content, line_start, '\n');
+        const line_end = nl orelse content.len;
+        const line = std.mem.trim(u8, content[line_start..line_end], " \t\r");
+
+        if (isFenceLine(line)) {
+            fenced = !fenced;
+        } else if (!fenced) {
+            if (isBeginMarkerLine(line)) {
+                // A second begin marker before any end marker means the first
+                // one is unterminated — repair it rather than spanning across.
+                if (begin) |b| return .{ .start = b, .end = begin_line_end, .terminated = false };
+                begin = line_start;
+                begin_line_end = line_end;
+            } else if (begin != null and std.mem.eql(u8, line, end_marker)) {
+                return .{ .start = begin.?, .end = line_end, .terminated = true };
+            }
+        }
+
+        if (nl) |n| line_start = n + 1 else break;
+    }
+
+    if (begin) |b| return .{ .start = b, .end = begin_line_end, .terminated = false };
+    return null;
+}
+
+fn isFenceLine(line: []const u8) bool {
+    return std.mem.startsWith(u8, line, "```") or std.mem.startsWith(u8, line, "~~~");
+}
+
+/// A begin marker line is exactly `<!-- codedb:begin v<version> -->` — no
+/// leading prose, no trailing text, and a non-empty version with no marker
+/// punctuation in it.
+fn isBeginMarkerLine(line: []const u8) bool {
+    if (!std.mem.startsWith(u8, line, begin_marker_prefix)) return false;
+    if (!std.mem.endsWith(u8, line, begin_marker_suffix)) return false;
+    if (line.len < begin_marker_prefix.len + begin_marker_suffix.len + 1) return false;
+    const version = line[begin_marker_prefix.len .. line.len - begin_marker_suffix.len];
+    if (version.len == 0) return false;
+    for (version) |c| {
+        if (c == ' ' or c == '\t' or c == '<' or c == '>') return false;
+    }
+    return true;
 }
 
 /// Version recorded in the begin marker, borrowed from `content`, or null.
+/// A damaged (unterminated) block reports null so `verify` says "no codedb
+/// block" and `install` repairs it, instead of claiming it is current.
 pub fn policyBlockVersion(content: []const u8) ?[]const u8 {
     const span = findPolicyBlock(content) orelse return null;
-    const tail = content[span.start + begin_marker_prefix.len .. span.end];
-    const close = std.mem.indexOf(u8, tail, begin_marker_suffix) orelse return null;
-    if (close == 0) return null;
-    return tail[0..close];
+    if (!span.terminated) return null;
+    const line_end = std.mem.indexOfScalarPos(u8, content, span.start, '\n') orelse span.end;
+    const line = std.mem.trim(u8, content[span.start..line_end], " \t\r");
+    if (!isBeginMarkerLine(line)) return null;
+    return line[begin_marker_prefix.len .. line.len - begin_marker_suffix.len];
 }
 
 /// Insert or refresh the managed block. Returns null when `content` already
-/// holds exactly `block` (nothing to write) — the same null-means-unchanged
-/// contract as nuke.removeCodexMcpServerBlock. An existing codedb block of any
-/// version is replaced in place; otherwise the block is appended after a blank
-/// line so it never runs into the user's own prose.
+/// holds exactly `block` and nothing else needs repairing (nothing to write)
+/// — the same null-means-unchanged contract as
+/// nuke.removeCodexMcpServerBlock. The first codedb block of any version is
+/// replaced in place, an unterminated one is repaired, and any further blocks
+/// are dropped so the file converges on exactly one. With no block at all,
+/// the block is appended after a blank line so it never runs into the user's
+/// own prose.
 pub fn upsertPolicyBlock(allocator: std.mem.Allocator, content: []const u8, block: []const u8) !?[]u8 {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
-    if (findPolicyBlock(content)) |span| {
-        if (std.mem.eql(u8, content[span.start..span.end], block)) return null;
-        try out.appendSlice(allocator, content[0..span.start]);
+    var pos: usize = 0;
+    var replaced = false;
+    var changed = false;
+
+    while (findPolicyBlockFrom(content, pos)) |span| {
+        if (!replaced) {
+            try out.appendSlice(allocator, content[pos..span.start]);
+            try out.appendSlice(allocator, block);
+            if (!span.terminated or !std.mem.eql(u8, content[span.start..span.end], block)) changed = true;
+            replaced = true;
+            pos = span.end;
+        } else {
+            try out.appendSlice(allocator, trimBlockSeparator(content[pos..span.start]));
+            pos = skipTrailingNewline(content, span.end);
+            changed = true;
+        }
+    }
+
+    if (!replaced) {
+        const head = std.mem.trimEnd(u8, content, " \t\r\n");
+        if (head.len > 0) {
+            try out.appendSlice(allocator, head);
+            try out.appendSlice(allocator, "\n\n");
+        }
         try out.appendSlice(allocator, block);
-        try out.appendSlice(allocator, content[span.end..]);
+        try out.append(allocator, '\n');
         return try out.toOwnedSlice(allocator);
     }
 
-    const head = std.mem.trimEnd(u8, content, " \t\r\n");
-    if (head.len > 0) {
-        try out.appendSlice(allocator, head);
-        try out.appendSlice(allocator, "\n\n");
-    }
-    try out.appendSlice(allocator, block);
-    try out.append(allocator, '\n');
+    try out.appendSlice(allocator, content[pos..]);
+    if (!changed) return null;
     return try out.toOwnedSlice(allocator);
 }
 
-/// Strip the managed block plus its blank-line separator. Returns null when no
+/// Strip EVERY managed block plus its blank-line separator, so uninstall and
+/// nuke cannot leave a second stale codedb block behind. Returns null when no
 /// block is present, so callers skip the rewrite entirely.
 pub fn removePolicyBlock(allocator: std.mem.Allocator, content: []const u8) !?[]u8 {
-    const span = findPolicyBlock(content) orelse return null;
-
-    var remove_end = span.end;
-    if (remove_end < content.len and content[remove_end] == '\r') remove_end += 1;
-    if (remove_end < content.len and content[remove_end] == '\n') remove_end += 1;
-
-    var remove_start = span.start;
-    while (remove_start > 0 and (content[remove_start - 1] == ' ' or content[remove_start - 1] == '\t')) : (remove_start -= 1) {}
-    while (remove_start >= 2 and content[remove_start - 1] == '\n' and content[remove_start - 2] == '\n') : (remove_start -= 1) {}
-
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
-    try out.appendSlice(allocator, content[0..remove_start]);
-    try out.appendSlice(allocator, content[remove_end..]);
+
+    var pos: usize = 0;
+    var found = false;
+    while (findPolicyBlockFrom(content, pos)) |span| {
+        found = true;
+        try out.appendSlice(allocator, trimBlockSeparator(content[pos..span.start]));
+        pos = skipTrailingNewline(content, span.end);
+    }
+    if (!found) return null;
+
+    try out.appendSlice(allocator, content[pos..]);
     return try out.toOwnedSlice(allocator);
+}
+
+/// Drop the indentation and the extra blank line that separated a removed
+/// block from the text before it.
+fn trimBlockSeparator(keep: []const u8) []const u8 {
+    var end = keep.len;
+    while (end > 0 and (keep[end - 1] == ' ' or keep[end - 1] == '\t')) : (end -= 1) {}
+    while (end >= 2 and keep[end - 1] == '\n' and keep[end - 2] == '\n') : (end -= 1) {}
+    return keep[0..end];
+}
+
+fn skipTrailingNewline(content: []const u8, at: usize) usize {
+    var end = at;
+    if (end < content.len and content[end] == '\r') end += 1;
+    if (end < content.len and content[end] == '\n') end += 1;
+    return end;
 }
 
 /// True when `content` declares the given TOML table header, ignoring
@@ -139,11 +241,22 @@ fn trimTomlLine(line: []const u8) []const u8 {
     return std.mem.trimEnd(u8, trimmed[0..comment_start], " \t");
 }
 
-/// The 40-char HEAD sha of the repo at `root`, read straight off disk — no
-/// `git` subprocess, so it still answers when git is missing. Handles linked
-/// worktrees (`.git` as a gitdir pointer file) and packed refs.
+/// The 40-char HEAD sha of the repo containing `root`, read straight off disk
+/// — no `git` subprocess, so it still answers when git is missing. Handles
+/// linked worktrees (`.git` as a gitdir pointer file) and packed refs, and
+/// walks up like git does so an index root that is a SUBDIRECTORY of a repo
+/// resolves the same HEAD the indexer recorded via `git rev-parse`.
 pub fn resolveGitHead(io: std.Io, allocator: std.mem.Allocator, root: []const u8) ?[40]u8 {
-    return resolveGitHeadInner(io, allocator, root) catch null;
+    var cur = std.mem.trimEnd(u8, root, "/");
+    var depth: usize = 0;
+    while (depth < 256) : (depth += 1) {
+        const probe = if (cur.len == 0) "/" else cur;
+        if (resolveGitHeadInner(io, allocator, probe) catch null) |sha| return sha;
+        if (cur.len == 0) return null;
+        const slash = std.mem.lastIndexOfScalar(u8, cur, '/') orelse return null;
+        cur = cur[0..slash];
+    }
+    return null;
 }
 
 fn resolveGitHeadInner(io: std.Io, allocator: std.mem.Allocator, root: []const u8) !?[40]u8 {
@@ -365,17 +478,27 @@ fn agentsPath(out: *Out, s: sty.Style, allocator: std.mem.Allocator, home: []con
     };
 }
 
-fn optOutMarkerPath(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, opt_out_marker_rel });
+/// Opt-out marker for `target`. Global uninstalls write under $HOME; a
+/// `--repo` uninstall writes inside that repo, so its opt-out cannot leak
+/// out and disable the policy everywhere else.
+fn optOutMarkerPathFor(allocator: std.mem.Allocator, home: []const u8, target: Target) ![]u8 {
+    return switch (target.scope) {
+        .global => std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, opt_out_marker_rel }),
+        .repo => std.fmt.allocPrint(allocator, "{s}/{s}", .{
+            std.mem.trimEnd(u8, target.repo, "/"),
+            repo_opt_out_marker_name,
+        }),
+    };
 }
 
-/// True when the user has opted out of the managed policy, via the env var or
-/// the marker `codedb codex uninstall` leaves behind.
-fn optedOut(io: std.Io, allocator: std.mem.Allocator, home: []const u8) bool {
+/// True when the user has opted out of the managed policy for THIS target,
+/// via the env var or the marker `codedb codex uninstall` leaves behind at
+/// the matching scope.
+fn optedOut(io: std.Io, allocator: std.mem.Allocator, home: []const u8, target: Target) bool {
     if (cio.posixGetenv(opt_out_env)) |v| {
         if (v.len > 0 and !std.mem.eql(u8, v, "0")) return true;
     }
-    const path = optOutMarkerPath(allocator, home) catch return false;
+    const path = optOutMarkerPathFor(allocator, home, target) catch return false;
     defer allocator.free(path);
     _ = std.Io.Dir.cwd().statFile(io, path, .{}) catch return false;
     return true;
@@ -386,10 +509,11 @@ fn runInstall(io: std.Io, out: *Out, s: sty.Style, allocator: std.mem.Allocator,
     const home = homeOrExit(out, s, allocator);
     defer allocator.free(home);
 
-    if (optedOut(io, allocator, home)) {
+    if (optedOut(io, allocator, home, target)) {
+        const marker = optOutMarkerPathFor(allocator, home, target) catch null;
         out.p("{s}\xe2\x97\x8b{s} codedb codex policy is opted out \xe2\x80\x94 nothing written\n", .{ s.yellow, s.reset });
-        out.p("  re-enable by deleting {s}{s}/{s}{s} (and unsetting {s}{s}{s})\n", .{
-            s.dim, home, opt_out_marker_rel, s.reset, s.dim, opt_out_env, s.reset,
+        out.p("  re-enable by deleting {s}{s}{s} (and unsetting {s}{s}{s})\n", .{
+            s.dim, marker orelse opt_out_marker_rel, s.reset, s.dim, opt_out_env, s.reset,
         });
         out.exitWithFlush(0);
     }
@@ -456,13 +580,13 @@ fn runUninstall(io: std.Io, out: *Out, s: sty.Style, allocator: std.mem.Allocato
         out.p("{s}\xe2\x97\x8b{s} no codedb policy block in {s}{s}{s}\n", .{ s.dim, s.reset, s.cyan, path, s.reset });
     }
 
-    // The marker makes the opt-out stick: a later `install` (including one run
-    // by an installer script) refuses instead of writing the block back.
-    const marker = optOutMarkerPath(allocator, home) catch {
+    // The marker makes the opt-out stick, at the SAME scope this uninstall ran
+    // in: opting one repo out must never block the global install (and every
+    // other repo) behind a marker it never asked for.
+    const marker = optOutMarkerPathFor(allocator, home, target) catch {
         out.p("{s}\xe2\x9c\x97{s} out of memory\n", .{ s.red, s.reset });
         out.exitWithFlush(1);
     };
-    defer allocator.free(marker);
     if (std.mem.lastIndexOfScalar(u8, marker, '/')) |slash| {
         if (slash > 0) std.Io.Dir.cwd().createDirPath(io, marker[0..slash]) catch {};
     }
@@ -521,6 +645,14 @@ fn runVerify(io: std.Io, out: *Out, s: sty.Style, allocator: std.mem.Allocator, 
     if (!policy_ok) {
         ok = false;
         out.p("            run {s}codedb codex install{s} to write the current policy\n", .{ s.cyan, s.reset });
+        // install refuses while the opt-out marker exists — without this the
+        // remedy line and install's exit-0 refusal contradict each other.
+        if (optOutMarkerPathFor(allocator, home, .{ .scope = .global }) catch null) |marker| {
+            defer allocator.free(marker);
+            if (std.Io.Dir.cwd().statFile(io, marker, .{})) |_| {
+                out.p("            delete {s}{s}{s} first \xe2\x80\x94 install refuses while it exists\n", .{ s.dim, marker, s.reset });
+            } else |_| {}
+        }
     }
 
     // 3. Index presence + staleness against the repo's real HEAD.
@@ -558,6 +690,13 @@ fn runVerify(io: std.Io, out: *Out, s: sty.Style, allocator: std.mem.Allocator, 
             s.bold, &head_short,  s.reset,
         });
         out.p("            run {s}codedb {s} index{s}\n", .{ s.cyan, root_arg, s.reset });
+    } else if (head == null) {
+        // "HEAD unknown" is not the same as "heads match" — printing a plain
+        // pass would be indistinguishable from a staleness check that ran.
+        out.p("  {s}\xe2\x9c\x93{s} index     {s}{d}{s} files at {s}{s}{s} {s}(HEAD unknown \xe2\x80\x94 staleness unchecked){s}\n", .{
+            s.green, s.reset,  s.bold, meta.file_count, s.reset,
+            s.dim,   abs_root, s.reset, s.dim,           s.reset,
+        });
     } else {
         out.p("  {s}\xe2\x9c\x93{s} index     {s}{d}{s} files at {s}{s}{s}\n", .{
             s.green, s.reset,  s.bold, meta.file_count, s.reset,
@@ -602,8 +741,10 @@ fn printCodexUsage(out: *Out, s: sty.Style) void {
         \\  {s}verify{s}    [path]            report MCP registration, policy, index state
         \\
         \\  Re-running install refreshes an older policy block in place.
-        \\  uninstall also writes {s}~/.codedb/no-codex-policy{s}; delete that file (and
-        \\  unset {s}CODEDB_NO_CODEX_POLICY{s}) to let install write the policy again.
+        \\  uninstall opts out at the SAME scope it ran in: global writes
+        \\  {s}~/.codedb/no-codex-policy{s}, --repo writes {s}<repo>/.codedb-no-codex-policy{s}.
+        \\  Delete that file (and unset {s}CODEDB_NO_CODEX_POLICY{s}) to let install
+        \\  write the policy again.
         \\
         \\  exit codes: verify returns 0 only when MCP, policy, and index all check out.
         \\
@@ -614,6 +755,7 @@ fn printCodexUsage(out: *Out, s: sty.Style) void {
         s.dim,   s.reset,
         s.cyan,  s.reset,
         s.cyan,  s.reset,
+        s.dim,   s.reset,
         s.dim,   s.reset,
         s.dim,   s.reset,
     });

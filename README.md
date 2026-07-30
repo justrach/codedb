@@ -85,7 +85,7 @@ On Windows, run this command inside WSL only if you want the Linux binary inside
 Run in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/justrach/codedb/main/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5833/install/install.ps1 | iex
 ```
 
 Run the same command again to update codedb.
@@ -270,7 +270,7 @@ For Codex and Claude Code hook examples around `codedb_remote`, see [`docs/hooks
 
 **Options:** `--no-telemetry` (or set `CODEDB_NO_TELEMETRY` env var)
 
-**Claude Code hook opt-out:** the installer registers a PreToolUse hook that nudges agents from `grep`/`cat` to codedb inside indexed repos. Disable it with `CODEDB_NO_HOOKS=1` at install time or `touch ~/.codedb/no-hooks`. Deleting the hook entry from `~/.claude/settings.json` is also permanent — the installer records its registrations and treats a missing entry as a deliberate removal.
+**Claude Code hook opt-out:** the installer registers a PreToolUse hook that nudges agents from `grep`/`cat` to codedb inside indexed repos. `CODEDB_NO_HOOKS=1` skips it for that run only (it is never persisted from the environment, so a transient export can't be promoted to a permanent opt-out by the background auto-updater). To make it permanent, run the installer with `CODEDB_PERSIST_NO_HOOKS=1` or `touch ~/.codedb/no-hooks`; `rm ~/.codedb/no-hooks` re-enables it. Deleting the hook entry from `~/.claude/settings.json` is also permanent — the installer records its registrations and treats a missing entry as a deliberate removal (it writes `~/.codedb/no-hooks` for you, so `rm` that file to undo).
 
 ### Example: agent explores a codebase
 
