@@ -26,6 +26,7 @@ const snapshot_mod = @import("snapshot.zig");
 const telemetry_mod = @import("telemetry.zig");
 const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
+const remote_cache = @import("remote_cache.zig");
 const release_info = @import("release_info.zig");
 pub const DeferredScan = struct {
     io: std.Io,
@@ -681,7 +682,7 @@ pub const tools_list =
     \\{"name":"codedb_status","description":"Current indexed-file count, sequence number, and scan phase.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_snapshot","description":"Pre-rendered JSON snapshot of the entire index — tree, outlines, symbols, deps. For caching or shipping to edge workers.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_bundle","description":"Run up to 20 codedb_* calls in one round-trip. Each op is either MCP-style {\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}} or inline {\"tool\":\"codedb_search\",\"query\":\"Agent\"} — both are accepted. Example: {\"ops\":[{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}},{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}}]}. Best for parallel outline/symbol/search; avoid bundling large codedb_read calls — responses are not size-capped. If a sub-op reports `received keys: []`, the wrapper field is misnamed: use `arguments` (MCP spec), not `args`.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","description":"Sub-tool calls to dispatch (max 20). Each item must have `tool` AND `arguments` (pass `{}` if the sub-tool takes none). Inline args alongside `tool` are still accepted as a fallback.","items":{"type":"object","properties":{"tool":{"type":"string","description":"codedb_* tool name to invoke (e.g. codedb_outline, codedb_symbol, codedb_search, codedb_word, codedb_callers, codedb_read, codedb_deps, codedb_tree, codedb_hot, codedb_status, codedb_changes). Required."},"arguments":{"type":"object","description":"Per-call args matching that tool's inputSchema. Field MUST be named `arguments` (MCP `tools/call` convention) — `args` is silently ignored. Pass `{}` only if the sub-tool takes no arguments. Required."}},"required":["tool","arguments"]}},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
-    \\{"name":"codedb_remote","description":"Query indexed public repos via api.wiki.codes. Pass action= one of: tree, outline, search, read, symbol, deps, score, cves, commits, branches, dep-history, policy, actions. Use action=actions first if unsure what a repo supports.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. vercel/next.js) or a raw wiki slug such as chromium."},"action":{"type":"string","enum":["tree","outline","search","read","actions","symbol","policy","deps","score","cves","commits","branches","dep-history"],"description":"What to query from api.wiki.codes: actions, tree, search, outline, read, symbol, policy, deps, score, cves, commits, branches, dep-history."},"query":{"type":"string","description":"Action-specific argument. search: text query. symbol: identifier name. outline: file path."},"path":{"type":"string","description":"For action=read: the file path to fetch."},"lines":{"type":"string","description":"For action=read: line range like '10-60' (1-indexed, inclusive). Omit for full file."},"limit":{"type":"integer","description":"For search/tree/deps/commits/branches/dep-history: cap the number of items returned (server may enforce its own ceiling)."},"offset":{"type":"integer","description":"For tree/deps/commits/branches/dep-history: skip the first N items (pagination)."},"prefix":{"type":"string","description":"For tree: only return paths starting with this prefix (e.g. 'src/')."},"expand":{"type":"boolean","description":"For tree: when true, return the full file list. When false returns a compact directory summary when supported."},"since":{"type":"string","description":"For commits/dep-history: ISO timestamp or commit SHA to start from."},"scope":{"type":"string","enum":["runtime","all"],"description":"For score/cves only. Defaults to runtime; use all to include dev/tooling dependencies."},"backend":{"type":"string","enum":["wiki"],"description":"Deprecated compatibility field. Only 'wiki' is accepted; requests always use api.wiki.codes."}},"required":["repo","action"]}},
+    \\{"name":"codedb_remote","description":"Query indexed public repos via api.wiki.codes. When the upstream is unreachable, automatically falls back to a local shallow clone + index for tree, outline, search, read, symbol, and deps actions. Pass action= one of: tree, outline, search, read, symbol, deps, score, cves, commits, branches, dep-history, policy, actions, clean_cache. Use action=actions first if unsure what a repo supports.","inputSchema":{"type":"object","properties":{"repo":{"type":"string","description":"GitHub repo in owner/repo format (e.g. vercel/next.js) or a raw wiki slug such as chromium."},"action":{"type":"string","enum":["tree","outline","search","read","actions","symbol","policy","deps","score","cves","commits","branches","dep-history","clean_cache"],"description":"What to query from api.wiki.codes: actions, tree, search, outline, read, symbol, policy, deps, score, cves, commits, branches, dep-history. Or clean_cache to purge the local fallback cache."},"query":{"type":"string","description":"Action-specific argument. search: text query. symbol: identifier name. outline: file path."},"path":{"type":"string","description":"For action=read: the file path to fetch."},"lines":{"type":"string","description":"For action=read: line range like '10-60' (1-indexed, inclusive). Omit for full file."},"limit":{"type":"integer","description":"For search/tree/deps/commits/branches/dep-history: cap the number of items returned (server may enforce its own ceiling)."},"offset":{"type":"integer","description":"For tree/deps/commits/branches/dep-history: skip the first N items (pagination)."},"prefix":{"type":"string","description":"For tree: only return paths starting with this prefix (e.g. 'src/')."},"expand":{"type":"boolean","description":"For tree: when true, return the full file list. When false returns a compact directory summary when supported."},"since":{"type":"string","description":"For commits/dep-history: ISO timestamp or commit SHA to start from."},"scope":{"type":"string","enum":["runtime","all"],"description":"For score/cves only. Defaults to runtime; use all to include dev/tooling dependencies."},"backend":{"type":"string","enum":["wiki"],"description":"Deprecated compatibility field. Only 'wiki' is accepted; requests always use api.wiki.codes."}},"required":["repo","action"]}},
     \\{"name":"codedb_projects","description":"List every locally indexed project on this machine: path, data-dir hash, snapshot presence.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"codedb_index","description":"Index a local FOLDER (not a file). Builds outlines, trigrams, word index, and writes codedb.snapshot. After indexing, query it via the project= param on any other tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the FOLDER (not a file) to index, e.g. /Users/you/myproject"}},"required":["path"]}},
     \\{"name":"codedb_find","description":"Replaces find for filenames: fuzzy FILE-NAME search ONLY — typo-tolerant subsequence match against indexed file paths. NOT a content/symbol search: 'rerank' will NOT find files containing rerankSignalScore unless the filename itself contains 'rerank'. For symbol lookups use codedb_word/codedb_symbol; for content use codedb_search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy filename query (e.g. 'authmidlware' for auth_middleware.go, 'test_auth', 'main.zig'). Matched against path basenames, not file contents."},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
@@ -1560,7 +1561,7 @@ fn dispatch(
         .codedb_status => handleStatus(alloc, out, ctx.store, ctx.explorer),
         .codedb_snapshot => handleSnapshot(alloc, out, ctx.explorer, ctx.store, ctx.snapshot_cache),
         .codedb_bundle => handleBundle(io, alloc, args, out, ctx.store, ctx.explorer, agents, cache, deferred_scan, edit_agent_id),
-        .codedb_remote => handleRemote(alloc, args, out),
+        .codedb_remote => handleRemote(io, alloc, args, out, cache, default_explorer, default_store),
         .codedb_projects => handleProjects(io, alloc, out),
         .codedb_index => handleIndex(io, alloc, args, out, cache, default_store, default_explorer, deferred_scan),
         .codedb_find => handleFind(io, alloc, args, out, ctx.explorer),
@@ -3916,13 +3917,13 @@ fn fetchRemote(
     return .{ .captured = captured, .status = status, .body_len = body_len };
 }
 
-fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8)) void {
+fn handleRemote(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), cache: *ProjectCache, default_explorer: *Explorer, default_store: *Store) void {
     const repo = getStr(args, "repo") orelse {
         out.appendSlice(alloc, "error: missing 'repo' (e.g. justrach/merjs)") catch {};
         return;
     };
     const action = getStr(args, "action") orelse {
-        out.appendSlice(alloc, "error: missing 'action' (actions, tree, outline, search, read, symbol, policy, deps, score, cves, commits, branches, dep-history)") catch {};
+        out.appendSlice(alloc, "error: missing 'action' (actions, tree, outline, search, read, symbol, policy, deps, score, cves, commits, branches, dep-history, clean_cache)") catch {};
         return;
     };
 
@@ -3949,6 +3950,7 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         "branches",
         "dep-history",
         "actions",
+        "clean_cache",
     };
     var action_valid = false;
     for (&wiki_actions) |va| {
@@ -3960,7 +3962,20 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
     if (!action_valid) {
         out.appendSlice(alloc, "error: action '") catch {};
         out.appendSlice(alloc, action) catch {};
-        out.appendSlice(alloc, "' not supported by api.wiki.codes (supports: tree, outline, search, read, symbol, policy, deps, score, cves, commits, branches, dep-history, actions)") catch {};
+        out.appendSlice(alloc, "' not supported by api.wiki.codes (supports: tree, outline, search, read, symbol, policy, deps, score, cves, commits, branches, dep-history, actions, clean_cache)") catch {};
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "clean_cache")) {
+        const count = remote_cache.cleanRemoteCache(io, alloc) catch {
+            out.appendSlice(alloc, "error: failed to clean remote cache") catch {};
+            return;
+        };
+        var num_buf: [16]u8 = undefined;
+        const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{count}) catch "0";
+        out.appendSlice(alloc, "cleaned remote cache: removed ") catch {};
+        out.appendSlice(alloc, num_str) catch {};
+        out.appendSlice(alloc, " repos") catch {};
         return;
     }
 
@@ -4086,8 +4101,10 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         }
     }
 
+    // Try remote first
     const remote = fetchRemote(alloc, url, params.items) catch {
-        out.appendSlice(alloc, "error: failed to fetch from api.wiki.codes") catch {};
+        if (handleRemoteFallback(io, alloc, args, out, cache, repo, wiki_slug, action, default_explorer, default_store)) return;
+        out.appendSlice(alloc, "error: failed to fetch from api.wiki.codes (local fallback unavailable)") catch {};
         return;
     };
     defer alloc.free(remote.captured.stdout);
@@ -4101,6 +4118,9 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         out.appendSlice(alloc, body) catch {};
         return;
     }
+
+    // Remote returned an error — try local fallback
+    if (handleRemoteFallback(io, alloc, args, out, cache, repo, wiki_slug, action, default_explorer, default_store)) return;
 
     out.appendSlice(alloc, "error: ") catch {};
     out.appendSlice(alloc, "api.wiki.codes") catch {};
@@ -4130,6 +4150,101 @@ fn handleRemote(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
     // agents and humans can decide whether to retry or take a different
     // path (e.g. clone the repo locally) without parsing the raw error.
     appendRemoteErrorHint(alloc, out, remote.status, body);
+}
+
+fn isLocallyServiceable(action: []const u8) bool {
+    const local_actions = [_][]const u8{ "tree", "outline", "search", "read", "symbol", "deps" };
+    for (&local_actions) |a| {
+        if (std.mem.eql(u8, action, a)) return true;
+    }
+    return false;
+}
+
+fn handleRemoteFallback(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+    cache: *ProjectCache,
+    repo: []const u8,
+    wiki_slug: []const u8,
+    action: []const u8,
+    default_explorer: *Explorer,
+    default_store: *Store,
+) bool {
+    if (!isLocallyServiceable(action)) return false;
+
+    const ensure_result = remote_cache.ensureCached(io, alloc, repo, wiki_slug);
+    if (ensure_result != .ready) return false;
+
+    const cache_dir = remote_cache.getRemoteCacheDir(alloc, wiki_slug) orelse return false;
+    defer alloc.free(cache_dir);
+
+    const ctx = cache.get(io, cache_dir, default_explorer, default_store) catch return false;
+
+    if (std.mem.eql(u8, action, "search") or std.mem.eql(u8, action, "symbol")) {
+        loadProjectWordIndexFromDiskIfPresent(io, ctx.explorer, cache_dir, alloc);
+    }
+
+    var translated_args: std.json.ObjectMap = .empty;
+    defer translated_args.deinit(alloc);
+    translateRemoteArgs(alloc, args, action, &translated_args);
+
+    // Provenance: local-cache results are structurally different from the wiki
+    // JSON and can lag the live repo by up to REMOTE_CACHE_TTL_SECONDS. Say so
+    // explicitly rather than passing a stale clone off as a live remote answer.
+    out.appendSlice(alloc, "note: api.wiki.codes was unreachable — served from a local shallow clone under ~/.codedb/remote-cache/") catch {};
+    out.appendSlice(alloc, wiki_slug) catch {};
+    out.appendSlice(alloc, " (refreshed at most weekly, so it may lag the live repo).\n\n") catch {};
+
+    if (std.mem.eql(u8, action, "tree")) {
+        handleTree(alloc, out, ctx.explorer);
+    } else if (std.mem.eql(u8, action, "outline")) {
+        handleOutline(alloc, &translated_args, out, ctx.explorer);
+    } else if (std.mem.eql(u8, action, "search")) {
+        handleSearch(alloc, &translated_args, out, ctx.explorer);
+    } else if (std.mem.eql(u8, action, "read")) {
+        handleRead(io, alloc, &translated_args, out, ctx.explorer);
+    } else if (std.mem.eql(u8, action, "symbol")) {
+        handleSymbol(alloc, &translated_args, out, ctx.explorer);
+    } else if (std.mem.eql(u8, action, "deps")) {
+        handleDeps(alloc, &translated_args, out, ctx.explorer);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+pub fn translateRemoteArgs(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, action: []const u8, out: *std.json.ObjectMap) void {
+    if (std.mem.eql(u8, action, "outline")) {
+        if (getStr(args, "query")) |q| {
+            out.put(alloc, "path", .{ .string = q }) catch {};
+        }
+    } else if (std.mem.eql(u8, action, "symbol")) {
+        if (getStr(args, "query")) |q| {
+            out.put(alloc, "name", .{ .string = q }) catch {};
+        }
+    } else if (std.mem.eql(u8, action, "read")) {
+        if (getStr(args, "path")) |p| {
+            out.put(alloc, "path", .{ .string = p }) catch {};
+        }
+        if (getStr(args, "lines")) |lines| {
+            if (std.mem.indexOfScalar(u8, lines, '-')) |dash_pos| {
+                const start_str = lines[0..dash_pos];
+                const end_str = lines[dash_pos + 1 ..];
+                if (std.fmt.parseInt(i64, start_str, 10)) |start| {
+                    out.put(alloc, "line_start", .{ .integer = start }) catch {};
+                } else |_| {}
+                if (std.fmt.parseInt(i64, end_str, 10)) |end| {
+                    out.put(alloc, "line_end", .{ .integer = end }) catch {};
+                } else |_| {}
+            }
+        }
+    } else if (std.mem.eql(u8, action, "search")) {
+        if (getStr(args, "query")) |q| {
+            out.put(alloc, "query", .{ .string = q }) catch {};
+        }
+    }
 }
 
 pub fn appendRemoteErrorHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), status: u16, body: []const u8) void {
