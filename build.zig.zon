@@ -1,7 +1,7 @@
 .{
     .name = .codedb2,
     .fingerprint = 0x6e18d96ca2a31757,
-    .version = "0.2.5834",
+    .version = "0.2.5835",
     .minimum_zig_version = "0.17.0-dev.813+2153f8143",
     .dependencies = .{
         .nanoregex = .{
