@@ -99,7 +99,6 @@ fn page() h.Node {
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_status") }), h.td(.{}, "Index status (file count, current sequence)") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_snapshot") }), h.td(.{}, "Full pre-rendered JSON snapshot of the codebase") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_bundle") }), h.td(.{}, "Batch multiple queries in one call") }),
-                h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_remote") }), h.td(.{}, "Query indexed public repos via api.wiki.codes") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_projects") }), h.td(.{}, "List all indexed local projects") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_index") }), h.td(.{}, "Index a new local folder") }),
             }),

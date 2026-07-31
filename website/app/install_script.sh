@@ -217,6 +217,93 @@ PYEOF
   printf "  ${G}✓${N} %-12s ${D}→ %s${N}\n" "$label" "$config"
 }
 
+DEEPWIKI_URL="https://mcp.deepwiki.com/mcp"
+
+_register_deepwiki_json() {
+  local config="$1"
+  local label="$2"
+  local entry_json="$3"
+  local rc=0
+  python3 - "$config" "$entry_json" << 'PYEOF' || rc=$?
+import json, sys, os
+config_path, entry_json = sys.argv[1], sys.argv[2]
+try:
+    with open(config_path) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+servers = data.setdefault("mcpServers", {})
+if "deepwiki" in servers:
+    sys.exit(3)  # already configured — never clobber a user's own entry
+servers["deepwiki"] = json.loads(entry_json)
+d = os.path.dirname(config_path)
+if d:
+    os.makedirs(d, exist_ok=True)
+with open(config_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+  case "$rc" in
+    0) printf "  ${G}✓${N} %-12s ${D}→ %s (+deepwiki)${N}\n" "$label" "$config" ;;
+    3) printf "  ${D}%-12s deepwiki already configured → %s${N}\n" "$label" "$config" ;;
+    *) printf "  ${Y}%-12s deepwiki registration failed → %s${N}\n" "$label" "$config" ;;
+  esac
+  return 0
+}
+
+register_deepwiki() {
+  # DeepWiki is a free, no-auth REMOTE MCP server (mcp.deepwiki.com) that
+  # answers questions about public GitHub repos — a good complement to codedb's
+  # local index. Registered additively alongside codedb; an existing "deepwiki"
+  # entry is never overwritten. Set CODEDB_INSTALL_DEEPWIKI=0 to opt out.
+  # Note: text sent to its tools (e.g. ask_question) leaves the machine.
+  if [ "${CODEDB_INSTALL_DEEPWIKI:-1}" = "0" ]; then
+    printf "  ${D}deepwiki:  skip (CODEDB_INSTALL_DEEPWIKI=0)${N}\n"
+    return
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf "  ${D}deepwiki:  skip (python3 not found)${N}\n"
+    return
+  fi
+
+  # Claude Code: always (mirrors register_claude). Field: type+url.
+  _register_deepwiki_json "$HOME/.claude.json" "claude code" \
+    "{\"type\":\"http\",\"url\":\"$DEEPWIKI_URL\"}"
+  # Gemini CLI: streamable HTTP uses httpUrl.
+  if [ -d "$HOME/.gemini" ]; then
+    _register_deepwiki_json "$HOME/.gemini/settings.json" "gemini cli" \
+      "{\"httpUrl\":\"$DEEPWIKI_URL\"}"
+  fi
+  # Cursor: standard url field.
+  if [ -d "$HOME/.cursor" ]; then
+    _register_deepwiki_json "$HOME/.cursor/mcp.json" "cursor" \
+      "{\"url\":\"$DEEPWIKI_URL\"}"
+  fi
+  # Windsurf and Devin: both use serverUrl.
+  if [ -d "$HOME/.codeium/windsurf" ]; then
+    _register_deepwiki_json "$HOME/.codeium/windsurf/mcp_config.json" "windsurf" \
+      "{\"serverUrl\":\"$DEEPWIKI_URL\"}"
+  fi
+  if [ -d "$HOME/.config/devin" ]; then
+    _register_deepwiki_json "$HOME/.config/devin/config.json" "devin" \
+      "{\"serverUrl\":\"$DEEPWIKI_URL\"}"
+  fi
+  # Codex: TOML, url key selects the streamable-HTTP transport.
+  local codex_cfg="$HOME/.codex/config.toml"
+  if grep -q '\[mcp_servers\.deepwiki\]' "$codex_cfg" 2>/dev/null; then
+    printf "  ${D}%-12s deepwiki already configured → %s${N}\n" "codex" "$codex_cfg"
+  else
+    mkdir -p "$HOME/.codex"
+    {
+      [ -f "$codex_cfg" ] && [ -s "$codex_cfg" ] && echo "" || true
+      echo '[mcp_servers.deepwiki]'
+      echo "url = \"$DEEPWIKI_URL\""
+    } >> "$codex_cfg"
+    printf "  ${G}✓${N} %-12s ${D}→ %s (+deepwiki)${N}\n" "codex" "$codex_cfg"
+  fi
+  printf "  ${D}note: deepwiki is a third-party remote service — queries sent to its tools leave this machine${N}\n"
+}
+
 register_hooks() {
   if ! command -v python3 >/dev/null 2>&1; then
     printf "  ${D}hooks:   skip (python3 not found)${N}\n"
@@ -518,6 +605,7 @@ main() {
   register_gemini "$dest"
   register_cursor "$dest"
   register_windsurf_devin "$dest"
+  register_deepwiki
   register_hooks
   print_hook_notes "$dest"
 

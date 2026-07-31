@@ -2,7 +2,7 @@
 
 codedb does not have its own hook runtime. It installs an MCP server, and Codex
 or Claude Code can run hooks around MCP tool calls. Use hooks for local policy,
-logging, and guardrails around calls such as `codedb_remote`; do not use them as
+logging, and guardrails around calls such as `codedb_search`; do not use them as
 the only security boundary.
 
 The installer registers the MCP server. Hook configuration is separate because
@@ -36,11 +36,11 @@ Codex discovers hooks next to active config layers:
 Project-local hooks load only when the project `.codex/` layer is trusted.
 Matching hooks from multiple files all run.
 
-### Guard remote tree calls
+### Guard unbounded search calls
 
-This hook blocks unbounded `codedb_remote action=tree` calls unless the agent
-uses `limit`, `prefix`, or compact summary mode. That keeps huge remote repos
-from dumping too much context.
+This hook blocks unbounded `codedb_search` calls unless the agent sets a
+reasonable `max_results`. That keeps broad content searches from dumping too
+much context.
 
 `.codex/hooks.json`:
 
@@ -49,13 +49,13 @@ from dumping too much context.
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "mcp__codedb__codedb_remote",
+        "matcher": "mcp__codedb__codedb_search",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env bash \"$(git rev-parse --show-toplevel)/.codex/hooks/codedb_remote_guard.sh\"",
+            "command": "/usr/bin/env bash \"$(git rev-parse --show-toplevel)/.codex/hooks/codedb_search_guard.sh\"",
             "timeout": 5,
-            "statusMessage": "Checking codedb_remote request"
+            "statusMessage": "Checking codedb_search request"
           }
         ]
       }
@@ -64,24 +64,21 @@ from dumping too much context.
 }
 ```
 
-`.codex/hooks/codedb_remote_guard.sh`:
+`.codex/hooks/codedb_search_guard.sh`:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
 input="$(cat)"
-action="$(printf '%s' "$input" | jq -r '.tool_input.action // empty')"
-limit="$(printf '%s' "$input" | jq -r '.tool_input.limit // empty')"
-prefix="$(printf '%s' "$input" | jq -r '.tool_input.prefix // empty')"
-expand="$(printf '%s' "$input" | jq -r '.tool_input.expand // empty')"
+max_results="$(printf '%s' "$input" | jq -r '.tool_input.max_results // empty')"
 
-if [ "$action" = "tree" ] && [ -z "$limit" ] && [ -z "$prefix" ] && [ "$expand" != "false" ]; then
+if [ -z "$max_results" ] || [ "$max_results" -gt 100 ]; then
   jq -n '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
-      permissionDecisionReason: "Use codedb_remote tree with expand=false, a prefix, or a limit."
+      permissionDecisionReason: "Use codedb_search with an explicit max_results of 100 or less."
     }
   }'
 fi
@@ -115,7 +112,7 @@ Common hook locations:
 - skill or agent frontmatter
 
 Claude Code MCP tool names use the same `mcp__<server>__<tool>` shape, so
-codedb tools match as `mcp__codedb__codedb_remote`,
+codedb tools match as `mcp__codedb__codedb_tree`,
 `mcp__codedb__codedb_search`, or `mcp__codedb__.*`.
 
 `.claude/settings.json`:
@@ -125,13 +122,13 @@ codedb tools match as `mcp__codedb__codedb_remote`,
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "mcp__codedb__codedb_remote",
+        "matcher": "mcp__codedb__codedb_search",
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/codedb_remote_guard.sh",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/codedb_search_guard.sh",
             "timeout": 5,
-            "statusMessage": "Checking codedb_remote request"
+            "statusMessage": "Checking codedb_search request"
           }
         ]
       }
@@ -153,7 +150,7 @@ codedb tools match as `mcp__codedb__codedb_remote`,
 }
 ```
 
-The same `codedb_remote_guard.sh` script from the Codex lab works for Claude
+The same `codedb_search_guard.sh` script from the Codex lab works for Claude
 Code because both clients pass MCP tool input as JSON and accept
 `hookSpecificOutput.permissionDecision`.
 
@@ -166,11 +163,11 @@ set -euo pipefail
 input="$(cat)"
 tool="$(printf '%s' "$input" | jq -r '.tool_name // "unknown"')"
 event="$(printf '%s' "$input" | jq -r '.hook_event_name // "unknown"')"
-repo="$(printf '%s' "$input" | jq -r '.tool_input.repo // empty')"
-action="$(printf '%s' "$input" | jq -r '.tool_input.action // empty')"
+query="$(printf '%s' "$input" | jq -r '.tool_input.query // empty')"
+path="$(printf '%s' "$input" | jq -r '.tool_input.path // empty')"
 
 mkdir -p .claude/logs
-printf '%s\t%s\t%s\t%s\n' "$event" "$tool" "$repo" "$action" >> .claude/logs/codedb-tools.tsv
+printf '%s\t%s\t%s\t%s\n' "$event" "$tool" "$query" "$path" >> .claude/logs/codedb-tools.tsv
 ```
 
 Claude Code has more hook events and handler types than Codex. The ones most
@@ -186,27 +183,12 @@ Claude Code also supports command, HTTP, MCP-tool, prompt, and agent hook
 handlers. Prefer command hooks for deterministic policy checks; use async
 command hooks for logging that should not block the agent loop.
 
-## codedb_remote Defaults
+## Public repos — DeepWiki
 
-`codedb_remote` always calls `https://api.wiki.codes`. The old `codegraff`
-backend name is no longer a supported route. Keep `backend="wiki"` only for
-compatibility with older prompts, or omit `backend` entirely.
-
-Start with:
-
-```text
-codedb_remote repo="openai/codex" action="actions"
-codedb_remote repo="openai/codex" action="tree" expand=false
-codedb_remote repo="openai/codex" action="tree" prefix="codex-rs/" limit=100
-codedb_remote repo="openai/codex" action="search" query="AuthMode" limit=10
-codedb_remote repo="openai/codex" action="branches" limit=20
-codedb_remote repo="openai/codex" action="read" path="codex-rs/core/src/codex.rs" lines="1-80"
-```
-
-Use `scope="runtime"` for user-facing dependency risk and `scope="all"` when
-you also need dev and tooling dependencies:
-
-```text
-codedb_remote repo="vercel/next.js" action="score" scope="runtime"
-codedb_remote repo="vercel/next.js" action="cves" scope="all"
-```
+The `codedb_remote` tool (api.wiki.codes) was removed. For questions about
+public GitHub repos, the installer registers [DeepWiki](https://deepwiki.com)
+(`https://mcp.deepwiki.com/mcp` — free, no auth) as a separate remote MCP
+server in each detected client. Its tools — `read_wiki_structure`,
+`read_wiki_contents`, `ask_question` — match as `mcp__deepwiki__*` in hook
+matchers if you want the same guardrail/logging patterns from the labs above.
+Opt out of the registration with `CODEDB_INSTALL_DEEPWIKI=0`.

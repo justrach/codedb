@@ -136,7 +136,6 @@ JSON-RPC 2.0 over stdio with Content-Length framing. Implements the Model Contex
 | `codedb_status` | Index status |
 | `codedb_snapshot` | Full snapshot |
 | `codedb_bundle` | Batch multiple queries (max 20 ops) |
-| `codedb_remote` | Query indexed public repos via api.wiki.codes |
 | `codedb_projects` | List locally indexed projects |
 | `codedb_index` | Index a local folder |
 **Safety:** path validation, oversized message handling (drains >1MB lines instead of killing the loop).

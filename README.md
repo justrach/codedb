@@ -205,7 +205,6 @@ codedb hot                            # recently modified files
 | `codedb_changes` | Changed files since a sequence number |
 | `codedb_status` | Index status (file count, current sequence, scan phase) |
 | `codedb_snapshot` | Full pre-rendered JSON snapshot of the codebase |
-| `codedb_remote` | Query indexed public repos via api.wiki.codes — no local clone needed |
 | `codedb_projects` | List all locally indexed projects on this machine |
 | `codedb_index` | Index a local folder and write `codedb.snapshot` |
 | `codedb_find` | Fuzzy **file-name** search (typo-tolerant subsequence match against indexed paths — not a content/symbol search) |
@@ -213,41 +212,24 @@ codedb hot                            # recently modified files
 | `codedb_ls` | List immediate children of a directory — dirs first, then files with language + counts |
 | `codedb_query` | Composable pipeline — chain `find`, `search`, `filter`, `deps`, `outline`, `read`, `sort`, `limit` in one request |
 
-### `codedb_remote` — Cloud Intelligence
+`codedb_context` accepts `max_tokens` as a conservative approximate response
+budget. Compact evidence is admitted progressively; when the remaining
+evidence does not fit, the response reports the omission once instead of
+overflowing the request with lower-priority sections.
 
-Query any indexed public GitHub repo without cloning it. `codedb_remote` always uses `api.wiki.codes`; the old `codegraff` backend name is no longer a supported route. Omit `backend`, or keep `backend="wiki"` only for older prompts.
+MCP responses are plain text by default, without ANSI styling. Set
+`CODEDB_MCP_ANSI=1` in the MCP server environment to opt into ANSI-colored
+summary and guidance blocks for clients that render terminal colors.
 
-```
-# Check what the remote slug supports
-codedb_remote repo="vercel/next.js" action="actions"
+### Public repos — DeepWiki (remote MCP)
 
-# Get a compact directory summary instead of dumping a huge file list
-codedb_remote repo="vercel/next.js" action="tree" expand=false
-
-# Page a file tree by prefix and limit
-codedb_remote repo="vercel/next.js" action="tree" prefix="packages/" limit=100
-
-# Search for code in a dependency
-codedb_remote repo="justrach/merjs" action="search" query="handleRequest"
-
-# Read a small file slice
-codedb_remote repo="openai/codex" action="read" path="codex-rs/core/src/codex.rs" lines="1-80"
-
-# Exact symbol lookup
-codedb_remote repo="justrach/codedb" action="symbol" query="buildSnapshot"
-
-# Check dependency CVE evidence; scope can be runtime or all
-codedb_remote repo="axios/axios" action="cves" scope="runtime"
-
-# Raw wiki slugs are accepted for repos that are indexed that way
-codedb_remote repo="chromium" action="policy"
-```
-
-**Remote actions:** `actions`, `tree`, `outline`, `search`, `read`, `symbol`, `policy`, `deps`, `score`, `cves`, `commits`, `branches`, `dep-history`
-
-For Codex and Claude Code hook examples around `codedb_remote`, see [`docs/hooks-labs.md`](docs/hooks-labs.md).
-
-**Note:** This tool calls `https://api.wiki.codes`. No API key required. The repo must already be indexed by the public service.
+codedb is deliberately local-only: it indexes *your* checked-out code. For
+questions about *public* GitHub repos, the installer registers
+[DeepWiki](https://deepwiki.com) (`https://mcp.deepwiki.com/mcp` — free, no
+auth) as a separate remote MCP server in each detected client, with tools
+`read_wiki_structure`, `read_wiki_contents`, and `ask_question`. Opt out at
+install time with `CODEDB_INSTALL_DEEPWIKI=0`. (The old `codedb_remote` tool
+backed by api.wiki.codes was removed; DeepWiki replaces that role.)
 
 ### CLI Commands
 

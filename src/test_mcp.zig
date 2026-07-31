@@ -2342,41 +2342,6 @@ test "mcp-2026-07-28: tools/list result carries ttlMs and cacheScope" {
     try testing.expect(root.get("tools").?.array.items.len > 0);
 }
 
-test "issue-508: appendRemoteErrorHint differentiates Cloudflare 530 from 404/429" {
-    {
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(testing.allocator);
-        mcp_mod.appendRemoteErrorHint(testing.allocator, &out, 530, "error code: 1033");
-        try testing.expect(std.mem.indexOf(u8, out.items, "origin is unreachable") != null);
-        try testing.expect(std.mem.indexOf(u8, out.items, "codedb_index") != null);
-    }
-    {
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(testing.allocator);
-        mcp_mod.appendRemoteErrorHint(testing.allocator, &out, 530, "");
-        try testing.expect(std.mem.indexOf(u8, out.items, "Retry") != null);
-        try testing.expect(std.mem.indexOf(u8, out.items, "origin is unreachable") == null);
-    }
-    {
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(testing.allocator);
-        mcp_mod.appendRemoteErrorHint(testing.allocator, &out, 404, "");
-        try testing.expect(std.mem.indexOf(u8, out.items, "not indexed") != null);
-    }
-    {
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(testing.allocator);
-        mcp_mod.appendRemoteErrorHint(testing.allocator, &out, 429, "");
-        try testing.expect(std.mem.indexOf(u8, out.items, "rate limited") != null);
-    }
-    {
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(testing.allocator);
-        mcp_mod.appendRemoteErrorHint(testing.allocator, &out, 200, "");
-        try testing.expectEqual(@as(usize, 0), out.items.len);
-    }
-}
-
 test "issue-507: indexFileOutlineOnly files remain searchable via tier 3" {
     // Repro for #507: after a snapshot rebuild, certain files showed up in
     // `tree` and `read` but searchContent returned 0 hits for substrings
@@ -2529,109 +2494,6 @@ test "issue-538: temp roots are indexable only when CODEDB_ALLOW_TEMP opts in" {
     try testing.expect(!root_policy.isIndexableRoot("/etc"));
     try testing.expect(!root_policy.isIndexableRoot("/usr/local/bin"));
     try testing.expect(!root_policy.isIndexableRoot("/"));
-}
-
-test "issue-534: remote cache TTL enforcement" {
-    const remote_cache = @import("remote_cache.zig");
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
-    const cache_dir = path_buf[0..dir_path_len];
-
-    var snap_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const snap_path = try std.fmt.bufPrint(&snap_path_buf, "{s}/codedb.snapshot", .{cache_dir});
-    {
-        const file = try std.Io.Dir.cwd().createFile(io, snap_path, .{});
-        defer file.close(io);
-        try file.writeStreamingAll(io, "test");
-    }
-
-    try testing.expect(remote_cache.isCacheFresh(io, cache_dir, 3600));
-    try testing.expect(!remote_cache.isCacheFresh(io, cache_dir, 0));
-}
-
-test "issue-534: remote cache clone-to-temp-then-rename prevents race" {
-    const remote_cache = @import("remote_cache.zig");
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
-    const root_dir = path_buf[0..dir_path_len];
-
-    const tmp_clone = try std.fmt.allocPrint(testing.allocator, "{s}/test-repo.tmp.12345", .{root_dir});
-    defer testing.allocator.free(tmp_clone);
-    const final_dir = try std.fmt.allocPrint(testing.allocator, "{s}/test-repo", .{root_dir});
-    defer testing.allocator.free(final_dir);
-
-    try std.Io.Dir.cwd().createDirPath(io, tmp_clone);
-    var snap_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const snap_path = try std.fmt.bufPrint(&snap_buf, "{s}/codedb.snapshot", .{tmp_clone});
-    {
-        const file = try std.Io.Dir.cwd().createFile(io, snap_path, .{});
-        defer file.close(io);
-        try file.writeStreamingAll(io, "test");
-    }
-
-    try std.Io.Dir.cwd().rename(tmp_clone, std.Io.Dir.cwd(), final_dir, io);
-
-    try testing.expect(remote_cache.isCacheValid(io, final_dir));
-    std.Io.Dir.cwd().access(io, tmp_clone, .{}) catch |err| {
-        try testing.expect(err == error.FileNotFound);
-    };
-}
-
-test "issue-534: translateRemoteArgs maps remote keys to local handler keys" {
-    const alloc = testing.allocator;
-
-    var remote_args: std.json.ObjectMap = .empty;
-    defer remote_args.deinit(alloc);
-
-    var translated: std.json.ObjectMap = .empty;
-    defer translated.deinit(alloc);
-
-    try remote_args.put(alloc, "query", .{ .string = "src/foo.zig" });
-    mcp_mod.translateRemoteArgs(alloc, &remote_args, "outline", &translated);
-    try testing.expectEqualStrings("src/foo.zig", translated.get("path").?.string);
-
-    translated.deinit(alloc);
-    translated = .empty;
-    try remote_args.put(alloc, "query", .{ .string = "MySymbol" });
-    mcp_mod.translateRemoteArgs(alloc, &remote_args, "symbol", &translated);
-    try testing.expectEqualStrings("MySymbol", translated.get("name").?.string);
-
-    translated.deinit(alloc);
-    translated = .empty;
-    try remote_args.put(alloc, "path", .{ .string = "src/bar.zig" });
-    try remote_args.put(alloc, "lines", .{ .string = "10-60" });
-    mcp_mod.translateRemoteArgs(alloc, &remote_args, "read", &translated);
-    try testing.expectEqualStrings("src/bar.zig", translated.get("path").?.string);
-    try testing.expectEqual(@as(i64, 10), translated.get("line_start").?.integer);
-    try testing.expectEqual(@as(i64, 60), translated.get("line_end").?.integer);
-}
-
-test "issue-508: remote fallback cache dir is an indexable root" {
-    // handleRemoteFallback feeds getRemoteCacheDir's result straight into
-    // ProjectCache.get, which rejects any path root_policy refuses. If the
-    // cache dir ever moved under /tmp or collapsed onto the bare home dir,
-    // cache.get would return error.PathNotAllowed, the fallback would
-    // silently return false, and #508 would look unfixed with no diagnostic.
-    const remote_cache = @import("remote_cache.zig");
-    const alloc = testing.allocator;
-
-    const dir = remote_cache.getRemoteCacheDir(alloc, "vercel-next.js") orelse return error.SkipZigTest;
-    defer alloc.free(dir);
-
-    try testing.expect(std.mem.endsWith(u8, dir, "/.codedb/remote-cache/vercel-next.js"));
-    try testing.expect(root_policy.isIndexableRoot(dir));
-
-    // ...and it must never collapse onto the bare home directory, which
-    // root_policy denies outright (#174).
-    if (cio.posixGetenv("HOME")) |home| {
-        try testing.expect(!std.mem.eql(u8, dir, home));
-    }
 }
 
 test "issue-570: codedb_context falls back to plain words for all-lowercase tasks" {
@@ -3619,56 +3481,6 @@ test "issue-680: uninstall strips every codedb policy block, install collapses t
     try testing.expect(std.mem.indexOf(u8, collapsed, "old two") == null);
     try testing.expect(std.mem.indexOf(u8, collapsed, "middle user text") != null);
     try testing.expect(std.mem.indexOf(u8, collapsed, "tail user text") != null);
-}
-
-test "issue-534: remote cache records which repo populated a slug dir" {
-    const remote_cache = @import("remote_cache.zig");
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
-    const cache_dir = path_buf[0..dir_len];
-
-    // No recorded origin — a cache written by an older build is never trusted.
-    try testing.expect(!remote_cache.cachedOriginMatches(io, testing.allocator, cache_dir, "vercel/next.js"));
-
-    var origin_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const origin_path = try std.fmt.bufPrint(&origin_buf, "{s}/{s}", .{ cache_dir, remote_cache.origin_marker_name });
-    {
-        const file = try std.Io.Dir.cwd().createFile(io, origin_path, .{});
-        defer file.close(io);
-        try file.writeStreamingAll(io, "vercel/next.js");
-    }
-
-    try testing.expect(remote_cache.cachedOriginMatches(io, testing.allocator, cache_dir, "vercel/next.js"));
-    // wikiSlugForRepo collapses next.js and next-js onto one slug; the origin
-    // must not, or one repo's source gets served under the other's name.
-    try testing.expect(!remote_cache.cachedOriginMatches(io, testing.allocator, cache_dir, "vercel/next-js"));
-}
-
-test "issue-534: cache sweepers leave an in-flight temp clone alone" {
-    const remote_cache = @import("remote_cache.zig");
-
-    var name_buf: [64]u8 = undefined;
-    const fresh = try std.fmt.bufPrint(&name_buf, "vercel-next-js.tmp.{d}", .{@as(u64, @bitCast(cio.milliTimestamp()))});
-    try testing.expect(remote_cache.isActiveTempEntry(fresh));
-
-    // Finished entries and long-abandoned staging dirs are still sweepable.
-    try testing.expect(!remote_cache.isActiveTempEntry("vercel-next-js"));
-    try testing.expect(!remote_cache.isActiveTempEntry("vercel-next-js.tmp.1"));
-}
-
-test "issue-534: remote clone budget reads the GitHub-reported repo size" {
-    const remote_cache = @import("remote_cache.zig");
-
-    try testing.expectEqual(@as(u64, 12345), remote_cache.parseGithubRepoSizeKb(
-        "{\"id\":1,\"name\":\"x\",\"size\": 12345,\"stargazers_count\":2}",
-    ).?);
-    try testing.expect(remote_cache.parseGithubRepoSizeKb("{\"id\":1,\"name\":\"x\"}") == null);
-    // chromium-scale repos are past the budget; a normal repo is not.
-    try testing.expect(20_000_000 > remote_cache.MAX_CLONE_SIZE_KB);
-    try testing.expect(50_000 < remote_cache.MAX_CLONE_SIZE_KB);
 }
 
 test "installers: the website copies stay byte-identical to install/install.sh" {
