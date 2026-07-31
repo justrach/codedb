@@ -142,6 +142,24 @@ Both read MCP configuration from `~/.gemini/mcp.json` (Gemini) and
 }
 ```
 
+### DeepWiki (remote, registered by the installer)
+
+The installer also registers [DeepWiki](https://deepwiki.com) — a free,
+no-auth **remote** MCP server (`https://mcp.deepwiki.com/mcp`, streamable
+HTTP) — alongside codedb in each detected client. It answers questions
+about *public* GitHub repos (`read_wiki_structure`, `read_wiki_contents`,
+`ask_question`), which complements codedb's local index of *your* code.
+
+- Registration is additive: an existing `deepwiki` entry in your config is
+  never overwritten, and re-running the installer is idempotent.
+- The URL field name is per-client (`url` for Cursor, `serverUrl` for
+  Windsurf/Devin, `httpUrl` for Gemini, `type: "http"` + `url` for Claude
+  Code, `url` in Codex's TOML) — the installer writes the right one.
+- Opt out with `CODEDB_INSTALL_DEEPWIKI=0 sh install.sh`.
+- Privacy note: DeepWiki is a third-party hosted service — any text you
+  send its tools (e.g. `ask_question`) leaves your machine. codedb itself
+  stays fully local.
+
 ---
 
 ## 3. Root resolution — which project does `codedb mcp` scan?
