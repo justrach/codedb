@@ -142,6 +142,15 @@ Both read MCP configuration from `~/.gemini/mcp.json` (Gemini) and
 }
 ```
 
+### Tool profile (smaller tools/list)
+
+Set `CODEDB_TOOLS_PROFILE=core` in the MCP server environment to advertise
+only the 10 everyday navigation tools (`tree`, `outline`, `symbol`, `search`,
+`read`, `callers`, `deps`, `find`, `context`, `status`). A smaller
+`tools/list` costs fewer prompt tokens per session and keeps agents from
+reaching for rarely right tools. `full` (the default) advertises all 20.
+The profile only changes what's *advertised* — every tool remains callable.
+
 ### DeepWiki (remote, registered by the installer)
 
 The installer also registers [DeepWiki](https://deepwiki.com) — a free,

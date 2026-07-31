@@ -220,6 +220,13 @@ MCP responses are plain text by default, without ANSI styling. Set
 `CODEDB_MCP_ANSI=1` in the MCP server environment to opt into ANSI-colored
 summary and guidance blocks for clients that render terminal colors.
 
+**Tool profile:** set `CODEDB_TOOLS_PROFILE=core` in the MCP server
+environment to advertise only the 10 everyday navigation tools (`tree`,
+`outline`, `symbol`, `search`, `read`, `callers`, `deps`, `find`, `context`,
+`status`) — a smaller `tools/list` keeps agents from reaching for rarely
+right tools. `full` (the default) advertises all 20; every tool remains
+callable either way, the profile only changes what's advertised.
+
 ### Public repos — DeepWiki (remote MCP)
 
 codedb is deliberately local-only: it indexes *your* checked-out code. For
