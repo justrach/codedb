@@ -52,9 +52,6 @@ pub const Version = @import("version.zig").Version;
 pub const FileVersions = @import("version.zig").FileVersions;
 pub const Op = @import("version.zig").Op;
 
-pub const EditRequest = @import("edit.zig").EditRequest;
-pub const EditResult = @import("edit.zig").EditResult;
-pub const applyEdit = @import("edit.zig").applyEdit;
 
 pub const watcher = @import("watcher.zig");
 pub const mcp = @import("mcp.zig");

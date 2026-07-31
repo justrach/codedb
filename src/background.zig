@@ -132,7 +132,7 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     // use on the CLI cold-index path (bootstrap.zig). A shared (read) lock
     // is held for the whole build: worker threads read file content slices
     // straight out of ContentCache without copying, so any concurrent
-    // writer (codedb_edit, incremental file-watcher commits, which all take
+    // writer (incremental file-watcher commits, which all take
     // the exclusive lock) must be excluded for the entire parallel section,
     // not just while collecting entries. Other readers (search) can still
     // run concurrently under the shared lock.

@@ -17,7 +17,6 @@ const Config = @import("config.zig").Config;
 const telemetry_mod = @import("telemetry.zig");
 const release_info = @import("release_info.zig");
 const root_policy = @import("root_policy.zig");
-const edit_mod = @import("edit.zig");
 const snapshot_mod = @import("snapshot.zig");
 const watcher = @import("watcher.zig");
 const WordIndex = @import("index.zig").WordIndex;
@@ -1709,7 +1708,7 @@ test "issue-441: bundle rejects codedb_projects sub-op" {
     // codedb_projects, it tends to replay the same shape — re-emitting 5x
     // codedb_projects ops as if that were the canonical "what do I do here"
     // call. Block it at the dispatcher, mirroring the existing rejections of
-    // codedb_bundle (recursive) and codedb_edit (write op).
+    // codedb_bundle (recursive).
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     var store = Store.init(testing.allocator);
@@ -1898,7 +1897,7 @@ test "issue-437: codedb_bundle ops items schema has discriminated oneOf per sub-
     const one_of = one_of_val.?.array;
 
     // Must have at least one branch per dispatchable codedb_* sub-tool.
-    // codedb_bundle (recursive) and codedb_edit (write op) are explicitly
+    // codedb_bundle (recursive).are explicitly
     // rejected by handleBundle, so they are excluded.
     try testing.expect(one_of.items.len >= 10);
 
@@ -1927,13 +1926,12 @@ test "issue-437: codedb_bundle ops items schema has discriminated oneOf per sub-
     }
     try testing.expect(found_outline);
 
-    // No branch should be for the recursive codedb_bundle or the write-op codedb_edit.
+    // No branch should be for the recursive codedb_bundle.
     for (one_of.items) |branch| {
         const props = branch.object.get("properties").?.object;
         const tool_v = props.get("tool").?;
         const tool_const = tool_v.object.get("const") orelse continue;
         try testing.expect(!std.mem.eql(u8, tool_const.string, "codedb_bundle"));
-        try testing.expect(!std.mem.eql(u8, tool_const.string, "codedb_edit"));
     }
 }
 

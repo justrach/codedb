@@ -3,7 +3,6 @@ const cio = @import("cio.zig");
 const builtin = @import("builtin");
 const sty = @import("style.zig");
 const release_info = @import("release_info.zig");
-const linter = @import("linter.zig");
 
 const github_repo = "justrach/codedb";
 const default_base_url = "https://codedb.codegraff.com";
@@ -60,7 +59,6 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
     switch (version_order) {
         .eq => {
             out.p("codedb {s} is already up to date\n", .{release_info.semver});
-            linter.maybePromptAndInstall(io, allocator);
             return;
         },
         .gt => {
@@ -107,8 +105,6 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
 
     out.p("{s}✓{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });
 
-    // Offer the external-linter opt-in (interactive TTY only; asked once).
-    linter.maybePromptAndInstall(io, allocator);
 }
 
 pub fn assetNameForTarget(os_tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?[]const u8 {

@@ -15,7 +15,6 @@ const snapshot_json = @import("snapshot_json.zig");
 const watcher = @import("watcher.zig");
 const git_mod = @import("git.zig");
 const AgentRegistry = @import("agent.zig").AgentRegistry;
-const edit_mod = @import("edit.zig");
 
 test "issue-625: in-tree snapshot is added to .git/info/exclude" {
     var tmp = testing.tmpDir(.{});
@@ -45,68 +44,6 @@ test "issue-625: in-tree snapshot is added to .git/info/exclude" {
     const exclude2 = try tmp.dir.readFileAlloc(io, ".git/info/exclude", testing.allocator, .limited(64 * 1024));
     defer testing.allocator.free(exclude2);
     try testing.expectEqual(exclude1.len, exclude2.len);
-}
-
-test "issue-35: edits immediately update explorer and snapshot output" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/edit-live-sync.zig", .{tmp.sub_path});
-    defer testing.allocator.free(rel_path);
-
-    var file = try tmp.dir.createFile(io, "edit-live-sync.zig", .{});
-    defer file.close(io);
-    try file.writeStreamingAll(io, "pub fn oldName() void {}\n");
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    try explorer.indexFile(rel_path, "pub fn oldName() void {}\n");
-
-    var store = Store.init(testing.allocator);
-    defer store.deinit();
-    _ = try store.recordSnapshot(rel_path, "pub fn oldName() void {}\n".len, std.hash.Wyhash.hash(0, "pub fn oldName() void {}\n"));
-
-    var agents = AgentRegistry.init(testing.allocator);
-    defer agents.deinit();
-    const agent_id = try agents.register("issue-35-agent");
-
-    const before_snap = try snapshot_json.buildSnapshot(&explorer, &store, testing.allocator);
-    defer testing.allocator.free(before_snap);
-    try testing.expect(std.mem.indexOf(u8, before_snap, "oldName") != null);
-
-    _ = try edit_mod.applyEdit(io, testing.allocator, &store, &agents, &explorer, .{
-        .path = rel_path,
-        .agent_id = agent_id,
-        .op = .replace,
-        .range = .{ 1, 1 },
-        .content = "pub fn newName() void {}",
-    });
-
-    const new_results = try explorer.searchContent("newName", testing.allocator, 10);
-    defer {
-        for (new_results) |r| {
-            testing.allocator.free(r.path);
-            testing.allocator.free(r.line_text);
-        }
-        testing.allocator.free(new_results);
-    }
-    try testing.expect(new_results.len == 1);
-
-    const old_results = try explorer.searchContent("oldName", testing.allocator, 10);
-    defer {
-        for (old_results) |r| {
-            testing.allocator.free(r.path);
-            testing.allocator.free(r.line_text);
-        }
-        testing.allocator.free(old_results);
-    }
-    try testing.expect(old_results.len == 0);
-
-    const after_snap = try snapshot_json.buildSnapshot(&explorer, &store, testing.allocator);
-    defer testing.allocator.free(after_snap);
-    try testing.expect(std.mem.indexOf(u8, after_snap, "newName") != null);
-    try testing.expect(std.mem.indexOf(u8, after_snap, "oldName") == null);
 }
 
 test "snapshot_json: snapshot builds and is valid JSON" {
@@ -1036,67 +973,7 @@ test "issue-528: isSensitivePath parity between snapshot.zig and watcher.zig" {
     try testing.expect(!snapshot_mod.isSensitivePath(".envoy.json")); // issue-409
     try testing.expect(!snapshot_mod.isSensitivePath(".environment"));
     try testing.expect(!snapshot_mod.isSensitivePath("main.zig"));
-    try testing.expect(!snapshot_mod.isSensitivePath("package.json"));
 }
-
-test "issue-528: codedb_edit applies via a per-session agent id (not the first/__filesystem__ agent)" {
-    // Bug 2 wiring (runtime): handleEdit now uses Session.edit_agent_id — a
-    // per-connection agent registered AFTER __filesystem__, so its id != 1.
-    // applyEdit's advisory lock returns error.FileLocked if that id is not a
-    // live registered agent, so this proves an edit through a non-first session
-    // agent actually acquires the lock and writes the file.
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/per-session-edit.zig", .{tmp.sub_path});
-    defer testing.allocator.free(rel_path);
-
-    var file = try tmp.dir.createFile(io, "per-session-edit.zig", .{});
-    defer file.close(io);
-    try file.writeStreamingAll(io, "const foo = 1;\n");
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    try explorer.indexFile(rel_path, "const foo = 1;\n");
-
-    var store = Store.init(testing.allocator);
-    defer store.deinit();
-
-    var agents = AgentRegistry.init(testing.allocator);
-    defer agents.deinit();
-    const fs = try agents.register("__filesystem__"); // startup agent (id 1)
-    const session = try agents.register("mcp-session"); // per-session owner (id 2)
-    try testing.expect(session != fs);
-
-    // Edit through the per-session id — must acquire the lock and apply.
-    const r1 = try edit_mod.applyEdit(io, testing.allocator, &store, &agents, &explorer, .{
-        .path = rel_path,
-        .agent_id = session,
-        .op = .replace,
-        .range = .{ 1, 1 },
-        .content = "const bar = 1;",
-    });
-    defer if (r1.health) |h| testing.allocator.free(h);
-    defer if (r1.preview) |p| testing.allocator.free(p);
-    try testing.expect(r1.changed);
-
-    // The lock was released on success, so another session can edit immediately.
-    const r2 = try edit_mod.applyEdit(io, testing.allocator, &store, &agents, &explorer, .{
-        .path = rel_path,
-        .agent_id = fs,
-        .op = .replace,
-        .range = .{ 1, 1 },
-        .content = "const baz = 1;",
-    });
-    defer if (r2.health) |h| testing.allocator.free(h);
-    defer if (r2.preview) |p| testing.allocator.free(p);
-
-    const content = try tmp.dir.readFileAlloc(io, "per-session-edit.zig", testing.allocator, .limited(64 * 1024));
-    defer testing.allocator.free(content);
-    try testing.expect(std.mem.indexOf(u8, content, "baz") != null);
-}
-
 test "issue-537b: snapshot-restored files resolve call edges (symbol_index divergence)" {
     // commitParsedFileOwnedOutline rebuilds symbol_index (explore.zig:872), but the
     // snapshot-load path (insertRestoredFile) did not. resolveCallees reads

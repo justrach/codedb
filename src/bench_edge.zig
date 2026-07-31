@@ -52,7 +52,6 @@ const cases = [_]Case{
     .{ .tool = .codedb_find, .name = "edge_find_fuzzy", .args_json = "{\"query\":\"edge_fle_39_74\"}", .iterations = 30 },
     .{ .tool = .codedb_word, .name = "edge_word_hot", .args_json = "{\"word\":\"hotword\"}", .iterations = 25 },
     .{ .tool = .codedb_deps, .name = "edge_deps_trans", .args_json = "{\"path\":\"many/d39/edge_file_39_74.zig\",\"transitive\":true}", .iterations = 25 },
-    .{ .tool = .codedb_edit, .name = "edge_edit_huge", .args_json = "{\"path\":\"huge.zig\",\"op\":\"replace\",\"range_start\":3,\"range_end\":3,\"content\":\"    acc +%= hotword + 999; // hotword filler 999\\n\"}", .iterations = 5, .warmup = 0, .reset_huge = true },
 };
 
 pub fn main(init: std.process.Init.Minimal) !void {

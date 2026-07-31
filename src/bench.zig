@@ -36,7 +36,6 @@ const cases = [_]Case{
     .{ .tool = .codedb_hot, .name = "codedb_hot", .args_json = "{\"limit\":10}", .iterations = 100 },
     .{ .tool = .codedb_deps, .name = "codedb_deps", .args_json = "{\"path\":\"src/main.zig\"}", .iterations = 100 },
     .{ .tool = .codedb_read, .name = "codedb_read", .args_json = "{\"path\":\"src/main.zig\",\"line_start\":1,\"line_end\":20}", .iterations = 100 },
-    .{ .tool = .codedb_edit, .name = "codedb_edit", .args_json = "{\"path\":\"src/bench_target.zig\",\"op\":\"replace\",\"range_start\":1,\"range_end\":1,\"content\":\"pub const bench_value = 2;\\n\"}", .iterations = 10 },
     .{ .tool = .codedb_changes, .name = "codedb_changes", .args_json = "{\"since\":0}", .iterations = 100 },
     // Status intentionally exposes cache counters, which may differ when the
     // candidate removes work while returning the same query results.
@@ -54,7 +53,6 @@ const corpus_files = [_][]const u8{
     "build.zig.zon",
     "src/agent.zig",
     "src/bench.zig",
-    "src/edit.zig",
     "src/explore.zig",
     "src/git.zig",
     "src/index.zig",
@@ -181,9 +179,6 @@ fn runCase(
     var response_hash: u64 = 0;
 
     for (0..case.iterations) |_| {
-        if (case.tool == .codedb_edit) {
-            try resetBenchTarget(explorer, store);
-        }
 
         const r = bench_ctx.runToolCall(io, allocator, case.name, case.tool, args, store, explorer, agents, telem);
         total_ns +|= r.dispatch_ns;
@@ -247,10 +242,6 @@ fn writeBenchTarget(io: std.Io, tmp_root: []const u8) !void {
     try file.writeStreamingAll(io, "pub const bench_value = 1;\n");
 }
 
-fn resetBenchTarget(explorer: *Explorer, store: *Store) !void {
-    try explorer.indexFile("src/bench_target.zig", "pub const bench_value = 1;\n");
-    _ = try store.recordSnapshot("src/bench_target.zig", "pub const bench_value = 1;\n".len, std.hash.Wyhash.hash(0, "pub const bench_value = 1;\n"));
-}
 
 fn summarizeCorpus(explorer: *Explorer) struct { files: usize, bytes: u64 } {
     explorer.mu.lockShared();

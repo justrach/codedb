@@ -35,7 +35,7 @@ const snapshot_json = @import("snapshot_json.zig");
 const mcp_mod = @import("mcp.zig");
 const SearchResult = @import("explore.zig").SearchResult;
 const SymbolKind = explore.SymbolKind;
-const edit_mod = @import("edit.zig");
+const bootstrap_mod = @import("bootstrap.zig");
 
 test "trigram index: index and candidate lookup" {
     var ti = TrigramIndex.init(testing.allocator);
@@ -828,58 +828,6 @@ test "watcher: parallel word-index shards match sequential (skip_file_words)" {
     }
 }
 
-test "edit: range_start zero is invalid" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/edit-range.txt", .{tmp.sub_path});
-    defer testing.allocator.free(rel_path);
-
-    var file = try tmp.dir.createFile(io, "edit-range.txt", .{});
-    defer file.close(io);
-    try file.writeStreamingAll(io, "line 1\nline 2\n");
-
-    var store = Store.init(testing.allocator);
-    defer store.deinit();
-    var agents = AgentRegistry.init(testing.allocator);
-    defer agents.deinit();
-    const agent_id = try agents.register("test-agent");
-
-    try testing.expectError(error.InvalidRange, edit_mod.applyEdit(io, testing.allocator, &store, &agents, null, .{
-        .path = rel_path,
-        .agent_id = agent_id,
-        .op = .replace,
-        .range = .{ 0, 1 },
-        .content = "changed",
-    }));
-}
-
-test "edit: range_start beyond file is invalid" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/edit-range-oob.txt", .{tmp.sub_path});
-    defer testing.allocator.free(rel_path);
-
-    var file = try tmp.dir.createFile(io, "edit-range-oob.txt", .{});
-    defer file.close(io);
-    try file.writeStreamingAll(io, "line 1\nline 2\n");
-
-    var store = Store.init(testing.allocator);
-    defer store.deinit();
-    var agents = AgentRegistry.init(testing.allocator);
-    defer agents.deinit();
-    const agent_id = try agents.register("test-agent-oob");
-
-    try testing.expectError(error.InvalidRange, edit_mod.applyEdit(io, testing.allocator, &store, &agents, null, .{
-        .path = rel_path,
-        .agent_id = agent_id,
-        .op = .replace,
-        .range = .{ 3, 3 },
-        .content = "changed",
-    }));
-}
-
 test "regression #2: searchContent frees trigram candidate slice" {
     // Verifies that the candidates() return value is freed by searchContent.
     // If the defer is missing, the GPA will detect the leak and fail.
@@ -1323,7 +1271,6 @@ test "Tool enum: all valid tool names parse" {
     try testing.expect(std.meta.stringToEnum(Tool, "codedb_hot") != null);
     try testing.expect(std.meta.stringToEnum(Tool, "codedb_deps") != null);
     try testing.expect(std.meta.stringToEnum(Tool, "codedb_read") != null);
-    try testing.expect(std.meta.stringToEnum(Tool, "codedb_edit") != null);
     try testing.expect(std.meta.stringToEnum(Tool, "codedb_changes") != null);
     try testing.expect(std.meta.stringToEnum(Tool, "codedb_status") != null);
     try testing.expect(std.meta.stringToEnum(Tool, "codedb_snapshot") != null);

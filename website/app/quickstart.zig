@@ -94,7 +94,6 @@ fn page() h.Node {
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_hot") }), h.td(.{}, "Most recently modified files") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_deps") }), h.td(.{}, "Reverse dependency graph") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_read") }), h.td(.{}, "Read file content") }),
-                h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_edit") }), h.td(.{}, "Apply line-range edits (atomic writes)") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_changes") }), h.td(.{}, "Changed files since a sequence number") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_status") }), h.td(.{}, "Index status (file count, current sequence)") }),
                 h.tr(.{}, .{ h.td(.{}, .{ h.code(.{}, "codedb_snapshot") }), h.td(.{}, "Full pre-rendered JSON snapshot of the codebase") }),

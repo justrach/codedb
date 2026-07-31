@@ -14,7 +14,6 @@ const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Explorer = @import("explore.zig").Explorer;
 const snapshot_json = @import("snapshot_json.zig");
 const watcher = @import("watcher.zig");
-const edit_mod = @import("edit.zig");
 
 pub fn serve(
     io: std.Io,
@@ -263,96 +262,6 @@ fn handleConnection(
         };
         agents.releaseLock(agent_id, path);
         respondJson(&conn, "200 OK", "{\"unlocked\":true}");
-        return;
-    }
-
-    // ── Edit ──
-    if (std.mem.startsWith(u8, request, "POST /edit")) {
-        const body = extractBody(request);
-        if (body.len == 0) {
-            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing body\"}");
-            return;
-        }
-        const parsed_body = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
-            respondJson(&conn, "400 Bad Request", "{\"error\":\"invalid json\"}");
-            return;
-        };
-        defer parsed_body.deinit();
-        if (parsed_body.value != .object) {
-            respondJson(&conn, "400 Bad Request", "{\"error\":\"body must be object\"}");
-            return;
-        }
-
-        const body_obj = &parsed_body.value.object;
-        const path = jsonString(body_obj, "path") orelse {
-            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing path\"}");
-            return;
-        };
-        if (!isPathSafe(path)) {
-            respondJson(&conn, "403 Forbidden", "{\"error\":\"path traversal not allowed\"}");
-            return;
-        }
-
-        const agent_id = jsonU64(body_obj, "agent") orelse {
-            respondJson(&conn, "400 Bad Request", "{\"error\":\"missing agent\"}");
-            return;
-        };
-
-        const op_str = jsonString(body_obj, "op") orelse "replace";
-        const op: @import("version.zig").Op = if (std.mem.eql(u8, op_str, "insert"))
-            .insert
-        else if (std.mem.eql(u8, op_str, "delete"))
-            .delete
-        else
-            .replace;
-
-        var content: ?[]const u8 = null;
-        if (body_obj.get("content")) |value| {
-            switch (value) {
-                .string => |s| content = s,
-                .null => {},
-                else => {
-                    respondJson(&conn, "400 Bad Request", "{\"error\":\"content must be string\"}");
-                    return;
-                },
-            }
-        }
-
-        const range_start = jsonU64(body_obj, "range_start");
-        const range_end = jsonU64(body_obj, "range_end");
-        const after = jsonU64(body_obj, "after");
-
-        var req = edit_mod.EditRequest{
-            .path = path,
-            .agent_id = agent_id,
-            .op = op,
-            .content = content,
-            .if_hash = jsonString(body_obj, "if_hash"),
-        };
-        if (range_start != null and range_end != null) {
-            req.range = .{ @intCast(range_start.?), @intCast(range_end.?) };
-        }
-        if (after) |a| req.after = @intCast(a);
-
-        const result = edit_mod.applyEdit(io, allocator, store, agents, explorer, req) catch |err| {
-            var err_buf: [128]u8 = undefined;
-            const err_body = std.fmt.bufPrint(&err_buf, "{{\"error\":\"{s}\"}}", .{@errorName(err)}) catch return;
-            const status = switch (err) {
-                error.InvalidRange, error.MissingContent => "400 Bad Request",
-                error.FileLocked, error.HashMismatch => "409 Conflict",
-                error.FileNotFound => "404 Not Found",
-                error.AccessDenied => "403 Forbidden",
-                else => "500 Internal Server Error",
-            };
-            respondJson(&conn, status, err_body);
-            return;
-        };
-
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(allocator);
-        const w = cio.listWriter(&out, allocator);
-        w.print("{{\"seq\":{d},\"hash\":{d},\"size\":{d}}}", .{ result.seq, result.new_hash, result.new_size }) catch return;
-        respondJson(&conn, "200 OK", out.items);
         return;
     }
 

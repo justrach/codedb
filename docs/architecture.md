@@ -107,7 +107,6 @@ Thread-per-connection HTTP server on `:7719`. Parses raw HTTP/1.1 requests.
 | `/hot?limit=` | GET | Recently modified files |
 | `/deps?path=` | GET | Reverse dependencies |
 | `/read?path=` | GET | Read file content |
-| `/edit` | POST | Apply a line-range edit |
 | `/changes?since=` | GET | Changed files since sequence N |
 | `/status` | GET | File count + current sequence |
 | `/snapshot` | GET | Full pre-rendered JSON snapshot |
@@ -131,7 +130,6 @@ JSON-RPC 2.0 over stdio with Content-Length framing. Implements the Model Contex
 | `codedb_hot` | Hot files |
 | `codedb_deps` | Reverse dependencies |
 | `codedb_read` | Read file content (line ranges, hash caching) |
-| `codedb_edit` | Apply edits (replace, insert, delete) |
 | `codedb_changes` | Changes since seq |
 | `codedb_status` | Index status |
 | `codedb_snapshot` | Full snapshot |
@@ -139,12 +137,6 @@ JSON-RPC 2.0 over stdio with Content-Length framing. Implements the Model Contex
 | `codedb_projects` | List locally indexed projects |
 | `codedb_index` | Index a local folder |
 **Safety:** path validation, oversized message handling (drains >1MB lines instead of killing the loop).
-
-### `edit.zig` — File Editor
-
-Line-range editing engine. Supports `replace` and `delete` operations on line ranges.
-
-**Atomic writes:** writes to a `.codedb_tmp` temp file then renames, preventing corruption on crash. Returns `EditResult` with new content, hash, size, and line count.
 
 ### `snapshot_json.zig` — Snapshot Renderer
 
@@ -214,4 +206,3 @@ All threads share a `shutdown: std.atomic.Value(bool)` flag for graceful termina
 1. **Startup:** `initialScan` walks the project (via `FilteredWalker`), indexes each file's outline and content into `Explorer`, records snapshots in `Store`
 2. **Steady state:** `incrementalLoop` detects changes, re-indexes modified files, and pushes events to `EventQueue`
 3. **Queries:** HTTP/MCP handlers call `Explorer` methods under its mutex, return JSON responses
-4. **Edits:** `/edit` applies line-range changes atomically, re-indexes the file, records the edit in `Store`
