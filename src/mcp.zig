@@ -703,6 +703,7 @@ pub const ToolsListOpts = struct {
     bundle_enabled: bool = false,
     discriminated_opt_in: bool = false,
     profile_core: bool = false,
+    profile_slim: bool = false,
 };
 
 /// CODEDB_TOOLS_PROFILE=core advertises only the everyday navigation set,
@@ -720,6 +721,31 @@ const core_profile_tools = [_][]const u8{
     "codedb_context",
     "codedb_status",
 };
+
+/// CODEDB_TOOLS_PROFILE=slim advertises only the six everyday tools with terse
+/// descriptions. Tool schemas ride along on EVERY model call, so the full
+/// 20-tool list costs ~4k tokens × every round trip of the session — the slim
+/// profile brings that to ~1k. Schemas are kept intact (clients bind args
+/// against them); only descriptions shrink. Everything still dispatches — a
+/// client that knows a rarer tool can call it; it's just not advertised.
+const slim_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
+    .{ .name = "codedb_search", .desc = "Full-text search across the repo; matching lines with path:line. Best first move for 'where is X'." },
+    .{ .name = "codedb_outline", .desc = "Symbol outline of one file (functions/types/imports with line numbers). Run before read to target a range." },
+    .{ .name = "codedb_read", .desc = "Read a file, optionally line_start..line_end. Prefer outline first; large rangeless reads are capped." },
+    .{ .name = "codedb_symbol", .desc = "Where a symbol is defined; body=true includes source (very large bodies capped)." },
+    .{ .name = "codedb_callers", .desc = "Call sites of a function." },
+    .{ .name = "codedb_context", .desc = "Task-shaped bundle (files, symbols, deps) for a natural-language task. Good session opener." },
+};
+
+fn isSlimProfileTool(name: []const u8) bool {
+    for (&slim_descriptions) |sd| if (std.mem.eql(u8, name, sd.name)) return true;
+    return false;
+}
+
+fn slimDescription(name: []const u8) ?[]const u8 {
+    for (&slim_descriptions) |sd| if (std.mem.eql(u8, name, sd.name)) return sd.desc;
+    return null;
+}
 
 fn isCoreProfileTool(name: []const u8) bool {
     for (&core_profile_tools) |c| if (std.mem.eql(u8, name, c)) return true;
@@ -756,6 +782,24 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
                 }
             }
             try filtered.append(t);
+        }
+        tools_val.* = .{ .array = filtered };
+    }
+
+    if (opts.profile_slim) {
+        var filtered: std.json.Array = .init(a);
+        for (tools_val.array.items) |*t| {
+            if (t.* == .object) {
+                if (t.*.object.get("name")) |n| {
+                    if (n == .string) {
+                        if (!isSlimProfileTool(n.string)) continue;
+                        if (slimDescription(n.string)) |d| {
+                            t.*.object.put(a, "description", .{ .string = d }) catch {};
+                        }
+                    }
+                }
+            }
+            try filtered.append(t.*);
         }
         tools_val.* = .{ .array = filtered };
     }
@@ -1022,15 +1066,22 @@ pub fn run(
         const v = cio.posixGetenv("CODEDB_BUNDLE_ENABLED") orelse break :blk_be false;
         break :blk_be std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
     };
-    // CODEDB_TOOLS_PROFILE=core shrinks tools/list to the everyday set.
+    // CODEDB_TOOLS_PROFILE=core shrinks tools/list to the everyday set;
+    // =slim goes further — six tools, terse descriptions (~1k tokens total
+    // vs ~4k) since tool schemas ride along on every model call.
     const profile_core = blk_pc: {
         const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_pc false;
         break :blk_pc std.mem.eql(u8, v, "core");
+    };
+    const profile_slim = blk_ps: {
+        const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_ps false;
+        break :blk_ps std.mem.eql(u8, v, "slim");
     };
     const tools_list_response: []const u8 = buildToolsListResponse(alloc, .{
         .bundle_enabled = bundle_enabled,
         .discriminated_opt_in = discriminated_opt_in,
         .profile_core = profile_core,
+        .profile_slim = profile_slim,
     }) catch tools_list;
     defer if (tools_list_response.ptr != tools_list.ptr) alloc.free(tools_list_response);
     var session = Session{
