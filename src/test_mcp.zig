@@ -86,7 +86,10 @@ test "mcp json: typed fields and escaping preserve protocol behavior" {
 }
 
 fn zigExe() []const u8 {
-    return "zig";
+    // Machines with several zig installs (zigup + homebrew) need the same
+    // binary that built the tests; a bare "zig" can resolve to an
+    // incompatible version and fail the build these tests spawn.
+    return cio.posixGetenv("ZIG") orelse "zig";
 }
 
 fn builtCodedbExe() []const u8 {
@@ -166,9 +169,12 @@ test "windows cli pipe metadata parser rejects spoofable records" {
 }
 
 fn buildCliForHelpTests() !void {
+    // `--global-cache-dir` is only accepted by newer zigs (the pinned
+    // 0.17.0-dev.813 rejects it); prefer the env var, which every version
+    // honors, and keep the arg off entirely.
     const build = try cio.runCapture(.{
         .allocator = testing.allocator,
-        .argv = &.{ zigExe(), "build", "--global-cache-dir", ".zig-global-cache" },
+        .argv = &.{ zigExe(), "build" },
         .max_output_bytes = 8192,
     });
     defer testing.allocator.free(build.stdout);

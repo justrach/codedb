@@ -19,6 +19,47 @@ const index_mod = @import("index.zig");
 const sty = @import("style.zig");
 const Out = @import("out.zig").Out;
 const parseSearchArgs = @import("cli_args.zig").parseSearchArgs;
+const cliIsQueryCmd = @import("cli_args.zig").cliIsQueryCmd;
+
+/// Cheap freshness probe: true when any indexable source file under abs_root
+/// is newer than the snapshot on disk. Agents edit files all session long —
+/// serving the pre-edit index hides the agent's OWN new symbols (observed in
+/// the DeepSWE bench: `search <just-added-fn>` → 0 results → the model
+/// distrusts the tool and reverts to grep/read_file loops, doubling tokens).
+/// A walk+stat of the tree is a few ms and early-exits on the first drifted
+/// file; conservative (returns not-stale) on any IO error.
+fn snapshotIsStale(io: std.Io, abs_root: []const u8, data_dir: []const u8, allocator: std.mem.Allocator) bool {
+    // Stat the snapshot that would actually be served — same precedence as
+    // loadBestSnapshot: in-repo first, then the central data dir.
+    var snap_stat: @TypeOf(std.Io.Dir.cwd().statFile(io, abs_root, .{}) catch unreachable) = undefined;
+    var found = false;
+    for ([_][]const u8{ abs_root, data_dir }) |base| {
+        if (found) break;
+        const snap_path = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{base}) catch return false;
+        defer allocator.free(snap_path);
+        if (std.Io.Dir.cwd().statFile(io, snap_path, .{})) |st| {
+            snap_stat = st;
+            found = true;
+        } else |_| {}
+    }
+    if (!found) return false;
+    var dir = std.Io.Dir.cwd().openDir(io, abs_root, .{ .iterate = true }) catch return false;
+    defer dir.close(io);
+    var walker = watcher.FilteredWalker.init(io, dir, allocator) catch return false;
+    defer walker.deinit();
+    while (walker.next() catch return false) |entry| {
+        // Skip codedb's own writes (snapshot, .codedb data dir) and agent
+        // scratch (.graff): they are touched by codedb/the harness itself on
+        // every run, so counting them makes the index permanently "stale"
+        // and forces a rescan on EVERY call.
+        if (std.mem.eql(u8, entry.path, "codedb.snapshot")) continue;
+        if (std.mem.startsWith(u8, entry.path, ".codedb/") or
+            std.mem.startsWith(u8, entry.path, ".graff/")) continue;
+        const st = dir.statFile(io, entry.path, .{}) catch continue;
+        if (st.mtime.nanoseconds > snap_stat.mtime.nanoseconds) return true;
+    }
+    return false;
+}
 
 /// Resolve config from the (already-extracted) --config-file path, falling
 /// back to $CWD/.codedbrc and then <binary_dir>/.codedbrc. Returns the
@@ -388,8 +429,17 @@ pub fn coldLoadOrScan(
 
     const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
 
+    // Staleness probe BEFORE loading: a query served from a pre-edit snapshot
+    // is worse than a 300ms rescan — it silently misses the agent's own edits.
+    // On drift, skip the load entirely and fall into the cold rescan branch,
+    // which repersists a fresh snapshot so the next call is warm again.
+    // CODEDB_NO_AUTO_REFRESH=1 pins the old load-only behavior.
+    const stale = cliIsQueryCmd(cmd) and
+        cio.posixGetenv("CODEDB_NO_AUTO_REFRESH") == null and
+        snapshotIsStale(io, abs_root, data_dir, allocator);
+
     const snapshot_t0 = cio.nanoTimestamp();
-    const snapshot_loaded = loadBestSnapshot(io, explorer, store, abs_root, data_dir, git_head, allocator);
+    const snapshot_loaded = !stale and loadBestSnapshot(io, explorer, store, abs_root, data_dir, git_head, allocator);
     const snapshot_elapsed = cio.nanoTimestamp() - snapshot_t0;
 
     // The word index powers codedb_word and BM25 ranked search. It must be

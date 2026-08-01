@@ -274,7 +274,7 @@ fn shouldSkipDir(name: []const u8) bool {
 /// Recursive directory walker that prunes skip_dirs before descending.
 /// Unlike std.Io.Dir.walk(), this never enters .git, node_modules, etc.,
 /// avoiding the CPU cost of traversing potentially huge directory trees.
-const FilteredWalker = struct {
+pub const FilteredWalker = struct {
     const StackItem = struct {
         dir_handle: std.Io.Dir,
         iter: std.Io.Dir.Iterator,

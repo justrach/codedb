@@ -747,6 +747,23 @@ fn slimDescription(name: []const u8) ?[]const u8 {
     return null;
 }
 
+/// Terse replacements for the wordiest shared property descriptions in slim
+/// mode (the full texts run 120-180 chars each and repeat across tools).
+/// Types/required/enums are untouched, so arg binding is unaffected.
+const slim_prop_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
+    .{ .name = "offset", .desc = "Pagination offset into ranked results (default: 0)" },
+    .{ .name = "paths_only", .desc = "Return path:line only, no line text (default: false)" },
+    .{ .name = "path_glob", .desc = "Glob filter on paths, e.g. 'src/**/*.zig'" },
+    .{ .name = "max_tokens", .desc = "Response token budget (min 256, ~4 bytes/token)" },
+    .{ .name = "skeleton", .desc = "Declarations only; bodies elided (default: false)" },
+    .{ .name = "project", .desc = "Absolute path to another indexed project" },
+};
+
+fn slimPropDescription(name: []const u8) ?[]const u8 {
+    for (&slim_prop_descriptions) |sd| if (std.mem.eql(u8, name, sd.name)) return sd.desc;
+    return null;
+}
+
 fn isCoreProfileTool(name: []const u8) bool {
     for (&core_profile_tools) |c| if (std.mem.eql(u8, name, c)) return true;
     return false;
@@ -795,6 +812,22 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
                         if (!isSlimProfileTool(n.string)) continue;
                         if (slimDescription(n.string)) |d| {
                             t.*.object.put(a, "description", .{ .string = d }) catch {};
+                        }
+                        if (t.*.object.getPtr("inputSchema")) |schema| {
+                            if (schema.* == .object) {
+                                if (schema.*.object.getPtr("properties")) |props| {
+                                    if (props.* == .object) {
+                                        var pit = props.*.object.iterator();
+                                        while (pit.next()) |prop| {
+                                            if (slimPropDescription(prop.key_ptr.*)) |d| {
+                                                if (prop.value_ptr.* == .object) {
+                                                    prop.value_ptr.*.object.put(a, "description", .{ .string = d }) catch {};
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -963,10 +996,15 @@ const Session = struct {
 /// only lets handleCall append a one-line hint once a call repeats.
 pub const ConvergenceGovernor = struct {
     pub const HISTORY = 8; // ring-buffer window of recent calls
-    pub const WARN_AT = 3; // same signature this many times in the window -> nudge
+    // WARN_AT=2: tool results are deterministic within a session, so the
+    // SECOND identical call is already pure waste — don't wait for a third.
+    pub const WARN_AT = 2; // same signature this many times in the window -> nudge
+    pub const NAME_WARN_AT = 4; // same query-tool (any args) this many times -> strategy nudge
 
     sigs: [HISTORY]u64 = @splat(0),
     head: usize = 0,
+    name_sigs: [HISTORY]u64 = @splat(0),
+    name_head: usize = 0,
 
     /// Record a call signature and return how many times it has occurred within
     /// the recent window (including this call). >= WARN_AT means it's looping.
@@ -978,6 +1016,20 @@ pub const ConvergenceGovernor = struct {
         }
         self.sigs[self.head] = s;
         self.head = (self.head + 1) % HISTORY;
+        return occurrences;
+    }
+
+    /// Record a tool-name-only signature. Catches reformulation loops — the
+    /// classic runaway is search "nosec" → search "nosec directive" →
+    /// search "nosec suppress": different exact sigs, same wasted strategy.
+    pub fn recordName(self: *ConvergenceGovernor, name_sig: u64) usize {
+        const s = if (name_sig == 0) 1 else name_sig;
+        var occurrences: usize = 1;
+        for (self.name_sigs) |prev| {
+            if (prev == s) occurrences += 1;
+        }
+        self.name_sigs[self.name_head] = s;
+        self.name_head = (self.name_head + 1) % HISTORY;
         return occurrences;
     }
 };
@@ -1008,7 +1060,21 @@ fn isGovernedNavTool(name: []const u8) bool {
         std.mem.eql(u8, name, "codedb_find") or
         std.mem.eql(u8, name, "codedb_word") or
         std.mem.eql(u8, name, "codedb_read") or
-        std.mem.eql(u8, name, "codedb_outline");
+        std.mem.eql(u8, name, "codedb_outline") or
+        std.mem.eql(u8, name, "codedb_symbol") or
+        std.mem.eql(u8, name, "codedb_callers") or
+        std.mem.eql(u8, name, "codedb_context");
+}
+
+/// Query-reformulation tools where repeated use with DRIFTING args signals a
+/// fishing expedition. Deliberately excludes read/outline/symbol/callers —
+/// hitting those repeatedly with distinct targets is legitimate sequential
+/// exploration, and a noisy nudge trains agents to ignore the real one.
+fn isGovernedQueryTool(name: []const u8) bool {
+    return std.mem.eql(u8, name, "codedb_search") or
+        std.mem.eql(u8, name, "codedb_find") or
+        std.mem.eql(u8, name, "codedb_word") or
+        std.mem.eql(u8, name, "codedb_context");
 }
 
 /// The convergence nudge text for a governed nav call, or null when no nudge
@@ -1021,7 +1087,15 @@ fn isGovernedNavTool(name: []const u8) bool {
 pub fn convergenceNudge(occurrences: usize, json_fmt: bool) ?[]const u8 {
     if (occurrences < ConvergenceGovernor.WARN_AT) return null;
     if (json_fmt) return null;
-    return "\n\n[codedb] You have issued this exact call several times — repeating it will not surface anything new. Change strategy: use a structural tool (codedb_symbol for a definition, codedb_callers for usages, codedb_deps for impact), open the file directly with codedb_read, or refine the query.";
+    return "\n\n[codedb] You have issued this exact call before — results are deterministic within a session, the answer is already above. Change strategy: use a structural tool (codedb_symbol for a definition, codedb_callers for usages, codedb_deps for impact), open the file directly with codedb_read, or refine the query.";
+}
+
+/// Fired when the same QUERY tool is used repeatedly with drifting args —
+/// the reformulation loop the exact-signature nudge can't see.
+pub fn convergenceStrategyNudge(occurrences: usize, json_fmt: bool) ?[]const u8 {
+    if (occurrences < ConvergenceGovernor.NAME_WARN_AT) return null;
+    if (json_fmt) return null;
+    return "\n\n[codedb] Repeated searches with tweaked queries are not converging. Stop guessing phrasing: locate the exact identifier with codedb_symbol, then codedb_callers / codedb_read around its definition — or pull everything at once with codedb_context.";
 }
 
 pub fn run(
@@ -1077,13 +1151,13 @@ pub fn run(
         const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_ps false;
         break :blk_ps std.mem.eql(u8, v, "slim");
     };
-    const tools_list_response: []const u8 = buildToolsListResponse(alloc, .{
-        .bundle_enabled = bundle_enabled,
-        .discriminated_opt_in = discriminated_opt_in,
-        .profile_core = profile_core,
-        .profile_slim = profile_slim,
-    }) catch tools_list;
-    defer if (tools_list_response.ptr != tools_list.ptr) alloc.free(tools_list_response);
+    // Slim-by-default: with no explicit profile env var, agent harnesses get
+    // the slim list — tool schemas ride along on EVERY model call, so the
+    // 20-tool list (~4k tok) vs slim (~1.5k) is worth ~100k tokens over a
+    // 40-call session. Human-facing GUI clients (the mcpEmitRichBlocks
+    // allowlist) keep the full list for discoverability. Decided lazily at
+    // the first tools/list request, when clientInfo.name is known.
+    const profile_explicit = cio.posixGetenv("CODEDB_TOOLS_PROFILE") != null;
     var session = Session{
         .alloc = alloc,
         .stdout = stdout,
@@ -1155,7 +1229,17 @@ pub fn run(
                 requestRoots(&session);
             }
         } else if (mcpj.eql(method, "tools/list")) {
-            if (!is_notification) writeResult(alloc, stdout, id, tools_list_response);
+            if (!is_notification) {
+                const slim_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
+                const resp = buildToolsListResponse(alloc, .{
+                    .bundle_enabled = bundle_enabled,
+                    .discriminated_opt_in = discriminated_opt_in,
+                    .profile_core = profile_core,
+                    .profile_slim = profile_slim or slim_default,
+                }) catch tools_list;
+                defer if (resp.ptr != tools_list.ptr) alloc.free(resp);
+                writeResult(alloc, stdout, id, resp);
+            }
         } else if (mcpj.eql(method, "tools/call")) {
             handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, &session.governor, session.client_name);
         } else if (mcpj.eql(method, "ping")) {
@@ -1452,6 +1536,12 @@ fn handleCall(
             // text/json calls); only surface the text nudge when it won't
             // corrupt the result — convergenceNudge suppresses it for json.
             if (convergenceNudge(occurrences, wantsJsonFormat(args))) |msg| {
+                out.appendSlice(alloc, msg) catch {};
+            }
+        }
+        if (isGovernedQueryTool(name)) {
+            const name_occurrences = gov.recordName(std.hash.Wyhash.hash(0, name));
+            if (convergenceStrategyNudge(name_occurrences, wantsJsonFormat(args))) |msg| {
                 out.appendSlice(alloc, msg) catch {};
             }
         }
@@ -2606,6 +2696,22 @@ fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: 
     }
 }
 
+/// Delimiter-aware test-path check for codedb_context section routing. The
+/// old substring check (`indexOf(path, "/test")`) misclassified tester.py,
+/// testutils.py, latest/, contest/ as tests — silently emptying the Callers
+/// section on exactly the files agents need. Matches real test conventions:
+/// test(s)/ dirs, test_*.py, *_test.go, *.test.js, __tests__, spec, fixtures.
+fn isTestPath(path: []const u8) bool {
+    if (std.mem.startsWith(u8, path, "tests/") or std.mem.startsWith(u8, path, "test/")) return true;
+    if (std.mem.indexOf(u8, path, "/tests/") != null or std.mem.indexOf(u8, path, "/test/") != null) return true;
+    if (std.mem.indexOf(u8, path, "_test.") != null or std.mem.indexOf(u8, path, ".test.") != null) return true;
+    if (std.mem.indexOf(u8, path, "/__tests__/") != null) return true;
+    if (std.mem.indexOf(u8, path, "/spec/") != null or std.mem.indexOf(u8, path, "/fixtures/") != null) return true;
+    const base = std.fs.path.basename(path);
+    if (std.mem.startsWith(u8, base, "test_") or std.mem.startsWith(u8, base, "test-")) return true;
+    return false;
+}
+
 fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
     const task = getStr(args, "task") orelse {
         out.appendSlice(alloc, "error: missing 'task' argument") catch {};
@@ -2637,6 +2743,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     var sec_syms_rich: std.ArrayList(u8) = .empty;
     var sec_syms_lean: std.ArrayList(u8) = .empty;
     var sec_callers: std.ArrayList(u8) = .empty;
+    var sec_tests: std.ArrayList(u8) = .empty;
     var sec_calls: std.ArrayList(u8) = .empty;
     var sec_files: std.ArrayList(u8) = .empty;
     var sec_sites: std.ArrayList(u8) = .empty;
@@ -2809,7 +2916,11 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         //   T2 regex: Builder::build → meta::Regex::new in regex.rs
         if (inline_bodies) {
             const wc = cio.listWriter(&sec_callers, A);
+            const wt = cio.listWriter(&sec_tests, A);
             var any_callers = false;
+            var any_tests = false;
+            var tests_shown: u32 = 0;
+            var tests_overflow: u32 = 0;
             var seen_caller = std.StringHashMap(void).init(A);
             var total_shown: u32 = 0;
             // Dedupe scoped searches by keyword — multiple sym_refs often
@@ -2828,16 +2939,25 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                     if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
                     // Skip the definition site itself
                     if (r.line_num == sr.line and std.mem.eql(u8, r.path, sr.path)) continue;
-                    // Skip test/spec/fixture paths
-                    const is_test = std.mem.startsWith(u8, r.path, "tests/") or
-                        std.mem.startsWith(u8, r.path, "test/") or
-                        std.mem.indexOf(u8, r.path, "/test") != null or
-                        std.mem.indexOf(u8, r.path, "_test.") != null or
-                        std.mem.indexOf(u8, r.path, ".test.") != null or
-                        std.mem.indexOf(u8, r.path, "/__tests__/") != null or
-                        std.mem.indexOf(u8, r.path, "/spec/") != null or
-                        std.mem.indexOf(u8, r.path, "/fixtures/") != null;
-                    if (is_test) continue;
+                    // Route test/spec/fixture hits into their own Related tests
+                    // section instead of dropping them — implementation tasks
+                    // otherwise need 2-4 follow-up calls to find the tests.
+                    if (isTestPath(r.path)) {
+                        const dedup_key = std.fmt.allocPrint(A, "{s}:{d}", .{ r.path, r.line_num }) catch continue;
+                        if (seen_caller.contains(dedup_key)) continue;
+                        seen_caller.put(dedup_key, {}) catch {};
+                        if (!any_tests) {
+                            wt.print("\n## Related tests (existing coverage touching these symbols)\n", .{}) catch {};
+                            any_tests = true;
+                        }
+                        if (tests_shown < 6) {
+                            appendMatchLine(wt, "- ", r.path, r.line_num, r.line_text);
+                            tests_shown += 1;
+                        } else {
+                            tests_overflow += 1;
+                        }
+                        continue;
+                    }
                     if (r.scope_kind) |sk| {
                         if (sk == .import or sk == .type_alias or sk == .constant) continue;
                     }
@@ -2857,6 +2977,9 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                     shown_for_sym += 1;
                     total_shown += 1;
                 }
+            }
+            if (tests_overflow > 0) {
+                wt.print("… +{d} more test hits (codedb_search in tests/ for the rest)\n", .{tests_overflow}) catch {};
             }
         }
 
@@ -3016,6 +3139,11 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         out.appendSlice(alloc, sec_callers.items) catch {};
     } else if (sec_callers.items.len > 0) {
         w.print("\n[max_tokens: omitted Callers (~{d} tokens)]\n", .{sec_callers.items.len / 4}) catch {};
+    }
+    if (fits(budget, &spent, sec_tests.items.len)) {
+        out.appendSlice(alloc, sec_tests.items) catch {};
+    } else if (sec_tests.items.len > 0) {
+        w.print("\n[max_tokens: omitted Related tests (~{d} tokens)]\n", .{sec_tests.items.len / 4}) catch {};
     }
     if (inc_calls) {
         out.appendSlice(alloc, sec_calls.items) catch {};

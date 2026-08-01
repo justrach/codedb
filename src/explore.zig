@@ -2698,10 +2698,41 @@ pub const Explorer = struct {
         const outline = self.outlines.getPtr(path) orelse return false;
         try out.ensureUnusedCapacity(alloc, 128 + outline.symbols.items.len * 128);
         const w = cio.listWriter(out, alloc);
-        w.print("{s} ({s}, {d} lines, {d} bytes)\n", .{
-            outline.path, @tagName(outline.language), outline.line_count, outline.byte_size,
+        w.print("{s} ({s}, {d} lines)\n", .{
+            outline.path, @tagName(outline.language), outline.line_count,
         }) catch {};
-        for (outline.symbols.items) |sym| {
+        // Consecutive imports collapse into one summary line: each import used
+        // to print as `L5: import import collections` (kind tag + verbatim
+        // statement, ~26% of outline bytes on import-heavy files) and import
+        // lines are never call/edit targets — the line numbers carry no value.
+        const syms = outline.symbols.items;
+        var i: usize = 0;
+        while (i < syms.len) {
+            const sym = syms[i];
+            if (sym.kind == .import) {
+                var count: usize = 0;
+                var names_len: usize = 0;
+                var truncated = false;
+                var first = true;
+                w.writeAll("  imports: ") catch {};
+                while (i < syms.len and syms[i].kind == .import) : (i += 1) {
+                    count += 1;
+                    if (names_len > 160) {
+                        truncated = true;
+                        continue;
+                    }
+                    if (!first) {
+                        w.writeAll(", ") catch {};
+                        names_len += 2;
+                    }
+                    first = false;
+                    w.writeAll(syms[i].name) catch {};
+                    names_len += syms[i].name.len;
+                }
+                if (truncated) w.writeAll(", …") catch {};
+                w.print("  (x{d})\n", .{count}) catch {};
+                continue;
+            }
             if (compact) {
                 w.print("  L{d}: {s} {s}\n", .{ sym.line_start, @tagName(sym.kind), sym.name }) catch {};
             } else {
@@ -2709,6 +2740,7 @@ pub const Explorer = struct {
                 if (sym.detail) |d| w.print("  // {s}", .{d}) catch {};
                 w.writeAll("\n") catch {};
             }
+            i += 1;
         }
         self.outline_render_cache.put(path, compact, gen, out.items[render_start..]);
         return true;
@@ -3123,13 +3155,52 @@ pub const Explorer = struct {
         var seen_dirs = std.StringHashMap(void).init(allocator);
         defer seen_dirs.deinit();
 
+        // Token guard (two-pass): files with no symbols and dot-paths are pure
+        // noise for agents — measured 86% of tree bytes on a large repo
+        // (174 KB, of which 150 KB is 0-symbol files under .graff/, docs/,
+        // fixtures). Filter them, keep one summary line for discoverability.
+        // If the repo has NOTHING but such files (docs-only), show everything
+        // rather than an empty tree.
+        var keep = std.ArrayList(bool).empty;
+        defer keep.deinit(allocator);
+        var kept_dirs = std.StringHashMap(void).init(allocator);
+        defer kept_dirs.deinit();
+        var shown: usize = 0;
         for (paths.items) |path| {
+            const outline = self.outlines.get(path) orelse {
+                try keep.append(allocator, false);
+                continue;
+            };
+            const dotpath = path[0] == '.' or std.mem.indexOf(u8, path, "/.") != null;
+            const k = !dotpath and outline.symbols.items.len > 0;
+            try keep.append(allocator, k);
+            if (k) {
+                shown += 1;
+                var prefix_end: usize = 0;
+                while (std.mem.indexOfScalarPos(u8, path, prefix_end, '/')) |sep| {
+                    try kept_dirs.put(path[0 .. sep + 1], {});
+                    prefix_end = sep + 1;
+                }
+            }
+        }
+        const filter_active = shown > 0;
+        var omitted: usize = 0;
+
+        for (paths.items, 0..) |path, pi| {
             const outline = self.outlines.get(path) orelse continue;
+            if (filter_active and !keep.items[pi]) {
+                omitted += 1;
+                continue;
+            }
 
             // Emit directory nodes we haven't seen yet
             var prefix_end: usize = 0;
             while (std.mem.indexOfScalarPos(u8, path, prefix_end, '/')) |sep| {
                 const dir = path[0 .. sep + 1];
+                if (filter_active and !kept_dirs.contains(dir)) {
+                    prefix_end = sep + 1;
+                    continue;
+                }
                 if (!seen_dirs.contains(dir)) {
                     try seen_dirs.put(dir, {});
                     const depth = std.mem.count(u8, dir[0..sep], "/");
@@ -3155,6 +3226,9 @@ pub const Explorer = struct {
                 outline.symbols.items.len,
                 s.reset,
             });
+        }
+        if (filter_active and omitted > 0) {
+            try writer.print("{s}… +{d} non-code files omitted (no symbols or dotfiles){s}\n", .{ s.dim, omitted, s.reset });
         }
         self.tree_render_cache.put(gen, use_color, out.items[render_start..]);
     }

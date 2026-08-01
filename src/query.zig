@@ -73,7 +73,34 @@ pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
             s.reset,                               sty.durationColor(s, elapsed),
             sty.formatDuration(&dur_buf, elapsed), s.reset,
         });
-        for (outline.symbols.items) |sym| {
+        // Consecutive imports collapse into one summary line (same token
+        // guard as the MCP outline renderer — import lines are never edit
+        // targets and are ~26% of outline bytes on import-heavy files).
+        const syms = outline.symbols.items;
+        var i: usize = 0;
+        while (i < syms.len) {
+            const sym = syms[i];
+            if (sym.kind == .import) {
+                var count: usize = 0;
+                var names_len: usize = 0;
+                var truncated = false;
+                var first = true;
+                out.p("  {s}imports:{s} ", .{ s.dim, s.reset });
+                while (i < syms.len and syms[i].kind == .import) : (i += 1) {
+                    count += 1;
+                    if (names_len > 160) {
+                        truncated = true;
+                        continue;
+                    }
+                    if (!first) out.p(", ", .{});
+                    first = false;
+                    out.p("{s}", .{syms[i].name});
+                    names_len += syms[i].name.len + 2;
+                }
+                if (truncated) out.p(", …", .{});
+                out.p("  {s}(x{d}){s}\n", .{ s.dim, count, s.reset });
+                continue;
+            }
             const kind = @tagName(sym.kind);
             out.p("  {s}L{d:<5}{s}  {s}{s:<14}{s}  {s}{s}{s}", .{
                 s.dim,             sym.line_start, s.reset,
@@ -84,6 +111,7 @@ pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
                 out.p("  {s}{s}{s}", .{ s.dim, d, s.reset });
             }
             out.p("\n", .{});
+            i += 1;
         }
     } else if (std.mem.eql(u8, cmd, "find")) {
         const name = if (args.len > cmd_args_start) args[cmd_args_start] else {
