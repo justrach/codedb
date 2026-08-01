@@ -2904,6 +2904,28 @@ pub const Explorer = struct {
         return "↪ whole-file read: codedb_outline maps this file 4-15x smaller — get the structure, pick a line range, then codedb_read just that range.\n";
     }
 
+    /// Token guard for rangeless full-file reads: past a point a whole-file
+    /// dump is never the right payload — tool results persist in the agent
+    /// transcript and re-bill on every subsequent model call (a 150 KB dump
+    /// costs ~37k tokens × the rest of the session). Cap only pathological
+    /// dumps (64 KB ≈ 1,500 lines) — tighter caps measurably backfire: agents
+    /// route around the tool and burn far more on extra round-trips.
+    pub const full_read_cap = 64 * 1024;
+
+    pub fn appendCappedFullFile(allocator: std.mem.Allocator, out: *std.ArrayList(u8), content: []const u8) !void {
+        if (content.len <= full_read_cap) {
+            try out.appendSlice(allocator, content);
+            return;
+        }
+        try out.appendSlice(allocator, content[0..full_read_cap]);
+        var elided: usize = 0;
+        for (content[full_read_cap..]) |ch| {
+            if (ch == '\n') elided += 1;
+        }
+        const w = cio.listWriter(out, allocator);
+        try w.print("\n… [{d} more lines elided ({d} bytes total) — run codedb_outline on this file, then codedb_read with line_start/line_end for the slice you need]\n", .{ elided, content.len });
+    }
+
     fn renderReadBytes(
         self: *Explorer,
         path: []const u8,
@@ -2944,7 +2966,7 @@ pub const Explorer = struct {
             }
         } else {
             if (fullFileReadHint(content)) |hint| try out.appendSlice(allocator, hint);
-            try out.appendSlice(allocator, content);
+            try appendCappedFullFile(allocator, out, content);
         }
     }
 

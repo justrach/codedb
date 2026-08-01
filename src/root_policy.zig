@@ -76,12 +76,100 @@ pub fn isIndexableRoot(path: []const u8) bool {
     return true;
 }
 
+/// True when `path` sits under one of the temp/system-volatile roots the
+/// default policy refuses (the set CODEDB_ALLOW_TEMP re-enables). /var/home
+/// project dirs are NOT temp roots — they are accepted unconditionally above.
+pub fn isTempRoot(path: []const u8) bool {
+    if (std.mem.startsWith(u8, path, "/var/home/")) return false;
+    return isExactOrChild(path, "/private/tmp") or
+        isExactOrChild(path, "/tmp") or
+        isExactOrChild(path, "/private/var") or
+        isExactOrChild(path, "/var");
+}
+
+/// True only for the bare temp dirs themselves — never bootstrap these, no
+/// matter what marker files happen to be lying in them.
+fn isBareTempDir(path: []const u8) bool {
+    return std.mem.eql(u8, path, "/tmp") or
+        std.mem.eql(u8, path, "/private/tmp") or
+        std.mem.eql(u8, path, "/var") or
+        std.mem.eql(u8, path, "/private/var");
+}
+
+/// Files/dirs whose presence at a root strongly indicates a real project
+/// checkout rather than a scratch directory. `.git` may be a regular file
+/// (worktrees, submodules), so everything is probed with statFile.
+const project_markers = [_][]const u8{
+    ".git",           "pyproject.toml", "package.json", "Cargo.toml",
+    "go.mod",         "build.zig",      "setup.py",     "pom.xml",
+    "Gemfile",        "composer.json",  "build.gradle", "CMakeLists.txt",
+};
+
+pub fn looksLikeProject(io: std.Io, path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    for (project_markers) |m| {
+        const p = std.fmt.bufPrint(&buf, "{s}/{s}", .{ path, m }) catch return false;
+        if (std.Io.Dir.cwd().statFile(io, p, .{})) |_| {
+            return true;
+        } else |_| {}
+    }
+    return false;
+}
+
+/// Out-of-the-box bootstrap exception: a temp root that recognizably holds a
+/// project checkout may be indexed on the fly without CODEDB_ALLOW_TEMP.
+/// Rationale: agent harnesses hard-fail once on a refused call and never
+/// retry the tool for the rest of the session, so refusing a legit /tmp
+/// clone silently disables codedb entirely. System prefixes (/usr, /etc, …)
+/// and the bare temp dirs stay denied unconditionally.
+pub fn isBootstrapableRoot(io: std.Io, path: []const u8) bool {
+    if (isIndexableRoot(path)) return false;
+    return isTempRoot(path) and !isBareTempDir(path) and looksLikeProject(io, path);
+}
+
 const testing = std.testing;
 
 test "issue-80: normal paths are allowed" {
     try testing.expect(isIndexableRoot("/Users/dev/project"));
     try testing.expect(isIndexableRoot("/home/user/code"));
     try testing.expect(isIndexableRoot("/home/user/code/subdir"));
+}
+
+test "isTempRoot classification" {
+    try testing.expect(isTempRoot("/tmp"));
+    try testing.expect(isTempRoot("/tmp/repo"));
+    try testing.expect(isTempRoot("/private/tmp/repo"));
+    try testing.expect(isTempRoot("/var/folders/ab/cd/T/build"));
+    try testing.expect(isTempRoot("/private/var/folders/ab/cd/T/build"));
+    try testing.expect(!isTempRoot("/var/home/user/project"));
+    try testing.expect(!isTempRoot("/Users/dev/project"));
+    try testing.expect(!isTempRoot("/usr/local"));
+}
+
+test "bootstrap: project markers enable temp-root indexing, scratch stays refused" {
+    const tio = std.testing.io;
+    var name_buf: [128]u8 = undefined;
+    const base = std.fmt.bufPrint(&name_buf, "/tmp/codedb-policy-test-{d}", .{cio.milliTimestamp()}) catch unreachable;
+    std.Io.Dir.cwd().createDirPath(tio, base) catch return error.SkipZigTest;
+    defer std.Io.Dir.cwd().deleteTree(tio, base) catch {};
+
+    // Scratch temp dir: no markers → not bootstrapable.
+    try testing.expect(isTempRoot(base));
+    try testing.expect(!looksLikeProject(tio, base));
+    try testing.expect(!isBootstrapableRoot(tio, base));
+
+    // Drop a project marker → bootstrap on the fly is allowed.
+    var dir = try std.Io.Dir.cwd().openDir(tio, base, .{});
+    defer dir.close(tio);
+    try dir.writeFile(tio, .{ .sub_path = "package.json", .data = "{}\n" });
+    try testing.expect(looksLikeProject(tio, base));
+    try testing.expect(isBootstrapableRoot(tio, base));
+
+    // Already-allowed roots are never "bootstrapable" (no fs probe needed).
+    try testing.expect(!isBootstrapableRoot(tio, "/Users/dev/project"));
+    // Bare temp dirs stay refused even with the marker file present inside
+    // the child we just created.
+    try testing.expect(!isBootstrapableRoot(tio, "/tmp"));
 }
 
 test "issue-174: home directory itself is denied" {

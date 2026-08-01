@@ -389,7 +389,7 @@ const ProjectCache = struct {
         default_store: *Store,
     ) !ProjectCtx {
         const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
-        if (!root_policy.isIndexableRoot(p))
+        if (!root_policy.isIndexableRoot(p) and !root_policy.isBootstrapableRoot(io, p))
             return error.PathNotAllowed;
 
         self.mu.lock();
@@ -1070,7 +1070,7 @@ pub fn run(
 
         if (method_opt == null) {
             if (has_id) {
-                handleResponse(&session, root);
+                handleResponse(io, &session, root);
             }
             continue;
         }
@@ -1249,7 +1249,7 @@ fn requestRoots(s: *Session) void {
     writeRequest(s.alloc, s.stdout, rid, "roots/list", "{}");
 }
 
-fn handleResponse(s: *Session, root: *const std.json.ObjectMap) void {
+fn handleResponse(io: std.Io, s: *Session, root: *const std.json.ObjectMap) void {
     const resp_id_val = root.get("id") orelse return;
     const resp_id: i64 = switch (resp_id_val) {
         .integer => |n| n,
@@ -1261,12 +1261,12 @@ fn handleResponse(s: *Session, root: *const std.json.ObjectMap) void {
             if (root.get("error") != null) return;
             const result_val = root.get("result") orelse return;
             if (result_val != .object) return;
-            parseRoots(s, &result_val.object);
+            parseRoots(io, s, &result_val.object);
         }
     }
 }
 
-fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
+fn parseRoots(io: std.Io, s: *Session, result: *const std.json.ObjectMap) void {
     s.freeRoots();
     const roots_val = result.get("roots") orelse return;
     if (roots_val != .array) return;
@@ -1277,7 +1277,7 @@ fn parseRoots(s: *Session, result: *const std.json.ObjectMap) void {
         const name_raw = mcpj.getStr(&obj, "name") orelse "";
         // Strip file:// prefix for policy check
         const path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
-        if (!root_policy.isIndexableRoot(path)) {
+        if (!root_policy.isIndexableRoot(path) and !root_policy.isBootstrapableRoot(io, path)) {
             std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
             continue;
         }
@@ -1766,7 +1766,24 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             const body = explorer.getSymbolBody(r.path, r.symbol.line_start, r.symbol.line_end, alloc) catch null;
             if (body) |b| {
                 defer alloc.free(b);
-                out.appendSlice(alloc, b) catch {};
+                // Token guard: god-class bodies (a 3,000-line `class Table` is
+                // ~127 KB) would otherwise be dumped whole — and since tool
+                // results persist in the agent transcript, ONE such call can
+                // cost ~1M re-sent tokens over a session. Cap only the
+                // pathological dumps (32 KB passes virtually every real
+                // function whole) — tighter caps measurably backfire: agents
+                // route around the tool and burn far more on extra round-trips.
+                const body_cap = 32 * 1024;
+                if (b.len <= body_cap) {
+                    out.appendSlice(alloc, b) catch {};
+                } else {
+                    out.appendSlice(alloc, b[0..body_cap]) catch {};
+                    var elided: usize = 0;
+                    for (b[body_cap..]) |ch| {
+                        if (ch == '\n') elided += 1;
+                    }
+                    w.print("\n… [{d} more lines elided — run `outline {s}` for the member list, then `read {s}` at the line range you need]\n", .{ elided, r.path, r.path }) catch {};
+                }
             }
         }
     }
@@ -3233,8 +3250,12 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
     } else {
         if (!raw) {
             if (Explorer.fullFileReadHint(content)) |hint| out.appendSlice(alloc, hint) catch {};
+            // Token guard: cap rangeless whole-file dumps (raw stays byte-exact
+            // for exact-string editors, #632).
+            Explorer.appendCappedFullFile(alloc, out, content) catch {};
+        } else {
+            out.appendSlice(alloc, content) catch {};
         }
-        out.appendSlice(alloc, content) catch {};
     }
 }
 
@@ -3660,7 +3681,7 @@ fn handleIndex(
         return;
     };
     const abs_path = abs_buf[0..abs_len];
-    if (!root_policy.isIndexableRoot(abs_path)) {
+    if (!root_policy.isIndexableRoot(abs_path) and !root_policy.isBootstrapableRoot(io, abs_path)) {
         out.appendSlice(alloc, "error: refusing to index temporary root: ") catch {};
         out.appendSlice(alloc, abs_path) catch {};
         return;

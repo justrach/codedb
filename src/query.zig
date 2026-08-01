@@ -373,11 +373,27 @@ pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
                 sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed),
                 s.reset,
             });
+            // Token guard (mirrors Explorer.appendCappedFullFile): a rangeless
+            // whole-file dump persists in the agent transcript and re-bills on
+            // every subsequent model call — a 150 KB file costs ~37k tokens ×
+            // the rest of the session. Cap it; point at outline + ranged read.
             var line_num: u32 = 0;
+            var budget: usize = explore_mod.Explorer.full_read_cap;
             var lines = std.mem.splitScalar(u8, content_owned, '\n');
+            var truncated = false;
             while (lines.next()) |line| {
+                if (budget < line.len + 10) {
+                    truncated = true;
+                    break;
+                }
+                budget -= line.len + 10;
                 line_num += 1;
                 out.p("{d:>5} | {s}\n", .{ line_num, line });
+            }
+            if (truncated) {
+                var remaining: usize = 1; // the line we stopped on
+                while (lines.next()) |_| remaining += 1;
+                out.p("… [{d} more lines elided — run `outline {s}` then `read {s} -L FROM-TO` for the slice you need]\n", .{ remaining, path, path });
             }
         }
     } else if (std.mem.eql(u8, cmd, "hot")) {

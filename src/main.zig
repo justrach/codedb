@@ -312,10 +312,27 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
     // immediately on notifications/initialized — see handleSession.
     const mcp_deferred_root = mcpRootIsImplicitCwd(cmd, root, root_is_explicit);
     if (!mcp_deferred_root and !root_policy.isIndexableRoot(abs_root)) {
-        out.p("{s}\xe2\x9c\x97{s} refusing to index temporary root: {s}{s}{s}\n", .{
-            s.red, s.reset, s.bold, abs_root, s.reset,
-        });
-        out.exitWithFlush(1);
+        // Load-only exception: the footgun guard exists to prevent *indexing*
+        // junk roots, but reading an already-built index is harmless. Bench/CI
+        // harnesses pre-index /tmp clones with CODEDB_ALLOW_TEMP=1 and then
+        // spawn the CLI without the env var — refusing here silently disables
+        // codedb for the whole session (agents fall back to grep/sed after one
+        // hard failure). Allow read-only query commands when an index exists.
+        const load_only_ok = cliIsQueryCmd(cmd) and blk: {
+            const data_dir = getDataDir(io, allocator, abs_root) catch break :blk false;
+            defer allocator.free(data_dir);
+            break :blk index_mod.readStatusMeta(io, data_dir, allocator).indexed;
+        };
+        // Bootstrap exception: a temp root that looks like a real project
+        // checkout (.git, pyproject.toml, …) may be indexed on the fly, so
+        // fresh clones work out of the box without the env var.
+        const bootstrap_ok = !load_only_ok and root_policy.isBootstrapableRoot(io, abs_root);
+        if (!load_only_ok and !bootstrap_ok) {
+            out.p("{s}\xe2\x9c\x97{s} refusing to index temporary root: {s}{s}{s}\n", .{
+                s.red, s.reset, s.bold, abs_root, s.reset,
+            });
+            out.exitWithFlush(1);
+        }
     }
 
     // #553: `status` must be a cheap, fast-exiting metadata query. It previously
