@@ -68,8 +68,13 @@ jobs:
           }
           archive="zig-${{ matrix.zig_host }}-${ZIG_VERSION}.tar.xz"
           zig_dir="zig-${{ matrix.zig_host }}-${ZIG_VERSION}"
+          # Old dev builds are rotated off ziglang.org; fall back to the
+          # hexops community mirror (byte-identical official tarballs).
+          # The pinned sha256 below is verified regardless of source.
           curl --fail --show-error --location --retry 3 \
-            "https://ziglang.org/builds/${archive}" -o zig.tar.xz
+            "https://ziglang.org/builds/${archive}" -o zig.tar.xz || \
+          curl --fail --show-error --location --retry 3 \
+            "https://pkg.machengine.org/zig/${archive}" -o zig.tar.xz
           echo "${{ matrix.zig_sha256 }}  zig.tar.xz" | shasum -a 256 --check
           tar -xf zig.tar.xz
           test "$("$PWD/${zig_dir}/zig" version)" = "$ZIG_VERSION"
