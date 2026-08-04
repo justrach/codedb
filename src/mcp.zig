@@ -2578,7 +2578,11 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
             }
         }
         if (is_def) continue;
-        if (!hasWholeWordMatch(r.line_text, name)) continue;
+        // A whole-word match that only ever lands inside a string literal is a
+        // mention, not an invocation — a `("name", "file")` table row or a
+        // `test "…name…" {` declaration. Real calls in the same file (and even
+        // in the same test body) sit outside the quotes and survive.
+        if (!hasWholeWordMatchOutsideStrings(r.line_text, name)) continue;
         kept.append(alloc, r_idx) catch {};
     }
 
@@ -2640,20 +2644,57 @@ fn isIdentChar(c: u8) bool {
         c == '_';
 }
 
-/// Returns true iff `needle` appears in `haystack` with non-identifier
-/// characters (or string boundary) on both sides — i.e. as a whole-word
-/// identifier match, not as a substring inside a longer identifier.
-fn hasWholeWordMatch(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0 or haystack.len < needle.len) return false;
-    var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, haystack, search_from, needle)) |pos| {
-        const before_ok = pos == 0 or !isIdentChar(haystack[pos - 1]);
-        const after_idx = pos + needle.len;
-        const after_ok = after_idx >= haystack.len or !isIdentChar(haystack[after_idx]);
-        if (before_ok and after_ok) return true;
-        search_from = pos + 1;
+/// Returns true iff `needle` occurs in `line` as a whole-word identifier
+/// (non-identifier characters or line boundaries on both sides) at a position
+/// that is NOT inside a string literal.
+///
+/// An occurrence that only ever appears between quotes is a mention, not a
+/// call: the Python table row `("renderPlainSearch", "src/explore.zig"),` and
+/// the Zig declaration `test "def-first: renderPlainSearch surfaces …" {` both
+/// name the symbol without invoking it, yet passed every other filter here.
+///
+/// Deliberately line-local and pragmatic, in the spirit of `isCommentOrBlank`:
+///   - tracks '…' and "…" spans, honouring backslash escapes
+///   - a quote with no closing partner on the line (an apostrophe in a
+///     trailing comment, a Rust lifetime `&'a`, an open multi-line literal) is
+///     treated as ordinary code, so it can never swallow the rest of the line
+///   - backticks are not treated as quotes: Go raw strings and JS template
+///     literals routinely wrap real calls (`${render()}`)
+fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or line.len < needle.len) return false;
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == '"' or line[i] == '\'') {
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+        }
+        // `i` is a code byte — try to anchor a whole-word match on it.
+        if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+            const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+            const after = i + needle.len;
+            const after_ok = after >= line.len or !isIdentChar(line[after]);
+            if (before_ok and after_ok) return true;
+        }
+        i += 1;
     }
     return false;
+}
+
+/// Index of the quote closing the literal opened at `open`, or null when the
+/// literal never closes on this line.
+fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+    const quote = line[open];
+    var i = open + 1;
+    while (i < line.len) : (i += 1) {
+        if (line[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (line[i] == quote) return i;
+    }
+    return null;
 }
 
 /// Languages where the concept of a "call site" is meaningful. Excludes
