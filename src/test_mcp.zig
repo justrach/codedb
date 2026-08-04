@@ -3565,3 +3565,23 @@ test "context: identifier candidates merge with plain concept words" {
     try testing.expectEqual(@as(usize, 1), meta_count);
     try testing.expect(has_snapshot);
 }
+
+test "tools/list mini profile advertises six tools with full descriptions" {
+    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_mini = true });
+    defer testing.allocator.free(resp);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    try testing.expectEqual(@as(usize, 6), tools.items.len);
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_read") or std.mem.eql(u8, name, "codedb_word"))
+            return error.NonMiniToolAdvertised;
+        if (std.mem.eql(u8, name, "codedb_callers")) {
+            const desc = t.object.get("description").?.string;
+            try testing.expect(std.mem.indexOf(u8, desc, "PRIMARY tool") != null);
+        }
+    }
+}

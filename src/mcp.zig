@@ -704,7 +704,27 @@ pub const ToolsListOpts = struct {
     discriminated_opt_in: bool = false,
     profile_core: bool = false,
     profile_slim: bool = false,
+    profile_mini: bool = false,
 };
+
+/// CODEDB_TOOLS_PROFILE=mini advertises the six tools agents actually reach
+/// for, keeping the full steering descriptions (slim's terse ones measured
+/// worse: agents never called the tools yet paid the surface). Tools a
+/// native-editor client already has (read) and rarely-used extras (word,
+/// callpath, hot, tree, find, status) are unadvertised but still dispatch.
+const mini_profile_tools = [_][]const u8{
+    "codedb_outline",
+    "codedb_symbol",
+    "codedb_search",
+    "codedb_callers",
+    "codedb_deps",
+    "codedb_context",
+};
+
+fn isMiniProfileTool(name: []const u8) bool {
+    for (&mini_profile_tools) |c| if (std.mem.eql(u8, name, c)) return true;
+    return false;
+}
 
 /// CODEDB_TOOLS_PROFILE=core advertises only the everyday navigation set,
 /// keeping tools/list small for agents that get distracted by rare tools.
@@ -787,7 +807,7 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
     const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
     if (tools_val.* != .array) return error.MalformedToolsList;
 
-    if (!opts.bundle_enabled or opts.profile_core) {
+    if (!opts.bundle_enabled or opts.profile_core or opts.profile_mini) {
         var filtered: std.json.Array = .init(a);
         for (tools_val.array.items) |t| {
             if (t == .object) {
@@ -795,6 +815,7 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
                     if (n == .string) {
                         if (!opts.bundle_enabled and std.mem.eql(u8, n.string, "codedb_bundle")) continue;
                         if (opts.profile_core and !isCoreProfileTool(n.string)) continue;
+                        if (opts.profile_mini and !isMiniProfileTool(n.string)) continue;
                     }
                 }
             }
@@ -1151,17 +1172,23 @@ pub fn run(
         const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_ps false;
         break :blk_ps std.mem.eql(u8, v, "slim");
     };
-    // Core-by-default: with no explicit profile env var, agent harnesses get
-    // the core list — 10 navigation tools with the full steering
-    // descriptions. A 12-question Opus 5 A/B (2026-08-04, QA over
-    // this repo, 2 reps) measured slim-by-default at +15% total input tokens
-    // vs core-by-default: the terse slim descriptions stop the model from
-    // reaching for the tools at all, so it greps natively AND pays the
-    // schema tax, while core converts those grep chains into single calls
-    // and lands at parity-or-better with a no-MCP baseline. Human-facing
-    // GUI clients (the mcpEmitRichBlocks allowlist) keep the full list for
-    // discoverability. Decided lazily at the first tools/list request, when
-    // clientInfo.name is known.
+    const profile_mini = blk_pm: {
+        const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_pm false;
+        break :blk_pm std.mem.eql(u8, v, "mini");
+    };
+    // Mini-by-default: with no explicit profile env var, agent harnesses
+    // get the mini list — the six everyday navigation tools with the full
+    // steering descriptions (~1.9k tokens/request vs core's ~2.7k, full's
+    // ~5.2k, and the schema rides along on EVERY round trip). A 12-question
+    // Opus 5 A/B (2026-08-04, QA over this repo, 2 reps per config)
+    // measured slim-by-default (terse descriptions) at +15% total input
+    // tokens vs the rich-description profiles, which land at
+    // parity-or-better with a no-MCP baseline; mini vs core is within
+    // run-to-run noise on outcomes, so the deterministically smaller
+    // surface wins. Everything still dispatches when called by name.
+    // Human-facing GUI clients (the mcpEmitRichBlocks allowlist) keep the
+    // full list for discoverability. Decided lazily at the first
+    // tools/list request, when clientInfo.name is known.
     const profile_explicit = cio.posixGetenv("CODEDB_TOOLS_PROFILE") != null;
     var session = Session{
         .alloc = alloc,
@@ -1235,12 +1262,13 @@ pub fn run(
             }
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) {
-                const core_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
+                const mini_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
                 const resp = buildToolsListResponse(alloc, .{
                     .bundle_enabled = bundle_enabled,
                     .discriminated_opt_in = discriminated_opt_in,
-                    .profile_core = profile_core or core_default,
+                    .profile_core = profile_core,
                     .profile_slim = profile_slim,
+                    .profile_mini = profile_mini or mini_default,
                 }) catch tools_list;
                 defer if (resp.ptr != tools_list.ptr) alloc.free(resp);
                 writeResult(alloc, stdout, id, resp);
