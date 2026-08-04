@@ -69,7 +69,7 @@ https://github.com/justrach/codedb/
 
 Posting notes
 
-- DO NOT POST until the perf branch (7 commits, currently at /tmp/codedb-pr) is merged and released — the frontier numbers were measured on that branch, not on the shipped release, which was +18% worse than baseline before the fixes.
+- DO NOT POST until the next release ships. The perf branch is merged (PR #681 -> release/0.2.5833-mcp2026, 2026-08-04) but the frontier numbers are not in any shipped release yet — the current shipped release was +18% worse than baseline before these fixes.
 - Method if asked: Opus 5 `claude -p` A/B harness, 36 questions x 3 repetitions per setup, same machine, same repo (637 files). Cost CV across repetitions ~8%; individual lanes swing +/-19%, which is why the +0.9% baseline delta is reported as a tie.
 - "Every capability dimension" = indexing speed (17-22x), point-query latency (~600x), concept retrieval (11/12 vs lower for both competitors), one-call callers, and the multi-hop set (cheaper AND 14% faster than baseline).
 - Do not claim "beats grep" — on this repo size it doesn't need to and the data doesn't show it. The defensible framing is "free to attach, strictly more capable, undominated."
