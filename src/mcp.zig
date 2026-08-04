@@ -576,7 +576,7 @@ pub const BenchContext = struct {
         defer out.deinit(alloc);
 
         const t0 = cio.nanoTimestamp();
-        dispatch(io, alloc, tool, args, &out, store, explorer, agents, &self.cache, null, 1);
+        dispatch(io, alloc, tool, args, &out, store, explorer, agents, &self.cache, null);
         const elapsed = cio.nanoTimestamp() - t0;
 
         const is_error = std.mem.startsWith(u8, out.items, "error:");
