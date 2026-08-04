@@ -3504,3 +3504,299 @@ test "installers: the website copies stay byte-identical to install/install.sh" 
         try testing.expectEqualStrings(canonical, copy);
     }
 }
+
+test "tools/list core profile advertises the navigation set with full descriptions" {
+    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_core = true });
+    defer testing.allocator.free(resp);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    try testing.expectEqual(@as(usize, 10), tools.items.len);
+    var found_callers = false;
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_glob") or std.mem.eql(u8, name, "codedb_projects"))
+            return error.NonCoreToolAdvertised;
+        if (std.mem.eql(u8, name, "codedb_callers")) {
+            found_callers = true;
+            const desc = t.object.get("description").?.string;
+            try testing.expect(std.mem.indexOf(u8, desc, "PRIMARY tool") != null);
+        }
+    }
+    try testing.expect(found_callers);
+}
+
+test "tools/list slim profile stays six terse tools" {
+    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_slim = true });
+    defer testing.allocator.free(resp);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    try testing.expectEqual(@as(usize, 6), tools.items.len);
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_callers")) {
+            const desc = t.object.get("description").?.string;
+            try testing.expect(std.mem.indexOf(u8, desc, "PRIMARY tool") == null);
+        }
+    }
+}
+
+test "context: identifier candidates merge with plain concept words" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const A = arena.allocator();
+
+    const task = "find where the portable snapshot file with META/TREE sections is written to disk";
+    var cands: std.ArrayList([]const u8) = .empty;
+    mcp_mod.extractContextCandidates(task, A, &cands);
+    mcp_mod.extractContextFallbackWords(task, A, &cands);
+
+    var meta_count: usize = 0;
+    var has_snapshot = false;
+    for (cands.items) |c| {
+        if (std.mem.eql(u8, c, "META")) meta_count += 1;
+        if (std.ascii.eqlIgnoreCase(c, "snapshot")) has_snapshot = true;
+    }
+    try testing.expectEqual(@as(usize, 1), meta_count);
+    try testing.expect(has_snapshot);
+}
+
+test "tools/list mini profile advertises six tools with full descriptions" {
+    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_mini = true });
+    defer testing.allocator.free(resp);
+
+    // tools/list rides on every model request, so the whole payload is the
+    // per-request tax. Keep the compressed mini surface under budget.
+    try testing.expect(resp.len < 6500);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    try testing.expectEqual(@as(usize, 6), tools.items.len);
+    var found_callers = false;
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_read") or std.mem.eql(u8, name, "codedb_word"))
+            return error.NonMiniToolAdvertised;
+        if (std.mem.eql(u8, name, "codedb_callers")) {
+            found_callers = true;
+            const desc = t.object.get("description").?.string;
+            // Compressed, but the steering claim survives.
+            try testing.expect(std.mem.indexOf(u8, desc, "grep") != null);
+            try testing.expect(std.mem.indexOf(u8, desc, "call site") != null);
+            try testing.expect(desc.len <= 220);
+        }
+    }
+    try testing.expect(found_callers);
+}
+
+test "issue: codedb_callers returns results when max_results is smaller than the filtered-out prefix" {
+    // Reported as "codedb_callers returns 0 call sites after a snapshot
+    // fast-load". The fast-load is a red herring — searchContentUncached
+    // already ensures both lazy indexes (explore.zig:3931 word index,
+    // explore.zig:3941 symbol index). The real defect is in handleCallers:
+    // it passes the user's max_results straight through as the cap on the
+    // RAW content search, then applies its four exclusion filters (non-code
+    // language, comment/blank line, definition site, whole-word) to that
+    // already-truncated slice. Ranked search deliberately floats the
+    // defining file (+20 prior, explore.zig:4524) and its definition lines
+    // (explore.zig:4598) to the front — exactly the rows this tool drops —
+    // so a small max_results spends its entire budget on rows that are then
+    // filtered away and the tool reports "0 call sites" for a symbol with
+    // real callers. max_results is documented as "Maximum call sites to
+    // return": it must cap the OUTPUT, not the pre-filter search.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    // One file, so tier0_per_file_cap == max_results (explore.zig:4125) and
+    // the raw hits are taken in line order: the first three are the doc
+    // comments, which handleCallers drops. The two genuine call sites sit
+    // just past the cap.
+    try explorer.indexFile("mod.zig",
+        \\// fooBar is the entry point
+        \\// fooBar is described again
+        \\// fooBar is described once more
+        \\pub fn fooBar() void {}
+        \\pub fn callerA() void {
+        \\    fooBar();
+        \\}
+        \\pub fn callerB() void {
+        \\    fooBar();
+        \\}
+        \\
+    );
+
+    const args_json =
+        \\{"name":"fooBar","max_results":3}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Both real call sites fit inside max_results=3 and must be reported.
+    try testing.expect(std.mem.indexOf(u8, out.items, "0 call sites") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'fooBar'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:6") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:9") != null);
+    // The filtered rows must still not leak into the output.
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:1:") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:4:") == null);
+}
+
+test "issue: codedb_callers caps the reported call sites at max_results" {
+    // Companion to the test above: over-fetching to survive the filters must
+    // not turn max_results into a no-op — the OUTPUT still has to honour it.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
+    try explorer.indexFile("many.zig",
+        \\pub fn callerA() void {
+        \\    fooBar();
+        \\    fooBar();
+        \\    fooBar();
+        \\    fooBar();
+        \\    fooBar();
+        \\}
+        \\
+    );
+
+    const args_json =
+        \\{"name":"fooBar","max_results":2}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'fooBar'") != null);
+}
+
+// ── codedb_callers: string-literal mentions are not call sites ──────────────
+// `codedb . callers renderPlainSearch` reported two kinds of non-calls:
+//   scripts/rank-eval.py:56: ("renderPlainSearch", "src/explore.zig"),
+//   src/test_search.zig:1959: test "def-first: renderPlainSearch surfaces …" {
+// In both the symbol occurs ONLY inside a string literal. The four existing
+// filters (non-code language, comment/blank, definition site, whole-word) all
+// pass such a line, so it was rendered as a call site.
+
+/// Index `files` (path/content pairs) into a fresh Explorer, run the
+/// codedb_callers handler for `name`, and leave the rendered text in `out`.
+/// `explorer_alloc` should be an arena — the Explorer is not deinit'ed.
+fn renderCallersFixture(
+    explorer_alloc: std.mem.Allocator,
+    files: []const [2][]const u8,
+    name: []const u8,
+    out: *std.ArrayList(u8),
+) !void {
+    var explorer = Explorer.init(explorer_alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    for (files) |f| try explorer.indexFile(f[0], f[1]);
+
+    var m: std.json.ObjectMap = .empty;
+    defer m.deinit(testing.allocator);
+    try m.put(testing.allocator, "name", .{ .string = name });
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &m, out, &store, &explorer, &agents);
+}
+
+test "issue: codedb_callers excludes a line that mentions the symbol only inside string literals" {
+    // The scripts/rank-eval.py:56 case — a table of ("symbol", "file") pairs.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "table.zig", "const t = (\"renderX\", \"y.zig\");\n" },
+        .{ "call.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "table.zig:1") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
+}
+
+test "issue: codedb_callers excludes a test declaration that names the symbol in its title" {
+    // The src/test_search.zig:1959 case — the symbol sits inside the quoted
+    // test name, so the declaration line is documentation, not an invocation.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "t.zig", "test \"about renderX behavior\" {\n    const x = 1;\n    _ = x;\n}\n" },
+        .{ "call.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "t.zig:1") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
+}
+
+test "issue: codedb_callers keeps real calls inside and outside test bodies" {
+    // The body call at src/test_search.zig:1970 is a genuine caller: the new
+    // string filter must not follow the test declaration line out the door.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "body.zig", "test \"about renderX behavior\" {\n    const r = explorer.renderX(1);\n    _ = r;\n}\n" },
+        .{ "plain.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "body.zig:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "plain.zig:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "body.zig:1") == null);
+}
+
+test "issue: codedb_callers keeps a symbol used outside a string on a line that has strings" {
+    // `foo("msg", renderX)` passes the function by reference next to a string
+    // literal — the mention is real code and must survive the filter.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "mixed.zig", "pub fn callerA() void {\n    foo(\"msg\", renderX);\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mixed.zig:2") != null);
+}

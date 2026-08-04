@@ -246,6 +246,9 @@ const skip_dirs = [_][]const u8{
     ".cabal-sandbox",
     ".cargo",
     "bower_components",
+    "graphify-out", // graphify AST/graph cache
+    ".graff",
+    ".harness",
 };
 
 fn shouldSkip(path: []const u8) bool {

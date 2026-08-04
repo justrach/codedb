@@ -98,7 +98,7 @@ pub fn printUsage(out: *Out, s: sty.Style) void {
         \\    {s}ls{s}  [path]                list a directory's indexed children
         \\    {s}file{s}  <fuzzy-name>        fuzzy file-name search
         \\    {s}context{s}  <task...>        task-shaped orientation bundle
-        \\    {s}serve{s}                     HTTP daemon on :7719
+        \\    {s}serve{s}                     HTTP daemon on :6767
         \\    {s}mcp{s}                       JSON-RPC/MCP server over stdio
         \\    {s}update{s}                    self-update to the latest verified release
         \\    {s}nuke{s}                      uninstall codedb, clear caches, and deregister integrations

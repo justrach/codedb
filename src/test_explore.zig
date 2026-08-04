@@ -1922,6 +1922,68 @@ test "issue-405: FilteredWalker walks directory symlinks safely (cycle + escape)
     }
 }
 
+test "walker: generated tool-output dirs are not indexed" {
+    // Other AI/code tools drop machine-generated caches inside the workspace
+    // (graphify's `graphify-out/cache/ast/<version>/<sha>.json`, `.graff/`,
+    // `.harness/`). Those blobs repeat every identifier in the repo, so they
+    // outrank real source in word/content search — a live repo returned
+    // `graphify-out/cache/ast/v0.9.32/<sha>.json` as the FIRST hit for
+    // `codedb_word packTrigram`. They must be pruned by the walker's
+    // skip_dirs list (src/watcher.zig) exactly like node_modules/.git.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "src");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "src/real.zig", .data = "pub fn packTrigram() void {}\n" });
+
+    try tmp_dir.dir.createDirPath(io, "graphify-out/cache/ast/v0.9.32");
+    try tmp_dir.dir.writeFile(io, .{
+        .sub_path = "graphify-out/cache/ast/v0.9.32/deadbeef.json",
+        .data = "{\"symbol\":\"packTrigram\",\"kind\":\"fn\"}\n",
+    });
+    try tmp_dir.dir.createDirPath(io, ".graff");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = ".graff/state.json", .data = "{\"packTrigram\":1}\n" });
+    try tmp_dir.dir.createDirPath(io, ".harness");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = ".harness/trace.jsonl", .data = "{\"packTrigram\":1}\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    // Real source is still indexed.
+    try testing.expect(explorer.contents.contains("src/real.zig"));
+
+    // Generated tool output is not indexed at all.
+    try testing.expect(!explorer.contents.contains("graphify-out/cache/ast/v0.9.32/deadbeef.json"));
+    try testing.expect(!explorer.contents.contains(".graff/state.json"));
+    try testing.expect(!explorer.contents.contains(".harness/trace.jsonl"));
+
+    var it = explorer.contents.iterator();
+    while (it.next()) |kv| {
+        const p = kv.key_ptr.*;
+        try testing.expect(std.mem.indexOf(u8, p, "graphify-out") == null);
+        try testing.expect(std.mem.indexOf(u8, p, ".graff") == null);
+        try testing.expect(std.mem.indexOf(u8, p, ".harness") == null);
+    }
+
+    // ...and the generated blobs contribute nothing to the word index, so a
+    // symbol query resolves to real source only.
+    const hits = try explorer.searchWord("packTrigram", testing.allocator);
+    defer testing.allocator.free(hits);
+    try testing.expect(hits.len >= 1);
+    for (hits) |h| {
+        const p = explorer.word_index.hitPath(h);
+        try testing.expect(std.mem.indexOf(u8, p, "graphify-out") == null);
+    }
+}
+
 test "issue-405: cleanupStaleTmpFiles deletes in-flight sibling tmp files" {
     // BUG: snapshot.zig:cleanupStaleTmpFiles deletes ANY file matching
     // `<basename>*.tmp` in the snapshot directory with no age guard.

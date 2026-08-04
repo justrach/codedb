@@ -704,7 +704,28 @@ pub const ToolsListOpts = struct {
     discriminated_opt_in: bool = false,
     profile_core: bool = false,
     profile_slim: bool = false,
+    profile_mini: bool = false,
 };
+
+/// CODEDB_TOOLS_PROFILE=mini advertises the six tools agents actually reach
+/// for, keeping the steering value of the full descriptions (slim's terse
+/// ones measured worse: agents never called the tools yet paid the surface)
+/// while compressing the wording — see mini_descriptions. Tools a
+/// native-editor client already has (read) and rarely-used extras (word,
+/// callpath, hot, tree, find, status) are unadvertised but still dispatch.
+const mini_profile_tools = [_][]const u8{
+    "codedb_outline",
+    "codedb_symbol",
+    "codedb_search",
+    "codedb_callers",
+    "codedb_deps",
+    "codedb_context",
+};
+
+fn isMiniProfileTool(name: []const u8) bool {
+    for (&mini_profile_tools) |c| if (std.mem.eql(u8, name, c)) return true;
+    return false;
+}
 
 /// CODEDB_TOOLS_PROFILE=core advertises only the everyday navigation set,
 /// keeping tools/list small for agents that get distracted by rare tools.
@@ -747,10 +768,12 @@ fn slimDescription(name: []const u8) ?[]const u8 {
     return null;
 }
 
+const PropDesc = struct { name: []const u8, desc: []const u8 };
+
 /// Terse replacements for the wordiest shared property descriptions in slim
 /// mode (the full texts run 120-180 chars each and repeat across tools).
 /// Types/required/enums are untouched, so arg binding is unaffected.
-const slim_prop_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
+const slim_prop_descriptions = [_]PropDesc{
     .{ .name = "offset", .desc = "Pagination offset into ranked results (default: 0)" },
     .{ .name = "paths_only", .desc = "Return path:line only, no line text (default: false)" },
     .{ .name = "path_glob", .desc = "Glob filter on paths, e.g. 'src/**/*.zig'" },
@@ -760,8 +783,80 @@ const slim_prop_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
 };
 
 fn slimPropDescription(name: []const u8) ?[]const u8 {
-    for (&slim_prop_descriptions) |sd| if (std.mem.eql(u8, name, sd.name)) return sd.desc;
+    return lookupPropDesc(&slim_prop_descriptions, name);
+}
+
+/// One terse line (<= 60 chars) for every property the six mini tools expose.
+/// tools/list rides on EVERY model request, so the property prose — not the
+/// tool prose — is the bulk of the surface: tersing these cuts ~1.3k chars
+/// per request while the tool descriptions keep doing the steering.
+const mini_prop_descriptions = [_]PropDesc{
+    .{ .name = "project", .desc = "Absolute path to another indexed project" },
+    .{ .name = "path", .desc = "File path relative to project root" },
+    .{ .name = "compact", .desc = "Condensed output, less framing (default: false)" },
+    .{ .name = "skeleton", .desc = "Declarations only; bodies elided (default: false)" },
+    .{ .name = "name", .desc = "Exact symbol name" },
+    .{ .name = "prefix", .desc = "Prefix match, e.g. parse_" },
+    .{ .name = "pattern", .desc = "Glob on symbol name, e.g. *Manager" },
+    .{ .name = "kind", .desc = "function | struct | class | method | enum | interface" },
+    .{ .name = "fuzzy", .desc = "Typo-tolerant match for name (default: false)" },
+    .{ .name = "body", .desc = "Include each symbol source (default: false)" },
+    .{ .name = "max_results", .desc = "Max results (defaults: search 20, symbol 50, callers 30)" },
+    .{ .name = "format", .desc = "Set to json for structured output" },
+    .{ .name = "query", .desc = "Text to match; regex when regex=true" },
+    .{ .name = "offset", .desc = "Page offset; responses print the next offset=N" },
+    .{ .name = "scope", .desc = "Annotate hits with enclosing symbol (default: false)" },
+    .{ .name = "paths_only", .desc = "Return path:line only, no line text (default: false)" },
+    .{ .name = "regex", .desc = "Treat query as a regex (default: false)" },
+    .{ .name = "path_glob", .desc = "Glob filter on paths, e.g. 'src/**/*.zig'" },
+    .{ .name = "task", .desc = "Task in natural language; include likely identifiers" },
+    .{ .name = "max_tokens", .desc = "Response token budget (min 256, ~2.5 bytes/token)" },
+    .{ .name = "detail", .desc = "compact (default) or full sections" },
+    .{ .name = "direction", .desc = "imported_by (default) or depends_on" },
+    .{ .name = "transitive", .desc = "Follow the dependency chain (default: false)" },
+    .{ .name = "max_depth", .desc = "Depth cap for transitive (default: unlimited)" },
+};
+
+/// Compressed mini tool descriptions: each <= 220 chars and each keeps the
+/// three things that actually steer a model — what the tool does, the native
+/// workflow it replaces, and the key parameter hint. The static tools_list
+/// JSON is shared with the core/full profiles, so it is left untouched and
+/// these are swapped in only on the mini path (mirrors slim_descriptions).
+const mini_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
+    .{ .name = "codedb_outline", .desc = "Replaces cat/head on a whole file: symbol outline of one file — functions, types, imports with line numbers, 4-15x smaller than the source. Run before reading to pick a range; skeleton=true elides bodies." },
+    .{ .name = "codedb_symbol", .desc = "Replaces grepping for a definition: where a symbol is defined — file, line, kind. Reach for this FIRST when you know or can guess the name; takes name, prefix, pattern, fuzzy or kind. body=true adds source." },
+    .{ .name = "codedb_search", .desc = "Replaces grep across the repo: ranked full-text (or regex=true) hits as path:line plus the line. Use ONLY when you do not know the symbol name; path_glob narrows, paths_only halves tokens." },
+    .{ .name = "codedb_callers", .desc = "Replaces grepping for usages: every call site of a symbol in one call — {path, line, snippet, enclosing scope}. Excludes the definition itself." },
+    .{ .name = "codedb_deps", .desc = "Replaces grepping for imports: file-level dependency edges — direction=imported_by (default) for who imports this file, depends_on for what it imports. transitive=true walks the chain." },
+    .{ .name = "codedb_context", .desc = "Replaces a manual grep-read-repeat sweep: one task-shaped bundle of files, symbols and deps for a natural-language task. Best opening move on a new task; max_tokens caps the budget." },
+};
+
+fn miniDescription(name: []const u8) ?[]const u8 {
+    for (&mini_descriptions) |md| if (std.mem.eql(u8, name, md.name)) return md.desc;
     return null;
+}
+
+fn lookupPropDesc(table: []const PropDesc, name: []const u8) ?[]const u8 {
+    for (table) |pd| if (std.mem.eql(u8, name, pd.name)) return pd.desc;
+    return null;
+}
+
+/// Swap in terse `description` strings for a tool's inputSchema properties.
+/// Only the description string of a property is ever rewritten — property
+/// names, types, enums and the schema's `required` list are left alone, so a
+/// client binding arguments against the schema sees no change.
+fn tersePropDescriptions(a: std.mem.Allocator, tool: *std.json.Value, table: []const PropDesc) void {
+    if (tool.* != .object) return;
+    const schema = tool.object.getPtr("inputSchema") orelse return;
+    if (schema.* != .object) return;
+    const props = schema.object.getPtr("properties") orelse return;
+    if (props.* != .object) return;
+    var it = props.object.iterator();
+    while (it.next()) |prop| {
+        if (prop.value_ptr.* != .object) continue;
+        const d = lookupPropDesc(table, prop.key_ptr.*) orelse continue;
+        prop.value_ptr.*.object.put(a, "description", .{ .string = d }) catch {};
+    }
 }
 
 fn isCoreProfileTool(name: []const u8) bool {
@@ -787,7 +882,7 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
     const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
     if (tools_val.* != .array) return error.MalformedToolsList;
 
-    if (!opts.bundle_enabled or opts.profile_core) {
+    if (!opts.bundle_enabled or opts.profile_core or opts.profile_mini) {
         var filtered: std.json.Array = .init(a);
         for (tools_val.array.items) |t| {
             if (t == .object) {
@@ -795,12 +890,28 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
                     if (n == .string) {
                         if (!opts.bundle_enabled and std.mem.eql(u8, n.string, "codedb_bundle")) continue;
                         if (opts.profile_core and !isCoreProfileTool(n.string)) continue;
+                        if (opts.profile_mini and !isMiniProfileTool(n.string)) continue;
                     }
                 }
             }
             try filtered.append(t);
         }
         tools_val.* = .{ .array = filtered };
+    }
+
+    // Mini keeps the steering shape of the full descriptions but pays for it
+    // once, compressed: tool prose from mini_descriptions, property prose from
+    // mini_prop_descriptions. Schema structure is never touched.
+    if (opts.profile_mini) {
+        for (tools_val.array.items) |*t| {
+            if (t.* != .object) continue;
+            const name_v = t.object.get("name") orelse continue;
+            if (name_v != .string) continue;
+            if (miniDescription(name_v.string)) |d| {
+                t.object.put(a, "description", .{ .string = d }) catch {};
+            }
+            tersePropDescriptions(a, t, &mini_prop_descriptions);
+        }
     }
 
     if (opts.profile_slim) {
@@ -813,22 +924,7 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
                         if (slimDescription(n.string)) |d| {
                             t.*.object.put(a, "description", .{ .string = d }) catch {};
                         }
-                        if (t.*.object.getPtr("inputSchema")) |schema| {
-                            if (schema.* == .object) {
-                                if (schema.*.object.getPtr("properties")) |props| {
-                                    if (props.* == .object) {
-                                        var pit = props.*.object.iterator();
-                                        while (pit.next()) |prop| {
-                                            if (slimPropDescription(prop.key_ptr.*)) |d| {
-                                                if (prop.value_ptr.* == .object) {
-                                                    prop.value_ptr.*.object.put(a, "description", .{ .string = d }) catch {};
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        tersePropDescriptions(a, t, &slim_prop_descriptions);
                     }
                 }
             }
@@ -1151,12 +1247,23 @@ pub fn run(
         const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_ps false;
         break :blk_ps std.mem.eql(u8, v, "slim");
     };
-    // Slim-by-default: with no explicit profile env var, agent harnesses get
-    // the slim list — tool schemas ride along on EVERY model call, so the
-    // 20-tool list (~4k tok) vs slim (~1.5k) is worth ~100k tokens over a
-    // 40-call session. Human-facing GUI clients (the mcpEmitRichBlocks
-    // allowlist) keep the full list for discoverability. Decided lazily at
-    // the first tools/list request, when clientInfo.name is known.
+    const profile_mini = blk_pm: {
+        const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_pm false;
+        break :blk_pm std.mem.eql(u8, v, "mini");
+    };
+    // Mini-by-default: with no explicit profile env var, agent harnesses
+    // get the mini list — the six everyday navigation tools with the full
+    // steering descriptions (~1.9k tokens/request vs core's ~2.7k, full's
+    // ~5.2k, and the schema rides along on EVERY round trip). A 12-question
+    // Opus 5 A/B (2026-08-04, QA over this repo, 2 reps per config)
+    // measured slim-by-default (terse descriptions) at +15% total input
+    // tokens vs the rich-description profiles, which land at
+    // parity-or-better with a no-MCP baseline; mini vs core is within
+    // run-to-run noise on outcomes, so the deterministically smaller
+    // surface wins. Everything still dispatches when called by name.
+    // Human-facing GUI clients (the mcpEmitRichBlocks allowlist) keep the
+    // full list for discoverability. Decided lazily at the first
+    // tools/list request, when clientInfo.name is known.
     const profile_explicit = cio.posixGetenv("CODEDB_TOOLS_PROFILE") != null;
     var session = Session{
         .alloc = alloc,
@@ -1230,12 +1337,13 @@ pub fn run(
             }
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) {
-                const slim_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
+                const mini_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
                 const resp = buildToolsListResponse(alloc, .{
                     .bundle_enabled = bundle_enabled,
                     .discriminated_opt_in = discriminated_opt_in,
                     .profile_core = profile_core,
-                    .profile_slim = profile_slim or slim_default,
+                    .profile_slim = profile_slim,
+                    .profile_mini = profile_mini or mini_default,
                 }) catch tools_list;
                 defer if (resp.ptr != tools_list.ptr) alloc.free(resp);
                 writeResult(alloc, stdout, id, resp);
@@ -1336,7 +1444,7 @@ pub const supported_versions_json = blk: {
     break :blk s ++ "]";
 };
 
-pub const mcp_instructions = "codedb is a code-intelligence and context tool — not your editor. Default to the structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline for a file's structure before codedb_read, and codedb_context to orient on a new task. Use codedb_search only for substrings or phrases when you do NOT know the exact symbol name — it is a fallback, not the default. Make edits with your own native file tools; codedb has no edit capability.";
+pub const mcp_instructions = "codedb is code intelligence, not your editor. Reach for structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline before reading a file, codedb_context to orient on a task. Use codedb_search only when the symbol name is unknown. Make edits with your native tools.";
 
 /// MCP 2026-07-28 `server/discover` — the stateless-mode probe/identity RPC.
 /// Prebuilt at comptime; declares resultType itself so assembleJsonRpcResult
@@ -2428,7 +2536,17 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
         alloc.free(defs);
     }
 
-    const results = explorer.searchContentWithScope(name, alloc, max_results) catch {
+    // max_results is documented as "Maximum call sites to return" — an OUTPUT
+    // cap. Passing it straight through as the RAW search cap starved the
+    // filter pass below: ranked search deliberately floats the defining file
+    // (+20 prior, explore.zig:4524) and its definition lines (explore.zig:4598)
+    // to the front, and a single file's share is capped at max_results/5
+    // (explore.zig:4125) — so the whole budget was spent on definition,
+    // comment and non-code rows that this tool then drops, reporting
+    // "0 call sites" for symbols with many real callers. Over-fetch, and let
+    // the kept-list cap below enforce max_results.
+    const search_cap: usize = @max(max_results, @min(max_results * 10 + 50, 5000));
+    const results = explorer.searchContentWithScope(name, alloc, search_cap) catch {
         out.appendSlice(alloc, "error: search failed") catch {};
         return;
     };
@@ -2447,6 +2565,7 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     var kept: std.ArrayList(usize) = .empty;
     defer kept.deinit(alloc);
     for (results, 0..) |r, r_idx| {
+        if (kept.items.len >= max_results) break;
         const lang = explore_mod.detectLanguage(r.path);
         if (!langHasCallSites(lang)) continue;
         // #562: a full-line comment mention is documentation, not a call site.
@@ -2459,7 +2578,11 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
             }
         }
         if (is_def) continue;
-        if (!hasWholeWordMatch(r.line_text, name)) continue;
+        // A whole-word match that only ever lands inside a string literal is a
+        // mention, not an invocation — a `("name", "file")` table row or a
+        // `test "…name…" {` declaration. Real calls in the same file (and even
+        // in the same test body) sit outside the quotes and survive.
+        if (!hasWholeWordMatchOutsideStrings(r.line_text, name)) continue;
         kept.append(alloc, r_idx) catch {};
     }
 
@@ -2521,20 +2644,57 @@ fn isIdentChar(c: u8) bool {
         c == '_';
 }
 
-/// Returns true iff `needle` appears in `haystack` with non-identifier
-/// characters (or string boundary) on both sides — i.e. as a whole-word
-/// identifier match, not as a substring inside a longer identifier.
-fn hasWholeWordMatch(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0 or haystack.len < needle.len) return false;
-    var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, haystack, search_from, needle)) |pos| {
-        const before_ok = pos == 0 or !isIdentChar(haystack[pos - 1]);
-        const after_idx = pos + needle.len;
-        const after_ok = after_idx >= haystack.len or !isIdentChar(haystack[after_idx]);
-        if (before_ok and after_ok) return true;
-        search_from = pos + 1;
+/// Returns true iff `needle` occurs in `line` as a whole-word identifier
+/// (non-identifier characters or line boundaries on both sides) at a position
+/// that is NOT inside a string literal.
+///
+/// An occurrence that only ever appears between quotes is a mention, not a
+/// call: the Python table row `("renderPlainSearch", "src/explore.zig"),` and
+/// the Zig declaration `test "def-first: renderPlainSearch surfaces …" {` both
+/// name the symbol without invoking it, yet passed every other filter here.
+///
+/// Deliberately line-local and pragmatic, in the spirit of `isCommentOrBlank`:
+///   - tracks '…' and "…" spans, honouring backslash escapes
+///   - a quote with no closing partner on the line (an apostrophe in a
+///     trailing comment, a Rust lifetime `&'a`, an open multi-line literal) is
+///     treated as ordinary code, so it can never swallow the rest of the line
+///   - backticks are not treated as quotes: Go raw strings and JS template
+///     literals routinely wrap real calls (`${render()}`)
+fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or line.len < needle.len) return false;
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == '"' or line[i] == '\'') {
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+        }
+        // `i` is a code byte — try to anchor a whole-word match on it.
+        if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+            const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+            const after = i + needle.len;
+            const after_ok = after >= line.len or !isIdentChar(line[after]);
+            if (before_ok and after_ok) return true;
+        }
+        i += 1;
     }
     return false;
+}
+
+/// Index of the quote closing the literal opened at `open`, or null when the
+/// literal never closes on this line.
+fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+    const quote = line[open];
+    var i = open + 1;
+    while (i < line.len) : (i += 1) {
+        if (line[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (line[i] == quote) return i;
+    }
+    return null;
 }
 
 /// Languages where the concept of a "call site" is meaningful. Excludes
@@ -2595,7 +2755,7 @@ fn looksLikeContextIdentifier(tok: []const u8) bool {
 // for diminishing return — the by_file ranking already heavily favors
 // the first 1–2 high-quality identifiers. End-to-end this drops
 // codedb_context from ~330µs → ~220µs on the standard bench task.
-const CONTEXT_MAX_CANDIDATES: usize = 3;
+const CONTEXT_MAX_CANDIDATES: usize = 5;
 // 20 was the original tier-search cap, but only CONTEXT_TOP_LINES_PER_FILE
 // (3) hits per file are ever kept after ranking — every additional result
 // is wasted work in search-content + per-file map churn. Empirically 8
@@ -2604,7 +2764,7 @@ const CONTEXT_MAX_RESULTS_PER_KW: usize = 8;
 const CONTEXT_TOP_FILES: usize = 5;
 const CONTEXT_TOP_LINES_PER_FILE: usize = 3;
 
-fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+pub fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
     var seen = std.StringHashMap(void).init(alloc);
     defer seen.deinit();
     var i: usize = 0;
@@ -2646,7 +2806,7 @@ fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *st
 // #570: fallback for tasks with no identifier-shaped token. Plain words
 // (≥4 chars, glue/generic words dropped) sorted longest-first — longer words
 // are more specific ("ranking" beats "fix") — capped like the identifier pass.
-fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+pub fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
     const stop = [_][]const u8{
         "that",   "this",   "with",    "from",    "into",      "when",   "where",
         "what",   "which",  "then",    "them",    "they",      "have",   "will",
@@ -2661,6 +2821,7 @@ fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: 
     defer words.deinit(alloc);
     var seen = std.StringHashMap(void).init(alloc);
     defer seen.deinit();
+    for (out.items) |existing| seen.put(existing, {}) catch {};
     var i: usize = 0;
     while (i < task.len) {
         if (isContextIdentStart(task[i])) {
@@ -2788,13 +2949,13 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
 
     var candidates: std.ArrayList([]const u8) = .empty;
     extractContextCandidates(task, A, &candidates);
-    if (candidates.items.len == 0) {
-        // #570: all-lowercase tasks ("fix search ranking") carry no
-        // identifier-shaped token. Fall back to the task's plain words so the
-        // composer orients instead of dead-ending — natural language is the
-        // documented input shape.
-        extractContextFallbackWords(task, A, &candidates);
-    }
+    // Identifier-shaped tokens alone lose the task's concept words: "find
+    // where the portable snapshot file with META/TREE sections is written"
+    // used to extract only META/TREE and rank bench scripts over
+    // src/snapshot.zig. Always merge the plain content words in after the
+    // identifier candidates (#570 made them the empty-case fallback;
+    // identifier candidates keep priority under CONTEXT_MAX_CANDIDATES).
+    extractContextFallbackWords(task, A, &candidates);
     const pf_cand = cio.nanoTimestamp();
     if (candidates.items.len == 0) {
         out.appendSlice(alloc, sec_reader.items) catch {};

@@ -2923,3 +2923,44 @@ test "search-cache: renderPlainSearch hit restores the producing search's breakd
     try testing.expectEqual(fresh.result_count, restored.result_count);
     try testing.expectEqual(@as(i128, 0), restored.tier0_ns);
 }
+
+test "nl-bridge: multi-word query ranks the file defining a name-matching symbol first" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/cache.zig", "pub fn ensureWidgetCache() void {}\n");
+    try explorer.indexFile("src/noise.zig", "// widget cache\n// widget cache\n// widget cache\n// the widget uses a cache\n// cache the widget\n");
+
+    const results = try explorer.searchContentRanked("widget cache rebuild", testing.allocator, 4);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("src/cache.zig", results[0].path);
+    try testing.expectEqual(@as(u32, 1), results[0].line_num);
+}
+
+test "rank: machine artifact logs rank below source for multi-word queries" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    try explorer.indexFile("bench/results/run.log", "widget cache widget cache widget cache\nwidget cache widget cache\nwidget cache\n");
+    try explorer.indexFile("src/widget.zig", "// widget cache logic\nconst cache_for_widget = 1;\n");
+
+    const results = try explorer.searchContentRanked("widget cache", testing.allocator, 4);
+    defer {
+        for (results) |r| {
+            testing.allocator.free(r.line_text);
+            testing.allocator.free(r.path);
+        }
+        testing.allocator.free(results);
+    }
+
+    try testing.expect(results.len >= 2);
+    try testing.expectEqualStrings("src/widget.zig", results[0].path);
+}
