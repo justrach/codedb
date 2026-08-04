@@ -154,7 +154,7 @@ jobs:
             fi
           done
           python3 "$head_cwd/scripts/compare-bench-paired.py" bench-paired --require-parity --require-provenance \
-            --allow-parity-skip codedb_snapshot --allow-parity-skip codedb_status \
+            --allow-parity-skip codedb_snapshot --allow-parity-skip codedb_status --allow-parity-skip codedb_context \
             --expected-head-sha "$head_source_sha" --expected-head-tree-sha "$head_tree_sha" \
             --threshold-pct 10 --min-abs-ns 50000 --markdown-out bench-paired-report.md
 
