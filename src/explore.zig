@@ -5080,6 +5080,17 @@ pub const Explorer = struct {
         if (std.mem.indexOf(u8, path, "node_modules") != null or
             std.mem.indexOf(u8, path, "/vendor/") != null or
             std.mem.indexOf(u8, path, "zig-pkg") != null) mult *= 0.4;
+        // Machine artifacts: run logs and record files match almost any
+        // multi-word query (giant JSON lines) and buried real source in the
+        // 2026-08 agent eval — a bench .log outranked src/snapshot.zig for
+        // "snapshot serialization". They are records, not code.
+        if (std.mem.endsWith(u8, path, ".log") or
+            std.mem.endsWith(u8, path, ".jsonl") or
+            std.mem.endsWith(u8, path, ".ndjson")) mult *= 0.25;
+        if (std.mem.indexOf(u8, path, "/bench/") != null or
+            std.mem.startsWith(u8, path, "bench/") or
+            std.mem.indexOf(u8, path, "/benchmarks/") != null or
+            std.mem.startsWith(u8, path, "benchmarks/")) mult *= 0.5;
         return mult;
     }
 
@@ -5517,7 +5528,10 @@ pub const Explorer = struct {
         // #550: the graph-distance gate below reads symbol_index, which a
         // snapshot fast-load defers (#564). Identifier-shaped queries ensure it
         // here, pre-shared-lock — ensureSymbolIndex takes the exclusive lock.
-        if (max_results > 0 and queryNamesIdentifier(query) and
+        // Multi-word queries need it too: the NL→symbol bridge below matches
+        // query words against split definition names.
+        if (max_results > 0 and (queryNamesIdentifier(query) or
+            std.mem.indexOfScalar(u8, query, ' ') != null) and
             cio.posixGetenv("CODEDB_NO_CENTRALITY") == null and
             cio.posixGetenv("CODEDB_NO_GRAPH_DISTANCE") == null)
         {
@@ -5702,6 +5716,44 @@ pub const Explorer = struct {
             if (cc_seeds.count() > 0) self.ensureCoChange();
         }
 
+        // NL→symbol bridge: a multi-word query whose terms cover ≥2 words of
+        // a defined symbol's split name almost certainly seeks that
+        // definition ("lazy symbol index rebuild" → ensureSymbolIndex).
+        // Boost the defining file and point its best line at the definition,
+        // so concept phrasing surfaces definitions instead of the
+        // highest-word-count comment line. Query terms and splitIdentifier
+        // sub-tokens are both lowercased, so plain eql matches.
+        const DefOverlap = struct { overlap: u32, line: u32 };
+        var def_overlap = std.StringHashMap(DefOverlap).init(ta);
+        if (terms_set.count() >= 2 and self.symbol_index_complete) {
+            var sym_it = self.symbol_index.iterator();
+            while (sym_it.next()) |se| {
+                const sym_name = se.key_ptr.*;
+                if (sym_name.len < 5) continue;
+                var subs: std.ArrayList([]const u8) = .empty;
+                defer subs.deinit(ta);
+                idx.splitIdentifier(sym_name, &subs, ta) catch continue;
+                if (subs.items.len < 2) continue;
+                var overlap: u32 = 0;
+                var ov_it = terms_set.keyIterator();
+                while (ov_it.next()) |t| {
+                    for (subs.items) |sub| {
+                        if (std.mem.eql(u8, sub, t.*)) {
+                            overlap += 1;
+                            break;
+                        }
+                    }
+                }
+                if (overlap < 2) continue;
+                for (se.value_ptr.items) |loc| {
+                    const gop = def_overlap.getOrPut(loc.path) catch continue;
+                    if (!gop.found_existing or overlap > gop.value_ptr.overlap) {
+                        gop.value_ptr.* = .{ .overlap = overlap, .line = loc.line_start };
+                    }
+                }
+            }
+        }
+
         const Cand = struct { doc_id: u32, score: f32, best_line: u32 };
         var cands: std.ArrayList(Cand) = .empty;
         defer cands.deinit(ta);
@@ -5710,14 +5762,20 @@ pub const Explorer = struct {
         while (pd_iter.next()) |entry| {
             const cand_doc_id = entry.key_ptr.*;
             const cand_path = if (cand_doc_id < self.word_index.id_to_path.items.len) self.word_index.id_to_path.items[cand_doc_id] else "";
+            var cand_score = entry.value_ptr.score *
+                pathRelevanceMultiplier(cand_path, &terms_set) *
+                self.centralityBoost(cand_path) *
+                graphDistanceBoost(graph_dist, cand_path) *
+                self.coChangeBoost(&cc_seeds, cand_path);
+            var cand_best_line = entry.value_ptr.best_line;
+            if (def_overlap.get(cand_path)) |dh| {
+                cand_score *= 1.0 + 0.6 * @as(f32, @floatFromInt(dh.overlap));
+                cand_best_line = dh.line;
+            }
             cands.appendAssumeCapacity(.{
                 .doc_id = cand_doc_id,
-                .score = entry.value_ptr.score *
-                    pathRelevanceMultiplier(cand_path, &terms_set) *
-                    self.centralityBoost(cand_path) *
-                    graphDistanceBoost(graph_dist, cand_path) *
-                    self.coChangeBoost(&cc_seeds, cand_path),
-                .best_line = entry.value_ptr.best_line,
+                .score = cand_score,
+                .best_line = cand_best_line,
             });
         }
         // Lazy top-k via a max-heap: pop candidates in (score desc, doc_id asc)

@@ -2600,7 +2600,7 @@ fn looksLikeContextIdentifier(tok: []const u8) bool {
 // for diminishing return — the by_file ranking already heavily favors
 // the first 1–2 high-quality identifiers. End-to-end this drops
 // codedb_context from ~330µs → ~220µs on the standard bench task.
-const CONTEXT_MAX_CANDIDATES: usize = 3;
+const CONTEXT_MAX_CANDIDATES: usize = 5;
 // 20 was the original tier-search cap, but only CONTEXT_TOP_LINES_PER_FILE
 // (3) hits per file are ever kept after ranking — every additional result
 // is wasted work in search-content + per-file map churn. Empirically 8
@@ -2609,7 +2609,7 @@ const CONTEXT_MAX_RESULTS_PER_KW: usize = 8;
 const CONTEXT_TOP_FILES: usize = 5;
 const CONTEXT_TOP_LINES_PER_FILE: usize = 3;
 
-fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+pub fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
     var seen = std.StringHashMap(void).init(alloc);
     defer seen.deinit();
     var i: usize = 0;
@@ -2651,7 +2651,7 @@ fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *st
 // #570: fallback for tasks with no identifier-shaped token. Plain words
 // (≥4 chars, glue/generic words dropped) sorted longest-first — longer words
 // are more specific ("ranking" beats "fix") — capped like the identifier pass.
-fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+pub fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
     const stop = [_][]const u8{
         "that",   "this",   "with",    "from",    "into",      "when",   "where",
         "what",   "which",  "then",    "them",    "they",      "have",   "will",
@@ -2666,6 +2666,7 @@ fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: 
     defer words.deinit(alloc);
     var seen = std.StringHashMap(void).init(alloc);
     defer seen.deinit();
+    for (out.items) |existing| seen.put(existing, {}) catch {};
     var i: usize = 0;
     while (i < task.len) {
         if (isContextIdentStart(task[i])) {
@@ -2793,13 +2794,13 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
 
     var candidates: std.ArrayList([]const u8) = .empty;
     extractContextCandidates(task, A, &candidates);
-    if (candidates.items.len == 0) {
-        // #570: all-lowercase tasks ("fix search ranking") carry no
-        // identifier-shaped token. Fall back to the task's plain words so the
-        // composer orients instead of dead-ending — natural language is the
-        // documented input shape.
-        extractContextFallbackWords(task, A, &candidates);
-    }
+    // Identifier-shaped tokens alone lose the task's concept words: "find
+    // where the portable snapshot file with META/TREE sections is written"
+    // used to extract only META/TREE and rank bench scripts over
+    // src/snapshot.zig. Always merge the plain content words in after the
+    // identifier candidates (#570 made them the empty-case fallback;
+    // identifier candidates keep priority under CONTEXT_MAX_CANDIDATES).
+    extractContextFallbackWords(task, A, &candidates);
     const pf_cand = cio.nanoTimestamp();
     if (candidates.items.len == 0) {
         out.appendSlice(alloc, sec_reader.items) catch {};

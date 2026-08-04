@@ -3545,3 +3545,23 @@ test "tools/list slim profile stays six terse tools" {
         }
     }
 }
+
+test "context: identifier candidates merge with plain concept words" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const A = arena.allocator();
+
+    const task = "find where the portable snapshot file with META/TREE sections is written to disk";
+    var cands: std.ArrayList([]const u8) = .empty;
+    mcp_mod.extractContextCandidates(task, A, &cands);
+    mcp_mod.extractContextFallbackWords(task, A, &cands);
+
+    var meta_count: usize = 0;
+    var has_snapshot = false;
+    for (cands.items) |c| {
+        if (std.mem.eql(u8, c, "META")) meta_count += 1;
+        if (std.ascii.eqlIgnoreCase(c, "snapshot")) has_snapshot = true;
+    }
+    try testing.expectEqual(@as(usize, 1), meta_count);
+    try testing.expect(has_snapshot);
+}
