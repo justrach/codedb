@@ -3785,6 +3785,26 @@ test "issue: codedb_callers keeps real calls inside and outside test bodies" {
     try testing.expect(std.mem.indexOf(u8, out.items, "body.zig:1") == null);
 }
 
+test "issue-682: codedb_callers excludes a symbol mentioned only in a trailing comment" {
+    // `init(); // then renderX() draws the frame` — the mention lives in the
+    // trailing comment. The comment/blank filter passes the line (it starts
+    // with code) and the string filter sees no quotes, so the line is
+    // reported as a call site even though nothing on it invokes the symbol.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "trail.zig", "pub fn callerA() void {\n    init(); // then renderX() draws the frame\n}\n" },
+        .{ "call.zig", "pub fn callerB() void {\n    renderX();\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "trail.zig:2") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
+}
+
 test "issue: codedb_callers keeps a symbol used outside a string on a line that has strings" {
     // `foo("msg", renderX)` passes the function by reference next to a string
     // literal — the mention is real code and must survive the filter.
