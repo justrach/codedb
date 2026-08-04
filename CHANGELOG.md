@@ -1,6 +1,31 @@
 # Changelog
 
-## Unreleased
+## 0.2.5837 - 2026-08-05
+
+- **OCaml** `.ml`/`.mli` parser support (#622): let/type/module outline symbols
+  with nested `(* ... *)` comment handling.
+- **Mini MCP tools profile is the agent default** — 6 tools with rich steering
+  descriptions and compressed schemas, replacing the terse slim profile after
+  A/B evals showed description quality drives agent success.
+- **NL→symbol search bridge** — natural-language queries bridge to symbol names,
+  machine-artifact hits are deranked, context words merge into the query; the
+  bridge is cached as an inverted token index so repeat queries cost ~0.
+- **Windows daemon reap** — `nuke` runs a bounded multi-pass reap so daemons
+  republished mid-nuke no longer survive it (#657).
+- `codedb_callers` fixes: no more zero call sites when `max_results` starved its
+  filters, and lines where the symbol appears only inside string literals are no
+  longer counted.
+- Indexer skips generated tool-output dirs (`.graff/`, `.harness/`,
+  `graphify-out/`).
+- Bench regression gate repaired (`codedb_context` parity exemption) and pinned
+  Zig dev builds fall back to the hexops mirror.
+
+## 0.2.5836 - 2026-08-02
+
+Agent token efficiency release — see the
+[v0.2.5836 release notes](https://github.com/justrach/codedb/releases/tag/v0.2.5836)
+for the full story (slim-by-default MCP profile, stale-index auto-refresh,
+context fixes, output caps). Also in this cut:
 
 - Preallocate each retained per-file trigram list once at its exact final count
   and use capacity-proven appends. This removes geometric growth, intermediate
@@ -619,7 +644,7 @@ the query hot path.
 
 Beyond the graph, this cut also lands a **warm CLI daemon** (near-MCP latency
 from the plain `codedb` CLI), a **faster fuzzy `find`**, **hardened CLI** parsing
-and exit codes (#529), **ReScript** `.res`/`.resi` support (#532), and **OCaml** `.ml`/`.mli` support.
+and exit codes (#529), and **ReScript** `.res`/`.resi` support (#532).
 
 ### Graph-aware ranking (call-graph centrality)
 

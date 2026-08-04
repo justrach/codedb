@@ -42,7 +42,7 @@
 > **Alpha software — API is stabilizing but may change**
 >
 > codedb works and is used daily in production AI workflows, but:
-> - **Parser support** — Zig, C/C++, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, Dart/Flutter
+> - **Parser support** — Zig, C/C++, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, Dart/Flutter, OCaml
 > - **Lightweight outline support** — Java, Kotlin, Svelte, Vue, Astro, shell, CSS/SCSS, SQL, protobuf, Fortran, LLVM IR, MLIR, and TableGen
 > - **No auth** — HTTP server binds to localhost only
 > - **Snapshot format** may change between versions
@@ -85,7 +85,7 @@ On Windows, run this command inside WSL only if you want the Linux binary inside
 Run in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5833/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5837/install/install.ps1 | iex
 ```
 
 Run the same command again to update codedb.
