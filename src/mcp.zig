@@ -2536,7 +2536,17 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
         alloc.free(defs);
     }
 
-    const results = explorer.searchContentWithScope(name, alloc, max_results) catch {
+    // max_results is documented as "Maximum call sites to return" — an OUTPUT
+    // cap. Passing it straight through as the RAW search cap starved the
+    // filter pass below: ranked search deliberately floats the defining file
+    // (+20 prior, explore.zig:4524) and its definition lines (explore.zig:4598)
+    // to the front, and a single file's share is capped at max_results/5
+    // (explore.zig:4125) — so the whole budget was spent on definition,
+    // comment and non-code rows that this tool then drops, reporting
+    // "0 call sites" for symbols with many real callers. Over-fetch, and let
+    // the kept-list cap below enforce max_results.
+    const search_cap: usize = @max(max_results, @min(max_results * 10 + 50, 5000));
+    const results = explorer.searchContentWithScope(name, alloc, search_cap) catch {
         out.appendSlice(alloc, "error: search failed") catch {};
         return;
     };
@@ -2555,6 +2565,7 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     var kept: std.ArrayList(usize) = .empty;
     defer kept.deinit(alloc);
     for (results, 0..) |r, r_idx| {
+        if (kept.items.len >= max_results) break;
         const lang = explore_mod.detectLanguage(r.path);
         if (!langHasCallSites(lang)) continue;
         // #562: a full-line comment mention is documentation, not a call site.

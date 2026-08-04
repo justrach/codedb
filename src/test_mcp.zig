@@ -3595,3 +3595,104 @@ test "tools/list mini profile advertises six tools with full descriptions" {
     }
     try testing.expect(found_callers);
 }
+
+test "issue: codedb_callers returns results when max_results is smaller than the filtered-out prefix" {
+    // Reported as "codedb_callers returns 0 call sites after a snapshot
+    // fast-load". The fast-load is a red herring — searchContentUncached
+    // already ensures both lazy indexes (explore.zig:3931 word index,
+    // explore.zig:3941 symbol index). The real defect is in handleCallers:
+    // it passes the user's max_results straight through as the cap on the
+    // RAW content search, then applies its four exclusion filters (non-code
+    // language, comment/blank line, definition site, whole-word) to that
+    // already-truncated slice. Ranked search deliberately floats the
+    // defining file (+20 prior, explore.zig:4524) and its definition lines
+    // (explore.zig:4598) to the front — exactly the rows this tool drops —
+    // so a small max_results spends its entire budget on rows that are then
+    // filtered away and the tool reports "0 call sites" for a symbol with
+    // real callers. max_results is documented as "Maximum call sites to
+    // return": it must cap the OUTPUT, not the pre-filter search.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    // One file, so tier0_per_file_cap == max_results (explore.zig:4125) and
+    // the raw hits are taken in line order: the first three are the doc
+    // comments, which handleCallers drops. The two genuine call sites sit
+    // just past the cap.
+    try explorer.indexFile("mod.zig",
+        \\// fooBar is the entry point
+        \\// fooBar is described again
+        \\// fooBar is described once more
+        \\pub fn fooBar() void {}
+        \\pub fn callerA() void {
+        \\    fooBar();
+        \\}
+        \\pub fn callerB() void {
+        \\    fooBar();
+        \\}
+        \\
+    );
+
+    const args_json =
+        \\{"name":"fooBar","max_results":3}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Both real call sites fit inside max_results=3 and must be reported.
+    try testing.expect(std.mem.indexOf(u8, out.items, "0 call sites") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'fooBar'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:6") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:9") != null);
+    // The filtered rows must still not leak into the output.
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:1:") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:4:") == null);
+}
+
+test "issue: codedb_callers caps the reported call sites at max_results" {
+    // Companion to the test above: over-fetching to survive the filters must
+    // not turn max_results into a no-op — the OUTPUT still has to honour it.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
+    try explorer.indexFile("many.zig",
+        \\pub fn callerA() void {
+        \\    fooBar();
+        \\    fooBar();
+        \\    fooBar();
+        \\    fooBar();
+        \\    fooBar();
+        \\}
+        \\
+    );
+
+    const args_json =
+        \\{"name":"fooBar","max_results":2}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'fooBar'") != null);
+}
