@@ -619,7 +619,7 @@ the query hot path.
 
 Beyond the graph, this cut also lands a **warm CLI daemon** (near-MCP latency
 from the plain `codedb` CLI), a **faster fuzzy `find`**, **hardened CLI** parsing
-and exit codes (#529), and **ReScript** `.res`/`.resi` support (#532).
+and exit codes (#529), **ReScript** `.res`/`.resi` support (#532), and **OCaml** `.ml`/`.mli` support.
 
 ### Graph-aware ranking (call-graph centrality)
 
