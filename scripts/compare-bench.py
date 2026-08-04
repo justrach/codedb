@@ -14,6 +14,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold-pct", type=float, default=10.0, help="maximum allowed latency regression percentage")
     parser.add_argument("--min-abs-ns", type=int, default=50000, help="ignore regressions below this absolute delta (ns)")
     parser.add_argument("--markdown-out", help="write markdown report to this path")
+    parser.add_argument("--allow-regression", action="append", default=[], metavar="TOOL", help="waive an intended latency regression for this tool")
     return parser.parse_args()
 
 
@@ -28,15 +29,15 @@ def pct_change(base_ns: int, head_ns: int) -> float:
     return ((head_ns - base_ns) / base_ns) * 100.0
 
 
-def status_for(delta_pct: float, abs_delta_ns: int, threshold_pct: float, min_abs_ns: int) -> str:
+def status_for(delta_pct: float, abs_delta_ns: int, threshold_pct: float, min_abs_ns: int, waived: bool = False) -> str:
     if delta_pct <= threshold_pct:
         return "OK"
     if abs_delta_ns <= min_abs_ns:
         return "NOISE"
-    return "FAIL"
+    return "WAIVED" if waived else "FAIL"
 
 
-def render_markdown(rows: list[tuple[str, int, int, float, int]], threshold_pct: float, min_abs_ns: int) -> str:
+def render_markdown(rows: list[tuple[str, int, int, float, int]], threshold_pct: float, min_abs_ns: int, allowed_regressions: set[str] | None = None) -> str:
     lines = [
         "## Benchmark Regression Report",
         "",
@@ -48,7 +49,7 @@ def render_markdown(rows: list[tuple[str, int, int, float, int]], threshold_pct:
         "| --- | ---: | ---: | ---: | ---: | --- |",
     ]
     for tool, base_ns, head_ns, delta, abs_delta in rows:
-        status = status_for(delta, abs_delta, threshold_pct, min_abs_ns)
+        status = status_for(delta, abs_delta, threshold_pct, min_abs_ns, waived=tool in (allowed_regressions or set()))
         lines.append(f"| `{tool}` | {base_ns} | {head_ns} | {delta:+.2f}% | {abs_delta:+d} | {status} |")
     return "\n".join(lines) + "\n"
 
@@ -78,10 +79,10 @@ def main() -> int:
         rows.append((tool, base_ns, head_ns, delta, abs_delta))
         # Only flag as regression if BOTH percentage AND absolute delta exceed thresholds
         # This prevents false positives on fast tools where CI noise dominates
-        if delta > args.threshold_pct and abs_delta > args.min_abs_ns:
+        if delta > args.threshold_pct and abs_delta > args.min_abs_ns and tool not in args.allow_regression:
             failures.append(f"{tool} regressed by {delta:.2f}% ({abs_delta:+d} ns)")
 
-    report = render_markdown(rows, args.threshold_pct, args.min_abs_ns)
+    report = render_markdown(rows, args.threshold_pct, args.min_abs_ns, set(args.allow_regression))
     sys.stdout.write(report)
 
     if args.markdown_out:

@@ -28,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-parity", action="store_true")
     parser.add_argument("--require-provenance", action="store_true")
     parser.add_argument("--allow-parity-skip", action="append", default=[], metavar="TOOL")
+    parser.add_argument("--allow-regression", action="append", default=[], metavar="TOOL")
     parser.add_argument("--expected-head-sha")
     parser.add_argument("--expected-head-tree-sha")
     parser.add_argument("--markdown-out")
@@ -202,6 +203,7 @@ def compare(
     bootstrap_samples: int,
     require_provenance: bool = False,
     allowed_parity_skips: set[str] | None = None,
+    allowed_regressions: set[str] | None = None,
     expected_head_sha: str | None = None,
     expected_head_tree_sha: str | None = None,
 ) -> tuple[str, list[str]]:
@@ -209,6 +211,7 @@ def compare(
     parity_failures: list[str] = []
     corpus_hashes: list[str] = []
     allowed_parity_skips = allowed_parity_skips or set()
+    allowed_regressions = allowed_regressions or set()
     provenance_failures, provenance_summary = (
         validate_provenance(samples, expected_head_sha, expected_head_tree_sha)
         if require_provenance
@@ -288,8 +291,11 @@ def compare(
 
         status = "OK"
         if pct_median > threshold_pct and delta_median > min_abs_ns:
-            status = "FAIL"
-            failures.append(f"{tool} median paired regression {pct_median:+.2f}% ({delta_median:+d} ns)")
+            if tool in allowed_regressions:
+                status = "WAIVED"
+            else:
+                status = "FAIL"
+                failures.append(f"{tool} median paired regression {pct_median:+.2f}% ({delta_median:+d} ns)")
         elif pct_median > threshold_pct:
             status = "NOISE"
         rows.append((tool, base_median, head_median, pct_median, delta_median, ci_low, ci_high, wins, ties, parity_status, status))
@@ -341,6 +347,7 @@ def main() -> int:
             args.bootstrap_samples,
             require_provenance=args.require_provenance,
             allowed_parity_skips=set(args.allow_parity_skip),
+            allowed_regressions=set(args.allow_regression),
             expected_head_sha=args.expected_head_sha,
             expected_head_tree_sha=args.expected_head_tree_sha,
         )
