@@ -3570,18 +3570,28 @@ test "tools/list mini profile advertises six tools with full descriptions" {
     const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_mini = true });
     defer testing.allocator.free(resp);
 
+    // tools/list rides on every model request, so the whole payload is the
+    // per-request tax. Keep the compressed mini surface under budget.
+    try testing.expect(resp.len < 6500);
+
     var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
     defer parsed.deinit();
     const tools = parsed.value.object.get("tools").?.array;
 
     try testing.expectEqual(@as(usize, 6), tools.items.len);
+    var found_callers = false;
     for (tools.items) |t| {
         const name = t.object.get("name").?.string;
         if (std.mem.eql(u8, name, "codedb_read") or std.mem.eql(u8, name, "codedb_word"))
             return error.NonMiniToolAdvertised;
         if (std.mem.eql(u8, name, "codedb_callers")) {
+            found_callers = true;
             const desc = t.object.get("description").?.string;
-            try testing.expect(std.mem.indexOf(u8, desc, "PRIMARY tool") != null);
+            // Compressed, but the steering claim survives.
+            try testing.expect(std.mem.indexOf(u8, desc, "grep") != null);
+            try testing.expect(std.mem.indexOf(u8, desc, "call site") != null);
+            try testing.expect(desc.len <= 220);
         }
     }
+    try testing.expect(found_callers);
 }

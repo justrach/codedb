@@ -708,8 +708,9 @@ pub const ToolsListOpts = struct {
 };
 
 /// CODEDB_TOOLS_PROFILE=mini advertises the six tools agents actually reach
-/// for, keeping the full steering descriptions (slim's terse ones measured
-/// worse: agents never called the tools yet paid the surface). Tools a
+/// for, keeping the steering value of the full descriptions (slim's terse
+/// ones measured worse: agents never called the tools yet paid the surface)
+/// while compressing the wording — see mini_descriptions. Tools a
 /// native-editor client already has (read) and rarely-used extras (word,
 /// callpath, hot, tree, find, status) are unadvertised but still dispatch.
 const mini_profile_tools = [_][]const u8{
@@ -767,10 +768,12 @@ fn slimDescription(name: []const u8) ?[]const u8 {
     return null;
 }
 
+const PropDesc = struct { name: []const u8, desc: []const u8 };
+
 /// Terse replacements for the wordiest shared property descriptions in slim
 /// mode (the full texts run 120-180 chars each and repeat across tools).
 /// Types/required/enums are untouched, so arg binding is unaffected.
-const slim_prop_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
+const slim_prop_descriptions = [_]PropDesc{
     .{ .name = "offset", .desc = "Pagination offset into ranked results (default: 0)" },
     .{ .name = "paths_only", .desc = "Return path:line only, no line text (default: false)" },
     .{ .name = "path_glob", .desc = "Glob filter on paths, e.g. 'src/**/*.zig'" },
@@ -780,8 +783,80 @@ const slim_prop_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
 };
 
 fn slimPropDescription(name: []const u8) ?[]const u8 {
-    for (&slim_prop_descriptions) |sd| if (std.mem.eql(u8, name, sd.name)) return sd.desc;
+    return lookupPropDesc(&slim_prop_descriptions, name);
+}
+
+/// One terse line (<= 60 chars) for every property the six mini tools expose.
+/// tools/list rides on EVERY model request, so the property prose — not the
+/// tool prose — is the bulk of the surface: tersing these cuts ~1.3k chars
+/// per request while the tool descriptions keep doing the steering.
+const mini_prop_descriptions = [_]PropDesc{
+    .{ .name = "project", .desc = "Absolute path to another indexed project" },
+    .{ .name = "path", .desc = "File path relative to project root" },
+    .{ .name = "compact", .desc = "Condensed output, less framing (default: false)" },
+    .{ .name = "skeleton", .desc = "Declarations only; bodies elided (default: false)" },
+    .{ .name = "name", .desc = "Exact symbol name" },
+    .{ .name = "prefix", .desc = "Prefix match, e.g. parse_" },
+    .{ .name = "pattern", .desc = "Glob on symbol name, e.g. *Manager" },
+    .{ .name = "kind", .desc = "function | struct | class | method | enum | interface" },
+    .{ .name = "fuzzy", .desc = "Typo-tolerant match for name (default: false)" },
+    .{ .name = "body", .desc = "Include each symbol source (default: false)" },
+    .{ .name = "max_results", .desc = "Max results (defaults: search 20, symbol 50, callers 30)" },
+    .{ .name = "format", .desc = "Set to json for structured output" },
+    .{ .name = "query", .desc = "Text to match; regex when regex=true" },
+    .{ .name = "offset", .desc = "Page offset; responses print the next offset=N" },
+    .{ .name = "scope", .desc = "Annotate hits with enclosing symbol (default: false)" },
+    .{ .name = "paths_only", .desc = "Return path:line only, no line text (default: false)" },
+    .{ .name = "regex", .desc = "Treat query as a regex (default: false)" },
+    .{ .name = "path_glob", .desc = "Glob filter on paths, e.g. 'src/**/*.zig'" },
+    .{ .name = "task", .desc = "Task in natural language; include likely identifiers" },
+    .{ .name = "max_tokens", .desc = "Response token budget (min 256, ~2.5 bytes/token)" },
+    .{ .name = "detail", .desc = "compact (default) or full sections" },
+    .{ .name = "direction", .desc = "imported_by (default) or depends_on" },
+    .{ .name = "transitive", .desc = "Follow the dependency chain (default: false)" },
+    .{ .name = "max_depth", .desc = "Depth cap for transitive (default: unlimited)" },
+};
+
+/// Compressed mini tool descriptions: each <= 220 chars and each keeps the
+/// three things that actually steer a model — what the tool does, the native
+/// workflow it replaces, and the key parameter hint. The static tools_list
+/// JSON is shared with the core/full profiles, so it is left untouched and
+/// these are swapped in only on the mini path (mirrors slim_descriptions).
+const mini_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
+    .{ .name = "codedb_outline", .desc = "Replaces cat/head on a whole file: symbol outline of one file — functions, types, imports with line numbers, 4-15x smaller than the source. Run before reading to pick a range; skeleton=true elides bodies." },
+    .{ .name = "codedb_symbol", .desc = "Replaces grepping for a definition: where a symbol is defined — file, line, kind. Reach for this FIRST when you know or can guess the name; takes name, prefix, pattern, fuzzy or kind. body=true adds source." },
+    .{ .name = "codedb_search", .desc = "Replaces grep across the repo: ranked full-text (or regex=true) hits as path:line plus the line. Use ONLY when you do not know the symbol name; path_glob narrows, paths_only halves tokens." },
+    .{ .name = "codedb_callers", .desc = "Replaces grepping for usages: every call site of a symbol in one call — {path, line, snippet, enclosing scope}. Excludes the definition itself." },
+    .{ .name = "codedb_deps", .desc = "Replaces grepping for imports: file-level dependency edges — direction=imported_by (default) for who imports this file, depends_on for what it imports. transitive=true walks the chain." },
+    .{ .name = "codedb_context", .desc = "Replaces a manual grep-read-repeat sweep: one task-shaped bundle of files, symbols and deps for a natural-language task. Best opening move on a new task; max_tokens caps the budget." },
+};
+
+fn miniDescription(name: []const u8) ?[]const u8 {
+    for (&mini_descriptions) |md| if (std.mem.eql(u8, name, md.name)) return md.desc;
     return null;
+}
+
+fn lookupPropDesc(table: []const PropDesc, name: []const u8) ?[]const u8 {
+    for (table) |pd| if (std.mem.eql(u8, name, pd.name)) return pd.desc;
+    return null;
+}
+
+/// Swap in terse `description` strings for a tool's inputSchema properties.
+/// Only the description string of a property is ever rewritten — property
+/// names, types, enums and the schema's `required` list are left alone, so a
+/// client binding arguments against the schema sees no change.
+fn tersePropDescriptions(a: std.mem.Allocator, tool: *std.json.Value, table: []const PropDesc) void {
+    if (tool.* != .object) return;
+    const schema = tool.object.getPtr("inputSchema") orelse return;
+    if (schema.* != .object) return;
+    const props = schema.object.getPtr("properties") orelse return;
+    if (props.* != .object) return;
+    var it = props.object.iterator();
+    while (it.next()) |prop| {
+        if (prop.value_ptr.* != .object) continue;
+        const d = lookupPropDesc(table, prop.key_ptr.*) orelse continue;
+        prop.value_ptr.*.object.put(a, "description", .{ .string = d }) catch {};
+    }
 }
 
 fn isCoreProfileTool(name: []const u8) bool {
@@ -824,6 +899,21 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
         tools_val.* = .{ .array = filtered };
     }
 
+    // Mini keeps the steering shape of the full descriptions but pays for it
+    // once, compressed: tool prose from mini_descriptions, property prose from
+    // mini_prop_descriptions. Schema structure is never touched.
+    if (opts.profile_mini) {
+        for (tools_val.array.items) |*t| {
+            if (t.* != .object) continue;
+            const name_v = t.object.get("name") orelse continue;
+            if (name_v != .string) continue;
+            if (miniDescription(name_v.string)) |d| {
+                t.object.put(a, "description", .{ .string = d }) catch {};
+            }
+            tersePropDescriptions(a, t, &mini_prop_descriptions);
+        }
+    }
+
     if (opts.profile_slim) {
         var filtered: std.json.Array = .init(a);
         for (tools_val.array.items) |*t| {
@@ -834,22 +924,7 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
                         if (slimDescription(n.string)) |d| {
                             t.*.object.put(a, "description", .{ .string = d }) catch {};
                         }
-                        if (t.*.object.getPtr("inputSchema")) |schema| {
-                            if (schema.* == .object) {
-                                if (schema.*.object.getPtr("properties")) |props| {
-                                    if (props.* == .object) {
-                                        var pit = props.*.object.iterator();
-                                        while (pit.next()) |prop| {
-                                            if (slimPropDescription(prop.key_ptr.*)) |d| {
-                                                if (prop.value_ptr.* == .object) {
-                                                    prop.value_ptr.*.object.put(a, "description", .{ .string = d }) catch {};
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        tersePropDescriptions(a, t, &slim_prop_descriptions);
                     }
                 }
             }
@@ -1369,7 +1444,7 @@ pub const supported_versions_json = blk: {
     break :blk s ++ "]";
 };
 
-pub const mcp_instructions = "codedb is a code-intelligence and context tool — not your editor. Default to the structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline for a file's structure before codedb_read, and codedb_context to orient on a new task. Use codedb_search only for substrings or phrases when you do NOT know the exact symbol name — it is a fallback, not the default. Make edits with your own native file tools; codedb has no edit capability.";
+pub const mcp_instructions = "codedb is code intelligence, not your editor. Reach for structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline before reading a file, codedb_context to orient on a task. Use codedb_search only when the symbol name is unknown. Make edits with your native tools.";
 
 /// MCP 2026-07-28 `server/discover` — the stateless-mode probe/identity RPC.
 /// Prebuilt at comptime; declares resultType itself so assembleJsonRpcResult
