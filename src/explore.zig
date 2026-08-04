@@ -1622,6 +1622,13 @@ pub const Explorer = struct {
     symbol_index: std.StringHashMap(std.ArrayList(SymbolLocation)),
     /// False after a snapshot fast-load until ensureSymbolIndex runs (#564).
     symbol_index_complete: bool,
+    /// Inverted split-name token → def_token_names indices for the NL→symbol
+    /// bridge in searchContentRanked. Built lazily once per search generation
+    /// (ensureDefTokenIndex), so the per-query bridge costs a few hash lookups
+    /// instead of a full symbol-index sweep. Keys and names are owned copies.
+    def_token_index: std.StringHashMap(std.ArrayList(u32)),
+    def_token_names: std.ArrayList([]const u8) = .empty,
+    def_token_gen: ?SearchGeneration = null,
     word_index: WordIndex,
     trigram_index: AnyTrigramIndex,
     /// Paths indexed with skip_trigram=true (past 15k cap or excluded).
@@ -1735,6 +1742,7 @@ pub const Explorer = struct {
             .word_render_cache = OutlineRenderCache.init(allocator),
             .symbol_index = std.StringHashMap(std.ArrayList(SymbolLocation)).init(allocator),
             .symbol_index_complete = true,
+            .def_token_index = std.StringHashMap(std.ArrayList(u32)).init(allocator),
             .word_index = WordIndex.init(allocator),
             .trigram_index = .{ .heap = TrigramIndex.init(allocator) },
             .skip_trigram_files = std.StringHashMap(void).init(allocator),
@@ -1758,6 +1766,10 @@ pub const Explorer = struct {
             entry.value_ptr.deinit(self.allocator);
         }
         self.symbol_index.deinit();
+
+        self.clearDefTokenIndexLocked();
+        self.def_token_index.deinit();
+        self.def_token_names.deinit(self.allocator);
 
         self.contents.deinit();
         self.content_hashes.deinit();
@@ -2587,6 +2599,82 @@ pub const Explorer = struct {
         while (it.next()) |entry| {
             self.rebuildSymbolIndexFor(entry.key_ptr.*, entry.value_ptr, false);
         }
+    }
+
+    /// Free the NL→symbol bridge token cache. Caller holds the exclusive
+    /// lock (or is deinit).
+    fn clearDefTokenIndexLocked(self: *Explorer) void {
+        var it = self.def_token_index.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.def_token_index.clearRetainingCapacity();
+        for (self.def_token_names.items) |n| self.allocator.free(n);
+        self.def_token_names.clearRetainingCapacity();
+        self.def_token_gen = null;
+    }
+
+    /// Build the inverted split-name token index for the NL→symbol bridge if
+    /// it is missing or from an older search generation. Cheap when fresh
+    /// (one gen check). Call BEFORE taking the shared lock — this takes the
+    /// exclusive lock itself (after ensureSymbolIndex). On mid-build OOM the
+    /// generation stays unset and the bridge falls back to its direct sweep.
+    pub fn ensureDefTokenIndex(self: *Explorer) void {
+        self.ensureSymbolIndex();
+        self.mu.lockShared();
+        const fresh = self.def_token_gen != null and self.def_token_gen.? == self.search_gen.load(.acquire);
+        self.mu.unlockShared();
+        if (fresh) return;
+        self.mu.lock();
+        defer self.mu.unlock();
+        const gen = self.search_gen.load(.acquire);
+        if (self.def_token_gen != null and self.def_token_gen.? == gen) return;
+        self.clearDefTokenIndexLocked();
+        var split_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer split_arena.deinit();
+        const sa = split_arena.allocator();
+        var sym_it = self.symbol_index.iterator();
+        while (sym_it.next()) |se| {
+            const sym_name = se.key_ptr.*;
+            if (sym_name.len < 5) continue;
+            var subs: std.ArrayList([]const u8) = .empty;
+            idx.splitIdentifier(sym_name, &subs, sa) catch continue;
+            if (subs.items.len < 2) continue;
+            const name_copy = self.allocator.dupe(u8, sym_name) catch return;
+            const sym_id: u32 = @intCast(self.def_token_names.items.len);
+            self.def_token_names.append(self.allocator, name_copy) catch {
+                self.allocator.free(name_copy);
+                return;
+            };
+            for (subs.items, 0..) |sub, i| {
+                var dup = false;
+                for (subs.items[0..i]) |prev| {
+                    if (std.mem.eql(u8, prev, sub)) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (dup) continue;
+                if (self.def_token_index.getPtr(sub)) |list| {
+                    list.append(self.allocator, sym_id) catch return;
+                } else {
+                    const key_copy = self.allocator.dupe(u8, sub) catch return;
+                    var list: std.ArrayList(u32) = .empty;
+                    list.append(self.allocator, sym_id) catch {
+                        self.allocator.free(key_copy);
+                        return;
+                    };
+                    self.def_token_index.put(key_copy, list) catch {
+                        self.allocator.free(key_copy);
+                        var l = list;
+                        l.deinit(self.allocator);
+                        return;
+                    };
+                }
+            }
+        }
+        self.def_token_gen = gen;
     }
 
     pub fn disableWordIndexDiskLoad(self: *Explorer) void {
@@ -5536,6 +5624,7 @@ pub const Explorer = struct {
             cio.posixGetenv("CODEDB_NO_GRAPH_DISTANCE") == null)
         {
             self.ensureSymbolIndex();
+            if (std.mem.indexOfScalar(u8, query, ' ') != null) self.ensureDefTokenIndex();
         }
         self.mu.lockShared();
         defer self.mu.unlockShared();
@@ -5726,29 +5815,57 @@ pub const Explorer = struct {
         const DefOverlap = struct { overlap: u32, line: u32 };
         var def_overlap = std.StringHashMap(DefOverlap).init(ta);
         if (terms_set.count() >= 2 and self.symbol_index_complete) {
-            var sym_it = self.symbol_index.iterator();
-            while (sym_it.next()) |se| {
-                const sym_name = se.key_ptr.*;
-                if (sym_name.len < 5) continue;
-                var subs: std.ArrayList([]const u8) = .empty;
-                defer subs.deinit(ta);
-                idx.splitIdentifier(sym_name, &subs, ta) catch continue;
-                if (subs.items.len < 2) continue;
-                var overlap: u32 = 0;
-                var ov_it = terms_set.keyIterator();
-                while (ov_it.next()) |t| {
-                    for (subs.items) |sub| {
-                        if (std.mem.eql(u8, sub, t.*)) {
-                            overlap += 1;
-                            break;
+            if (self.def_token_gen != null and self.def_token_gen.? == self.search_gen.load(.acquire)) {
+                // Fast path: count per-symbol term overlap through the
+                // inverted token index instead of sweeping every symbol.
+                var counts = std.AutoHashMap(u32, u32).init(ta);
+                var t_it = terms_set.keyIterator();
+                while (t_it.next()) |t| {
+                    const list = self.def_token_index.get(t.*) orelse continue;
+                    for (list.items) |sym_id| {
+                        const gop = counts.getOrPut(sym_id) catch continue;
+                        if (!gop.found_existing) gop.value_ptr.* = 0;
+                        gop.value_ptr.* += 1;
+                    }
+                }
+                var c_it = counts.iterator();
+                while (c_it.next()) |ce| {
+                    if (ce.value_ptr.* < 2) continue;
+                    const locs = self.symbol_index.get(self.def_token_names.items[ce.key_ptr.*]) orelse continue;
+                    for (locs.items) |loc| {
+                        const gop = def_overlap.getOrPut(loc.path) catch continue;
+                        if (!gop.found_existing or ce.value_ptr.* > gop.value_ptr.overlap) {
+                            gop.value_ptr.* = .{ .overlap = ce.value_ptr.*, .line = loc.line_start };
                         }
                     }
                 }
-                if (overlap < 2) continue;
-                for (se.value_ptr.items) |loc| {
-                    const gop = def_overlap.getOrPut(loc.path) catch continue;
-                    if (!gop.found_existing or overlap > gop.value_ptr.overlap) {
-                        gop.value_ptr.* = .{ .overlap = overlap, .line = loc.line_start };
+            } else {
+                // Token cache stale (env-gated pre-pass skipped it, or an
+                // index mutation raced): sweep the symbol index directly.
+                var sym_it = self.symbol_index.iterator();
+                while (sym_it.next()) |se| {
+                    const sym_name = se.key_ptr.*;
+                    if (sym_name.len < 5) continue;
+                    var subs: std.ArrayList([]const u8) = .empty;
+                    defer subs.deinit(ta);
+                    idx.splitIdentifier(sym_name, &subs, ta) catch continue;
+                    if (subs.items.len < 2) continue;
+                    var overlap: u32 = 0;
+                    var ov_it = terms_set.keyIterator();
+                    while (ov_it.next()) |t| {
+                        for (subs.items) |sub| {
+                            if (std.mem.eql(u8, sub, t.*)) {
+                                overlap += 1;
+                                break;
+                            }
+                        }
+                    }
+                    if (overlap < 2) continue;
+                    for (se.value_ptr.items) |loc| {
+                        const gop = def_overlap.getOrPut(loc.path) catch continue;
+                        if (!gop.found_existing or overlap > gop.value_ptr.overlap) {
+                            gop.value_ptr.* = .{ .overlap = overlap, .line = loc.line_start };
+                        }
                     }
                 }
             }
