@@ -155,13 +155,12 @@ jobs:
           done
           python3 "$head_cwd/scripts/compare-bench-paired.py" bench-paired --require-parity --require-provenance \
             --allow-parity-skip codedb_snapshot --allow-parity-skip codedb_status --allow-parity-skip codedb_context \
-            --allow-regression codedb_context \
             --expected-head-sha "$head_source_sha" --expected-head-tree-sha "$head_tree_sha" \
             --threshold-pct 10 --min-abs-ns 50000 --markdown-out bench-paired-report.md
 
       - name: Compare
         run: |
-          python3 scripts/compare-bench.py bench-base.json bench-head.json --threshold-pct 10 --allow-regression codedb_context --markdown-out bench-report.md
+          python3 scripts/compare-bench.py bench-base.json bench-head.json --threshold-pct 10 --markdown-out bench-report.md
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
