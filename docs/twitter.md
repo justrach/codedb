@@ -1,99 +1,94 @@
-# Twitter/X launch copy — codedb 0.2.5830
+# codedb 0.2.5830 - Twitter/X copy
 
-Release: <https://github.com/justrach/codedb/releases/tag/v0.2.5830>
+Release: https://github.com/justrach/codedb/releases/tag/v0.2.5830
 
-## Primary thread
+Best times to post (PST): Tue-Thu, 8-10 AM
+Best times to post (SGT): Tue-Thu, 11 PM - 1 AM
 
-### 1/9
+---
 
-> 1/9 codedb 0.2.5830 is live.
->
-> Faster code intelligence for AI agents, with retrieval and full MCP-response parity preserved.
->
-> Exact symbol: 81.72% lower latency
-> Tree: 67.60%
-> Outline: 59.79%
->
-> https://github.com/justrach/codedb/releases/tag/v0.2.5830
+Tweet 1/5 (Hook)
 
-### 2/9
+We are now releasing codedb 0.2.5830.
 
-> 2/9 The final gate was 20 real, counterbalanced AB/BA pairs against an immutable 0.2.5829 baseline.
->
-> Same compiler. Same fixed corpus. Source/tree/order provenance verified. Full normalized JSON-RPC responses matched across every measured iteration.
+Faster code intelligence for AI agents. Same answers. Just sooner.
 
-### 3/9
+Finding a symbol is 81.72% faster, listing files 67.60%, outlining a file 59.79%.
 
-> 3/9 The biggest paired-median latency reductions:
->
-> • symbol 81.72%
-> • tree 67.60%
-> • outline 59.79%
-> • word 37.16%
-> • bundle 27.73%
-> • hot lookup 17.81%
-> • context 11.89%
->
-> No parity-enabled tool had a material regression.
+Zig 0.16.0 -> 0.17.0-dev. Indexing 136ms -> 131ms.
 
-### 4/9
+~1,290x vs ripgrep. ~1,520x vs grep.
 
-> 4/9 Under the hood: direct hash-index symbol lookup, bounded generation-validated render/score caches, cached hashes + newline offsets, zero-copy context bodies, rolling trigrams, and a compact JSON-RPC fast path with CR/LF sanitization retained.
+---
 
-### 5/9
+Tweet 2/5 (We actually measured it)
 
-> 5/9 A separate end-to-end MCP benchmark—including JSON-RPC, stdio, dispatch, escaping, and client receipt—measured 2.16× to 99.11× speedups.
->
-> Normalized responses were byte-identical. Large synthetic handler cases improved 12.8×–109.7×.
+We compared this build head-to-head against 0.2.5829 on the same machine, same files, same Zig 0.17 compiler.
 
-### 6/9
+Same answers came back. Just faster.
 
-> 6/9 This release line also completes the move from Zig 0.16.0 to pinned Zig 0.17.0-dev.
->
-> The final initial-index comparison: 136ms → 131ms, 3.7% faster, 20/20 paired wins, with identical hit counts across all 14 query rows.
+Word lookups 37% quicker. Bundles 28%. Hot files 18%. Context 12%.
 
-### 7/9
+Nothing got slower.
 
-> 7/9 The context-efficiency snapshot is just as important:
->
-> • 19.7B tokens saved / 30 days
-> • 580K codedb ops / 7 days
-> • 63µs p50 per op
-> • ~47 tokens per outline
-> • ~14 per lookup
->
-> Aggregate deployment counters—not a version-specific A/B claim.
+---
 
-### 8/9
+Tweet 3/5 (What changed)
 
-> 8/9 Shipping for macOS arm64/x86_64, Linux arm64/x86_64, and Windows x86_64.
->
-> macOS arm64 is Developer ID signed, Apple-notarized, and Gatekeeper accepted. Every published asset was downloaded again and checksum-verified before release.
+Exact symbols now hit a hash index. Tree/outline/word use smart caches. Context is zero-copy.
 
-### 9/9
+End-to-end over MCP: 2x-99x faster. Same responses, byte-for-byte.
 
-> 9/9 codedb gives AI agents structural search, symbols, callers, dependencies, outlines, and compact context—then hands edits to native tools.
->
-> Install:
-> curl -fsSL https://codedb.codegraff.com/install.sh | bash
->
-> https://github.com/justrach/codedb/releases/tag/v0.2.5830
+Zig 0.16 -> 0.17 shaved indexing 136ms -> 131ms. The big % drops are the new perf work on that same compiler.
 
-## Single-post version
+---
 
-> codedb 0.2.5830 is live: exact symbol 81.72%, tree 67.60%, outline 59.79%, word 37.16%, and bundle 27.73% lower paired-median latency—with full MCP-response parity. Built on pinned Zig 0.17. Five platforms. https://github.com/justrach/codedb/releases/tag/v0.2.5830
+Tweet 4/5 (In the wild)
 
-## Shorter single-post version
+What agents are seeing right now:
 
-> codedb 0.2.5830 is live. Up to 81.72% lower paired-median latency in the final 20-pair gate, full MCP-response parity, pinned Zig 0.17, and binaries for five OS/architecture targets. https://github.com/justrach/codedb/releases/tag/v0.2.5830
+19.7B tokens saved / 30 days
+580K ops / 7 days
+63µs p50
+~47 tokens/outline, ~14/lookup
 
-## Suggested media alt text
+(Live install stats, not caused by 0.2.5830 alone.)
 
-> Dark Codegraff dashboard showing engineering teams using Codegraff and four codedb metrics: 19.7 billion tokens saved in the last 30 days, 580,000 operations in the last 7 days, 63 microseconds per operation at p50, and about 47 tokens per outline versus 14 per lookup.
+macOS, Linux, Windows. macOS arm64 signed + notarized.
 
-## Posting notes
+---
 
-- Attach the dashboard image to post 7, or to post 1 if the thread needs a stronger visual opener.
-- Keep the release URL unshortened so readers can inspect the binaries, checksums, benchmark report, and raw evidence.
-- Optional tags on the final post: `#Zig #MCP #AIEngineering #DeveloperTools`.
-- The 19.7B/580K/63µs figures are a release-day deployment snapshot. Do not present them as improvements caused solely by 0.2.5830.
+Tweet 5/5 (CTA)
+
+codedb gives AI agents symbols, callers, deps, outlines, and compact context. Your editor still does the edits.
+
+curl -fsSL https://codedb.codegraff.com/install.sh | bash
+
+Star it here: https://github.com/justrach/codedb/
+
+View the release: https://github.com/justrach/codedb/releases/tag/v0.2.5830
+
+---
+
+Alt: Single tweet
+
+codedb 0.2.5830: symbol -81.72%, tree -67.60%, outline -59.79%. Zig 0.16 -> 0.17.0-dev. ~1,290x vs ripgrep. Full MCP parity.
+
+https://github.com/justrach/codedb/releases/tag/v0.2.5830
+
+---
+
+Alt text (dashboard image)
+
+Dark Codegraff dashboard showing engineering teams using Codegraff and four codedb metrics: 19.7 billion tokens saved in the last 30 days, 580,000 operations in the last 7 days, 63 microseconds per operation at p50, and about 47 tokens per outline versus 14 per lookup.
+
+---
+
+Posting notes
+
+- Attach the dashboard image to tweet 4, or tweet 1 if you want a stronger visual opener.
+- No link on tweet 1. Put the release URL on tweet 5 only.
+- Keep the release URL unshortened.
+- Optional tags on the final post: #Zig #MCP #AIEngineering #DeveloperTools
+- 19.7B / 580K / 63µs = release-day deployment snapshot, not caused solely by 0.2.5830.
+- Grep/ripgrep speedups: local 2026-07-13 check on this repo (761 files), `bench-engine search allocator` p50=13µs vs warm `rg` ~16.8ms (~1,290x) and `grep -R src` ~19.7ms (~1,520x).
