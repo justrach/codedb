@@ -3805,6 +3805,22 @@ test "issue-682: codedb_callers excludes a symbol mentioned only in a trailing c
     try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
 }
 
+test "issue-682: codedb_callers keeps a call after a string containing the comment marker" {
+    // `fetch("https://x", renderX);` — the `//` sits inside the string literal,
+    // so the comment cut must not swallow the real reference after it.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "url.zig", "pub fn callerA() void {\n    fetch(\"https://x\", renderX);\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "url.zig:2") != null);
+}
+
 test "issue: codedb_callers keeps a symbol used outside a string on a line that has strings" {
     // `foo("msg", renderX)` passes the function by reference next to a string
     // literal — the mention is real code and must survive the filter.
