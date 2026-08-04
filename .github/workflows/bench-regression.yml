@@ -31,8 +31,13 @@ jobs:
 
           head_archive="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
           head_dir="zig-x86_64-linux-${ZIG_VERSION}"
+          # Old dev builds are rotated off ziglang.org; fall back to the
+          # hexops community mirror (byte-identical official tarballs).
+          # The pinned sha256 below is verified regardless of source.
           curl --fail --show-error --location --retry 3 \
-            "https://ziglang.org/builds/${head_archive}" -o zig-head.tar.xz
+            "https://ziglang.org/builds/${head_archive}" -o zig-head.tar.xz || \
+          curl --fail --show-error --location --retry 3 \
+            "https://pkg.machengine.org/zig/${head_archive}" -o zig-head.tar.xz
           echo "${ZIG_SHA256}  zig-head.tar.xz" | sha256sum --check
           tar -xf zig-head.tar.xz
           test "$("$PWD/${head_dir}/zig" version)" = "$ZIG_VERSION"
