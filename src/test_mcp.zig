@@ -3504,3 +3504,44 @@ test "installers: the website copies stay byte-identical to install/install.sh" 
         try testing.expectEqualStrings(canonical, copy);
     }
 }
+
+test "tools/list core profile advertises the navigation set with full descriptions" {
+    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_core = true });
+    defer testing.allocator.free(resp);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    try testing.expectEqual(@as(usize, 10), tools.items.len);
+    var found_callers = false;
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_glob") or std.mem.eql(u8, name, "codedb_projects"))
+            return error.NonCoreToolAdvertised;
+        if (std.mem.eql(u8, name, "codedb_callers")) {
+            found_callers = true;
+            const desc = t.object.get("description").?.string;
+            try testing.expect(std.mem.indexOf(u8, desc, "PRIMARY tool") != null);
+        }
+    }
+    try testing.expect(found_callers);
+}
+
+test "tools/list slim profile stays six terse tools" {
+    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_slim = true });
+    defer testing.allocator.free(resp);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    try testing.expectEqual(@as(usize, 6), tools.items.len);
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_callers")) {
+            const desc = t.object.get("description").?.string;
+            try testing.expect(std.mem.indexOf(u8, desc, "PRIMARY tool") == null);
+        }
+    }
+}

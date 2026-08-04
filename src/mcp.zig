@@ -1151,12 +1151,17 @@ pub fn run(
         const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_ps false;
         break :blk_ps std.mem.eql(u8, v, "slim");
     };
-    // Slim-by-default: with no explicit profile env var, agent harnesses get
-    // the slim list — tool schemas ride along on EVERY model call, so the
-    // 20-tool list (~4k tok) vs slim (~1.5k) is worth ~100k tokens over a
-    // 40-call session. Human-facing GUI clients (the mcpEmitRichBlocks
-    // allowlist) keep the full list for discoverability. Decided lazily at
-    // the first tools/list request, when clientInfo.name is known.
+    // Core-by-default: with no explicit profile env var, agent harnesses get
+    // the core list — 10 navigation tools with the full steering
+    // descriptions. A 12-question Opus 5 A/B (2026-08-04, QA over
+    // this repo, 2 reps) measured slim-by-default at +15% total input tokens
+    // vs core-by-default: the terse slim descriptions stop the model from
+    // reaching for the tools at all, so it greps natively AND pays the
+    // schema tax, while core converts those grep chains into single calls
+    // and lands at parity-or-better with a no-MCP baseline. Human-facing
+    // GUI clients (the mcpEmitRichBlocks allowlist) keep the full list for
+    // discoverability. Decided lazily at the first tools/list request, when
+    // clientInfo.name is known.
     const profile_explicit = cio.posixGetenv("CODEDB_TOOLS_PROFILE") != null;
     var session = Session{
         .alloc = alloc,
@@ -1230,12 +1235,12 @@ pub fn run(
             }
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) {
-                const slim_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
+                const core_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
                 const resp = buildToolsListResponse(alloc, .{
                     .bundle_enabled = bundle_enabled,
                     .discriminated_opt_in = discriminated_opt_in,
-                    .profile_core = profile_core,
-                    .profile_slim = profile_slim or slim_default,
+                    .profile_core = profile_core or core_default,
+                    .profile_slim = profile_slim,
                 }) catch tools_list;
                 defer if (resp.ptr != tools_list.ptr) alloc.free(resp);
                 writeResult(alloc, stdout, id, resp);
