@@ -2648,6 +2648,12 @@ fn isIdentChar(c: u8) bool {
 /// line-local lexical scan: it handles complete spans on the current line and
 /// conservatively treats an unclosed block/raw span as consuming the remainder.
 fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explore_mod.Language) bool {
+    return hasWholeWordMatchInCodeDepth(line, needle, language, 0);
+}
+
+const max_template_nesting = 16;
+
+fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: explore_mod.Language, template_depth: usize) bool {
     if (needle.len == 0 or line.len < needle.len) return false;
     const markers = lineCommentMarkers(language);
     var i: usize = 0;
@@ -2668,8 +2674,23 @@ fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explo
             }
         }
         if (line[i] == '`' and hasBacktickLiterals(language)) {
+            if (language == .r) {
+                if (stringLiteralEnd(line, i)) |end| {
+                    if (std.mem.eql(u8, line[i + 1 .. end], needle)) return true;
+                    i = end + 1;
+                    continue;
+                }
+                return false;
+            }
             if (hasTemplateLiterals(language)) {
-                const template = scanTemplateLiteral(line, i, needle, language);
+                if (template_depth >= max_template_nesting) {
+                    if (stringLiteralEnd(line, i)) |end| {
+                        i = end + 1;
+                        continue;
+                    }
+                    return false;
+                }
+                const template = scanTemplateLiteral(line, i, needle, language, template_depth);
                 if (template.matched) return true;
                 if (template.end) |end| {
                     i = end;
@@ -2682,6 +2703,12 @@ fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explo
                 continue;
             }
             return false;
+        }
+        if (hasTemplateLiterals(language) and line[i] == '/') {
+            if (javascriptRegexEndAt(line, i)) |end| {
+                i = end;
+                continue;
+            }
         }
         if (blockCommentAt(line, i, language)) |block| {
             if (block.end) |end| {
@@ -2774,7 +2801,7 @@ const TemplateScan = struct {
     matched: bool,
 };
 
-fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, language: explore_mod.Language) TemplateScan {
+fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, language: explore_mod.Language, template_depth: usize) TemplateScan {
     var i = open + 1;
     while (i < line.len) {
         if (line[i] == '\\') {
@@ -2786,7 +2813,7 @@ fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, langua
             const expression_start = i + 2;
             const expression_end = templateExpressionEnd(line, expression_start, language);
             const end = expression_end orelse line.len;
-            if (hasWholeWordMatchInCode(line[expression_start..end], needle, language)) {
+            if (hasWholeWordMatchInCodeDepth(line[expression_start..end], needle, language, template_depth + 1)) {
                 return .{ .end = expression_end, .matched = true };
             }
             if (expression_end) |close| {
@@ -2800,6 +2827,34 @@ fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, langua
     return .{ .end = null, .matched = false };
 }
 
+fn javascriptRegexEndAt(line: []const u8, start: usize) ?usize {
+    if (start + 1 >= line.len or line[start] != '/' or line[start + 1] == '/' or line[start + 1] == '*') return null;
+
+    var previous = start;
+    while (previous > 0 and (line[previous - 1] == ' ' or line[previous - 1] == '\t')) previous -= 1;
+    if (previous > 0 and std.mem.indexOfScalar(u8, "([{:;,=!?&|+-*%^~<>", line[previous - 1]) == null) return null;
+
+    var in_class = false;
+    var i = start + 1;
+    while (i < line.len) {
+        if (line[i] == '\\') {
+            i += if (line.len - i > 1) 2 else 1;
+            continue;
+        }
+        if (line[i] == '[') {
+            in_class = true;
+        } else if (line[i] == ']') {
+            in_class = false;
+        } else if (line[i] == '/' and !in_class) {
+            i += 1;
+            while (i < line.len and std.ascii.isAlphabetic(line[i])) i += 1;
+            return i;
+        }
+        i += 1;
+    }
+    return null;
+}
+
 fn templateExpressionEnd(line: []const u8, start: usize, language: explore_mod.Language) ?usize {
     const markers = lineCommentMarkers(language);
     var depth: usize = 1;
@@ -2811,6 +2866,12 @@ fn templateExpressionEnd(line: []const u8, start: usize, language: explore_mod.L
                 continue;
             }
             return null;
+        }
+        if (line[i] == '/') {
+            if (javascriptRegexEndAt(line, i)) |end| {
+                i = end;
+                continue;
+            }
         }
         if (blockCommentAt(line, i, language)) |block| {
             if (block.end) |end| {
