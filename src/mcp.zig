@@ -2578,12 +2578,10 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
             }
         }
         if (is_def) continue;
-        // A whole-word match that only ever lands inside a string literal or a
-        // trailing comment is a mention, not an invocation — a `("name",
-        // "file")` table row, a `test "…name…" {` declaration, or
-        // `init(); // then name() …`. Real calls sit on the code prefix of the
-        // line, outside the quotes, and survive both cuts. (#682)
-        if (!hasWholeWordMatchOutsideStrings(lineCodePrefix(r.line_text, lang), name)) continue;
+        // A whole-word match that only lands inside a literal or comment is a
+        // mention, not an invocation — a `("name", "file")` table row, a
+        // `test "…name…" {` declaration, or `init(); // then name() …`. (#682)
+        if (!hasWholeWordMatchInCode(r.line_text, name, lang)) continue;
         kept.append(alloc, r_idx) catch {};
     }
 
@@ -2645,33 +2643,55 @@ fn isIdentChar(c: u8) bool {
         c == '_';
 }
 
-/// Returns true iff `needle` occurs in `line` as a whole-word identifier
-/// (non-identifier characters or line boundaries on both sides) at a position
-/// that is NOT inside a string literal.
-///
-/// An occurrence that only ever appears between quotes is a mention, not a
-/// call: the Python table row `("renderPlainSearch", "src/explore.zig"),` and
-/// the Zig declaration `test "def-first: renderPlainSearch surfaces …" {` both
-/// name the symbol without invoking it, yet passed every other filter here.
-///
-/// Deliberately line-local and pragmatic, in the spirit of `isCommentOrBlank`:
-///   - tracks '…' and "…" spans, honouring backslash escapes
-///   - a quote with no closing partner on the line (an apostrophe in a
-///     trailing comment, a Rust lifetime `&'a`, an open multi-line literal) is
-///     treated as ordinary code, so it can never swallow the rest of the line
-///   - backticks are not treated as quotes: Go raw strings and JS template
-///     literals routinely wrap real calls (`${render()}`)
-fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+/// Returns true when `needle` occurs as a whole-word identifier in code rather
+/// than in a string, raw/template literal, or comment. This is deliberately a
+/// line-local lexical scan: it handles complete spans on the current line and
+/// conservatively treats an unclosed block/raw span as consuming the remainder.
+fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explore_mod.Language) bool {
     if (needle.len == 0 or line.len < needle.len) return false;
+    const markers = lineCommentMarkers(language);
     var i: usize = 0;
     while (i < line.len) {
+        if (language == .rust) {
+            if (rustRawLiteralAt(line, i)) |raw| {
+                if (raw.end) |end| {
+                    i = end;
+                    continue;
+                }
+                return false;
+            }
+        }
         if (line[i] == '"' or line[i] == '\'') {
             if (stringLiteralEnd(line, i)) |end| {
                 i = end + 1;
                 continue;
             }
         }
-        // `i` is a code byte — try to anchor a whole-word match on it.
+        if (line[i] == '`' and hasBacktickLiterals(language)) {
+            if (hasTemplateLiterals(language)) {
+                const template = scanTemplateLiteral(line, i, needle, language);
+                if (template.matched) return true;
+                if (template.end) |end| {
+                    i = end;
+                    continue;
+                }
+                return false;
+            }
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+            return false;
+        }
+        if (blockCommentAt(line, i, language)) |block| {
+            if (block.end) |end| {
+                i = end;
+                continue;
+            }
+            return false;
+        }
+        if (isLineCommentAt(line, i, language, markers)) return false;
+
         if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
             const before_ok = i == 0 or !isIdentChar(line[i - 1]);
             const after = i + needle.len;
@@ -2683,18 +2703,8 @@ fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
     return false;
 }
 
-/// The slice of `line` before its first line-comment marker outside string
-/// literals, per `language` — the part of the line that can actually contain a
-/// call. Lines with no marker, and languages without a line-comment syntax
-/// (OCaml's `(* *)` is block-only), come back whole. (#682)
-///
-/// This remains deliberately line-local, but skips complete quoted, raw,
-/// backtick, and block-comment spans while looking for a line-comment opener.
-/// The spans remain in the returned prefix so the caller matcher keeps its
-/// existing behavior for references inside them; skipping them here only
-/// prevents marker-like text from hiding real code later on the same line.
-fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
-    const markers: []const []const u8 = switch (language) {
+fn lineCommentMarkers(language: explore_mod.Language) []const []const u8 {
+    return switch (language) {
         .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .swift, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
         .php => &.{ "//", "#" },
         .python, .ruby, .r, .shell => &.{"#"},
@@ -2702,44 +2712,21 @@ fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
         .sql => &.{"--"},
         .fortran => &.{"!"},
         .llvm_ir => &.{";"},
-        else => return line,
+        else => &.{},
     };
-    var i: usize = 0;
-    while (i < line.len) {
-        if (language == .rust) {
-            if (rustRawLiteralAt(line, i)) |raw| {
-                if (raw.end) |end| {
-                    i = end;
-                    continue;
-                }
-                return line;
-            }
-        }
-        if (line[i] == '"' or line[i] == '\'' or (line[i] == '`' and hasBacktickLiterals(language))) {
-            if (stringLiteralEnd(line, i)) |end| {
-                i = end + 1;
-                continue;
-            }
-        }
-        if (blockCommentAt(line, i, language)) |block| {
-            if (block.end) |end| {
-                i = end;
-                continue;
-            }
-            return line;
-        }
-        for (markers) |m| {
-            if (!std.mem.startsWith(u8, line[i..], m)) continue;
-            // `#[` starts a PHP 8 attribute, not a hash comment.
-            if (language == .php and m[0] == '#' and i + 1 < line.len and line[i + 1] == '[') break;
-            // Shell: `#` opens a comment only when it begins a word. Operators
-            // are word boundaries too; `${#var}` and `$#` remain live syntax.
-            if (language == .shell and !isShellCommentStart(line, i)) break;
-            return line[0..i];
-        }
-        i += 1;
+}
+
+fn isLineCommentAt(line: []const u8, start: usize, language: explore_mod.Language, markers: []const []const u8) bool {
+    for (markers) |marker| {
+        if (!std.mem.startsWith(u8, line[start..], marker)) continue;
+        // `#[` starts a PHP 8 attribute, not a hash comment.
+        if (language == .php and marker[0] == '#' and start + 1 < line.len and line[start + 1] == '[') return false;
+        // Shell: `#` opens a comment only when it begins a word. Operators are
+        // word boundaries too; `${#var}` and `$#` remain live syntax.
+        if (language == .shell and !isShellCommentStart(line, start)) return false;
+        return true;
     }
-    return line;
+    return false;
 }
 
 const LineSpan = struct { end: ?usize };
@@ -2775,7 +2762,79 @@ fn hasBacktickLiterals(language: explore_mod.Language) bool {
     };
 }
 
+fn hasTemplateLiterals(language: explore_mod.Language) bool {
+    return switch (language) {
+        .javascript, .typescript, .svelte, .vue, .astro => true,
+        else => false,
+    };
+}
+
+const TemplateScan = struct {
+    end: ?usize,
+    matched: bool,
+};
+
+fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, language: explore_mod.Language) TemplateScan {
+    var i = open + 1;
+    while (i < line.len) {
+        if (line[i] == '\\') {
+            i += if (line.len - i > 1) 2 else 1;
+            continue;
+        }
+        if (line[i] == '`') return .{ .end = i + 1, .matched = false };
+        if (line[i] == '$' and i + 1 < line.len and line[i + 1] == '{') {
+            const expression_start = i + 2;
+            const expression_end = templateExpressionEnd(line, expression_start, language);
+            const end = expression_end orelse line.len;
+            if (hasWholeWordMatchInCode(line[expression_start..end], needle, language)) {
+                return .{ .end = expression_end, .matched = true };
+            }
+            if (expression_end) |close| {
+                i = close + 1;
+                continue;
+            }
+            return .{ .end = null, .matched = false };
+        }
+        i += 1;
+    }
+    return .{ .end = null, .matched = false };
+}
+
+fn templateExpressionEnd(line: []const u8, start: usize, language: explore_mod.Language) ?usize {
+    const markers = lineCommentMarkers(language);
+    var depth: usize = 1;
+    var i = start;
+    while (i < line.len) {
+        if (line[i] == '"' or line[i] == '\'' or line[i] == '`') {
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+            return null;
+        }
+        if (blockCommentAt(line, i, language)) |block| {
+            if (block.end) |end| {
+                i = end;
+                continue;
+            }
+            return null;
+        }
+        if (isLineCommentAt(line, i, language, markers)) return null;
+        if (line[i] == '{') {
+            depth += 1;
+        } else if (line[i] == '}') {
+            depth -= 1;
+            if (depth == 0) return i;
+        }
+        i += 1;
+    }
+    return null;
+}
+
 fn blockCommentAt(line: []const u8, start: usize, language: explore_mod.Language) ?LineSpan {
+    if (language == .ocaml and std.mem.startsWith(u8, line[start..], "(*")) {
+        return .{ .end = delimitedCommentEnd(line, start, "(*", "*)", true) };
+    }
     const slash_block = switch (language) {
         .rust, .go_lang, .javascript, .typescript, .c, .cpp, .php, .hcl, .dart, .java, .kotlin, .swift, .svelte, .vue, .astro, .sql, .mlir, .tablegen, .rescript => true,
         else => false,
