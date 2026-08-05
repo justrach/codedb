@@ -2688,14 +2688,15 @@ fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
 /// call. Lines with no marker, and languages without a line-comment syntax
 /// (OCaml's `(* *)` is block-only), come back whole. (#682)
 ///
-/// Same line-local scanning discipline as `hasWholeWordMatchOutsideStrings`:
-/// quoted spans are skipped (so `"https://…"` never truncates), an unclosed
-/// quote is ordinary code. Mid-line block-comment openers are left alone — a
-/// false negative re-admits a mention; truncating at `/*` could drop the real
-/// call in `foo(); /* … */ bar()`.
+/// This remains deliberately line-local, but skips complete quoted, raw,
+/// backtick, and block-comment spans while looking for a line-comment opener.
+/// The spans remain in the returned prefix so the caller matcher keeps its
+/// existing behavior for references inside them; skipping them here only
+/// prevents marker-like text from hiding real code later on the same line.
 fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
     const markers: []const []const u8 = switch (language) {
-        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
+        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .swift, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
+        .php => &.{ "//", "#" },
         .python, .ruby, .r, .shell => &.{"#"},
         .hcl => &.{ "#", "//" },
         .sql => &.{"--"},
@@ -2705,23 +2706,126 @@ fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
     };
     var i: usize = 0;
     while (i < line.len) {
-        if (line[i] == '"' or line[i] == '\'') {
+        if (language == .rust) {
+            if (rustRawLiteralAt(line, i)) |raw| {
+                if (raw.end) |end| {
+                    i = end;
+                    continue;
+                }
+                return line;
+            }
+        }
+        if (line[i] == '"' or line[i] == '\'' or (line[i] == '`' and hasBacktickLiterals(language))) {
             if (stringLiteralEnd(line, i)) |end| {
                 i = end + 1;
                 continue;
             }
         }
-        for (markers) |m| {
-            if (std.mem.startsWith(u8, line[i..], m)) {
-                // Shell: `#` only opens a comment at the start of a word —
-                // `${#var}` and `$#` are live syntax, not comments.
-                if (language == .shell and i != 0 and line[i - 1] != ' ' and line[i - 1] != '\t') break;
-                return line[0..i];
+        if (blockCommentAt(line, i, language)) |block| {
+            if (block.end) |end| {
+                i = end;
+                continue;
             }
+            return line;
+        }
+        for (markers) |m| {
+            if (!std.mem.startsWith(u8, line[i..], m)) continue;
+            // `#[` starts a PHP 8 attribute, not a hash comment.
+            if (language == .php and m[0] == '#' and i + 1 < line.len and line[i + 1] == '[') break;
+            // Shell: `#` opens a comment only when it begins a word. Operators
+            // are word boundaries too; `${#var}` and `$#` remain live syntax.
+            if (language == .shell and !isShellCommentStart(line, i)) break;
+            return line[0..i];
         }
         i += 1;
     }
     return line;
+}
+
+const LineSpan = struct { end: ?usize };
+
+fn rustRawLiteralAt(line: []const u8, start: usize) ?LineSpan {
+    if (start != 0 and isIdentChar(line[start - 1])) return null;
+    var i = start;
+    if (line[i] == 'b') {
+        if (i + 1 >= line.len or line[i + 1] != 'r') return null;
+        i += 2;
+    } else if (line[i] == 'r') {
+        i += 1;
+    } else return null;
+
+    var hashes: usize = 0;
+    while (i < line.len and line[i] == '#') : (i += 1) hashes += 1;
+    if (i >= line.len or line[i] != '"') return null;
+
+    i += 1;
+    while (i < line.len) : (i += 1) {
+        if (line[i] != '"' or i + 1 + hashes > line.len) continue;
+        var matched: usize = 0;
+        while (matched < hashes and line[i + 1 + matched] == '#') : (matched += 1) {}
+        if (matched == hashes) return .{ .end = i + 1 + hashes };
+    }
+    return .{ .end = null };
+}
+
+fn hasBacktickLiterals(language: explore_mod.Language) bool {
+    return switch (language) {
+        .go_lang, .javascript, .typescript, .php, .ruby, .r, .svelte, .vue, .astro => true,
+        else => false,
+    };
+}
+
+fn blockCommentAt(line: []const u8, start: usize, language: explore_mod.Language) ?LineSpan {
+    const slash_block = switch (language) {
+        .rust, .go_lang, .javascript, .typescript, .c, .cpp, .php, .hcl, .dart, .java, .kotlin, .swift, .svelte, .vue, .astro, .sql, .mlir, .tablegen, .rescript => true,
+        else => false,
+    };
+    if (slash_block and std.mem.startsWith(u8, line[start..], "/*")) {
+        return .{ .end = delimitedCommentEnd(line, start, "/*", "*/", language == .rust or language == .swift) };
+    }
+    const html_block = switch (language) {
+        .svelte, .vue, .astro => true,
+        else => false,
+    };
+    if (html_block and std.mem.startsWith(u8, line[start..], "<!--")) {
+        return .{ .end = delimitedCommentEnd(line, start, "<!--", "-->", false) };
+    }
+    return null;
+}
+
+fn delimitedCommentEnd(line: []const u8, start: usize, open: []const u8, close: []const u8, nested: bool) ?usize {
+    var depth: usize = 1;
+    var i = start + open.len;
+    while (i < line.len) {
+        if (nested and std.mem.startsWith(u8, line[i..], open)) {
+            depth += 1;
+            i += open.len;
+            continue;
+        }
+        if (std.mem.startsWith(u8, line[i..], close)) {
+            depth -= 1;
+            i += close.len;
+            if (depth == 0) return i;
+            continue;
+        }
+        i += 1;
+    }
+    return null;
+}
+
+fn isShellCommentStart(line: []const u8, hash: usize) bool {
+    if (hash == 0) return true;
+    const boundary = hash - 1;
+    const c = line[boundary];
+    if (c != ' ' and c != '\t' and std.mem.indexOfScalar(u8, "|&;()<>", c) == null) return false;
+
+    var slash_count: usize = 0;
+    var i = boundary;
+    while (i > 0 and line[i - 1] == '\\') {
+        slash_count += 1;
+        i -= 1;
+    }
+    return slash_count % 2 == 0;
 }
 
 /// Index of the quote closing the literal opened at `open`, or null when the
