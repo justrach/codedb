@@ -3861,6 +3861,28 @@ test "issue-682: codedb_callers keeps calls after markers inside literals and bl
     try testing.expect(std.mem.indexOf(u8, out.items, "raw.rs:2") != null);
 }
 
+test "issue-682: codedb_callers excludes mentions inside raw literals and block comments" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "mention.go", "func notCallerA() {\n    text := `https://example.test/renderX`\n}\n" },
+        .{ "mention.js", "function notCallerB() {\n    const text = `https://example.test/renderX`;\n}\n" },
+        .{ "mention.c", "void not_caller_c(void) {\n    init(); /* see https://example.test/renderX */\n}\n" },
+        .{ "mention.rs", "fn not_caller_d() {\n    let text = r#\"say \"https://example.test/renderX\"\"#;\n}\n" },
+        .{ "template.js", "function callerE() {\n    const text = `value: ${renderX()}`;\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mention.go") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mention.js") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mention.c") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mention.rs") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "template.js:2") != null);
+}
+
 test "issue-682: codedb_callers recognizes shell comments after operators" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -3869,7 +3891,7 @@ test "issue-682: codedb_callers recognizes shell comments after operators" {
 
     try renderCallersFixture(arena.allocator(), &.{
         .{ "trail.sh", "init;# renderX() is documented here\n" },
-        .{ "call.sh", "items=abc\nprintf '%s' \"${#items}\"; renderX\n" },
+        .{ "call.sh", "items=abc\ncount=${#items}; renderX\n" },
     }, "renderX", &out);
 
     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
