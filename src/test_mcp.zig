@@ -3883,6 +3883,24 @@ test "issue-682: codedb_callers excludes mentions inside raw literals and block 
     try testing.expect(std.mem.indexOf(u8, out.items, "template.js:2") != null);
 }
 
+test "issue-682: codedb_callers keeps template-regex and R backtick calls" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "regex.js", "function callerA(value) {\n    return `${/[}]/.test(value) ? renderX() : value}`;\n}\n" },
+        .{ "backtick-call.r", "caller_b <- function() {\n  `renderX`(1)\n}\n" },
+        .{ "backtick-marker.r", "caller_c <- function() {\n  `label#value`; renderX()\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "3 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "regex.js:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "backtick-call.r:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "backtick-marker.r:2") != null);
+}
+
 test "issue-682: codedb_callers recognizes shell comments after operators" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
