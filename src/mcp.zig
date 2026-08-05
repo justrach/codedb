@@ -2832,7 +2832,7 @@ fn javascriptRegexEndAt(line: []const u8, start: usize) ?usize {
 
     var previous = start;
     while (previous > 0 and (line[previous - 1] == ' ' or line[previous - 1] == '\t')) previous -= 1;
-    if (previous > 0 and std.mem.indexOfScalar(u8, "([{:;,=!?&|+-*%^~<>", line[previous - 1]) == null) return null;
+    if (!javascriptRegexCanFollow(line, previous)) return null;
 
     var in_class = false;
     var i = start + 1;
@@ -2853,6 +2853,23 @@ fn javascriptRegexEndAt(line: []const u8, start: usize) ?usize {
         i += 1;
     }
     return null;
+}
+
+fn javascriptRegexCanFollow(line: []const u8, end: usize) bool {
+    if (end == 0) return true;
+    if (std.mem.indexOfScalar(u8, "([{:;,=!?&|+-*%^~<>", line[end - 1]) != null) return true;
+
+    var start = end;
+    while (start > 0 and (std.ascii.isAlphanumeric(line[start - 1]) or line[start - 1] == '_')) start -= 1;
+    const word = line[start..end];
+    const keywords = [_][]const u8{
+        "await", "case", "delete", "do",    "else",   "in",   "instanceof",
+        "new",   "of",   "return", "throw", "typeof", "void", "yield",
+    };
+    for (keywords) |keyword| {
+        if (std.mem.eql(u8, word, keyword)) return true;
+    }
+    return false;
 }
 
 fn templateExpressionEnd(line: []const u8, start: usize, language: explore_mod.Language) ?usize {
