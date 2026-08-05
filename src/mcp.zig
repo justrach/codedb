@@ -427,14 +427,14 @@ const ProjectCache = struct {
             return error.PathTooLong;
         };
 
-        if (!snapshot_mod.loadSnapshot(io, snap_path, &new_entry.explorer, &new_entry.store, self.alloc)) {
+        if (!snapshot_mod.loadSnapshotValidated(io, snap_path, p, &new_entry.explorer, &new_entry.store, self.alloc)) {
             // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
             const hash = std.hash.Wyhash.hash(0, p);
             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
             const loaded_central = blk: {
                 const home = cio.homeDir() orelse break :blk false;
                 const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
-                break :blk snapshot_mod.loadSnapshot(io, central, &new_entry.explorer, &new_entry.store, self.alloc);
+                break :blk snapshot_mod.loadSnapshotValidated(io, central, p, &new_entry.explorer, &new_entry.store, self.alloc);
             };
             if (!loaded_central) {
                 new_entry.store.deinit();
@@ -671,9 +671,9 @@ pub const tools_list =
     \\{"name":"codedb_word","description":"O(1) exact-identifier occurrences via inverted index — every (file, line) one exact word appears. Use ONLY for a single exact identifier; for its definition prefer codedb_symbol, for substrings or phrases use codedb_search.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
     \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
     \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Use after codedb_callers when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]}},
-    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Replaces 3-5 sequential search/word/symbol calls — use for first-touch orientation on a new task. For narrow follow-ups stick with codedb_search/codedb_symbol.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]}},
+    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Replaces 3-5 sequential search/word/symbol calls — use for first-touch orientation on a new task. For narrow follow-ups stick with codedb_search/codedb_symbol.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"document_hops":{"type":"integer","description":"Explicitly expand Markdown document links from ranked files (0 default, hard-capped at 2 hops and 64 files)."},"format":{"type":"string","enum":["markdown","json"],"description":"markdown (default) preserves the compact text response. json returns schema-versioned sections, evidence provenance, reader.md validation, and machine-readable token-budget omissions."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]}},
     \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
-    \\{"name":"codedb_deps","description":"PRIMARY tool for impact/blast-radius — use this instead of grepping import lines. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set transitive=true for the full BFS blast radius.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+    \\{"name":"codedb_deps","description":"PRIMARY tool for impact/blast-radius — use this instead of grepping import lines. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set edge_type=documents for Markdown links; document traversal is capped at 2 hops and 64 nodes.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"Inbound (default) or outbound edges; for documents these mean linked-by and links-to."},"edge_type":{"type":"string","enum":["imports","documents"],"description":"Typed graph relation (default: imports)."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth (document edges are always capped at 2)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Never dump whole large files — run codedb_outline or codedb_symbol first to pick a tight range. Pass if_hash to skip unchanged re-reads; compact=true for minified or long-line files.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"raw":{"type":"boolean","description":"Byte-exact output: no line-number prefixes and no hash header, so the result can feed an exact-string edit (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_changes","description":"Direct way to see WHAT changed since a point in time, instead of re-scanning the tree. Files changed since a given sequence number. Pair with codedb_status (which reports the current sequence number) to poll for updates.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
     \\{"name":"codedb_status","description":"Index health: file count, current sequence number, scan phase. Call once to learn the seq for codedb_changes polling, or when results look stale; not needed before ordinary queries.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
@@ -3156,6 +3156,59 @@ fn isTestPath(path: []const u8) bool {
     return false;
 }
 
+const ContextEvidenceItem = struct {
+    path: []const u8,
+    source_path: ?[]const u8 = null,
+    line_start: ?u32 = null,
+    line_end: ?u32 = null,
+    name: ?[]const u8 = null,
+    symbol_kind: ?[]const u8 = null,
+    relation: ?[]const u8 = null,
+    reason: ?[]const u8 = null,
+};
+
+const ContextProvenanceSection = struct {
+    id: []const u8,
+    evidence_kind: []const u8,
+    included: bool,
+    omission_reason: ?[]const u8 = null,
+    detail: ?[]const u8 = null,
+    estimated_tokens: usize,
+    markdown: []const u8,
+    items: []const ContextEvidenceItem = &.{},
+};
+
+const ContextReaderProvenance = struct {
+    validation: []const u8,
+    source_files: []const []const u8 = &.{},
+    declared_revision: ?[]const u8 = null,
+    computed_revision: ?[]const u8 = null,
+};
+
+const ContextStructuredOutput = struct {
+    schema_version: u8 = 1,
+    format: []const u8 = "codedb_context",
+    task: []const u8,
+    keywords: []const []const u8,
+    reader: ContextReaderProvenance,
+    sections: []const ContextProvenanceSection,
+    omissions: []const []const u8,
+    budget: struct {
+        max_tokens: ?u32,
+        estimated_tokens_used: usize,
+        accounting: []const u8 = "four_bytes_per_token",
+    },
+};
+
+fn appendStructuredContext(alloc: std.mem.Allocator, out: *std.ArrayList(u8), value: ContextStructuredOutput) void {
+    const encoded = std.json.Stringify.valueAlloc(alloc, value, .{}) catch {
+        out.appendSlice(alloc, "error: structured context serialization failed") catch {};
+        return;
+    };
+    defer alloc.free(encoded);
+    out.appendSlice(alloc, encoded) catch {};
+}
+
 fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
     const task = getStr(args, "task") orelse {
         out.appendSlice(alloc, "error: missing 'task' argument") catch {};
@@ -3168,6 +3221,13 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     }
 
     const max_tokens: ?u32 = if (getInt(args, "max_tokens")) |n| @intCast(@max(256, @min(n, 1_000_000))) else null;
+    const document_hops: u32 = if (getInt(args, "document_hops")) |n| @intCast(@max(0, @min(n, 2))) else 0;
+    const format = getStr(args, "format") orelse "markdown";
+    const structured = std.mem.eql(u8, format, "json");
+    if (!structured and !std.mem.eql(u8, format, "markdown")) {
+        out.appendSlice(alloc, "error: format must be 'markdown' or 'json'") catch {};
+        return;
+    }
 
     // Arena: every transient string in this handler lives here, no per-result
     // free bookkeeping. Released at function exit.
@@ -3189,6 +3249,8 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     var sec_callers: std.ArrayList(u8) = .empty;
     var sec_tests: std.ArrayList(u8) = .empty;
     var sec_calls: std.ArrayList(u8) = .empty;
+    var sec_documents: std.ArrayList(u8) = .empty;
+    var document_items: std.ArrayList(ContextEvidenceItem) = .empty;
     var sec_files: std.ArrayList(u8) = .empty;
     var sec_sites: std.ArrayList(u8) = .empty;
 
@@ -3207,11 +3269,29 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     // exploration rather than a narrow lookup. 80 chars is the inflection
     // point in the eval — T1's "find before_request decorator" is 28 chars,
     // T2/T3 are 230+ chars.
-    const reader_md_gate = task.len > 80;
+    const reader_md_gate = task.len > 80 or structured;
+    var reader_validation: []const u8 = if (reader_md_gate) "missing" else "not_checked";
+    var reader_source_files: []const []const u8 = &.{};
+    var reader_declared_revision: ?[]const u8 = null;
+    var reader_computed_revision: ?[]const u8 = null;
     if (reader_md_gate) {
-        var reader_state = reader_md.load(io, alloc, project_root) catch null;
+        var reader_state = reader_md.load(io, alloc, project_root) catch blk: {
+            reader_validation = "error";
+            break :blk null;
+        };
         if (reader_state) |*r| {
             defer r.free(alloc);
+            reader_validation = @tagName(r.state);
+            if (r.source_files.len > 0) {
+                if (A.alloc([]const u8, r.source_files.len) catch null) |copied| {
+                    for (r.source_files, 0..) |source, i| {
+                        copied[i] = A.dupe(u8, source) catch "";
+                    }
+                    reader_source_files = copied;
+                }
+            }
+            if (r.declared_hash) |hash| reader_declared_revision = A.dupe(u8, hash) catch null;
+            if (r.computed_hash) |hash| reader_computed_revision = A.dupe(u8, hash) catch null;
             const wr = cio.listWriter(&sec_reader, A);
             switch (r.state) {
                 .ready => {
@@ -3241,8 +3321,46 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     extractContextFallbackWords(task, A, &candidates);
     const pf_cand = cio.nanoTimestamp();
     if (candidates.items.len == 0) {
-        out.appendSlice(alloc, sec_reader.items) catch {};
-        out.appendSlice(alloc, "no candidate identifiers found in task — include symbol names (camelCase or snake_case) or \"quoted strings\" so the composer can extract keywords") catch {};
+        const message = "no candidate identifiers found in task — include symbol names (camelCase or snake_case) or \"quoted strings\" so the composer can extract keywords";
+        if (structured) {
+            var sections: [2]ContextProvenanceSection = undefined;
+            var section_count: usize = 0;
+            if (sec_reader.items.len > 0) {
+                sections[section_count] = .{
+                    .id = "reader",
+                    .evidence_kind = "generated",
+                    .included = true,
+                    .estimated_tokens = (sec_reader.items.len + 3) / 4,
+                    .markdown = sec_reader.items,
+                };
+                section_count += 1;
+            }
+            sections[section_count] = .{
+                .id = "task",
+                .evidence_kind = "request",
+                .included = true,
+                .detail = message,
+                .estimated_tokens = (task.len + 3) / 4,
+                .markdown = task,
+            };
+            section_count += 1;
+            appendStructuredContext(alloc, out, .{
+                .task = task,
+                .keywords = &.{},
+                .reader = .{
+                    .validation = reader_validation,
+                    .source_files = reader_source_files,
+                    .declared_revision = reader_declared_revision,
+                    .computed_revision = reader_computed_revision,
+                },
+                .sections = sections[0..section_count],
+                .omissions = &.{},
+                .budget = .{ .max_tokens = max_tokens, .estimated_tokens_used = (task.len + sec_reader.items.len + 3) / 4 },
+            });
+        } else {
+            out.appendSlice(alloc, sec_reader.items) catch {};
+            out.appendSlice(alloc, message) catch {};
+        }
         return;
     }
 
@@ -3257,6 +3375,9 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     const SymRef = struct { kw: []const u8, kind: []const u8, path: []const u8, line: u32, line_end: u32 };
     var sym_refs: std.ArrayList(SymRef) = .empty;
     var seen_syms = std.StringHashMap(void).init(A);
+    var caller_evidence: std.ArrayList(ContextEvidenceItem) = .empty;
+    var test_evidence: std.ArrayList(ContextEvidenceItem) = .empty;
+    var callee_evidence: std.ArrayList(ContextEvidenceItem) = .empty;
 
     for (candidates.items) |kw| {
         // Symbol definitions (best-effort; ignore failures).
@@ -3396,6 +3517,14 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                         }
                         if (tests_shown < 6) {
                             appendMatchLine(wt, "- ", r.path, r.line_num, r.line_text);
+                            test_evidence.append(A, .{
+                                .path = r.path,
+                                .line_start = r.line_num,
+                                .line_end = r.line_num,
+                                .name = sr.kw,
+                                .relation = "test_usage",
+                                .reason = "lexical scoped usage",
+                            }) catch {};
                             tests_shown += 1;
                         } else {
                             tests_overflow += 1;
@@ -3412,6 +3541,15 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                         wc.print("\n## Callers (top non-test, non-import usages of these symbols)\n", .{}) catch {};
                         any_callers = true;
                     }
+                    caller_evidence.append(A, .{
+                        .path = r.path,
+                        .line_start = r.line_num,
+                        .line_end = if (r.scope_name != null) r.scope_end else r.line_num,
+                        .name = sr.kw,
+                        .symbol_kind = if (r.scope_kind) |kind| @tagName(kind) else null,
+                        .relation = "usage",
+                        .reason = "lexical scoped usage",
+                    }) catch {};
                     if (r.scope_name) |sn| {
                         appendMatchLineNoNL(wc, "- ", r.path, r.line_num, r.line_text);
                         wc.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
@@ -3449,11 +3587,47 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                 wcal.print("- {s} ({s}) calls:\n", .{ sr.kw, sr.kind }) catch {};
                 for (callees) |c| {
                     wcal.print("    \xe2\x86\x92 {s} ({s})  {s}:{d}\n", .{ c.name, @tagName(c.kind), c.path, c.line }) catch {};
+                    callee_evidence.append(A, .{
+                        .path = c.path,
+                        .line_start = c.line,
+                        .line_end = c.line,
+                        .name = c.name,
+                        .symbol_kind = @tagName(c.kind),
+                        .relation = "calls",
+                        .reason = sr.kw,
+                    }) catch {};
                 }
             }
         }
     }
     const pf_render = cio.nanoTimestamp();
+
+    if (document_hops > 0 and top_n > 0) {
+        const wd = cio.listWriter(&sec_documents, A);
+        var seen_documents = std.StringHashMap(void).init(A);
+        wd.print("\n## Linked documentation (max {d} hops, 64 files)\n", .{document_hops}) catch {};
+        explorer.mu.lockShared();
+        for (ranked.items[0..top_n]) |f| {
+            if (document_items.items.len >= 64) break;
+            const remaining = 64 - document_items.items.len;
+            const linked = explorer.document_graph.getTransitiveBounded(f.path, A, document_hops, remaining, true) catch continue;
+            for (linked) |target| {
+                if (!explorer.outlines.contains(target)) continue;
+                const gop = seen_documents.getOrPut(target) catch continue;
+                if (gop.found_existing) continue;
+                wd.print("- {s} -> {s}\n", .{ f.path, target }) catch {};
+                document_items.append(A, .{
+                    .path = target,
+                    .source_path = f.path,
+                    .relation = "document_link",
+                    .reason = "reachable from ranked documentation seed",
+                }) catch {};
+                if (document_items.items.len >= 64) break;
+            }
+        }
+        explorer.mu.unlockShared();
+        if (document_items.items.len == 0) sec_documents.clearRetainingCapacity();
+    }
 
     if (top_n > 0) {
         const wf = cio.listWriter(&sec_files, A);
@@ -3566,7 +3740,152 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     const inc_reader = fits(budget, &spent, sec_reader.items.len);
     const inc_callers = fits(budget, &spent, sec_callers.items.len);
     const inc_calls = fits(budget, &spent, sec_calls.items.len);
+    const inc_documents = fits(budget, &spent, sec_documents.items.len);
     const inc_sites = fits(budget, &spent, sec_sites.items.len);
+    const inc_tests = fits(budget, &spent, sec_tests.items.len);
+
+    if (structured) {
+        var definition_items: std.ArrayList(ContextEvidenceItem) = .empty;
+        for (sym_refs.items) |sr| {
+            definition_items.append(A, .{
+                .path = sr.path,
+                .line_start = sr.line,
+                .line_end = sr.line_end,
+                .name = sr.kw,
+                .symbol_kind = sr.kind,
+                .reason = "exact parsed symbol match",
+            }) catch {};
+        }
+        var file_items: std.ArrayList(ContextEvidenceItem) = .empty;
+        var site_items: std.ArrayList(ContextEvidenceItem) = .empty;
+        for (ranked.items[0..top_n]) |file| {
+            file_items.append(A, .{
+                .path = file.path,
+                .relation = "ranked_candidate",
+                .reason = "lexical and symbol relevance",
+            }) catch {};
+            for (file.top) |hit| {
+                site_items.append(A, .{
+                    .path = file.path,
+                    .line_start = if (hit.line > 2) hit.line - 2 else 1,
+                    .line_end = hit.line +| 2,
+                    .relation = "source_snippet",
+                    .reason = "top lexical site",
+                }) catch {};
+            }
+        }
+
+        var omissions: std.ArrayList([]const u8) = .empty;
+        if (sec_reader.items.len > 0 and !inc_reader) omissions.append(A, "reader") catch {};
+        if (sec_syms_rich.items.len > 0 and syms.len == 0) omissions.append(A, "symbol_definitions") catch {};
+        if (syms_lean_fallback) omissions.append(A, "symbol_definition_bodies") catch {};
+        if (sec_callers.items.len > 0 and !inc_callers) omissions.append(A, "callers") catch {};
+        if (sec_tests.items.len > 0 and !inc_tests) omissions.append(A, "related_tests") catch {};
+        if (sec_calls.items.len > 0 and !inc_calls) omissions.append(A, "calls") catch {};
+        if (sec_documents.items.len > 0 and !inc_documents) omissions.append(A, "document_links") catch {};
+        if (sec_files.items.len > 0 and !inc_files) omissions.append(A, "most_relevant_files") catch {};
+        if (sec_sites.items.len > 0 and !inc_sites) omissions.append(A, "top_sites") catch {};
+
+        var sections: std.ArrayList(ContextProvenanceSection) = .empty;
+        sections.append(A, .{
+            .id = "reader",
+            .evidence_kind = "generated",
+            .included = inc_reader and sec_reader.items.len > 0,
+            .omission_reason = if (sec_reader.items.len > 0 and !inc_reader) "max_tokens" else null,
+            .estimated_tokens = (sec_reader.items.len + 3) / 4,
+            .markdown = if (inc_reader) sec_reader.items else &.{},
+        }) catch {};
+        sections.append(A, .{
+            .id = "task",
+            .evidence_kind = "request",
+            .included = true,
+            .estimated_tokens = (sec_head.items.len + 3) / 4,
+            .markdown = sec_head.items,
+        }) catch {};
+        sections.append(A, .{
+            .id = "symbol_definitions",
+            .evidence_kind = "parsed",
+            .included = syms.len > 0,
+            .omission_reason = if (sec_syms_rich.items.len > 0 and syms.len == 0) "max_tokens" else if (syms_lean_fallback) "max_tokens_body_detail" else null,
+            .detail = if (syms_lean_fallback) "declarations" else if (syms.len > 0) "focused_bodies" else null,
+            .estimated_tokens = ((if (syms.len > 0) syms.len else sec_syms_rich.items.len) + 3) / 4,
+            .markdown = syms,
+            .items = if (syms.len > 0) definition_items.items else &.{},
+        }) catch {};
+        sections.append(A, .{
+            .id = "callers",
+            .evidence_kind = "lexical_scope",
+            .included = inc_callers and sec_callers.items.len > 0,
+            .omission_reason = if (sec_callers.items.len > 0 and !inc_callers) "max_tokens" else null,
+            .estimated_tokens = (sec_callers.items.len + 3) / 4,
+            .markdown = if (inc_callers) sec_callers.items else &.{},
+            .items = if (inc_callers) caller_evidence.items else &.{},
+        }) catch {};
+        sections.append(A, .{
+            .id = "related_tests",
+            .evidence_kind = "lexical_scope",
+            .included = inc_tests and sec_tests.items.len > 0,
+            .omission_reason = if (sec_tests.items.len > 0 and !inc_tests) "max_tokens" else null,
+            .estimated_tokens = (sec_tests.items.len + 3) / 4,
+            .markdown = if (inc_tests) sec_tests.items else &.{},
+            .items = if (inc_tests) test_evidence.items else &.{},
+        }) catch {};
+        sections.append(A, .{
+            .id = "calls",
+            .evidence_kind = "graph",
+            .included = inc_calls and sec_calls.items.len > 0,
+            .omission_reason = if (sec_calls.items.len > 0 and !inc_calls) "max_tokens" else null,
+            .estimated_tokens = (sec_calls.items.len + 3) / 4,
+            .markdown = if (inc_calls) sec_calls.items else &.{},
+            .items = if (inc_calls) callee_evidence.items else &.{},
+        }) catch {};
+        sections.append(A, .{
+            .id = "document_links",
+            .evidence_kind = "graph",
+            .included = inc_documents and sec_documents.items.len > 0,
+            .omission_reason = if (sec_documents.items.len > 0 and !inc_documents) "max_tokens" else null,
+            .detail = if (document_hops > 0) "bounded_markdown_links" else null,
+            .estimated_tokens = (sec_documents.items.len + 3) / 4,
+            .markdown = if (inc_documents) sec_documents.items else &.{},
+            .items = if (inc_documents) document_items.items else &.{},
+        }) catch {};
+        sections.append(A, .{
+            .id = "most_relevant_files",
+            .evidence_kind = "ranked",
+            .included = inc_files and sec_files.items.len > 0,
+            .omission_reason = if (sec_files.items.len > 0 and !inc_files) "max_tokens" else null,
+            .estimated_tokens = (sec_files.items.len + 3) / 4,
+            .markdown = if (inc_files) sec_files.items else &.{},
+            .items = if (inc_files) file_items.items else &.{},
+        }) catch {};
+        sections.append(A, .{
+            .id = "top_sites",
+            .evidence_kind = "exact_source",
+            .included = inc_sites and sec_sites.items.len > 0,
+            .omission_reason = if (sec_sites.items.len > 0 and !inc_sites) "max_tokens" else null,
+            .estimated_tokens = (sec_sites.items.len + 3) / 4,
+            .markdown = if (inc_sites) sec_sites.items else &.{},
+            .items = if (inc_sites) site_items.items else &.{},
+        }) catch {};
+
+        appendStructuredContext(alloc, out, .{
+            .task = task,
+            .keywords = candidates.items,
+            .reader = .{
+                .validation = reader_validation,
+                .source_files = reader_source_files,
+                .declared_revision = reader_declared_revision,
+                .computed_revision = reader_computed_revision,
+            },
+            .sections = sections.items,
+            .omissions = omissions.items,
+            .budget = .{
+                .max_tokens = max_tokens,
+                .estimated_tokens_used = (spent + 3) / 4,
+            },
+        });
+        return;
+    }
 
     const w = cio.listWriter(out, alloc);
     if (inc_reader) out.appendSlice(alloc, sec_reader.items) catch {};
@@ -3584,7 +3903,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     } else if (sec_callers.items.len > 0) {
         w.print("\n[max_tokens: omitted Callers (~{d} tokens)]\n", .{sec_callers.items.len / 4}) catch {};
     }
-    if (fits(budget, &spent, sec_tests.items.len)) {
+    if (inc_tests) {
         out.appendSlice(alloc, sec_tests.items) catch {};
     } else if (sec_tests.items.len > 0) {
         w.print("\n[max_tokens: omitted Related tests (~{d} tokens)]\n", .{sec_tests.items.len / 4}) catch {};
@@ -3593,6 +3912,11 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         out.appendSlice(alloc, sec_calls.items) catch {};
     } else if (sec_calls.items.len > 0) {
         w.print("\n[max_tokens: omitted Calls (~{d} tokens)]\n", .{sec_calls.items.len / 4}) catch {};
+    }
+    if (inc_documents) {
+        out.appendSlice(alloc, sec_documents.items) catch {};
+    } else if (sec_documents.items.len > 0) {
+        w.print("\n[max_tokens: omitted Linked documentation (~{d} tokens)]\n", .{sec_documents.items.len / 4}) catch {};
     }
     if (inc_files) {
         out.appendSlice(alloc, sec_files.items) catch {};
@@ -3622,6 +3946,85 @@ fn handleHot(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *st
     };
 }
 
+fn handleDocumentDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, path: []const u8, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    const direction = getStr(args, "direction") orelse "imported_by";
+    if (!std.mem.eql(u8, direction, "imported_by") and !std.mem.eql(u8, direction, "depends_on")) {
+        out.appendSlice(alloc, "error: direction must be 'imported_by' or 'depends_on'") catch {};
+        return;
+    }
+    const forward = std.mem.eql(u8, direction, "depends_on");
+    const transitive = getBool(args, "transitive");
+    const max_depth: u32 = if (getInt(args, "max_depth")) |n| @intCast(@max(1, @min(n, 2))) else 2;
+
+    var results: []const []const u8 = &.{};
+    explorer.mu.lockShared();
+    if (transitive) {
+        results = explorer.document_graph.getTransitiveBounded(path, alloc, max_depth, 64, forward) catch {
+            explorer.mu.unlockShared();
+            out.appendSlice(alloc, "error: document deps failed") catch {};
+            return;
+        };
+    } else if (forward) {
+        var list: std.ArrayList([]const u8) = .empty;
+        if (explorer.document_graph.getForwardDeps(path)) |deps| {
+            for (deps) |dep| {
+                if (!explorer.outlines.contains(dep)) continue;
+                const copy = alloc.dupe(u8, dep) catch continue;
+                list.append(alloc, copy) catch {
+                    alloc.free(copy);
+                    continue;
+                };
+            }
+        }
+        results = list.toOwnedSlice(alloc) catch &.{};
+    } else {
+        results = explorer.document_graph.getImportedByFiltered(path, alloc, false) catch {
+            explorer.mu.unlockShared();
+            out.appendSlice(alloc, "error: document deps failed") catch {};
+            return;
+        };
+    }
+
+    // Deleted targets can leave borrowed reverse keys until their sources are
+    // refreshed. Never expose an edge to a file outside the live indexed set.
+    const result_allocation = results;
+    const mutable_results = @constCast(results);
+    var write: usize = 0;
+    for (mutable_results) |item| {
+        if (explorer.outlines.contains(item)) {
+            mutable_results[write] = item;
+            write += 1;
+        } else {
+            alloc.free(item);
+        }
+    }
+    if (write > 64) {
+        for (mutable_results[64..write]) |item| alloc.free(item);
+        write = 64;
+    }
+    results = mutable_results[0..write];
+    const known = explorer.outlines.contains(path);
+    explorer.mu.unlockShared();
+    defer {
+        for (results) |item| alloc.free(item);
+        alloc.free(result_allocation);
+    }
+
+    const w = cio.listWriter(out, alloc);
+    if (forward) {
+        w.print("{s} {s}links to:\n", .{ path, if (transitive) "transitively " else "" }) catch {};
+    } else {
+        w.print("{s} is {s}linked by:\n", .{ path, if (transitive) "transitively " else "" }) catch {};
+    }
+    if (results.len == 0) {
+        w.writeAll("  (none)\n(0 files)\n") catch {};
+        if (!known) appendFuzzyPathSuggestions(alloc, out, explorer, path);
+        return;
+    }
+    for (results) |item| w.print("  {s}\n", .{item}) catch {};
+    w.print("({d} files)\n", .{results.len}) catch {};
+}
+
 fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const path = getStr(args, "path") orelse {
         out.appendSlice(alloc, "error: missing 'path' argument") catch {};
@@ -3629,8 +4032,18 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
         return;
     };
 
+    const edge_type = getStr(args, "edge_type") orelse "imports";
+    if (std.mem.eql(u8, edge_type, "documents")) {
+        handleDocumentDeps(alloc, args, path, out, explorer);
+        return;
+    }
+    if (!std.mem.eql(u8, edge_type, "imports")) {
+        out.appendSlice(alloc, "error: edge_type must be 'imports' or 'documents'") catch {};
+        return;
+    }
+
     if (args.count() == 1 or
-        (args.get("direction") == null and args.get("transitive") == null and args.get("max_depth") == null))
+        (args.get("direction") == null and args.get("edge_type") == null and args.get("transitive") == null and args.get("max_depth") == null))
     {
         handleDepsPathOnly(alloc, path, out, explorer);
         return;
@@ -3638,7 +4051,7 @@ fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
 
     const direction = getStr(args, "direction") orelse "imported_by";
     const transitive = getBool(args, "transitive");
-    const max_depth: ?u32 = if (getInt(args, "max_depth")) |n| @intCast(@max(1, n)) else null;
+    const max_depth: ?u32 = if (getInt(args, "max_depth")) |n| @intCast(@min(@max(1, n), 64)) else null;
 
     const is_forward = std.mem.eql(u8, direction, "depends_on");
 
@@ -4359,7 +4772,7 @@ fn handleIndex(
         getScanState() == .loading_snapshot)
     {
         default_explorer.setRoot(io, abs_path);
-        if (snapshot_mod.loadSnapshot(io, snapshot_path, default_explorer, default_store, alloc)) {
+        if (snapshot_mod.loadSnapshotValidated(io, snapshot_path, abs_path, default_explorer, default_store, alloc)) {
             loadProjectTrigramFromDiskIfPresent(io, default_explorer, abs_path, alloc);
             if (default_explorer.outlines.count() > 1000) {
                 default_explorer.releaseContents();

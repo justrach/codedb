@@ -2535,6 +2535,225 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
     try testing.expect(std.mem.indexOf(u8, out.items, "ranking") != null);
 }
 
+test "issue-688: codedb_context json exposes typed provenance and preserves markdown default" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile(
+        "src/ranking.zig",
+        "pub fn rankingBoost() void { helper(); }\npub fn helper() void {}\n",
+    );
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const json_args = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"task":"trace rankingBoost helper provenance and token omissions","format":"json","max_tokens":256}
+    ,
+        .{},
+    );
+    defer json_args.deinit();
+    var json_out: std.ArrayList(u8) = .empty;
+    defer json_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &json_args.value.object, &json_out, &store, &explorer, &agents);
+
+    const structured = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_out.items, .{});
+    defer structured.deinit();
+    try testing.expectEqual(@as(i64, 1), structured.value.object.get("schema_version").?.integer);
+    try testing.expectEqualStrings("codedb_context", structured.value.object.get("format").?.string);
+    try testing.expect(structured.value.object.get("reader").?.object.contains("validation"));
+    try testing.expect(structured.value.object.get("omissions").? == .array);
+
+    var found_parsed = false;
+    for (structured.value.object.get("sections").?.array.items) |section_value| {
+        const section = section_value.object;
+        if (!std.mem.eql(u8, section.get("id").?.string, "symbol_definitions")) continue;
+        try testing.expectEqualStrings("parsed", section.get("evidence_kind").?.string);
+        for (section.get("items").?.array.items) |item_value| {
+            const item = item_value.object;
+            const path = item.get("path").?.string;
+            try testing.expect(!std.fs.path.isAbsolute(path));
+            try testing.expect(item.get("line_start").? != .null);
+            try testing.expect(item.get("line_end").? != .null);
+            found_parsed = true;
+        }
+    }
+    try testing.expect(found_parsed);
+
+    const default_args = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"task":"trace rankingBoost helper provenance and token omissions"}
+    ,
+        .{},
+    );
+    defer default_args.deinit();
+    const markdown_args = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"task":"trace rankingBoost helper provenance and token omissions","format":"markdown"}
+    ,
+        .{},
+    );
+    defer markdown_args.deinit();
+    var default_out: std.ArrayList(u8) = .empty;
+    defer default_out.deinit(testing.allocator);
+    var markdown_out: std.ArrayList(u8) = .empty;
+    defer markdown_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &default_args.value.object, &default_out, &store, &explorer, &agents);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &markdown_args.value.object, &markdown_out, &store, &explorer, &agents);
+    try testing.expectEqualStrings(default_out.items, markdown_out.items);
+}
+
+test "issue-688: structured no-candidate response retains reader evidence" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, ".codedb");
+    try tmp.dir.writeFile(io, .{ .sub_path = "source.zig", .data = "pub fn source() void {}\n" });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = ".codedb/reader.md",
+        .data = "---\nsource_hash: blake2b:00000000000000000000000000000000\nsource_files:\n  - source.zig\n---\nreader body\n",
+    });
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, root_buf[0..root_len], Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"task\":\"!!!\",\"format\":\"json\"}", .{});
+    defer args.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &args.value.object, &out, &store, &explorer, &agents);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.items, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("stale", parsed.value.object.get("reader").?.object.get("validation").?.string);
+    var found_reader = false;
+    for (parsed.value.object.get("sections").?.array.items) |section_value| {
+        const section = section_value.object;
+        if (!std.mem.eql(u8, section.get("id").?.string, "reader")) continue;
+        try testing.expect(section.get("included").?.bool);
+        try testing.expect(section.get("markdown").?.string.len > 0);
+        try testing.expect(section.get("estimated_tokens").?.integer > 0);
+        found_reader = true;
+    }
+    try testing.expect(found_reader);
+    try testing.expect(parsed.value.object.get("budget").?.object.get("estimated_tokens_used").?.integer > 1);
+}
+
+test "issue-685: codedb_deps exposes bounded typed document edges" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("docs/c.md", "# Gamma\n[A](a.md)\n");
+    try explorer.indexFile("docs/b.md", "# Beta\n[C](c.md)\n");
+    try explorer.indexFile("docs/a.md", "# Alpha\n[B](b.md)\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"path":"docs/a.md","edge_type":"documents","direction":"depends_on","transitive":true,"max_depth":99}
+    ,
+        .{},
+    );
+    defer args.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_deps, &args.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "docs/a.md transitively links to:") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "  docs/b.md\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "  docs/c.md\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "(2 files)\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "  docs/a.md\n") == null);
+
+    const context_args = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"task":"trace Alpha documentation graph","format":"json","document_hops":2}
+    ,
+        .{},
+    );
+    defer context_args.deinit();
+    var context_out: std.ArrayList(u8) = .empty;
+    defer context_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &context_args.value.object, &context_out, &store, &explorer, &agents);
+    const context = try std.json.parseFromSlice(std.json.Value, testing.allocator, context_out.items, .{});
+    defer context.deinit();
+    var found_document_graph = false;
+    for (context.value.object.get("sections").?.array.items) |section_value| {
+        const section = section_value.object;
+        if (!std.mem.eql(u8, section.get("id").?.string, "document_links")) continue;
+        try testing.expect(section.get("included").?.bool);
+        for (section.get("items").?.array.items) |item_value| {
+            const item = item_value.object;
+            if (std.mem.eql(u8, item.get("path").?.string, "docs/b.md")) {
+                try testing.expectEqualStrings("docs/a.md", item.get("source_path").?.string);
+                try testing.expectEqualStrings("document_link", item.get("relation").?.string);
+                found_document_graph = true;
+            }
+        }
+    }
+    try testing.expect(found_document_graph);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"edge_type\":{\"type\":\"string\",\"enum\":[\"imports\",\"documents\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"document_hops\":{\"type\":\"integer\"") != null);
+}
+
+test "issue-685: direct document deps are capped at 64 files" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    var root_content: std.ArrayList(u8) = .empty;
+    defer root_content.deinit(testing.allocator);
+    const writer = @import("cio.zig").listWriter(&root_content, testing.allocator);
+    for (0..70) |i| {
+        const path = try std.fmt.allocPrint(testing.allocator, "docs/page-{d}.md", .{i});
+        defer testing.allocator.free(path);
+        try explorer.indexFile(path, "# Page\n");
+        try writer.print("[page]({s})\n", .{path["docs/".len..]});
+    }
+    try explorer.indexFile("docs/root.md", root_content.items);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+    const args = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"path":"docs/root.md","edge_type":"documents","direction":"depends_on"}
+    ,
+        .{},
+    );
+    defer args.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_deps, &args.value.object, &out, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, out.items, "(64 files)\n") != null);
+}
+
 test "issue-573: cli bridge must not bind a leading flag as the positional name" {
     // Live repro: `codedb callers --max-results 3 indexFile` reported
     // "1 call sites for '--max-results'" — the bridge takes args[cmd_args_start]

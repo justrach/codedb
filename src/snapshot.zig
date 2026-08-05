@@ -30,11 +30,13 @@ const FileOutline = explore_mod.FileOutline;
 const Symbol = explore_mod.Symbol;
 const SymbolKind = explore_mod.SymbolKind;
 const Language = explore_mod.Language;
+const DocumentLink = explore_mod.DocumentLink;
+const DocumentLinkKind = explore_mod.DocumentLinkKind;
 const Store = @import("store.zig").Store;
 const git_mod = @import("git.zig");
 
 const MAGIC = [4]u8{ 'C', 'D', 'B', 0x01 };
-const FORMAT_VERSION: u16 = 2;
+const FORMAT_VERSION: u16 = 3;
 
 pub const SectionId = enum(u32) {
     tree = 1,
@@ -97,7 +99,7 @@ pub fn writeSnapshot(
         var file_count_meta: u32 = 0;
         var fc_iter = explorer.outlines.keyIterator();
         while (fc_iter.next()) |k| {
-            if (!isSensitivePath(k.*)) file_count_meta += 1;
+            if (isSafeSnapshotPath(k.*)) file_count_meta += 1;
         }
 
         const root_hash = std.hash.Wyhash.hash(0, root_path);
@@ -124,7 +126,7 @@ pub fn writeSnapshot(
         var first = true;
         var iter = explorer.outlines.iterator();
         while (iter.next()) |entry| {
-            if (isSensitivePath(entry.key_ptr.*)) continue;
+            if (!isSafeSnapshotPath(entry.key_ptr.*)) continue;
             if (!first) try writer.writeByte(',');
             first = false;
             const outline = entry.value_ptr;
@@ -155,14 +157,14 @@ pub fn writeSnapshot(
         var file_count: u32 = 0;
         var count_iter = explorer.outlines.keyIterator();
         while (count_iter.next()) |key_ptr| {
-            if (!isSensitivePath(key_ptr.*)) file_count += 1;
+            if (isSafeSnapshotPath(key_ptr.*)) file_count += 1;
         }
         std.mem.writeInt(u32, &file_count_buf, file_count, .little);
         try writer.writeAll(&file_count_buf);
 
         var iter = explorer.outlines.iterator();
         while (iter.next()) |entry| {
-            if (isSensitivePath(entry.key_ptr.*)) continue;
+            if (!isSafeSnapshotPath(entry.key_ptr.*)) continue;
 
             const path = entry.key_ptr.*;
             const outline = entry.value_ptr;
@@ -191,6 +193,25 @@ pub fn writeSnapshot(
                 std.mem.writeInt(u16, &import_len_buf, @intCast(imp.len), .little);
                 try writer.writeAll(&import_len_buf);
                 try writer.writeAll(imp);
+            }
+
+            var document_link_count: u32 = 0;
+            for (outline.document_links.items) |link| {
+                if (link.target.len <= std.math.maxInt(u16) and explore_mod.isSafeDocumentTarget(link.target) and
+                    isSafeSnapshotPath(link.target) and explorer.outlines.contains(link.target)) document_link_count += 1;
+            }
+            var document_link_count_buf: [4]u8 = undefined;
+            std.mem.writeInt(u32, &document_link_count_buf, document_link_count, .little);
+            try writer.writeAll(&document_link_count_buf);
+            for (outline.document_links.items) |link| {
+                if (link.target.len > std.math.maxInt(u16) or !explore_mod.isSafeDocumentTarget(link.target) or
+                    !isSafeSnapshotPath(link.target) or !explorer.outlines.contains(link.target)) continue;
+                const target = link.target;
+                var target_len_buf: [2]u8 = undefined;
+                std.mem.writeInt(u16, &target_len_buf, @intCast(target.len), .little);
+                try writer.writeAll(&target_len_buf);
+                try writer.writeAll(target);
+                try writer.writeByte(@intFromEnum(link.kind));
             }
 
             var symbol_count_buf: [4]u8 = undefined;
@@ -248,8 +269,8 @@ pub fn writeSnapshot(
         var path_iter = explorer.outlines.keyIterator();
         while (path_iter.next()) |path_ptr| {
             const path = path_ptr.*;
-            // Skip sensitive files that may contain secrets
-            if (isSensitivePath(path)) continue;
+            // Persist only canonical project-relative, non-sensitive paths.
+            if (!isSafeSnapshotPath(path)) continue;
             const cached_content = explorer.contents.get(path);
             if (cached_content) |content| {
                 var pl_buf: [2]u8 = undefined;
@@ -584,8 +605,33 @@ pub fn loadSnapshotValidated(
         }
     }
 
+    // Freshness reads are allowed only through a canonical project root. The
+    // validated API supplies it directly; normal callers may preconfigure the
+    // Explorer root. Without either, snapshot content can still load but no
+    // snapshot-provided path is used for disk I/O.
+    var disk_root: ?std.Io.Dir = null;
+    var close_disk_root = false;
+    if (expected_root) |root| {
+        disk_root = std.Io.Dir.cwd().openDir(io, root, .{}) catch return false;
+        close_disk_root = true;
+    } else if (explorer.root_dir) |dir| {
+        disk_root = dir;
+    }
+    defer if (close_disk_root) if (disk_root) |*dir| dir.close(io);
+
+    var canonical_root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var canonical_root: ?[]const u8 = null;
+    if (disk_root) |dir| root_blk: {
+        const len = dir.realPathFile(io, ".", &canonical_root_buf) catch {
+            if (expected_root != null) return false;
+            disk_root = null;
+            break :root_blk;
+        };
+        canonical_root = canonical_root_buf[0..len];
+    }
+
     if (sections.get(@intFromEnum(SectionId.outline_state)) != null) {
-        return loadSnapshotFast(io, snapshot_path, expected_file_count, explorer, store, allocator) catch false;
+        return loadSnapshotFast(io, snapshot_path, expected_file_count, disk_root, canonical_root, explorer, store, allocator) catch false;
     }
 
     // Load CONTENT section — this is the core data
@@ -614,7 +660,7 @@ pub fn loadSnapshotValidated(
         const path_buf = allocator.alloc(u8, path_len) catch return false;
         defer allocator.free(path_buf);
         const prn = file.readPositionalAll(io, path_buf, read_pos) catch return false;
-        if (prn != path_len) break;
+        if (prn != path_len or !isSafeSnapshotPath(path_buf)) return false;
         read_pos += path_len;
         bytes_read += path_len;
 
@@ -637,12 +683,13 @@ pub fn loadSnapshotValidated(
 
         // Re-index from disk if file was modified after the snapshot
         var disk_content: ?[]u8 = null;
-        if (snap_mtime > 0) blk: {
-            // statFile (no open/close): only the mtime is needed here.
-            const ds = std.Io.Dir.cwd().statFile(io, path_buf, .{}) catch break :blk;
+        if (snap_mtime > 0 and disk_root != null and canonical_root != null) blk: {
+            var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const resolved = resolveSafeSnapshotPath(io, disk_root.?, canonical_root.?, path_buf, &resolved_buf) orelse break :blk;
+            const ds = std.Io.Dir.cwd().statFile(io, resolved, .{}) catch break :blk;
             const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
             if (ds_mtime <= snap_mtime) break :blk;
-            disk_content = std.Io.Dir.cwd().readFileAlloc(io, path_buf, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+            disk_content = std.Io.Dir.cwd().readFileAlloc(io, resolved, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
         }
         defer if (disk_content) |dc| allocator.free(dc);
         const effective = if (disk_content) |dc| dc else content;
@@ -750,6 +797,16 @@ fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std.mem
     var release_bytes = true;
     defer if (release_bytes) backing_allocator.free(bytes);
 
+    const snapshot_file = try std.Io.Dir.cwd().openFile(io, snapshot_path, .{});
+    defer snapshot_file.close(io);
+    var version_buf: [2]u8 = undefined;
+    if (try snapshot_file.readPositionalAll(io, &version_buf, 4) != version_buf.len) return error.InvalidData;
+    const format_version = std.mem.readInt(u16, &version_buf, .little);
+    // Older outline records have no document-link field. Reject only this
+    // optional fast-path state so loadSnapshotFast safely reparses CONTENT;
+    // the snapshot itself remains usable and gains a complete document graph.
+    if (format_version != FORMAT_VERSION) return error.InvalidData;
+
     var result = std.StringHashMap(FileOutline).init(allocator);
     errdefer deinitOutlineStateMap(&result, allocator);
     // Pre-size to the known file count: the map otherwise grows 0 -> ~N with
@@ -762,8 +819,8 @@ fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std.mem
         // `path` is the map key and stays individually owned (deinitOutlineStateMap
         // / Explorer.deinit free it). Only the import/symbol strings are borrowed.
         const path = try readSectionString(bytes, &cursor, allocator, 4096);
-        if (path.len == 0) return error.InvalidData;
         errdefer allocator.free(path);
+        if (!isSafeSnapshotPath(path) or result.contains(path)) return error.InvalidData;
 
         var outline = FileOutline.init(allocator, path);
         outline.borrows_strings = true;
@@ -779,6 +836,19 @@ fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std.mem
         for (0..import_count) |_| {
             const imp = try readSectionStringBorrowed(bytes, &cursor, std.math.maxInt(u16));
             outline.imports.appendAssumeCapacity(imp);
+        }
+
+        if (format_version >= 3) {
+            const document_link_count = try readSectionInt(u32, bytes, &cursor);
+            if (document_link_count > @as(u32, @intCast(explore_mod.MAX_DOCUMENT_LINKS_PER_FILE))) return error.InvalidData;
+            try outline.document_links.ensureTotalCapacity(allocator, document_link_count);
+            for (0..document_link_count) |_| {
+                const target = try readSectionStringBorrowed(bytes, &cursor, std.math.maxInt(u16));
+                if (!explore_mod.isSafeDocumentTarget(target) or !isSafeSnapshotPath(target)) return error.InvalidData;
+                const kind_raw = try readSectionByte(bytes, &cursor);
+                const kind = std.enums.fromInt(DocumentLinkKind, kind_raw) orelse return error.InvalidData;
+                outline.document_links.appendAssumeCapacity(DocumentLink{ .target = target, .kind = kind });
+            }
         }
 
         const symbol_count = try readSectionInt(u32, bytes, &cursor);
@@ -812,6 +882,12 @@ fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std.mem
     }
 
     if (cursor != bytes.len) return error.InvalidData;
+    var outline_iter = result.valueIterator();
+    while (outline_iter.next()) |outline| {
+        for (outline.document_links.items) |link| {
+            if (!result.contains(link.target)) return error.InvalidData;
+        }
+    }
     // Success: transfer the backing buffer to the caller.
     backing_out.* = bytes;
     release_bytes = false;
@@ -945,9 +1021,11 @@ const LoadFreshness = struct {
 // open/close) and flag it stale when its mtime is newer than the snapshot. Pure
 // read-only and allocation-free, so workers run this over disjoint chunks
 // concurrently; each writes only its own slice of `out`.
-fn freshnessScan(io: std.Io, snap_mtime: i128, recs: []const LoadRecord, out: []LoadFreshness) void {
+fn freshnessScan(io: std.Io, root_dir: std.Io.Dir, canonical_root: []const u8, snap_mtime: i128, recs: []const LoadRecord, out: []LoadFreshness) void {
     for (recs, out) |record, *fr| {
-        const ds = std.Io.Dir.cwd().statFile(io, record.path, .{}) catch continue;
+        var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const resolved = resolveSafeSnapshotPath(io, root_dir, canonical_root, record.path, &resolved_buf) orelse continue;
+        const ds = std.Io.Dir.cwd().statFile(io, resolved, .{}) catch continue;
         const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
         if (ds_mtime > snap_mtime) fr.stale = true;
     }
@@ -957,6 +1035,8 @@ fn loadSnapshotFast(
     io: std.Io,
     snapshot_path: []const u8,
     expected_file_count: ?u32,
+    disk_root: ?std.Io.Dir,
+    canonical_root: ?[]const u8,
     explorer: *Explorer,
     store: *Store,
     allocator: std.mem.Allocator,
@@ -1074,6 +1154,7 @@ fn loadSnapshotFast(
             if (sc + path_len > section.len) break;
             const path = section[sc..][0..path_len];
             sc += path_len;
+            if (!isSafeSnapshotPath(path)) return false;
 
             if (sc + 4 > section.len) break;
             const content_len = std.mem.readInt(u32, section[sc..][0..4], .little);
@@ -1107,7 +1188,7 @@ fn loadSnapshotFast(
     for (fresh_results) |*fr| fr.* = .{};
 
     const t_fresh0: i128 = if (prof) cio.nanoTimestamp() else 0;
-    if (snap_mtime > 0 and records.items.len > 0) {
+    if (snap_mtime > 0 and records.items.len > 0 and disk_root != null and canonical_root != null) {
         const want_workers = blk: {
             if (cio.posixGetenv("CODEDB_LOAD_WORKERS")) |raw| {
                 const parsed = std.fmt.parseInt(usize, raw, 10) catch 0;
@@ -1119,7 +1200,7 @@ fn loadSnapshotFast(
         };
         const n_workers = @max(@as(usize, 1), @min(want_workers, records.items.len));
         if (n_workers <= 1) {
-            freshnessScan(io, snap_mtime, records.items, fresh_results);
+            freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, records.items, fresh_results);
         } else if (allocator.alloc(std.Thread, n_workers)) |threads| {
             defer allocator.free(threads);
             const chunk = records.items.len / n_workers;
@@ -1134,21 +1215,21 @@ fn loadSnapshotFast(
                 const recs = records.items[start..off];
                 const out = fresh_results[start..off];
                 if (spawn_failed) {
-                    freshnessScan(io, snap_mtime, recs, out);
+                    freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, recs, out);
                     continue;
                 }
-                if (std.Thread.spawn(.{}, freshnessScan, .{ io, snap_mtime, recs, out })) |t| {
+                if (std.Thread.spawn(.{}, freshnessScan, .{ io, disk_root.?, canonical_root.?, snap_mtime, recs, out })) |t| {
                     threads[spawned] = t;
                     spawned += 1;
                 } else |_| {
                     // Out of threads: scan this chunk (and any remaining) inline.
-                    freshnessScan(io, snap_mtime, recs, out);
+                    freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, recs, out);
                     spawn_failed = true;
                 }
             }
             for (threads[0..spawned]) |t| t.join();
         } else |_| {
-            freshnessScan(io, snap_mtime, records.items, fresh_results);
+            freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, records.items, fresh_results);
         }
     }
     if (prof) fresh_ns += cio.nanoTimestamp() - t_fresh0;
@@ -1168,8 +1249,11 @@ fn loadSnapshotFast(
         // content from disk and re-index it. Read here (not in the parallel scan) so
         // peak memory is one file's content, not every changed file's at once.
         var disk_content: ?[]u8 = null;
-        if (fr.stale) {
-            disk_content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(16 * 1024 * 1024)) catch null;
+        if (fr.stale and disk_root != null and canonical_root != null) {
+            var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (resolveSafeSnapshotPath(io, disk_root.?, canonical_root.?, path, &resolved_buf)) |resolved| {
+                disk_content = std.Io.Dir.cwd().readFileAlloc(io, resolved, allocator, .limited(16 * 1024 * 1024)) catch null;
+            }
         }
         defer if (disk_content) |dc| allocator.free(dc);
 
@@ -1213,6 +1297,7 @@ fn loadSnapshotFast(
     }
 
     if (outline_states.count() != 0) return false;
+    try explorer.rebuildDocumentGraph();
 
     explorer.markWordIndexIncomplete(word_index_can_load_from_disk);
 
@@ -1352,6 +1437,36 @@ fn parseJsonU64(json: []const u8, key: []const u8) ?u64 {
         }
     }
     return null;
+}
+
+/// Snapshot records are untrusted input. Only canonical project-relative paths
+/// may be persisted, indexed, or used for freshness reads.
+pub fn isSafeSnapshotPath(path: []const u8) bool {
+    if (path.len == 0 or path.len > 4096 or std.fs.path.isAbsolute(path)) return false;
+    if (std.mem.indexOfScalar(u8, path, 0) != null or
+        std.mem.indexOfScalar(u8, path, '\\') != null or
+        std.mem.indexOfScalar(u8, path, ':') != null or
+        isSensitivePath(path)) return false;
+
+    var components = std.mem.splitScalar(u8, path, '/');
+    while (components.next()) |component| {
+        if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return false;
+    }
+    return true;
+}
+
+fn isWithinCanonicalRoot(root: []const u8, candidate: []const u8) bool {
+    if (!std.mem.startsWith(u8, candidate, root)) return false;
+    if (candidate.len == root.len) return true;
+    return root.len > 0 and (std.fs.path.isSep(root[root.len - 1]) or std.fs.path.isSep(candidate[root.len]));
+}
+
+fn resolveSafeSnapshotPath(io: std.Io, root_dir: std.Io.Dir, canonical_root: []const u8, path: []const u8, buf: []u8) ?[]const u8 {
+    if (!isSafeSnapshotPath(path)) return null;
+    const len = root_dir.realPathFile(io, path, buf) catch return null;
+    const resolved = buf[0..len];
+    if (!isWithinCanonicalRoot(canonical_root, resolved)) return null;
+    return resolved;
 }
 
 /// Returns true for secret/credential paths that must never be persisted to a

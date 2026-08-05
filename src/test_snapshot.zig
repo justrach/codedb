@@ -92,17 +92,14 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
 
     const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/test.snapshot", .{dir_path});
     defer testing.allocator.free(snap_path);
-    const file_abs = try std.fmt.allocPrint(testing.allocator, "{s}/stale.zig", .{dir_path});
-    defer testing.allocator.free(file_abs);
-
     // Step 1: write file with old content, index it, write snapshot.
     try tmp.dir.writeFile(io, .{ .sub_path = "stale.zig", .data = "pub fn oldFunc() void {}" });
     {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
         var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-        try exp.indexFile(file_abs, "pub fn oldFunc() void {}");
-        try snapshot_mod.writeSnapshot(io, &exp, ".", snap_path, arena.allocator());
+        try exp.indexFile("stale.zig", "pub fn oldFunc() void {}");
+        try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, arena.allocator());
     }
 
     // Step 2: modify file AFTER snapshot creation (simulating uncommitted working tree change).
@@ -117,6 +114,7 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
     var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    exp2.setRoot(io, dir_path);
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
 
@@ -166,7 +164,104 @@ test "issue-46: empty-repo snapshot rejected on load" {
     try testing.expect(exp2.outlines.count() == 0);
 }
 
-// Restored FileOutlines borrow their import/symbol strings as slices into a
+test "issue-685: snapshot paths must be canonical project-relative paths" {
+    try testing.expect(snapshot_mod.isSafeSnapshotPath("src/main.zig"));
+    try testing.expect(!snapshot_mod.isSafeSnapshotPath(""));
+    try testing.expect(!snapshot_mod.isSafeSnapshotPath("/etc/passwd"));
+    try testing.expect(!snapshot_mod.isSafeSnapshotPath("../secret.zig"));
+    try testing.expect(!snapshot_mod.isSafeSnapshotPath("src/../secret.zig"));
+    try testing.expect(!snapshot_mod.isSafeSnapshotPath("src//main.zig"));
+    try testing.expect(!snapshot_mod.isSafeSnapshotPath("src\\main.zig"));
+    try testing.expect(!snapshot_mod.isSafeSnapshotPath("C:/secret.zig"));
+    try testing.expect(!snapshot_mod.isSafeSnapshotPath("config/.env"));
+}
+
+test "issue-685: unsafe snapshot records are rejected before indexing" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const root = path_buf[0..root_len];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/unsafe.snapshot", .{root});
+    defer testing.allocator.free(snap_path);
+
+    var source = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer source.deinit();
+    try source.indexFile("docs/a.md", "# A\n");
+    try snapshot_mod.writeSnapshot(io, &source, root, snap_path, testing.allocator);
+
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, snap_path, testing.allocator, .limited(8 * 1024 * 1024));
+    defer testing.allocator.free(bytes);
+    var replacements: usize = 0;
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, bytes, cursor, "docs/a.md")) |at| {
+        @memcpy(bytes[at .. at + "../bad.md".len], "../bad.md");
+        cursor = at + "../bad.md".len;
+        replacements += 1;
+    }
+    try testing.expect(replacements >= 2);
+    try tmp.dir.writeFile(io, .{ .sub_path = "unsafe.snapshot", .data = bytes });
+
+    var restored = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer restored.deinit();
+    restored.setRoot(io, root);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try testing.expect(!snapshot_mod.loadSnapshot(io, snap_path, &restored, &store, testing.allocator));
+    try testing.expectEqual(@as(usize, 0), restored.outlines.count());
+}
+
+test "issue-685: snapshot round trip preserves typed document links and graph" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+    const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/docs.snapshot", .{dir_path});
+    defer testing.allocator.free(snap_path);
+
+    var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer exp.deinit();
+    try exp.indexFile("issue-685-fixture/b.md", "# B\n");
+    try exp.indexFile("issue-685-fixture/a.md", "[[b|B]]\n");
+    try snapshot_mod.writeSnapshot(io, &exp, dir_path, snap_path, testing.allocator);
+
+    var restored = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer restored.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &restored, &store, testing.allocator));
+
+    var outline = (try restored.getOutline("issue-685-fixture/a.md", testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer outline.deinit();
+    try testing.expectEqual(@as(usize, 1), outline.document_links.items.len);
+    try testing.expectEqualStrings("issue-685-fixture/b.md", outline.document_links.items[0].target);
+    try testing.expectEqual(explore.DocumentLinkKind.wikilink, outline.document_links.items[0].kind);
+
+    const deps = restored.document_graph.getForwardDeps("issue-685-fixture/a.md") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 1), deps.len);
+    try testing.expectEqualStrings("issue-685-fixture/b.md", deps[0]);
+
+    // A pre-document-graph snapshot remains usable: only its old outline-state
+    // fast path is rejected, forcing a safe reparse of the retained CONTENT.
+    {
+        const file = try std.Io.Dir.cwd().openFile(io, snap_path, .{ .mode = .read_write });
+        defer file.close(io);
+        var version_buf: [2]u8 = undefined;
+        std.mem.writeInt(u16, &version_buf, 2, .little);
+        try file.writePositionalAll(io, &version_buf, 4);
+    }
+    var legacy = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer legacy.deinit();
+    var legacy_store = Store.init(testing.allocator);
+    defer legacy_store.deinit();
+    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &legacy, &legacy_store, testing.allocator));
+    const legacy_deps = legacy.document_graph.getForwardDeps("issue-685-fixture/a.md") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 1), legacy_deps.len);
+    try testing.expectEqualStrings("issue-685-fixture/b.md", legacy_deps[0]);
+}
+
+// Restored FileOutlines borrow their import/symbol/document-link strings as slices into a
 // section buffer the Explorer retains (FileOutline.borrows_strings). This test
 // pins two things the borrow optimization must preserve:
 //   1. the strings survive the round-trip intact (slices point at the right bytes)
@@ -433,16 +528,13 @@ test "snapshot: parallel freshness load re-indexes changed files, restores the r
 
     const total = snapshot_mod.FRESHNESS_PARALLEL_THRESHOLD + 32;
 
-    // Build `total` files on disk, indexing each by ABSOLUTE path so the load's
-    // cwd-relative statFile resolves them regardless of the test's working dir.
+    // Build `total` files on disk using canonical project-relative snapshot paths.
     var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    const abs_paths = try aa.alloc([]const u8, total);
     for (0..total) |i| {
         const rel = try std.fmt.allocPrint(aa, "f{d}.zig", .{i});
         const content = try std.fmt.allocPrint(aa, "pub fn oldfn_{d}() void {{}}\n", .{i});
         try tmp.dir.writeFile(io, .{ .sub_path = rel, .data = content });
-        abs_paths[i] = try std.fmt.allocPrint(aa, "{s}/{s}", .{ dir_path, rel });
-        try exp.indexFileOutlineOnly(abs_paths[i], content);
+        try exp.indexFileOutlineOnly(rel, content);
     }
 
     const snap_path = try std.fmt.allocPrint(aa, "{s}/parallel.codedb", .{dir_path});
@@ -461,6 +553,7 @@ test "snapshot: parallel freshness load re-indexes changed files, restores the r
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
     var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    exp2.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
@@ -476,10 +569,11 @@ test "snapshot: parallel freshness load re-indexes changed files, restores the r
     // all outlines present; 0/25 repro in isolation) — on failure, dump which
     // file and what state survived so the next occurrence localizes the branch.
     for (0..total) |i| {
-        const cached = exp2.contents.get(abs_paths[i]) orelse {
+        const rel = try std.fmt.allocPrint(aa, "f{d}.zig", .{i});
+        const cached = exp2.contents.get(rel) orelse {
             std.debug.print(
                 "MissingContent: i={d} changed={} outline_present={} contents_cached={d}/{d}\n",
-                .{ i, is_changed[i], exp2.outlines.contains(abs_paths[i]), exp2.contents.len(), total },
+                .{ i, is_changed[i], exp2.outlines.contains(rel), exp2.contents.len(), total },
             );
             return error.MissingContent;
         };

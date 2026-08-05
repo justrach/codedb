@@ -2,6 +2,15 @@
 
 ## 0.2.5838 - 2026-08-05
 
+- **`codedb_context` supports typed JSON provenance** (#688). `format=json`
+  distinguishes generated, parsed, graph, ranked, and exact-source evidence,
+  reports validated `reader.md` source/revision state, and exposes token-budget
+  omissions without changing the default Markdown response.
+- **Markdown documentation links form a separate bounded graph** (#685).
+  Relative inline links and wikilinks resolve only to exact indexed Markdown
+  paths; `codedb_deps edge_type=documents` and explicit
+  `codedb_context document_hops=1..2` expose those edges without conflating
+  them with imports or allowing unbounded traversal.
 - **`codedb_callers` now matches names only in lexical code** (#682, #683,
   #684). A whole-word mention that exists solely in a trailing comment, quoted
   string, raw/backtick literal, JavaScript regular expression, or complete

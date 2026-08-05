@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "description": "Documentation-linked retrieval subset for issue #685. Each answer is an indexed Markdown page one link from the lexical seed page.",
+  "queries": [
+    {
+      "task": "README MCP setup and client integration documentation",
+      "seed": "README.md",
+      "answer": "docs/mcp.md"
+    },
+    {
+      "task": "README skill base and context files documentation",
+      "seed": "README.md",
+      "answer": "docs/skills.md"
+    },
+    {
+      "task": "README command line CLI reference documentation",
+      "seed": "README.md",
+      "answer": "docs/cli.md"
+    },
+    {
+      "task": "README codedb architecture documentation",
+      "seed": "README.md",
+      "answer": "docs/architecture.md"
+    },
+    {
+      "task": "README benchmark methodology documentation",
+      "seed": "README.md",
+      "answer": "docs/benchmarks.md"
+    },
+    {
+      "task": "README Raspberry Pi 4 guidance documentation",
+      "seed": "README.md",
+      "answer": "docs/raspberry-pi.md"
+    },
+    {
+      "task": "README Zig 0.17 migration guide documentation",
+      "seed": "README.md",
+      "answer": "docs/zig-0.17-migration.md"
+    },
+    {
+      "task": "Tweet v0.2.5831 paired benchmark report",
+      "seed": "Tweet-v0.2.5831.md",
+      "answer": "docs/bench-0.2.5830-paired-report.md"
+    },
+    {
+      "task": "Tweet v0.2.5831 performance report",
+      "seed": "Tweet-v0.2.5831.md",
+      "answer": "docs/performance-0.2.5830.md"
+    },
+    {
+      "task": "SWE-lite deep big results validation report",
+      "seed": "bench/swe-lite/results-deepswe-big/RESULTS.md",
+      "answer": "bench/swe-lite/results-deepswe-big/VALIDATION.md"
+    }
+  ]
+}

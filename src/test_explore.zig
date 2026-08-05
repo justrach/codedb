@@ -265,6 +265,11 @@ test "explorer: packed outline clone owns one string backing" {
             errdefer testing.allocator.free(import);
             try source.imports.append(testing.allocator, import);
         }
+        {
+            const target = try testing.allocator.dupe(u8, "docs/target.md");
+            errdefer testing.allocator.free(target);
+            try source.document_links.append(testing.allocator, .{ .target = target, .kind = .wikilink });
+        }
         break :blk try Explorer.cloneOutlinePackedBorrowingPath(&source, testing.allocator);
     };
     defer packed_outline.deinit();
@@ -275,7 +280,67 @@ test "explorer: packed outline clone owns one string backing" {
     try testing.expectEqualStrings("packedSymbol", packed_outline.symbols.items[0].name);
     try testing.expectEqualStrings("fn packedSymbol() void", packed_outline.symbols.items[0].detail.?);
     try testing.expectEqualStrings("dep.zig", packed_outline.imports.items[0]);
+    try testing.expectEqualStrings("docs/target.md", packed_outline.document_links.items[0].target);
+    try testing.expectEqual(explore.DocumentLinkKind.wikilink, packed_outline.document_links.items[0].kind);
     try testing.expectEqual(expected_mask, packed_outline.name_len_mask);
+}
+
+test "issue-685: document graph tracks incremental targets updates removals and cycles" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    try explorer.indexFile("docs/a.md", "[B](b.md)\n");
+    try testing.expectEqual(@as(usize, 0), explorer.document_graph.getForwardDeps("docs/a.md").?.len);
+
+    try explorer.indexFile("docs/b.md", "[A](a.md)\n");
+    const a_links = explorer.document_graph.getForwardDeps("docs/a.md") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 1), a_links.len);
+    try testing.expectEqualStrings("docs/b.md", a_links[0]);
+
+    const cycle = try explorer.document_graph.getTransitiveBounded("docs/a.md", testing.allocator, 2, 64, true);
+    defer {
+        for (cycle) |path| testing.allocator.free(path);
+        testing.allocator.free(cycle);
+    }
+    try testing.expectEqual(@as(usize, 1), cycle.len);
+    try testing.expectEqualStrings("docs/b.md", cycle[0]);
+
+    try explorer.indexFile("docs/a.md", "no links\n");
+    try testing.expectEqual(@as(usize, 0), explorer.document_graph.getForwardDeps("docs/a.md").?.len);
+    const stale_reverse = try explorer.document_graph.getImportedByFiltered("docs/b.md", testing.allocator, false);
+    defer {
+        for (stale_reverse) |path| testing.allocator.free(path);
+        testing.allocator.free(stale_reverse);
+    }
+    try testing.expectEqual(@as(usize, 0), stale_reverse.len);
+
+    try explorer.indexFile("docs/a.md", "[B](b.md)\n");
+    explorer.removeFile("docs/b.md");
+    try testing.expectEqual(@as(usize, 0), explorer.document_graph.getForwardDeps("docs/a.md").?.len);
+}
+
+test "issue-685: dense document traversal is capped at 64 results" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    var root_content: std.ArrayList(u8) = .empty;
+    defer root_content.deinit(testing.allocator);
+    const writer = @import("cio.zig").listWriter(&root_content, testing.allocator);
+    for (0..70) |i| {
+        const path = try std.fmt.allocPrint(testing.allocator, "docs/page-{d}.md", .{i});
+        defer testing.allocator.free(path);
+        try explorer.indexFile(path, "# Page\n");
+        try writer.print("[page]({s})\n", .{path["docs/".len..]});
+    }
+    try explorer.indexFile("docs/root.md", root_content.items);
+
+    const linked = try explorer.document_graph.getTransitiveBounded("docs/root.md", testing.allocator, 2, 64, true);
+    defer {
+        for (linked) |path| testing.allocator.free(path);
+        testing.allocator.free(linked);
+    }
+    try testing.expectEqual(@as(usize, 64), linked.len);
+    for (linked) |path| try testing.expect(!std.mem.eql(u8, path, "docs/root.md"));
 }
 
 test "explorer: adopt outline permits path argument to alias owned path" {

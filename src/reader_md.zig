@@ -24,15 +24,25 @@ pub const Reader = struct {
     computed_hash: ?[]const u8 = null,
     /// Body (after `---\n` separator) — caller-owned slice into raw.
     body: ?[]const u8 = null,
+    /// Validated project-relative source paths. Each string borrows from raw;
+    /// the slice itself is caller-owned and freed by free().
+    source_files: []const []const u8 = &.{},
     /// Whole file contents (caller frees via free()).
     raw: []const u8 = "",
 
     pub fn free(self: *Reader, allocator: std.mem.Allocator) void {
+        if (self.source_files.len > 0) allocator.free(self.source_files);
         if (self.raw.len > 0) allocator.free(self.raw);
         if (self.declared_hash) |h| allocator.free(h);
         if (self.computed_hash) |h| allocator.free(h);
     }
 };
+
+fn isWithinProject(root: []const u8, candidate: []const u8) bool {
+    if (!std.mem.startsWith(u8, candidate, root)) return false;
+    if (candidate.len == root.len) return true;
+    return root.len > 0 and (std.fs.path.isSep(root[root.len - 1]) or std.fs.path.isSep(candidate[root.len]));
+}
 
 /// Load and validate `<project_root>/.codedb/reader.md` against the source_files
 /// listed in its frontmatter. The blake2b computation matches the canonical
@@ -152,16 +162,55 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, project_root: []const u8) 
         }
     }.lt);
 
+    const stored_source_files = try source_files.toOwnedSlice(allocator);
+    errdefer allocator.free(stored_source_files);
+
+    // Resolve each source before reading it. Lexically relative paths can still
+    // escape through symlinks, so require the canonical target to remain under
+    // the canonical project root and read that checked path.
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = root_dir.realPathFile(io, ".", &root_buf) catch {
+        return .{
+            .state = .stale,
+            .raw = raw,
+            .declared_hash = declared_hash_opt,
+            .body = body,
+            .source_files = stored_source_files,
+        };
+    };
+    const canonical_root = root_buf[0..root_len];
+
     // Compute blake2b(16) over: for each f, f.bytes ++ 0x00 ++ file_contents ++ 0x00 0x00
     var h = std.crypto.hash.blake2.Blake2b128.init(.{});
-    for (source_files.items) |rel| {
-        const data = root_dir.readFileAlloc(io, rel, allocator, .limited(8 * 1024 * 1024)) catch {
+    for (stored_source_files) |rel| {
+        var source_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const source_len = root_dir.realPathFile(io, rel, &source_buf) catch {
             // Listed file is gone — definitionally stale.
             return .{
                 .state = .stale,
                 .raw = raw,
                 .declared_hash = declared_hash_opt,
                 .body = body,
+                .source_files = stored_source_files,
+            };
+        };
+        const canonical_source = source_buf[0..source_len];
+        if (!isWithinProject(canonical_root, canonical_source)) {
+            return .{
+                .state = .malformed,
+                .raw = raw,
+                .declared_hash = declared_hash_opt,
+                .body = body,
+                .source_files = stored_source_files,
+            };
+        }
+        const data = std.Io.Dir.cwd().readFileAlloc(io, canonical_source, allocator, .limited(8 * 1024 * 1024)) catch {
+            return .{
+                .state = .stale,
+                .raw = raw,
+                .declared_hash = declared_hash_opt,
+                .body = body,
+                .source_files = stored_source_files,
             };
         };
         defer allocator.free(data);
@@ -186,8 +235,48 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, project_root: []const u8) 
         .declared_hash = declared_hash_opt,
         .computed_hash = computed,
         .body = body,
+        .source_files = stored_source_files,
         .raw = raw,
     };
+}
+
+test "issue-688: missing source_hash is malformed" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".codedb");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = ".codedb/reader.md",
+        .data = "---\nsource_files:\n  - source.zig\n---\nbody\n",
+    });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(std.testing.io, ".", &root_buf);
+    var reader = try load(std.testing.io, std.testing.allocator, root_buf[0..root_len]);
+    defer reader.free(std.testing.allocator);
+    try std.testing.expectEqual(State.malformed, reader.state);
+}
+
+test "issue-688: source symlink outside project is malformed" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "project/.codedb");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "outside.zig", .data = "secret\n" });
+    var project_dir = try tmp.dir.openDir(std.testing.io, "project", .{});
+    defer project_dir.close(std.testing.io);
+    project_dir.symLink(std.testing.io, "../outside.zig", "escape.zig", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    try project_dir.writeFile(std.testing.io, .{
+        .sub_path = ".codedb/reader.md",
+        .data = "---\nsource_hash: blake2b:00000000000000000000000000000000\nsource_files:\n  - escape.zig\n---\nbody\n",
+    });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try project_dir.realPathFile(std.testing.io, ".", &root_buf);
+    var reader = try load(std.testing.io, std.testing.allocator, root_buf[0..root_len]);
+    defer reader.free(std.testing.allocator);
+    try std.testing.expectEqual(State.malformed, reader.state);
 }
 
 test "blake2b: byte-for-byte parity with canonical Python algorithm" {

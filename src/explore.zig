@@ -11,7 +11,13 @@ const MmapTrigramIndex = idx.MmapTrigramIndex;
 const AnyTrigramIndex = idx.AnyTrigramIndex;
 const SparseNgramIndex = idx.SparseNgramIndex;
 const codegraph = @import("codegraph.zig");
+const markdown_graph = @import("markdown_graph.zig");
 const git = @import("git.zig");
+
+pub const DocumentLinkKind = markdown_graph.LinkKind;
+pub const DocumentLink = markdown_graph.Link;
+pub const MAX_DOCUMENT_LINKS_PER_FILE = markdown_graph.MAX_LINKS_PER_FILE;
+pub const isSafeDocumentTarget = markdown_graph.isSafeNormalizedTarget;
 
 const SearchGeneration = if (builtin.cpu.arch == .wasm32) u32 else u64;
 
@@ -100,10 +106,11 @@ pub const FileOutline = struct {
     byte_size: u64,
     symbols: std.ArrayList(Symbol) = .empty,
     imports: std.ArrayList([]const u8) = .empty,
+    document_links: std.ArrayList(DocumentLink) = .empty,
     allocator: std.mem.Allocator,
     owns_path: bool = false,
-    /// When true, `imports` and each `symbols[].name`/`.detail` are borrowed
-    /// slices into an externally-owned buffer (the snapshot outline_state
+    /// When true, `imports`, `document_links[].target`, and each
+    /// `symbols[].name`/`.detail` are borrowed slices into an externally-owned buffer (the snapshot outline_state
     /// section, retained by the Explorer) rather than individual allocations,
     /// so deinit must not free them. The ArrayLists themselves are still owned.
     borrows_strings: bool = false,
@@ -146,9 +153,11 @@ pub const FileOutline = struct {
                 if (sym.detail) |d| self.allocator.free(d);
             }
             for (self.imports.items) |imp| self.allocator.free(imp);
+            for (self.document_links.items) |link| self.allocator.free(link.target);
         }
         self.symbols.deinit(self.allocator);
         self.imports.deinit(self.allocator);
+        self.document_links.deinit(self.allocator);
     }
 };
 
@@ -346,8 +355,16 @@ pub const DependencyGraph = struct {
         // Remove old reverse edges for this path
         if (self.forward.getPtr(path)) |old_deps| {
             for (old_deps.items) |old_dep| {
+                var remove_reverse_key = false;
                 if (self.reverse.getPtr(old_dep)) |rev_set| {
                     _ = rev_set.remove(path);
+                    remove_reverse_key = rev_set.count() == 0;
+                }
+                if (remove_reverse_key) {
+                    if (self.reverse.fetchRemove(old_dep)) |removed| {
+                        var rev_set = removed.value;
+                        rev_set.deinit();
+                    }
                 }
             }
             old_deps.deinit(self.allocator);
@@ -373,8 +390,16 @@ pub const DependencyGraph = struct {
         // Remove forward edges and their reverse counterparts
         if (self.forward.getPtr(path)) |deps| {
             for (deps.items) |dep| {
+                var remove_reverse_key = false;
                 if (self.reverse.getPtr(dep)) |rev_set| {
                     _ = rev_set.remove(path);
+                    remove_reverse_key = rev_set.count() == 0;
+                }
+                if (remove_reverse_key) {
+                    if (self.reverse.fetchRemove(dep)) |removed| {
+                        var rev_set = removed.value;
+                        rev_set.deinit();
+                    }
                 }
             }
             deps.deinit(self.allocator);
@@ -535,6 +560,67 @@ pub const DependencyGraph = struct {
             }
         }
 
+        return result.toOwnedSlice(allocator);
+    }
+
+    /// Exact-path BFS with both depth and result caps. Documentation traversal
+    /// uses this instead of the import graph's historically unbounded helpers.
+    pub fn getTransitiveBounded(
+        self: *const DependencyGraph,
+        path: []const u8,
+        allocator: std.mem.Allocator,
+        max_depth: u32,
+        max_results: usize,
+        forward: bool,
+    ) ![]const []const u8 {
+        var visited = std.StringHashMap(void).init(allocator);
+        defer visited.deinit();
+        var queue: std.ArrayList(struct { path: []const u8, depth: u32 }) = .empty;
+        defer queue.deinit(allocator);
+        var result: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (result.items) |item| allocator.free(item);
+            result.deinit(allocator);
+        }
+
+        try visited.put(path, {});
+        try queue.append(allocator, .{ .path = path, .depth = 0 });
+        var head: usize = 0;
+        while (head < queue.items.len and result.items.len < max_results) {
+            const item = queue.items[head];
+            head += 1;
+            if (item.depth >= max_depth) continue;
+
+            if (forward) {
+                const deps = self.forward.get(item.path) orelse continue;
+                for (deps.items) |dep| {
+                    if (visited.contains(dep)) continue;
+                    try visited.put(dep, {});
+                    const copy = try allocator.dupe(u8, dep);
+                    result.append(allocator, copy) catch |err| {
+                        allocator.free(copy);
+                        return err;
+                    };
+                    if (result.items.len >= max_results) break;
+                    try queue.append(allocator, .{ .path = dep, .depth = item.depth + 1 });
+                }
+            } else {
+                const dependents = self.reverse.get(item.path) orelse continue;
+                var iter = dependents.keyIterator();
+                while (iter.next()) |key_ptr| {
+                    const dep = key_ptr.*;
+                    if (visited.contains(dep)) continue;
+                    try visited.put(dep, {});
+                    const copy = try allocator.dupe(u8, dep);
+                    result.append(allocator, copy) catch |err| {
+                        allocator.free(copy);
+                        return err;
+                    };
+                    if (result.items.len >= max_results) break;
+                    try queue.append(allocator, .{ .path = dep, .depth = item.depth + 1 });
+                }
+            }
+        }
         return result.toOwnedSlice(allocator);
     }
 
@@ -1618,6 +1704,9 @@ fn rankingEnvFingerprint() u64 {
 pub const Explorer = struct {
     outlines: std.StringHashMap(FileOutline),
     dep_graph: DependencyGraph,
+    /// Markdown-to-Markdown links are kept separate from language imports so
+    /// callers can preserve edge type and apply tighter traversal bounds.
+    document_graph: DependencyGraph,
     contents: ContentCache,
     content_hashes: ContentHashCache,
     line_offsets: LineOffsetCache,
@@ -1732,6 +1821,7 @@ pub const Explorer = struct {
         return .{
             .outlines = std.StringHashMap(FileOutline).init(allocator),
             .dep_graph = DependencyGraph.init(allocator),
+            .document_graph = DependencyGraph.init(allocator),
             .contents = try ContentCache.initAlloc(allocator, content_cache_capacity),
             .content_hashes = ContentHashCache.init(allocator),
             .line_offsets = LineOffsetCache.init(allocator),
@@ -1761,6 +1851,7 @@ pub const Explorer = struct {
         self.outlines.deinit();
 
         self.dep_graph.deinit();
+        self.document_graph.deinit();
 
         var sym_iter = self.symbol_index.iterator();
         while (sym_iter.next()) |entry| {
@@ -1965,6 +2056,10 @@ pub const Explorer = struct {
         }
 
         try self.rebuildDepsFor(stable_path, &persistent_outline);
+        try self.rebuildDocumentDepsFor(stable_path, &persistent_outline);
+        if (is_new and persistent_outline.language == .markdown) {
+            try self.refreshDocumentLinksTo(stable_path);
+        }
         self.rebuildSymbolIndexFor(stable_path, &persistent_outline, !is_new);
 
         // Last fallible step: put frees the prior cache value in place, so it
@@ -2439,6 +2534,14 @@ pub const Explorer = struct {
             prev_line_trimmed = trimmed;
         }
         outline.line_count = line_num;
+        if (outline.language == .markdown) {
+            const links = try markdown_graph.extract(parser.allocator, path, content);
+            outline.document_links.appendSlice(parser.allocator, links) catch |err| {
+                markdown_graph.freeLinks(parser.allocator, links);
+                return err;
+            };
+            parser.allocator.free(links);
+        }
         computeSymbolEnds(content, &outline);
         return outline;
     }
@@ -2821,6 +2924,7 @@ pub const Explorer = struct {
             self.word_index_generation +%= 1;
         }
         self.dep_graph.remove(path);
+        self.document_graph.remove(path);
         self.removeSymbolIndexFor(path);
         _ = self.skip_trigram_files.remove(path);
         self.contents.remove(path);
@@ -2830,8 +2934,10 @@ pub const Explorer = struct {
         self.trigram_index.removeFile(path);
 
         if (self.outlines.fetchRemove(path)) |kv| {
+            const removed_markdown = kv.value.language == .markdown;
             var outline = kv.value;
             outline.deinit();
+            if (removed_markdown) self.refreshDocumentLinksTo(kv.key) catch {};
             self.allocator.free(kv.key);
         }
     }
@@ -3199,6 +3305,10 @@ pub const Explorer = struct {
             if (imp.len > std.math.maxInt(usize) - string_bytes) return error.OutOfMemory;
             string_bytes += imp.len;
         }
+        for (src.document_links.items) |link| {
+            if (link.target.len > std.math.maxInt(usize) - string_bytes) return error.OutOfMemory;
+            string_bytes += link.target.len;
+        }
 
         var dst = FileOutline.init(allocator, src.path);
         errdefer dst.deinit();
@@ -3213,6 +3323,7 @@ pub const Explorer = struct {
         dst.borrows_strings = true;
         try dst.symbols.ensureTotalCapacity(allocator, src.symbols.items.len);
         try dst.imports.ensureTotalCapacity(allocator, src.imports.items.len);
+        try dst.document_links.ensureTotalCapacity(allocator, src.document_links.items.len);
 
         var cursor: usize = 0;
         for (src.symbols.items) |sym| {
@@ -3239,6 +3350,12 @@ pub const Explorer = struct {
             cursor += imp.len;
             dst.imports.appendAssumeCapacity(copied_import);
         }
+        for (src.document_links.items) |link| {
+            const copied_target = storage[cursor .. cursor + link.target.len];
+            @memcpy(copied_target, link.target);
+            cursor += link.target.len;
+            dst.document_links.appendAssumeCapacity(.{ .target = copied_target, .kind = link.kind });
+        }
         std.debug.assert(cursor == string_bytes);
         return dst;
     }
@@ -3258,6 +3375,7 @@ pub const Explorer = struct {
 
         try dst.symbols.ensureTotalCapacity(allocator, src.symbols.items.len);
         try dst.imports.ensureTotalCapacity(allocator, src.imports.items.len);
+        try dst.document_links.ensureTotalCapacity(allocator, src.document_links.items.len);
         for (src.symbols.items) |sym| {
             const copied_name = try allocator.dupe(u8, sym.name);
             errdefer allocator.free(copied_name);
@@ -3280,6 +3398,11 @@ pub const Explorer = struct {
             const copied_import = try allocator.dupe(u8, imp);
             errdefer allocator.free(copied_import);
             dst.imports.appendAssumeCapacity(copied_import);
+        }
+        for (src.document_links.items) |link| {
+            const copied_target = try allocator.dupe(u8, link.target);
+            errdefer allocator.free(copied_target);
+            dst.document_links.appendAssumeCapacity(.{ .target = copied_target, .kind = link.kind });
         }
 
         return dst;
@@ -7739,6 +7862,54 @@ pub const Explorer = struct {
         }
 
         try self.dep_graph.setDeps(path, deps);
+    }
+
+    fn rebuildDocumentDepsFor(self: *Explorer, path: []const u8, outline: *const FileOutline) !void {
+        var deps: std.ArrayList([]const u8) = .empty;
+        errdefer deps.deinit(self.allocator);
+        try deps.ensureTotalCapacity(self.allocator, outline.document_links.items.len);
+
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+
+        for (outline.document_links.items) |link| {
+            // Extraction already rejects absolute and out-of-root paths. Keep
+            // only exact, case-sensitive targets that are currently indexed.
+            if (!self.outlines.contains(link.target)) continue;
+            const stable_target = try self.document_graph.internString(link.target);
+            const gop = try seen.getOrPut(stable_target);
+            if (gop.found_existing) continue;
+            deps.appendAssumeCapacity(stable_target);
+        }
+
+        const stable_path = try self.document_graph.internString(path);
+        try self.document_graph.setDeps(stable_path, deps);
+    }
+
+    fn refreshDocumentLinksTo(self: *Explorer, target: []const u8) !void {
+        var iter = self.outlines.iterator();
+        while (iter.next()) |entry| {
+            if (std.mem.eql(u8, entry.key_ptr.*, target)) continue;
+            const outline = entry.value_ptr;
+            if (outline.language != .markdown) continue;
+            for (outline.document_links.items) |link| {
+                if (!std.mem.eql(u8, link.target, target)) continue;
+                try self.rebuildDocumentDepsFor(entry.key_ptr.*, outline);
+                break;
+            }
+        }
+    }
+
+    /// Rebuild after bulk restore, where source files may have been inserted
+    /// before their exact Markdown targets existed in the outline map.
+    pub fn rebuildDocumentGraph(self: *Explorer) !void {
+        self.document_graph.deinit();
+        self.document_graph = DependencyGraph.init(self.allocator);
+        var iter = self.outlines.iterator();
+        while (iter.next()) |entry| {
+            if (entry.value_ptr.language != .markdown) continue;
+            try self.rebuildDocumentDepsFor(entry.key_ptr.*, entry.value_ptr);
+        }
     }
 
     pub fn rebuildSymbolIndexFor(self: *Explorer, path: []const u8, outline: *FileOutline, had_prior: bool) void {

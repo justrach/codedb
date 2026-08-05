@@ -1577,3 +1577,63 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
         }
     }
 }
+
+test "issue-685: watcher diff updates document edges for modify add and delete" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "docs");
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/a.md", .data = "[B](b.md)\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/b.md", .data = "# B\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+    try testing.expectEqual(@as(usize, 1), explorer.document_graph.getForwardDeps("docs/a.md").?.len);
+
+    var known = FileMap.init(testing.allocator);
+    defer {
+        var iter = known.keyIterator();
+        while (iter.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    var root_dir = try std.Io.Dir.cwd().openDir(io, root, .{});
+    defer root_dir.close(io);
+    for ([_][]const u8{ "docs/a.md", "docs/b.md" }) |path| {
+        const stat = try root_dir.statFile(io, path, .{});
+        const content = try root_dir.readFileAlloc(io, path, testing.allocator, .limited(max_indexed_file_bytes));
+        defer testing.allocator.free(content);
+        const owned_path = try testing.allocator.dupe(u8, path);
+        try known.put(owned_path, .{
+            .mtime = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms)),
+            .size = stat.size,
+            .hash = std.hash.Wyhash.hash(0, content),
+            .seen = true,
+        });
+    }
+
+    cio.sleepMs(10);
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/a.md", .data = "[C](c.md)\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/c.md", .data = "# C\n" });
+    try tmp.dir.deleteFile(io, "docs/b.md");
+
+    var queue = EventQueue{};
+    var cycle_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer cycle_arena.deinit();
+    try incrementalDiff(io, &store, &explorer, &queue, &known, root, testing.allocator, cycle_arena.allocator());
+
+    try testing.expect(!explorer.outlines.contains("docs/b.md"));
+    try testing.expect(explorer.outlines.contains("docs/c.md"));
+    const links = explorer.document_graph.getForwardDeps("docs/a.md") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 1), links.len);
+    try testing.expectEqualStrings("docs/c.md", links[0]);
+}
