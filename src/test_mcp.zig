@@ -3872,7 +3872,8 @@ test "issue-682: codedb_callers excludes mentions inside raw literals and block 
         .{ "mention.js", "function notCallerB() {\n    const text = `https://example.test/renderX`;\n}\n" },
         .{ "mention.c", "void not_caller_c(void) {\n    init(); /* see https://example.test/renderX */\n}\n" },
         .{ "mention.rs", "fn not_caller_d() {\n    let text = r#\"say \"https://example.test/renderX\"\"#;\n}\n" },
-        .{ "template.js", "function callerE() {\n    const text = `value: ${renderX()}`;\n}\n" },
+        .{ "mention-regex.js", "function notCallerE() {\n    return /renderX/;\n}\n" },
+        .{ "template.js", "function callerF() {\n    const text = `value: ${renderX()}`;\n}\n" },
     }, "renderX", &out);
 
     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
@@ -3880,6 +3881,7 @@ test "issue-682: codedb_callers excludes mentions inside raw literals and block 
     try testing.expect(std.mem.indexOf(u8, out.items, "mention.js") == null);
     try testing.expect(std.mem.indexOf(u8, out.items, "mention.c") == null);
     try testing.expect(std.mem.indexOf(u8, out.items, "mention.rs") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mention-regex.js") == null);
     try testing.expect(std.mem.indexOf(u8, out.items, "template.js:2") != null);
 }
 
