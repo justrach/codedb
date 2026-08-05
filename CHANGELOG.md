@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.5838 - 2026-08-05
+
+- **`codedb_callers` now matches names only in lexical code** (#682, #683,
+  #684). A whole-word mention that exists solely in a trailing comment, quoted
+  string, raw/backtick literal, JavaScript regular expression, or complete
+  inline block comment is no longer reported as a call site.
+- Real references later on the same line remain visible when an earlier string,
+  raw literal, backtick literal, or block comment contains marker-like text such
+  as `//`, `#`, or `https://`; filtering no longer truncates the line at a
+  marker that is not actually a comment.
+- Language-aware handling covers PHP `//`/`#` comments without hiding PHP 8
+  `#[Attribute]` syntax, Swift `//` comments, Rust raw strings, nested block
+  comments where the language permits them, and shell comments after unescaped
+  operators while preserving `${#var}` and `$#`.
+- JavaScript and TypeScript template text is ignored while code inside `${...}`
+  remains searchable. Regular-expression bodies are skipped after punctuation
+  and expression-leading keywords such as `return`, `throw`, `yield`, and
+  `await`, including braces that appear inside regexes embedded in templates.
+- R backtick identifiers such as `` `renderX`(1) `` remain valid caller matches;
+  backticks in languages that use them as raw/template strings remain excluded
+  unless the match occurs in an executable template expression.
+- The scanner is allocation-free and caps nested template-expression scanning
+  at 16 levels to bound stack use and hostile-input rescanning. It intentionally
+  remains line-local because ranked caller candidates contain isolated source
+  lines; comment or literal state opened on a previous line is therefore still
+  treated as a heuristic limitation.
+
 ## 0.2.5837 - 2026-08-05
 
 - **OCaml** `.ml`/`.mli` parser support (#622): let/type/module outline symbols
