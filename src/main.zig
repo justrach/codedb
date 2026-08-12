@@ -510,7 +510,7 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
         // even though the index had been built.
         if (cliNotifyRefresh(io, allocator, abs_root, data_dir)) |refreshed| {
             if (!refreshed) {
-                out.p("{s}\xe2\x9c\x97{s} index persisted but live daemon refresh failed\n", .{ s.red, s.reset });
+                out.p("{s}\xe2\x9c\x97{s} index persisted but live daemon refresh failed; restart the codedb daemon to load it\n", .{ s.red, s.reset });
                 out.flush();
                 std.process.exit(1);
             }
