@@ -438,8 +438,9 @@ pub fn coldLoadOrScan(
         cio.posixGetenv("CODEDB_NO_AUTO_REFRESH") == null and
         snapshotIsStale(io, abs_root, data_dir, allocator);
 
+    const force_rescan = std.mem.eql(u8, cmd, "index") or std.mem.eql(u8, cmd, "snapshot");
     const snapshot_t0 = cio.nanoTimestamp();
-    const snapshot_loaded = !stale and loadBestSnapshot(io, explorer, store, abs_root, data_dir, git_head, allocator);
+    const snapshot_loaded = !force_rescan and !stale and loadBestSnapshot(io, explorer, store, abs_root, data_dir, git_head, allocator);
     const snapshot_elapsed = cio.nanoTimestamp() - snapshot_t0;
 
     // The word index powers codedb_word and BM25 ranked search. It must be

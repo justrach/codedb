@@ -7,6 +7,7 @@ const Store = @import("store.zig").Store;
 const Explorer = @import("explore.zig").Explorer;
 const Out = @import("out.zig").Out;
 const runQuery = @import("query.zig").runQuery;
+const watcher = @import("watcher.zig");
 const cli_args = @import("cli_args.zig");
 const parsePositional = cli_args.parsePositional;
 const cliIsQueryCmd = cli_args.cliIsQueryCmd;
@@ -132,6 +133,7 @@ const cli_bind_retry_ms: u64 = 1000;
 /// tests. Chosen so it can never collide with a real request blob, which
 /// always starts with a project root path (see cliTryProxy).
 pub const cli_yield_sentinel = "\x01codedb-cli-yield-v1\x01";
+pub const cli_refresh_sentinel = "\x01codedb-cli-refresh-v1\x01";
 
 /// Settle delay after sending a yield request before the very next bind
 /// attempt: gives the owner a moment to process the sentinel, unbind, and
@@ -781,6 +783,14 @@ fn cliServeConn(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
         cliRespond(conn, 0, "");
         return true;
     }
+    if (std.mem.eql(u8, blob, cli_refresh_sentinel)) {
+        watcher.refreshIndex(io, store, explorer, abs_root, allocator) catch {
+            cliRespond(conn, 1, "");
+            return false;
+        };
+        cliRespond(conn, 0, "");
+        return false;
+    }
 
     // Rebuild argv = ["codedb"] ++ split(blob, '\0'), skipping empty fields.
     var argv: std.ArrayList([]const u8) = .empty;
@@ -866,6 +876,27 @@ pub fn cliTryProxy(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u
         cio.File.stdout().writeAll(out_bytes) catch {};
     }
     return code;
+}
+
+pub fn cliNotifyRefresh(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8, data_dir: ?[]const u8) ?bool {
+    const conn = cliConnect(io, allocator, abs_root, data_dir) orelse return null;
+    defer cliCloseConn(conn);
+
+    var hdr: [5]u8 = undefined;
+    hdr[0] = 0;
+    std.mem.writeInt(u32, hdr[1..5], @intCast(cli_refresh_sentinel.len), .little);
+    if (!cliWriteFull(conn, &hdr) or !cliWriteFull(conn, cli_refresh_sentinel)) return false;
+
+    var resp_hdr: [5]u8 = undefined;
+    if (!cliReadFull(conn, &resp_hdr)) return false;
+    const out_len = std.mem.readInt(u32, resp_hdr[1..5], .little);
+    if (!cliResponseLenAllowed(out_len)) return false;
+    if (out_len > 0) {
+        const response = allocator.alloc(u8, out_len) catch return false;
+        defer allocator.free(response);
+        if (!cliReadFull(conn, response)) return false;
+    }
+    return resp_hdr[0] == 0;
 }
 
 fn cliConnect(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8, data_dir: ?[]const u8) ?CliConn {

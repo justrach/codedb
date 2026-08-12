@@ -533,7 +533,11 @@ def run_scenario_5_issue690_live_index_refresh(binary: str, project: str) -> lis
             r.ok()
 
             r = t("live MCP sees the file after CLI index")
-            outline_text = tool_text(p.call_tool("codedb_outline", {"path": "cli_added.py"}))
+            try:
+                outline_text = tool_text(p.call_tool("codedb_outline", {"path": "cli_added.py"}))
+            except BrokenPipeError:
+                r.fail(f"MCP process exited during refresh: {p.stderr_lines()[-40:]!r}")
+                return results
             if "cli_added" not in outline_text or "not indexed" in outline_text:
                 r.fail(f"outline stayed stale: {outline_text[:220]!r}")
                 return results
@@ -553,6 +557,16 @@ def run_scenario_5_issue690_live_index_refresh(binary: str, project: str) -> lis
             outline_text = tool_text(p.call_tool("codedb_outline", {"path": "tool_added.py"}))
             if "tool_added" not in outline_text or "not indexed" in outline_text:
                 r.fail(f"outline stayed stale: {outline_text[:220]!r}")
+            else:
+                r.ok()
+
+            (root / "initial.py").unlink()
+
+            r = t("codedb_index removes deleted files from the live MCP")
+            p.call_tool("codedb_index", {"path": str(root)})
+            outline_text = tool_text(p.call_tool("codedb_outline", {"path": "initial.py"}))
+            if "not indexed" not in outline_text:
+                r.fail(f"deleted file stayed indexed: {outline_text[:220]!r}")
             else:
                 r.ok()
         finally:

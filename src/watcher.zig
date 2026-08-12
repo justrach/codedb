@@ -1472,6 +1472,33 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
     }
 }
 
+pub fn refreshIndex(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator) !void {
+    var known = FileMap.init(allocator);
+    defer {
+        var iter = known.keyIterator();
+        while (iter.next()) |path| allocator.free(path.*);
+        known.deinit();
+    }
+
+    {
+        explorer.mu.lockShared();
+        defer explorer.mu.unlockShared();
+        var iter = explorer.outlines.keyIterator();
+        while (iter.next()) |path| {
+            const copy = try allocator.dupe(u8, path.*);
+            errdefer allocator.free(copy);
+            try known.put(copy, .{ .mtime = 0, .size = 0, .hash = 0, .seen = false });
+        }
+    }
+
+    const queue = try allocator.create(EventQueue);
+    defer allocator.destroy(queue);
+    queue.* = EventQueue{};
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    try incrementalDiff(io, store, explorer, queue, &known, root, allocator, arena.allocator());
+}
+
 const skip_extensions = [_][]const u8{
     ".png",     ".jpg",  ".jpeg", ".gif",  ".bmp",   ".ico",   ".icns",  ".webp",
     ".svg",     ".ttf",  ".otf",  ".woff", ".woff2", ".eot",   ".zip",   ".tar",

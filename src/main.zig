@@ -125,6 +125,7 @@ pub const daemonLockTryAcquire = cli_proxy.daemonLockTryAcquire;
 pub const daemonLockRelease = cli_proxy.daemonLockRelease;
 pub const daemonLockAvailable = cli_proxy.daemonLockAvailable;
 const cliTryProxy = cli_proxy.cliTryProxy;
+const cliNotifyRefresh = cli_proxy.cliNotifyRefresh;
 
 const bootstrap = @import("bootstrap.zig");
 const loadUserConfig = bootstrap.loadUserConfig;
@@ -507,6 +508,13 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
         // scanned + persisted the on-disk index for this cmd; confirm and exit
         // cleanly. It used to fall through to "unknown command: index" + exit 1
         // even though the index had been built.
+        if (cliNotifyRefresh(io, allocator, abs_root, data_dir)) |refreshed| {
+            if (!refreshed) {
+                out.p("{s}\xe2\x9c\x97{s} index persisted but live daemon refresh failed\n", .{ s.red, s.reset });
+                out.flush();
+                std.process.exit(1);
+            }
+        }
         explorer.mu.lockShared();
         const file_count = explorer.outlines.count();
         explorer.mu.unlockShared();
