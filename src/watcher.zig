@@ -1491,6 +1491,18 @@ pub fn refreshIndex(io: std.Io, store: *Store, explorer: *Explorer, root: []cons
         }
     }
 
+    // Seed size/hash from the store's latest version so unchanged files hit
+    // the metadata-only shortcut in incrementalDiff instead of being
+    // re-recorded and re-parsed on every explicit refresh. mtime stays 0 so
+    // every file is still read and hash-checked against current disk content.
+    var seed_iter = known.iterator();
+    while (seed_iter.next()) |kv| {
+        if (store.getLatest(kv.key_ptr.*)) |v| {
+            kv.value_ptr.size = v.size;
+            kv.value_ptr.hash = v.hash;
+        }
+    }
+
     const queue = try allocator.create(EventQueue);
     defer allocator.destroy(queue);
     queue.* = EventQueue{};
