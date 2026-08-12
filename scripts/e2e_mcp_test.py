@@ -26,6 +26,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -219,7 +220,7 @@ def all_tool_text(resp: dict[str, Any] | None) -> str:
 
 
 def wait_for_scan(p: MCPProcess, timeout: float = 60.0) -> bool:
-    """Poll codedb_status until outlines > 0 (full scan + outline pass done) or timeout."""
+    """Poll codedb_status until the scan is ready with at least one outline."""
     import re
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -227,7 +228,7 @@ def wait_for_scan(p: MCPProcess, timeout: float = 60.0) -> bool:
         if resp and "result" in resp:
             text = all_tool_text(resp)
             m = re.search(r'\boutlines:\s*(\d+)', text)
-            if m and int(m.group(1)) > 0:
+            if m and int(m.group(1)) > 0 and "scan: ready" in text:
                 return True
         time.sleep(1.0)
     return False
@@ -496,6 +497,70 @@ def run_scenario_4_issue512_direct_inline_args(binary: str, project: str) -> lis
     return results
 
 
+def run_scenario_5_issue690_live_index_refresh(binary: str, project: str) -> list[TestResult]:
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S5] {name}")
+        results.append(r)
+        return r
+
+    with tempfile.TemporaryDirectory(prefix="codedb-issue-690-", dir=Path(project).parent) as tmp:
+        root = Path(tmp)
+        (root / "pyproject.toml").write_text("[project]\nname = 'issue-690'\nversion = '0'\n")
+        (root / "initial.py").write_text("def initial():\n    return 'initial'\n")
+        p = MCPProcess(binary, [], cwd="/", command=[binary, str(root), "mcp", "--no-telemetry"])
+
+        try:
+            r = t("initial scan completes")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p):
+                r.fail("MCP server did not become ready")
+                return results
+            r.ok()
+
+            (root / "cli_added.py").write_text("def cli_added():\n    return 'cli_added'\n")
+
+            r = t("CLI index rebuilds the project")
+            index_run = subprocess.run(
+                [binary, str(root), "index"],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "CODEDB_NO_AUTO_UPDATE": "1", "CODEDB_NO_TELEMETRY": "1"},
+            )
+            if index_run.returncode != 0 or "index ready" not in index_run.stdout:
+                r.fail(f"index result: code={index_run.returncode} stdout={index_run.stdout[:160]!r}")
+                return results
+            r.ok()
+
+            r = t("live MCP sees the file after CLI index")
+            outline_text = tool_text(p.call_tool("codedb_outline", {"path": "cli_added.py"}))
+            if "cli_added" not in outline_text or "not indexed" in outline_text:
+                r.fail(f"outline stayed stale: {outline_text[:220]!r}")
+                return results
+            r.ok()
+
+            (root / "tool_added.py").write_text("def tool_added():\n    return 'tool_added'\n")
+
+            r = t("codedb_index rebuilds the project")
+            index_resp = p.call_tool("codedb_index", {"path": str(root)})
+            index_text = tool_text(index_resp)
+            if "indexed:" not in index_text or "error:" in index_text:
+                r.fail(f"index response: {index_text[:220]!r}")
+                return results
+            r.ok()
+
+            r = t("live MCP sees the file after codedb_index")
+            outline_text = tool_text(p.call_tool("codedb_outline", {"path": "tool_added.py"}))
+            if "tool_added" not in outline_text or "not indexed" in outline_text:
+                r.fail(f"outline stayed stale: {outline_text[:220]!r}")
+            else:
+                r.ok()
+        finally:
+            p.close()
+
+    return results
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -531,6 +596,9 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 4: issue-512 direct inline args ──{RESET}")
     all_results += run_scenario_4_issue512_direct_inline_args(binary, project)
+
+    print(f"\n{CYAN}── Scenario 5: issue-690 live index refresh ──{RESET}")
+    all_results += run_scenario_5_issue690_live_index_refresh(binary, project)
 
     print()
     passed = 0
