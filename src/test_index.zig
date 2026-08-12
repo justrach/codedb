@@ -3528,3 +3528,36 @@ test "issue-635: files between 512KB and 1MB are silently dropped from the index
     defer testing.allocator.free(big_hits);
     try testing.expect(big_hits.len >= 1); // fails on main: big.zig dropped at the 512KB gate
 }
+
+test "issue-690: refreshIndex skips unchanged files but re-indexes changed ones" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.py", .data = "def a():\n    return 1\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, true, 1);
+
+    // First refresh records real content hashes for entries the initial scan
+    // stored with hash 0; the second must then be a no-op on the store.
+    try watcher.refreshIndex(io, &store, &explorer, root, testing.allocator);
+    const settled_seq = store.currentSeq();
+    try watcher.refreshIndex(io, &store, &explorer, root, testing.allocator);
+    try testing.expectEqual(settled_seq, store.currentSeq());
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.py", .data = "def a_changed():\n    return 2\n" });
+    try watcher.refreshIndex(io, &store, &explorer, root, testing.allocator);
+    try testing.expect(store.currentSeq() > settled_seq);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try testing.expect(try explorer.renderOutline("a.py", testing.allocator, &out, false));
+    try testing.expect(std.mem.indexOf(u8, out.items, "a_changed") != null);
+}
