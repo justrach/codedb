@@ -1240,21 +1240,20 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
         }
         known.deinit();
     }
-    // Build initial snapshot: stat every file, defer expensive hashing until mtime changes.
+    // Seed from the live Explorer, not the current tree. Files that exist
+    // on disk but were missing from the snapshot (added before this daemon
+    // started) must look new so the first reconcile indexes them. Seeding
+    // from a tree walk used to stamp those files as already-known and they
+    // stayed invisible until restart (#690).
+    seedKnownFromExplorer(store, explorer, &known, backing) catch |err| {
+        std.log.warn("watcher: could not seed known files: {}", .{err});
+    };
     {
-        var snap_arena = std.heap.ArenaAllocator.init(backing);
-        defer snap_arena.deinit();
-        const tmp = snap_arena.allocator();
-        const dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return;
-        defer dir.close(io);
-        var walker = FilteredWalker.init(io, dir, tmp) catch return;
-        defer walker.deinit();
-        while (walker.next() catch null) |entry| {
-            const stat = dir.statFile(io, entry.path, .{}) catch continue;
-            const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
-            const duped = backing.dupe(u8, entry.path) catch continue;
-            known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = false }) catch backing.free(duped);
-        }
+        var boot_arena = std.heap.ArenaAllocator.init(backing);
+        defer boot_arena.deinit();
+        incrementalDiff(io, store, explorer, queue, &known, root, backing, boot_arena.allocator()) catch |err| {
+            std.log.err("watcher: startup reconcile failed: {}", .{err});
+        };
     }
 
     // Track current git HEAD to detect branch switches (#116)
@@ -1472,14 +1471,7 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
     }
 }
 
-pub fn refreshIndex(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator) !void {
-    var known = FileMap.init(allocator);
-    defer {
-        var iter = known.keyIterator();
-        while (iter.next()) |path| allocator.free(path.*);
-        known.deinit();
-    }
-
+fn seedKnownFromExplorer(store: *Store, explorer: *Explorer, known: *FileMap, allocator: std.mem.Allocator) !void {
     {
         explorer.mu.lockShared();
         defer explorer.mu.unlockShared();
@@ -1502,6 +1494,17 @@ pub fn refreshIndex(io: std.Io, store: *Store, explorer: *Explorer, root: []cons
             kv.value_ptr.hash = v.hash;
         }
     }
+}
+
+pub fn refreshIndex(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator) !void {
+    var known = FileMap.init(allocator);
+    defer {
+        var iter = known.keyIterator();
+        while (iter.next()) |path| allocator.free(path.*);
+        known.deinit();
+    }
+
+    try seedKnownFromExplorer(store, explorer, &known, allocator);
 
     const queue = try allocator.create(EventQueue);
     defer allocator.destroy(queue);

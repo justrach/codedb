@@ -3561,3 +3561,86 @@ test "issue-690: refreshIndex skips unchanged files but re-indexes changed ones"
     try testing.expect(try explorer.renderOutline("a.py", testing.allocator, &out, false));
     try testing.expect(std.mem.indexOf(u8, out.items, "a_changed") != null);
 }
+
+test "issue-690: refreshIndex adds new files and drops deleted ones" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "keep.py", .data = "def keep():\n    return 1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "gone.py", .data = "def gone():\n    return 1\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, true, 1);
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "added.py", .data = "def added():\n    return 1\n" });
+    try tmp.dir.deleteFile(io, "gone.py");
+    try watcher.refreshIndex(io, &store, &explorer, root, testing.allocator);
+
+    var added_out: std.ArrayList(u8) = .empty;
+    defer added_out.deinit(testing.allocator);
+    try testing.expect(try explorer.renderOutline("added.py", testing.allocator, &added_out, false));
+    try testing.expect(std.mem.indexOf(u8, added_out.items, "added") != null);
+
+    var gone_out: std.ArrayList(u8) = .empty;
+    defer gone_out.deinit(testing.allocator);
+    try testing.expect(!(try explorer.renderOutline("gone.py", testing.allocator, &gone_out, false)));
+
+    var keep_out: std.ArrayList(u8) = .empty;
+    defer keep_out.deinit(testing.allocator);
+    try testing.expect(try explorer.renderOutline("keep.py", testing.allocator, &keep_out, false));
+}
+
+test "issue-690: incrementalLoop startup indexes files missing from the snapshot" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "snap.py", .data = "def snap():\n    return 1\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, true, 1);
+
+    // File exists on disk before the daemon starts, but is absent from the
+    // in-memory snapshot. The old watcher seeded `known` from a tree walk,
+    // stamped this file as already-seen, and never indexed it.
+    try tmp.dir.writeFile(io, .{ .sub_path = "preexisting.py", .data = "def preexisting():\n    return 1\n" });
+
+    var shutdown = std.atomic.Value(bool).init(false);
+    var scan_done = std.atomic.Value(bool).init(true);
+    const queue = try testing.allocator.create(watcher.EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = .{};
+    const thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{
+        io, &store, &explorer, queue, root, &shutdown, &scan_done,
+    });
+
+    var found = false;
+    var i: usize = 0;
+    while (i < 40) : (i += 1) {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        if (try explorer.renderOutline("preexisting.py", testing.allocator, &out, false)) {
+            if (std.mem.indexOf(u8, out.items, "preexisting") != null) {
+                found = true;
+                break;
+            }
+        }
+        cio.sleepMs(50);
+    }
+    shutdown.store(true, .release);
+    thread.join();
+    try testing.expect(found);
+}

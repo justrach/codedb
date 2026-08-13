@@ -9,9 +9,10 @@ Scenarios covered:
      and tools return data without needing a roots handshake.
   3. No-roots client: spawn from cwd=/, client declares no roots capability, MCP
      stays alive and tools respond gracefully (0 files, no crash).
-  4. issue-512 regression: direct tools/call accepts inline params when
-     arguments is empty, matching codedb_bundle's compatibility fallback.
-
+   4. issue-512 regression: direct tools/call accepts inline params when
+      arguments is empty, matching codedb_bundle's compatibility fallback.
+   5. issue-690 regression: CLI `index` and `codedb_index` refresh a live
+      MCP daemon so newly added/deleted files are visible without restart.
 Usage:
   python3 scripts/e2e_mcp_test.py [--binary /path/to/codedb] [--project /path/to/project]
 

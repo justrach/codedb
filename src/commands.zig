@@ -244,6 +244,14 @@ pub fn runSnapshot(ctx: *RunCtx) void {
         sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed),
         s.reset,
     });
+    // #690: `codedb_index` runs this command in a child process. Tell a
+    // live daemon about the rebuilt snapshot; do not fail the write if the
+    // daemon cannot refresh — the parent MCP path retries in-process.
+    if (cli_proxy.cliNotifyRefresh(io, allocator, abs_root, data_dir)) |refreshed| {
+        if (!refreshed) {
+            std.log.warn("snapshot: live daemon refresh failed; restart the codedb daemon to load it", .{});
+        }
+    }
 }
 
 pub fn runCliDaemon(ctx: *RunCtx) !void {

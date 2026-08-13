@@ -2719,6 +2719,11 @@ test "issue-685: codedb_deps exposes bounded typed document edges" {
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"document_hops\":{\"type\":\"integer\"") != null);
 }
 
+test "issue-690: codedb_index description says it refreshes a live daemon" {
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "refreshes a live daemon") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "the watched MCP project stays fresh automatically") == null);
+}
+
 test "issue-685: direct document deps are capped at 64 files" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
