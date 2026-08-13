@@ -4767,6 +4767,12 @@ fn handleIndex(
     }
 
     cache.invalidate(abs_path);
+    if (std.mem.eql(u8, abs_path, cache.default_path) and getScanState() == .ready) {
+        watcher.refreshIndex(io, default_store, default_explorer, abs_path, alloc) catch {
+            out.appendSlice(alloc, "error: indexed snapshot but failed to refresh live project") catch {};
+            return;
+        };
+    }
     if (std.mem.eql(u8, abs_path, cache.default_path) and
         default_store.currentSeq() == 0 and
         getScanState() == .loading_snapshot)
