@@ -4747,7 +4747,7 @@ fn handleIndex(
 
     const result = cio.runCapture(.{
         .allocator = alloc,
-        .argv = &.{ exe_path, abs_path, "snapshot", snapshot_path },
+        .argv = &.{ exe_path, abs_path, "snapshot", snapshot_path, "--no-live-refresh" },
         .max_output_bytes = 64 * 1024,
     }) catch {
         out.appendSlice(alloc, "error: failed to run indexer") catch {};

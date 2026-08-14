@@ -215,6 +215,8 @@ pub fn runSnapshot(ctx: *RunCtx) void {
     const out = ctx.out;
     const s = ctx.s;
     const t0 = cio.nanoTimestamp();
+    const suppress_live_refresh = args.len > cmd_args_start + 1 and
+        std.mem.eql(u8, args[cmd_args_start + 1], "--no-live-refresh");
     const output = if (args.len > cmd_args_start) args[cmd_args_start] else blk: {
         break :blk std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch "codedb.snapshot";
     };
@@ -244,12 +246,15 @@ pub fn runSnapshot(ctx: *RunCtx) void {
         sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed),
         s.reset,
     });
-    // #690: `codedb_index` runs this command in a child process. Tell a
-    // live daemon about the rebuilt snapshot; do not fail the write if the
-    // daemon cannot refresh — the parent MCP path retries in-process.
-    if (cli_proxy.cliNotifyRefresh(io, allocator, abs_root, data_dir)) |refreshed| {
-        if (!refreshed) {
-            std.log.warn("snapshot: live daemon refresh failed; restart the codedb daemon to load it", .{});
+    // #690: Tell a live daemon about the rebuilt snapshot. `codedb_index`
+    // suppresses this child notification because its MCP parent refreshes the
+    // same live Explorer directly; notifying here would walk and hash the whole
+    // tree twice. Standalone `snapshot` keeps the notification behavior.
+    if (!suppress_live_refresh) {
+        if (cli_proxy.cliNotifyRefresh(io, allocator, abs_root, data_dir)) |refreshed| {
+            if (!refreshed) {
+                std.log.warn("snapshot: live daemon refresh failed; restart the codedb daemon to load it", .{});
+            }
         }
     }
 }
