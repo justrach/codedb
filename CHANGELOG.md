@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.5839 - 2026-08-15
+
+- **Live daemon index refresh** (#690, #691). `codedb index` and the
+  `codedb_index` MCP tool used to rebuild the persisted snapshot and still
+  report `✓ index ready` while a long-lived `mcp` / `cli-daemon` process kept
+  serving the old in-memory `Explorer`. Explicit index and snapshot operations
+  now rescan the current tree, reuse the watcher reconciliation path for added,
+  changed, and deleted files, and notify a live daemon after a CLI rebuild.
+  Unchanged files stay on the metadata-only shortcut (no extra store version,
+  no re-parse) because refresh is seeded from the store's latest size and hash.
+  If the daemon accepts the connection but cannot refresh, the command fails
+  and names the recovery step: restart the daemon.
+- Watcher startup now reconciles against the live `Explorer` instead of
+  rebuilding a second in-memory index, so a just-refreshed daemon is not
+  immediately replaced by a stale snapshot.
+- A second live-index refresh after an already-successful rebuild is skipped,
+  so the success path does not redo the same work.
+
 ## 0.2.5838 - 2026-08-05
 
 - **`codedb_context` supports typed JSON provenance** (#688). `format=json`
