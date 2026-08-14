@@ -16,6 +16,9 @@ pub const ChangeEntry = struct {
 
 pub const Store = struct {
     files: std.StringHashMap(FileVersions),
+    /// Last observed file mtime (ms). Process-local: lets refreshIndex skip
+    /// unread files after the first reconcile without changing Version.
+    mtimes: std.StringHashMap(i64),
     seq: u64,
     allocator: std.mem.Allocator,
     mu: cio.Mutex = .{},
@@ -33,6 +36,7 @@ pub const Store = struct {
     pub fn init(allocator: std.mem.Allocator) Store {
         return .{
             .files = std.StringHashMap(FileVersions).init(allocator),
+            .mtimes = std.StringHashMap(i64).init(allocator),
             .seq = 0,
             .allocator = allocator,
         };
@@ -45,6 +49,9 @@ pub const Store = struct {
             entry.value_ptr.deinit();
         }
         self.files.deinit();
+        var miter = self.mtimes.iterator();
+        while (miter.next()) |entry| self.allocator.free(entry.key_ptr.*);
+        self.mtimes.deinit();
         if (self.data_log) |f| {
             if (self.io) |io| f.close(io);
         }
@@ -212,6 +219,29 @@ pub const Store = struct {
         }
         try log.setLength(io, write_pos);
         self.data_log_pos = write_pos;
+    }
+
+    pub fn noteMtime(self: *Store, path: []const u8, mtime: i64) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (self.mtimes.getPtr(path)) |slot| {
+            slot.* = mtime;
+            return;
+        }
+        const key = self.allocator.dupe(u8, path) catch return;
+        self.mtimes.put(key, mtime) catch self.allocator.free(key);
+    }
+
+    pub fn getMtime(self: *Store, path: []const u8) ?i64 {
+        self.mu.lock();
+        defer self.mu.unlock();
+        return self.mtimes.get(path);
+    }
+
+    pub fn forgetMtime(self: *Store, path: []const u8) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (self.mtimes.fetchRemove(path)) |kv| self.allocator.free(kv.key);
     }
 
     pub fn getLatest(self: *Store, path: []const u8) ?Version {

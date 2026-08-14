@@ -3597,6 +3597,54 @@ test "issue-690: refreshIndex adds new files and drops deleted ones" {
     try testing.expect(try explorer.renderOutline("keep.py", testing.allocator, &keep_out, false));
 }
 
+test "refreshIndex second pass skips unread files once mtimes are cached" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.py", .data = "def a():\n    return 1\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, true, 1);
+
+    try watcher.refreshIndex(io, &store, &explorer, root, testing.allocator);
+    try testing.expect(store.getMtime("a.py") != null);
+    const settled_seq = store.currentSeq();
+    try watcher.refreshIndex(io, &store, &explorer, root, testing.allocator);
+    try testing.expectEqual(settled_seq, store.currentSeq());
+}
+
+test "indexMissingFile indexes a new file without a full refresh" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "keep.py", .data = "def keep():\n    return 1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "added.py", .data = "def added():\n    return 2\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try explorer.indexFile("keep.py", "def keep():\n    return 1\n");
+
+    try testing.expect(watcher.indexMissingFile(io, &store, &explorer, "added.py"));
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try testing.expect(try explorer.renderOutline("added.py", testing.allocator, &out, false));
+    try testing.expect(std.mem.indexOf(u8, out.items, "added") != null);
+    try testing.expect(!watcher.indexMissingFile(io, &store, &explorer, "../escape.py"));
+}
+
 test "issue-690: incrementalLoop startup indexes files missing from the snapshot" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

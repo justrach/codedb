@@ -81,6 +81,44 @@ const FileState = struct {
 };
 
 const FileMap = std.StringHashMap(FileState);
+const DirMap = std.StringHashMap(i64);
+
+fn parentRel(path: []const u8) []const u8 {
+    return if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| path[0..i] else "";
+}
+
+fn firstComponentUnder(prefix: []const u8, path: []const u8) ?[]const u8 {
+    const rest = if (prefix.len == 0)
+        path
+    else blk: {
+        if (!std.mem.startsWith(u8, path, prefix)) return null;
+        if (path.len == prefix.len) return null;
+        if (path[prefix.len] != '/') return null;
+        break :blk path[prefix.len + 1 ..];
+    };
+    if (rest.len == 0) return null;
+    if (std.mem.indexOfScalar(u8, rest, '/')) |i| return rest[0..i];
+    return null;
+}
+
+fn joinRel(tmp: std.mem.Allocator, prefix: []const u8, name: []const u8) ![]const u8 {
+    if (prefix.len == 0) return name;
+    return std.fmt.allocPrint(tmp, "{s}/{s}", .{ prefix, name });
+}
+
+fn dirMtimeMs(io: std.Io, dir: std.Io.Dir, rel: []const u8) ?i64 {
+    const st = dir.statFile(io, if (rel.len == 0) "." else rel, .{}) catch return null;
+    return @intCast(@divTrunc(st.mtime.nanoseconds, std.time.ns_per_ms));
+}
+
+fn rememberDirMtime(dirs: *DirMap, persistent: std.mem.Allocator, rel: []const u8, mtime: i64) void {
+    if (dirs.getPtr(rel)) |slot| {
+        slot.* = mtime;
+        return;
+    }
+    const key = persistent.dupe(u8, rel) catch return;
+    dirs.put(key, mtime) catch persistent.free(key);
+}
 
 const InitialScanEntry = struct {
     path: []u8,
@@ -1240,6 +1278,12 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
         }
         known.deinit();
     }
+    var dirs = DirMap.init(backing);
+    defer {
+        var diter = dirs.iterator();
+        while (diter.next()) |kv| backing.free(kv.key_ptr.*);
+        dirs.deinit();
+    }
     // Seed from the live Explorer, not the current tree. Files that exist
     // on disk but were missing from the snapshot (added before this daemon
     // started) must look new so the first reconcile indexes them. Seeding
@@ -1251,7 +1295,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
     {
         var boot_arena = std.heap.ArenaAllocator.init(backing);
         defer boot_arena.deinit();
-        incrementalDiff(io, store, explorer, queue, &known, root, backing, boot_arena.allocator()) catch |err| {
+        incrementalDiffInner(io, store, explorer, queue, &known, &dirs, root, backing, boot_arena.allocator()) catch |err| {
             std.log.err("watcher: startup reconcile failed: {}", .{err});
         };
     }
@@ -1310,6 +1354,9 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
             var kiter2 = known.iterator();
             while (kiter2.next()) |kv| backing.free(kv.key_ptr.*);
             known.clearRetainingCapacity();
+            var diter = dirs.iterator();
+            while (diter.next()) |kv| backing.free(kv.key_ptr.*);
+            dirs.clearRetainingCapacity();
 
             // Re-scan with trigram cap
             var rescan_arena = std.heap.ArenaAllocator.init(backing);
@@ -1338,7 +1385,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
         var cycle_arena = std.heap.ArenaAllocator.init(backing);
         defer cycle_arena.deinit();
 
-        incrementalDiff(io, store, explorer, queue, &known, root, backing, cycle_arena.allocator()) catch |err| {
+        incrementalDiffInner(io, store, explorer, queue, &known, &dirs, root, backing, cycle_arena.allocator()) catch |err| {
             std.log.err("watcher: diff failed: {}", .{err});
         };
     }
@@ -1385,6 +1432,20 @@ fn pushEventOrWait(queue: *EventQueue, event: FsEvent) void {
 }
 
 fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, persistent: std.mem.Allocator, tmp: std.mem.Allocator) !void {
+    try incrementalDiffInner(io, store, explorer, queue, known, null, root, persistent, tmp);
+}
+
+fn incrementalDiffInner(
+    io: std.Io,
+    store: *Store,
+    explorer: *Explorer,
+    queue: *EventQueue,
+    known: *FileMap,
+    dirs: ?*DirMap,
+    root: []const u8,
+    persistent: std.mem.Allocator,
+    tmp: std.mem.Allocator,
+) !void {
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 
@@ -1394,62 +1455,9 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
         kv.value_ptr.seen = false;
     }
 
-    var walker = try FilteredWalker.init(io, dir, tmp);
-    defer walker.deinit();
-
-    while (try walker.next()) |entry| {
-        const stat = dir.statFile(io, entry.path, .{}) catch continue;
-        const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
-
-        if (known.getEntry(entry.path)) |known_entry| {
-            const old = known_entry.value_ptr;
-            old.seen = true;
-
-            // Mtime unchanged -> skip (cheap path, no IO)
-            if (old.mtime == mtime) continue;
-
-            const stable_path = known_entry.key_ptr.*;
-
-            // Mtime changed: read the file once and reuse the buffer for both the
-            // content hash (change detection) and indexing, instead of hashing
-            // (full read) and then indexing (a second full read).
-            var hash: u64 = 0;
-            var content: ?[]const u8 = null;
-            var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer content_arena.deinit();
-            if (!shouldSkipFile(entry.path) and stat.size <= max_indexed_file_bytes) {
-                if (dir.readFileAlloc(io, entry.path, content_arena.allocator(), .limited(max_indexed_file_bytes))) |buf| {
-                    content = buf;
-                    hash = std.hash.Wyhash.hash(0, buf);
-                } else |_| {
-                    hash = std.math.maxInt(u64); // IO error -> force re-index next cycle
-                }
-            }
-
-            // Same size + matching prior hash -> content identical (touch, git
-            // checkout): update metadata only, no snapshot/event/re-index.
-            if (old.size == stat.size and hash != 0 and old.hash != 0 and hash == old.hash) {
-                old.mtime = mtime;
-                old.size = stat.size;
-                continue;
-            }
-
-            const seq = try store.recordSnapshot(entry.path, stat.size, hash);
-            old.mtime = mtime;
-            old.size = stat.size;
-            old.hash = hash;
-            if (FsEvent.init(stable_path, .modified, seq)) |ev| pushEventOrWait(queue, ev);
-            if (content) |buf| indexContentBuffer(explorer, stable_path, buf, false) catch {};
-        } else {
-            // New files always generate an event, so skip the extra full-file hash pass.
-            const duped = try persistent.dupe(u8, entry.path);
-            errdefer persistent.free(duped);
-            const seq = try store.recordSnapshot(duped, stat.size, 0);
-            try known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = true });
-            if (FsEvent.init(duped, .created, seq)) |ev| pushEventOrWait(queue, ev);
-            indexFileContent(io, explorer, dir, duped, tmp, false) catch {};
-        }
-    }
+    var ignore = try FilteredWalker.init(io, dir, tmp);
+    defer ignore.deinit();
+    try walkRel(io, store, explorer, queue, known, dirs, &ignore, dir, "", persistent, tmp);
 
     // Detect deleted files
     var to_remove: std.ArrayList([]const u8) = .empty;
@@ -1468,6 +1476,147 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
             if (FsEvent.init(kv.key, .deleted, seq)) |ev| pushEventOrWait(queue, ev);
             persistent.free(kv.key);
         }
+        store.forgetMtime(path);
+    }
+}
+
+fn applyKnownFile(
+    io: std.Io,
+    store: *Store,
+    explorer: *Explorer,
+    queue: *EventQueue,
+    known: *FileMap,
+    dir: std.Io.Dir,
+    path: []const u8,
+    stat: std.Io.Dir.Stat,
+) !void {
+    const known_entry = known.getEntry(path) orelse return;
+    const old = known_entry.value_ptr;
+    old.seen = true;
+    const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
+    if (old.mtime == mtime and old.size == stat.size) {
+        store.noteMtime(path, mtime);
+        return;
+    }
+
+    const stable_path = known_entry.key_ptr.*;
+    var hash: u64 = 0;
+    var content: ?[]const u8 = null;
+    var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer content_arena.deinit();
+    if (!shouldSkipFile(path) and stat.size <= max_indexed_file_bytes) {
+        if (dir.readFileAlloc(io, path, content_arena.allocator(), .limited(max_indexed_file_bytes))) |buf| {
+            content = buf;
+            hash = std.hash.Wyhash.hash(0, buf);
+        } else |_| {
+            hash = std.math.maxInt(u64);
+        }
+    }
+
+    if (old.size == stat.size and hash != 0 and old.hash != 0 and hash == old.hash) {
+        old.mtime = mtime;
+        old.size = stat.size;
+        store.noteMtime(path, mtime);
+        return;
+    }
+
+    const seq = try store.recordSnapshot(path, stat.size, hash);
+    old.mtime = mtime;
+    old.size = stat.size;
+    old.hash = hash;
+    store.noteMtime(path, mtime);
+    if (FsEvent.init(stable_path, .modified, seq)) |ev| pushEventOrWait(queue, ev);
+    if (content) |buf| indexContentBuffer(explorer, stable_path, buf, false) catch {};
+}
+
+fn walkRel(
+    io: std.Io,
+    store: *Store,
+    explorer: *Explorer,
+    queue: *EventQueue,
+    known: *FileMap,
+    dirs: ?*DirMap,
+    ignore: *FilteredWalker,
+    dir: std.Io.Dir,
+    prefix: []const u8,
+    persistent: std.mem.Allocator,
+    tmp: std.mem.Allocator,
+) !void {
+    const current_mtime = dirMtimeMs(io, dir, prefix);
+    const cached_mtime = if (dirs) |d| d.get(prefix) else null;
+    const dir_unchanged = current_mtime != null and cached_mtime != null and current_mtime.? == cached_mtime.?;
+
+    if (dir_unchanged) {
+        // Listing is unchanged: no creates/deletes in this directory. Still
+        // stat known files here (edits bump file mtime, not the parent) and
+        // recurse into known child directories so their mtimes are checked.
+        var child_seen = std.StringHashMap(void).init(tmp);
+        defer child_seen.deinit();
+        var kiter = known.iterator();
+        while (kiter.next()) |kv| {
+            const path = kv.key_ptr.*;
+            if (std.mem.eql(u8, parentRel(path), prefix)) {
+                const stat = dir.statFile(io, path, .{}) catch continue;
+                try applyKnownFile(io, store, explorer, queue, known, dir, path, stat);
+                continue;
+            }
+            if (firstComponentUnder(prefix, path)) |name| {
+                child_seen.put(name, {}) catch {};
+            }
+        }
+        var cit = child_seen.keyIterator();
+        while (cit.next()) |name| {
+            if (shouldSkipDir(name.*)) continue;
+            const child = try joinRel(tmp, prefix, name.*);
+            if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(name.*, child)) continue;
+            try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp);
+        }
+        return;
+    }
+
+    const listing = if (prefix.len == 0)
+        dir
+    else
+        dir.openDir(io, prefix, .{ .iterate = true }) catch return;
+    defer if (prefix.len != 0) listing.close(io);
+    var it = listing.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind == .directory or (entry.kind == .sym_link and blk: {
+            const st = listing.statFile(io, entry.name, .{}) catch break :blk false;
+            break :blk st.kind == .directory;
+        })) {
+            if (shouldSkipDir(entry.name)) continue;
+            const child = try joinRel(tmp, prefix, entry.name);
+            if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(entry.name, child)) continue;
+            try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp);
+            continue;
+        }
+
+        if (entry.kind != .file) {
+            if (entry.kind != .sym_link) continue;
+            const st = listing.statFile(io, entry.name, .{}) catch continue;
+            if (st.kind != .file) continue;
+        }
+
+        const rel = try joinRel(tmp, prefix, entry.name);
+        if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(entry.name, rel)) continue;
+        const stat = dir.statFile(io, rel, .{}) catch continue;
+        if (known.getEntry(rel)) |known_entry| {
+            try applyKnownFile(io, store, explorer, queue, known, dir, known_entry.key_ptr.*, stat);
+        } else {
+            const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
+            const duped = try persistent.dupe(u8, rel);
+            errdefer persistent.free(duped);
+            const seq = try store.recordSnapshot(duped, stat.size, 0);
+            try known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = true });
+            store.noteMtime(duped, mtime);
+            if (FsEvent.init(duped, .created, seq)) |ev| pushEventOrWait(queue, ev);
+            indexFileContent(io, explorer, dir, duped, tmp, false) catch {};
+        }
+    }
+
+    if (dirs) |dir_map| {
+        if (current_mtime) |mt| rememberDirMtime(dir_map, persistent, prefix, mt);
     }
 }
 
@@ -1485,15 +1634,40 @@ fn seedKnownFromExplorer(store: *Store, explorer: *Explorer, known: *FileMap, al
 
     // Seed size/hash from the store's latest version so unchanged files hit
     // the metadata-only shortcut in incrementalDiff instead of being
-    // re-recorded and re-parsed on every explicit refresh. mtime stays 0 so
-    // every file is still read and hash-checked against current disk content.
+    // re-recorded and re-parsed on every explicit refresh. mtime comes from
+    // the process-local store cache after the first reconcile so later
+    // refreshes can skip unread files whose stat mtime still matches.
     var seed_iter = known.iterator();
     while (seed_iter.next()) |kv| {
         if (store.getLatest(kv.key_ptr.*)) |v| {
             kv.value_ptr.size = v.size;
             kv.value_ptr.hash = v.hash;
         }
+        if (store.getMtime(kv.key_ptr.*)) |mt| kv.value_ptr.mtime = mt;
     }
+}
+
+/// Index one on-disk file that the live Explorer has not seen yet.
+/// Used by codedb_outline so agents get the file instead of a codedb_index hint.
+pub fn indexMissingFile(io: std.Io, store: ?*Store, explorer: *Explorer, path: []const u8) bool {
+    if (path.len == 0 or path[0] == '/') return false;
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return false;
+    if (std.mem.indexOfScalar(u8, path, '\\') != null) return false;
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |component| {
+        if (std.mem.eql(u8, component, "..")) return false;
+    }
+    if (shouldSkipFile(path)) return false;
+    const root_dir = explorer.root_dir orelse return false;
+    const stat = root_dir.statFile(io, path, .{}) catch return false;
+    if (stat.size > max_indexed_file_bytes) return false;
+    indexFileContent(io, explorer, root_dir, path, explorer.allocator, false) catch return false;
+    const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
+    if (store) |s| {
+        _ = s.recordSnapshot(path, stat.size, 0) catch {};
+        s.noteMtime(path, mtime);
+    }
+    return true;
 }
 
 pub fn refreshIndex(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator) !void {
@@ -1612,6 +1786,7 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
             existing.size = stat.size;
             existing.hash = hash;
         }
+        store.noteMtime(rel, mtime);
 
         // Push event to queue
         if (FsEvent.init(rel, .modified, store.currentSeq())) |ev| {
@@ -1678,4 +1853,76 @@ test "issue-685: watcher diff updates document edges for modify add and delete" 
     const links = explorer.document_graph.getForwardDeps("docs/a.md") orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(usize, 1), links.len);
     try testing.expectEqualStrings("docs/c.md", links[0]);
+}
+
+test "dir-mtime prune still stats known files and notices new siblings" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "src");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/a.py", .data = "def a():\n    return 1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/b.py", .data = "def b():\n    return 1\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+
+    var known = FileMap.init(testing.allocator);
+    defer {
+        var iter = known.keyIterator();
+        while (iter.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    var dirs = DirMap.init(testing.allocator);
+    defer {
+        var iter = dirs.keyIterator();
+        while (iter.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+
+    var queue = EventQueue{};
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+    }
+    try testing.expect(explorer.outlines.contains("src/a.py"));
+    try testing.expect(explorer.outlines.contains("src/b.py"));
+    const first_seq = store.currentSeq();
+
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+    }
+    try testing.expectEqual(first_seq, store.currentSeq());
+
+    cio.sleepMs(10);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/a.py", .data = "def a_changed():\n    return 2\n" });
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+    }
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try testing.expect(try explorer.renderOutline("src/a.py", testing.allocator, &out, false));
+    try testing.expect(std.mem.indexOf(u8, out.items, "a_changed") != null);
+
+    cio.sleepMs(10);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/c.py", .data = "def c():\n    return 3\n" });
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+    }
+    try testing.expect(explorer.outlines.contains("src/c.py"));
 }

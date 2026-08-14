@@ -17,6 +17,13 @@
   immediately replaced by a stale snapshot.
 - A second live-index refresh after an already-successful rebuild is skipped,
   so the success path does not redo the same work.
+- The live walker now skips `readdir` on directories whose mtime has not
+  changed, while still statting known files so in-place edits are seen.
+  Explicit `refreshIndex` caches file mtimes after the first pass so later
+  refreshes do not re-read unchanged content.
+- `codedb_outline` indexes a just-added on-disk file on miss instead of
+  telling the agent to run `codedb_index`. The remaining not-indexed hint
+  is only for missing, ignored, or oversized paths.
 
 ## 0.2.5838 - 2026-08-05
 

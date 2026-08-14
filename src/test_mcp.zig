@@ -2721,7 +2721,42 @@ test "issue-685: codedb_deps exposes bounded typed document edges" {
 
 test "issue-690: codedb_index description says it refreshes a live daemon" {
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "refreshes a live daemon") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "indexes a just-added file on miss") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "do not call codedb_index first") != null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "the watched MCP project stays fresh automatically") == null);
+}
+
+test "live outline indexes a missing on-disk file instead of hinting codedb_index" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "keep.py", .data = "def keep():\n    return 1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "added.py", .data = "def added():\n    return 2\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try explorer.indexFile("keep.py", "def keep():\n    return 1\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, root, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"path\":\"added.py\"}", .{});
+    defer args.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_outline, &args.value.object, &out, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, out.items, "file not indexed") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "try codedb_index") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "added") != null);
 }
 
 test "issue-685: direct document deps are capped at 64 files" {
