@@ -13,6 +13,9 @@ Scenarios covered:
       arguments is empty, matching codedb_bundle's compatibility fallback.
    5. issue-690 regression: CLI `index` and `codedb_index` refresh a live
       MCP daemon so newly added/deleted files are visible without restart.
+   6. Out-of-the-box agent route: a just-added file is visible via
+      codedb_outline / codedb_read / codedb_search without codedb_index,
+      and the live walker picks up an in-place edit.
 Usage:
   python3 scripts/e2e_mcp_test.py [--binary /path/to/codedb] [--project /path/to/project]
 
@@ -576,6 +579,120 @@ def run_scenario_5_issue690_live_index_refresh(binary: str, project: str) -> lis
     return results
 
 
+
+def wait_until(predicate, timeout: float = 8.0, interval: float = 0.25) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def run_scenario_6_agent_route_no_index(binary: str, project: str) -> list[TestResult]:
+    """Agent path: outline/read index a just-added file; walker sees an edit."""
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S6] {name}")
+        results.append(r)
+        return r
+
+    with tempfile.TemporaryDirectory(prefix="codedb-agent-route-", dir=Path(project).parent) as tmp:
+        root = Path(tmp)
+        (root / "pyproject.toml").write_text("[project]\nname = 'agent-route'\nversion = '0'\n")
+        (root / "keep.py").write_text("def keep():\n    return 'keep'\n")
+        p = MCPProcess(binary, [], cwd="/", command=[binary, str(root), "mcp", "--no-telemetry"])
+
+        try:
+            r = t("initial scan completes")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p):
+                r.fail("MCP server did not become ready")
+                return results
+            r.ok()
+
+            (root / "added.py").write_text("def added_live():\n    return 'added_live'\n")
+
+            r = t("outline indexes a just-added file without codedb_index")
+            outline_text = tool_text(p.call_tool("codedb_outline", {"path": "added.py"}))
+            if "added_live" not in outline_text or "not indexed" in outline_text or "try codedb_index" in outline_text:
+                r.fail(f"outline miss path failed: {outline_text[:240]!r}")
+                return results
+            r.ok()
+
+            r = t("search sees the file after outline-on-miss")
+            search_text = tool_text(p.call_tool("codedb_search", {"query": "added_live"}))
+            if "added.py" not in search_text or "added_live" not in search_text:
+                r.fail(f"search stayed stale after outline: {search_text[:240]!r}")
+                return results
+            r.ok()
+
+            r = t("symbol finds the just-added definition without codedb_index")
+            symbol_text = tool_text(p.call_tool("codedb_symbol", {"name": "added_live"}))
+            if "added.py" not in symbol_text or "added_live" not in symbol_text:
+                r.fail(f"symbol stayed stale after outline: {symbol_text[:240]!r}")
+                return results
+            r.ok()
+
+            r = t("find locates the just-added filename without codedb_index")
+            find_text = tool_text(p.call_tool("codedb_find", {"query": "added"}))
+            if "added.py" not in find_text:
+                r.fail(f"find stayed stale after outline: {find_text[:240]!r}")
+                return results
+            r.ok()
+
+            (root / "read_added.py").write_text("def read_added():\n    return 'read_added'\n")
+
+            r = t("read indexes a just-added file without codedb_index")
+            read_text = tool_text(p.call_tool("codedb_read", {"path": "read_added.py"}))
+            if "read_added" not in read_text:
+                r.fail(f"read miss path failed: {read_text[:240]!r}")
+                return results
+            r.ok()
+
+            r = t("search sees the file after read-on-miss")
+            search_text = tool_text(p.call_tool("codedb_search", {"query": "read_added"}))
+            if "read_added.py" not in search_text or "read_added" not in search_text:
+                r.fail(f"search stayed stale after read: {search_text[:240]!r}")
+                return results
+            r.ok()
+
+            r = t("symbol finds the definition after read-on-miss")
+            symbol_text = tool_text(p.call_tool("codedb_symbol", {"name": "read_added"}))
+            if "read_added.py" not in symbol_text or "read_added" not in symbol_text:
+                r.fail(f"symbol stayed stale after read: {symbol_text[:240]!r}")
+                return results
+            r.ok()
+
+            (root / "keep.py").write_text("def keep():\n    return 'keep_edited'\n")
+
+            r = t("walker refreshes an in-place edit without codedb_index")
+            def edited() -> bool:
+                text = tool_text(p.call_tool("codedb_read", {"path": "keep.py"}))
+                return "keep_edited" in text
+
+            if not wait_until(edited, timeout=8.0):
+                late = tool_text(p.call_tool("codedb_read", {"path": "keep.py"}))
+                r.fail(f"walker did not pick up edit: {late[:240]!r}")
+                return results
+            r.ok()
+
+            r = t("search sees the walker edit without codedb_index")
+            def search_edited() -> bool:
+                text = tool_text(p.call_tool("codedb_search", {"query": "keep_edited"}))
+                return "keep.py" in text and "keep_edited" in text
+
+            if not wait_until(search_edited, timeout=8.0):
+                late = tool_text(p.call_tool("codedb_search", {"query": "keep_edited"}))
+                r.fail(f"search stayed stale after walker edit: {late[:240]!r}")
+            else:
+                r.ok()
+        finally:
+            p.close()
+
+    return results
+
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -614,6 +731,9 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 5: issue-690 live index refresh ──{RESET}")
     all_results += run_scenario_5_issue690_live_index_refresh(binary, project)
+
+    print(f"\n{CYAN}── Scenario 6: agent route (outline/read on miss, no codedb_index) ──{RESET}")
+    all_results += run_scenario_6_agent_route_no_index(binary, project)
 
     print()
     passed = 0
