@@ -3692,3 +3692,65 @@ test "issue-690: incrementalLoop startup indexes files missing from the snapshot
     thread.join();
     try testing.expect(found);
 }
+
+test "issue-693: unchanged-dir prune must not rescan the whole known map" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_count: usize = 8;
+    const files_per_dir: usize = 5;
+    var d: usize = 0;
+    while (d < dir_count) : (d += 1) {
+        var dir_buf: [8]u8 = undefined;
+        const dir_name = std.fmt.bufPrint(&dir_buf, "d{d}", .{d}) catch unreachable;
+        try tmp.dir.createDirPath(io, dir_name);
+        var f: usize = 0;
+        while (f < files_per_dir) : (f += 1) {
+            var path_buf: [24]u8 = undefined;
+            const rel = std.fmt.bufPrint(&path_buf, "d{d}/f{d}.py", .{ d, f }) catch unreachable;
+            var data_buf: [40]u8 = undefined;
+            const data = std.fmt.bufPrint(&data_buf, "def f{d}_{d}():\n    return 1\n", .{ d, f }) catch unreachable;
+            try tmp.dir.writeFile(io, .{ .sub_path = rel, .data = data });
+        }
+    }
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+
+    var known = watcher.FileMap.init(testing.allocator);
+    defer {
+        var iter = known.keyIterator();
+        while (iter.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    var dirs = watcher.DirMap.init(testing.allocator);
+    defer {
+        var iter = dirs.keyIterator();
+        while (iter.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+
+    var queue = watcher.EventQueue{};
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+    }
+    try testing.expectEqual(dir_count * files_per_dir, known.count());
+
+    watcher.debug_unchanged_full_scans = 0;
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+    }
+    try testing.expectEqual(dir_count * files_per_dir, known.count());
+    try testing.expectEqual(@as(usize, 0), watcher.debug_unchanged_full_scans);
+}

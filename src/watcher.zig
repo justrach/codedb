@@ -80,8 +80,9 @@ const FileState = struct {
     seen: bool, // set during current poll cycle for deletion detection
 };
 
-const FileMap = std.StringHashMap(FileState);
-const DirMap = std.StringHashMap(i64);
+pub const FileMap = std.StringHashMap(FileState);
+pub const DirMap = std.StringHashMap(i64);
+pub var debug_unchanged_full_scans: usize = 0;
 
 fn parentRel(path: []const u8) []const u8 {
     return if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| path[0..i] else "";
@@ -1435,7 +1436,7 @@ fn incrementalDiff(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
     try incrementalDiffInner(io, store, explorer, queue, known, null, root, persistent, tmp);
 }
 
-fn incrementalDiffInner(
+pub fn incrementalDiffInner(
     io: std.Io,
     store: *Store,
     explorer: *Explorer,
@@ -1554,6 +1555,7 @@ fn walkRel(
         defer child_seen.deinit();
         var kiter = known.iterator();
         while (kiter.next()) |kv| {
+            debug_unchanged_full_scans += 1;
             const path = kv.key_ptr.*;
             if (std.mem.eql(u8, parentRel(path), prefix)) {
                 const stat = dir.statFile(io, path, .{}) catch continue;
