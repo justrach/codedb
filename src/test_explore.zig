@@ -2049,6 +2049,43 @@ test "walker: generated tool-output dirs are not indexed" {
     }
 }
 
+test "issue-692: .devenv and .jj are not indexed" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "src");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "src/app.py", .data = "def hello():\n    return 1\n" });
+    try tmp_dir.dir.createDirPath(io, ".devenv/state");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = ".devenv/state/gc_roots.py", .data = "DEVENV_MARKER_692 = 1\n" });
+    try tmp_dir.dir.createDirPath(io, ".jj/store");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = ".jj/store/op_log.py", .data = "JJ_MARKER_692 = 1\n" });
+    try tmp_dir.dir.createDirPath(io, ".venv/lib");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = ".venv/lib/site.py", .data = "VENV_MARKER_692 = 1\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    try testing.expect(explorer.contents.contains("src/app.py"));
+    try testing.expect(!explorer.contents.contains(".venv/lib/site.py"));
+    try testing.expect(!explorer.contents.contains(".devenv/state/gc_roots.py"));
+    try testing.expect(!explorer.contents.contains(".jj/store/op_log.py"));
+
+    var it = explorer.contents.iterator();
+    while (it.next()) |kv| {
+        const p = kv.key_ptr.*;
+        try testing.expect(std.mem.indexOf(u8, p, ".devenv") == null);
+        try testing.expect(std.mem.indexOf(u8, p, ".jj") == null);
+    }
+}
+
 test "issue-405: cleanupStaleTmpFiles deletes in-flight sibling tmp files" {
     // BUG: snapshot.zig:cleanupStaleTmpFiles deletes ANY file matching
     // `<basename>*.tmp` in the snapshot directory with no age guard.
