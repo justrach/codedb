@@ -1297,7 +1297,9 @@ const FileChangeWatch = struct {
         var dit = self.wd_to_dir.iterator();
         while (dit.next()) |kv| self.alloc.free(kv.value_ptr.*);
         self.wd_to_dir.clearRetainingCapacity();
-        for (self.files.items) |fd| cio.closeFd(fd);
+        if (comptime watch_kqueue or watch_inotify) {
+            for (self.files.items) |fd| cio.closeFd(@intCast(fd));
+        }
         self.files.clearRetainingCapacity();
         for (self.unwatched.items) |p| self.alloc.free(p);
         self.unwatched.clearRetainingCapacity();
