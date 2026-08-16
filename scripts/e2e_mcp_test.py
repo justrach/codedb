@@ -16,6 +16,9 @@ Scenarios covered:
    6. Out-of-the-box agent route: a just-added file is visible via
       codedb_outline / codedb_read / codedb_search without codedb_index,
       and the live walker picks up an in-place edit.
+   7. Mid-session live watch: same MCP process, in-place edit + new sibling;
+      outline/search/read/symbol see the new contents without restart or
+      codedb_index. Reports write-to-visible latency.
 Usage:
   python3 scripts/e2e_mcp_test.py [--binary /path/to/codedb] [--project /path/to/project]
 
@@ -581,12 +584,19 @@ def run_scenario_5_issue690_live_index_refresh(binary: str, project: str) -> lis
 
 
 def wait_until(predicate, timeout: float = 8.0, interval: float = 0.25) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    seen, _ = wait_until_ms(predicate, timeout=timeout, interval=interval)
+    return seen
+
+
+def wait_until_ms(predicate, timeout: float = 8.0, interval: float = 0.05) -> tuple[bool, float]:
+    start = time.monotonic()
+    while True:
         if predicate():
-            return True
+            return True, (time.monotonic() - start) * 1000.0
+        elapsed = (time.monotonic() - start) * 1000.0
+        if elapsed >= timeout * 1000.0:
+            return False, elapsed
         time.sleep(interval)
-    return False
 
 
 def run_scenario_6_agent_route_no_index(binary: str, project: str) -> list[TestResult]:
@@ -693,6 +703,135 @@ def run_scenario_6_agent_route_no_index(binary: str, project: str) -> list[TestR
     return results
 
 
+def run_scenario_7_live_watch_mid_session(binary: str, project: str) -> list[TestResult]:
+    """Same MCP process: in-place edit + new sibling become visible without restart."""
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S7] {name}")
+        results.append(r)
+        return r
+
+    with tempfile.TemporaryDirectory(prefix="codedb-live-watch-", dir=Path(project).parent) as tmp:
+        root = Path(tmp)
+        (root / "pyproject.toml").write_text("[project]\nname = 'live-watch'\nversion = '0'\n")
+        keep = root / "keep.py"
+        keep.write_text("def keep():\n    return 'keep'\n")
+        p = MCPProcess(binary, [], cwd="/", command=[binary, str(root), "mcp", "--no-telemetry"])
+
+        try:
+            r = t("initial scan completes")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p):
+                r.fail("MCP server did not become ready")
+                return results
+            r.ok()
+
+            baseline = tool_text(p.call_tool("codedb_outline", {"path": "keep.py"}))
+            r = t("baseline outline sees keep()")
+            if "keep" not in baseline or "not indexed" in baseline:
+                r.fail(f"baseline outline missing: {baseline[:220]!r}")
+                return results
+            r.ok()
+
+            edit_latencies: list[float] = []
+            for trial in range(1, 4):
+                token = f"keep_live_{trial}_{int(time.time() * 1000) % 100000}"
+                keep.write_text(f"def keep():\n    return 'keep'\n\ndef {token}():\n    return {trial}\n")
+
+                def outline_has(expected: str = token) -> bool:
+                    text = tool_text(p.call_tool("codedb_outline", {"path": "keep.py"}))
+                    return expected in text and "not indexed" not in text
+
+                seen, ms = wait_until_ms(outline_has, timeout=8.0, interval=0.05)
+                r = t(f"trial {trial} outline sees in-place edit")
+                if not seen:
+                    late = tool_text(p.call_tool("codedb_outline", {"path": "keep.py"}))
+                    r.fail(f"outline stale after {ms:.0f}ms: {late[:220]!r}")
+                    return results
+                edit_latencies.append(ms)
+                r.ok(f"{ms:.0f}ms")
+
+                r = t(f"trial {trial} search sees in-place edit")
+                search_text = tool_text(p.call_tool("codedb_search", {"query": token}))
+                if "keep.py" not in search_text or token not in search_text:
+                    r.fail(f"search stale: {search_text[:220]!r}")
+                    return results
+                r.ok()
+
+                r = t(f"trial {trial} read sees in-place edit")
+                read_text = tool_text(p.call_tool("codedb_read", {"path": "keep.py"}))
+                if token not in read_text:
+                    r.fail(f"read stale: {read_text[:220]!r}")
+                    return results
+                r.ok()
+
+                r = t(f"trial {trial} symbol sees in-place edit")
+                symbol_text = tool_text(p.call_tool("codedb_symbol", {"name": token}))
+                if "keep.py" not in symbol_text or token not in symbol_text:
+                    r.fail(f"symbol stale: {symbol_text[:220]!r}")
+                    return results
+                r.ok()
+
+            r = t("in-place edit latency (3 trials)")
+            r.ok(" / ".join(f"{ms:.0f}ms" for ms in edit_latencies))
+
+            token = f"atomic_live_{int(time.time() * 1000) % 100000}"
+            tmp_path = root / "keep.py.tmp"
+            tmp_path.write_text(f"def keep():\n    return 'keep'\n\ndef {token}():\n    return 9\n")
+            tmp_path.replace(keep)
+
+            def atomic_outline() -> bool:
+                text = tool_text(p.call_tool("codedb_outline", {"path": "keep.py"}))
+                return token in text and "not indexed" not in text
+
+            seen, ms = wait_until_ms(atomic_outline, timeout=8.0, interval=0.05)
+            r = t("atomic rename save visible to outline")
+            if not seen:
+                late = tool_text(p.call_tool("codedb_outline", {"path": "keep.py"}))
+                r.fail(f"atomic save stale after {ms:.0f}ms: {late[:220]!r}")
+            else:
+                r.ok(f"{ms:.0f}ms")
+
+            sib_token = f"sibling_live_{int(time.time() * 1000) % 100000}"
+            (root / "sibling.py").write_text(f"def {sib_token}():\n    return 'sibling'\n")
+
+            def search_sibling() -> bool:
+                text = tool_text(p.call_tool("codedb_search", {"query": sib_token}))
+                return "sibling.py" in text and sib_token in text
+
+            seen, ms = wait_until_ms(search_sibling, timeout=8.0, interval=0.05)
+            r = t("walker search sees new sibling without outline/read")
+            if not seen:
+                late = tool_text(p.call_tool("codedb_search", {"query": sib_token}))
+                r.fail(f"sibling search stale after {ms:.0f}ms: {late[:220]!r}")
+                return results
+            r.ok(f"{ms:.0f}ms")
+
+            r = t("symbol finds new sibling without codedb_index")
+            symbol_text = tool_text(p.call_tool("codedb_symbol", {"name": sib_token}))
+            if "sibling.py" not in symbol_text or sib_token not in symbol_text:
+                r.fail(f"sibling symbol stale: {symbol_text[:220]!r}")
+                return results
+            r.ok()
+
+            r = t("outline of sibling after walker (not miss-index first)")
+            outline_text = tool_text(p.call_tool("codedb_outline", {"path": "sibling.py"}))
+            if sib_token not in outline_text or "not indexed" in outline_text:
+                r.fail(f"sibling outline missing: {outline_text[:220]!r}")
+            else:
+                r.ok()
+
+            r = t("read of sibling after walker")
+            read_text = tool_text(p.call_tool("codedb_read", {"path": "sibling.py"}))
+            if sib_token not in read_text:
+                r.fail(f"sibling read missing: {read_text[:220]!r}")
+            else:
+                r.ok()
+        finally:
+            p.close()
+
+    return results
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -734,6 +873,9 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 6: agent route (outline/read on miss, no codedb_index) ──{RESET}")
     all_results += run_scenario_6_agent_route_no_index(binary, project)
+
+    print(f"\n{CYAN}── Scenario 7: mid-session live watch (same process, no restart) ──{RESET}")
+    all_results += run_scenario_7_live_watch_mid_session(binary, project)
 
     print()
     passed = 0

@@ -3822,3 +3822,120 @@ test "issue-694: dirty-set skips stats on unchanged dirs but reindexes dirty fil
     try testing.expect(try explorer.renderOutline("src/a.py", testing.allocator, &out, false));
     try testing.expect(std.mem.indexOf(u8, out.items, "a_changed") != null);
 }
+
+test "experiment-694: quiet dirty cycle is cheaper than stat-all" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir_count: usize = 20;
+    const files_per_dir: usize = 25;
+    var d: usize = 0;
+    while (d < dir_count) : (d += 1) {
+        var dir_buf: [8]u8 = undefined;
+        const dir_name = std.fmt.bufPrint(&dir_buf, "d{d}", .{d}) catch unreachable;
+        try tmp.dir.createDirPath(io, dir_name);
+        var f: usize = 0;
+        while (f < files_per_dir) : (f += 1) {
+            var path_buf: [24]u8 = undefined;
+            const rel = std.fmt.bufPrint(&path_buf, "d{d}/f{d}.py", .{ d, f }) catch unreachable;
+            var data_buf: [48]u8 = undefined;
+            const data = std.fmt.bufPrint(&data_buf, "def f{d}_{d}():\n    return 1\n", .{ d, f }) catch unreachable;
+            try tmp.dir.writeFile(io, .{ .sub_path = rel, .data = data });
+        }
+    }
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+
+    var known = watcher.FileMap.init(testing.allocator);
+    defer {
+        var iter = known.keyIterator();
+        while (iter.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    var dirs = watcher.DirMap.init(testing.allocator);
+    defer {
+        var iter = dirs.keyIterator();
+        while (iter.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+
+    var queue = watcher.EventQueue{};
+    var timer = try cio.Timer.start();
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+    }
+    const first_ms = timer.lap() / 1_000_000;
+    const file_count = dir_count * files_per_dir;
+    try testing.expectEqual(file_count, known.count());
+
+    var dirty = watcher.DirtySet.init(testing.allocator);
+    defer dirty.deinit();
+
+    watcher.debug_unchanged_file_stats = 0;
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffDirty(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+    }
+    const quiet_ms = timer.lap() / 1_000_000;
+    const quiet_stats = watcher.debug_unchanged_file_stats;
+    try testing.expectEqual(@as(usize, 0), quiet_stats);
+
+    watcher.debug_unchanged_file_stats = 0;
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+    }
+    const fallback_ms = timer.lap() / 1_000_000;
+    const fallback_stats = watcher.debug_unchanged_file_stats;
+    try testing.expectEqual(file_count, fallback_stats);
+
+    cio.sleepMs(10);
+    try tmp.dir.writeFile(io, .{ .sub_path = "d0/f0.py", .data = "def f0_0_changed():\n    return 2\n" });
+    try dirty.put("d0/f0.py", {});
+    watcher.debug_unchanged_file_stats = 0;
+    _ = timer.lap();
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffDirty(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+    }
+    const edit_ms = timer.lap() / 1_000_000;
+    try testing.expectEqual(@as(usize, 1), watcher.debug_unchanged_file_stats);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try testing.expect(try explorer.renderOutline("d0/f0.py", testing.allocator, &out, false));
+    try testing.expect(std.mem.indexOf(u8, out.items, "f0_0_changed") != null);
+
+    cio.sleepMs(10);
+    try tmp.dir.writeFile(io, .{ .sub_path = "d0/sibling.py", .data = "def sibling_new():\n    return 3\n" });
+    dirty.clearRetainingCapacity();
+    watcher.debug_unchanged_file_stats = 0;
+    _ = timer.lap();
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffDirty(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+    }
+    const sibling_ms = timer.lap() / 1_000_000;
+    try testing.expectEqual(file_count + 1, known.count());
+    out.clearRetainingCapacity();
+    try testing.expect(try explorer.renderOutline("d0/sibling.py", testing.allocator, &out, false));
+    try testing.expect(std.mem.indexOf(u8, out.items, "sibling_new") != null);
+
+    std.debug.print(
+        "\nexperiment-694 files={d} first={d}ms quiet={d}ms stats={d} fallback={d}ms stats={d} edit={d}ms sibling={d}ms\n",
+        .{ file_count, first_ms, quiet_ms, quiet_stats, fallback_ms, fallback_stats, edit_ms, sibling_ms },
+    );
+}

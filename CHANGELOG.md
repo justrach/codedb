@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.5841 - 2026-08-17
+
+- **Live walker dirty-set + OS events** (#693, #694). Unchanged directories
+  no longer scan the whole known-file map or `stat` every file. Known files
+  are bucketed by parent once per cycle. Quiet passes skip `statFile` unless
+  the path is in a dirty set fed by Darwin `kqueue` vnode watches or Linux
+  `inotify`. A failed watch init falls back to the previous stat-all path.
+  Explicit `refreshIndex` still stats everything.
+
 ## 0.2.5840 - 2026-08-15
 
 - The live walker now skips `readdir` on directories whose mtime has not
