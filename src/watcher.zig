@@ -88,19 +88,6 @@ fn parentRel(path: []const u8) []const u8 {
     return if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| path[0..i] else "";
 }
 
-fn firstComponentUnder(prefix: []const u8, path: []const u8) ?[]const u8 {
-    const rest = if (prefix.len == 0)
-        path
-    else blk: {
-        if (!std.mem.startsWith(u8, path, prefix)) return null;
-        if (path.len == prefix.len) return null;
-        if (path[prefix.len] != '/') return null;
-        break :blk path[prefix.len + 1 ..];
-    };
-    if (rest.len == 0) return null;
-    if (std.mem.indexOfScalar(u8, rest, '/')) |i| return rest[0..i];
-    return null;
-}
 
 fn joinRel(tmp: std.mem.Allocator, prefix: []const u8, name: []const u8) ![]const u8 {
     if (prefix.len == 0) return name;
@@ -1458,7 +1445,8 @@ pub fn incrementalDiffInner(
 
     var ignore = try FilteredWalker.init(io, dir, tmp);
     defer ignore.deinit();
-    try walkRel(io, store, explorer, queue, known, dirs, &ignore, dir, "", persistent, tmp);
+    const parents = try buildParentIndex(known, tmp);
+    try walkRel(io, store, explorer, queue, known, dirs, &ignore, dir, "", persistent, tmp, &parents);
 
     // Detect deleted files
     var to_remove: std.ArrayList([]const u8) = .empty;
@@ -1530,6 +1518,39 @@ fn applyKnownFile(
     if (content) |buf| indexContentBuffer(explorer, stable_path, buf, false) catch {};
 }
 
+const ParentIndex = struct {
+    files: std.StringHashMap(std.ArrayList([]const u8)),
+    child_dirs: std.StringHashMap(std.StringHashMap(void)),
+};
+
+fn buildParentIndex(known: *const FileMap, tmp: std.mem.Allocator) !ParentIndex {
+    var files = std.StringHashMap(std.ArrayList([]const u8)).init(tmp);
+    var child_dirs = std.StringHashMap(std.StringHashMap(void)).init(tmp);
+    var it = known.iterator();
+    while (it.next()) |kv| {
+        const path = kv.key_ptr.*;
+        const parent = parentRel(path);
+        {
+            const gop = try files.getOrPut(parent);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(tmp, path);
+        }
+        var dir_path = parent;
+        while (dir_path.len > 0) {
+            const grand = parentRel(dir_path);
+            const name = if (std.mem.lastIndexOfScalar(u8, dir_path, '/')) |i|
+                dir_path[i + 1 ..]
+            else
+                dir_path;
+            const gop = try child_dirs.getOrPut(grand);
+            if (!gop.found_existing) gop.value_ptr.* = std.StringHashMap(void).init(tmp);
+            try gop.value_ptr.put(name, {});
+            dir_path = grand;
+        }
+    }
+    return .{ .files = files, .child_dirs = child_dirs };
+}
+
 fn walkRel(
     io: std.Io,
     store: *Store,
@@ -1542,36 +1563,27 @@ fn walkRel(
     prefix: []const u8,
     persistent: std.mem.Allocator,
     tmp: std.mem.Allocator,
+    parents: *const ParentIndex,
 ) !void {
     const current_mtime = dirMtimeMs(io, dir, prefix);
     const cached_mtime = if (dirs) |d| d.get(prefix) else null;
     const dir_unchanged = current_mtime != null and cached_mtime != null and current_mtime.? == cached_mtime.?;
 
     if (dir_unchanged) {
-        // Listing is unchanged: no creates/deletes in this directory. Still
-        // stat known files here (edits bump file mtime, not the parent) and
-        // recurse into known child directories so their mtimes are checked.
-        var child_seen = std.StringHashMap(void).init(tmp);
-        defer child_seen.deinit();
-        var kiter = known.iterator();
-        while (kiter.next()) |kv| {
-            debug_unchanged_full_scans += 1;
-            const path = kv.key_ptr.*;
-            if (std.mem.eql(u8, parentRel(path), prefix)) {
+        if (parents.files.get(prefix)) |file_list| {
+            for (file_list.items) |path| {
                 const stat = dir.statFile(io, path, .{}) catch continue;
                 try applyKnownFile(io, store, explorer, queue, known, dir, path, stat);
-                continue;
-            }
-            if (firstComponentUnder(prefix, path)) |name| {
-                child_seen.put(name, {}) catch {};
             }
         }
-        var cit = child_seen.keyIterator();
-        while (cit.next()) |name| {
-            if (shouldSkipDir(name.*)) continue;
-            const child = try joinRel(tmp, prefix, name.*);
-            if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(name.*, child)) continue;
-            try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp);
+        if (parents.child_dirs.get(prefix)) |children| {
+            var cit = children.keyIterator();
+            while (cit.next()) |name| {
+                if (shouldSkipDir(name.*)) continue;
+                const child = try joinRel(tmp, prefix, name.*);
+                if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(name.*, child)) continue;
+                try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents);
+            }
         }
         return;
     }
@@ -1590,7 +1602,7 @@ fn walkRel(
             if (shouldSkipDir(entry.name)) continue;
             const child = try joinRel(tmp, prefix, entry.name);
             if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(entry.name, child)) continue;
-            try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp);
+            try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents);
             continue;
         }
 
