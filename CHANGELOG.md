@@ -10,6 +10,8 @@
   Explicit `refreshIndex` still stats everything. Windows keeps the
   stat-all fallback; `FileChangeWatch` no longer fails the `x86_64-windows`
   compile.
+- Default skip list now prunes `.devenv` and `.jj` so Nix devenv stores and
+  Jujutsu repos are not walked like source (#692).
 
 ## 0.2.5840 - 2026-08-15
 

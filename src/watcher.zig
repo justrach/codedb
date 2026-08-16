@@ -227,6 +227,7 @@ fn readIndexableFile(
 }
 const skip_dirs = [_][]const u8{
     ".git",
+    ".jj",
     ".claude",
     ".codedb",
     "node_modules",
@@ -242,6 +243,7 @@ const skip_dirs = [_][]const u8{
     "out",
     "__pycache__",
     ".venv",
+    ".devenv",
     "venv",
     ".env",
     ".tox",
