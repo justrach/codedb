@@ -85,7 +85,7 @@ On Windows, run this command inside WSL only if you want the Linux binary inside
 Run in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5840/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5841/install/install.ps1 | iex
 ```
 
 Run the same command again to update codedb.
