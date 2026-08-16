@@ -82,7 +82,9 @@ const FileState = struct {
 
 pub const FileMap = std.StringHashMap(FileState);
 pub const DirMap = std.StringHashMap(i64);
+pub const DirtySet = std.StringHashMap(void);
 pub var debug_unchanged_full_scans: usize = 0;
+pub var debug_unchanged_file_stats: usize = 0;
 
 fn parentRel(path: []const u8) []const u8 {
     return if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| path[0..i] else "";
@@ -1434,6 +1436,21 @@ pub fn incrementalDiffInner(
     persistent: std.mem.Allocator,
     tmp: std.mem.Allocator,
 ) !void {
+    return incrementalDiffDirty(io, store, explorer, queue, known, dirs, root, persistent, tmp, null);
+}
+
+pub fn incrementalDiffDirty(
+    io: std.Io,
+    store: *Store,
+    explorer: *Explorer,
+    queue: *EventQueue,
+    known: *FileMap,
+    dirs: ?*DirMap,
+    root: []const u8,
+    persistent: std.mem.Allocator,
+    tmp: std.mem.Allocator,
+    dirty: ?*const DirtySet,
+) !void {
     const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
     defer dir.close(io);
 
@@ -1446,7 +1463,7 @@ pub fn incrementalDiffInner(
     var ignore = try FilteredWalker.init(io, dir, tmp);
     defer ignore.deinit();
     const parents = try buildParentIndex(known, tmp);
-    try walkRel(io, store, explorer, queue, known, dirs, &ignore, dir, "", persistent, tmp, &parents);
+    try walkRel(io, store, explorer, queue, known, dirs, &ignore, dir, "", persistent, tmp, &parents, dirty);
 
     // Detect deleted files
     var to_remove: std.ArrayList([]const u8) = .empty;
@@ -1564,6 +1581,7 @@ fn walkRel(
     persistent: std.mem.Allocator,
     tmp: std.mem.Allocator,
     parents: *const ParentIndex,
+    dirty: ?*const DirtySet,
 ) !void {
     const current_mtime = dirMtimeMs(io, dir, prefix);
     const cached_mtime = if (dirs) |d| d.get(prefix) else null;
@@ -1572,6 +1590,7 @@ fn walkRel(
     if (dir_unchanged) {
         if (parents.files.get(prefix)) |file_list| {
             for (file_list.items) |path| {
+                debug_unchanged_file_stats += 1;
                 const stat = dir.statFile(io, path, .{}) catch continue;
                 try applyKnownFile(io, store, explorer, queue, known, dir, path, stat);
             }
@@ -1582,7 +1601,7 @@ fn walkRel(
                 if (shouldSkipDir(name.*)) continue;
                 const child = try joinRel(tmp, prefix, name.*);
                 if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(name.*, child)) continue;
-                try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents);
+                try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents, dirty);
             }
         }
         return;
@@ -1602,7 +1621,7 @@ fn walkRel(
             if (shouldSkipDir(entry.name)) continue;
             const child = try joinRel(tmp, prefix, entry.name);
             if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(entry.name, child)) continue;
-            try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents);
+            try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents, dirty);
             continue;
         }
 

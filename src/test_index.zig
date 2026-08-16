@@ -3754,3 +3754,71 @@ test "issue-693: unchanged-dir prune must not rescan the whole known map" {
     try testing.expectEqual(dir_count * files_per_dir, known.count());
     try testing.expectEqual(@as(usize, 0), watcher.debug_unchanged_full_scans);
 }
+
+test "issue-694: dirty-set skips stats on unchanged dirs but reindexes dirty files" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "src");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/a.py", .data = "def a():\n    return 1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/b.py", .data = "def b():\n    return 1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "keep.py", .data = "def keep():\n    return 1\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+
+    var known = watcher.FileMap.init(testing.allocator);
+    defer {
+        var iter = known.keyIterator();
+        while (iter.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    var dirs = watcher.DirMap.init(testing.allocator);
+    defer {
+        var iter = dirs.keyIterator();
+        while (iter.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+
+    var queue = watcher.EventQueue{};
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+    }
+    try testing.expectEqual(@as(u32, 3), known.count());
+
+    var dirty = watcher.DirtySet.init(testing.allocator);
+    defer dirty.deinit();
+
+    watcher.debug_unchanged_file_stats = 0;
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffDirty(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+    }
+    try testing.expectEqual(@as(u32, 3), known.count());
+    try testing.expectEqual(@as(usize, 0), watcher.debug_unchanged_file_stats);
+
+    cio.sleepMs(10);
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/a.py", .data = "def a_changed():\n    return 2\n" });
+    try dirty.put("src/a.py", {});
+    watcher.debug_unchanged_file_stats = 0;
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffDirty(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+    }
+    try testing.expectEqual(@as(usize, 1), watcher.debug_unchanged_file_stats);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try testing.expect(try explorer.renderOutline("src/a.py", testing.allocator, &out, false));
+    try testing.expect(std.mem.indexOf(u8, out.items, "a_changed") != null);
+}
