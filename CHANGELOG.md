@@ -7,7 +7,9 @@
   are bucketed by parent once per cycle. Quiet passes skip `statFile` unless
   the path is in a dirty set fed by Darwin `kqueue` vnode watches or Linux
   `inotify`. A failed watch init falls back to the previous stat-all path.
-  Explicit `refreshIndex` still stats everything.
+  Explicit `refreshIndex` still stats everything. Windows keeps the
+  stat-all fallback; `FileChangeWatch` no longer fails the `x86_64-windows`
+  compile.
 
 ## 0.2.5840 - 2026-08-15
 
