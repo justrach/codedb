@@ -1,0 +1,180 @@
+  2727	/// Index of the quote closing the literal opened at `open`, or null when the
+  2728	/// literal never closes on this line.
+  2729	fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+  2730	    const quote = line[open];
+  2731	    var i = open + 1;
+  2732	    while (i < line.len) : (i += 1) {
+  2733	        if (line[i] == '\\') {
+  2734	            i += 1;
+  2735	            continue;
+  2736	        }
+  2737	        if (line[i] == quote) return i;
+  2738	    }
+  2739	    return null;
+  2740	}
+  2741	
+  2742	/// Languages where the concept of a "call site" is meaningful. Excludes
+  2743	/// data formats (json, yaml), markup/styling (markdown, css, scss),
+  2744	/// declarative schemas (protobuf), and unknown files — callers found
+  2745	/// inside these are mentions in prose or config, not real invocations.
+  2746	fn langHasCallSites(lang: explore_mod.Language) bool {
+  2747	    return switch (lang) {
+  2748	        .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
+  2749	        else => true,
+  2750	    };
+  2751	}
+  2752	
+  2753	// ── codedb_context ──────────────────────────────────────────────────────────
+  2754	// Task-shaped composer. Takes a natural-language task, extracts candidate
+  2755	// identifiers (camelCase / snake_case / "quoted strings"), and returns ONE
+  2756	// composite text block: keywords + symbol defs + ranked files + top sites.
+  2757	// Replaces 3-5 separate search/word/symbol calls; targets parity with
+  2758	// codegraph_context on per-task token economy.
+  2759	
+  2760	fn isContextIdentStart(c: u8) bool {
+  2761	    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+  2762	}
+  2763	fn isContextIdentCont(c: u8) bool {
+  2764	    return isContextIdentStart(c) or (c >= '0' and c <= '9');
+  2765	}
+   330	
+   331	    const source_path = try std.fs.path.join(testing.allocator, &.{ tmp_root, "sample.zig" });
+   332	    defer testing.allocator.free(source_path);
+   333	    {
+   334	        const file = try std.Io.Dir.cwd().createFile(io, source_path, .{});
+   335	        defer file.close(io);
+   336	        try file.writeStreamingAll(io, "pub fn sample() void {}\n");
+   337	    }
+   338	
+   339	    const result = try cio.runCapture(.{
+   340	        .allocator = testing.allocator,
+   341	        .argv = &.{ "zig", "build", "run", "--", tmp_root, "snapshot" },
+   342	        .max_output_bytes = 256 * 1024,
+   343	    });
+   344	    defer testing.allocator.free(result.stdout);
+   345	    defer testing.allocator.free(result.stderr);
+   346	
+   347	    try testing.expect(result.term.Exited != 0);
+   348	}
+   349	
+   350	test "issue-93: isSensitivePath blocks .env and credentials" {
+   351	    try testing.expect(watcher.isSensitivePath(".env"));
+   352	    try testing.expect(watcher.isSensitivePath(".env.local"));
+   353	    try testing.expect(watcher.isSensitivePath(".env.production"));
+   354	    try testing.expect(watcher.isSensitivePath("credentials.json"));
+   355	    try testing.expect(watcher.isSensitivePath("service-account.json"));
+   356	    try testing.expect(watcher.isSensitivePath("id_rsa"));
+   357	    try testing.expect(watcher.isSensitivePath("secrets.yaml"));
+   358	    try testing.expect(watcher.isSensitivePath("config/secrets.yml"));
+   359	    try testing.expect(watcher.isSensitivePath("server.key"));
+   360	    try testing.expect(watcher.isSensitivePath("cert.pem"));
+   361	    try testing.expect(watcher.isSensitivePath("keystore.jks"));
+   362	    try testing.expect(watcher.isSensitivePath("identity.pfx"));
+   363	    try testing.expect(watcher.isSensitivePath(".ssh/known_hosts"));
+   364	    // Normal files should NOT be blocked
+   365	    try testing.expect(!watcher.isSensitivePath("main.zig"));
+   366	    try testing.expect(!watcher.isSensitivePath("src/server.zig"));
+   367	    try testing.expect(!watcher.isSensitivePath("README.md"));
+   368	    try testing.expect(!watcher.isSensitivePath("package.json"));
+   369	}
+   370	
+   371	test "issue-93: isPathSafe blocks traversal" {
+   372	    const MCP = @import("mcp.zig");
+   373	    try testing.expect(!MCP.isPathSafe("../../../etc/passwd"));
+   374	    try testing.expect(!MCP.isPathSafe("/etc/passwd"));
+   375	    try testing.expect(!MCP.isPathSafe(""));
+   376	    try testing.expect(MCP.isPathSafe("src/main.zig"));
+   377	    try testing.expect(MCP.isPathSafe("README.md"));
+   378	}
+   379	
+   380	test "issue-629: projectRelPath accepts absolute paths inside the project root" {
+   381	    const MCP = @import("mcp.zig");
+   382	    const root = "/Users/dev/project";
+   383	
+   384	    // Regression: codedb returned "path traversal not allowed" for ANY absolute
+   385	    // path, so agents that hold absolute paths abandoned codedb for bash (see
+   386	    // the #626 trajectory: codedb!,codedb! then seven bash calls). An absolute
+   387	    // path inside the project root must resolve to its project-relative form.
+   388	    try testing.expectEqualStrings("src/main.zig", MCP.projectRelPath("/Users/dev/project/src/main.zig", root).?);
+   389	    // A safe relative path passes through unchanged.
+   390	    try testing.expectEqualStrings("src/main.zig", MCP.projectRelPath("src/main.zig", root).?);
+   391	
+   392	    // Security must still hold:
+   393	    try testing.expect(MCP.projectRelPath("/etc/passwd", root) == null); // outside the root
+   394	    try testing.expect(MCP.projectRelPath("/Users/dev/project/../secret", root) == null); // escapes via ..
+   395	    try testing.expect(MCP.projectRelPath("../../../etc/passwd", root) == null); // relative traversal
+   396	    try testing.expect(MCP.projectRelPath("/Users/dev/projectile/secret", root) == null); // sibling prefix, not a child
+   397	}
+   398	
+   399	test "issue-624: convergence governor flags a repeated identical call" {
+   400	    const MCP = @import("mcp.zig");
+   401	    var gov: MCP.ConvergenceGovernor = .{};
+   402	    const sig: u64 = 0xC0FFEE;
+   403	    try testing.expectEqual(@as(usize, 1), gov.record(sig));
+   404	    try testing.expectEqual(@as(usize, 2), gov.record(sig));
+   405	    // Third identical call reaches the warn threshold — the loop is detected.
+   406	    try testing.expectEqual(@as(usize, 3), gov.record(sig));
+   407	    try testing.expect(gov.record(sig) >= MCP.ConvergenceGovernor.WARN_AT);
+   408	
+   409	    // Distinct calls in sequence are never flagged as looping.
+   410	    var gov2: MCP.ConvergenceGovernor = .{};
+   411	    try testing.expectEqual(@as(usize, 1), gov2.record(1));
+   412	    try testing.expectEqual(@as(usize, 1), gov2.record(2));
+   413	    try testing.expectEqual(@as(usize, 1), gov2.record(3));
+   414	}
+   415	
+   416	test "auto-update: shouldRunAutoUpdate gates correctly" {
+   417	    const day_ms: i64 = 24 * 60 * 60 * 1000;
+   418	
+   419	    // Disabled by env: never runs
+   420	    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, true));
+   421	    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, null, true));
+   422	    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, 0, true));
+   423	
+   424	    // First run (no stamp): always runs when not disabled
+   425	    try testing.expect(update_mod.shouldRunAutoUpdate(0, null, false));
+   426	
+   427	    // Throttled: <24h since last check → skip
+   428	    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms - 1, 0, false));
+   429	
+   430	    // Exactly 24h since last check → run
+   431	    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms, 0, false));
+   432	
+   433	    // Long after last check → run
+   434	    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false));
+   435	}
+   436	
+   437	test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp stamp file" {
+   438	    // Reproduces the case where the stamp file contains a timestamp in the
+   439	    // future relative to the wall clock — for example, after an NTP clock
+   440	    // correction that rolls the clock back, or after a stamp written by a
+   441	    // host with a fast clock. The current implementation computes
+   442	    // (now - last) and only fires when that delta >= 24h, so a future
+   443	    // `last` produces a negative delta and the check is silently skipped
+   444	    // for as long as the stamp stays in the future — potentially many days.
+   445	    //
+   446	    // Expected: a wildly future stamp should NOT prevent the next check
+   447	    // from firing. The simplest correct behavior is: if last > now, treat
+   448	    // the stamp as invalid and allow the update check to run.
+   449	
+   450	    const day_ms: i64 = 24 * 60 * 60 * 1000;
+   451	    const now_ms: i64 = 1_700_000_000_000;
+   452	    const future_last_ms: i64 = now_ms + day_ms * 30; // 30 days in the future
+   453	
+   454	    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, future_last_ms, false));
+   455	}
+   456	
+   457	test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corrupt" {
+   458	    // Reproduces a panic when ~/.codedb/last_auto_update_check is corrupt
+   459	    // and decodes to a very negative i64. readAutoUpdateStamp does no
+   460	    // sanity check — it reads 8 bytes, calls std.mem.readInt(i64, ...),
+   461	    // and feeds that straight into shouldRunAutoUpdate, which evaluates
+   462	    // `now_ms - last` with checked subtraction. For last = minInt(i64)
+   463	    // and any positive now_ms, the subtraction overflows and triggers an
+   464	    // integer-overflow panic in Debug / ReleaseSafe builds (which is what
+   465	    // `zig build test` and the shipped MCP binary use).
+   466	    //
+   467	    // Result: every `codedb mcp` startup crashes during the auto-update
+   468	    // gate for any user whose stamp file got corrupted to a value with
+   469	    // the high bit set (e.g. truncated write, partial flush, or any byte
+   470	    // sequence starting with 0x80..0xFF in the stamp).

@@ -1,0 +1,38 @@
+2 results for 'watcherDeferredLoop':
+  src/background.zig:228 (function) watcherDeferredLoop  // pub fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
+  228 | pub fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
+  229 |     const t0 = cio.milliTimestamp();
+  230 |     const fallback_after_ms: i64 = 3000;
+  231 |     // #502: after the 3s fallback fires, give the cwd-policy check a
+  232 |     // little more time, then unblock. Previously, when fallback_cwd was
+  233 |     // non-indexable (e.g. `/`, `/tmp`, or any other path that fails
+  234 |     // isIndexableRoot), `triggerDeferredScanWithFallback` would return
+  235 |     // false, leave `triggered=false`, leave `scan_done=false`, and this
+  236 |     // loop would poll forever — tool calls saw scan=loading_snapshot
+  237 |     // indefinitely and the server hung from the user's POV.
+  238 |     const give_up_after_ms: i64 = 13000;
+  239 |     var fallback_attempted = false;
+  240 |     while (!ctx.scan_done.load(.acquire) and !ctx.shutdown.load(.acquire)) {
+  241 |         cio.sleepMs(50);
+  242 |         const elapsed = cio.milliTimestamp() - t0;
+  243 |         if (!fallback_attempted and elapsed >= fallback_after_ms) {
+  244 |             fallback_attempted = true;
+  245 |             // Client never sent indexable roots — fall back to cwd so the
+  246 |             // server doesn't sit in loading_snapshot forever.
+  247 |             const empty_roots: []const mcp_server.Root = &.{};
+  248 |             _ = mcp_server.triggerDeferredScanWithFallback(ctx, empty_roots, ctx.fallback_cwd);
+  249 |         }
+  250 |         if (fallback_attempted and elapsed >= give_up_after_ms and !ctx.triggered.load(.acquire)) {
+  251 |             std.log.warn("codedb mcp: no indexable root found after {d}ms — exiting deferred mode with empty index. set CODEDB_ROOT or pass `codedb <path> mcp` to fix.", .{give_up_after_ms});
+  252 |             ctx.scan_done.store(true, .release);
+  253 |             return;
+  254 |         }
+  255 |     }
+  256 |     if (ctx.shutdown.load(.acquire)) return;
+  257 |     // If we exited the loop without ever triggering a scan (give-up path),
+  258 |     // resolved_root is empty — skip incrementalLoop so we don't crash.
+  259 |     if (!ctx.triggered.load(.acquire)) return;
+  260 |     watcher.incrementalLoop(ctx.io, ctx.store, ctx.explorer, ctx.queue, ctx.resolved_root, ctx.shutdown, ctx.scan_done);
+  261 | }
+  src/commands.zig:40 (constant) watcherDeferredLoop  // const watcherDeferredLoop = background.watcherDeferredLoop;
+   40 | const watcherDeferredLoop = background.watcherDeferredLoop;

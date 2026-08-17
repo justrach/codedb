@@ -1,0 +1,91 @@
+fn resolveTargetVersion(allocator: std.mem.Allocator) !ResolvedVersion {
+    if (cio.posixGetenv("CODEDB_VERSION")) |value| {
+        if (value.len != 0) {
+            const dup = try allocator.dupe(u8, value);
+            return .{ .value = dup, .source = .env };
+        }
+    }
+
+    if (fetchLatestVersionFromGitHub(allocator) catch null) |value| {
+        return .{ .value = value, .source = .github };
+    }
+
+    if (fetchLatestVersionFromFallback(allocator) catch null) |value| {
+        return .{ .value = value, .source = .fallback };
+    }
+
+    return error.CouldNotResolveLatestVersion;
+}
+
+fn fetchLatestVersionFromGitHub(allocator: std.mem.Allocator) !?[]u8 {
+    const response = fetchUrlToMemory(allocator, "https://api.github.com/repos/" ++ github_repo ++ "/releases/latest", 1 * 1024 * 1024) catch return null;
+    defer allocator.free(response);
+    return parseJsonStringField(allocator, response, "tag_name", true);
+}
+
+fn fetchLatestVersionFromFallback(allocator: std.mem.Allocator) !?[]u8 {
+    const base_url = try getBaseUrl(allocator);
+    defer if (base_url.owned) allocator.free(base_url.value);
+
+    const url = try std.fmt.allocPrint(allocator, "{s}/latest.json", .{base_url.value});
+    defer allocator.free(url);
+
+    const response = fetchUrlToMemory(allocator, url, 256 * 1024) catch return null;
+    defer allocator.free(response);
+    return parseJsonStringField(allocator, response, "version", false);
+}
+
+fn fetchChecksumsManifest(allocator: std.mem.Allocator, version: []const u8) ![]u8 {
+    const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/checksums.sha256", .{ github_repo, version });
+    defer allocator.free(url);
+    return fetchUrlToMemory(allocator, url, 256 * 1024);
+}
+
+fn fetchUrlToMemory(allocator: std.mem.Allocator, url: []const u8, max_output_bytes: usize) ![]u8 {
+    const result = try cio.runCapture(.{
+        .allocator = allocator,
+        .argv = &.{ "curl", "-fsSL", "-A", user_agent, url },
+        .max_output_bytes = max_output_bytes,
+    });
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        allocator.free(result.stdout);
+        return error.CurlFailed;
+    }
+
+    return result.stdout;
+}
+
+fn parseJsonStringField(allocator: std.mem.Allocator, json_text: []const u8, field_name: []const u8, trim_v_prefix: bool) !?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, json_text, .{}) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return null;
+    const field = parsed.value.object.get(field_name) orelse return null;
+    if (field != .string) return null;
+
+    const value = if (trim_v_prefix) trimVersionPrefix(field.string) else field.string;
+    if (value.len == 0) return null;
+    return try allocator.dupe(u8, value);
+}
+
+fn getBaseUrl(allocator: std.mem.Allocator) !struct { value: []const u8, owned: bool } {
+    if (cio.posixGetenv("CODEDB_URL")) |value| {
+        if (value.len != 0) {
+            const dup = try allocator.dupe(u8, value);
+            return .{ .value = dup, .owned = true };
+        }
+    }
+    return .{ .value = default_base_url, .owned = false };
+}
+
+fn trimVersionPrefix(value: []const u8) []const u8 {
+    return std.mem.trimStart(u8, value, "vV");
+}
+
+fn parseVersionPart(part: []const u8) !u64 {
+    const trimmed = std.mem.trim(u8, part, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidVersion;
+    return std.fmt.parseInt(u64, trimmed, 10);
+}

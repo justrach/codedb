@@ -1,0 +1,51 @@
+    defer allocator.free(args);
+
+    var root: []const u8 = undefined;
+    var cmd: []const u8 = undefined;
+    var cmd_args_start: usize = undefined;
+    var root_is_explicit: bool = false;
+
+    const parsed = parsePositional(args);
+    if (parsed.usage_exit) {
+        printUsage(&out, s);
+        out.exitWithFlush(1);
+    }
+    root = parsed.root;
+    cmd = parsed.cmd;
+    cmd_args_start = parsed.cmd_args_start;
+    root_is_explicit = parsed.root_is_explicit;
+
+    // CODEDB_ROOT env var lets clients (Claude Code MCP, shell scripts) pin
+    // the root without needing to pass a positional arg. Treated as explicit
+    // so the MCP scan kicks off at startup instead of waiting for a roots
+    // handshake — without this, every fresh `codedb mcp` call against a
+    // client that doesn't send roots/list_changed sees an empty index.
+    if (mcpRootAcceptsEnv(cmd, root)) {
+        if (cio.posixGetenv("CODEDB_ROOT")) |env_root| {
+            if (env_root.len > 0) {
+                root = env_root;
+                root_is_explicit = true;
+            }
+        }
+    }
+
+    // #502: when `codedb mcp` is launched from a subdirectory of a git
+    // repo (e.g. opencode/Zed spawning from the buffer's directory), walk
+    // up to the repo root so the user gets the whole project indexed
+    // rather than the subdir they happen to be in. Skipped if the env var
+    // or a positional arg already pinned the root, or if no .git is found.
+    var git_root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (mcpRootIsImplicitCwd(cmd, root, root_is_explicit)) {
+        if (findGitRoot(io, &git_root_buf)) |git_root| {
+            root = git_root;
+            root_is_explicit = true;
+        }
+    }
+
+    // MCP stdio reserves stdout for JSON-RPC — route status/error output to
+    // stderr so startup/failure paths don't corrupt the protocol stream.
+    // See #304.
+    if (std.mem.eql(u8, cmd, "mcp")) {
+        out.file = cio.File.stderr();
+        // #502: reject unknown flags after `mcp` (e.g. `codedb mcp --snapshot`
+        // was previously consumed silently and the server started anyway,

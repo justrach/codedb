@@ -1,0 +1,237 @@
+// ── codedb_callers: string-literal mentions are not call sites ──────────────
+// `codedb . callers renderPlainSearch` reported two kinds of non-calls:
+//   scripts/rank-eval.py:56: ("renderPlainSearch", "src/explore.zig"),
+//   src/test_search.zig:1959: test "def-first: renderPlainSearch surfaces …" {
+// In both the symbol occurs ONLY inside a string literal. The four existing
+// filters (non-code language, comment/blank, definition site, whole-word) all
+// pass such a line, so it was rendered as a call site.
+
+/// Index `files` (path/content pairs) into a fresh Explorer, run the
+/// codedb_callers handler for `name`, and leave the rendered text in `out`.
+/// `explorer_alloc` should be an arena — the Explorer is not deinit'ed.
+fn renderCallersFixture(
+    explorer_alloc: std.mem.Allocator,
+    files: []const [2][]const u8,
+    name: []const u8,
+    out: *std.ArrayList(u8),
+) !void {
+    var explorer = Explorer.init(explorer_alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    for (files) |f| try explorer.indexFile(f[0], f[1]);
+
+    var m: std.json.ObjectMap = .empty;
+    defer m.deinit(testing.allocator);
+    try m.put(testing.allocator, "name", .{ .string = name });
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &m, out, &store, &explorer, &agents);
+}
+
+test "issue: codedb_callers excludes a line that mentions the symbol only inside string literals" {
+    // The scripts/rank-eval.py:56 case — a table of ("symbol", "file") pairs.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "table.zig", "const t = (\"renderX\", \"y.zig\");\n" },
+        .{ "call.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "table.zig:1") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
+}
+
+test "issue: codedb_callers excludes a test declaration that names the symbol in its title" {
+    // The src/test_search.zig:1959 case — the symbol sits inside the quoted
+    // test name, so the declaration line is documentation, not an invocation.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "t.zig", "test \"about renderX behavior\" {\n    const x = 1;\n    _ = x;\n}\n" },
+        .{ "call.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "t.zig:1") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
+}
+
+test "issue: codedb_callers keeps real calls inside and outside test bodies" {
+    // The body call at src/test_search.zig:1970 is a genuine caller: the new
+    // string filter must not follow the test declaration line out the door.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "body.zig", "test \"about renderX behavior\" {\n    const r = explorer.renderX(1);\n    _ = r;\n}\n" },
+        .{ "plain.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "body.zig:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "plain.zig:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "body.zig:1") == null);
+}
+
+test "issue-682: codedb_callers excludes a symbol mentioned only in a trailing comment" {
+    // `init(); // then renderX() draws the frame` — the mention lives in the
+    // trailing comment. The comment/blank filter passes the line (it starts
+    // with code) and the string filter sees no quotes, so the line is
+    // reported as a call site even though nothing on it invokes the symbol.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "trail.zig", "pub fn callerA() void {\n    init(); // then renderX() draws the frame\n}\n" },
+        .{ "call.zig", "pub fn callerB() void {\n    renderX();\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "trail.zig:2") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
+}
+
+test "issue-682: codedb_callers keeps a call after a string containing the comment marker" {
+    // `fetch("https://x", renderX);` — the `//` sits inside the string literal,
+    // so the comment cut must not swallow the real reference after it.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "url.zig", "pub fn callerA() void {\n    fetch(\"https://x\", renderX);\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "url.zig:2") != null);
+}
+
+test "issue-682: codedb_callers recognizes PHP and Swift trailing comments" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "trail.php", "<?php\ninit(); // renderX() is documented here\ninit(); # renderX() is documented here\n" },
+        .{ "trail.swift", "func callerA() {\n    init() // renderX() is documented here\n}\n" },
+        .{ "call.php", "<?php\nrenderX();\n" },
+        .{ "attribute.php", "<?php\n#[SomeAttribute] function callerB() { renderX(); }\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "trail.php") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "trail.swift") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call.php:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "attribute.php:2") != null);
+}
+
+test "issue-682: codedb_callers keeps calls after markers inside literals and block comments" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "url.go", "func callerA() {\n    url := `https://example.test`; renderX()\n}\n" },
+        .{ "url.js", "function callerB() {\n    const url = `https://example.test`; renderX();\n}\n" },
+        .{ "block.c", "void callerC(void) {\n    init(); /* see https://example.test */ renderX();\n}\n" },
+        .{ "raw.rs", "fn caller_d() {\n    let text = r#\"say \"https://example.test\"\"#; renderX();\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "4 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "url.go:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "url.js:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "block.c:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "raw.rs:2") != null);
+}
+
+test "issue-682: codedb_callers excludes mentions inside raw literals and block comments" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "mention.go", "func notCallerA() {\n    text := `https://example.test/renderX`\n}\n" },
+        .{ "mention.js", "function notCallerB() {\n    const text = `https://example.test/renderX`;\n}\n" },
+        .{ "mention.c", "void not_caller_c(void) {\n    init(); /* see https://example.test/renderX */\n}\n" },
+        .{ "mention.rs", "fn not_caller_d() {\n    let text = r#\"say \"https://example.test/renderX\"\"#;\n}\n" },
+        .{ "mention-regex.js", "function notCallerE() {\n    return /renderX/;\n}\n" },
+        .{ "template.js", "function callerF() {\n    const text = `value: ${renderX()}`;\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mention.go") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mention.js") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mention.c") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mention.rs") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mention-regex.js") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "template.js:2") != null);
+}
+
+test "issue-682: codedb_callers keeps template-regex and R backtick calls" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "regex.js", "function callerA(value) {\n    return `${/[}]/.test(value) ? renderX() : value}`;\n}\n" },
+        .{ "backtick-call.r", "caller_b <- function() {\n  `renderX`(1)\n}\n" },
+        .{ "backtick-marker.r", "caller_c <- function() {\n  `label#value`; renderX()\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "3 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "regex.js:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "backtick-call.r:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "backtick-marker.r:2") != null);
+}
+
+test "issue-682: codedb_callers recognizes shell comments after operators" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "trail.sh", "init;# renderX() is documented here\n" },
+        .{ "call.sh", "items=abc\ncount=${#items}; renderX\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "trail.sh") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call.sh:2") != null);
+}
+
+test "issue: codedb_callers keeps a symbol used outside a string on a line that has strings" {
+    // `foo("msg", renderX)` passes the function by reference next to a string
+    // literal — the mention is real code and must survive the filter.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "mixed.zig", "pub fn callerA() void {\n    foo(\"msg\", renderX);\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mixed.zig:2") != null);
+}

@@ -1,0 +1,44 @@
+   228	    if (std.mem.endsWith(u8, path, ".dart")) return .dart;
+   229	    if (std.mem.endsWith(u8, path, ".java")) return .java;
+   230	    if (std.mem.endsWith(u8, path, ".kt")) return .kotlin;
+   231	    if (std.mem.endsWith(u8, path, ".swift")) return .swift;
+   232	    if (std.mem.endsWith(u8, path, ".svelte")) return .svelte;
+   233	    if (std.mem.endsWith(u8, path, ".vue")) return .vue;
+   234	    if (std.mem.endsWith(u8, path, ".astro")) return .astro;
+   235	    if (std.mem.endsWith(u8, path, ".sh")) return .shell;
+   236	    if (std.mem.endsWith(u8, path, ".css")) return .css;
+   237	    if (std.mem.endsWith(u8, path, ".scss")) return .scss;
+   238	    if (std.mem.endsWith(u8, path, ".sql")) return .sql;
+   239	    if (std.mem.endsWith(u8, path, ".proto")) return .protobuf;
+   240	    if (std.mem.endsWith(u8, path, ".f90")) return .fortran;
+   241	    if (std.mem.endsWith(u8, path, ".ll")) return .llvm_ir;
+   242	    if (std.mem.endsWith(u8, path, ".mlir")) return .mlir;
+   243	    if (std.mem.endsWith(u8, path, ".td")) return .tablegen;
+   244	    if (std.mem.endsWith(u8, path, ".res") or std.mem.endsWith(u8, path, ".resi")) return .rescript;
+   245	    if (std.mem.endsWith(u8, path, ".ml") or std.mem.endsWith(u8, path, ".mli")) return .ocaml;
+   246	    return .unknown;
+   247	}
+   248	
+   249	/// Returns true for languages whose content is primarily prose / data /
+   250	/// markup rather than executable code. Used to deprioritise these files in
+  8130	pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
+  8131	    const trimmed = std.mem.trim(u8, line, " \t");
+  8132	    if (trimmed.len == 0) return true;
+  8133	    return switch (language) {
+  8134	        .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
+  8135	        .python, .ruby, .r, .shell => std.mem.startsWith(u8, trimmed, "#"),
+  8136	        .hcl => std.mem.startsWith(u8, trimmed, "#") or std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8137	        .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .protobuf, .mlir, .tablegen => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8138	        .svelte, .vue, .astro => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*") or std.mem.startsWith(u8, trimmed, "<!--"),
+  8139	        .css => std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8140	        .scss => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8141	        .sql => std.mem.startsWith(u8, trimmed, "--") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8142	        .fortran => std.mem.startsWith(u8, trimmed, "!"),
+  8143	        .llvm_ir => std.mem.startsWith(u8, trimmed, ";"),
+  8144	        .rescript => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8145	        .ocaml => std.mem.startsWith(u8, trimmed, "(*"),
+  8146	        else => false,
+  8147	    };
+  8148	}
+  8149	
+  8150	fn appendTargetLineHits(

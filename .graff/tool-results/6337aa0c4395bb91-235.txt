@@ -1,0 +1,73 @@
+
+test "cli response length cap rejects oversized frames" {
+    try std.testing.expect(cliResponseLenAllowed(0));
+    try std.testing.expect(cliResponseLenAllowed(cli_response_max));
+    try std.testing.expect(!cliResponseLenAllowed(cli_response_max + 1));
+    try std.testing.expect(cliResponseSendAllowed(cli_response_max));
+    try std.testing.expect(!cliResponseSendAllowed(@as(usize, cli_response_max) + 1));
+}
+
+const win = std.os.windows;
+const INVALID_HANDLE_VALUE = win.INVALID_HANDLE_VALUE;
+const GENERIC_READ: u32 = 0x80000000;
+const GENERIC_WRITE: u32 = 0x40000000;
+const OPEN_EXISTING: u32 = 3;
+const OPEN_ALWAYS: u32 = 4;
+const PIPE_ACCESS_DUPLEX: u32 = 0x00000003;
+const PIPE_TYPE_BYTE: u32 = 0x00000000;
+const PIPE_READMODE_BYTE: u32 = 0x00000000;
+const PIPE_WAIT: u32 = 0x00000000;
+const PIPE_UNLIMITED_INSTANCES: u32 = 255;
+const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x00080000;
+const SECURITY_SQOS_PRESENT: u32 = 0x00100000;
+const SECURITY_IDENTIFICATION: u32 = 0x00010000;
+const SDDL_REVISION_1: u32 = 1;
+const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x00000008;
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x00001000;
+const TOKEN_QUERY: u32 = 0x0008;
+const TokenUser: u32 = 1;
+
+extern "kernel32" fn CreateNamedPipeA(
+    lpName: [*:0]const u8,
+    dwOpenMode: u32,
+    dwPipeMode: u32,
+    nMaxInstances: u32,
+    nOutBufferSize: u32,
+    nInBufferSize: u32,
+    nDefaultTimeOut: u32,
+    lpSecurityAttributes: ?*anyopaque,
+) callconv(.winapi) win.HANDLE;
+extern "kernel32" fn ConnectNamedPipe(hNamedPipe: win.HANDLE, lpOverlapped: ?*anyopaque) callconv(.winapi) win.BOOL;
+extern "kernel32" fn DisconnectNamedPipe(hNamedPipe: win.HANDLE) callconv(.winapi) win.BOOL;
+extern "kernel32" fn GetNamedPipeServerProcessId(Pipe: win.HANDLE, ServerProcessId: *u32) callconv(.winapi) win.BOOL;
+extern "kernel32" fn CreateFileW(
+    lpFileName: [*:0]const u16,
+    dwDesiredAccess: u32,
+    dwShareMode: u32,
+    lpSecurityAttributes: ?*anyopaque,
+    dwCreationDisposition: u32,
+    dwFlagsAndAttributes: u32,
+    hTemplateFile: ?win.HANDLE,
+) callconv(.winapi) win.HANDLE;
+extern "kernel32" fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: win.BOOL, dwProcessId: u32) callconv(.winapi) ?win.HANDLE;
+extern "kernel32" fn GetCurrentProcess() callconv(.winapi) win.HANDLE;
+extern "kernel32" fn ReadFile(hFile: win.HANDLE, lpBuffer: [*]u8, nNumberOfBytesToRead: u32, lpNumberOfBytesRead: *u32, lpOverlapped: ?*anyopaque) callconv(.winapi) win.BOOL;
+extern "kernel32" fn WriteFile(hFile: win.HANDLE, lpBuffer: [*]const u8, nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: *u32, lpOverlapped: ?*anyopaque) callconv(.winapi) win.BOOL;
+extern "kernel32" fn LocalFree(hMem: ?*anyopaque) callconv(.winapi) ?*anyopaque;
+extern "advapi32" fn OpenProcessToken(ProcessHandle: win.HANDLE, DesiredAccess: u32, TokenHandle: *win.HANDLE) callconv(.winapi) win.BOOL;
+extern "advapi32" fn GetTokenInformation(TokenHandle: win.HANDLE, TokenInformationClass: u32, TokenInformation: ?*anyopaque, TokenInformationLength: u32, ReturnLength: *u32) callconv(.winapi) win.BOOL;
+extern "advapi32" fn EqualSid(pSid1: ?*anyopaque, pSid2: ?*anyopaque) callconv(.winapi) win.BOOL;
+extern "advapi32" fn ConvertSidToStringSidA(Sid: ?*anyopaque, StringSid: *?[*:0]u8) callconv(.winapi) win.BOOL;
+extern "advapi32" fn ConvertStringSecurityDescriptorToSecurityDescriptorA(
+    sddl: [*:0]const u8,
+    revision: u32,
+    sd: *?*anyopaque,
+    sd_size: ?*u32,
+) callconv(.winapi) win.BOOL;
+extern "advapi32" fn SystemFunction036(RandomBuffer: ?*anyopaque, RandomBufferLength: u32) callconv(.winapi) win.BOOL;
+
+const SID_AND_ATTRIBUTES = extern struct {
+    Sid: ?*anyopaque,
+    Attributes: u32,
+};
+

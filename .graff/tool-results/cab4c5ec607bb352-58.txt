@@ -1,0 +1,51 @@
+✓ 50 results for "line_text"  ⚡ 405.0µs
+  src/test_search.zig:560          try testing.expectEqualStrings(a.line_text, b.line_text);
+  src/mcp.zig:2129  fn appendMatchLineNoNL(w: anytype, prefix: []const u8, path: []const u8, line_num: u32, line_text: []const u8) void {
+  src/mcp.zig:2130      const r = trimMatchText(line_text);
+  src/mcp.zig:2139  /// line_text is non-null. Trims the match text (see trimMatchText) to save
+  src/mcp.zig:2141  fn appendMatchLine(w: anytype, prefix: []const u8, path: []const u8, line_num: u32, line_text: ?[]const u8) void {
+  src/mcp.zig:2142      if (line_text) |t| {
+  src/mcp.zig:2208                  alloc.free(r.line_text);
+  src/mcp.zig:2220              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2228              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2232                  appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+  src/mcp.zig:2235                  appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
+  src/explore.zig:268      line_text: []const u8,
+  src/explore.zig:1055          line_text: []u8,
+  src/explore.zig:1095              self.allocator.free(r.line_text);
+  src/explore.zig:1106      /// path/line_text and the slice, same contract as a fresh search) and
+  src/explore.zig:1127                  const t = out_allocator.dupe(u8, r.line_text) catch {
+  src/explore.zig:1131                  out[n] = .{ .path = p, .line_num = r.line_num, .line_text = t, .score = r.score };
+  src/explore.zig:1138                      out_allocator.free(r.line_text);
+  src/explore.zig:1156          for (results) |r| bytes += r.path.len + r.line_text.len + @sizeOf(CachedResult);
+  src/explore.zig:1163              const t = self.allocator.dupe(u8, r.line_text) catch {
+  src/explore.zig:1167              owned[n] = .{ .path = p, .line_num = r.line_num, .line_text = t, .score = r.score };
+  src/test_explore.zig:350              testing.allocator.free(r.line_text);
+  src/test_explore.zig:491              testing.allocator.free(r.line_text);
+  src/test_explore.zig:502              testing.allocator.free(r.line_text);
+  src/test_explore.zig:665              testing.allocator.free(r.line_text);
+  src/test_explore.zig:691              testing.allocator.free(r.line_text);
+  src/test_explore.zig:885              testing.allocator.free(r.line_text);
+  src/test_explore.zig:909              testing.allocator.free(r.line_text);
+  src/test_explore.zig:929              testing.allocator.free(r.line_text);
+  src/test_explore.zig:1049              testing.allocator.free(r.line_text);
+  src/test_explore.zig:1681              testing.allocator.free(r.line_text);
+  src/test_search.zig:47              testing.allocator.free(r.line_text);
+  src/test_search.zig:74              testing.allocator.free(r.line_text);
+  src/test_search.zig:93              testing.allocator.free(r.line_text);
+  src/test_search.zig:108              testing.allocator.free(r.line_text);
+  src/test_search.zig:209              testing.allocator.free(r.line_text);
+  src/test_search.zig:486              testing.allocator.free(r.line_text);
+  src/test_search.zig:543              testing.allocator.free(result.line_text);
+  src/test_search.zig:551              testing.allocator.free(result.line_text);
+  src/test_search.zig:590              testing.allocator.free(r.line_text);
+  src/test_index.zig:811              testing.allocator.free(r.line_text);
+  src/test_index.zig:819              testing.allocator.free(r.line_text);
+  src/test_index.zig:844              testing.allocator.free(r.line_text);
+  src/test_index.zig:865              testing.allocator.free(r.line_text);
+  src/test_index.zig:883              testing.allocator.free(r.line_text);
+  src/test_index.zig:1082              testing.allocator.free(r.line_text);
+  src/test_index.zig:1189      // Path and line_text should still be valid (owned)
+  src/test_index.zig:2610              testing.allocator.free(r.line_text);
+  src/test_index.zig:2643              testing.allocator.free(r.line_text);
+  src/test_index.zig:2670              testing.allocator.free(r.line_text);

@@ -1,0 +1,107 @@
+  2562	    // #573: single filter pass — the header count and the printed entries come
+  2563	    // from the same accumulation, so a predicate edit cannot desync them (the
+  2564	    // previous count loop + print loop duplicated four predicates verbatim).
+  2565	    var kept: std.ArrayList(usize) = .empty;
+  2566	    defer kept.deinit(alloc);
+  2567	    for (results, 0..) |r, r_idx| {
+  2568	        if (kept.items.len >= max_results) break;
+  2569	        const lang = explore_mod.detectLanguage(r.path);
+  2570	        if (!langHasCallSites(lang)) continue;
+  2571	        // #562: a full-line comment mention is documentation, not a call site.
+  2572	        if (explore_mod.isCommentOrBlank(r.line_text, lang)) continue;
+  2573	        var is_def = false;
+  2574	        for (defs) |d| {
+  2575	            if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
+  2576	                is_def = true;
+  2577	                break;
+  2578	            }
+  2579	        }
+  2580	        if (is_def) continue;
+  2581	        // A whole-word match that only ever lands inside a string literal or a
+  2582	        // trailing comment is a mention, not an invocation — a `("name",
+  2583	        // "file")` table row, a `test "…name…" {` declaration, or
+  2584	        // `init(); // then name() …`. Real calls sit on the code prefix of the
+  2585	        // line, outside the quotes, and survive both cuts. (#682)
+  2586	        if (!hasWholeWordMatchOutsideStrings(lineCodePrefix(r.line_text, lang), name)) continue;
+  2587	        kept.append(alloc, r_idx) catch {};
+  2588	    }
+  2589	
+  2590	    const w = cio.listWriter(out, alloc);
+  2591	    w.print("{d} call sites for '{s}':\n", .{ kept.items.len, name }) catch {};
+  2592	    for (kept.items) |kept_idx| {
+  2593	        const r = results[kept_idx];
+  2594	        if (r.scope_name) |sn| {
+  2595	            appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+  2596	            w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
+  2597	        } else {
+  2598	            appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
+  2599	        }
+  2600	    }
+  2601	}
+  2602	
+  2603	fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  2604	    const from_name = getStr(args, "from") orelse {
+  2605	        out.appendSlice(alloc, "error: missing 'from' argument") catch {};
+  2606	        appendBundleArgKeysDiagnostic(alloc, out, args);
+  2607	        return;
+  2608	    };
+  2609	    const to_name = getStr(args, "to") orelse {
+  2610	        out.appendSlice(alloc, "error: missing 'to' argument") catch {};
+  2611	        appendBundleArgKeysDiagnostic(alloc, out, args);
+  2612	        return;
+  2613	    };
+  2614	    if (from_name.len == 0 or to_name.len == 0) {
+  2615	        out.appendSlice(alloc, "error: 'from' and 'to' must be non-empty symbol names") catch {};
+  2616	        return;
+  2617	    }
+  2618	    const max_hops: usize = if (getInt(args, "max_hops")) |n| @intCast(@max(1, @min(n, 64))) else 12;
+  2619	
+  2620	    const steps = explorer.findCallPath(from_name, to_name, alloc, max_hops) catch {
+  2621	        out.appendSlice(alloc, "error: callpath search failed") catch {};
+  2622	        return;
+  2623	    };
+  2624	    const path = steps orelse {
+  2625	        const w = cio.listWriter(out, alloc);
+  2626	        w.print("no call path from '{s}' to '{s}' within {d} hops\n", .{ from_name, to_name, max_hops }) catch {};
+  2627	        return;
+  2628	    };
+  2629	    defer alloc.free(path);
+  2630	
+  2631	    const w = cio.listWriter(out, alloc);
+  2632	    w.print("call path ({d} hops): {s} → {s}\n", .{ path.len - 1, from_name, to_name }) catch {};
+  2633	    for (path, 0..) |step, i| {
+  2634	        if (i > 0) w.print("  → ", .{}) catch {};
+  2635	        w.print("{s}:{s}@L{d}", .{ step.path, step.name, step.line }) catch {};
+  2636	        if (i + 1 < path.len) w.print("\n", .{}) catch {};
+  2637	    }
+  2638	    w.print("\n", .{}) catch {};
+  2639	}
+  2640	
+  2641	fn isIdentChar(c: u8) bool {
+  2642	    return (c >= 'a' and c <= 'z') or
+  2643	        (c >= 'A' and c <= 'Z') or
+  2644	        (c >= '0' and c <= '9') or
+  2645	        c == '_';
+  2646	}
+  2647	
+  2648	/// Returns true iff `needle` occurs in `line` as a whole-word identifier
+  2649	/// (non-identifier characters or line boundaries on both sides) at a position
+  2650	/// that is NOT inside a string literal.
+  2651	///
+  2652	/// An occurrence that only ever appears between quotes is a mention, not a
+  2653	/// call: the Python table row `("renderPlainSearch", "src/explore.zig"),` and
+  2654	/// the Zig declaration `test "def-first: renderPlainSearch surfaces …" {` both
+  2655	/// name the symbol without invoking it, yet passed every other filter here.
+  2656	///
+  2657	/// Deliberately line-local and pragmatic, in the spirit of `isCommentOrBlank`:
+  2658	///   - tracks '…' and "…" spans, honouring backslash escapes
+  2659	///   - a quote with no closing partner on the line (an apostrophe in a
+  2660	///     trailing comment, a Rust lifetime `&'a`, an open multi-line literal) is
+  2661	///     treated as ordinary code, so it can never swallow the rest of the line
+  2662	///   - backticks are not treated as quotes: Go raw strings and JS template
+  2663	///     literals routinely wrap real calls (`${render()}`)
+  2664	fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+  2665	    if (needle.len == 0 or line.len < needle.len) return false;
+  2666	    var i: usize = 0;
+  2667	    while (i < line.len) {
+  2668	        if (line[i] == '"' or line[i] == '\'') {

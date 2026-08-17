@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Codesign + notarize a macOS `nb` binary locally using a notarytool keychain
+# profile. Produces a signed binary, a notarized tar.gz, and a .sha256 sidecar
+# alongside the input.
+#
+# Usage:
+#   scripts/notarize-macos.sh <path-to-nb-binary> [arch-tag]
+#
+# If arch-tag is omitted, it is inferred via `file` (arm64 | x86_64).
+# If CODESIGN_IDENTITY is omitted and exactly one Developer ID Application
+# identity exists in the login keychain, that identity is used.
+#
+# Prereqs (one-time):
+#   xcrun notarytool store-credentials notary-local \
+#     --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+#     --password "$APPLE_APP_SPECIFIC_PASSWORD"
+
+set -euo pipefail
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "notarize-macos.sh: this script only runs on macOS" >&2
+  exit 1
+fi
+
+BIN="${1:-}"
+if [[ -z "$BIN" || ! -f "$BIN" ]]; then
+  echo "usage: $0 <path-to-nb-binary> [arch-tag]" >&2
+  exit 1
+fi
+
+ARCH_TAG="${2:-}"
+if [[ -z "$ARCH_TAG" ]]; then
+  case "$(file -b "$BIN")" in
+    *arm64*)  ARCH_TAG="arm64"  ;;
+    *x86_64*) ARCH_TAG="x86_64" ;;
+    *)
+      echo "notarize-macos.sh: cannot infer arch from '$BIN'; pass arch-tag explicitly" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+IDENTITY="${CODESIGN_IDENTITY:-}"
+if [[ -z "$IDENTITY" ]]; then
+  IDENTITIES=()
+  while IFS= read -r found_identity; do
+    IDENTITIES+=("$found_identity")
+  done < <(security find-identity -v -p codesigning 2>/dev/null | awk -F '"' '/Developer ID Application/{print $2}')
+
+  if [[ "${#IDENTITIES[@]}" -eq 1 ]]; then
+    IDENTITY="${IDENTITIES[0]}"
+  else
+    echo "notarize-macos.sh: set CODESIGN_IDENTITY to your Developer ID Application certificate" >&2
+    echo "notarize-macos.sh: found ${#IDENTITIES[@]} Developer ID Application identities" >&2
+    exit 1
+  fi
+fi
+PROFILE="${NOTARY_PROFILE:-${NOTARYTOOL_PROFILE:-codedb-notary}}"
+
+OUT_DIR="$(cd "$(dirname "$BIN")" && pwd)"
+TARBALL="$OUT_DIR/nb-${ARCH_TAG}-apple-darwin.tar.gz"
+SHAFILE="$TARBALL.sha256"
+ZIPFILE="$OUT_DIR/nb-${ARCH_TAG}-apple-darwin-notarize.zip"
+
+echo "==> codesign ($IDENTITY)"
+codesign --sign "$IDENTITY" \
+  --options runtime \
+  --timestamp \
+  --force \
+  "$BIN"
+codesign --verify --deep --strict "$BIN"
+
+echo "==> notarize via profile '$PROFILE'"
+rm -f "$ZIPFILE"
+ditto -c -k --keepParent "$BIN" "$ZIPFILE"
+xcrun notarytool submit "$ZIPFILE" --keychain-profile "$PROFILE" --wait
+rm -f "$ZIPFILE"
+
+# Standalone Mach-O CLI binaries are not .app bundles, so `spctl --assess
+# --type execute` will reject them even when correctly notarized. Verify the
+# signature fields directly instead: Developer ID authority + hardened runtime.
+# Gatekeeper/syspolicyd will fetch the notarization ticket online on first run
+# for quarantined downloads.
+echo "==> verify signature fields"
+CS_OUT="$(codesign -dv --verbose=4 "$BIN" 2>&1 || true)"
+echo "$CS_OUT" | grep -E '^(Authority|TeamIdentifier|CodeDirectory v=|flags=)' || true
+if ! echo "$CS_OUT" | grep -q "Authority=Developer ID Application"; then
+  echo "notarize-macos.sh: binary is not signed with a Developer ID authority" >&2
+  exit 1
+fi
+if ! echo "$CS_OUT" | grep -q "flags=0x10000(runtime)"; then
+  echo "notarize-macos.sh: binary is missing the hardened runtime flag" >&2
+  exit 1
+fi
+
+if [[ "$ARCH_TAG" == "x86_64" ]]; then
+  MINOS="$(otool -l "$BIN" | awk '
+    $1 == "cmd" && $2 == "LC_BUILD_VERSION" { in_build = 1; next }
+    in_build && $1 == "minos" { print $2; exit }
+  ')"
+  case "$MINOS" in
+    10.*|11.*|12.*) ;;
+    *)
+      echo "notarize-macos.sh: x86_64 binary must target macOS 12.x or older; got minos '${MINOS:-unknown}'" >&2
+      echo "notarize-macos.sh: rebuild with: zig build -Dtarget=x86_64-macos.12.0 -Doptimize=ReleaseFast" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+echo "==> smoke test signed binary"
+set +e
+if [[ "$ARCH_TAG" == "x86_64" && "$(uname -m)" == "arm64" ]]; then
+  SMOKE_OUT="$(arch -x86_64 "$BIN" 2>&1)"
+  SMOKE_STATUS=$?
+else
+  SMOKE_OUT="$("$BIN" 2>&1)"
+  SMOKE_STATUS=$?
+fi
+set -e
+case "$SMOKE_STATUS" in
+  1) ;;
+  *)
+    echo "notarize-macos.sh: signed binary smoke test exited with $SMOKE_STATUS, expected 1 from usage path" >&2
+    echo "$SMOKE_OUT" >&2
+    exit 1
+    ;;
+esac
+if ! grep -q "nanobrew" <<<"$SMOKE_OUT"; then
+  echo "notarize-macos.sh: signed binary smoke test did not print usage" >&2
+  echo "$SMOKE_OUT" >&2
+  exit 1
+fi
+
+echo "==> package $TARBALL"
+STAGE_DIR="$(mktemp -d)"
+cp "$BIN" "$STAGE_DIR/nb"
+tar -czf "$TARBALL" -C "$STAGE_DIR" nb
+rm -rf "$STAGE_DIR"
+(cd "$OUT_DIR" && shasum -a 256 "$(basename "$TARBALL")" > "$(basename "$SHAFILE")")
+shasum -a 256 "$TARBALL" > "$SHAFILE"
+
+echo ""
+echo "done:"
+echo "  signed+notarized: $BIN"
+echo "  tarball:          $TARBALL"
+echo "  sha256:           $SHAFILE"
+
+--- changelog mentions ---
+235-
+236-### Added
+237-- **macOS release notarization** — release tarballs for `darwin-arm64` and `darwin-x86_64` are now signed with a Developer ID Application certificate under the hardened runtime and notarized by Apple. Gatekeeper fetches the notarization ticket online on first run, so downloads via browser no longer prompt as "unidentified developer". Closes #118 for macOS consumers (Sigstore/cosign remains a separate option for cross-platform provenance). (#118, #228)
+238-- **`nb where <pattern>`** — new diagnostic subcommand that aggregates three views for a given pattern: installed kegs/casks/debs that match, files in `$PREFIX/{bin,lib,opt}` that match, and Homebrew index hits. Replaces the common `nb list | grep X; ls $PREFIX/lib/ | grep X; nb search X` pipeline. (#228)
+239:- **`scripts/notarize-macos.sh`** — local notarization helper that uses the `codedb-notary` keychain profile. Used for one-off releases and for reproducing CI behavior locally when CI secrets are unavailable. (#228)
+240-- **`nb info <formula>` — rich output** — formula info now prints description, homepage, license, bottle/source URL + sha256, dependencies, build dependencies, and caveats (mirroring `nb info --cask`). Bottled formulae are tagged `(bottled)`; source-only formulae tag the URL as `(source)`. `Formula` struct gains `homepage` and `license` fields parsed from the Homebrew API. (#230, #231)
+241-
+242-### Fixed
+243-- **Python (and other framework-bundled formulae) crashed on `dlopen` with `Invalid Page` / `Code Signature Invalid`** — the Mach-O relocator only re-signed binaries it rewrote with `install_name_tool`, leaving every other Mach-O with whatever (often broken) signature the upstream bottle shipped. `install_name_tool` removes signatures unconditionally on invocation, and `*.framework` bundles carry a sealed-resource hash that invalidates on any nested file change. Additionally, the batch `codesign` call had a 4 KiB stdout capture limit that SIGPIPEd the subprocess mid-batch on packages with many Mach-O files (e.g. `python@3.14`'s 76 `.so` plugins), leaving most files unsigned. Now every Mach-O file in a keg is ad-hoc re-signed after relocation, and every `*.framework` bundle gets a final `codesign --deep` pass after `replaceKegPlaceholders` finishes all text-file rewrites. Fresh cold install of `python@3.14` went from **60/76 broken `.so`** + invalid framework + SIGKILL on `import sqlite3` to **0/76 broken** + valid framework + all imports succeed. (#239)

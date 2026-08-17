@@ -1,0 +1,76 @@
+  8100	}
+  8101	
+  8102	fn appendExtractedLines(
+  8103	    content: []const u8,
+  8104	    start: u32,
+  8105	    end: u32,
+  8106	    line_numbers: bool,
+  8107	    compact: bool,
+  8108	    language: Language,
+  8109	    line_prefix: []const u8,
+  8110	    allocator: std.mem.Allocator,
+  8111	    out: *std.ArrayList(u8),
+  8112	) !void {
+  8113	    const w = cio.listWriter(out, allocator);
+  8114	    var line_num: u32 = 0;
+  8115	    var lines = std.mem.splitScalar(u8, content, '\n');
+  8116	    while (lines.next()) |line| {
+  8117	        line_num += 1;
+  8118	        if (line_num < start) continue;
+  8119	        if (line_num > end) break;
+  8120	        if (compact and isCommentOrBlank(line, language)) continue;
+  8121	        if (line_numbers) {
+  8122	            try w.print("{s}{d:>5} | {s}\n", .{ line_prefix, line_num, line });
+  8123	        } else {
+  8124	            try w.print("{s}\n", .{line});
+  8125	        }
+  8126	    }
+  8127	}
+  8128	
+  8129	/// Returns true if a line is blank or a single-line comment for the given language.
+  8130	pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
+  8131	    const trimmed = std.mem.trim(u8, line, " \t");
+  8132	    if (trimmed.len == 0) return true;
+  8133	    return switch (language) {
+  8134	        .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
+  8135	        .python, .ruby, .r, .shell => std.mem.startsWith(u8, trimmed, "#"),
+  8136	        .hcl => std.mem.startsWith(u8, trimmed, "#") or std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8137	        .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .protobuf, .mlir, .tablegen => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8138	        .svelte, .vue, .astro => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*") or std.mem.startsWith(u8, trimmed, "<!--"),
+  8139	        .css => std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8140	        .scss => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8141	        .sql => std.mem.startsWith(u8, trimmed, "--") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8142	        .fortran => std.mem.startsWith(u8, trimmed, "!"),
+  8143	        .llvm_ir => std.mem.startsWith(u8, trimmed, ";"),
+  8144	        .rescript => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8145	        .ocaml => std.mem.startsWith(u8, trimmed, "(*"),
+  8146	        else => false,
+  8147	    };
+  8148	}
+  8149	
+  8150	fn appendTargetLineHits(
+  8151	    path: []const u8,
+  8152	    content: []const u8,
+  8153	    allocator: std.mem.Allocator,
+  8154	    target_lines: []const u32,
+  8155	    max_results: usize,
+  8156	    result_list: *std.ArrayList(SearchResult),
+  8157	) !void {
+  8158	    if (target_lines.len == 0 or result_list.items.len >= max_results) return;
+  8159	    result_list.ensureUnusedCapacity(allocator, @min(target_lines.len, max_results - result_list.items.len)) catch {};
+  8160	    var target_i: usize = 0;
+  8161	    var line_num: u32 = 0;
+  8162	    var lines = std.mem.splitScalar(u8, content, '\n');
+  8163	    while (lines.next()) |line| {
+  8164	        line_num += 1;
+  8165	        while (target_i < target_lines.len and target_lines[target_i] < line_num) {
+  8166	            target_i += 1;
+  8167	        }
+  8168	        if (target_i >= target_lines.len) return;
+  8169	        if (target_lines[target_i] != line_num) continue;
+  8170	        target_i += 1;
+  8171	
+  8172	        const line_text = try allocator.dupe(u8, line);
+  8173	        errdefer allocator.free(line_text);
+  8174	        const path_copy = try allocator.dupe(u8, path);
+  8175	        errdefer allocator.free(path_copy);

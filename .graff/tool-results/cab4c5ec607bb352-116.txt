@@ -1,0 +1,140 @@
+   200	        response_bytes = r.response_bytes;
+   201	    }
+   202	
+   203	    return .{
+   204	        .avg_latency_ns = @intCast(@divTrunc(total_ns, case.iterations)),
+   205	        .min_latency_ns = min_ns,
+   206	        .response_bytes = response_bytes,
+   207	    };
+   208	}
+   209	
+   210	fn genCorpus(io: std.Io, allocator: std.mem.Allocator, tmp_root: []const u8) ![]const u8 {
+   211	    var buf: std.ArrayList(u8) = .empty;
+   212	    defer buf.deinit(allocator);
+   213	    const w = cio.listWriter(&buf, allocator);
+   214	
+   215	    // huge.zig: ~1.8MB, ~47k lines, 3600 functions. Above the 1MB trigram cap,
+   216	    // below the 2MB index cap — lands in the skip-trigram full-scan set.
+   217	    try buf.ensureTotalCapacity(allocator, 2_000_000);
+   218	    for (0..HUGE_FN_COUNT) |i| {
+   219	        try w.print("pub fn edgeHugeFn_{d:0>4}(x: usize) usize {{\n", .{i});
+   220	        try w.writeAll("    var acc: usize = x;\n");
+   221	        for (0..HUGE_BODY_LINES) |j| {
+   222	            try w.print("    acc +%= hotword + {d}; // hotword filler {d}\n", .{ j, i });
+   223	        }
+   224	        try w.writeAll("    return acc;\n}\n\n");
+   225	    }
+   226	    try w.writeAll("pub const needleUniqueXyz: usize = 42;\n");
+   227	    const huge_content = try allocator.dupe(u8, buf.items);
+   228	    errdefer allocator.free(huge_content);
+   229	    try writeFileUnder(io, tmp_root, "huge.zig", huge_content);
+   230	
+   231	    // long_line_a.js: ~900KB single line (trigram-indexed).
+   232	    // long_line_b.js: ~1.5MB single line (skip-trigram).
+   233	    buf.clearRetainingCapacity();
+   234	    for (0..12_000) |i| {
+   235	        if (i % 50 == 0) {
+   236	            try w.print("var fillpayload{d}=hotword;", .{i});
+   237	        } else {
+   238	            try w.print("var v{d}=payload_chunk_{d}_abcdefghijklmnopqrstuvwxyz0123456789;", .{ i, i });
+   239	        }
+   240	    }
+   241	    try w.writeAll("\n");
+   242	    try writeFileUnder(io, tmp_root, "long_line_a.js", buf.items);
+   243	
+   244	    buf.clearRetainingCapacity();
+   245	    for (0..20_000) |i| {
+   246	        if (i % 50 == 0) {
+   247	            try w.print("var fillpayload{d}x=hotword;", .{i});
+   248	        } else {
+   249	            try w.print("var w{d}=payload_chunk_{d}_abcdefghijklmnopqrstuvwxyz0123456789;", .{ i, i });
+   250	        }
+   251	    }
+   252	    try w.writeAll("\n");
+   253	    try writeFileUnder(io, tmp_root, "long_line_b.js", buf.items);
+   254	
+   255	    // many/: 40 dirs x 75 files, an import/call chain within each dir, every
+   256	    // file calls sharedHelper (3000 call sites).
+   257	    try writeFileUnder(io, tmp_root, "many/shared_helper.zig", "pub fn sharedHelper() void {}\npub const shared_marker: usize = 7;\n");
+   258	
+   259	    var rel_buf: [256]u8 = undefined;
+   260	    for (0..MANY_DIRS) |d| {
+   261	        for (0..MANY_FILES_PER_DIR) |f| {
+   262	            buf.clearRetainingCapacity();
+   263	            if (f > 0) {
+   264	                try w.print("const dep = @import(\"edge_file_{d}_{d}.zig\");\n", .{ d, f - 1 });
+   265	            }
+   266	            try w.print("pub fn edgeHandlerAlphaBeta_{d}_{d}() void {{\n", .{ d, f });
+   267	            try w.writeAll("    sharedHelper();\n");
+   268	            if (f > 0) {
+   269	                try w.print("    dep.edgeHandlerAlphaBeta_{d}_{d}();\n", .{ d, f - 1 });
+   270	            }
+   271	            try w.print("    var local_{d}_{d}: usize = hotword;\n", .{ d, f });
+   272	            try w.print("    _ = &local_{d}_{d};\n", .{ d, f });
+   273	            try w.writeAll("}\n");
+   274	            try w.print("pub const edge_const_{d}_{d}: usize = {d};\n", .{ d, f, d * 100 + f });
+   275	
+   276	            const rel = try std.fmt.bufPrint(&rel_buf, "many/d{d}/edge_file_{d}_{d}.zig", .{ d, d, f });
+   277	            try writeFileUnder(io, tmp_root, rel, buf.items);
+   278	        }
+   279	    }
+   280	
+   330	        var min_buf: [32]u8 = undefined;
+   331	        try writer.print("{s:<24} {s:<10} {s:<10} {d}\n", .{
+   332	            result.tool,
+   333	            formatNs(&avg_buf, result.avg_latency_ns),
+   334	            formatNs(&min_buf, result.min_latency_ns),
+   335	            result.response_bytes,
+   336	        });
+   337	    }
+   338	    try file.writeAll(out.items);
+   339	}
+   340	
+   341	fn writeJsonSummary(allocator: std.mem.Allocator, file: cio.File, repo_root: []const u8, corpus_root: []const u8, file_count: usize, total_bytes: u64, scan_ns: u64, results: []const CaseResult) !void {
+   342	    var out: std.ArrayList(u8) = .empty;
+   343	    defer out.deinit(allocator);
+   344	    const writer = cio.listWriter(&out, allocator);
+   345	    try writer.print("{{\"repo_root\":\"{s}\",\"corpus_root\":\"{s}\",\"file_count\":{d},\"total_bytes\":{d},\"scan_ns\":{d},\"tools\":[", .{
+   346	        repo_root,
+   347	        corpus_root,
+   348	        file_count,
+   349	        total_bytes,
+   350	        scan_ns,
+   351	    });
+   352	    for (results, 0..) |result, idx| {
+   353	        if (idx > 0) try writer.writeByte(',');
+   354	        try writer.print("{{\"tool\":\"{s}\",\"avg_latency_ns\":{d},\"min_latency_ns\":{d},\"response_bytes\":{d},\"ops_per_sec\":{d:.3}}}", .{
+   355	            result.tool,
+   356	            result.avg_latency_ns,
+   357	            result.min_latency_ns,
+   358	            result.response_bytes,
+   359	            result.ops_per_sec,
+   360	        });
+   361	    }
+   362	    try writer.writeAll("]}\n");
+   363	    try file.writeAll(out.items);
+   364	}
+   365	
+   366	fn opsPerSec(avg_latency_ns: u64) f64 {
+   367	    if (avg_latency_ns == 0) return 0;
+   368	    return @as(f64, 1_000_000_000.0) / @as(f64, @floatFromInt(avg_latency_ns));
+   369	}
+   370	
+   371	fn formatNs(buf: []u8, ns: u64) []const u8 {
+   372	    if (ns >= std.time.ns_per_s) {
+   373	        const whole = ns / std.time.ns_per_s;
+   374	        const frac = (ns % std.time.ns_per_s) / 100_000_000;
+   375	        return std.fmt.bufPrint(buf, "{d}.{d}s", .{ whole, frac }) catch "0s";
+   376	    }
+   377	    if (ns >= std.time.ns_per_ms) {
+   378	        const whole = ns / std.time.ns_per_ms;
+   379	        const frac = (ns % std.time.ns_per_ms) / 100_000;
+   380	        return std.fmt.bufPrint(buf, "{d}.{d}ms", .{ whole, frac }) catch "0ms";
+   381	    }
+   382	    if (ns >= std.time.ns_per_us) {
+   383	        const whole = ns / std.time.ns_per_us;
+   384	        const frac = (ns % std.time.ns_per_us) / 100;
+   385	        return std.fmt.bufPrint(buf, "{d}.{d}us", .{ whole, frac }) catch "0us";
+   386	    }
+   387	    return std.fmt.bufPrint(buf, "{d}ns", .{ns}) catch "0ns";
+   388	}

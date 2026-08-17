@@ -1,0 +1,61 @@
+        explorer.releaseSecondaryIndexes();
+    }
+}
+pub fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8) void {
+    const data_dir = getDataDir(ctx.io, ctx.allocator, abs_root) catch {
+        ctx.triggered.store(false, .release);
+        return;
+    };
+    defer ctx.allocator.free(data_dir);
+    const git_head = git_mod.getGitHead(abs_root, ctx.allocator) catch null;
+    mcp_server.setScanState(.loading_snapshot);
+    const snapshot_loaded = loadBestSnapshot(ctx.io, ctx.explorer, ctx.store, abs_root, data_dir, git_head, ctx.allocator);
+    ctx.resolved_root = abs_root;
+    ctx.explorer.setRoot(ctx.io, abs_root);
+    ctx.scan_done.store(snapshot_loaded, .release);
+    if (!snapshot_loaded) {
+        mcp_server.setScanState(.walking);
+        const scan_thread = std.Thread.spawn(.{}, scanBg, .{ ctx.io, ctx.store, ctx.explorer, abs_root, ctx.allocator, ctx.scan_done, ctx.shutdown, data_dir, abs_root, ctx.telem, ctx.startup_t0 }) catch return;
+        ctx.scan_thread = scan_thread;
+    } else {
+        const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - ctx.startup_t0, 0));
+        loadTrigramFromDiskIfPresent(ctx.io, ctx.explorer, data_dir, ctx.allocator);
+        ctx.telem.recordCodebaseStats(ctx.explorer, startup_time_ms);
+        compactMcpReadyMemory(ctx.io, ctx.explorer, data_dir, git_head, ctx.allocator);
+        mcp_server.setScanState(.ready);
+    }
+}
+
+pub fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
+    const t0 = cio.milliTimestamp();
+    const fallback_after_ms: i64 = 3000;
+    // #502: after the 3s fallback fires, give the cwd-policy check a
+    // little more time, then unblock. Previously, when fallback_cwd was
+    // non-indexable (e.g. `/`, `/tmp`, or any other path that fails
+    // isIndexableRoot), `triggerDeferredScanWithFallback` would return
+    // false, leave `triggered=false`, leave `scan_done=false`, and this
+    // loop would poll forever — tool calls saw scan=loading_snapshot
+    // indefinitely and the server hung from the user's POV.
+    const give_up_after_ms: i64 = 13000;
+    var fallback_attempted = false;
+    while (!ctx.scan_done.load(.acquire) and !ctx.shutdown.load(.acquire)) {
+        cio.sleepMs(50);
+        const elapsed = cio.milliTimestamp() - t0;
+        if (!fallback_attempted and elapsed >= fallback_after_ms) {
+            fallback_attempted = true;
+            // Client never sent indexable roots — fall back to cwd so the
+            // server doesn't sit in loading_snapshot forever.
+            const empty_roots: []const mcp_server.Root = &.{};
+            _ = mcp_server.triggerDeferredScanWithFallback(ctx, empty_roots, ctx.fallback_cwd);
+        }
+        if (fallback_attempted and elapsed >= give_up_after_ms and !ctx.triggered.load(.acquire)) {
+            std.log.warn("codedb mcp: no indexable root found after {d}ms — exiting deferred mode with empty index. set CODEDB_ROOT or pass `codedb <path> mcp` to fix.", .{give_up_after_ms});
+            ctx.scan_done.store(true, .release);
+            return;
+        }
+    }
+    if (ctx.shutdown.load(.acquire)) return;
+    // If we exited the loop without ever triggering a scan (give-up path),
+    // resolved_root is empty — skip incrementalLoop so we don't crash.
+    if (!ctx.triggered.load(.acquire)) return;
+    watcher.incrementalLoop(ctx.io, ctx.store, ctx.explorer, ctx.queue, ctx.resolved_root, ctx.shutdown, ctx.scan_done);

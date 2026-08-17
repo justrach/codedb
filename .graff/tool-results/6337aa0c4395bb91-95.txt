@@ -1,0 +1,91 @@
+STRIPPED=$(echo "$STRIPPED" | sed -E 's/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+//')
+FIRST=$(echo "$STRIPPED" | awk '{print $1}')
+
+case "$FIRST" in
+  grep|rg|egrep|fgrep|cat|head|tail|sed|awk|find) ;;
+  *) exit 0 ;;
+esac
+
+# Scope 1: cwd must sit at/under a codedb-indexed root. Otherwise codedb has
+# nothing to offer here — allow the native tool (no blocking outside repos, on
+# unindexed dirs, or in ~/.claude).
+PWD_ABS=$(pwd -P)
+REPO_ROOT=""
+for pt in "$HOME"/.codedb/projects/*/project.txt; do
+  [ -f "$pt" ] || continue
+  root=$(head -1 "$pt" 2>/dev/null)
+  [ -z "$root" ] && continue
+  [ "$root" = "/" ] && continue        # degenerate root matches everything
+  [ "$root" = "$HOME" ] && continue    # home indexed as a project would block all of ~
+  if [ "$PWD_ABS" = "$root" ] || [ "${PWD_ABS#"$root"/}" != "$PWD_ABS" ]; then
+    REPO_ROOT="$root"; break
+  fi
+done
+[ -z "$REPO_ROOT" ] && exit 0
+
+# Scope 2: if the command names an ABSOLUTE path outside this repo (cat /etc/hosts,
+# grep x /tmp/f), codedb can't read it — allow. Relative paths are assumed
+# in-repo (cwd is in-repo). Fail-open: any out-of-repo absolute arg -> allow.
+set -f
+for tok in $STRIPPED; do
+  case "$tok" in
+    /*)
+      if [ "$tok" = "$REPO_ROOT" ] || [ "${tok#"$REPO_ROOT"/}" != "$tok" ]; then :; else set +f; exit 0; fi
+      ;;
+  esac
+done
+set +f
+
+case "$FIRST" in
+  grep|rg|egrep|fgrep) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_search \"<text>\" (codedb_word for an exact identifier, codedb_callers for call sites) instead of $FIRST — ranked + fewer tokens. Native $FIRST is allowed outside this repo or with CODEDB_NO_HOOKS=1." >&2; exit 2 ;;
+  cat) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_read path=<file> (codedb_outline first for a map) instead of cat. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
+  head|tail) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_read path=<file> line_start=.. line_end=.. instead of $FIRST. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
+  sed|awk) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_edit (op=str_replace) instead of $FIRST for edits. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
+  find) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_find (fuzzy names) or codedb_glob (patterns) instead of find. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
+esac
+exit 0
+''',
+    "codedb-warmup.sh": r'''#!/bin/bash
+command -v codedb >/dev/null 2>&1 || exit 0
+codedb . status >/dev/null 2>&1 &
+exit 0
+''',
+}
+
+for name, content in scripts.items():
+    if name == "codedb-block-legacy.sh" and skip_pretooluse:
+        continue
+    path = os.path.join(hooks_dir, name)
+    with open(path, "w") as f:
+        f.write(content)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+# Merge codedb hooks without clobbering existing hooks from other tools.
+# If a competing legacy-tools hook is already registered for the same
+# event/matcher (e.g. muonry's block-legacy-tools.sh), insert codedb's
+# entry at the FRONT of the list so its redirect wins the race; otherwise
+# append. Re-runs will also reshuffle an already-registered codedb hook
+# to the front if a competitor has appeared since the previous install.
+COMPETITOR_MARKERS = ("block-legacy-tools", "muonry", "zigrep", "zigread")
+
+def merge_hook(event, new_entry):
+    existing = hooks.get(event, [])
+    cmd = new_entry["hooks"][0]["command"]
+    matcher = new_entry.get("matcher", "")
+    competes = any(
+        e.get("matcher", "") == matcher
+        and any(any(m in h.get("command", "") for m in COMPETITOR_MARKERS) for h in e.get("hooks", []))
+        for e in existing
+    )
+    idx = None
+    for i, e in enumerate(existing):
+        if any(cmd in h.get("command", "") for h in e.get("hooks", [])):
+            idx = i
+            break
+    if idx is not None:
+        if competes and idx != 0:
+            existing.insert(0, existing.pop(idx))
+            hooks[event] = existing
+        return
+    if competes:
+        existing.insert(0, new_entry)

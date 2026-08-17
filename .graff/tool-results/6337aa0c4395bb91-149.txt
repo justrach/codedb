@@ -1,0 +1,143 @@
+✓ src/out.zig  zig  ⚡ 2.0µs
+    1 | const std = @import("std");
+    2 | const cio = @import("cio.zig");
+    3 | const sty = @import("style.zig");
+    4 | 
+    5 | pub const Out = struct {
+    6 |     file: cio.File,
+    7 |     alloc: std.mem.Allocator,
+    8 |     buf: [65536]u8 = undefined,
+    9 |     used: usize = 0,
+   10 |     // When set, flush() appends here instead of writing to `file`. Lets a warm
+   11 |     // daemon capture a command's full rendered output (run via runQuery) and frame
+   12 |     // it back to a CLI client over a socket — reusing the exact rendering the cold
+   13 |     // CLI uses. null for the normal stdout path.
+   14 |     sink: ?*std.ArrayList(u8) = null,
+   15 | 
+   16 |     pub fn p(self: *Out, comptime fmt: []const u8, args: anytype) void {
+   17 |         // Fast path: format directly into the remaining buffer window.
+   18 |         const remaining = self.buf[self.used..];
+   19 |         if (std.fmt.bufPrint(remaining, fmt, args)) |s| {
+   20 |             self.used += s.len;
+   21 |             return;
+   22 |         } else |_| {}
+   23 |         // Either doesn't fit OR remaining is too small. Flush, retry from start.
+   24 |         self.flush();
+   25 |         if (std.fmt.bufPrint(&self.buf, fmt, args)) |s| {
+   26 |             self.used = s.len;
+   27 |             return;
+   28 |         } else |_| {}
+   29 |         // Single message larger than 64KB — fall back to one-shot heap alloc.
+   30 |         const big = std.fmt.allocPrint(self.alloc, fmt, args) catch return;
+   31 |         defer self.alloc.free(big);
+   32 |         if (self.sink) |snk| {
+   33 |             snk.appendSlice(self.alloc, big) catch {};
+   34 |         } else {
+   35 |             self.file.writeAll(big) catch {};
+   36 |         }
+   37 |     }
+   38 | 
+   39 |     pub fn flush(self: *Out) void {
+   40 |         if (self.used == 0) return;
+   41 |         if (self.sink) |snk| {
+   42 |             snk.appendSlice(self.alloc, self.buf[0..self.used]) catch {};
+   43 |         } else {
+   44 |             self.file.writeAll(self.buf[0..self.used]) catch {};
+   45 |         }
+   46 |         self.used = 0;
+   47 |     }
+   48 | 
+   49 |     /// Print + flush + exit. `std.process.exit(_)` skips the deferred
+   50 |     /// `out.flush()`, which used to silently swallow usage and error
+   51 |     /// messages on any failure path — `codedb` with no args printed
+   52 |     /// nothing and just exited 1 (#504). Use this anywhere we'd
+   53 |     /// otherwise call exit() directly after writing user-facing output.
+   54 |     pub fn exitWithFlush(self: *Out, code: u8) noreturn {
+   55 |         self.flush();
+   56 |         std.process.exit(code);
+   57 |     }
+   58 | };
+   59 | 
+   60 | pub fn printUsage(out: *Out, s: sty.Style) void {
+   61 |     out.p(
+   62 |         \\
+   63 |         \\{s}codedb{s}  code intelligence server
+   64 |         \\
+   65 |         \\  {s}usage:{s} codedb [root] <command> [args...]
+   66 |         \\
+   67 |         \\  {s}commands:{s}
+   68 |         \\    {s}tree{s}                      show file tree with language and symbol counts
+   69 |         \\    {s}outline{s} {s}<path>{s}         list all symbols in a file
+   70 |         \\    {s}find{s}    {s}<name>{s}         find where a symbol is defined
+   71 |         \\    {s}search{s}  {s}<query>{s}        full-text search (trigram, case-insensitive)
+   72 |         \\    {s}word{s}    {s}<identifier>{s}   exact word lookup via inverted index
+   73 |         \\    {s}read{s}    {s}<path>{s}         file contents (optionally -L FROM-TO, --compact)
+   74 |         \\
+   75 |     , .{
+   76 |         s.bold, s.reset,
+   77 |         s.dim,  s.reset,
+   78 |         s.dim,  s.reset,
+   79 |         s.cyan, s.reset,
+   80 |         s.cyan, s.reset,
+   81 |         s.dim,  s.reset,
+   82 |         s.cyan, s.reset,
+   83 |         s.dim,  s.reset,
+   84 |         s.cyan, s.reset,
+   85 |         s.dim,  s.reset,
+   86 |         s.cyan, s.reset,
+   87 |         s.dim,  s.reset,
+   88 |         s.cyan, s.reset,
+   89 |         s.dim,  s.reset,
+   90 |     });
+   91 |     out.p(
+   92 |         \\    {s}hot{s}                       recently modified files
+   93 |         \\    {s}status{s}                    index size, store seq, and index state
+   94 |         \\    {s}symbol{s}  <name>            where a symbol is defined (all matches; --body for source)
+   95 |         \\    {s}callers{s}  <name>           every call site of a symbol
+   96 |         \\    {s}deps{s}  <path>              dependency graph (--depends-on, --transitive, --max-depth N)
+   97 |         \\    {s}glob{s}  <pattern>           match indexed paths by glob
+   98 |         \\    {s}ls{s}  [path]                list a directory's indexed children
+   99 |         \\    {s}file{s}  <fuzzy-name>        fuzzy file-name search
+  100 |         \\    {s}context{s}  <task...>        task-shaped orientation bundle
+  101 |         \\    {s}serve{s}                     HTTP daemon on :6767
+  102 |         \\    {s}mcp{s}                       JSON-RPC/MCP server over stdio
+  103 |         \\    {s}update{s}                    self-update to the latest verified release
+  104 |         \\    {s}nuke{s}                      uninstall codedb, clear caches, and deregister integrations
+  105 |         \\    {s}codex{s}                     CodeDB-first Codex setup (install|uninstall|verify)
+  106 |         \\
+  107 |     , .{
+  108 |         s.cyan, s.reset,
+  109 |         s.cyan, s.reset,
+  110 |         s.cyan, s.reset,
+  111 |         s.cyan, s.reset,
+  112 |         s.cyan, s.reset,
+  113 |         s.cyan, s.reset,
+  114 |         s.cyan, s.reset,
+  115 |         s.cyan, s.reset,
+  116 |         s.cyan, s.reset,
+  117 |         s.cyan, s.reset,
+  118 |         s.cyan, s.reset,
+  119 |         s.cyan, s.reset,
+  120 |         s.cyan, s.reset,
+  121 |         s.cyan, s.reset,
+  122 |     });
+  123 |     out.p(
+  124 |         \\  {s}options:{s}
+  125 |         \\    {s}--no-telemetry{s}             disable usage telemetry (or set CODEDB_NO_TELEMETRY)
+  126 |         \\    {s}--config-file <path>{s}       load config overrides from <path> (default: ./.codedbrc)
+  127 |         \\
+  128 |         \\  If root is omitted, uses current working directory.
+  129 |         \\  Data stored in {s}~/.codedb/projects/<hash>/{s}
+  130 |         \\
+  131 |         \\  exit codes: 0 = success (incl. a valid query that finds nothing),
+  132 |         \\              1 = usage error, invalid input, or operational failure.
+  133 |         \\
+  134 |         \\
+  135 |     , .{
+  136 |         s.dim,  s.reset,
+  137 |         s.cyan, s.reset,
+  138 |         s.cyan, s.reset,
+  139 |         s.dim,  s.reset,
+  140 |     });
+  141 | }
+  142 | 

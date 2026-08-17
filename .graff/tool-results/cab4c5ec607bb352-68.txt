@@ -1,0 +1,121 @@
+    }
+
+    pub fn getForwardDeps(self: *const DependencyGraph, path: []const u8) ?[]const []const u8 {
+        const deps = self.forward.get(path) orelse return null;
+        return deps.items;
+    }
+
+    pub fn getImportedBy(self: *const DependencyGraph, path: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
+        return self.getImportedByFiltered(path, allocator, true);
+    }
+
+    pub fn getImportedByFiltered(self: *const DependencyGraph, path: []const u8, allocator: std.mem.Allocator, allow_basename: bool) ![]const []const u8 {
+        // Extract basename for matching (e.g., "src/store.zig" -> "store.zig")
+        const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
+
+        var result: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (result.items) |p| allocator.free(p);
+            result.deinit(allocator);
+        }
+
+        // O(1) lookup: check reverse index for exact path match
+        if (self.reverse.get(path)) |rev_set| {
+            var rev_iter = rev_set.keyIterator();
+            while (rev_iter.next()) |key_ptr| {
+                const dep_path = try allocator.dupe(u8, key_ptr.*);
+                try result.append(allocator, dep_path);
+            }
+        }
+
+        // Basename fallback (imports often use short names). Skipped when the basename is
+        // ambiguous across indexed files (allow_basename=false): a bare `import conf`
+        // can't be attributed to a specific same-basename file (a/conf.py vs b/conf.py).
+        if (allow_basename and !std.mem.eql(u8, path, basename)) {
+            if (self.reverse.get(basename)) |rev_set| {
+                var rev_iter = rev_set.keyIterator();
+                while (rev_iter.next()) |key_ptr| {
+                    // Avoid duplicates from exact path match above
+                    var already = false;
+                    for (result.items) |existing| {
+                        if (std.mem.eql(u8, existing, key_ptr.*)) {
+                            already = true;
+                            break;
+                        }
+                    }
+                    if (!already) {
+                        const dep_path = try allocator.dupe(u8, key_ptr.*);
+                        try result.append(allocator, dep_path);
+                    }
+                }
+            }
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
+
+    pub fn getTransitiveDependents(self: *const DependencyGraph, path: []const u8, allocator: std.mem.Allocator, max_depth: ?u32) ![]const []const u8 {
+        const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |pos| path[pos + 1 ..] else path;
+
+        var visited = std.StringHashMap(void).init(allocator);
+        defer visited.deinit();
+
+        var queue: std.ArrayList(struct { path: []const u8, depth: u32 }) = .empty;
+        defer queue.deinit(allocator);
+
+        try visited.put(path, {});
+        if (!std.mem.eql(u8, path, basename)) {
+            try visited.put(basename, {});
+        }
+        try queue.append(allocator, .{ .path = path, .depth = 0 });
+        if (!std.mem.eql(u8, path, basename)) {
+            try queue.append(allocator, .{ .path = basename, .depth = 0 });
+        }
+
+        var result: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (result.items) |p| allocator.free(p);
+            result.deinit(allocator);
+        }
+
+        var head: usize = 0;
+        while (head < queue.items.len) {
+            const item = queue.items[head];
+            head += 1;
+
+            const depth_limit = max_depth orelse std.math.maxInt(u32);
+            if (item.depth >= depth_limit) continue;
+
+            if (self.reverse.get(item.path)) |rev_set| {
+                var rev_iter = rev_set.keyIterator();
+                while (rev_iter.next()) |key_ptr| {
+                    const dep = key_ptr.*;
+                    if (!visited.contains(dep)) {
+                        try visited.put(dep, {});
+                        const dep_copy = try allocator.dupe(u8, dep);
+                        try result.append(allocator, dep_copy);
+                        try queue.append(allocator, .{ .path = dep, .depth = item.depth + 1 });
+
+                        // Also enqueue basename for this dep
+                        const dep_basename = if (std.mem.lastIndexOfScalar(u8, dep, '/')) |pos| dep[pos + 1 ..] else dep;
+                        if (!std.mem.eql(u8, dep, dep_basename) and !visited.contains(dep_basename)) {
+                            try visited.put(dep_basename, {});
+                            try queue.append(allocator, .{ .path = dep_basename, .depth = item.depth + 1 });
+                        }
+                    }
+                }
+            }
+        }
+
+        return result.toOwnedSlice(allocator);
+    }
+
+    pub fn getTransitiveDependencies(self: *const DependencyGraph, path: []const u8, allocator: std.mem.Allocator, max_depth: ?u32) ![]const []const u8 {
+        var visited = std.StringHashMap(void).init(allocator);
+        defer visited.deinit();
+
+        var queue: std.ArrayList(struct { path: []const u8, depth: u32 }) = .empty;
+        defer queue.deinit(allocator);
+
+        try visited.put(path, {});
+        try queue.append(allocator, .{ .path = path, .depth = 0 });

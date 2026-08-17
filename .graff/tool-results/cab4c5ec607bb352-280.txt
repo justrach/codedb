@@ -1,0 +1,40 @@
+build-codedb-linux-arm64	UNKNOWN STEP	2026-08-04T17:58:31.4617562Z   RELEASE_TAG: v0.2.5837
+build-codedb-linux-arm64	UNKNOWN STEP	2026-08-04T17:58:35.1868082Z   RELEASE_TAG: v0.2.5837
+build-codedb-linux-arm64	UNKNOWN STEP	2026-08-04T17:58:44.6884500Z ^[[36;1m   grep -q 'codesign-identity' build.zig; then^[[0m
+build-codedb-linux-arm64	UNKNOWN STEP	2026-08-04T17:58:44.6885196Z ^[[36;1m  zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux -Dcodesign-identity="$CODEDB_CODESIGN_IDENTITY"^[[0m
+build-codedb-linux-arm64	UNKNOWN STEP	2026-08-04T17:58:44.6887696Z ^[[36;1mcp "$binary" "codedb-linux-arm64"^[[0m
+build-codedb-linux-arm64	UNKNOWN STEP	2026-08-04T17:58:44.6920166Z   RELEASE_TAG: v0.2.5837
+build-codedb-linux-arm64	UNKNOWN STEP	2026-08-04T18:00:45.0920290Z   RELEASE_TAG: v0.2.5837
+build-codedb-darwin-x86_64	UNKNOWN STEP	2026-08-04T17:58:25.8430970Z   RELEASE_TAG: v0.2.5837
+build-codedb-darwin-x86_64	UNKNOWN STEP	2026-08-04T17:58:30.3896150Z   RELEASE_TAG: v0.2.5837
+build-codedb-darwin-x86_64	UNKNOWN STEP	2026-08-04T17:58:51.7018960Z ^[[36;1m   grep -q 'codesign-identity' build.zig; then^[[0m
+build-codedb-darwin-x86_64	UNKNOWN STEP	2026-08-04T17:58:51.7020120Z ^[[36;1m  zig build -Doptimize=ReleaseFast -Dtarget=x86_64-macos -Dcodesign-identity="$CODEDB_CODESIGN_IDENTITY"^[[0m
+build-codedb-darwin-x86_64	UNKNOWN STEP	2026-08-04T17:58:51.7024930Z ^[[36;1mcp "$binary" "codedb-darwin-x86_64"^[[0m
+build-codedb-darwin-x86_64	UNKNOWN STEP	2026-08-04T17:58:51.7099340Z   RELEASE_TAG: v0.2.5837
+build-codedb-darwin-x86_64	UNKNOWN STEP	2026-08-04T18:00:59.2592280Z   RELEASE_TAG: v0.2.5837
+build-codedb-linux-x86_64	UNKNOWN STEP	2026-08-04T17:58:23.9829166Z   RELEASE_TAG: v0.2.5837
+build-codedb-linux-x86_64	UNKNOWN STEP	2026-08-04T17:58:27.7441130Z   RELEASE_TAG: v0.2.5837
+build-codedb-linux-x86_64	UNKNOWN STEP	2026-08-04T17:58:35.8605210Z ^[[36;1m   grep -q 'codesign-identity' build.zig; then^[[0m
+build-codedb-linux-x86_64	UNKNOWN STEP	2026-08-04T17:58:35.8606170Z ^[[36;1m  zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux -Dcodesign-identity="$CODEDB_CODESIGN_IDENTITY"^[[0m
+build-codedb-linux-x86_64	UNKNOWN STEP	2026-08-04T17:58:35.8608454Z ^[[36;1mcp "$binary" "codedb-linux-x86_64"^[[0m
+build-codedb-linux-x86_64	UNKNOWN STEP	2026-08-04T17:58:35.8664209Z   RELEASE_TAG: v0.2.5837
+build-codedb-linux-x86_64	UNKNOWN STEP	2026-08-04T18:00:41.0221769Z   RELEASE_TAG: v0.2.5837
+build-codedb-darwin-arm64	UNKNOWN STEP	2026-08-04T17:58:30.5808440Z   RELEASE_TAG: v0.2.5837
+build-codedb-darwin-arm64	UNKNOWN STEP	2026-08-04T17:58:36.5138180Z   RELEASE_TAG: v0.2.5837
+build-codedb-darwin-arm64	UNKNOWN STEP	2026-08-04T17:58:45.4373760Z ^[[36;1m   grep -q 'codesign-identity' build.zig; then^[[0m
+build-codedb-darwin-arm64	UNKNOWN STEP	2026-08-04T17:58:45.4374200Z ^[[36;1m  zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos -Dcodesign-identity="$CODEDB_CODESIGN_IDENTITY"^[[0m
+build-codedb-darwin-arm64	UNKNOWN STEP	2026-08-04T17:58:45.4375970Z ^[[36;1mcp "$binary" "codedb-darwin-arm64"^[[0m
+build-codedb-darwin-arm64	UNKNOWN STEP	2026-08-04T17:58:45.4424880Z   RELEASE_TAG: v0.2.5837
+build-codedb-darwin-arm64	UNKNOWN STEP	2026-08-04T18:00:12.6775810Z   RELEASE_TAG: v0.2.5837
+build-codedb-windows-x86_64.exe	UNKNOWN STEP	2026-08-04T17:58:31.4905634Z   RELEASE_TAG: v0.2.5837
+build-codedb-windows-x86_64.exe	UNKNOWN STEP	2026-08-04T17:58:35.7328074Z   RELEASE_TAG: v0.2.5837
+build-codedb-windows-x86_64.exe	UNKNOWN STEP	2026-08-04T17:58:44.7790493Z ^[[36;1m   grep -q 'codesign-identity' build.zig; then^[[0m
+build-codedb-windows-x86_64.exe	UNKNOWN STEP	2026-08-04T17:58:44.7791078Z ^[[36;1m  zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcodesign-identity="$CODEDB_CODESIGN_IDENTITY"^[[0m
+build-codedb-windows-x86_64.exe	UNKNOWN STEP	2026-08-04T17:58:44.7794291Z ^[[36;1mcp "$binary" "codedb-windows-x86_64.exe"^[[0m
+build-codedb-windows-x86_64.exe	UNKNOWN STEP	2026-08-04T17:58:44.7824866Z   RELEASE_TAG: v0.2.5837
+build-codedb-windows-x86_64.exe	UNKNOWN STEP	2026-08-04T18:00:51.0932731Z   RELEASE_TAG: v0.2.5837
+upload-release-assets	UNKNOWN STEP	2026-08-04T18:01:08.9933015Z   RELEASE_TAG: v0.2.5837
+upload-release-assets	UNKNOWN STEP	2026-08-04T18:01:09.5668189Z ^[[36;1m  sha256sum codedb-* | sort > checksums.sha256^[[0m
+upload-release-assets	UNKNOWN STEP	2026-08-04T18:01:09.5721115Z   RELEASE_TAG: v0.2.5837
+upload-release-assets	UNKNOWN STEP	2026-08-04T18:01:09.6231908Z ^[[36;1mgh release upload "$RELEASE_TAG" assets/codedb-* assets/checksums.sha256 --clobber --repo "$GITHUB_REPOSITORY"^[[0m
+upload-release-assets	UNKNOWN STEP	2026-08-04T18:01:09.6280038Z   RELEASE_TAG: v0.2.5837

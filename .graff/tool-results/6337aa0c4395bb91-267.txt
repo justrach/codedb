@@ -1,0 +1,545 @@
+20 results for 'run':
+  build.zig:109 (constant) run  // const run = b.addRunArtifact(t);
+  109 |         const run = b.addRunArtifact(t);
+  src/cio.zig:816 (function) run  // fn run(self: *@This()) void {
+  816 |         fn run(self: *@This()) void {
+  817 |             var chunk: [64 * 1024]u8 = undefined;
+  818 |             while (self.out.items.len < self.cap) {
+  819 |                 const want = @min(chunk.len, self.cap - self.out.items.len);
+  820 |                 const n = read(self.fd, &chunk, want);
+  821 |                 if (n <= 0) break;
+  822 |                 self.out.appendSlice(self.alloc, chunk[0..@intCast(n)]) catch |e| {
+  823 |                     self.err = e;
+  824 |                     return;
+  825 |                 };
+  826 |             }
+  827 |         }
+  src/codex_setup.zig:421 (function) run  // pub fn run(io: std.Io, out: *Out, s: sty.Style, allocator: std.mem.Allocator, args: []const []const u8) void {
+  421 | pub fn run(io: std.Io, out: *Out, s: sty.Style, allocator: std.mem.Allocator, args: []const []const u8) void {
+  422 |     if (args.len == 0) {
+  423 |         printCodexUsage(out, s);
+  424 |         out.exitWithFlush(1);
+  425 |     }
+  426 |     const sub = args[0];
+  427 |     if (std.mem.eql(u8, sub, "--help") or std.mem.eql(u8, sub, "-h") or std.mem.eql(u8, sub, "help")) {
+  428 |         printCodexUsage(out, s);
+  429 |         out.exitWithFlush(0);
+  430 |     }
+  431 |     if (std.mem.eql(u8, sub, "install")) runInstall(io, out, s, allocator, args[1..]);
+  432 |     if (std.mem.eql(u8, sub, "uninstall")) runUninstall(io, out, s, allocator, args[1..]);
+  433 |     if (std.mem.eql(u8, sub, "verify")) runVerify(io, out, s, allocator, args[1..]);
+  434 | 
+  435 |     out.p("{s}\xe2\x9c\x97{s} unknown subcommand for {s}codex{s}: {s}{s}{s}\n", .{
+  436 |         s.red, s.reset, s.bold, s.reset, s.bold, sub, s.reset,
+  437 |     });
+  438 |     printCodexUsage(out, s);
+  439 |     out.exitWithFlush(1);
+  440 | }
+  src/mcp.zig:1197 (function) run  // pub fn run(
+ 1197 | pub fn run(
+ 1198 |     io: std.Io,
+ 1199 |     alloc: std.mem.Allocator,
+ 1200 |     store: *Store,
+ 1201 |     explorer: *Explorer,
+ 1202 |     agents: *AgentRegistry,
+ 1203 |     default_path: []const u8,
+ 1204 |     content_cache_capacity: u32,
+ 1205 |     telem: *telemetry_mod.Telemetry,
+ 1206 |     deferred_scan: ?*DeferredScan,
+ 1207 |     shutdown: *std.atomic.Value(bool),
+ 1208 | ) void {
+ 1209 |     const stdout = cio.File.stdout();
+ 1210 |     const stdin = std.Io.File.stdin();
+ 1211 |     last_activity.store(cio.milliTimestamp(), .release);
+ 1212 | 
+ 1213 |     var cache = ProjectCache.init(alloc, default_path, content_cache_capacity);
+ 1214 |     defer cache.deinit();
+ 1215 | 
+ 1216 |     // Build the `tools/list` payload. The discriminated `oneOf` on the
+ 1217 |     // codedb_bundle ops items (issue #437) is incompatible with OpenAI's
+ 1218 |     // strict-mode tool-schema validator, which rejects `oneOf` outright with
+ 1219 |     // "'oneOf' is not permitted" — breaking codex/forgecode and any other
+ 1220 |     // OpenAI-Responses-API-backed MCP client. Default to the raw schema (which
+ 1221 |     // still has Stage 1's required: ["tool", "arguments"] from #434). Set
+ 1222 |     // CODEDB_DISCRIMINATED_SCHEMA=1 to opt back into the augmented oneOf for
+ 1223 |     // Anthropic-backed clients that benefit from it.
+ 1224 |     //
+ 1225 |     // Issue #443: even with all the above, OpenAI clients still emit empty
+ 1226 |     // `arguments: {}` for bundle sub-ops because the schema can't bind
+ 1227 |     // sub-tool argument shape without `oneOf`. Disable the bundle entirely
+ 1228 |     // by default — the dispatcher handler stays so cached-schema clients
+ 1229 |     // don't crash, but tools/list no longer advertises it. Set
+ 1230 |     // CODEDB_BUNDLE_ENABLED=1 to re-advertise.
+ 1231 |     const discriminated_opt_in = blk_opt: {
+ 1232 |         const v = cio.posixGetenv("CODEDB_DISCRIMINATED_SCHEMA") orelse break :blk_opt false;
+ 1233 |         break :blk_opt std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
+ 1234 |     };
+ 1235 |     const bundle_enabled = blk_be: {
+ 1236 |         const v = cio.posixGetenv("CODEDB_BUNDLE_ENABLED") orelse break :blk_be false;
+ 1237 |         break :blk_be std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
+ 1238 |     };
+ 1239 |     // CODEDB_TOOLS_PROFILE=core shrinks tools/list to the everyday set;
+ 1240 |     // =slim goes further — six tools, terse descriptions (~1k tokens total
+ 1241 |     // vs ~4k) since tool schemas ride along on every model call.
+ 1242 |     const profile_core = blk_pc: {
+ 1243 |         const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_pc false;
+ 1244 |         break :blk_pc std.mem.eql(u8, v, "core");
+ 1245 |     };
+ 1246 |     const profile_slim = blk_ps: {
+ 1247 |         const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_ps false;
+ 1248 |         break :blk_ps std.mem.eql(u8, v, "slim");
+ 1249 |     };
+ 1250 |     const profile_mini = blk_pm: {
+ 1251 |         const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_pm false;
+ 1252 |         break :blk_pm std.mem.eql(u8, v, "mini");
+ 1253 |     };
+ 1254 |     // Mini-by-default: with no explicit profile env var, agent harnesses
+ 1255 |     // get the mini list — the six everyday navigation tools with the full
+ 1256 |     // steering descriptions (~1.9k tokens/request vs core's ~2.7k, full's
+ 1257 |     // ~5.2k, and the schema rides along on EVERY round trip). A 12-question
+ 1258 |     // Opus 5 A/B (2026-08-04, QA over this repo, 2 reps per config)
+ 1259 |     // measured slim-by-default (terse descriptions) at +15% total input
+ 1260 |     // tokens vs the rich-description profiles, which land at
+ 1261 |     // parity-or-better with a no-MCP baseline; mini vs core is within
+ 1262 |     // run-to-run noise on outcomes, so the deterministically smaller
+ 1263 |     // surface wins. Everything still dispatches when called by name.
+ 1264 |     // Human-facing GUI clients (the mcpEmitRichBlocks allowlist) keep the
+ 1265 |     // full list for discoverability. Decided lazily at the first
+ 1266 |     // tools/list request, when clientInfo.name is known.
+ 1267 |     const profile_explicit = cio.posixGetenv("CODEDB_TOOLS_PROFILE") != null;
+ 1268 |     var session = Session{
+ 1269 |         .alloc = alloc,
+ 1270 |         .stdout = stdout,
+ 1271 |         .deferred_scan = deferred_scan,
+ 1272 |     };
+ 1273 |     defer session.deinit();
+ 1274 | 
+ 1275 |     var read_buf: [4096]u8 = undefined;
+ 1276 |     var stdin_reader = stdin.reader(io, &read_buf);
+ 1277 | 
+ 1278 |     while (!stdout_broken.load(.acquire) and !shutdown.load(.acquire)) {
+ 1279 |         const msg = mcpj.readLineBuf(alloc, &stdin_reader.interface) orelse break;
+ 1280 |         last_activity.store(cio.milliTimestamp(), .release);
+ 1281 |         defer alloc.free(msg);
+ 1282 | 
+ 1283 |         const input = std.mem.trim(u8, msg, " \t\r");
+ 1284 |         if (input.len == 0) continue;
+ 1285 | 
+ 1286 |         const parsed = std.json.parseFromSlice(std.json.Value, alloc, input, .{}) catch {
+ 1287 |             writeError(alloc, stdout, null, -32700, "Parse error");
+ 1288 |             continue;
+ 1289 |         };
+ 1290 |         defer parsed.deinit();
+ 1291 | 
+ 1292 |         if (parsed.value != .object) {
+ 1293 |             writeError(alloc, stdout, null, -32600, "Invalid Request");
+ 1294 |             continue;
+ 1295 |         }
+ 1296 | 
+ 1297 |         const root = &parsed.value.object;
+ 1298 |         const method_opt = mcpj.getStr(root, "method");
+ 1299 |         const has_id = root.contains("id");
+ 1300 |         const id = root.get("id");
+ 1301 |         const is_notification = !has_id;
+ 1302 | 
+ 1303 |         if (method_opt == null) {
+ 1304 |             if (has_id) {
+ 1305 |                 handleResponse(io, &session, root);
+ 1306 |             }
+ 1307 |             continue;
+ 1308 |         }
+ 1309 |         const method = method_opt.?;
+ 1310 | 
+ 1311 |         // MCP 2026-07-28 stateless mode: a request may pin its protocol
+ 1312 |         // version in params._meta; answer versions we do not support with
+ 1313 |         // UnsupportedProtocolVersionError instead of guessing.
+ 1314 |         if (!is_notification) {
+ 1315 |             if (unsupportedMetaProtocolVersion(root)) |requested| {
+ 1316 |                 writeUnsupportedProtocolVersionError(alloc, stdout, id, requested);
+ 1317 |                 continue;
+ 1318 |             }
+ 1319 |         }
+ 1320 | 
+ 1321 |         if (mcpj.eql(method, "initialize")) {
+ 1322 |             handleInitialize(&session, root, id);
+ 1323 |         } else if (mcpj.eql(method, "notifications/initialized")) {
+ 1324 |             if (session.client_supports_roots) {
+ 1325 |                 requestRoots(&session);
+ 1326 |             } else if (session.deferred_scan) |ds| {
+ 1327 |                 // Client won't be sending workspace roots — fire the deferred
+ 1328 |                 // scan now with the cwd fallback so we don't sit in
+ 1329 |                 // loading_snapshot waiting for a roots/list reply that never
+ 1330 |                 // comes.
+ 1331 |                 const empty_roots: []const Root = &.{};
+ 1332 |                 _ = triggerDeferredScanWithFallback(ds, empty_roots, ds.fallback_cwd);
+ 1333 |             }
+ 1334 |         } else if (mcpj.eql(method, "notifications/roots/list_changed")) {
+ 1335 |             if (session.client_supports_roots) {
+ 1336 |                 requestRoots(&session);
+ 1337 |             }
+ 1338 |         } else if (mcpj.eql(method, "tools/list")) {
+ 1339 |             if (!is_notification) {
+ 1340 |                 const mini_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
+ 1341 |                 const resp = buildToolsListResponse(alloc, .{
+ 1342 |                     .bundle_enabled = bundle_enabled,
+ 1343 |                     .discriminated_opt_in = discriminated_opt_in,
+ 1344 |                     .profile_core = profile_core,
+ 1345 |                     .profile_slim = profile_slim,
+ 1346 |                     .profile_mini = profile_mini or mini_default,
+ 1347 |                 }) catch tools_list;
+ 1348 |                 defer if (resp.ptr != tools_list.ptr) alloc.free(resp);
+ 1349 |                 writeResult(alloc, stdout, id, resp);
+ 1350 |             }
+ 1351 |         } else if (mcpj.eql(method, "tools/call")) {
+ 1352 |             handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, &session.governor, session.client_name);
+ 1353 |         } else if (mcpj.eql(method, "ping")) {
+ 1354 |             if (!is_notification) writeResult(alloc, stdout, id, "{}");
+ 1355 |         } else if (mcpj.eql(method, "server/discover")) {
+ 1356 |             if (!is_notification) writeResult(alloc, stdout, id, discover_result);
+ 1357 |         } else {
+ 1358 |             if (!is_notification) writeError(alloc, stdout, id, -32601, "Method not found");
+ 1359 |         }
+ 1360 |     }
+ 1361 | }
+  src/nuke.zig:43 (function) run  // pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+   43 | pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+   44 |     const out = Out{ .file = stdout, .alloc = allocator };
+   45 |     // HOME on POSIX; Windows exposes the equivalent as USERPROFILE.
+   46 |     const home_env = cio.homeDir() orelse {
+   47 |         out.p("{s}\xe2\x9c\x97{s} cannot determine home directory\n", .{ s.red, s.reset });
+   48 |         std.process.exit(1);
+   49 |     };
+   50 |     const home = allocator.dupe(u8, home_env) catch {
+   51 |         out.p("{s}\xe2\x9c\x97{s} failed to allocate HOME\n", .{ s.red, s.reset });
+   52 |         std.process.exit(1);
+   53 |     };
+   54 |     defer allocator.free(home);
+   55 |     const self_exe = std.process.executablePathAlloc(io, allocator) catch null;
+   56 |     defer if (self_exe) |path| allocator.free(path);
+   57 | 
+   58 |     var stats = NukeStats{};
+   59 | 
+   60 |     const self_pid = cio.currentProcessId();
+   61 |     stats.killed_processes = killOtherCodedbProcesses(io, allocator, home, self_pid, self_exe);
+   62 |     stats.integrations_removed = deregisterInstalledIntegrations(io, allocator, home);
+   63 |     stats.snapshots_removed = removeRegisteredSnapshots(io, allocator, home);
+   64 | 
+   65 |     if (deleteFileIfExists(io, "codedb.snapshot")) {
+   66 |         stats.snapshots_removed += 1;
+   67 |     }
+   68 | 
+   69 |     stats.binaries_removed = removeInstalledBinaries(io, home, self_exe);
+   70 | 
+   71 |     const codedb_dir = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch {
+   72 |         out.p("{s}\xe2\x9c\x97{s} failed to allocate uninstall paths\n", .{ s.red, s.reset });
+   73 |         std.process.exit(1);
+   74 |     };
+   75 |     defer allocator.free(codedb_dir);
+   76 | 
+   77 |     if (std.Io.Dir.cwd().openDir(io, codedb_dir, .{})) |opened_dir| {
+   78 |         var dir = opened_dir;
+   79 |         dir.close(io);
+   80 |         std.Io.Dir.cwd().deleteTree(io, codedb_dir) catch |err| {
+   81 |             out.p("{s}\xe2\x9c\x97{s} failed to remove {s}: {}\n", .{ s.red, s.reset, codedb_dir, err });
+   82 |             return;
+   83 |         };
+   84 |         stats.removed_data_dir = true;
+   85 |     } else |_| {}
+   86 | 
+   87 |     out.p("{s}\xe2\x9c\x93{s} nuked codedb installation\n", .{ s.green, s.reset });
+   88 |     out.p("  removed data dir      {s}{s}{s}\n", .{ s.dim, codedb_dir, s.reset });
+   89 |     out.p("  removed snapshots     {d}\n", .{stats.snapshots_removed});
+   90 |     out.p("  deregistered tools    {d}\n", .{stats.integrations_removed});
+   91 |     out.p("  removed binaries      {d}\n", .{stats.binaries_removed});
+   92 |     out.p("  terminated processes  {d}\n", .{stats.killed_processes});
+   93 |     out.p("\n  to reinstall: {s}curl -fsSL https://codedb.codegraff.com/install.sh | bash{s}\n", .{ s.cyan, s.reset });
+   94 | }
+  src/test_explore.zig:1107 (function) run  // fn run(ctx: *@This()) void {
+ 1107 |         fn run(ctx: *@This()) void {
+ 1108 |             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+ 1109 |             defer arena.deinit();
+ 1110 |             const alloc = arena.allocator();
+ 1111 |             for (0..200) |_| {
+ 1112 |                 const cands = ctx.ti.candidates("handleRequest", alloc) orelse continue;
+ 1113 |                 defer alloc.free(cands);
+ 1114 |                 var found = false;
+ 1115 |                 for (cands) |p| {
+ 1116 |                     if (std.mem.eql(u8, p, "a.zig") or std.mem.eql(u8, p, "c.zig")) found = true;
+ 1117 |                 }
+ 1118 |                 if (!found) _ = ctx.errors.fetchAdd(1, .monotonic);
+ 1119 |             }
+ 1120 |         }
+  src/test_explore.zig:1137 (function) run  // fn run(ctx: *@This()) void {
+ 1137 |         fn run(ctx: *@This()) void {
+ 1138 |             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+ 1139 |             defer arena.deinit();
+ 1140 |             const alloc = arena.allocator();
+ 1141 |             for (0..200) |_| {
+ 1142 |                 const cands = ctx.sni.candidates("handleRequest", alloc) orelse continue;
+ 1143 |                 defer alloc.free(cands);
+ 1144 |                 var found = false;
+ 1145 |                 for (cands) |p| {
+ 1146 |                     if (std.mem.eql(u8, p, "x.zig")) found = true;
+ 1147 |                 }
+ 1148 |                 if (!found) _ = ctx.errors.fetchAdd(1, .monotonic);
+ 1149 |             }
+ 1150 |         }
+  src/test_explore.zig:1171 (function) run  // fn run(ctx: *@This()) void {
+ 1171 |         fn run(ctx: *@This()) void {
+ 1172 |             ctx.exp.mu.lock();
+ 1173 |             defer ctx.exp.mu.unlock();
+ 1174 |             ctx.exp.trigram_index.deinit();
+ 1175 |             ctx.exp.trigram_index = .{ .heap = TrigramIndex.init(ctx.exp.allocator) };
+ 1176 |             ctx.swapped.store(true, .release);
+ 1177 |         }
+  src/test_explore.zig:2701 (function) run  // fn run(ctx: *@This()) void {
+ 2701 |         fn run(ctx: *@This()) void {
+ 2702 |             var out: std.ArrayList(u8) = .empty;
+ 2703 |             defer out.deinit(std.heap.page_allocator);
+ 2704 |             ctx.started.store(true, .release);
+ 2705 |             if (ctx.outline) {
+ 2706 |                 const found = ctx.ex.renderOutline("src/alpha.zig", std.heap.page_allocator, &out, false) catch {
+ 2707 |                     ctx.failed.store(true, .release);
+ 2708 |                     return;
+ 2709 |                 };
+ 2710 |                 if (!found) ctx.failed.store(true, .release);
+ 2711 |             } else {
+ 2712 |                 ctx.ex.renderTree(std.heap.page_allocator, &out, false) catch {
+ 2713 |                     ctx.failed.store(true, .release);
+ 2714 |                     return;
+ 2715 |                 };
+ 2716 |             }
+ 2717 |             ctx.finished.store(true, .release);
+ 2718 |         }
+  src/test_index.zig:957 (function) run  // fn run(ctx: *Ctx) void {
+  957 |         fn run(ctx: *Ctx) void {
+  958 |             while (!ctx.stop.load(.acquire)) {
+  959 |                 const hot = ctx.explorer.getHotFiles(ctx.store, testing.allocator, 2) catch continue;
+  960 |                 defer {
+  961 |                     for (hot) |path| testing.allocator.free(path);
+  962 |                     testing.allocator.free(hot);
+  963 |                 }
+  964 | 
+  965 |                 const cached = ctx.explorer.getContent("race.zig", testing.allocator) catch continue;
+  966 |                 if (cached) |content| testing.allocator.free(content);
+  967 |             }
+  968 |         }
+  src/test_mcp.zig:861 (function) run  // fn run(s: *std.atomic.Value(bool)) void {
+  861 |         fn run(s: *std.atomic.Value(bool)) void {
+  862 |             cio.sleepMs(500);
+  863 |             s.store(true, .release);
+  864 |         }
+  src/test_mcp.zig:1258 (function) run  // fn run(exp: *Explorer) void {
+ 1258 |         fn run(exp: *Explorer) void {
+ 1259 |             cio.sleepMs(100);
+ 1260 |             exp.indexFile("src/late.zig", "fn waitsForScanMarker() void {}\n") catch return;
+ 1261 |             mcp_mod.setScanState(.ready);
+ 1262 |         }
+  src/test_mcp.zig:3284 (function) run  // fn run(self: *@This()) void {
+ 3284 |         fn run(self: *@This()) void {
+ 3285 |             self.fd = cli_proxy_mod.cliAcquireListener(self.path, true, 10, self.sd);
+ 3286 |             self.done.store(true, .release);
+ 3287 |         }
+  src/test_mcp.zig:3315 (function) run  // fn run(self: *@This()) void {
+ 3315 |     fn run(self: *@This()) void {
+ 3316 |         // Mirror the real accept loop: keep accepting connections and only
+ 3317 |         // give the socket up once one of them is the actual yield sentinel.
+ 3318 |         // A plain liveness probe (cliSocketLive — connect then close with no
+ 3319 |         // data) must NOT be mistaken for a yield request.
+ 3320 |         while (true) {
+ 3321 |             const conn = std.c.accept(self.fd, null, null);
+ 3322 |             if (conn < 0) break;
+ 3323 |             var matched = false;
+ 3324 |             var hdr: [5]u8 = undefined;
+ 3325 |             var off: usize = 0;
+ 3326 |             while (off < hdr.len) {
+ 3327 |                 const n = std.c.read(conn, hdr[off..].ptr, hdr.len - off);
+ 3328 |                 if (n <= 0) break;
+ 3329 |                 off += @intCast(n);
+ 3330 |             }
+ 3331 |             if (off == hdr.len) {
+ 3332 |                 const blob_len = std.mem.readInt(u32, hdr[1..5], .little);
+ 3333 |                 if (blob_len > 0 and blob_len <= 256) {
+ 3334 |                     var buf: [256]u8 = undefined;
+ 3335 |                     var boff: usize = 0;
+ 3336 |                     while (boff < blob_len) {
+ 3337 |                         const n = std.c.read(conn, buf[boff..].ptr, blob_len - boff);
+ 3338 |                         if (n <= 0) break;
+ 3339 |                         boff += @intCast(n);
+ 3340 |                     }
+ 3341 |                     if (boff == blob_len) {
+ 3342 |                         matched = std.mem.eql(u8, buf[0..blob_len], cli_proxy_mod.cli_yield_sentinel);
+ 3343 |                     }
+ 3344 |                 }
+ 3345 |             }
+ 3346 |             _ = std.c.close(conn);
+ 3347 |             if (matched) {
+ 3348 |                 self.saw_sentinel = true;
+ 3349 |                 break;
+ 3350 |             }
+ 3351 |         }
+ 3352 |         // Mirror the real accept loop's response to a yield request: give the
+ 3353 |         // socket up entirely rather than waiting for an idle timeout.
+ 3354 |         _ = std.c.close(self.fd);
+ 3355 |         var zbuf: [128]u8 = undefined;
+ 3356 |         if (cio.bufPrintZ(&zbuf, "{s}", .{self.sock_path})) |z| {
+ 3357 |             _ = std.c.unlink(z.ptr);
+ 3358 |         } else |_| {}
+ 3359 |         self.sd.store(true, .release);
+ 3360 |         self.done.store(true, .release);
+ 3361 |     }
+  src/test_parser.zig:1542 (constant) run  // const run = try explorer.findAllSymbols("run", alloc);
+ 1542 |     const run = try explorer.findAllSymbols("run", alloc);
+  src/test_snapshot.zig:681 (function) run  // fn run(ctx: *@This()) void {
+  681 |         fn run(ctx: *@This()) void {
+  682 |             for (0..10) |_| {
+  683 |                 snapshot_mod.writeSnapshot(io, ctx.exp, ctx.dir, ctx.path, ctx.alloc) catch {
+  684 |                     ctx.failed.store(true, .release);
+  685 |                     return;
+  686 |                 };
+  687 |             }
+  688 |         }
+  src/test_snapshot.zig:728 (function) run  // fn run(ctx: *@This()) void {
+  728 |         fn run(ctx: *@This()) void {
+  729 |             cio.sleepMs(10);
+  730 |             if (ctx.data_dir.len > 0) {
+  731 |                 _ = ctx.data_dir[0];
+  732 |                 ctx.ok.store(true, .release);
+  733 |             }
+  734 |             ctx.done.store(true, .release);
+  735 |         }
+  src/update.zig:94 (function) run  // pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+   94 | pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+   95 |     const out = Out{ .file = stdout, .alloc = allocator };
+   96 | 
+   97 |     const self_path = std.process.executablePathAlloc(io, allocator) catch |err| {
+   98 |         out.p("{s}✗{s} cannot locate current executable: {s}\n", .{ s.red, s.reset, @errorName(err) });
+   99 |         std.process.exit(1);
+  100 |     };
+  101 |     defer allocator.free(self_path);
+  102 | 
+  103 |     const update_lock = updateLockTryAcquire(self_path) orelse {
+  104 |         out.p("{s}✗{s} another codedb update is already running\n", .{ s.red, s.reset });
+  105 |         std.process.exit(1);
+  106 |     };
+  107 |     defer updateLockRelease(update_lock);
+  108 | 
+  109 |     const resolved = resolveTargetVersion(allocator) catch |err| {
+  110 |         out.p("{s}✗{s} failed to resolve update target: {s}\n", .{ s.red, s.reset, @errorName(err) });
+  111 |         std.process.exit(1);
+  112 |     };
+  113 |     defer allocator.free(resolved.value);
+  114 | 
+  115 |     const version_order = compareVersionsForUpdate(release_info.semver, resolved.value) catch |err| {
+  116 |         out.p("{s}✗{s} invalid release version: {s}\n", .{ s.red, s.reset, @errorName(err) });
+  117 |         std.process.exit(1);
+  118 |     };
+  119 | 
+  120 |     switch (version_order) {
+  121 |         .eq => {
+  122 |             out.p("codedb {s} is already up to date\n", .{release_info.semver});
+  123 |             return;
+  124 |         },
+  125 |         .gt => {
+  126 |             out.p("{s}✗{s} refusing to replace codedb {s} with older release {s}\n", .{ s.red, s.reset, release_info.semver, resolved.value });
+  127 |             std.process.exit(1);
+  128 |         },
+  129 |         .lt => {},
+  130 |     }
+  131 | 
+  132 |     const asset_name = assetNameForTarget(builtin.os.tag, builtin.cpu.arch) orelse {
+  133 |         out.p("{s}✗{s} self-update is unsupported on this platform\n", .{ s.red, s.reset });
+  134 |         std.process.exit(1);
+  135 |     };
+  136 | 
+  137 |     out.p("updating codedb {s} -> {s}\n", .{ release_info.semver, resolved.value });
+  138 |     out.p("  source: {s}\n", .{switch (resolved.source) {
+  139 |         .env => "CODEDB_VERSION",
+  140 |         .github => "github releases",
+  141 |         .fallback => "codedb.codegraff.com/latest.json",
+  142 |     }});
+  143 |     out.p("  asset:  {s}\n", .{asset_name});
+  144 | 
+  145 |     const manifest = fetchChecksumsManifest(allocator, resolved.value) catch |err| {
+  146 |         out.p("{s}✗{s} failed to download checksums for v{s}: {s}\n", .{ s.red, s.reset, resolved.value, @errorName(err) });
+  147 |         std.process.exit(1);
+  148 |     };
+  149 |     defer allocator.free(manifest);
+  150 | 
+  151 |     const expected_hash = checksumForBinary(manifest, asset_name) orelse {
+  152 |         out.p("{s}✗{s} release v{s} is missing a checksum for {s}\n", .{ s.red, s.reset, resolved.value, asset_name });
+  153 |         std.process.exit(1);
+  154 |     };
+  155 | 
+  156 |     downloadAndReplaceBinary(io, allocator, resolved.value, asset_name, self_path, expected_hash) catch |err| {
+  157 |         out.p("{s}✗{s} update failed: {s}\n", .{ s.red, s.reset, @errorName(err) });
+  158 |         std.process.exit(1);
+  159 |     };
+  160 | 
+  161 |     out.p("{s}✓{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });
+  162 | }
+  website/src/prerender.zig:14 (function) run  // pub fn run(alloc: std.mem.Allocator, router: *const Router) !void {
+   14 | pub fn run(alloc: std.mem.Allocator, router: *const Router) !void {
+   15 |     // Clean and recreate dist/
+   16 |     std.fs.cwd().deleteTree("dist") catch {};
+   17 |     try std.fs.cwd().makePath("dist");
+   18 | 
+   19 |     var rendered: usize = 0;
+   20 |     var skipped: usize = 0;
+   21 | 
+   22 |     for (router.routes) |route| {
+   23 |         if (!route.prerender) {
+   24 |             skipped += 1;
+   25 |             continue;
+   26 |         }
+   27 | 
+   28 |         var arena = std.heap.ArenaAllocator.init(alloc);
+   29 |         defer arena.deinit();
+   30 |         const arena_alloc = arena.allocator();
+   31 | 
+   32 |         // Call render via the router dispatch so layout wrapping applies.
+   33 |         const req = mer.Request.init(arena_alloc, .GET, route.path);
+   34 |         const response = dispatch_mod.dispatch(router.*, req);
+   35 | 
+   36 |         if (response.content_type != .html) {
+   37 |             log.info("skip {s} (not HTML)", .{route.path});
+   38 |             skipped += 1;
+   39 |             continue;
+   40 |         }
+   41 | 
+   42 |         // Map URL path → file path in dist/:
+   43 |         //   "/"       → "dist/index.html"
+   44 |         //   "/about"  → "dist/about.html"
+   45 |         //   "/blog/x" → "dist/blog/x.html"
+   46 |         const fs_path = try urlToFsPath(arena_alloc, route.path);
+   47 | 
+   48 |         // Ensure parent dirs exist.
+   49 |         if (std.mem.lastIndexOfScalar(u8, fs_path, '/')) |sep| {
+   50 |             try std.fs.cwd().makePath(fs_path[0..sep]);
+   51 |         }
+   52 | 
+   53 |         const file = try std.fs.cwd().createFile(fs_path, .{});
+   54 |         defer file.close();
+   55 |         try file.writeAll(response.body);
+   56 | 
+   57 |         rendered += 1;
+   58 |         log.info("{s} → {s} ({d} bytes)", .{ route.path, fs_path, response.body.len });
+   59 |     }
+   60 | 
+   61 |     // Copy public/ assets into dist/ so the static export is self-contained.
+   62 |     copyPublicDir(alloc) catch |err| {
+   63 |         log.warn("could not copy public/ → dist/: {s}", .{@errorName(err)});
+   64 |     };
+   65 | 
+   66 |     log.info("{d} page(s) pre-rendered, {d} skipped (SSR-only)", .{ rendered, skipped });
+   67 | }
+  website/src/watcher.zig:66 (function) run  // pub fn run(self: *Watcher) void {
+   66 |     pub fn run(self: *Watcher) void {
+   67 |         while (true) {
+   68 |             std.Thread.sleep(300 * std.time.ns_per_ms);
+   69 |             if (self.pollOnce()) {
+   70 |                 log.info("change detected — reloading", .{});
+   71 |                 self.broadcast();
+   72 |             }
+   73 |         }
+   74 |     }

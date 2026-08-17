@@ -2535,6 +2535,52 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
     try testing.expect(std.mem.indexOf(u8, out.items, "ranking") != null);
 }
 
+test "context: phrase task ranks definition file over keyword-symbol collisions" {
+    // Task-shaped queries extract words like "gateway" / "primary" and then
+    // findAllSymbols those words. A `const gateway` in an unrelated file gets
+    // the definition boost and outranks the file that actually implements the
+    // asked-for behavior. Agents then spend extra codedb calls hunting.
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile(
+        "src/gateway/net.ts",
+        "/** Pick the primary non-internal IPv4 address (LAN IP). */\n" ++
+            "export function pickPrimaryLanIPv4(): string | undefined { return \"10.0.0.1\"; }\n",
+    );
+    try explorer.indexFile(
+        "src/shared/net/ipv4.ts",
+        "export function validateIPv4AddressInput(s: string): boolean { return true; }\n",
+    );
+    try explorer.indexFile(
+        "src/discord.ts",
+        "const gateway = \"ready\";\nconst primary = 1;\n",
+    );
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args_json = "{\"task\":\"Where does the gateway pick its primary LAN IPv4 address?\"}";
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    const files_at = std.mem.indexOf(u8, out.items, "## Most-relevant files") orelse return error.TestUnexpectedResult;
+    const rest = out.items[files_at..];
+    const net_at = std.mem.indexOf(u8, rest, "src/gateway/net.ts") orelse return error.TestUnexpectedResult;
+    if (std.mem.indexOf(u8, rest, "src/discord.ts")) |discord_at| {
+        try testing.expect(net_at < discord_at);
+    }
+}
+
 test "issue-688: codedb_context json exposes typed provenance and preserves markdown default" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();

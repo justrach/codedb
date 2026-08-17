@@ -1,0 +1,47 @@
+✓ 46 results for "content_cache_capacity"  ⚡ 929.0µs
+  src/benchmark.zig:301      var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/wasm.zig:48          explorer = Explorer.init(allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/bench.zig:118      var explorer = Explorer.init(allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/bench.zig:127      var bench_ctx = mcp.BenchContext.init(allocator, tmp_root, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/bench_edge.zig:95      var explorer = Explorer.init(allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/bench_edge.zig:106      var bench_ctx = mcp.BenchContext.init(allocator, tmp_root, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/explore.zig:1717      pub const DEFAULT_CONTENT_CACHE_CAPACITY: u32 = 4096;
+  src/explore.zig:1726      pub fn init(allocator: std.mem.Allocator, content_cache_capacity: u32) Explorer {
+  src/explore.zig:1727          return initFallible(allocator, content_cache_capacity) catch
+  src/explore.zig:1728              std.debug.panic("Explorer.init: OOM allocating {d} content cache slots", .{content_cache_capacity});
+  src/explore.zig:1731      fn initFallible(allocator: std.mem.Allocator, content_cache_capacity: u32) !Explorer {
+  src/explore.zig:1735              .contents = try ContentCache.initAlloc(allocator, content_cache_capacity),
+  src/adversarial_tests.zig:92      var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/adversarial_tests.zig:124      var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/adversarial_tests.zig:435      var exp = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_explore.zig:214      var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_explore.zig:230      var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_explore.zig:282      var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_index.zig:613      var explorer_seq = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_index.zig:621      var explorer_par = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_index.zig:672      var source = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_mcp.zig:278      var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_mcp.zig:979      var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_mcp.zig:991      var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_parser.zig:29      var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_parser.zig:67      var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_parser.zig:107      var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_query.zig:76      var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_query.zig:93      var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_query.zig:109      var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_search.zig:26      var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_search.zig:64      var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_search.zig:87      var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_snapshot.zig:55      var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_snapshot.zig:103          var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/test_snapshot.zig:119      var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/mcp.zig:329              .content_cache_capacity = content_cache_capacity_,
+  src/mcp.zig:319      content_cache_capacity: u32,
+  src/mcp.zig:321      fn init(alloc_: std.mem.Allocator, default_path_: []const u8, content_cache_capacity_: u32) ProjectCache {
+  src/mcp.zig:414          new_entry.explorer = Explorer.init(self.alloc, self.content_cache_capacity);
+  src/mcp.zig:524      pub fn init(alloc: std.mem.Allocator, default_path: []const u8, content_cache_capacity: u32) BenchContext {
+  src/mcp.zig:526              .cache = ProjectCache.init(alloc, default_path, content_cache_capacity),
+  src/mcp.zig:1204      content_cache_capacity: u32,
+  src/mcp.zig:1213      var cache = ProjectCache.init(alloc, default_path, content_cache_capacity);
+  src/mcp.zig:6044      var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  src/mcp.zig:6057      var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);

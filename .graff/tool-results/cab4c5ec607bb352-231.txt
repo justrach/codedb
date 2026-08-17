@@ -1,0 +1,59 @@
+[agent 6: completed in 427210ms · 58 tool call(s) · ~78367 context token(s) · 36352 cache-read token(s)]
+
+## Findings
+
+### High — nested JavaScript template expressions can exhaust the stack and cause quadratic work
+**File:** `src/mcp.zig:2785-2790`
+
+`scanTemplateLiteral` recursively calls `hasWholeWordMatchInCode` for each `${...}` expression. A sufficiently deep valid nesting such as:
+
+```js
+const value = `${`${`${/* repeat many times */ `${renderX()}` /* close each level */}`}`}`;
+```
+
+causes one recursive call per nested template. Deep input can overflow the daemon stack; before that, each level rescans the remaining expression, producing quadratic work on the benchmark-critical `codedb_callers` path. There is no nesting or line-length limit.
+
+**Merge-blocking: yes.**
+
+### Medium — template-expression brace matching is confused by JavaScript regex literals
+**File:** `src/mcp.zig:2808-2827`
+
+For:
+
+```js
+const text = `${/[}]/; renderX()}`;
+```
+
+the `}` inside the regex character class is interpreted as the closing `}` of `${...}`. The expression is truncated before `renderX()`, and the real caller is omitted. Regex comment markers such as `//` inside a regex can similarly terminate scanning incorrectly.
+
+### Medium — R backtick-quoted function calls are discarded as literals
+**File:** `src/mcp.zig:2670-2684`, `2758-2761`
+
+This valid R call is skipped:
+
+```r
+`renderX`(argument)
+```
+
+Because `.r` is classified as having backtick literals, the scanner consumes `` `renderX` `` and never sees the callable symbol. `codedb_callers` therefore misses a genuine caller.
+
+### Medium — Swift interpolation and shell command substitution inside quotes are treated as inert strings
+**File:** `src/mcp.zig:2664-2668`
+
+These contain real calls, but the entire quoted span is skipped:
+
+```swift
+let value = "\(renderX())"
+```
+
+```sh
+printf '%s\n' "$(renderX)"
+```
+
+The scanner does not distinguish Swift interpolation or shell `$()` command substitution from literal string contents, so both callers are omitted.
+
+`zig build test` passes, but the existing tests do not cover these cases.
+
+**Verdict: the unbounded nested-template recursion/scan is the single most dangerous defect and remains merge-blocking.**
+
+[subagent sa-005-b14b1d76 · inspect: .graff/subagents/sa-005-b14b1d76.md]

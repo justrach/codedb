@@ -1,0 +1,111 @@
+            return results
+        r.ok()
+
+        r = t("server does NOT send roots/list (scan is immediate)")
+        # Give 2 seconds — if no roots/list arrives, that's correct for explicit-root mode
+        req = p.recv_method("roots/list", timeout=2.0)
+        if req is not None:
+            r.fail("server sent roots/list even though root was explicit — unexpected")
+        else:
+            r.ok("no roots/list request (correct)")
+
+        r = t("scan completes without roots handshake")
+        scan_ok = wait_for_scan(p, timeout=90.0)
+        if not scan_ok:
+            r.fail("timed out waiting for scan")
+        else:
+            r.ok()
+
+        r = t("codedb_search works")
+        resp = p.call_tool("codedb_search", {"query": "isIndexableRoot", "max_results": 3})
+        text = tool_text(resp)
+        if "isIndexableRoot" not in text:
+            r.fail(f"search result: {text[:200]!r}")
+        else:
+            r.ok()
+
+    finally:
+        p.close()
+
+    return results
+
+
+def run_scenario_3_no_roots_client(binary: str) -> list[TestResult]:
+    """
+    No-roots client: spawn from cwd=/, no roots capability, MCP stays alive, tools
+    respond gracefully with 0 files (no crash, no transport-closed).
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S3] {name}")
+        results.append(r)
+        return r
+
+    p = MCPProcess(binary, [], cwd="/")
+
+    try:
+        r = t("initialize succeeds with no roots capability")
+        ok = do_initialize(p, with_roots=False)
+        if not ok:
+            r.fail("no initialize response — transport closed")
+            return results
+        r.ok()
+
+        r = t("server does NOT send roots/list")
+        req = p.recv_method("roots/list", timeout=3.0)
+        if req is not None:
+            r.fail("server sent roots/list to a client with no roots capability")
+        else:
+            r.ok("correctly skipped roots/list")
+
+        r = t("codedb_status responds (0 files is fine)")
+        resp = p.call_tool("codedb_status", {})
+        if resp is None or "result" not in resp:
+            r.fail("codedb_status did not respond")
+        else:
+            r.ok(f"responded: {tool_text(resp)[:80]}")
+
+        r = t("codedb_search responds (may return empty)")
+        resp = p.call_tool("codedb_search", {"query": "anything", "max_results": 5})
+        if resp is None:
+            r.fail("no response to codedb_search — server may have crashed")
+        else:
+            r.ok("responded (empty results expected)")
+
+        r = t("process is still alive")
+        poll = p.proc.poll()
+        if poll is not None:
+            r.fail(f"process exited with code {poll}")
+        else:
+            r.ok()
+
+    finally:
+        p.close()
+
+    return results
+
+
+def run_scenario_4_issue512_direct_inline_args(binary: str, project: str) -> list[TestResult]:
+    """
+    issue-512: direct tools/call must recover when a client sends arguments: {}
+    but places real tool fields inline in params.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S4] {name}")
+        results.append(r)
+        return r
+
+    p = MCPProcess(binary, [], cwd="/", command=[binary, project, "mcp"])
+
+    try:
+        r = t("initialize succeeds")
+        ok = do_initialize(p, with_roots=False)
+        if not ok:
+            r.fail("no initialize response")
+            return results
+        r.ok()
+
+        r = t("scan completes before inline-arg backtest")

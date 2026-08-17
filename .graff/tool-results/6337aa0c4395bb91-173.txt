@@ -1,0 +1,67 @@
+600:  printf "  ${W}registering integrations${N}\n"
+601:  echo ""
+602:  register_claude "$dest"
+603:  register_codex "$dest"
+604:  register_codex_policy "$dest"
+605:  register_gemini "$dest"
+606:  register_cursor "$dest"
+607:  register_windsurf_devin "$dest"
+608:  register_deepwiki
+609:  register_hooks
+610:  print_hook_notes "$dest"
+611:
+612:  # Check PATH
+613:  case ":$PATH:" in
+614:    *":$INSTALL_DIR:"*) ;;
+615:    *)
+616:      echo ""
+617:      printf "  ${Y}add to PATH:${N}\n"
+618:      printf "  ${C}export PATH=\"$INSTALL_DIR:\$PATH\"${N}\n"
+619:      printf "  ${D}(add to ~/.bashrc or ~/.zshrc)${N}\n"
+620:      ;;
+621:  esac
+622:
+623:  echo ""
+624:  printf "  ${W}done!${N} run ${C}codedb --help${N} to get started\n"
+625:  echo ""
+375:    const delta: i128 = @as(i128, now_ms) - @as(i128, last);
+376:    return delta >= auto_update_throttle_ms;
+377:}
+378:
+379:pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+380:    const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+381:    const home = cio.homeDir() orelse return;
+382:    if (home.len == 0) return;
+383:
+384:    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
+385:    defer allocator.free(dir_path);
+386:    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+387:
+388:    const stamp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, auto_update_stamp_filename }) catch return;
+389:    defer allocator.free(stamp_path);
+390:
+391:    const last_ms = readAutoUpdateStamp(io, stamp_path);
+392:    const now_ms = cio.milliTimestamp();
+393:    if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+394:
+395:    const executable_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
+396:    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{executable_path}) catch {
+397:        std.heap.page_allocator.free(executable_path);
+398:        return;
+399:    };
+400:    thread.detach();
+401:
+402:    // Only throttle after the worker launches so a local spawn failure can be
+403:    // retried on the next MCP startup.
+404:    writeAutoUpdateStamp(io, stamp_path, now_ms);
+405:}
+406:
+407:pub fn autoUpdateArgv(executable_path: []const u8) [2][]const u8 {
+408:    return .{ executable_path, "update" };
+409:}
+410:
+411:fn autoUpdateWorker(executable_path: []u8) void {
+412:    defer std.heap.page_allocator.free(executable_path);
+413:
+414:    // Invoke the checksum-verifying built-in updater directly. Capturing and
+415:    // discarding its output keeps the MCP stdio transport clean, while avoiding

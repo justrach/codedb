@@ -1,0 +1,176 @@
+  1900	        const stable_path = if (outline_gop.found_existing) blk: {
+  1901	            break :blk outline_gop.key_ptr.*;
+  1902	        } else blk: {
+  1903	            const duped = try self.allocator.dupe(u8, path);
+  1904	            new_stable_path = duped;
+  1905	            outline_gop.key_ptr.* = duped;
+  1906	            break :blk duped;
+  1907	        };
+  1908	
+  1909	        if (persistent_outline.owns_path) {
+  1910	            persistent_outline.allocator.free(persistent_outline.path);
+  1911	            persistent_outline.owns_path = false;
+  1912	        }
+  1913	        persistent_outline.path = stable_path;
+  1914	
+  1915	        const prior_content = self.contents.get(stable_path);
+  1916	        // Any failure below must put the word index back the way it was —
+  1917	        // indexFile wipes the old postings before adding new ones, and search
+  1918	        // serves whatever the postings say. prior_content stays valid through
+  1919	        // every fallible step because contents.put runs last.
+  1920	        errdefer if (full_index and !self.defer_word_index) {
+  1921	            if (prior_content) |old| {
+  1922	                self.word_index.indexFile(stable_path, old) catch {};
+  1923	            } else {
+  1924	                self.word_index.removeFile(stable_path);
+  1925	            }
+  1926	        };
+  1927	
+  1928	        if (full_index) {
+  1929	            // A disabled word index (cold CLI scan keeps it off to save memory)
+  1930	            // can't absorb this file, so it no longer reflects the indexed set —
+  1931	            // ranked/BM25 readers must lazy-rebuild instead of trusting it (#546).
+  1932	            if (!self.word_index.enabled) self.word_index_complete = false;
+  1933	            if (!self.word_index_complete) {
+  1934	                self.word_index_can_load_from_disk = false;
+  1935	            }
+  1936	            if (!self.defer_word_index) try self.word_index.indexFile(stable_path, content);
+  1937	            if (self.word_index_complete) {
+  1938	                self.word_index_generation +%= 1;
+  1939	            }
+  1940	            if (!skip_trigram) {
+  1941	                try self.trigram_index.indexFile(stable_path, content);
+  1942	                // sparse_ngram_index population removed — it duplicates
+  1943	                // ~70% of trigram_index's recall on niche fuzzy queries
+  1944	                // at the cost of substantial RSS. Tier 2 (sparse) in
+  1945	                // searchContent now no-ops; tier 3 (skip_trigram_files)
+  1946	                // + tier 5 (full-scan when !trigram_ruled_out) cover
+  1947	                // the same surface area.
+  1948	                _ = self.skip_trigram_files.remove(stable_path);
+  1949	            } else {
+  1950	                self.trigram_index.removeFile(stable_path);
+  1951	                try self.skip_trigram_files.put(stable_path, {});
+  1952	            }
+  1953	        } else {
+  1954	            // Outline-only path (snapshot load fallback, file-watcher incremental
+  1955	            // updates, WASM fast-path). The file is in `outlines` + `contents` but
+  1956	            // not in word_index or trigram_index — without this entry it would
+  1957	            // also be absent from `skip_trigram_files`, dropping it out of every
+  1958	            // search tier:
+  1959	            //   • tier 1 (trigram candidates) — file not in trigram_index
+  1960	            //   • tier 3 (skip_trigram_files scan) — file not in this set
+  1961	            //   • tier 5 (full outline scan) — short-circuited by trigram_ruled_out
+  1962	            // Registering here means tier 3 picks the file up via searchInContent.
+  1963	            // See #507.
+  1964	            try self.skip_trigram_files.put(stable_path, {});
+  1965	        }
+  1966	
+  1967	        try self.rebuildDepsFor(stable_path, &persistent_outline);
+  1968	        self.rebuildSymbolIndexFor(stable_path, &persistent_outline, !is_new);
+  1969	
+  1970	        // Last fallible step: put frees the prior cache value in place, so it
+  1971	        // must run only once nothing after it can still need prior_content.
+  1972	        try self.contents.put(stable_path, content);
+  1973	        self.content_hashes.invalidate(stable_path);
+  1974	        self.line_offsets.invalidate(stable_path);
+  1975	
+  1976	        outline_gop.value_ptr.* = persistent_outline;
+  1977	        if (prior_outline) |*old_outline| old_outline.deinit();
+  1978	    }
+  1979	
+  1980	    fn computeSymbolEnds(content: []const u8, outline: *FileOutline) void {
+  1981	        if (outline.symbols.items.len == 0) return;
+  1982	
+  1983	        // Build a line offset table for O(1) line lookups
+  1984	        var line_offsets: std.ArrayList(usize) = .empty;
+  1985	        defer line_offsets.deinit(outline.allocator);
+  1986	        line_offsets.append(outline.allocator, 0) catch return; // line 1 starts at offset 0
+  1987	        for (content, 0..) |c, i| {
+  1988	            if (c == '\n' and i + 1 <= content.len) {
+  1989	                line_offsets.append(outline.allocator, i + 1) catch return;
+  1990	            }
+  1991	        }
+  1992	        const total_lines: u32 = @intCast(line_offsets.items.len);
+  1993	
+  1994	        const is_brace_lang = outline.language == .zig or outline.language == .c or
+  1995	            outline.language == .cpp or outline.language == .typescript or
+  1996	            outline.language == .javascript or outline.language == .rust or
+  1997	            outline.language == .go_lang or outline.language == .php or
+  1998	            outline.language == .dart or outline.language == .java or
+  1999	            outline.language == .kotlin or outline.language == .svelte or
+  2000	            outline.language == .vue or outline.language == .astro or
+  2001	            outline.language == .css or outline.language == .scss or
+  2002	            outline.language == .protobuf or outline.language == .mlir or
+  2003	            outline.language == .tablegen;
+  2004	
+  2005	        for (outline.symbols.items) |*sym| {
+  2006	            // Skip single-line kinds
+  2007	            switch (sym.kind) {
+  2008	                .import, .variable, .constant, .comment_block, .type_alias, .macro_def => continue,
+  2009	                else => {},
+  2010	            }
+  2011	
+  2012	            if (sym.line_start == 0 or sym.line_start > total_lines) continue;
+  2013	
+  2014	            if (is_brace_lang) {
+  2015	                sym.line_end = findBraceEnd(content, line_offsets.items, sym.line_start, total_lines, outline.language);
+  2016	            } else if (outline.language == .python) {
+  2017	                sym.line_end = findPythonEnd(content, line_offsets.items, sym.line_start, total_lines);
+  2018	            } else if (outline.language == .ruby) {
+  2019	                sym.line_end = findRubyEnd(content, line_offsets.items, sym.line_start, total_lines);
+  2020	            }
+  2021	        }
+  2022	    }
+  2023	
+  2024	    fn findBraceEnd(content: []const u8, line_offsets: []const usize, line_start: u32, total_lines: u32, language: Language) u32 {
+  2025	        const start_idx = line_offsets[line_start - 1];
+  2026	        var depth: i32 = 0;
+  2027	        var found_open = false;
+  2028	        var in_string: u8 = 0; // 0=none, '"', '\''
+  2029	        var in_triple_quote: u8 = 0; // 0=none, '"', '\''
+  2030	        var interp_depth: i32 = 0;
+  2031	        var paren_depth: i32 = 0; // params/types before the body brace
+  2032	        var in_line_comment = false;
+  2033	        var in_block_comment = false;
+  2034	        var i = start_idx;
+  2035	        var current_line = line_start;
+  2036	
+  2037	        while (i < content.len) : (i += 1) {
+  2038	            const c = content[i];
+  2039	
+  2040	            if (c == '\n') {
+  2041	                current_line += 1;
+  2042	                in_line_comment = false;
+  2043	                // Bail out if no opening brace found within 10 lines
+  2044	                if (!found_open and current_line > line_start + 24) return line_start;
+  2045	                continue;
+  2046	            }
+  2047	
+  2048	            if (in_line_comment) continue;
+  2049	
+  2050	            if (in_block_comment) {
+  2051	                if (c == '*' and i + 1 < content.len and content[i + 1] == '/') {
+  2052	                    in_block_comment = false;
+  2053	                    i += 1;
+  2054	                }
+  2055	                continue;
+  2056	            }
+  2057	
+  2058	            if (in_triple_quote != 0) {
+  2059	                if (c == in_triple_quote and i + 2 < content.len and
+  2060	                    content[i + 1] == in_triple_quote and content[i + 2] == in_triple_quote)
+  2061	                {
+  2062	                    in_triple_quote = 0;
+  2063	                    i += 2;
+  2064	                }
+  2065	                continue;
+  2066	            }
+  2067	
+  2068	            if (in_string != 0) {
+  2069	                if (c == '\\') {
+  2070	                    i += 1;
+  2071	                } else if (language == .dart and interp_depth > 0) {
+  2072	                    if (c == '{') {
+  2073	                        interp_depth += 1;
+  2074	                    } else if (c == '}') {
+  2075	                        interp_depth -= 1;

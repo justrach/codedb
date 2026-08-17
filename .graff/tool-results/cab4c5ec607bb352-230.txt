@@ -1,0 +1,91 @@
+2700:        .python, .ruby, .r, .shell => &.{"#"},
+2701:        .hcl => &.{ "#", "//" },
+2702:        .sql => &.{"--"},
+2703:        .fortran => &.{"!"},
+2704:        .llvm_ir => &.{";"},
+2705:        else => return line,
+2706:    };
+2707:    var i: usize = 0;
+2708:    while (i < line.len) {
+2709:        if (language == .rust) {
+2710:            if (rustRawLiteralAt(line, i)) |raw| {
+2711:                if (raw.end) |end| {
+2712:                    i = end;
+2713:                    continue;
+2714:                }
+2715:                return line;
+2716:            }
+2717:        }
+2718:        if (line[i] == '"' or line[i] == '\'' or (line[i] == '`' and hasBacktickLiterals(language))) {
+2719:            if (stringLiteralEnd(line, i)) |end| {
+2720:                i = end + 1;
+2721:                continue;
+2722:            }
+2723:        }
+2724:        if (blockCommentAt(line, i, language)) |block| {
+2725:            if (block.end) |end| {
+2726:                i = end;
+2727:                continue;
+2728:            }
+2729:            return line;
+2730:        }
+2731:        for (markers) |m| {
+2732:            if (!std.mem.startsWith(u8, line[i..], m)) continue;
+2733:            // `#[` starts a PHP 8 attribute, not a hash comment.
+2734:            if (language == .php and m[0] == '#' and i + 1 < line.len and line[i + 1] == '[') break;
+2735:            // Shell: `#` opens a comment only when it begins a word. Operators
+2736:            // are word boundaries too; `${#var}` and `$#` remain live syntax.
+2737:            if (language == .shell and !isShellCommentStart(line, i)) break;
+2738:            return line[0..i];
+2739:        }
+2740:        i += 1;
+2741:    }
+2742:    return line;
+2743:}
+2744:
+2745:const LineSpan = struct { end: ?usize };
+2746:
+2747:fn rustRawLiteralAt(line: []const u8, start: usize) ?LineSpan {
+2748:    if (start != 0 and isIdentChar(line[start - 1])) return null;
+2749:    var i = start;
+2750:    if (line[i] == 'b') {
+2751:        if (i + 1 >= line.len or line[i + 1] != 'r') return null;
+2752:        i += 2;
+2753:    } else if (line[i] == 'r') {
+2754:        i += 1;
+2755:    } else return null;
+2756:
+2757:    var hashes: usize = 0;
+2758:    while (i < line.len and line[i] == '#') : (i += 1) hashes += 1;
+2759:    if (i >= line.len or line[i] != '"') return null;
+2760:
+2761:    i += 1;
+2762:    while (i < line.len) : (i += 1) {
+2763:        if (line[i] != '"' or i + 1 + hashes > line.len) continue;
+2764:        var matched: usize = 0;
+2765:        while (matched < hashes and line[i + 1 + matched] == '#') : (matched += 1) {}
+2766:        if (matched == hashes) return .{ .end = i + 1 + hashes };
+2767:    }
+2768:    return .{ .end = null };
+2769:}
+2770:
+2771:fn hasBacktickLiterals(language: explore_mod.Language) bool {
+2772:    return switch (language) {
+2773:        .go_lang, .javascript, .typescript, .php, .ruby, .r, .svelte, .vue, .astro => true,
+2774:        else => false,
+2775:    };
+2776:}
+2777:
+2778:fn blockCommentAt(line: []const u8, start: usize, language: explore_mod.Language) ?LineSpan {
+2779:    const slash_block = switch (language) {
+2780:        .rust, .go_lang, .javascript, .typescript, .c, .cpp, .php, .hcl, .dart, .java, .kotlin, .swift, .svelte, .vue, .astro, .sql, .mlir, .tablegen, .rescript => true,
+2781:        else => false,
+2782:    };
+2783:    if (slash_block and std.mem.startsWith(u8, line[start..], "/*")) {
+2784:        return .{ .end = delimitedCommentEnd(line, start, "/*", "*/", language == .rust or language == .swift) };
+2785:    }
+2786:    const html_block = switch (language) {
+2787:        .svelte, .vue, .astro => true,
+2788:        else => false,
+2789:    };
+2790:    if (html_block and std.mem.startsWith(u8, line[start..], "<!--")) {

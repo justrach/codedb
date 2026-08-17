@@ -1,0 +1,126 @@
+register_cursor() {
+  local codedb_bin="$1"
+  local config_dir="$HOME/.cursor"
+  local config="$config_dir/mcp.json"
+
+  if [ ! -d "$config_dir" ]; then
+    return
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf "  ${D}cursor:  skip (python3 not found)${N}\n"
+    return
+  fi
+
+  python3 - "$config" "$codedb_bin" << 'PYEOF'
+import json, sys, os
+config_path, codedb_bin = sys.argv[1], sys.argv[2]
+try:
+    with open(config_path) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+servers = data.setdefault("mcpServers", {})
+servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
+with open(config_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+
+  printf "  ${G}✓${N} cursor       ${D}→ $config${N}\n"
+}
+
+register_windsurf_devin() {
+  local codedb_bin="$1"
+  # Windsurf and Devin both use a standard mcpServers JSON object, so we register
+  # codedb directly (additively, like the tools above) rather than through
+  # mcpsync. Direct writes only touch the codedb entry — they can't drop a
+  # server's nested env/headers — and add no external dependency. Each is
+  # registered only when the tool is actually present.
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf "  ${D}windsurf/devin: skip (python3 not found)${N}\n"
+    return
+  fi
+  if [ -d "$HOME/.codeium/windsurf" ]; then
+    _register_json_mcp "$HOME/.codeium/windsurf/mcp_config.json" "$codedb_bin" "windsurf"
+  fi
+  if [ -d "$HOME/.config/devin" ]; then
+    _register_json_mcp "$HOME/.config/devin/config.json" "$codedb_bin" "devin"
+  fi
+}
+
+_register_json_mcp() {
+  local config="$1"
+  local codedb_bin="$2"
+  local label="$3"
+  python3 - "$config" "$codedb_bin" << 'PYEOF'
+import json, sys, os
+config_path, codedb_bin = sys.argv[1], sys.argv[2]
+try:
+    with open(config_path) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+servers = data.setdefault("mcpServers", {})
+servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
+d = os.path.dirname(config_path)
+if d:
+    os.makedirs(d, exist_ok=True)
+with open(config_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+  printf "  ${G}✓${N} %-12s ${D}→ %s${N}\n" "$label" "$config"
+}
+
+DEEPWIKI_URL="https://mcp.deepwiki.com/mcp"
+
+_register_deepwiki_json() {
+  local config="$1"
+  local label="$2"
+  local entry_json="$3"
+  local rc=0
+  python3 - "$config" "$entry_json" << 'PYEOF' || rc=$?
+import json, sys, os
+config_path, entry_json = sys.argv[1], sys.argv[2]
+try:
+    with open(config_path) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+servers = data.setdefault("mcpServers", {})
+if "deepwiki" in servers:
+    sys.exit(3)  # already configured — never clobber a user's own entry
+servers["deepwiki"] = json.loads(entry_json)
+d = os.path.dirname(config_path)
+if d:
+    os.makedirs(d, exist_ok=True)
+with open(config_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+  case "$rc" in
+    0) printf "  ${G}✓${N} %-12s ${D}→ %s (+deepwiki)${N}\n" "$label" "$config" ;;
+    3) printf "  ${D}%-12s deepwiki already configured → %s${N}\n" "$label" "$config" ;;
+    *) printf "  ${Y}%-12s deepwiki registration failed → %s${N}\n" "$label" "$config" ;;
+  esac
+  return 0
+}
+
+register_deepwiki() {
+  # DeepWiki is a free, no-auth REMOTE MCP server (mcp.deepwiki.com) that
+  # answers questions about public GitHub repos — a good complement to codedb's
+  # local index. Registered additively alongside codedb; an existing "deepwiki"
+  # entry is never overwritten. Set CODEDB_INSTALL_DEEPWIKI=0 to opt out.
+  # Note: text sent to its tools (e.g. ask_question) leaves the machine.
+  if [ "${CODEDB_INSTALL_DEEPWIKI:-1}" = "0" ]; then
+    printf "  ${D}deepwiki:  skip (CODEDB_INSTALL_DEEPWIKI=0)${N}\n"
+    return
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf "  ${D}deepwiki:  skip (python3 not found)${N}\n"
+    return
+  fi
+
+  # Claude Code: always (mirrors register_claude). Field: type+url.
+  _register_deepwiki_json "$HOME/.claude.json" "claude code" \

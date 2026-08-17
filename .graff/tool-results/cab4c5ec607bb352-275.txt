@@ -1,0 +1,300 @@
+# macOS Release Build & Notarization Runbook — `graff` / `codegraff`
+
+This runbook produces signed, notarized macOS release binaries for the codegraff
+CLI on an **Apple Silicon Mac**. It builds two binaries — `graff` and `codegraff`
+— for both the native `aarch64-apple-darwin` target and the cross-compiled
+`x86_64-apple-darwin` target, codesigns them with a hardened runtime, notarizes
+them with Apple, and verifies Gatekeeper acceptance.
+
+Run every step from the workspace root unless noted. Commands are written to be
+copy-paste runnable in order.
+
+---
+
+## 0. Conventions
+
+These variables are referenced throughout. Export them once per shell session:
+
+```bash
+export IDENTITY="Developer ID Application: Rachit Pradhan (WWP9DLJ27P)"
+export NOTARY_PROFILE="codedb-notary"
+export AARCH64_DIR="target/aarch64-apple-darwin/release"
+export X86_64_DIR="target/x86_64-apple-darwin/release"
+```
+
+- `graff` and `codegraff` are the two Rust workspace binaries. After
+  `cargo build --release`, they land under `target/<triple>/release/`.
+- The signing identity is a **Developer ID Application** certificate (required
+  for distribution outside the Mac App Store).
+- `codedb-notary` is a stored `notarytool` keychain profile (set up once in
+  step 1.3).
+
+---
+
+## 1. Prerequisites
+
+### 1.1 Xcode Command Line Tools
+
+`codesign`, `notarytool`, `stapler`, `spctl`, `ditto`, and `xattr` all ship with
+the Xcode Command Line Tools.
+
+```bash
+xcode-select -p          # should print a developer dir, e.g. /Library/Developer/CommandLineTools
+xcode-select --install   # run only if the above fails
+```
+
+Confirm `notarytool` is reachable (it is invoked via `xcrun`):
+
+```bash
+xcrun --find notarytool
+xcrun notarytool --version
+```
+
+### 1.2 Developer ID Application identity present
+
+The signing certificate (plus its private key) must already be in the login
+keychain. Verify it is visible to codesigning:
+
+```bash
+security find-identity -v -p codesigning
+```
+
+You must see this line in the output:
+
+```
+  2) 5A6EF824D0238E59B2277629181838DBBB525F26 "Developer ID Application: Rachit Pradhan (WWP9DLJ27P)"
+```
+
+The exact hash and ordinal may differ; what matters is that
+`Developer ID Application: Rachit Pradhan (WWP9DLJ27P)` appears as a **valid**
+identity. If it is missing, import the `.p12` (certificate + private key) into
+the login keychain and re-run the check.
+
+### 1.3 The `codedb-notary` notarytool profile (one-time)
+
+Notarization credentials are stored once in the keychain as a named profile so
+they never appear on the command line. This requires an **app-specific
+password** generated at <https://appleid.apple.com> (Sign-In and Security →
+App-Specific Passwords), and the Team ID `WWP9DLJ27P`.
+
+```bash
+xcrun notarytool store-credentials codedb-notary \
+  --apple-id "rachxpradhan@gmail.com" \
+  --team-id "WWP9DLJ27P" \
+  --password "<app-specific-password>"
+```
+
+Run this **only once per machine** (re-run if the app-specific password is
+revoked or rotated). After this, every notary call uses
+`--keychain-profile codedb-notary` and prompts for nothing.
+
+Sanity-check that the profile resolves (this performs a lightweight credential
+check):
+
+```bash
+xcrun notarytool history --keychain-profile codedb-notary | head
+```
+
+### 1.4 Rust targets and `protoc`
+
+Both targets must be installed (the `x86_64` target is required for the
+cross-compile):
+
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+rustup target list --installed | grep apple-darwin
+```
+
+Expected:
+
+```
+aarch64-apple-darwin
+x86_64-apple-darwin
+```
+
+Install `protoc` (the Protocol Buffers compiler) so the build's codegen step can
+run:
+
+```bash
+brew install protobuf
+protoc --version
+```
+
+---
+
+## 2. Build per target
+
+Build a clean release of both binaries for each target. The `[profile.release]`
+in `Cargo.toml` already enables `lto`, `codegen-units = 1`, `opt-level = 3`, and
+`strip = true`, so the artifacts are stripped release builds.
+
+### 2.1 Native (Apple Silicon) — `aarch64-apple-darwin`
+
+```bash
+cargo build --release --target aarch64-apple-darwin
+```
+
+Artifacts:
+
+```
+target/aarch64-apple-darwin/release/graff
+target/aarch64-apple-darwin/release/codegraff
+```
+
+### 2.2 Cross-compile — `x86_64-apple-darwin`
+
+```bash
+cargo build --release --target x86_64-apple-darwin
+```
+
+Artifacts:
+
+```
+target/x86_64-apple-darwin/release/graff
+target/x86_64-apple-darwin/release/codegraff
+```
+
+Confirm all four artifacts exist and have the right architecture:
+
+```bash
+file "$AARCH64_DIR/graff" "$AARCH64_DIR/codegraff" \
+     "$X86_64_DIR/graff"  "$X86_64_DIR/codegraff"
+```
+
+`aarch64-*` binaries report `arm64`; `x86_64-*` report `x86_64`.
+
+### 2.3 (Optional) Universal binaries with `lipo`
+
+To ship a single fat binary per tool that runs natively on both architectures,
+merge the two slices with `lipo`:
+
+```bash
+mkdir -p target/universal-apple-darwin/release
+
+lipo -create \
+  "$AARCH64_DIR/graff" \
+  "$X86_64_DIR/graff" \
+  -output target/universal-apple-darwin/release/graff
+
+lipo -create \
+  "$AARCH64_DIR/codegraff" \
+  "$X86_64_DIR/codegraff" \
+  -output target/universal-apple-darwin/release/codegraff
+
+lipo -info target/universal-apple-darwin/release/graff
+lipo -info target/universal-apple-darwin/release/codegraff
+```
+
+If you build universal binaries, treat
+`target/universal-apple-darwin/release/{graff,codegraff}` as the binaries to sign
+and notarize in the following sections (instead of the per-target slices).
+**Sign after `lipo`, never before** — `lipo -create` produces a new file with no
+signature.
+
+---
+
+## 3. Codesign each binary (hardened runtime)
+
+Notarization **requires** the hardened runtime (`--options runtime`) and a secure
+timestamp (`--timestamp`). Sign every binary you intend to ship.
+
+### 3.1 Sign
+
+Per-target binaries:
+
+```bash
+for bin in \
+  "$AARCH64_DIR/graff" "$AARCH64_DIR/codegraff" \
+  "$X86_64_DIR/graff"  "$X86_64_DIR/codegraff"
+do
+  codesign --force --timestamp --options runtime \
+    --sign "Developer ID Application: Rachit Pradhan (WWP9DLJ27P)" \
+    "$bin"
+done
+```
+
+(If you built universal binaries in 2.3, sign
+`target/universal-apple-darwin/release/{graff,codegraff}` the same way.)
+
+Flags explained:
+
+- `--force` — replace any existing signature (release artifacts are sometimes
+  ad-hoc signed by the linker).
+- `--timestamp` — embed a trusted Apple timestamp (mandatory for notarization).
+- `--options runtime` — enable the **hardened runtime** (mandatory for
+  notarization).
+- `--sign "<identity>"` — the Developer ID Application identity from step 1.2.
+
+### 3.2 Verify the signature
+
+```bash
+for bin in \
+  "$AARCH64_DIR/graff" "$AARCH64_DIR/codegraff" \
+  "$X86_64_DIR/graff"  "$X86_64_DIR/codegraff"
+do
+  echo "=== $bin ==="
+  codesign -dvvv --verbose=4 "$bin"
+done
+```
+
+In the output for each binary, confirm:
+
+- `Authority=Developer ID Application: Rachit Pradhan (WWP9DLJ27P)`
+- `Authority=Developer ID Certification Authority`
+- `Authority=Apple Root CA`
+- `Timestamp=...` (a real date, not "none")
+- `flags=0x10000(runtime)` — confirms the hardened runtime is on.
+
+A quick structural check should also pass:
+
+```bash
+codesign --verify --strict --verbose=2 "$AARCH64_DIR/graff"
+```
+
+---
+
+## 4. Notarize
+
+Apple's notary service only accepts archives (`.zip`, `.dmg`, `.pkg`), not bare
+executables. Zip the signed binaries, then submit and wait.
+
+### 4.1 Zip the signed binaries
+
+Use `ditto` so macOS metadata and the embedded signature are preserved exactly:
+
+```bash
+ditto -c -k --keepParent "$AARCH64_DIR/graff"     graff-aarch64.zip
+ditto -c -k --keepParent "$AARCH64_DIR/codegraff" codegraff-aarch64.zip
+ditto -c -k --keepParent "$X86_64_DIR/graff"      graff-x86_64.zip
+ditto -c -k --keepParent "$X86_64_DIR/codegraff"  codegraff-x86_64.zip
+```
+
+`zip` also works if you prefer it (`zip graff-aarch64.zip "$AARCH64_DIR/graff"`),
+but `ditto -c -k --keepParent` is the recommended, metadata-safe form.
+
+### 4.2 Submit and wait
+
+Submit each archive **sequentially** (see pitfall 6.4 — do not background these
+in parallel). `--wait` blocks until Apple returns a terminal status.
+
+```bash
+for z in graff-aarch64.zip codegraff-aarch64.zip graff-x86_64.zip codegraff-x86_64.zip; do
+  echo "=== submitting $z ==="
+  xcrun notarytool submit "$z" \
+    --keychain-profile codedb-notary \
+    --wait
+done
+```
+
+Read the status block at the end of each submission. A success looks like:
+
+```
+  status: Accepted
+```
+
+Anything else (`Invalid`, `Rejected`) means notarization failed for that
+archive — fetch the log (next step).
+
+### 4.3 Fetch the log on failure
+
+Every submission prints an `id:` (the submission UUID). To see exactly what Apple

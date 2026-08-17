@@ -1,0 +1,102 @@
+✓ src/update.zig  zig  512 lines  ⚡ 19.0µs
+  imports: std, cio, builtin, sty, release_info  (x5)
+  L7      constant        github_repo  const github_repo = "justrach/codedb";
+  L8      constant        default_base_url  const default_base_url = "https://codedb.codegraff.com";
+  L9      constant        user_agent  const user_agent = "codedb-update";
+  L11     constant        win  const win = std.os.windows;
+  L12     constant        invalid_handle_value  const invalid_handle_value = win.INVALID_HANDLE_VALUE;
+  L13     constant        generic_read  const generic_read: u32 = 0x80000000;
+  L14     constant        generic_write  const generic_write: u32 = 0x40000000;
+  L15     constant        open_always  const open_always: u32 = 4;
+  L28     constant        UpdateLock  pub const UpdateLock = if (builtin.os.tag == .windows) win.HANDLE else c_int;
+  L30     struct_def      Out  const Out = struct {
+  L34     function        p  fn p(self: Out, comptime fmt: []const u8, args: anytype) void {
+  L35     constant        str  const str = std.fmt.allocPrint(self.alloc, fmt, args) catch return;
+  L41     function        updateLockTryAcquire  pub fn updateLockTryAcquire(executable_path: []const u8) ?UpdateLock {
+  L43     constant        lock_path  const lock_path = cio.bufPrintZ(&buf, "{s}.update.lock", .{executable_path}) catch return null;
+  L46     constant        path_w  const path_w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, lock_path) catch return null;
+  L48     constant        handle  const handle = CreateFileW(path_w.ptr, generic_read | generic_write, 0, null, open_always, 0, null);
+  L53     constant        fd  const fd = std.c.open(lock_path.ptr, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(c_uint, 0o600));
+  L62     function        updateLockRelease  pub fn updateLockRelease(lock: UpdateLock) void {
+  L71     enum_def        VersionSource  const VersionSource = enum {
+  L77     struct_def      ResolvedVersion  const ResolvedVersion = struct {
+  L82     struct_def      SupersededRelease  const SupersededRelease = struct {
+  L87     constant        superseded_releases  const superseded_releases = [_]SupersededRelease{
+  L94     function        run  pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+  L95     constant        out  const out = Out{ .file = stdout, .alloc = allocator };
+  L97     constant        self_path  const self_path = std.process.executablePathAlloc(io, allocator) catch |err| {
+  L103    constant        update_lock  const update_lock = updateLockTryAcquire(self_path) orelse {
+  L109    constant        resolved  const resolved = resolveTargetVersion(allocator) catch |err| {
+  L115    constant        version_order  const version_order = compareVersionsForUpdate(release_info.semver, resolved.value) catch |err| {
+  L132    constant        asset_name  const asset_name = assetNameForTarget(builtin.os.tag, builtin.cpu.arch) orelse {
+  L145    constant        manifest  const manifest = fetchChecksumsManifest(allocator, resolved.value) catch |err| {
+  L151    constant        expected_hash  const expected_hash = checksumForBinary(manifest, asset_name) orelse {
+  L164    function        assetNameForTarget  pub fn assetNameForTarget(os_tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?[]const u8 {
+  L188    function        shouldRegisterHooks  pub fn shouldRegisterHooks(env_no_hooks: bool, marker_exists: bool, receipt_exists: bool, entry_present: bool) bool {
+  L194    function        compareVersions  pub fn compareVersions(current: []const u8, target: []const u8) !std.math.Order {
+  L199    constant        current_part  const current_part = current_it.next();
+  L200    constant        target_part  const target_part = target_it.next();
+  L204    constant        current_num  const current_num = if (current_part) |part| try parseVersionPart(part) else 0;
+  L205    constant        target_num  const target_num = if (target_part) |part| try parseVersionPart(part) else 0;
+  L212    function        compareVersionsForUpdate  pub fn compareVersionsForUpdate(current: []const u8, target: []const u8) !std.math.Order {
+  L213    constant        order  const order = try compareVersions(current, target);
+  L218    function        targetSupersedesCurrent  pub fn targetSupersedesCurrent(current: []const u8, target: []const u8) !bool {
+  L219    constant        normalized_current  const normalized_current = trimVersionPrefix(current);
+  L227    function        checksumForBinary  pub fn checksumForBinary(manifest: []const u8, binary_name: []const u8) ?[]const u8 {
+  L230    constant        line  const line = std.mem.trim(u8, raw_line, " \t\r");
+  L233    constant        hash_end  const hash_end = std.mem.indexOfAny(u8, line, " \t") orelse continue;
+  L234    constant        hash  const hash = line[0..hash_end];
+  L244    function        resolveTargetVersion  fn resolveTargetVersion(allocator: std.mem.Allocator) !ResolvedVersion {
+  L247    constant        dup  const dup = try allocator.dupe(u8, value);
+  L263    function        fetchLatestVersionFromGitHub  fn fetchLatestVersionFromGitHub(allocator: std.mem.Allocator) !?[]u8 {
+  L264    constant        response  const response = fetchUrlToMemory(allocator, "https://api.github.com/repos/" ++ github_repo ++ "/releases/latest", 1 * 1024 * 1024) catch return null;
+  L269    function        fetchLatestVersionFromFallback  fn fetchLatestVersionFromFallback(allocator: std.mem.Allocator) !?[]u8 {
+  L270    constant        base_url  const base_url = try getBaseUrl(allocator);
+  L273    constant        url  const url = try std.fmt.allocPrint(allocator, "{s}/latest.json", .{base_url.value});
+  L276    constant        response  const response = fetchUrlToMemory(allocator, url, 256 * 1024) catch return null;
+  L281    function        fetchChecksumsManifest  fn fetchChecksumsManifest(allocator: std.mem.Allocator, version: []const u8) ![]u8 {
+  L282    constant        url  const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/checksums.sha256", .{ github_repo, version });
+  L287    function        fetchUrlToMemory  fn fetchUrlToMemory(allocator: std.mem.Allocator, url: []const u8, max_output_bytes: usize) ![]u8 {
+  L288    constant        result  const result = try cio.runCapture(.{
+  L303    function        parseJsonStringField  fn parseJsonStringField(allocator: std.mem.Allocator, json_text: []const u8, field_name: []const u8, trim_v_prefix: bool) !?[]u8 {
+  L308    constant        field  const field = parsed.value.object.get(field_name) orelse return null;
+  L311    constant        value  const value = if (trim_v_prefix) trimVersionPrefix(field.string) else field.string;
+  L316    function        getBaseUrl  fn getBaseUrl(allocator: std.mem.Allocator) !struct { value: []const u8, owned: bool } {
+  L319    constant        dup  const dup = try allocator.dupe(u8, value);
+  L326    function        trimVersionPrefix  fn trimVersionPrefix(value: []const u8) []const u8 {
+  L330    function        parseVersionPart  fn parseVersionPart(part: []const u8) !u64 {
+  L331    constant        trimmed  const trimmed = std.mem.trim(u8, part, " \t\r\n");
+  L336    function        downloadAndReplaceBinary  fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: []const u8, asset_name: []const u8, dest_path: []const u8, expected_hash: []const u8) !void {
+  L337    constant        url  const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/{s}", .{ github_repo, version, asset_name });
+  L340    constant        tmp_path  const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ dest_path, cio.nanoTimestamp() });
+  L346    constant        actual_hash  const actual_hash = try sha256FileHex(io, allocator, tmp_path);
+  L365    constant        old_path  const old_path = try std.fmt.allocPrint(allocator, "{s}.old", .{dest_path});
+  L372    function        replaceBinaryWithRollback  pub fn replaceBinaryWithRollback(io: std.Io, replacement_path: []const u8, dest_path: []const u8, old_path: []const u8) !void {
+  L375    constant        moved_old  const moved_old = blk: {
+  L388    function        downloadToFile  fn downloadToFile(allocator: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
+  L389    constant        result  const result = try cio.runCapture(.{
+  L402    function        sha256FileHex  fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+  L410    constant        read_len  const read_len = try file.readPositionalAll(io, &buf, offset);
+  L419    constant        digest_hex  const digest_hex = std.fmt.bytesToHex(digest, .lower);
+  L435    constant        auto_update_throttle_ms  const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
+  L436    constant        auto_update_stamp_filename  const auto_update_stamp_filename = "last_auto_update_check";
+  L440    function        shouldRunAutoUpdate  pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
+  L442    constant        last  const last = last_check_ms orelse return true;
+  L444    constant        delta  const delta: i128 = @as(i128, now_ms) - @as(i128, last);
+  L448    function        maybeAutoUpdate  pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+  L449    constant        env_disabled  const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+  L450    constant        home  const home = cio.homeDir() orelse return;
+  L453    constant        dir_path  const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
+  L457    constant        stamp_path  const stamp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, auto_update_stamp_filename }) catch return;
+  L460    constant        last_ms  const last_ms = readAutoUpdateStamp(io, stamp_path);
+  L461    constant        now_ms  const now_ms = cio.milliTimestamp();
+  L464    constant        executable_path  const executable_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
+  L465    constant        thread  const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{executable_path}) catch {
+  L476    function        autoUpdateArgv  pub fn autoUpdateArgv(executable_path: []const u8) [2][]const u8 {
+  L480    function        autoUpdateWorker  fn autoUpdateWorker(executable_path: []u8) void {
+  L486    constant        argv  const argv = autoUpdateArgv(executable_path);
+  L487    constant        result  const result = cio.runCapture(.{
+  L496    function        readAutoUpdateStamp  fn readAutoUpdateStamp(io: std.Io, path: []const u8) ?i64 {
+  L500    constant        n  const n = f.readPositionalAll(io, &buf, 0) catch return null;
+  L505    function        writeAutoUpdateStamp  fn writeAutoUpdateStamp(io: std.Io, path: []const u8, ms: i64) void {
+  L508    constant        f  const f = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true }) catch return;

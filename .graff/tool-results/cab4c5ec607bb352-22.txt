@@ -1,0 +1,214 @@
+diff --git a/src/mcp.zig b/src/mcp.zig
+index ca94d9c..fe0d13b 100644
+--- a/src/mcp.zig
++++ b/src/mcp.zig
+@@ -2561,45 +2561,46 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
+ 
+     // #573: single filter pass — the header count and the printed entries come
+     // from the same accumulation, so a predicate edit cannot desync them (the
+     // previous count loop + print loop duplicated four predicates verbatim).
+     var kept: std.ArrayList(usize) = .empty;
+     defer kept.deinit(alloc);
+     for (results, 0..) |r, r_idx| {
+         if (kept.items.len >= max_results) break;
+         const lang = explore_mod.detectLanguage(r.path);
+         if (!langHasCallSites(lang)) continue;
+         // #562: a full-line comment mention is documentation, not a call site.
+         if (explore_mod.isCommentOrBlank(r.line_text, lang)) continue;
+         var is_def = false;
+         for (defs) |d| {
+             if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
+                 is_def = true;
+                 break;
+             }
+         }
+         if (is_def) continue;
+-        // A whole-word match that only ever lands inside a string literal is a
+-        // mention, not an invocation — a `("name", "file")` table row or a
+-        // `test "…name…" {` declaration. Real calls in the same file (and even
+-        // in the same test body) sit outside the quotes and survive.
+-        if (!hasWholeWordMatchOutsideStrings(r.line_text, name)) continue;
++        // A whole-word match that only ever lands inside a string literal or a
++        // trailing comment is a mention, not an invocation — a `("name",
++        // "file")` table row, a `test "…name…" {` declaration, or
++        // `init(); // then name() …`. Real calls sit on the code prefix of the
++        // line, outside the quotes, and survive both cuts. (#682)
++        if (!hasWholeWordMatchOutsideStrings(lineCodePrefix(r.line_text, lang), name)) continue;
+         kept.append(alloc, r_idx) catch {};
+     }
+ 
+     const w = cio.listWriter(out, alloc);
+     w.print("{d} call sites for '{s}':\n", .{ kept.items.len, name }) catch {};
+     for (kept.items) |kept_idx| {
+         const r = results[kept_idx];
+         if (r.scope_name) |sn| {
+             appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+             w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
+         } else {
+             appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
+         }
+     }
+ }
+ 
+ fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+     const from_name = getStr(args, "from") orelse {
+         out.appendSlice(alloc, "error: missing 'from' argument") catch {};
+         appendBundleArgKeysDiagnostic(alloc, out, args);
+@@ -2665,40 +2666,81 @@ fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+     var i: usize = 0;
+     while (i < line.len) {
+         if (line[i] == '"' or line[i] == '\'') {
+             if (stringLiteralEnd(line, i)) |end| {
+                 i = end + 1;
+                 continue;
+             }
+         }
+         // `i` is a code byte — try to anchor a whole-word match on it.
+         if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+             const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+             const after = i + needle.len;
+             const after_ok = after >= line.len or !isIdentChar(line[after]);
+             if (before_ok and after_ok) return true;
+         }
+         i += 1;
+     }
+     return false;
+ }
+ 
++/// The slice of `line` before its first line-comment marker outside string
++/// literals, per `language` — the part of the line that can actually contain a
++/// call. Lines with no marker, and languages without a line-comment syntax
++/// (OCaml's `(* *)` is block-only), come back whole. (#682)
++///
++/// Same line-local scanning discipline as `hasWholeWordMatchOutsideStrings`:
++/// quoted spans are skipped (so `"https://…"` never truncates), an unclosed
++/// quote is ordinary code. Mid-line block-comment openers are left alone — a
++/// false negative re-admits a mention; truncating at `/*` could drop the real
++/// call in `foo(); /* … */ bar()`.
++fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
++    const markers: []const []const u8 = switch (language) {
++        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
++        .python, .ruby, .r, .shell => &.{"#"},
++        .hcl => &.{ "#", "//" },
++        .sql => &.{"--"},
++        .fortran => &.{"!"},
++        .llvm_ir => &.{";"},
++        else => return line,
++    };
++    var i: usize = 0;
++    while (i < line.len) {
++        if (line[i] == '"' or line[i] == '\'') {
++            if (stringLiteralEnd(line, i)) |end| {
++                i = end + 1;
++                continue;
++            }
++        }
++        for (markers) |m| {
++            if (std.mem.startsWith(u8, line[i..], m)) {
++                // Shell: `#` only opens a comment at the start of a word —
++                // `${#var}` and `$#` are live syntax, not comments.
++                if (language == .shell and i != 0 and line[i - 1] != ' ' and line[i - 1] != '\t') break;
++                return line[0..i];
++            }
++        }
++        i += 1;
++    }
++    return line;
++}
++
+ /// Index of the quote closing the literal opened at `open`, or null when the
+ /// literal never closes on this line.
+ fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+     const quote = line[open];
+     var i = open + 1;
+     while (i < line.len) : (i += 1) {
+         if (line[i] == '\\') {
+             i += 1;
+             continue;
+         }
+         if (line[i] == quote) return i;
+     }
+     return null;
+ }
+ 
+ /// Languages where the concept of a "call site" is meaningful. Excludes
+ /// data formats (json, yaml), markup/styling (markdown, css, scss),
+ /// declarative schemas (protobuf), and unknown files — callers found
+ /// inside these are mentions in prose or config, not real invocations.
+ fn langHasCallSites(lang: explore_mod.Language) bool {
+diff --git a/src/test_mcp.zig b/src/test_mcp.zig
+index 17eefb6..536684e 100644
+--- a/src/test_mcp.zig
++++ b/src/test_mcp.zig
+@@ -3768,35 +3768,71 @@ test "issue: codedb_callers excludes a test declaration that names the symbol in
+ 
+ test "issue: codedb_callers keeps real calls inside and outside test bodies" {
+     // The body call at src/test_search.zig:1970 is a genuine caller: the new
+     // string filter must not follow the test declaration line out the door.
+     var arena = std.heap.ArenaAllocator.init(testing.allocator);
+     defer arena.deinit();
+     var out: std.ArrayList(u8) = .empty;
+     defer out.deinit(testing.allocator);
+ 
+     try renderCallersFixture(arena.allocator(), &.{
+         .{ "body.zig", "test \"about renderX behavior\" {\n    const r = explorer.renderX(1);\n    _ = r;\n}\n" },
+         .{ "plain.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+     }, "renderX", &out);
+ 
+     try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'renderX'") != null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "body.zig:2") != null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "plain.zig:2") != null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "body.zig:1") == null);
+ }
+ 
++test "issue-682: codedb_callers excludes a symbol mentioned only in a trailing comment" {
++    // `init(); // then renderX() draws the frame` — the mention lives in the
++    // trailing comment. The comment/blank filter passes the line (it starts
++    // with code) and the string filter sees no quotes, so the line is
++    // reported as a call site even though nothing on it invokes the symbol.
++    var arena = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena.deinit();
++    var out: std.ArrayList(u8) = .empty;
++    defer out.deinit(testing.allocator);
++
++    try renderCallersFixture(arena.allocator(), &.{
++        .{ "trail.zig", "pub fn callerA() void {\n    init(); // then renderX() draws the frame\n}\n" },
++        .{ "call.zig", "pub fn callerB() void {\n    renderX();\n}\n" },
++    }, "renderX", &out);
++
++    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
++    try testing.expect(std.mem.indexOf(u8, out.items, "trail.zig:2") == null);
++    try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
++}
++
++test "issue-682: codedb_callers keeps a call after a string containing the comment marker" {
++    // `fetch("https://x", renderX);` — the `//` sits inside the string literal,
++    // so the comment cut must not swallow the real reference after it.
++    var arena = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena.deinit();
++    var out: std.ArrayList(u8) = .empty;
++    defer out.deinit(testing.allocator);
++
++    try renderCallersFixture(arena.allocator(), &.{
++        .{ "url.zig", "pub fn callerA() void {\n    fetch(\"https://x\", renderX);\n}\n" },
++    }, "renderX", &out);
++
++    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
++    try testing.expect(std.mem.indexOf(u8, out.items, "url.zig:2") != null);
++}
++
+ test "issue: codedb_callers keeps a symbol used outside a string on a line that has strings" {
+     // `foo("msg", renderX)` passes the function by reference next to a string
+     // literal — the mention is real code and must survive the filter.
+     var arena = std.heap.ArenaAllocator.init(testing.allocator);
+     defer arena.deinit();
+     var out: std.ArrayList(u8) = .empty;
+     defer out.deinit(testing.allocator);
+ 
+     try renderCallersFixture(arena.allocator(), &.{
+         .{ "mixed.zig", "pub fn callerA() void {\n    foo(\"msg\", renderX);\n}\n" },
+     }, "renderX", &out);
+ 
+     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "mixed.zig:2") != null);
+ }

@@ -1,0 +1,65 @@
+latest release metadata:
+{"assets":[{"apiUrl":"https://api.github.com/repos/justrach/codedb/releases/assets/501649971","contentType":"application/octet-stream","createdAt":"2026-08-04T18:03:05Z","digest":"sha256:7f0b742021e38f02f3c670f8dd8f0d81cd603dfacd91f978d173a09f764bc047","downloadCount":56,"id":"RA_kwDORdYQmc4d5pIz","label":"","name":"checksums.sha256","size":631,"state":"uploaded","updatedAt":"2026-08-04T18:03:06Z","url":"https://github.com/justrach/codedb/releases/download/v0.2.5837/checksums.sha256"},{"apiUrl":"https://api.github.com/repos/justrach/codedb/releases/assets/501649946","contentType":"application/octet-stream","createdAt":"2026-08-04T18:03:05Z","digest":"sha256:82413a2fd49984e5fe4a8ce860af7d5bbf1f302758e36c478596ae45bc748be1","downloadCount":40,"id":"RA_kwDORdYQmc4d5pIa","label":"","name":"codedb-darwin-arm64","size":6826880,"state":"uploaded","updatedAt":"2026-08-04T18:03:07Z","url":"https://github.com/justrach/codedb/releases/download/v0.2.5837/codedb-darwin-arm64"},{"apiUrl":"https://api.github.com/repos/justrach/codedb/releases/assets/501649953","contentType":"application/zip","createdAt":"2026-08-04T18:03:05Z","digest":"sha256:fcc4e331e572e5bca281dfa9be72b770c30b90abb7541bfba3bb3cba4338ffb5","downloadCount":1,"id":"RA_kwDORdYQmc4d5pIh","label":"","name":"codedb-darwin-arm64.notary.zip","size":945937,"state":"uploaded","updatedAt":"2026-08-04T18:03:06Z","url":"https://github.com/justrach/codedb/releases/download/v0.2.5837/codedb-darwin-arm64.notary.zip"},{"apiUrl":"https://api.github.com/repos/justrach/codedb/releases/assets/501649948","contentType":"application/octet-stream","createdAt":"2026-08-04T18:03:05Z","digest":"sha256:cf7b329799edf715fa8f836112332f121727c1b24ec809d379af24a314a0908f","downloadCount":2,"id":"RA_kwDORdYQmc4d5pIc","label":"","name":"codedb-darwin-x86_64","size":7028464,"state":"uploaded","updatedAt":"2026-08-04T18:03:07Z","url":"https://github.com/justrach/codedb/releases/download/v0.2.5837/codedb-darwin-x86_64"},{"apiUrl":"https://api.github.com/repos/justrach/codedb/releases/assets/501649951","contentType":"application/zip","createdAt":"2026-08-04T18:03:05Z","digest":"sha256:28ac0cdb77d9ff1ee9da7db9ead52edd06b3594a1d0b95fa3a256221ecc56690","downloadCount":1,"id":"RA_kwDORdYQmc4d5pIf","label":"","name":"codedb-darwin-x86_64.notary.zip","size":1043284,"state":"uploaded","updatedAt":"2026-08-04T18:03:06Z","url":"https://github.com/justrach/codedb/releases/download/v0.2.5837/codedb-darwin-x86_64.notary.zip"},{"apiUrl":"https://api.github.com/repos/justrach/codedb/releases/assets/501647802","contentType":"application/octet-stream","createdAt":"2026-08-04T18:01:10Z","digest":"sha256:27ebd3c76f9faecf36687f8772846bb1cb21555ebb0c0545808601bf462fa3d8","downloadCount":2,"id":"RA_kwDORdYQmc4d5om6","label":"","name":"codedb-linux-arm64","size":2530008,"state":"uploaded","updatedAt":"2026-08-04T18:01:10Z","url":"https://github.com/justrach/codedb/releases/download/v0.2.5837/codedb-linux-arm64"},{"apiUrl":"https://api.github.com/repos/justrach/codedb/releases/assets/501647799","contentType":"application/octet-stream","createdAt":"2026-08-04T18:01:10Z","digest":"sha256:3f954f0517ec3b3a5e19dea53182baf8cc52e6b0fee3a5f1e092a9e866d7ed09","downloadCount":21,"id":"RA_kwDORdYQmc4d5om3","label":"","name":"codedb-linux-x86_64","size":2811456,"state":"uploaded","updatedAt":"2026-08-04T18:01:10Z","url":"https://github.com/justrach/codedb/releases/download/v0.2.5837/codedb-linux-x86_64"},{"apiUrl":"https://api.github.com/repos/justrach/codedb/releases/assets/501647801","contentType":"application/octet-stream","createdAt":"2026-08-04T18:01:10Z","digest":"sha256:f99c6a46446039a63fee110d844d94f5f5c5f727e398f9e8d8a39334b62943de","downloadCount":2,"id":"RA_kwDORdYQmc4d5om5","label":"","name":"codedb-windows-x86_64.exe","size":3217408,"state":"uploaded","updatedAt":"2026-08-04T18:01:10Z","url":"https://github.com/justrach/codedb/releases/download/v0.2.5837/codedb-windows-x86_64.exe"}],"body":"## Highlights\n\n- **OCaml parser support** — `.ml`/`.mli` files now get full outline/symbol indexing (#622)\n- **Mini MCP tools profile is the agent default** — 6 tools with rich steering descriptions and compressed schemas, replacing the terse slim profile after A/B evals showed description quality drives agent success\n- **NL→symbol search bridge** — natural-language queries bridge to symbol names, machine-artifact hits deranked, context words merged; the bridge is cached as an inverted token index so it costs ~0 on repeat queries\n- **Windows daemon reap** — `nuke` now runs a bounded multi-pass reap, so daemons republished mid-nuke no longer survive it (#657)\n\n## Fixes\n\n- `codedb_callers` returned zero call sites when `max_results` starved its filters\n- `codedb_callers` no longer counts lines where the symbol appears only inside string literals\n- Indexer skips generated tool-output dirs (`.graff/`, `.harness/`, `graphify-out/`)\n\n## CI\n\n- Bench regression gate repaired: `codedb_context` exempted from cross-revision parity, one-shot waiver retired after use\n- Pinned Zig dev builds fall back to the hexops mirror when ziglang.org rotates them off its CDN\n\n## Assets\n\nBoth macOS binaries are Developer ID signed (hardened runtime, secure timestamp) and notarized by Apple — the `.notary.zip` assets are the notarized archives; the bare `codedb-darwin-*` binaries inside them are identical to the standalone assets. `checksums.sha256` covers every asset.\n\nFull unit suite green on the tagged commit.\n\n**Full diff**: [v0.2.5836...v0.2.5837](https://github.com/justrach/codedb/compare/v0.2.5836...v0.2.5837) · PRs: #622 (OCaml), #657 (Windows reap), #681 (lean MCP surface follow-ons)\n","isDraft":false,"isPrerelease":false,"name":"v0.2.5837 — OCaml parser, NL→symbol bridge cache, Windows daemon reap","publishedAt":"2026-08-04T17:58:16Z","tagName":"v0.2.5837","targetCommitish":"main"}
+
+tag object:
+commit
+commit b9788ee596938037ad00351b586ba49d1df56c0b
+Author:     justrach <54503978+justrach@users.noreply.github.com>
+AuthorDate: Wed Aug 5 01:57:56 2026 +0800
+Commit:     justrach <54503978+justrach@users.noreply.github.com>
+CommitDate: Wed Aug 5 01:57:56 2026 +0800
+
+    release: 0.2.5837 — OCaml parser, NL→symbol bridge cache, Windows daemon reap
+    
+    Version stamp bump for the v0.2.5837 tag.
+    
+    Highlights since 0.2.5836:
+    - OCaml (.ml/.mli) parser support (#622)
+    - Mini MCP tools profile (6 rich-description tools) as agent default
+    - NL→symbol bridge cached as inverted token index; machine-artifact derank
+    - codedb_callers: max_results starvation + string-literal false positives fixed
+    - Indexer skips generated tool-output dirs (.graff, .harness, graphify-out)
+    - Windows: bounded multi-pass daemon reap during nuke (#657)
+    - Bench gate repairs + hexops mirror fallback for pinned Zig
+    
+    Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+    Claude-Session: https://claude.ai/code/session_018teBQSh5eSDmojrx12k2jY
+
+release commit changes:
+b9788ee release: 0.2.5837 — OCaml parser, NL→symbol bridge cache, Windows daemon reap
+ build.zig.zon        | 2 +-
+ npm/package.json     | 2 +-
+ src/release_info.zig | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+diff --git a/build.zig.zon b/build.zig.zon
+index a30ae4b..ecf7c58 100644
+--- a/build.zig.zon
++++ b/build.zig.zon
+@@ -1,7 +1,7 @@
+ .{
+     .name = .codedb2,
+     .fingerprint = 0x6e18d96ca2a31757,
+-    .version = "0.2.5836",
++    .version = "0.2.5837",
+     .minimum_zig_version = "0.17.0-dev.813+2153f8143",
+     .dependencies = .{
+         .nanoregex = .{
+diff --git a/npm/package.json b/npm/package.json
+index 35d49e5..7c615b1 100644
+--- a/npm/package.json
++++ b/npm/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "codedeebee",
+-  "version": "0.2.5836",
++  "version": "0.2.5837",
+   "description": "Zig code intelligence MCP server — npx launcher for the codedb native binary",
+   "license": "MIT",
+   "author": "justrach",
+diff --git a/src/release_info.zig b/src/release_info.zig
+index 08e1184..b761de6 100644
+--- a/src/release_info.zig
++++ b/src/release_info.zig
+@@ -1 +1 @@
+-pub const semver = "0.2.5836";
++pub const semver = "0.2.5837";

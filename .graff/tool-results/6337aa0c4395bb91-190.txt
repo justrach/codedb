@@ -1,0 +1,78 @@
+diff --git a/src/update.zig b/src/update.zig
+index 92b2780..376de23 100644
+--- a/src/update.zig
++++ b/src/update.zig
+@@ -104,7 +104,6 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
+     };
+ 
+     out.p("{s}✓{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });
+-
+ }
+ 
+ pub fn assetNameForTarget(os_tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?[]const u8 {
+@@ -353,17 +352,16 @@ fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
+ 
+ // ── Auto-update ──────────────────────────────────────────────────────────────
+ //
+-// On startup we kick off a detached check that shells out to the public
+-// install.sh. The check is:
++// On startup we kick off a detached invocation of the built-in, checksum-
++// verified updater. The check is:
+ //   • disabled when CODEDB_NO_AUTO_UPDATE is set in the environment
+ //   • throttled to at most once every 24 hours, tracked in
+ //     ~/.codedb/last_auto_update_check (a u64 little-endian unix-ms timestamp)
+-// The update itself runs in a background thread so it never blocks server
+-// startup. If the binary on disk gets replaced mid-session, the kernel keeps
+-// the old inode mapped for the running process; subsequent invocations get the
+-// new binary.
++// The update itself runs in a background thread so network failures never block
++// server startup. If the binary on disk gets replaced mid-session, the kernel
++// keeps the old inode mapped for the running process; subsequent invocations
++// get the new binary.
+ 
+-const auto_update_install_url = "https://codedb.codegraff.com/install.sh";
+ const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
+ const auto_update_stamp_filename = "last_auto_update_check";
+ 
+@@ -393,21 +391,32 @@ pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+     const now_ms = cio.milliTimestamp();
+     if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+ 
+-    // Persist the new timestamp before launching so concurrent invocations
+-    // don't all race the same check.
++    const executable_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
++    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{executable_path}) catch {
++        std.heap.page_allocator.free(executable_path);
++        return;
++    };
++    thread.detach();
++
++    // Only throttle after the worker launches so a local spawn failure can be
++    // retried on the next MCP startup.
+     writeAutoUpdateStamp(io, stamp_path, now_ms);
++}
+ 
+-    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{}) catch return;
+-    thread.detach();
++pub fn autoUpdateArgv(executable_path: []const u8) [2][]const u8 {
++    return .{ executable_path, "update" };
+ }
+ 
+-fn autoUpdateWorker() void {
+-    // sh -c handles the curl-into-bash pipeline. We keep stdout/stderr captured
+-    // and immediately discard so the install script's progress output doesn't
+-    // leak into the parent's stdio (which is the MCP transport).
++fn autoUpdateWorker(executable_path: []u8) void {
++    defer std.heap.page_allocator.free(executable_path);
++
++    // Invoke the checksum-verifying built-in updater directly. Capturing and
++    // discarding its output keeps the MCP stdio transport clean, while avoiding
++    // a shell or execution of a remotely downloaded install script.
++    const argv = autoUpdateArgv(executable_path);
+     const result = cio.runCapture(.{
+         .allocator = std.heap.page_allocator,
+-        .argv = &.{ "sh", "-c", "curl -fsSL " ++ auto_update_install_url ++ " | bash" },
++        .argv = &argv,
+         .max_output_bytes = 64 * 1024,
+     }) catch return;
+     std.heap.page_allocator.free(result.stdout);

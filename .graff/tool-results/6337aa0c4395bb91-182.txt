@@ -1,0 +1,102 @@
+[agent 2: completed in 357722ms · 64 tool call(s) · ~98419 context token(s) · 67072 cache-read token(s)]
+
+## Verified findings
+
+### 1. MCP-mode detection and root selection
+
+- Positional parsing identifies the command as `mcp`; `mcpRootIsImplicitCwd()` is true only for `cmd == "mcp"`, root `"."`, and a non-explicit root. `mcpRootAcceptsEnv()` separately allows `CODEDB_ROOT` only for that MCP/cwd form. `src/cli_args.zig:96-103`
+- `mainImpl()` applies `CODEDB_ROOT` before git-root discovery, then walks upward to the repository root only for an implicit cwd MCP invocation. `src/main.zig:200-232`
+- MCP status and validation output is redirected to stderr before root validation and command dispatch. `src/main.zig:234-260`
+- The final dispatch is explicitly `commands.runMcp(&ctx)` for `cmd == "mcp"`; this is the clean MCP-only control-flow boundary. `src/main.zig:500-505`
+
+### 2. When scanning initializes
+
+- `mainImpl()` resolves `abs_root`, but `coldLoadOrScan()` immediately returns for MCP, so normal snapshot loading or project walking does not happen before `runMcp()`. `src/main.zig:303-314`; `src/bootstrap.zig:413-430`
+- For implicit cwd MCP, `runMcp()` creates a `DeferredScan`, sets scan state to `loading_snapshot`, and starts `watcherDeferredLoop()` before entering the JSON-RPC loop. `src/commands.zig:422-454`
+- For an explicit root or `CODEDB_ROOT`, `runMcp()` loads the snapshot immediately. If it cannot load one, it sets `walking` and spawns `scanBg()` before calling `mcp_server.run()`. `src/commands.zig:450-466`
+- Once a client advertises roots, `notifications/initialized` causes the server to send `roots/list`; the response is parsed and policy-filtered, then the first acceptable root triggers the deferred scan. `src/mcp.zig:1324-1338`; `src/mcp.zig:1488-1492`; `src/mcp.zig:1495-1508`; `src/mcp.zig:1512-1540`
+- The actual deferred trigger performs snapshot loading synchronously in the caller, updates `Explorer.root`, and only moves the full walk to `scanBg()` if no snapshot was found. `src/background.zig:203-225`
+- A no-roots client does not receive a `roots/list` request. On `notifications/initialized`, the server immediately tries the cwd fallback. `src/mcp.zig:1324-1332`
+- The deferred watcher independently tries the cwd fallback after three seconds and gives up after thirteen seconds if the cwd is not indexable, setting `scan_done` and leaving an empty index rather than polling forever. `src/background.zig:228-257`
+
+For issue-346 specifically:
+
+- `/` is explicitly rejected by `root_policy.isIndexableRoot()`. `/tmp`, `/var`, and other guarded system paths are also rejected unless the temp opt-in is set. `src/root_policy.zig:17-42`
+- The implicit MCP path bypasses the early explicit-root policy rejection so that the roots handshake can resolve the real project instead of rejecting the ambient cwd first. `src/main.zig:308-322`
+- The external E2E test starts from `cwd="/"`, completes initialization with roots capability, answers `roots/list` with the project path, waits for scan completion, and verifies `codedb_tree` and `codedb_search`. `scripts/e2e_mcp_test.py:260-327`
+- The no-roots E2E scenario starts from `/`, checks that no `roots/list` request is emitted, then verifies that `codedb_status`, `codedb_search`, and the still-running process respond gracefully. `scripts/e2e_mcp_test.py:392-445`
+
+### 3. stdout/stderr and JSON-RPC constraints
+
+- MCP stdout is reserved for JSON-RPC. `mainImpl()` changes the general `Out` stream to stderr before MCP startup, explicitly to prevent startup diagnostics from corrupting stdout. `src/main.zig:234-238`
+- The JSON-RPC server itself obtains `cio.File.stdout()` and writes protocol responses, errors, and server requests directly there. `src/mcp.zig:1209-1218`; `src/mcp.zig:1270-1294`; `src/mcp.zig:1488-1492`
+- `writeResult()` and `writeError()` set the process-wide `stdout_broken` atomic if stdout fails; the receive loop exits when that flag is set. `src/mcp.zig:5484-5513`; `src/mcp.zig:1279-1281`
+- Result assembly preserves one-line JSON-RPC framing and sanitizes embedded CR/LF in payloads. `src/mcp.zig:5450-5482`
+- Input is newline-framed and capped at 1 MiB; EOF with no buffered message terminates the loop, and oversized input returns no message. `src/mcp_json.zig:8-31`; `src/mcp.zig:1275-1281`
+- The auto-update worker captures and discards both child stdout and stderr, specifically preventing installer output from leaking into the MCP transport. `src/update.zig:404-414`
+- The E2E harness gives stdout and stderr separate pipes and drains both on separate reader threads. It parses only non-empty stdout lines as JSON. `scripts/e2e_mcp_test.py:67-96`
+
+### 4. Whether startup can safely perform background work
+
+Startup already performs several kinds of background work:
+
+- Auto-update gating and stamp-file work run synchronously, then the updater worker is detached. `src/commands.zig:395-398`; `src/update.zig:380-402`
+- Telemetry starts a sync thread. `src/commands.zig:417-420`
+- Deferred scanning, ordinary scanning, the incremental watcher, the stdin idle watchdog, CLI proxy, and warmup are started around the MCP server. `src/commands.zig:430-466`; `src/commands.zig:468-498`
+- The scanner takes the Explorer write lock while changing indexing state, and scan completion is published through atomics. `src/background.zig:44-60`; `src/background.zig:75-103`
+- Tracked scan, watcher, and watchdog threads are joined after `mcp_server.run()` returns. `src/commands.zig:484-498`
+
+Thus, background work is compatible with the JSON-RPC protocol **provided that** it does not write stdout, does not synchronously block the handshake path unnecessarily, and does not retain pointers past `runMcp()` lifetime.
+
+There are two important qualifications:
+
+1. Explicit-root startup performs `loadBestSnapshot()` before the JSON-RPC loop begins; roots-triggered deferred startup performs it inside the JSON-RPC dispatch thread. Both are potentially blocking operations. `src/commands.zig:450-465`; `src/background.zig:203-216`; `src/mcp.zig:1501-1508`
+2. `mcp_server.run()` exits on stdin EOF, while the CLI proxy is detached and receives pointers to `Explorer`, `Store`, allocator, and stack-owned atomics. The surrounding comments assume `mcp_server.run()` blocks for the process lifetime, but the receive loop demonstrably breaks on EOF. `src/mcp.zig:1279-1281`; `src/commands.zig:468-485`; `src/cli_proxy.zig:700-730`
+
+The second point is a lifetime risk independent of auto-update: after EOF, `runMcp()` begins teardown and joins only tracked threads, while the detached CLI listener may still be running.
+
+## Auto-update insertion point
+
+The current MCP-only hook is already at the correct high-level boundary:
+
+```text
+src/commands.zig:395-398
+runMcp()
+  └─ update_mod.maybeAutoUpdate(io, allocator)
+```
+
+This location is after `coldLoadOrScan()` has explicitly skipped MCP and before root-dependent scan setup. It is reached only through the `mcp` dispatch, so it does not add auto-update behavior to CLI, `serve`, `index`, or query commands. `src/bootstrap.zig:428`; `src/main.zig:500-505`
+
+It also does not interfere with issue-346/no-roots root selection because it performs no root resolution, roots request, or Explorer mutation; it only reads/writes the user-level update stamp and may spawn the detached worker. `src/update.zig:380-402`
+
+If the hook is moved or reintroduced, it should remain in `commands.runMcp()`, not in `mainImpl()` before command dispatch, `coldLoadOrScan()`, or the `roots/list` handlers. Moving it into the roots handshake would make behavior dependent on client roots support and could skip the no-roots path. `src/commands.zig:384-406`; `src/mcp.zig:1324-1338`
+
+### Concurrency and lifetime risks
+
+- The update worker is detached and not joined. The worker itself uses only `page_allocator` and captured subprocess buffers, so it does not appear to borrow `runMcp()` state. `src/update.zig:404-414`
+- The process may exit before the detached updater completes; because the timestamp is written before the worker is spawned, a spawn failure or interrupted update can suppress another attempt for up to 24 hours. `src/update.zig:396-401`; `src/update.zig:426-432`
+- The stamp-file “race prevention” is not an interprocess lock: reads and truncate/rewrite operations are separate, so concurrent MCP processes can still both pass the check and launch workers. `src/update.zig:392-400`; `src/update.zig:426-432`
+- The installer can mutate the installed executable or user configuration while the current MCP process, watcher, warmup, and CLI proxy are active. The current process’s code is already loaded, but filesystem/configuration races remain possible. This is an inference from the detached `curl | bash` worker and the long-lived background threads. `src/update.zig:404-414`; `src/commands.zig:417-498`
+- The more immediate existing lifetime concern is the detached CLI proxy: its listener loop does not use the MCP shutdown atomic as a normal termination condition on POSIX, while `runMcp()` tears down stack-owned state after stdin EOF. `src/cli_proxy.zig:700-730`; `src/mcp.zig:1279-1281`; `src/commands.zig:484-498`
+
+## Test strategy
+
+- Preserve the existing gate tests for disabled mode, first run, 24-hour throttling, future timestamps, and corrupt negative timestamps. `src/test_mcp.zig:416-466`
+- Add an integration assertion that an MCP process with auto-update enabled still produces only parseable JSON-RPC lines on stdout while installer diagnostics remain confined to stderr. The existing subprocess wrapper already separates and drains both streams. `scripts/e2e_mcp_test.py:67-96`
+- Run that assertion in all three root modes:
+  - issue-346 roots handshake from `/`: `scripts/e2e_mcp_test.py:260-327`
+  - explicit root, no roots handshake: `scripts/e2e_mcp_test.py:341-390`
+  - no-roots client from `/`: `scripts/e2e_mcp_test.py:392-445`
+- For deterministic protocol tests, set `CODEDB_NO_AUTO_UPDATE=1`; separately test the enabled path with an isolated temporary home/stamp location and avoid making the suite depend on the network installer. The production opt-out and stamp behavior are defined at `src/update.zig:380-402`.
+- Retain the existing stdin-EOF integration test, which builds the binary once, starts `codedb <project> mcp`, closes stdin, and requires prompt exit. `src/test_mcp.zig:875-925`
+- Retain the JSON framing tests for newline preservation, EOF framing, and the 1 MiB maximum. `src/test_mcp.zig:37-64`
+
+## Three load-bearing facts
+
+1. `coldLoadOrScan()` deliberately does nothing for MCP; implicit cwd MCP enters deferred mode so roots can arrive before scanning. `src/bootstrap.zig:413-430`; `src/main.zig:308-316`
+2. stdout is a protocol-only channel; MCP writes JSON-RPC there, while startup output and updater subprocess output are routed to or captured away from stdout. `src/main.zig:234-238`; `src/mcp.zig:5484-5513`; `src/update.zig:404-414`
+3. The safe MCP-only update boundary is `commands.runMcp()` before root-dependent setup; the updater is detached, so its main risks are stamp races, incomplete updates, and interaction with process/filesystem lifetime—not roots-handshake selection. `src/commands.zig:384-406`; `src/update.zig:380-414`
+
+**Open question:** Should a live MCP session be allowed to run an installer that can replace the installed binary/configuration while detached scan, watcher, warmup, and CLI-proxy threads are still active, or should updates be deferred until session shutdown?
+
+[subagent sa-001-5d07547c · inspect: .graff/subagents/sa-001-5d07547c.md]

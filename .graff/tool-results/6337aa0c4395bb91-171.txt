@@ -1,0 +1,221 @@
+95:      `unsupported platform/arch: ${key}. Supported: ${Object.keys(PLATFORM_MAP).join(", ")}.\n` +
+96:        `If you want this platform supported, comment on https://github.com/${REPO}/issues/501`
+97:    );
+98:    process.exit(0);
+99:  }
+100:
+101:  const tag = `v${VERSION}`;
+102:  const baseUrl = `https://github.com/${REPO}/releases/download/${tag}`;
+103:  const assetUrl = `${baseUrl}/${asset}`;
+104:  const checksumsUrl = `${baseUrl}/checksums.sha256`;
+105:
+106:  const vendorDir = path.join(__dirname, "..", "vendor");
+107:  fs.mkdirSync(vendorDir, { recursive: true });
+108:  const destPath = path.join(vendorDir, process.platform === "win32" ? "codedb.exe" : "codedb");
+109:  const tmpPath = `${destPath}.download`;
+110:
+111:  log(`platform: ${key} → asset: ${asset}`);
+112:  log(`fetching checksums from ${checksumsUrl}`);
+113:
+114:  let expectedHex;
+115:  try {
+116:    const checksums = await fetchText(checksumsUrl);
+117:    for (const line of checksums.split(/\r?\n/)) {
+118:      const m = line.match(/^([0-9a-fA-F]{64})\s+\*?(.+)$/);
+119:      if (m && m[2].trim() === asset) {
+120:        expectedHex = m[1].toLowerCase();
+121:        break;
+122:      }
+123:    }
+124:    if (!expectedHex) {
+125:      logErr(`could not find ${asset} in checksums.sha256 at ${checksumsUrl}`);
+126:      process.exit(1);
+127:    }
+128:  } catch (err) {
+129:    logErr(`failed to fetch checksums: ${err.message}`);
+130:    process.exit(1);
+131:  }
+132:
+133:  log(`downloading ${assetUrl}`);
+134:  try {
+135:    if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+136:    const actualHex = await downloadToFile(assetUrl, tmpPath);
+137:    if (actualHex !== expectedHex) {
+138:      logErr(
+139:        `checksum mismatch for ${asset}:\n` +
+140:          `  expected ${expectedHex}\n` +
+141:          `  actual   ${actualHex}`
+142:      );
+143:      try {
+144:        fs.unlinkSync(tmpPath);
+145:      } catch {}
+146:      process.exit(1);
+147:    }
+148:    fs.chmodSync(tmpPath, 0o755);
+149:    fs.renameSync(tmpPath, destPath);
+150:    log(`installed: ${destPath}`);
+151:  } catch (err) {
+152:    logErr(`failed to download binary: ${err.message}`);
+153:    try {
+154:      fs.unlinkSync(tmpPath);
+155:    } catch {}
+156:    process.exit(1);
+157:  }
+158:}
+159:
+160:main().catch((err) => {
+161:  logErr(`unexpected error: ${err.stack || err.message}`);
+162:  process.exit(1);
+163:});
+515:    printf "  ${W}codedb installer${N}\n"
+516:    echo ""
+517:    printf "  ${Y}Windows detected${N} — codedb has a native Windows x86_64 binary.\n"
+518:    printf "  This Bash installer is for macOS/Linux. Run this in PowerShell:\n"
+519:    echo ""
+520:    printf "    ${C}irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5833/install/install.ps1 | iex${N}\n"
+521:    echo ""
+522:    printf "  Use ${G}WSL2${N} only if you want the Linux binary inside WSL.\n"
+523:    echo ""
+524:    exit 0
+525:  fi
+526:
+527:  echo ""
+528:  printf "  ${W}codedb${N} ${D}installer${N}\n"
+529:  echo ""
+530:  printf "  ${D}platform${N}  $platform\n"
+531:
+532:  version="${CODEDB_VERSION:-}"
+533:  if [ -z "$version" ]; then
+534:    version="$(fetch_latest_version)"
+535:  fi
+536:  if [ -z "$version" ]; then
+537:    printf "  ${R}error: could not fetch latest version${N}\n" >&2
+538:    exit 1
+539:  fi
+540:  printf "  ${D}version${N}   v${version}\n"
+541:
+542:  [[ "$platform" == windows-* ]] && ext=".exe"
+543:
+544:  mkdir -p "$INSTALL_DIR"
+545:  printf "  ${D}install${N}   $INSTALL_DIR\n"
+546:  echo ""
+547:
+548:  local url="https://github.com/justrach/codedb/releases/download/v${version}/codedb-${platform}${ext}"
+549:  local checksum_url="https://github.com/justrach/codedb/releases/download/v${version}/checksums.sha256"
+550:  local dest="$INSTALL_DIR/codedb${ext}"
+551:
+552:  printf "  ${D}│${N} %-12s " "codedb"
+553:  local tmp="/tmp/codedb.tmp.$$"
+554:  if curl -fsSL -A 'codedb-installer' "$url" -o "$tmp" 2>/dev/null; then
+555:    # Verify checksum when the release publishes a checksum manifest.
+556:    local checksum_text expected_hash checksum_notice="" actual_hash=""
+557:    checksum_text="$(curl -fsSL -A 'codedb-installer' "$checksum_url" 2>/dev/null || true)"
+558:    expected_hash="$(printf '%s\n' "$checksum_text" | awk "/codedb-${platform}${ext}\$/ { print \$1 }")"
+559:    if [ -n "$expected_hash" ]; then
+560:      if command -v sha256sum >/dev/null 2>&1; then
+561:        actual_hash="$(sha256sum "$tmp" | awk '{print $1}')"
+562:      elif command -v shasum >/dev/null 2>&1; then
+563:        actual_hash="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+564:      fi
+565:      if [ -z "$actual_hash" ]; then
+566:        # No hashing tool on PATH. Never silently install an unverified
+567:        # binary — say so in the same place the skipped-manifest case does.
+568:        checksum_notice="  ${Y}warning:${N} checksum NOT verified — neither sha256sum nor shasum is on PATH\n"
+569:      elif [ "$actual_hash" != "$expected_hash" ]; then
+570:        rm -f "$tmp"
+571:        printf "${R}failed${N}\n"
+572:        printf "\n  ${R}error: checksum mismatch — binary may be corrupted${N}\n" >&2
+573:        printf "  ${D}expected: $expected_hash${N}\n" >&2
+574:        printf "  ${D}actual:   $actual_hash${N}\n" >&2
+575:        exit 1
+576:      fi
+577:    else
+578:      checksum_notice="  ${Y}warning:${N} checksum verification skipped (checksums.sha256 unavailable)\n"
+579:    fi
+580:    xattr -c "$tmp" 2>/dev/null || true
+581:    mv -f "$tmp" "$dest"
+582:    chmod +x "$dest"
+583:    printf "${G}✓${N}\n"
+584:  else
+585:    printf "${R}failed${N}\n"
+586:    printf "\n  ${R}error: download failed${N}\n" >&2
+587:    printf "  ${D}url: $url${N}\n" >&2
+588:    exit 1
+589:  fi
+590:
+591:  echo ""
+592:  printf "  ${G}installed${N} ${D}→ $dest${N}\n"
+593:  if [ -n "$checksum_notice" ]; then
+594:    printf "$checksum_notice"
+595:  fi
+55:  throw "Invalid codedb version: $Version"
+56:}
+57:
+58:$releaseUrl = "https://github.com/$repo/releases/download/v$Version"
+59:$downloadDir = Join-Path ([IO.Path]::GetTempPath()) ("codedb-install-" + [guid]::NewGuid().ToString("N"))
+60:$targetPath = Join-Path $InstallDir "codedb.exe"
+61:$stagedPath = Join-Path $InstallDir ("codedb.exe.new." + $PID)
+62:$previousPath = $null
+63:
+64:try {
+65:  New-Item -ItemType Directory -Force -Path $downloadDir, $InstallDir | Out-Null
+66:  Get-ChildItem -LiteralPath $InstallDir -Filter "codedb.exe.old.*" -File -ErrorAction SilentlyContinue |
+67:    Remove-Item -Force -ErrorAction SilentlyContinue
+68:
+69:  $downloadedBinary = Join-Path $downloadDir $assetName
+70:  $downloadedChecksums = Join-Path $downloadDir "checksums.sha256"
+71:
+72:  Write-Host "codedb installer"
+73:  Write-Host "  version   v$Version"
+74:  Write-Host "  install   $InstallDir"
+75:  Write-Host "  download  $assetName"
+76:
+77:  Invoke-WebRequest -UseBasicParsing `
+78:    -Headers @{ "User-Agent" = "codedb-installer" } `
+79:    "$releaseUrl/$assetName" `
+80:    -OutFile $downloadedBinary
+81:  Invoke-WebRequest -UseBasicParsing `
+82:    -Headers @{ "User-Agent" = "codedb-installer" } `
+83:    "$releaseUrl/checksums.sha256" `
+84:    -OutFile $downloadedChecksums
+85:
+86:  $checksumLine = Get-Content -LiteralPath $downloadedChecksums |
+87:    Where-Object { $_ -match "\s\*?$([regex]::Escape($assetName))$" } |
+88:    Select-Object -First 1
+89:  if (-not $checksumLine) {
+90:    throw "Release v$Version has no checksum for $assetName"
+91:  }
+92:
+93:  $expectedHash = ($checksumLine -split '\s+')[0]
+94:  if ($expectedHash -notmatch '^[0-9a-fA-F]{64}$') {
+95:    throw "Release v$Version contains an invalid checksum for $assetName"
+96:  }
+97:
+98:  $actualHash = (Get-FileHash -LiteralPath $downloadedBinary -Algorithm SHA256).Hash
+99:  if ($actualHash -ne $expectedHash.ToUpperInvariant()) {
+100:    throw "SHA256 mismatch for $assetName"
+101:  }
+102:  Write-Host "  verify    SHA256 OK"
+103:
+104:  Copy-Item -LiteralPath $downloadedBinary -Destination $stagedPath -Force
+105:  Unblock-File -LiteralPath $stagedPath -ErrorAction SilentlyContinue
+106:  if (Test-Path -LiteralPath $targetPath -PathType Leaf) {
+107:    $previousPath = Join-Path $InstallDir ("codedb.exe.old." + [guid]::NewGuid().ToString("N"))
+108:    Move-Item -LiteralPath $targetPath -Destination $previousPath
+109:  }
+110:  try {
+111:    Move-Item -LiteralPath $stagedPath -Destination $targetPath -Force
+112:    & $targetPath --version
+113:    if ($LASTEXITCODE -ne 0) {
+114:      throw "Installed codedb failed its version check"
+115:    }
+116:  } catch {
+117:    Remove-Item -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue
+118:    if ($previousPath -and
+119:        (Test-Path -LiteralPath $previousPath -PathType Leaf) -and
+120:        -not (Test-Path -LiteralPath $targetPath)) {
+121:      Move-Item -LiteralPath $previousPath -Destination $targetPath
+122:      $previousPath = $null
+123:    }
+124:    throw
+125:  }

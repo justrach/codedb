@@ -1,0 +1,216 @@
+const query_mod = @import("query.zig");
+const runQuery = query_mod.runQuery;
+
+const cli_proxy = @import("cli_proxy.zig");
+pub const daemonLockTryAcquire = cli_proxy.daemonLockTryAcquire;
+pub const daemonLockRelease = cli_proxy.daemonLockRelease;
+pub const daemonLockAvailable = cli_proxy.daemonLockAvailable;
+const cliTryProxy = cli_proxy.cliTryProxy;
+
+const bootstrap = @import("bootstrap.zig");
+const loadUserConfig = bootstrap.loadUserConfig;
+const getDataDir = bootstrap.getDataDir;
+
+const commands = @import("commands.zig");
+fn mainImpl(argv: []const [*:0]const u8) !void {
+    // Use c_allocator (libc malloc) — better page reclamation than GPA
+    const allocator = std.heap.c_allocator;
+    cio.ignoreSigpipe();
+
+    // 0.16: single Threaded I/O instance passed down through every subsystem
+    // that touches fs/subprocess. See issue #282. `io` flows into mcp.run,
+    // update.run, nuke.run, watcher.initialScan, server.serve, Store, Explorer.
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const stdout = cio.File.stdout();
+    const use_color = stdout.isTty();
+    const s = sty.style(use_color);
+    var out = Out{ .file = stdout, .alloc = allocator };
+    defer out.flush();
+
+    // Extract --config-file=<path> / --config-file <path> before positional
+    // arg parsing so a leading `--config-file=X` isn't misread as the root.
+    // See #101, #102.
+    var explicit_config: ?[]const u8 = null;
+    var no_telemetry = false;
+    const args = blk: {
+        var filtered: std.ArrayList([]const u8) = .empty;
+        errdefer filtered.deinit(allocator);
+        try filtered.append(allocator, std.mem.span(argv[0]));
+        var i: usize = 1;
+        while (i < argv.len) : (i += 1) {
+            const a = std.mem.span(argv[i]);
+            if (std.mem.startsWith(u8, a, "--config-file=")) {
+                explicit_config = a["--config-file=".len..];
+                continue;
+            } else if (std.mem.eql(u8, a, "--config-file") and i + 1 < argv.len) {
+                explicit_config = std.mem.span(argv[i + 1]);
+                i += 1;
+                continue;
+            } else if (std.mem.eql(u8, a, "--no-telemetry")) {
+                // #528 item 12: --no-telemetry is documented as a global option,
+                // so strip it before positional parsing (like --config-file)
+                // instead of only honoring it after `mcp`. Telemetry.init also
+                // honors CODEDB_NO_TELEMETRY.
+                no_telemetry = true;
+                continue;
+            } else if (std.mem.eql(u8, a, "--allow-temp")) {
+                // #538: opt-in to indexing temp roots (/tmp, /private/tmp). Sets
+                // CODEDB_ALLOW_TEMP so root_policy.tempIndexingAllowed (and any
+                // daemon this CLI spawns) honors it; the env var alone works too —
+                // the flag just flips it. Lets SWE-bench/CI harnesses index /tmp.
+                cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
+                continue;
+            }
+            try filtered.append(allocator, a);
+        }
+        break :blk try filtered.toOwnedSlice(allocator);
+    };
+    defer allocator.free(args);
+
+    var root: []const u8 = undefined;
+    var cmd: []const u8 = undefined;
+    var cmd_args_start: usize = undefined;
+    var root_is_explicit: bool = false;
+
+    const parsed = parsePositional(args);
+    if (parsed.usage_exit) {
+        printUsage(&out, s);
+        out.exitWithFlush(1);
+    }
+    root = parsed.root;
+    cmd = parsed.cmd;
+    cmd_args_start = parsed.cmd_args_start;
+    root_is_explicit = parsed.root_is_explicit;
+
+    // CODEDB_ROOT env var lets clients (Claude Code MCP, shell scripts) pin
+    // the root without needing to pass a positional arg. Treated as explicit
+    // so the MCP scan kicks off at startup instead of waiting for a roots
+    // handshake — without this, every fresh `codedb mcp` call against a
+    // client that doesn't send roots/list_changed sees an empty index.
+    if (mcpRootAcceptsEnv(cmd, root)) {
+        if (cio.posixGetenv("CODEDB_ROOT")) |env_root| {
+            if (env_root.len > 0) {
+                root = env_root;
+                root_is_explicit = true;
+            }
+        }
+    }
+
+    // #502: when `codedb mcp` is launched from a subdirectory of a git
+    // repo (e.g. opencode/Zed spawning from the buffer's directory), walk
+    // up to the repo root so the user gets the whole project indexed
+    // rather than the subdir they happen to be in. Skipped if the env var
+    // or a positional arg already pinned the root, or if no .git is found.
+    var git_root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (mcpRootIsImplicitCwd(cmd, root, root_is_explicit)) {
+        if (findGitRoot(io, &git_root_buf)) |git_root| {
+            root = git_root;
+            root_is_explicit = true;
+        }
+    }
+
+    // MCP stdio reserves stdout for JSON-RPC — route status/error output to
+    // stderr so startup/failure paths don't corrupt the protocol stream.
+    // See #304.
+    if (std.mem.eql(u8, cmd, "mcp")) {
+        out.file = cio.File.stderr();
+        // #502: reject unknown flags after `mcp` (e.g. `codedb mcp --snapshot`
+        // was previously consumed silently and the server started anyway,
+        // hiding the typo). Whitelist via isValidMcpFlag.
+        // Handle `--help` here too — parsePositional only catches it when it
+        // sits immediately after `mcp`; combos like `mcp --no-telemetry --help`
+        // need their own bypass.
+        for (args[cmd_args_start..]) |a| {
+            if (a.len == 0 or a[0] != '-') continue;
+            if (isHelpRequest(a)) {
+                out.file = stdout;
+                printUsage(&out, s);
+                return;
+            }
+            if (!isValidMcpFlag(a)) {
+                out.p("{s}\xe2\x9c\x97{s} unknown flag for {s}mcp{s}: {s}{s}{s}\n  valid: {s}--no-telemetry{s}, {s}--help{s}, {s}--config-file=<path>{s}\n", .{
+                    s.red,   s.reset,
+                    s.bold,  s.reset,
+                    s.bold,  a,
+                    s.reset, s.bold,
+                    s.reset, s.bold,
+                    s.reset, s.bold,
+                    s.reset,
+                });
+                out.exitWithFlush(1);
+            }
+        }
+    }
+
+    // Handle --version early (no root needed)
+    if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-v") or std.mem.eql(u8, cmd, "version")) {
+        out.p("codedb {s}\n", .{release_info.semver});
+        return;
+    }
+
+    // Handle --help early (no root needed)
+    if (isHelpRequest(cmd)) {
+        printUsage(&out, s);
+        return;
+    }
+
+    // Handle update command early — before root resolution so it works from anywhere.
+    if (std.mem.eql(u8, cmd, "update")) {
+        update_mod.run(io, stdout, s, allocator);
+        return;
+    }
+
+    // Handle nuke command early — before root resolution so it works from anywhere
+    if (std.mem.eql(u8, cmd, "nuke")) {
+        nuke_mod.run(io, stdout, s, allocator);
+        return;
+    }
+
+    // #680: `codedb codex install|uninstall|verify` — the CodeDB-first Codex
+    // setup. Handled here with nuke/update because it targets $HOME (or an
+    // explicit --repo path); it must not require a resolvable, indexable root.
+    if (std.mem.eql(u8, cmd, "codex")) {
+        codex_mod.run(io, &out, s, allocator, args[cmd_args_start..]);
+        return;
+    }
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_root = resolveRoot(io, root, &root_buf) catch {
+        out.p("{s}\xe2\x9c\x97{s} cannot resolve root: {s}{s}{s}\n", .{
+            s.red, s.reset, s.bold, root, s.reset,
+        });
+        out.exitWithFlush(1);
+    };
+    // For `codedb mcp` from cwd, always go through deferred mode: we need the
+    // initialize handshake first to know whether the client is going to send
+    // workspace roots. If we eager-load here we'd race the client's roots/list
+    // reply and silently ignore an editor's actual workspace path. The trigger
+    // path is fast (snapshot load happens in-process when the trigger fires),
+    // and clients that don't advertise the roots capability fire the trigger
+    // immediately on notifications/initialized — see handleSession.
+    const mcp_deferred_root = mcpRootIsImplicitCwd(cmd, root, root_is_explicit);
+    if (!mcp_deferred_root and !root_policy.isIndexableRoot(abs_root)) {
+        // Load-only exception: the footgun guard exists to prevent *indexing*
+        // junk roots, but reading an already-built index is harmless. Bench/CI
+        // harnesses pre-index /tmp clones with CODEDB_ALLOW_TEMP=1 and then
+        // spawn the CLI without the env var — refusing here silently disables
+        // codedb for the whole session (agents fall back to grep/sed after one
+        // hard failure). Allow read-only query commands when an index exists.
+        const load_only_ok = cliIsQueryCmd(cmd) and blk: {
+            const data_dir = getDataDir(io, allocator, abs_root) catch break :blk false;
+            defer allocator.free(data_dir);
+            break :blk index_mod.readStatusMeta(io, data_dir, allocator).indexed;
+        };
+        // Bootstrap exception: a temp root that looks like a real project
+        // checkout (.git, pyproject.toml, …) may be indexed on the fly, so
+        // fresh clones work out of the box without the env var.
+        const bootstrap_ok = !load_only_ok and root_policy.isBootstrapableRoot(io, abs_root);
+        if (!load_only_ok and !bootstrap_ok) {
+            out.p("{s}\xe2\x9c\x97{s} refusing to index temporary root: {s}{s}{s}\n", .{
+                s.red, s.reset, s.bold, abs_root, s.reset,
+            });
+            out.exitWithFlush(1);
+        }

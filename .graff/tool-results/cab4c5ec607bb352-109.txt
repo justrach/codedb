@@ -1,0 +1,226 @@
+  3500	    for (copies) |rel| {
+  3501	        const copy = std.Io.Dir.cwd().readFileAlloc(io, rel, alloc, .limited(1 << 20)) catch
+  3502	            return error.SkipZigTest;
+  3503	        defer alloc.free(copy);
+  3504	        try testing.expectEqualStrings(canonical, copy);
+  3505	    }
+  3506	}
+  3507	
+  3508	test "tools/list core profile advertises the navigation set with full descriptions" {
+  3509	    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_core = true });
+  3510	    defer testing.allocator.free(resp);
+  3511	
+  3512	    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+  3513	    defer parsed.deinit();
+  3514	    const tools = parsed.value.object.get("tools").?.array;
+  3515	
+  3516	    try testing.expectEqual(@as(usize, 10), tools.items.len);
+  3517	    var found_callers = false;
+  3518	    for (tools.items) |t| {
+  3519	        const name = t.object.get("name").?.string;
+  3520	        if (std.mem.eql(u8, name, "codedb_glob") or std.mem.eql(u8, name, "codedb_projects"))
+  3521	            return error.NonCoreToolAdvertised;
+  3522	        if (std.mem.eql(u8, name, "codedb_callers")) {
+  3523	            found_callers = true;
+  3524	            const desc = t.object.get("description").?.string;
+  3525	            try testing.expect(std.mem.indexOf(u8, desc, "PRIMARY tool") != null);
+  3526	        }
+  3527	    }
+  3528	    try testing.expect(found_callers);
+  3529	}
+  3530	
+  3531	test "tools/list slim profile stays six terse tools" {
+  3532	    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_slim = true });
+  3533	    defer testing.allocator.free(resp);
+  3534	
+  3535	    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+  3536	    defer parsed.deinit();
+  3537	    const tools = parsed.value.object.get("tools").?.array;
+  3538	
+  3539	    try testing.expectEqual(@as(usize, 6), tools.items.len);
+  3540	    for (tools.items) |t| {
+  3541	        const name = t.object.get("name").?.string;
+  3542	        if (std.mem.eql(u8, name, "codedb_callers")) {
+  3543	            const desc = t.object.get("description").?.string;
+  3544	            try testing.expect(std.mem.indexOf(u8, desc, "PRIMARY tool") == null);
+  3545	        }
+  3546	    }
+  3547	}
+  3548	
+  3549	test "context: identifier candidates merge with plain concept words" {
+  3550	    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+  3551	    defer arena.deinit();
+  3552	    const A = arena.allocator();
+  3553	
+  3554	    const task = "find where the portable snapshot file with META/TREE sections is written to disk";
+  3555	    var cands: std.ArrayList([]const u8) = .empty;
+  3556	    mcp_mod.extractContextCandidates(task, A, &cands);
+  3557	    mcp_mod.extractContextFallbackWords(task, A, &cands);
+  3558	
+  3559	    var meta_count: usize = 0;
+  3560	    var has_snapshot = false;
+  3561	    for (cands.items) |c| {
+  3562	        if (std.mem.eql(u8, c, "META")) meta_count += 1;
+  3563	        if (std.ascii.eqlIgnoreCase(c, "snapshot")) has_snapshot = true;
+  3564	    }
+  3565	    try testing.expectEqual(@as(usize, 1), meta_count);
+  3566	    try testing.expect(has_snapshot);
+  3567	}
+  3568	
+  3569	test "tools/list mini profile advertises six tools with full descriptions" {
+  3570	    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_mini = true });
+  3571	    defer testing.allocator.free(resp);
+  3572	
+  3573	    // tools/list rides on every model request, so the whole payload is the
+  3574	    // per-request tax. Keep the compressed mini surface under budget.
+  3575	    try testing.expect(resp.len < 6500);
+  3576	
+  3577	    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+  3578	    defer parsed.deinit();
+  3579	    const tools = parsed.value.object.get("tools").?.array;
+  3580	
+  3581	    try testing.expectEqual(@as(usize, 6), tools.items.len);
+  3582	    var found_callers = false;
+  3583	    for (tools.items) |t| {
+  3584	        const name = t.object.get("name").?.string;
+  3585	        if (std.mem.eql(u8, name, "codedb_read") or std.mem.eql(u8, name, "codedb_word"))
+  3586	            return error.NonMiniToolAdvertised;
+  3587	        if (std.mem.eql(u8, name, "codedb_callers")) {
+  3588	            found_callers = true;
+  3589	            const desc = t.object.get("description").?.string;
+  3590	            // Compressed, but the steering claim survives.
+  3591	            try testing.expect(std.mem.indexOf(u8, desc, "grep") != null);
+  3592	            try testing.expect(std.mem.indexOf(u8, desc, "call site") != null);
+  3593	            try testing.expect(desc.len <= 220);
+  3594	        }
+  3595	    }
+  3596	    try testing.expect(found_callers);
+  3597	}
+  3598	
+  3599	test "issue: codedb_callers returns results when max_results is smaller than the filtered-out prefix" {
+  3600	    // Reported as "codedb_callers returns 0 call sites after a snapshot
+  3601	    // fast-load". The fast-load is a red herring — searchContentUncached
+  3602	    // already ensures both lazy indexes (explore.zig:3931 word index,
+  3603	    // explore.zig:3941 symbol index). The real defect is in handleCallers:
+  3604	    // it passes the user's max_results straight through as the cap on the
+  3605	    // RAW content search, then applies its four exclusion filters (non-code
+  3606	    // language, comment/blank line, definition site, whole-word) to that
+  3607	    // already-truncated slice. Ranked search deliberately floats the
+  3608	    // defining file (+20 prior, explore.zig:4524) and its definition lines
+  3609	    // (explore.zig:4598) to the front — exactly the rows this tool drops —
+  3610	    // so a small max_results spends its entire budget on rows that are then
+  3611	    // filtered away and the tool reports "0 call sites" for a symbol with
+  3612	    // real callers. max_results is documented as "Maximum call sites to
+  3613	    // return": it must cap the OUTPUT, not the pre-filter search.
+  3614	    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+  3615	    defer arena.deinit();
+  3616	    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  3617	    var store = Store.init(testing.allocator);
+  3618	    defer store.deinit();
+  3619	    var agents = AgentRegistry.init(testing.allocator);
+  3620	    defer agents.deinit();
+  3621	    _ = try agents.register("__filesystem__");
+  3622	    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  3623	    defer bench_ctx.deinit();
+  3624	
+  3625	    // One file, so tier0_per_file_cap == max_results (explore.zig:4125) and
+  3626	    // the raw hits are taken in line order: the first three are the doc
+  3627	    // comments, which handleCallers drops. The two genuine call sites sit
+  3628	    // just past the cap.
+  3629	    try explorer.indexFile("mod.zig",
+  3630	        \\// fooBar is the entry point
+  3631	        \\// fooBar is described again
+  3632	        \\// fooBar is described once more
+  3633	        \\pub fn fooBar() void {}
+  3634	        \\pub fn callerA() void {
+  3635	        \\    fooBar();
+  3636	        \\}
+  3637	        \\pub fn callerB() void {
+  3638	        \\    fooBar();
+  3639	        \\}
+  3640	        \\
+  3641	    );
+  3642	
+  3643	    const args_json =
+  3644	        \\{"name":"fooBar","max_results":3}
+  3645	    ;
+  3646	    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  3647	    defer parsed.deinit();
+  3648	    var out: std.ArrayList(u8) = .empty;
+  3649	    defer out.deinit(testing.allocator);
+  3650	    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+  3651	
+  3652	    // Both real call sites fit inside max_results=3 and must be reported.
+  3653	    try testing.expect(std.mem.indexOf(u8, out.items, "0 call sites") == null);
+  3654	    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'fooBar'") != null);
+  3655	    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:6") != null);
+  3656	    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:9") != null);
+  3657	    // The filtered rows must still not leak into the output.
+  3658	    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:1:") == null);
+  3659	    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:4:") == null);
+  3660	}
+  3661	
+  3662	test "issue: codedb_callers caps the reported call sites at max_results" {
+  3663	    // Companion to the test above: over-fetching to survive the filters must
+  3664	    // not turn max_results into a no-op — the OUTPUT still has to honour it.
+  3665	    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+  3666	    defer arena.deinit();
+  3667	    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  3668	    var store = Store.init(testing.allocator);
+  3669	    defer store.deinit();
+  3670	    var agents = AgentRegistry.init(testing.allocator);
+  3671	    defer agents.deinit();
+  3672	    _ = try agents.register("__filesystem__");
+  3673	    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  3674	    defer bench_ctx.deinit();
+  3675	
+  3676	    try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
+  3677	    try explorer.indexFile("many.zig",
+  3678	        \\pub fn callerA() void {
+  3679	        \\    fooBar();
+  3680	        \\    fooBar();
+  3681	        \\    fooBar();
+  3682	        \\    fooBar();
+  3683	        \\    fooBar();
+  3684	        \\}
+  3685	        \\
+  3686	    );
+  3687	
+  3688	    const args_json =
+  3689	        \\{"name":"fooBar","max_results":2}
+  3690	    ;
+  3691	    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  3692	    defer parsed.deinit();
+  3693	    var out: std.ArrayList(u8) = .empty;
+  3694	    defer out.deinit(testing.allocator);
+  3695	    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+  3696	
+  3697	    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'fooBar'") != null);
+  3698	}
+  3699	
+  3700	// ── codedb_callers: string-literal mentions are not call sites ──────────────
+  3701	// `codedb . callers renderPlainSearch` reported two kinds of non-calls:
+  3702	//   scripts/rank-eval.py:56: ("renderPlainSearch", "src/explore.zig"),
+  3703	//   src/test_search.zig:1959: test "def-first: renderPlainSearch surfaces …" {
+  3704	// In both the symbol occurs ONLY inside a string literal. The four existing
+  3705	// filters (non-code language, comment/blank, definition site, whole-word) all
+  3706	// pass such a line, so it was rendered as a call site.
+  3707	
+  3708	/// Index `files` (path/content pairs) into a fresh Explorer, run the
+  3709	/// codedb_callers handler for `name`, and leave the rendered text in `out`.
+  3710	/// `explorer_alloc` should be an arena — the Explorer is not deinit'ed.
+  3711	fn renderCallersFixture(
+  3712	    explorer_alloc: std.mem.Allocator,
+  3713	    files: []const [2][]const u8,
+  3714	    name: []const u8,
+  3715	    out: *std.ArrayList(u8),
+  3716	) !void {
+  3717	    var explorer = Explorer.init(explorer_alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  3718	    var store = Store.init(testing.allocator);
+  3719	    defer store.deinit();
+  3720	    var agents = AgentRegistry.init(testing.allocator);
+  3721	    defer agents.deinit();
+  3722	    _ = try agents.register("__filesystem__");
+  3723	    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  3724	    defer bench_ctx.deinit();
+  3725	

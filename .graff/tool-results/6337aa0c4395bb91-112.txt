@@ -1,0 +1,126 @@
+    try testing.expect(std.mem.endsWith(u8, resolved, "git.exe"));
+    try testing.expect(std.mem.startsWith(u8, resolved, bin_abs));
+
+    try testing.expect((try cio.resolveExecutableFromPathWindows(testing.allocator, "git.bat")) == null);
+    try testing.expect((try cio.resolveExecutableFromPathWindows(testing.allocator, ".\\git.exe")) == null);
+}
+
+test "windows cli pipe metadata parser rejects spoofable records" {
+    const owner = "pid=123\npipe=\\\\.\\pipe\\codedb-123-deadbeef\n";
+    const ok = cli_proxy_mod.parseCliPipeMetadata(owner) orelse return error.TestUnexpectedResult;
+    try testing.expect(ok.pid == 123);
+    try testing.expect(std.mem.eql(u8, ok.pipe_name, "\\\\.\\pipe\\codedb-123-deadbeef"));
+    try testing.expect(cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 123, "\\\\.\\pipe\\codedb-123-deadbeef"));
+    try testing.expect(!cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 124, "\\\\.\\pipe\\codedb-123-deadbeef"));
+    try testing.expect(!cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 123, "\\\\.\\pipe\\codedb-other"));
+
+    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pid=0\npipe=\\\\.\\pipe\\codedb-x\n") == null);
+    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pid=123\npipe=\\\\.\\pipe\\other\n") == null);
+    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pipe=\\\\.\\pipe\\codedb-x\n") == null);
+}
+
+fn buildCliForHelpTests() !void {
+    // `--global-cache-dir` is only accepted by newer zigs (the pinned
+    // 0.17.0-dev.813 rejects it); prefer the env var, which every version
+    // honors, and keep the arg off entirely.
+    const build = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ zigExe(), "build" },
+        .max_output_bytes = 8192,
+    });
+    defer testing.allocator.free(build.stdout);
+    defer testing.allocator.free(build.stderr);
+
+    try testing.expect(build.term == .Exited);
+    try testing.expect(build.term.Exited == 0);
+}
+
+test "windows cli-daemon auto-spawn proxies next query from unicode root" {
+    // POSIX uses the Unix-socket daemon path. This test exercises the Windows
+    // behavior-equivalent path: detached CreateProcessW startup plus named-pipe
+    // proxying for the next process.
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    try buildCliForHelpTests();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "project-unicode-å/src");
+    try tmp.dir.createDirPath(io, ".home");
+
+    {
+        const f = try tmp.dir.createFile(io, "project-unicode-å/src/sample.zig", .{ .truncate = true });
+        defer f.close(io);
+        try f.writeStreamingAll(io, "pub fn sampleSymbolForDaemon() void {}\n");
+    }
+
+    var project_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_len = try tmp.dir.realPathFile(io, "project-unicode-å", &project_buf);
+    const project_root = project_buf[0..project_len];
+
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home_len = try tmp.dir.realPathFile(io, ".home", &home_buf);
+    const test_home = home_buf[0..home_len];
+
+    const g_allow = EnvVarGuard.save("CODEDB_ALLOW_TEMP");
+    defer g_allow.restore();
+    const g_idle = EnvVarGuard.save("CODEDB_CLI_DAEMON_IDLE_MS");
+    defer g_idle.restore();
+    const g_home = EnvVarGuard.save("HOME");
+    defer g_home.restore();
+    const g_profile = EnvVarGuard.save("USERPROFILE");
+    defer g_profile.restore();
+    cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
+    cio.posixSetenv("CODEDB_CLI_DAEMON_IDLE_MS", "750");
+    cio.posixSetenv("HOME", test_home);
+    cio.posixSetenv("USERPROFILE", test_home);
+
+    const cold = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ builtCodedbExe(), project_root, "status" },
+        .max_output_bytes = 64 * 1024,
+    });
+    defer testing.allocator.free(cold.stdout);
+    defer testing.allocator.free(cold.stderr);
+    try testing.expect(cold.term == .Exited);
+    try testing.expectEqual(@as(u8, 0), cold.term.Exited);
+
+    var warm_seen = false;
+    var attempts: usize = 0;
+    while (attempts < 20) : (attempts += 1) {
+        cio.sleepMs(150);
+        const warm = try cio.runCapture(.{
+            .allocator = testing.allocator,
+            .argv = &.{ builtCodedbExe(), project_root, "find", "sampleSymbolForDaemon" },
+            .max_output_bytes = 64 * 1024,
+        });
+        defer testing.allocator.free(warm.stdout);
+        defer testing.allocator.free(warm.stderr);
+
+        if (warm.term == .Exited and warm.term.Exited == 0 and
+            std.mem.indexOf(u8, warm.stdout, "src/sample.zig") != null and
+            std.mem.indexOf(u8, warm.stdout, "loaded snapshot") == null)
+        {
+            warm_seen = true;
+            break;
+        }
+    }
+
+    // Let the short-idle detached daemon release files before tmp cleanup on Windows.
+    cio.sleepMs(900);
+    try testing.expect(warm_seen);
+}
+
+test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
+
+    var telem = telemetry_mod.Telemetry.init(io, dir_path, testing.allocator, false);
+    defer telem.deinit();
+
+    telem.recordSessionStart();

@@ -1,0 +1,129 @@
+
+  echo ""
+  printf "  ${W}mcp command${N}\n"
+  printf "  ${C}$codedb_bin mcp${N}\n"
+}
+
+main() {
+  local platform version ext=""
+  platform="$(detect_platform)"
+
+  # #677: detect_platform runs in a command substitution, so it cannot print
+  # to the user or stop the script itself — handle Windows here, before any
+  # download is attempted.
+  if [ "$platform" = "windows" ]; then
+    echo ""
+    printf "  ${W}codedb installer${N}\n"
+    echo ""
+    printf "  ${Y}Windows detected${N} — codedb has a native Windows x86_64 binary.\n"
+    printf "  This Bash installer is for macOS/Linux. Run this in PowerShell:\n"
+    echo ""
+    printf "    ${C}irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5833/install/install.ps1 | iex${N}\n"
+    echo ""
+    printf "  Use ${G}WSL2${N} only if you want the Linux binary inside WSL.\n"
+    echo ""
+    exit 0
+  fi
+
+  echo ""
+  printf "  ${W}codedb${N} ${D}installer${N}\n"
+  echo ""
+  printf "  ${D}platform${N}  $platform\n"
+
+  version="${CODEDB_VERSION:-}"
+  if [ -z "$version" ]; then
+    version="$(fetch_latest_version)"
+  fi
+  if [ -z "$version" ]; then
+    printf "  ${R}error: could not fetch latest version${N}\n" >&2
+    exit 1
+  fi
+  printf "  ${D}version${N}   v${version}\n"
+
+  [[ "$platform" == windows-* ]] && ext=".exe"
+
+  mkdir -p "$INSTALL_DIR"
+  printf "  ${D}install${N}   $INSTALL_DIR\n"
+  echo ""
+
+  local url="https://github.com/justrach/codedb/releases/download/v${version}/codedb-${platform}${ext}"
+  local checksum_url="https://github.com/justrach/codedb/releases/download/v${version}/checksums.sha256"
+  local dest="$INSTALL_DIR/codedb${ext}"
+
+  printf "  ${D}│${N} %-12s " "codedb"
+  local tmp="/tmp/codedb.tmp.$$"
+  if curl -fsSL -A 'codedb-installer' "$url" -o "$tmp" 2>/dev/null; then
+    # Verify checksum when the release publishes a checksum manifest.
+    local checksum_text expected_hash checksum_notice="" actual_hash=""
+    checksum_text="$(curl -fsSL -A 'codedb-installer' "$checksum_url" 2>/dev/null || true)"
+    expected_hash="$(printf '%s\n' "$checksum_text" | awk "/codedb-${platform}${ext}\$/ { print \$1 }")"
+    if [ -n "$expected_hash" ]; then
+      if command -v sha256sum >/dev/null 2>&1; then
+        actual_hash="$(sha256sum "$tmp" | awk '{print $1}')"
+      elif command -v shasum >/dev/null 2>&1; then
+        actual_hash="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+      fi
+      if [ -z "$actual_hash" ]; then
+        # No hashing tool on PATH. Never silently install an unverified
+        # binary — say so in the same place the skipped-manifest case does.
+        checksum_notice="  ${Y}warning:${N} checksum NOT verified — neither sha256sum nor shasum is on PATH\n"
+      elif [ "$actual_hash" != "$expected_hash" ]; then
+        rm -f "$tmp"
+        printf "${R}failed${N}\n"
+        printf "\n  ${R}error: checksum mismatch — binary may be corrupted${N}\n" >&2
+        printf "  ${D}expected: $expected_hash${N}\n" >&2
+        printf "  ${D}actual:   $actual_hash${N}\n" >&2
+        exit 1
+      fi
+    else
+      checksum_notice="  ${Y}warning:${N} checksum verification skipped (checksums.sha256 unavailable)\n"
+    fi
+    xattr -c "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$dest"
+    chmod +x "$dest"
+    printf "${G}✓${N}\n"
+  else
+    printf "${R}failed${N}\n"
+    printf "\n  ${R}error: download failed${N}\n" >&2
+    printf "  ${D}url: $url${N}\n" >&2
+    exit 1
+  fi
+
+  echo ""
+  printf "  ${G}installed${N} ${D}→ $dest${N}\n"
+  if [ -n "$checksum_notice" ]; then
+    printf "$checksum_notice"
+  fi
+  printf "  ${D}claude hook opt-out: CODEDB_NO_HOOKS=1 skips this run; CODEDB_PERSIST_NO_HOOKS=1 or touch ~/.codedb/no-hooks makes it permanent (rm ~/.codedb/no-hooks re-enables)${N}\n"
+
+  # Register MCP server in coding tools
+  echo ""
+  printf "  ${W}registering integrations${N}\n"
+  echo ""
+  register_claude "$dest"
+  register_codex "$dest"
+  register_codex_policy "$dest"
+  register_gemini "$dest"
+  register_cursor "$dest"
+  register_windsurf_devin "$dest"
+  register_deepwiki
+  register_hooks
+  print_hook_notes "$dest"
+
+  # Check PATH
+  case ":$PATH:" in
+    *":$INSTALL_DIR:"*) ;;
+    *)
+      echo ""
+      printf "  ${Y}add to PATH:${N}\n"
+      printf "  ${C}export PATH=\"$INSTALL_DIR:\$PATH\"${N}\n"
+      printf "  ${D}(add to ~/.bashrc or ~/.zshrc)${N}\n"
+      ;;
+  esac
+
+  echo ""
+  printf "  ${W}done!${N} run ${C}codedb --help${N} to get started\n"
+  echo ""
+}
+
+main

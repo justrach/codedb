@@ -1,0 +1,29 @@
+Regression coverage proves both sides of the change: comment/literal/regex-only mentions are removed, and real references are not lost when comment-like bytes occur earlier on the same line.
+
+## Intentional scope and limitations
+
+`codedb_callers` remains a fast lexical heuristic over ranked, isolated source lines; it is not a full parser or semantic call graph. A whole-word symbol reference in lexical code can still be reported even when the expression is not a function invocation.
+
+Because ranked search supplies individual lines, the scanner intentionally does not carry comment, string, or template state forward from earlier lines. A multiline construct opened on a previous line is therefore outside this fix’s scope. Template-expression nesting beyond 16 levels is treated conservatively rather than recursed without bound.
+
+These constraints preserve the tool’s cross-language coverage, allocation profile, and benchmark-critical search path while fixing the concrete false positives without introducing per-language parsers into caller ranking.
+
+## Upgrade impact
+
+- No configuration changes are required.
+- No MCP schema or tool-call changes are required.
+- Existing clients receive more precise `codedb_callers` results after replacing the binary.
+- Consumers that depended on comment-, literal-, or regex-only mentions being returned should treat their removal as the intended bug fix.
+
+## Signed and notarized assets
+
+Both macOS binaries are signed with the project’s Developer ID Application certificate using the hardened runtime and a secure timestamp. Each architecture-specific archive is submitted to Apple through the `codedb-notary` keychain profile and must return **Accepted** before publication.
+
+The `.notary.zip` files are the exact archives submitted to Apple. The bare `codedb-darwin-*` binaries are byte-identical to the binaries inside those accepted archives. `checksums.sha256` covers every published binary and notarization archive.
+
+## Links
+
+- Fixed issue: [#682](https://github.com/justrach/codedb/issues/682)
+- Initial fix: [#683](https://github.com/justrach/codedb/pull/683)
+- Lexical hardening: [#684](https://github.com/justrach/codedb/pull/684)
+- Exact latest-change comparison: [`052c8aa...v0.2.5838`](https://github.com/justrach/codedb/compare/052c8aa...v0.2.5838)

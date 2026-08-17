@@ -1,0 +1,40 @@
+✓ 39 results for "php"  ⚡ 1.2ms
+  src/telemetry.zig:364          "php",
+  src/watcher.zig:226      "vendor", // go, php
+  src/mcp.zig:2699          .php => &.{ "//", "#" },
+  src/mcp.zig:2733              // `#[` starts a PHP 8 attribute, not a hash comment.
+  src/mcp.zig:2734              if (language == .php and m[0] == '#' and i + 1 < line.len and line[i + 1] == '[') break;
+  src/mcp.zig:2773          .go_lang, .javascript, .typescript, .php, .ruby, .r, .svelte, .vue, .astro => true,
+  src/mcp.zig:2780          .rust, .go_lang, .javascript, .typescript, .c, .cpp, .php, .hcl, .dart, .java, .kotlin, .swift, .svelte, .vue, .astro, .sql, .mlir, .tablegen, .rescript => true,
+  src/test_mcp.zig:3831          .{ "trail.php", "<?php\ninit(); // renderX() is documented here\ninit(); # renderX() is documented here\n" },
+  src/test_mcp.zig:3833          .{ "call.php", "<?php\nrenderX();\n" },
+  src/test_mcp.zig:3834          .{ "attribute.php", "<?php\n#[SomeAttribute] function callerB() { renderX(); }\n" },
+  docs/architecture.md:44  **Language parsers:** Zig, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, and Dart. Each parser extracts functions, classes/structs, constants, imports, and test declarations from source lines.
+  website/app/v0257.zig:246      \\      <div class="contributor-card" style="background:var(--dark3);"><a href="https://github.com/sims1253" style="color:var(--accent-light);">@sims1253</a><p style="color:rgba(255,255,255,0.5);">R language support, PHP/Ruby telemetry fix</p></div>
+  website/app/v02572.zig:247      \\      <div class="contributor-card" style="background:var(--dark3);"><a href="https://github.com/sims1253" style="color:var(--accent-light);">@sims1253</a><p style="color:rgba(255,255,255,0.5);">R language support, PHP/Ruby telemetry fix</p></div>
+  README.md:45  > - **Parser support** — Zig, C/C++, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, Dart/Flutter, OCaml
+  README.md:423  - **Explorer** — structural index engine. Parses Zig, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, and Dart. Maintains outlines, trigram index, inverted word index, content cache, and dependency graph behind a single mutex.
+  src/explore.zig:221      if (std.mem.endsWith(u8, path, ".php")) return .php;
+  src/explore.zig:2226          var php_state: PhpParseState = .{};
+  src/explore.zig:2387                  try parser.parsePhpLine(trimmed, line_num, &outline, &php_state);
+  src/explore.zig:7137      fn parsePhpLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline, state: *PhpParseState) !void {
+  src/test_mcp.zig:3824  test "issue-682: codedb_callers recognizes PHP and Swift trailing comments" {
+  src/test_mcp.zig:3838      try testing.expect(std.mem.indexOf(u8, out.items, "trail.php") == null);
+  src/test_mcp.zig:3840      try testing.expect(std.mem.indexOf(u8, out.items, "call.php:2") != null);
+  src/test_mcp.zig:3841      try testing.expect(std.mem.indexOf(u8, out.items, "attribute.php:2") != null);
+  src/test_parser.zig:240  test "issue-php-1: PHP class definition herkend" {
+  src/test_parser.zig:267  test "issue-php-2: PHP methode binnen class herkend" {
+  src/test_parser.zig:296  test "issue-php-3: PHP top-level functie herkend" {
+  src/explore.zig:164  const PhpParseState = struct {
+  src/explore.zig:180      php,
+  src/explore.zig:1997              outline.language == .go_lang or outline.language == .php or
+  src/explore.zig:2386              } else if (outline.language == .php) {
+  src/explore.zig:7149          if (startsWith(line, "<?php")) return;
+  src/explore.zig:7157              try self.parsePhpUseImport(a, line, line_num, outline);
+  src/test_parser.zig:245      try explorer.indexFile("app/Models/Candidate.php",
+  src/test_parser.zig:246          \\<?php
+  src/test_parser.zig:255      var outline = (try explorer.getOutline("app/Models/Candidate.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+  src/test_parser.zig:272      try explorer.indexFile("app/Models/User.php",
+  src/test_parser.zig:273          \\<?php
+  src/test_parser.zig:287      var outline = (try explorer.getOutline("app/Models/User.php", testing.allocator)) orelse return error.TestUnexpectedResult;
+  src/test_parser.zig:301      try explorer.indexFile("helpers.php",

@@ -1,0 +1,172 @@
+2 results for 'scanBg':
+  src/background.zig:35 (function) scanBg  // pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), shutdown: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8, telem: *telemetry.Telemetry, startup_t0: i64) void {
+   35 | pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), shutdown: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8, telem: *telemetry.Telemetry, startup_t0: i64) void {
+   36 |     const git_head = git_mod.getGitHead(root, allocator) catch null;
+   37 |     const disk_hdr = TrigramIndex.readDiskHeader(io, data_dir, allocator) catch null;
+   38 |     const heads_match = blk: {
+   39 |         const a = git_head orelse break :blk false;
+   40 |         const b = (disk_hdr orelse break :blk false).git_head orelse break :blk false;
+   41 |         break :blk std.mem.eql(u8, &a, &b);
+   42 |     };
+   43 | 
+   44 |     mcp_server.setScanState(.walking);
+   45 |     // Always skip per-file trigram indexing during the walk — trigrams are
+   46 |     // built afterward in one parallel pass over the populated ContentCache
+   47 |     // (mirrors the CLI cold-index path in bootstrap.zig). Previously this
+   48 |     // passed `heads_match`, which meant a genuinely cold scan (no disk
+   49 |     // index at all, heads_match=false) built trigrams file-by-file, single
+   50 |     // threaded, inline in the commit loop below.
+   51 |     // Bulk word indexing follows the CLI path too: worker-local shards avoid
+   52 |     // tokenizing every file on the serial commit spine. initialScan restores
+   53 |     // incremental file-word tracking before it returns.
+   54 |     explorer.mu.lock();
+   55 |     explorer.word_index.skip_file_words = true;
+   56 |     explorer.mu.unlock();
+   57 |     var initial_scan_ok = true;
+   58 |     watcher.initialScan(io, store, explorer, root, allocator, true) catch |err| {
+   59 |         std.log.warn("background scan failed: {}", .{err});
+   60 |         initial_scan_ok = false;
+   61 |         explorer.mu.lock();
+   62 |         explorer.word_index_complete = false;
+   63 |         explorer.word_index_can_load_from_disk = false;
+   64 |         explorer.mu.unlock();
+   65 |     };
+   66 | 
+   67 |     // Phase gate: bail if shutting down after initial scan
+   68 |     if (shutdown.load(.acquire)) {
+   69 |         scan_done.store(true, .release);
+   70 |         mcp_server.setScanState(.ready);
+   71 |         return;
+   72 |     }
+   73 |     mcp_server.setScanState(.indexing);
+   74 |     if (initial_scan_ok) persistWordIndexToDisk(io, explorer, data_dir, git_head);
+   75 | 
+   76 |     if (heads_match and initial_scan_ok) {
+   77 |         const current_count = @as(u32, @intCast(explorer.outlines.count()));
+   78 |         if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
+   79 |             if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
+   80 |                 explorer.adoptTrigramIndex(.{ .mmap = loaded });
+   81 |                 scan_done.store(true, .release);
+   82 |                 mcp_server.setScanState(.ready);
+   83 |                 if (shutdown.load(.acquire)) return;
+   84 |                 telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
+   85 |                 const snap_path_1 = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
+   86 |                 defer if (snap_path_1) |p| allocator.free(p);
+   87 |                 snapshot_mod.writeSnapshotDual(io, explorer, abs_root, snap_path_1 orelse "codedb.snapshot", allocator) catch |err| {
+   88 |                     std.log.warn("could not auto-write snapshot: {}", .{err});
+   89 |                 };
+   90 |                 const fc = explorer.outlines.count();
+   91 |                 if (fc > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
+   92 |                     explorer.releaseContents();
+   93 |                     explorer.releaseSecondaryIndexes();
+   94 |                 }
+   95 |                 // Shrink index allocations to reclaim ArrayList over-allocation
+   96 |                 if (explorer.trigram_index.asHeap()) |heap| heap.shrinkPostingLists();
+   97 |                 explorer.word_index.shrinkAllocations();
+   98 |                 return;
+   99 |             }
+  100 |             if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
+  101 |                 explorer.adoptTrigramIndex(.{ .heap = loaded });
+  102 |                 scan_done.store(true, .release);
+  103 |                 mcp_server.setScanState(.ready);
+  104 |                 if (shutdown.load(.acquire)) return;
+  105 |                 telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
+  106 |                 const snap_path_2 = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
+  107 |                 defer if (snap_path_2) |p| allocator.free(p);
+  108 |                 snapshot_mod.writeSnapshotDual(io, explorer, abs_root, snap_path_2 orelse "codedb.snapshot", allocator) catch |err| {
+  109 |                     std.log.warn("could not auto-write snapshot: {}", .{err});
+  110 |                 };
+  111 |                 const fc = explorer.outlines.count();
+  112 |                 if (fc > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
+  113 |                     explorer.releaseContents();
+  114 |                     explorer.releaseSecondaryIndexes();
+  115 |                 }
+  116 |                 return;
+  117 |             }
+  118 |         }
+  119 |         // No reusable disk index (stale/missing/count mismatch) — fall
+  120 |         // through to the parallel trigram build below, same as a cold scan.
+  121 |     }
+  122 | 
+  123 |     // Phase gate: bail before trigram build if shutting down
+  124 |     if (shutdown.load(.acquire)) {
+  125 |         scan_done.store(true, .release);
+  126 |         mcp_server.setScanState(.ready);
+  127 |         return;
+  128 |     }
+  129 | 
+  130 |     // Build the trigram index in parallel from the ContentCache that
+  131 |     // initialScan just populated — mirrors watcher.buildTrigramsFromCache's
+  132 |     // use on the CLI cold-index path (bootstrap.zig). A shared (read) lock
+  133 |     // is held for the whole build: worker threads read file content slices
+  134 |     // straight out of ContentCache without copying, so any concurrent
+  135 |     // writer (incremental file-watcher commits, which all take
+  136 |     // the exclusive lock) must be excluded for the entire parallel section,
+  137 |     // not just while collecting entries. Other readers (search) can still
+  138 |     // run concurrently under the shared lock.
+  139 |     var trigram_written = false;
+  140 |     {
+  141 |         const cpu_count = std.Thread.getCpuCount() catch 1;
+  142 |         const tri_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
+  143 |         explorer.mu.lockShared();
+  144 |         const tmp_tri = watcher.buildTrigramsFromCache(&explorer.contents, allocator, std.heap.c_allocator, tri_workers) catch |err| blk: {
+  145 |             std.log.warn("could not build trigram index: {}", .{err});
+  146 |             break :blk null;
+  147 |         };
+  148 |         explorer.mu.unlockShared();
+  149 |         if (tmp_tri) |tri| {
+  150 |             defer {
+  151 |                 tri.deinit();
+  152 |                 std.heap.c_allocator.destroy(tri);
+  153 |             }
+  154 |             write_trigrams: {
+  155 |                 tri.writeToDisk(io, data_dir, git_head) catch |err| {
+  156 |                     std.log.warn("could not persist trigram index: {}", .{err});
+  157 |                     break :write_trigrams;
+  158 |                 };
+  159 |                 trigram_written = true;
+  160 |             }
+  161 |         }
+  162 |     }
+  163 | 
+  164 |     // Phase gate: bail before mmap swap if shutting down
+  165 |     if (shutdown.load(.acquire)) {
+  166 |         scan_done.store(true, .release);
+  167 |         mcp_server.setScanState(.ready);
+  168 |         return;
+  169 |     }
+  170 | 
+  171 |     // Compact only the index written by this build. If building or persistence
+  172 |     // failed, an older on-disk index may describe another Git head; keep the
+  173 |     // ContentCache fallback instead of adopting stale candidate coverage.
+  174 |     var trigram_adopted = false;
+  175 |     if (trigram_written) {
+  176 |         if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
+  177 |             explorer.adoptTrigramIndex(.{ .mmap = loaded });
+  178 |             trigram_adopted = true;
+  179 |         } else if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
+  180 |             explorer.adoptTrigramIndex(.{ .heap = loaded });
+  181 |             trigram_adopted = true;
+  182 |         }
+  183 |     }
+  184 | 
+  185 |     scan_done.store(true, .release);
+  186 |     mcp_server.setScanState(.ready);
+  187 | 
+  188 |     if (shutdown.load(.acquire)) return;
+  189 | 
+  190 |     telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
+  191 | 
+  192 |     const snap_path_3 = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
+  193 |     defer if (snap_path_3) |p| allocator.free(p);
+  194 |     snapshot_mod.writeSnapshotDual(io, explorer, abs_root, snap_path_3 orelse "codedb.snapshot", allocator) catch |err| {
+  195 |         std.log.warn("could not auto-write snapshot: {}", .{err});
+  196 |     };
+  197 |     const file_count = explorer.outlines.count();
+  198 |     if (trigram_adopted and (file_count > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null)) {
+  199 |         explorer.releaseContents();
+  200 |         explorer.releaseSecondaryIndexes();
+  201 |     }
+  202 | }
+  src/commands.zig:38 (constant) scanBg  // const scanBg = background.scanBg;
+   38 | const scanBg = background.scanBg;

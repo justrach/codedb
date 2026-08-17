@@ -1,0 +1,75 @@
+// codedb MCP server — JSON-RPC 2.0 over stdio
+const cio = @import("cio.zig");
+//
+// Exposes codedb's exploration + edit engine as MCP tools.
+// Implements the JSON-RPC transport directly and adds roots support for workspace awareness.
+
+const std = @import("std");
+const testing = std.testing;
+const mcpj = @import("mcp_json.zig");
+pub const Root = struct {
+    uri: []u8,
+    name: []u8,
+};
+const Store = @import("store.zig").Store;
+const explore_mod = @import("explore.zig");
+const Explorer = explore_mod.Explorer;
+const reader_md = @import("reader_md.zig");
+const AgentRegistry = @import("agent.zig").AgentRegistry;
+const snapshot_json = @import("snapshot_json.zig");
+const watcher = @import("watcher.zig");
+const idx = @import("index.zig");
+const snapshot_mod = @import("snapshot.zig");
+const telemetry_mod = @import("telemetry.zig");
+const git_mod = @import("git.zig");
+const root_policy = @import("root_policy.zig");
+const release_info = @import("release_info.zig");
+pub const DeferredScan = struct {
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    store: *Store,
+    explorer: *Explorer,
+    scan_done: *std.atomic.Value(bool),
+    shutdown: *std.atomic.Value(bool),
+    telem: *telemetry_mod.Telemetry,
+    queue: *watcher.EventQueue,
+    startup_t0: i64,
+    triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    scan_thread: ?std.Thread = null,
+    resolved_root: []const u8 = "",
+    fallback_cwd: []const u8 = "",
+    triggerFn: *const fn (ctx: *DeferredScan, abs_root: []const u8) void,
+};
+
+/// Resolve which path to scan from (first indexable root, or cwd fallback) and
+/// fire the deferred scan exactly once. Returns true when this call actually
+/// fired the trigger; false if it had already fired or no usable path is
+/// available. Callers must filter denied paths out of `indexable_roots` first;
+/// the `fallback_cwd` path is policy-checked here.
+pub fn triggerDeferredScanWithFallback(
+    ds: *DeferredScan,
+    indexable_roots: []const Root,
+    fallback_cwd: []const u8,
+) bool {
+    var path: []const u8 = "";
+    if (indexable_roots.len > 0) {
+        const uri_raw = indexable_roots[0].uri;
+        path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+    }
+    if (path.len == 0 and fallback_cwd.len > 0 and root_policy.isIndexableRoot(fallback_cwd)) {
+        path = fallback_cwd;
+    }
+    if (path.len == 0) return false;
+    if (ds.triggered.swap(true, .acq_rel)) return false;
+    ds.triggerFn(ds, path);
+    return true;
+}
+
+// ── Project cache ────────────────────────────────────────────────────────────
+
+const SnapshotCache = struct {
+    const MAX_CACHED_BYTES = 16 * 1024 * 1024;
+
+    seq: u64 = std.math.maxInt(u64),
+    bytes: ?[]u8 = null,
+    mu: cio.Mutex = .{},

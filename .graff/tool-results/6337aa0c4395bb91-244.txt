@@ -1,0 +1,220 @@
+const std = @import("std");
+const cio = @import("cio.zig");
+const builtin = @import("builtin");
+const sty = @import("style.zig");
+const release_info = @import("release_info.zig");
+
+const github_repo = "justrach/codedb";
+const default_base_url = "https://codedb.codegraff.com";
+const user_agent = "codedb-update";
+
+const win = std.os.windows;
+const invalid_handle_value = win.INVALID_HANDLE_VALUE;
+const generic_read: u32 = 0x80000000;
+const generic_write: u32 = 0x40000000;
+const open_always: u32 = 4;
+
+extern "kernel32" fn CreateFileW(
+    lpFileName: [*:0]const u16,
+    dwDesiredAccess: u32,
+    dwShareMode: u32,
+    lpSecurityAttributes: ?*anyopaque,
+    dwCreationDisposition: u32,
+    dwFlagsAndAttributes: u32,
+    hTemplateFile: ?win.HANDLE,
+) callconv(.winapi) win.HANDLE;
+extern "kernel32" fn CloseHandle(hObject: win.HANDLE) callconv(.winapi) win.BOOL;
+
+pub const UpdateLock = if (builtin.os.tag == .windows) win.HANDLE else c_int;
+
+const Out = struct {
+    file: cio.File,
+    alloc: std.mem.Allocator,
+
+    fn p(self: Out, comptime fmt: []const u8, args: anytype) void {
+        const str = std.fmt.allocPrint(self.alloc, fmt, args) catch return;
+        defer self.alloc.free(str);
+        self.file.writeAll(str) catch {};
+    }
+};
+
+pub fn updateLockTryAcquire(executable_path: []const u8) ?UpdateLock {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const lock_path = cio.bufPrintZ(&buf, "{s}.update.lock", .{executable_path}) catch return null;
+
+    if (builtin.os.tag == .windows) {
+        const path_w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, lock_path) catch return null;
+        defer std.heap.page_allocator.free(path_w);
+        const handle = CreateFileW(path_w.ptr, generic_read | generic_write, 0, null, open_always, 0, null);
+        if (handle == invalid_handle_value) return null;
+        return handle;
+    }
+
+    const fd = std.c.open(lock_path.ptr, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(c_uint, 0o600));
+    if (fd < 0) return null;
+    if (std.c.flock(fd, std.c.LOCK.EX | std.c.LOCK.NB) != 0) {
+        _ = std.c.close(fd);
+        return null;
+    }
+    return fd;
+}
+
+pub fn updateLockRelease(lock: UpdateLock) void {
+    if (builtin.os.tag == .windows) {
+        _ = CloseHandle(lock);
+        return;
+    }
+    _ = std.c.flock(lock, std.c.LOCK.UN);
+    _ = std.c.close(lock);
+}
+
+const VersionSource = enum {
+    env,
+    github,
+    fallback,
+};
+
+const ResolvedVersion = struct {
+    value: []u8,
+    source: VersionSource,
+};
+
+const SupersededRelease = struct {
+    current: []const u8,
+    minimum_target: []const u8,
+};
+
+const superseded_releases = [_]SupersededRelease{
+    // v0.2.58181 was an accidental release-train typo. Pure SemVer ordering
+    // treats its patch component as newer than v0.2.5823, but operationally it
+    // belongs before v0.2.5823 and should update forward normally.
+    .{ .current = "0.2.58181", .minimum_target = "0.2.5823" },
+};
+
+pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+    const out = Out{ .file = stdout, .alloc = allocator };
+
+    const self_path = std.process.executablePathAlloc(io, allocator) catch |err| {
+        out.p("{s}✗{s} cannot locate current executable: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        std.process.exit(1);
+    };
+    defer allocator.free(self_path);
+
+    const update_lock = updateLockTryAcquire(self_path) orelse {
+        out.p("{s}✗{s} another codedb update is already running\n", .{ s.red, s.reset });
+        std.process.exit(1);
+    };
+    defer updateLockRelease(update_lock);
+
+    const resolved = resolveTargetVersion(allocator) catch |err| {
+        out.p("{s}✗{s} failed to resolve update target: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        std.process.exit(1);
+    };
+    defer allocator.free(resolved.value);
+
+    const version_order = compareVersionsForUpdate(release_info.semver, resolved.value) catch |err| {
+        out.p("{s}✗{s} invalid release version: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        std.process.exit(1);
+    };
+
+    switch (version_order) {
+        .eq => {
+            out.p("codedb {s} is already up to date\n", .{release_info.semver});
+            return;
+        },
+        .gt => {
+            out.p("{s}✗{s} refusing to replace codedb {s} with older release {s}\n", .{ s.red, s.reset, release_info.semver, resolved.value });
+            std.process.exit(1);
+        },
+        .lt => {},
+    }
+
+    const asset_name = assetNameForTarget(builtin.os.tag, builtin.cpu.arch) orelse {
+        out.p("{s}✗{s} self-update is unsupported on this platform\n", .{ s.red, s.reset });
+        std.process.exit(1);
+    };
+
+    out.p("updating codedb {s} -> {s}\n", .{ release_info.semver, resolved.value });
+    out.p("  source: {s}\n", .{switch (resolved.source) {
+        .env => "CODEDB_VERSION",
+        .github => "github releases",
+        .fallback => "codedb.codegraff.com/latest.json",
+    }});
+    out.p("  asset:  {s}\n", .{asset_name});
+
+    const manifest = fetchChecksumsManifest(allocator, resolved.value) catch |err| {
+        out.p("{s}✗{s} failed to download checksums for v{s}: {s}\n", .{ s.red, s.reset, resolved.value, @errorName(err) });
+        std.process.exit(1);
+    };
+    defer allocator.free(manifest);
+
+    const expected_hash = checksumForBinary(manifest, asset_name) orelse {
+        out.p("{s}✗{s} release v{s} is missing a checksum for {s}\n", .{ s.red, s.reset, resolved.value, asset_name });
+        std.process.exit(1);
+    };
+
+    downloadAndReplaceBinary(io, allocator, resolved.value, asset_name, self_path, expected_hash) catch |err| {
+        out.p("{s}✗{s} update failed: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        std.process.exit(1);
+    };
+
+    out.p("{s}✓{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });
+}
+
+pub fn assetNameForTarget(os_tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?[]const u8 {
+    return switch (os_tag) {
+        .macos => switch (arch) {
+            .aarch64 => "codedb-darwin-arm64",
+            .x86_64 => "codedb-darwin-x86_64",
+            else => null,
+        },
+        .linux => switch (arch) {
+            .aarch64 => "codedb-linux-arm64",
+            .x86_64 => "codedb-linux-x86_64",
+            else => null,
+        },
+        .windows => switch (arch) {
+            .x86_64 => "codedb-windows-x86_64.exe",
+            else => null,
+        },
+        else => null,
+    };
+}
+
+/// Policy for (re-)registering the Claude Code PreToolUse hook (#658),
+/// mirrored by install.sh: explicit opt-outs always win, and a receipt from a
+/// previous registration with no surviving settings entry means the user
+/// removed the hook — a removal that must stick across unattended updates.
+pub fn shouldRegisterHooks(env_no_hooks: bool, marker_exists: bool, receipt_exists: bool, entry_present: bool) bool {
+    if (env_no_hooks or marker_exists) return false;
+    if (receipt_exists and !entry_present) return false;
+    return true;
+}
+
+pub fn compareVersions(current: []const u8, target: []const u8) !std.math.Order {
+    var current_it = std.mem.splitScalar(u8, trimVersionPrefix(current), '.');
+    var target_it = std.mem.splitScalar(u8, trimVersionPrefix(target), '.');
+
+    while (true) {
+        const current_part = current_it.next();
+        const target_part = target_it.next();
+
+        if (current_part == null and target_part == null) return .eq;
+
+        const current_num = if (current_part) |part| try parseVersionPart(part) else 0;
+        const target_num = if (target_part) |part| try parseVersionPart(part) else 0;
+
+        if (current_num < target_num) return .lt;
+        if (current_num > target_num) return .gt;
+    }
+}
+
+pub fn compareVersionsForUpdate(current: []const u8, target: []const u8) !std.math.Order {
+    const order = try compareVersions(current, target);
+    if (order == .gt and try targetSupersedesCurrent(current, target)) return .lt;
+    return order;
+}
+
+pub fn targetSupersedesCurrent(current: []const u8, target: []const u8) !bool {
+    const normalized_current = trimVersionPrefix(current);
+    for (superseded_releases) |release| {

@@ -1,0 +1,76 @@
+
+## ⚡ Install
+
+### macOS and Linux
+
+```bash
+curl -fsSL https://codedb.codegraff.com/install.sh | bash
+```
+
+Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, and **Devin** — each written directly and additively into that tool's config (only when the tool is present). The installer prints the exact `codedb mcp` command it registered plus hook setup pointers for Codex and Claude Code.
+
+On Windows, run this command inside WSL only if you want the Linux binary inside WSL. For the native Windows binary, use PowerShell below.
+
+### Windows
+
+Run in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5838/install/install.ps1 | iex
+```
+
+Run the same command again to update codedb.
+
+### npm/npx on macOS and Linux
+
+```bash
+npx -y codedeebee mcp
+```
+
+Or install globally:
+
+```bash
+npm install -g codedeebee
+codedb mcp
+```
+
+The npm package is named [`codedeebee`](https://www.npmjs.com/package/codedeebee) (the bare `codedb` name is restricted on npm); it ships a thin launcher that downloads the matching native binary from GitHub Releases on `postinstall` and verifies the SHA256 checksum. The installed CLI is still called `codedb`.
+
+The launcher already knows how to fetch `codedb-windows-x86_64.exe`, but the currently published `codedeebee` predates that release asset, so `npx -y codedeebee mcp` does not work on Windows yet — it becomes available with the next published release. Use the PowerShell installer above until then.
+
+Useful for MCP clients (Claude Code, Cursor, opencode, Claude Desktop) that already use `npx`:
+
+```json
+{
+  "codedb": {
+    "type": "local",
+    "command": ["npx", "-y", "codedeebee"],
+    "args": ["mcp"],
+    "enabled": true
+  }
+}
+```
+
+### Updating or repairing an older install
+
+On macOS or Linux, if `codedb update` fails on an older release, rerun the installer:
+
+```bash
+curl -fsSL https://codedb.codegraff.com/install.sh | bash
+```
+
+This replaces the `codedb` binary with the latest GitHub Release and keeps your existing MCP registrations, config, caches, and snapshots. Use this path for any release whose built-in updater cannot fetch release checksums.
+
+Self-update works on native Windows from 0.2.5833 onward (`codedb update`). On older builds, rerun the PowerShell installer above to update or repair the binary.
+
+## Documentation
+
+- **[MCP setup](docs/mcp.md)** — per-client configurations (Claude Desktop, Cursor, VS Code, Claude Code, Codex CLI, Gemini CLI), root resolution, troubleshooting
+- **[Skill base & context files](docs/skills.md)** — `agents.md` / `CLAUDE.md` / `GEMINI.md`, `.codedbrc`, per-developer memory
+- **[CLI reference](docs/cli.md)** — every command, every flag
+- **[Architecture](docs/architecture.md)** — engine internals, index layout
+- **[Benchmarks](docs/benchmarks.md)** — micro-benchmarks + agentic-eval results vs codegraph, FTS5, lean-ctx
+- **[Raspberry Pi 4](docs/raspberry-pi.md)** — full-performance ARM64 setup, Cortex-A72 build, and on-device benchmark
+- **[Zig 0.17.0-dev migration guide](docs/zig-0.17-migration.md)** — repeatable zigup workflow and API change recipes
+
+| Platform | Binary | Signed |

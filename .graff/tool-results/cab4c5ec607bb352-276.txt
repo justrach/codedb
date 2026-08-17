@@ -1,0 +1,115 @@
+          - runner: ubuntu-24.04
+            zig_host: x86_64-linux
+            zig_sha256: b0d46ffc4587b9e8dd0b524ee5bc4da1e67f28bba55e7c534cec64af2f2d7a74
+            zig_target: x86_64-windows
+            asset_name: codedb-windows-x86_64.exe
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      CODEDB_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install pinned Zig
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq ".minimum_zig_version = \"${ZIG_VERSION}\"" build.zig.zon || {
+            echo "release tag does not require the workflow's pinned Zig ${ZIG_VERSION}" >&2
+            exit 1
+          }
+          archive="zig-${{ matrix.zig_host }}-${ZIG_VERSION}.tar.xz"
+          zig_dir="zig-${{ matrix.zig_host }}-${ZIG_VERSION}"
+          # Old dev builds are rotated off ziglang.org; fall back to the
+          # hexops community mirror (byte-identical official tarballs).
+          # The pinned sha256 below is verified regardless of source.
+          curl --fail --show-error --location --retry 3 \
+            "https://ziglang.org/builds/${archive}" -o zig.tar.xz || \
+          curl --fail --show-error --location --retry 3 \
+            "https://pkg.machengine.org/zig/${archive}" -o zig.tar.xz
+          echo "${{ matrix.zig_sha256 }}  zig.tar.xz" | shasum -a 256 --check
+          tar -xf zig.tar.xz
+          test "$("$PWD/${zig_dir}/zig" version)" = "$ZIG_VERSION"
+          echo "$PWD/${zig_dir}" >> "$GITHUB_PATH"
+
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE_P12 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/codedb-signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/codedb-signing.keychain-db"
+          export CERT_PATH
+          python3 - <<'PY'
+          import base64
+          import os
+          import pathlib
+          pathlib.Path(os.environ["CERT_PATH"]).write_bytes(
+              base64.b64decode(os.environ["APPLE_CERTIFICATE_P12"])
+          )
+          PY
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
+
+      - name: Build ${{ matrix.asset_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ runner.os }}" == "macOS" ]] &&
+             [[ "${{ matrix.zig_target }}" != "x86_64-macos" ]] &&
+             [[ -n "${CODEDB_CODESIGN_IDENTITY:-}" ]] &&
+             grep -q 'codesign-identity' build.zig; then
+            zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} -Dcodesign-identity="$CODEDB_CODESIGN_IDENTITY"
+          else
+            zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+          fi
+          binary=zig-out/bin/codedb
+          [[ -f "$binary" ]] || binary=zig-out/bin/codedb.exe
+          test -f "$binary"
+          cp "$binary" "${{ matrix.asset_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  publish:
+    name: upload-release-assets
+    runs-on: ubuntu-24.04
+    needs: build
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+
+      - name: Assemble release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          find dist -type f -name 'codedb-*' -exec cp {} assets/ \;
+          (
+            cd assets
+            sha256sum codedb-* | sort > checksums.sha256
+          )
+
+      - name: Upload assets to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" assets/codedb-* assets/checksums.sha256 --clobber --repo "$GITHUB_REPOSITORY"

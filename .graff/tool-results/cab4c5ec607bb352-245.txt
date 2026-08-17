@@ -1,0 +1,51 @@
+ M src/mcp.zig
+647:    codedb_callers,
+670:    \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+672:    \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+673:    \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Use after codedb_callers when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]}},
+681:    \\{"name":"codedb_bundle","description":"Run up to 20 codedb_* calls in one round-trip. Each op is either MCP-style {\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}} or inline {\"tool\":\"codedb_search\",\"query\":\"Agent\"} — both are accepted. Example: {\"ops\":[{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}},{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}}]}. Best for parallel outline/symbol/search; avoid bundling large codedb_read calls — responses are not size-capped. If a sub-op reports `received keys: []`, the wrapper field is misnamed: use `arguments` (MCP spec), not `args`.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","description":"Sub-tool calls to dispatch (max 20). Each item must have `tool` AND `arguments` (pass `{}` if the sub-tool takes none). Inline args alongside `tool` are still accepted as a fallback.","items":{"type":"object","properties":{"tool":{"type":"string","description":"codedb_* tool name to invoke (e.g. codedb_outline, codedb_symbol, codedb_search, codedb_word, codedb_callers, codedb_read, codedb_deps, codedb_tree, codedb_hot, codedb_status, codedb_changes). Required."},"arguments":{"type":"object","description":"Per-call args matching that tool's inputSchema. Field MUST be named `arguments` (MCP `tools/call` convention) — `args` is silently ignored. Pass `{}` only if the sub-tool takes no arguments. Required."}},"required":["tool","arguments"]}},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
+720:    "codedb_callers",
+739:    "codedb_callers",
+757:    .{ .name = "codedb_callers", .desc = "Call sites of a function." },
+804:    .{ .name = "max_results", .desc = "Max results (defaults: search 20, symbol 50, callers 30)" },
+829:    .{ .name = "codedb_callers", .desc = "Replaces grepping for usages: every call site of a symbol in one call — {path, line, snippet, enclosing scope}. Excludes the definition itself." },
+1019:// callers can decide whether to retry or proceed with what's available.
+1161:        std.mem.eql(u8, name, "codedb_callers") or
+1166:/// fishing expedition. Deliberately excludes read/outline/symbol/callers —
+1186:    return "\n\n[codedb] You have issued this exact call before — results are deterministic within a session, the answer is already above. Change strategy: use a structural tool (codedb_symbol for a definition, codedb_callers for usages, codedb_deps for impact), open the file directly with codedb_read, or refine the query.";
+1194:    return "\n\n[codedb] Repeated searches with tweaked queries are not converging. Stop guessing phrasing: locate the exact identifier with codedb_symbol, then codedb_callers / codedb_read around its definition — or pull everything at once with codedb_context.";
+1447:pub const mcp_instructions = "codedb is code intelligence, not your editor. Reach for structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline before reading a file, codedb_context to orient on a task. Use codedb_search only when the symbol name is unknown. Make edits with your native tools.";
+1814:        .codedb_callers => handleCallers(alloc, args, out, ctx.explorer),
+1855:        .codedb_search, .codedb_word, .codedb_callers, .codedb_callpath, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => true,
+1915:    // (which rendered as 'no results for: '). Mirrors codedb_callers.
+2045:// codedb_callers — fired in-context, exactly at the grep-style call.
+2100:// at — mcpGenerateGuidance already steers callers->callpath, edit->changes, hot.
+2127:/// WITHOUT a trailing newline — used by callers that append a scope suffix
+2546:    // "0 call sites" for symbols with many real callers. Over-fetch, and let
+2583:        // `test "…name…" {` declaration, or `init(); // then name() …`. (#682)
+2968:/// declarative schemas (protobuf), and unknown files — callers found
+3172:    var sec_callers: std.ArrayList(u8) = .empty;
+3340:        // from" so the agent doesn't need codedb_callers / outline / read
+3345:            const wc = cio.listWriter(&sec_callers, A);
+3347:            var any_callers = false;
+3394:                    if (!any_callers) {
+3396:                        any_callers = true;
+3527:    // (rich, falling back to lean), reader.md, callers, calls, snippets —
+3550:    const inc_callers = fits(budget, &spent, sec_callers.items.len);
+3565:    if (inc_callers) {
+3566:        out.appendSlice(alloc, sec_callers.items) catch {};
+3567:    } else if (sec_callers.items.len > 0) {
+3568:        w.print("\n[max_tokens: omitted Callers (~{d} tokens)]\n", .{sec_callers.items.len / 4}) catch {};
+3699:        // "file exists but no callers" — which is wrong. Append fuzzy
+3966:/// line listing the keys actually present in the op's args. Helps callers
+4000:/// Append up to 3 fuzzy-matched indexed paths so callers can recover from a
+4162:            .codedb_search, .codedb_word, .codedb_callers => 4 * 1024,
+4175:            // dropped after truncation, so callers can correlate by index
+4570:/// doesn't render natively — symbol / callers / deps / glob / ls / context and
+4576:/// callers/context).
+4589:    // the positional — `callers --max-results 3 foo` previously reported call
+4609:    } else if (std.mem.eql(u8, cmd, "callers")) {
+4610:        const name = pos orelse return cliUsage(alloc, out, "callers <name>");
+5312:    // and outgoing file count so callers can audit a multi-step pipeline at
+5980:            buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "next: codedb_callers name=<fn> for call sites, then edit with your native tool" ++ MCP_RESET) catch {};
+6001:    } else if (eql(tool_name, "codedb_callers")) {

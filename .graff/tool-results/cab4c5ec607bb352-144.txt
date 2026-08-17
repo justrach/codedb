@@ -1,0 +1,116 @@
+        .rust, .go_lang, .javascript, .typescript, .c, .cpp, .php, .hcl, .dart, .java, .kotlin, .swift, .svelte, .vue, .astro, .sql, .mlir, .tablegen, .rescript => true,
+        else => false,
+    };
+    if (slash_block and std.mem.startsWith(u8, line[start..], "/*")) {
+        return .{ .end = delimitedCommentEnd(line, start, "/*", "*/", language == .rust or language == .swift) };
+    }
+    const html_block = switch (language) {
+        .svelte, .vue, .astro => true,
+        else => false,
+    };
+    if (html_block and std.mem.startsWith(u8, line[start..], "<!--")) {
+        return .{ .end = delimitedCommentEnd(line, start, "<!--", "-->", false) };
+    }
+    return null;
+}
+
+fn delimitedCommentEnd(line: []const u8, start: usize, open: []const u8, close: []const u8, nested: bool) ?usize {
+    var depth: usize = 1;
+    var i = start + open.len;
+    while (i < line.len) {
+        if (nested and std.mem.startsWith(u8, line[i..], open)) {
+            depth += 1;
+            i += open.len;
+            continue;
+        }
+        if (std.mem.startsWith(u8, line[i..], close)) {
+            depth -= 1;
+            i += close.len;
+            if (depth == 0) return i;
+            continue;
+        }
+        i += 1;
+    }
+    return null;
+}
+
+fn isShellCommentStart(line: []const u8, hash: usize) bool {
+    if (hash == 0) return true;
+    const boundary = hash - 1;
+    const c = line[boundary];
+    if (c != ' ' and c != '\t' and std.mem.indexOfScalar(u8, "|&;()<>", c) == null) return false;
+
+    var slash_count: usize = 0;
+    var i = boundary;
+    while (i > 0 and line[i - 1] == '\\') {
+        slash_count += 1;
+        i -= 1;
+    }
+    return slash_count % 2 == 0;
+}
+
+/// Index of the quote closing the literal opened at `open`, or null when the
+/// literal never closes on this line.
+fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+    const quote = line[open];
+    var i = open + 1;
+    while (i < line.len) : (i += 1) {
+        if (line[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (line[i] == quote) return i;
+    }
+    return null;
+}
+
+/// Languages where the concept of a "call site" is meaningful. Excludes
+/// data formats (json, yaml), markup/styling (markdown, css, scss),
+/// declarative schemas (protobuf), and unknown files — callers found
+/// inside these are mentions in prose or config, not real invocations.
+fn langHasCallSites(lang: explore_mod.Language) bool {
+    return switch (lang) {
+        .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
+        else => true,
+    };
+}
+
+// ── codedb_context ──────────────────────────────────────────────────────────
+// Task-shaped composer. Takes a natural-language task, extracts candidate
+// identifiers (camelCase / snake_case / "quoted strings"), and returns ONE
+// composite text block: keywords + symbol defs + ranked files + top sites.
+// Replaces 3-5 separate search/word/symbol calls; targets parity with
+// codegraph_context on per-task token economy.
+
+fn isContextIdentStart(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+}
+fn isContextIdentCont(c: u8) bool {
+    return isContextIdentStart(c) or (c >= '0' and c <= '9');
+}
+fn looksLikeContextIdentifier(tok: []const u8) bool {
+    // Filter out sentence-leading English words ("Find", "React", "Want")
+    // that incidentally start with a capital, while keeping real identifiers.
+    // Rules:
+    //   - snake_case (any underscore)              → always pass
+    //   - all-caps acronym, 3-8 chars (API, TODO)  → pass
+    //   - camelCase / PascalCase with an internal
+    //     lower→upper transition (getNextLanes)    → pass
+    //   - everything else                          → reject
+    if (tok.len < 3) return false;
+    if (std.mem.indexOfScalar(u8, tok, '_') != null) return true;
+    var all_upper = true;
+    for (tok) |c| {
+        if (c < 'A' or c > 'Z') {
+            all_upper = false;
+            break;
+        }
+    }
+    if (all_upper) return tok.len <= 8;
+    var i: usize = 1;
+    while (i < tok.len) : (i += 1) {
+        const prev_lower = tok[i - 1] >= 'a' and tok[i - 1] <= 'z';
+        const cur_upper = tok[i] >= 'A' and tok[i] <= 'Z';
+        if (prev_lower and cur_upper) return true;
+    }
+    return false;

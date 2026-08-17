@@ -1,0 +1,132 @@
+    30	    reset_huge: bool = false,
+    31	};
+    32	
+    33	const cases = [_]Case{
+    34	    .{ .tool = .codedb_search, .name = "edge_search_common", .args_json = "{\"query\":\"hotword\",\"max_results\":20}", .iterations = 25, .bust_search_cache = true },
+    35	    .{ .tool = .codedb_search, .name = "edge_search_offset", .args_json = "{\"query\":\"hotword\",\"max_results\":20,\"offset\":400}", .iterations = 25, .bust_search_cache = true },
+    36	    .{ .tool = .codedb_search, .name = "edge_search_scope", .args_json = "{\"query\":\"hotword\",\"max_results\":20,\"scope\":true}", .iterations = 25, .bust_search_cache = true },
+    37	    .{ .tool = .codedb_search, .name = "edge_search_glob", .args_json = "{\"query\":\"hotword\",\"max_results\":20,\"path_glob\":\"many/**/*.zig\"}", .iterations = 25, .bust_search_cache = true },
+    38	    .{ .tool = .codedb_search, .name = "edge_search_regex", .args_json = "{\"query\":\"edgeHandler[A-Za-z]+_39_7[0-4]\",\"regex\":true,\"max_results\":20}", .iterations = 15, .bust_search_cache = true },
+    39	    .{ .tool = .codedb_search, .name = "edge_search_ranked", .args_json = "{\"query\":\"shared helper handler\",\"max_results\":20}", .iterations = 25, .bust_search_cache = true },
+    40	    .{ .tool = .codedb_search, .name = "edge_search_longline", .args_json = "{\"query\":\"fillpayload\",\"max_results\":20}", .iterations = 15, .bust_search_cache = true },
+    41	    .{ .tool = .codedb_search, .name = "edge_search_miss", .args_json = "{\"query\":\"zzqqxxyynotfound\",\"max_results\":20}", .iterations = 25, .bust_search_cache = true },
+    42	    .{ .tool = .codedb_symbol, .name = "edge_symbol_exact", .args_json = "{\"name\":\"edgeHandlerAlphaBeta_20_50\"}", .iterations = 50 },
+    43	    .{ .tool = .codedb_symbol, .name = "edge_symbol_fuzzy", .args_json = "{\"name\":\"edgeHandlerAlphaBata_20_50\",\"fuzzy\":true}", .iterations = 25 },
+    44	    .{ .tool = .codedb_symbol, .name = "edge_symbol_glob", .args_json = "{\"pattern\":\"edgeHandler*_2?_5*\"}", .iterations = 25 },
+    45	    .{ .tool = .codedb_callers, .name = "edge_callers_hot", .args_json = "{\"name\":\"sharedHelper\",\"max_results\":50}", .iterations = 15 },
+    46	    .{ .tool = .codedb_callpath, .name = "edge_callpath_deep", .args_json = "{\"from\":\"edgeHandlerAlphaBeta_39_74\",\"to\":\"edgeHandlerAlphaBeta_39_0\",\"max_hops\":80}", .iterations = 10 },
+    47	    .{ .tool = .codedb_outline, .name = "edge_outline_huge", .args_json = "{\"path\":\"huge.zig\"}", .iterations = 30 },
+    48	    .{ .tool = .codedb_read, .name = "edge_read_deep", .args_json = "{\"path\":\"huge.zig\",\"line_start\":40000,\"line_end\":40040}", .iterations = 30 },
+    49	    .{ .tool = .codedb_tree, .name = "edge_tree_many", .args_json = "{}", .iterations = 30 },
+    50	    .{ .tool = .codedb_ls, .name = "edge_ls_dir", .args_json = "{\"path\":\"many/d39\"}", .iterations = 50 },
+    51	    .{ .tool = .codedb_glob, .name = "edge_glob_many", .args_json = "{\"pattern\":\"many/**/*.zig\",\"max_results\":200}", .iterations = 25 },
+    52	    .{ .tool = .codedb_find, .name = "edge_find_fuzzy", .args_json = "{\"query\":\"edge_fle_39_74\"}", .iterations = 30 },
+    53	    .{ .tool = .codedb_word, .name = "edge_word_hot", .args_json = "{\"word\":\"hotword\"}", .iterations = 25 },
+    54	    .{ .tool = .codedb_deps, .name = "edge_deps_trans", .args_json = "{\"path\":\"many/d39/edge_file_39_74.zig\",\"transitive\":true}", .iterations = 25 },
+    55	};
+    56	
+    57	pub fn main(init: std.process.Init.Minimal) !void {
+    58	    cio.setProcessArgs(cio.bootstrapArgs(init.args));
+    59	    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    60	    defer _ = gpa.deinit();
+   120	    }
+   121	
+   122	    var results: std.ArrayList(CaseResult) = .empty;
+   123	    defer results.deinit(allocator);
+   124	
+   125	    for (cases, 0..) |case, idx| {
+   126	        if (filter) |f| {
+   127	            if (std.mem.indexOf(u8, case.name, f) == null) continue;
+   128	        }
+   129	        const args = &args_store[idx].value.object;
+   130	        const r = try runCase(io, allocator, &bench_ctx, &store, &explorer, &agents, case, args, &telem_off, huge_content);
+   131	        try results.append(allocator, .{
+   132	            .tool = case.name,
+   133	            .avg_latency_ns = r.avg_latency_ns,
+   134	            .min_latency_ns = r.min_latency_ns,
+   135	            .response_bytes = r.response_bytes,
+   136	            .ops_per_sec = opsPerSec(r.avg_latency_ns),
+   137	        });
+   138	    }
+   139	
+   140	    const corpus = summarizeCorpus(&explorer);
+   141	    try writeHumanSummary(allocator, cio.File.stderr(), corpus.files, corpus.bytes, scan_ns, results.items);
+   142	    if (emit_json) {
+   143	        try writeJsonSummary(allocator, cio.File.stdout(), repo_root, tmp_root, corpus.files, corpus.bytes, scan_ns, results.items);
+   144	    }
+   145	}
+   146	
+   147	var bust_flip: bool = false;
+   148	
+   149	fn bustSearchCache(explorer: *Explorer) !void {
+   150	    bust_flip = !bust_flip;
+   151	    const content = if (bust_flip) "pub const bust_marker = 1;\n" else "pub const bust_marker = 2;\n";
+   152	    try explorer.indexFile("bustfile.zig", content);
+   153	}
+   154	
+   155	fn resetHuge(explorer: *Explorer, store: *Store, huge_content: []const u8) !void {
+   156	    try explorer.indexFile("huge.zig", huge_content);
+   157	    _ = try store.recordSnapshot("huge.zig", huge_content.len, std.hash.Wyhash.hash(0, huge_content));
+   158	}
+   159	
+   160	fn runCase(
+   161	    io: std.Io,
+   162	    allocator: std.mem.Allocator,
+   163	    bench_ctx: *mcp.BenchContext,
+   164	    store: *Store,
+   165	    explorer: *Explorer,
+   166	    agents: *AgentRegistry,
+   167	    case: Case,
+   168	    args: *const std.json.ObjectMap,
+   169	    telem: *telemetry.Telemetry,
+   170	    huge_content: []const u8,
+   171	) !struct { avg_latency_ns: u64, min_latency_ns: u64, response_bytes: usize } {
+   172	    var total_ns: u64 = 0;
+   173	    var min_ns: u64 = std.math.maxInt(u64);
+   174	    var response_bytes: usize = 0;
+   175	
+   176	    for (0..case.warmup) |_| {
+   177	        if (case.bust_search_cache) try bustSearchCache(explorer);
+   178	        if (case.reset_huge) try resetHuge(explorer, store, huge_content);
+   179	        _ = bench_ctx.runToolCall(io, allocator, case.name, case.tool, args, store, explorer, agents, telem);
+   180	    }
+   181	
+   182	    if (cio.posixGetenv("CODEDB_EDGE_DUMP") != null) {
+   183	        var dump_out: std.ArrayList(u8) = .empty;
+   184	        defer dump_out.deinit(allocator);
+   185	        bench_ctx.runDispatch(io, allocator, case.tool, args, &dump_out, store, explorer, agents);
+   186	        cio.File.stderr().writeAll("=== DUMP ") catch {};
+   187	        cio.File.stderr().writeAll(case.name) catch {};
+   188	        cio.File.stderr().writeAll(" ===\n") catch {};
+   189	        cio.File.stderr().writeAll(dump_out.items) catch {};
+   190	        cio.File.stderr().writeAll("\n=== END ===\n") catch {};
+   191	    }
+   192	
+   193	    for (0..case.iterations) |_| {
+   194	        if (case.bust_search_cache) try bustSearchCache(explorer);
+   195	        if (case.reset_huge) try resetHuge(explorer, store, huge_content);
+   196	
+   197	        const r = bench_ctx.runToolCall(io, allocator, case.name, case.tool, args, store, explorer, agents, telem);
+   198	        total_ns +|= r.dispatch_ns;
+   199	        if (r.dispatch_ns < min_ns) min_ns = r.dispatch_ns;
+   200	        response_bytes = r.response_bytes;
+   201	    }
+   202	
+   203	    return .{
+   204	        .avg_latency_ns = @intCast(@divTrunc(total_ns, case.iterations)),
+   205	        .min_latency_ns = min_ns,
+   206	        .response_bytes = response_bytes,
+   207	    };
+   208	}
+   209	
+   210	fn genCorpus(io: std.Io, allocator: std.mem.Allocator, tmp_root: []const u8) ![]const u8 {
+   211	    var buf: std.ArrayList(u8) = .empty;
+   212	    defer buf.deinit(allocator);
+   213	    const w = cio.listWriter(&buf, allocator);
+   214	
+   215	    // huge.zig: ~1.8MB, ~47k lines, 3600 functions. Above the 1MB trigram cap,
+   216	    // below the 2MB index cap — lands in the skip-trigram full-scan set.
+   217	    try buf.ensureTotalCapacity(allocator, 2_000_000);
+   218	    for (0..HUGE_FN_COUNT) |i| {
+   219	        try w.print("pub fn edgeHugeFn_{d:0>4}(x: usize) usize {{\n", .{i});
+   220	        try w.writeAll("    var acc: usize = x;\n");

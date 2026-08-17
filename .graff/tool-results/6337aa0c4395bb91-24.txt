@@ -1,0 +1,136 @@
+    const root = ctx.root;
+    const store = ctx.store;
+    const explorer = ctx.explorer;
+    const port: u16 = blk: {
+        const raw = cio.posixGetenv("CODEDB_PORT") orelse break :blk 6767;
+        break :blk std.fmt.parseInt(u16, raw, 10) catch 6767;
+    };
+    var agents = AgentRegistry.init(allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var shutdown = std.atomic.Value(bool).init(false);
+    defer shutdown.store(true, .release);
+    var scan_already_done = std.atomic.Value(bool).init(true);
+
+    const queue = try allocator.create(watcher.EventQueue);
+    defer allocator.destroy(queue);
+    queue.* = watcher.EventQueue{};
+    const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_already_done });
+    defer watch_thread.join();
+
+    const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
+    defer reap_thread.join();
+
+    std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
+
+    // Thin-CLI proxy listener: lets `codedb <root> <query>` invocations
+    // reuse this warm explorer/store over a per-project Unix socket instead
+    // of paying a cold snapshot reload. Detached so it never blocks serve().
+    // serve has no idle timeout: it passes throwaway activity/shutdown
+    // atomics that nobody watches (a bind failure just disables the proxy).
+    // These outlive the detached thread because server.serve() below blocks
+    // on this same stack frame for the whole process lifetime.
+    var cli_activity = std.atomic.Value(i64).init(cio.milliTimestamp());
+    var cli_listener_dead = std.atomic.Value(bool).init(false);
+    if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, data_dir, &cli_activity, &cli_listener_dead, true })) |cli_t| {
+        cli_t.detach();
+    } else |err| {
+        std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
+    }
+    spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
+    try server.serve(io, allocator, store, &agents, explorer, queue, port);
+}
+
+pub fn runMcp(ctx: *RunCtx) !void {
+    const io = ctx.io;
+    const allocator = ctx.allocator;
+    const abs_root = ctx.abs_root;
+    const data_dir = ctx.data_dir;
+    const root = ctx.root;
+    const store = ctx.store;
+    const explorer = ctx.explorer;
+    const cfg = ctx.cfg;
+    const no_telemetry = ctx.no_telemetry;
+    const mcp_deferred_root = ctx.mcp_deferred_root;
+    // Background auto-update check (no-op when CODEDB_NO_AUTO_UPDATE is set
+    // or when the last check was within the last 24h). Detached thread, so
+    // this doesn't block server startup.
+    update_mod.maybeAutoUpdate(io, allocator);
+
+    var agents = AgentRegistry.init(allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    const root_from_cwd = mcp_deferred_root;
+
+    saveProjectInfo(io, allocator, data_dir, abs_root) catch {};
+
+    // Set up query tracking WAL
+    const query_log = std.fmt.allocPrint(allocator, "{s}/queries.log", .{data_dir}) catch null;
+    if (query_log) |ql| mcp_server.setQueryLogPath(ql);
+
+    const startup_t0 = cio.milliTimestamp();
+    // --no-telemetry is stripped globally above (#528 item 12); honor it
+    // here alongside CODEDB_NO_TELEMETRY (checked inside Telemetry.init).
+    const telemetry_disabled = no_telemetry;
+
+    var telem = telemetry.Telemetry.init(io, data_dir, allocator, telemetry_disabled);
+    defer telem.deinit();
+    telem.startSyncThread();
+    telem.recordSessionStart();
+
+    var shutdown = std.atomic.Value(bool).init(false);
+
+    const queue = try allocator.create(watcher.EventQueue);
+    defer allocator.destroy(queue);
+    queue.* = watcher.EventQueue{};
+
+    var scan_thread: ?std.Thread = null;
+    var watch_thread: std.Thread = undefined;
+
+    var deferred: mcp_server.DeferredScan = undefined;
+    var maybe_deferred: ?*mcp_server.DeferredScan = null;
+
+    if (root_from_cwd) {
+        deferred = .{
+            .io = io,
+            .allocator = allocator,
+            .store = store,
+            .explorer = explorer,
+            .scan_done = try allocator.create(std.atomic.Value(bool)),
+            .shutdown = &shutdown,
+            .telem = &telem,
+            .queue = queue,
+            .startup_t0 = startup_t0,
+            .fallback_cwd = abs_root,
+            .triggerFn = triggerScanFromRoots,
+        };
+        deferred.scan_done.* = std.atomic.Value(bool).init(false);
+        maybe_deferred = &deferred;
+        mcp_server.setScanState(.loading_snapshot);
+        watch_thread = try std.Thread.spawn(.{}, watcherDeferredLoop, .{&deferred});
+    } else {
+        const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
+        mcp_server.setScanState(.loading_snapshot);
+        const snapshot_loaded = loadBestSnapshot(io, explorer, store, abs_root, data_dir, git_head, allocator);
+        var scan_done = std.atomic.Value(bool).init(snapshot_loaded);
+        if (!snapshot_loaded) {
+            mcp_server.setScanState(.walking);
+            scan_thread = try std.Thread.spawn(.{}, scanBg, .{ io, store, explorer, root, allocator, &scan_done, &shutdown, data_dir, abs_root, &telem, startup_t0 });
+        } else {
+            const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - startup_t0, 0));
+            loadTrigramFromDiskIfPresent(io, explorer, data_dir, allocator);
+            telem.recordCodebaseStats(explorer, startup_time_ms);
+            compactMcpReadyMemory(io, explorer, data_dir, git_head, allocator);
+            mcp_server.setScanState(.ready);
+        }
+        watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_done });
+    }
+
+    const idle_thread = try std.Thread.spawn(.{}, idleWatchdog, .{&shutdown});
+
+    std.log.info("codedb mcp: root={s} files={d} data={s} scan={s}", .{ abs_root, store.currentSeq(), data_dir, mcp_server.getScanState().name() });
+
+    // Thin-CLI proxy listener (same as the serve branch): serve read-only
+    // query commands from this warm explorer/store over a per-project Unix

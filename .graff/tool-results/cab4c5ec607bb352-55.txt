@@ -1,0 +1,100 @@
+  2686	/// The slice of `line` before its first line-comment marker outside string
+  2687	/// literals, per `language` — the part of the line that can actually contain a
+  2688	/// call. Lines with no marker, and languages without a line-comment syntax
+  2689	/// (OCaml's `(* *)` is block-only), come back whole. (#682)
+  2690	///
+  2691	/// Same line-local scanning discipline as `hasWholeWordMatchOutsideStrings`:
+  2692	/// quoted spans are skipped (so `"https://…"` never truncates), an unclosed
+  2693	/// quote is ordinary code. Mid-line block-comment openers are left alone — a
+  2694	/// false negative re-admits a mention; truncating at `/*` could drop the real
+  2695	/// call in `foo(); /* … */ bar()`.
+  2696	fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
+  2697	    const markers: []const []const u8 = switch (language) {
+  2698	        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
+  2699	        .python, .ruby, .r, .shell => &.{"#"},
+  2700	        .hcl => &.{ "#", "//" },
+  2701	        .sql => &.{"--"},
+  2702	        .fortran => &.{"!"},
+  2703	        .llvm_ir => &.{";"},
+  2704	        else => return line,
+  2705	    };
+  2706	    var i: usize = 0;
+  2707	    while (i < line.len) {
+  2708	        if (line[i] == '"' or line[i] == '\'') {
+  2709	            if (stringLiteralEnd(line, i)) |end| {
+  2710	                i = end + 1;
+  2711	                continue;
+  2712	            }
+  2713	        }
+  2714	        for (markers) |m| {
+  2715	            if (std.mem.startsWith(u8, line[i..], m)) {
+  2716	                // Shell: `#` only opens a comment at the start of a word —
+  2717	                // `${#var}` and `$#` are live syntax, not comments.
+  2718	                if (language == .shell and i != 0 and line[i - 1] != ' ' and line[i - 1] != '\t') break;
+  2719	                return line[0..i];
+  2720	            }
+  2721	        }
+  2722	        i += 1;
+  2723	    }
+  2724	    return line;
+  2725	}
+  2726	
+  2727	/// Index of the quote closing the literal opened at `open`, or null when the
+  2728	/// literal never closes on this line.
+  2729	fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+  2730	    const quote = line[open];
+  2731	    var i = open + 1;
+  2732	    while (i < line.len) : (i += 1) {
+  2733	        if (line[i] == '\\') {
+  2734	            i += 1;
+  2735	            continue;
+  2736	        }
+  2737	        if (line[i] == quote) return i;
+  2738	    }
+  2739	    return null;
+  2740	}
+  2741	
+  2742	/// Languages where the concept of a "call site" is meaningful. Excludes
+  2743	/// data formats (json, yaml), markup/styling (markdown, css, scss),
+  2744	/// declarative schemas (protobuf), and unknown files — callers found
+  2745	/// inside these are mentions in prose or config, not real invocations.
+  2746	fn langHasCallSites(lang: explore_mod.Language) bool {
+  2747	    return switch (lang) {
+  2748	        .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
+  2749	        else => true,
+  2750	    };
+  2751	}
+  2752	
+  2753	// ── codedb_context ──────────────────────────────────────────────────────────
+  2754	// Task-shaped composer. Takes a natural-language task, extracts candidate
+  2755	// identifiers (camelCase / snake_case / "quoted strings"), and returns ONE
+  2756	// composite text block: keywords + symbol defs + ranked files + top sites.
+  2757	// Replaces 3-5 separate search/word/symbol calls; targets parity with
+  2758	// codegraph_context on per-task token economy.
+  2759	
+  2760	fn isContextIdentStart(c: u8) bool {
+  2761	    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+  2762	}
+  2763	fn isContextIdentCont(c: u8) bool {
+  2764	    return isContextIdentStart(c) or (c >= '0' and c <= '9');
+  2765	}
+  2766	fn looksLikeContextIdentifier(tok: []const u8) bool {
+  2767	    // Filter out sentence-leading English words ("Find", "React", "Want")
+  2768	    // that incidentally start with a capital, while keeping real identifiers.
+  2769	    // Rules:
+  2770	    //   - snake_case (any underscore)              → always pass
+  2771	    //   - all-caps acronym, 3-8 chars (API, TODO)  → pass
+  2772	    //   - camelCase / PascalCase with an internal
+  2773	    //     lower→upper transition (getNextLanes)    → pass
+  2774	    //   - everything else                          → reject
+  2775	    if (tok.len < 3) return false;
+  2776	    if (std.mem.indexOfScalar(u8, tok, '_') != null) return true;
+  2777	    var all_upper = true;
+  2778	    for (tok) |c| {
+  2779	        if (c < 'A' or c > 'Z') {
+  2780	            all_upper = false;
+  2781	            break;
+  2782	        }
+  2783	    }
+  2784	    if (all_upper) return tok.len <= 8;
+  2785	    var i: usize = 1;

@@ -1,0 +1,39 @@
+3841-    try testing.expect(std.mem.indexOf(u8, out.items, "attribute.php:2") != null);
+3842-}
+3843-
+3844:test "issue-682: codedb_callers keeps calls after markers inside literals and block comments" {
+3845-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+3846-    defer arena.deinit();
+3847-    var out: std.ArrayList(u8) = .empty;
+3848-    defer out.deinit(testing.allocator);
+3849-
+3850-    try renderCallersFixture(arena.allocator(), &.{
+3851-        .{ "url.go", "func callerA() {\n    url := `https://example.test`; renderX()\n}\n" },
+3852-        .{ "url.js", "function callerB() {\n    const url = `https://example.test`; renderX();\n}\n" },
+3853-        .{ "block.c", "void callerC(void) {\n    init(); /* see https://example.test */ renderX();\n}\n" },
+3854-        .{ "raw.rs", "fn caller_d() {\n    let text = r#\"say \"https://example.test\"\"#; renderX();\n}\n" },
+3855-    }, "renderX", &out);
+3856-
+3857-    try testing.expect(std.mem.indexOf(u8, out.items, "4 call sites for 'renderX'") != null);
+3858-    try testing.expect(std.mem.indexOf(u8, out.items, "url.go:2") != null);
+3859-    try testing.expect(std.mem.indexOf(u8, out.items, "url.js:2") != null);
+3860-    try testing.expect(std.mem.indexOf(u8, out.items, "block.c:2") != null);
+3861-    try testing.expect(std.mem.indexOf(u8, out.items, "raw.rs:2") != null);
+3862-}
+3863-
+3864-test "issue-682: codedb_callers recognizes shell comments after operators" {
+3865-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+3866-    defer arena.deinit();
+3867-    var out: std.ArrayList(u8) = .empty;
+3868-    defer out.deinit(testing.allocator);
+3869-
+3870-    try renderCallersFixture(arena.allocator(), &.{
+3871-        .{ "trail.sh", "init;# renderX() is documented here\n" },
+3872-        .{ "call.sh", "items=abc\nprintf '%s' \"${#items}\"; renderX\n" },
+3873-    }, "renderX", &out);
+3874-
+3875-    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+3876-    try testing.expect(std.mem.indexOf(u8, out.items, "trail.sh") == null);
+3877-    try testing.expect(std.mem.indexOf(u8, out.items, "call.sh:2") != null);
+3878-}
+3879-

@@ -1,0 +1,51 @@
+✓ 50 results for "curl"  ⚡ 323.0µs
+  src/codex_setup.zig:687          out.p("            register it with {s}curl -fsSL https://codedb.codegraff.com/install.sh | bash{s}\n", .{ s.cyan, s.reset });
+  src/nuke.zig:93      out.p("\n  to reinstall: {s}curl -fsSL https://codedb.codegraff.com/install.sh | bash{s}\n", .{ s.cyan, s.reset });
+  src/telemetry.zig:294              .argv = &.{ "curl", "-sf", "-X", "POST", CLOUD_URL, "-H", "Content-Type: application/json", "--data-binary", data_arg, "--max-time", "5" },
+  src/update.zig:235          .argv = &.{ "curl", "-fsSL", "-A", user_agent, url },
+  src/update.zig:242          return error.CurlFailed;
+  src/update.zig:321          .argv = &.{ "curl", "-fsSL", "-A", user_agent, url, "-o", dest_path },
+  src/test_parser.zig:1655          \\    curl_easy_perform(curl);
+  website/app/update.zig:210      \\    <div class="install-cmd">curl -fsSL https://codedb.codegraff.com/install.sh | bash</div>
+  website/app/v0257.zig:257      \\    <div class="install-cmd" style="background:var(--dark3);border-color:rgba(255,255,255,0.08);color:rgba(255,255,255,0.7);">curl -fsSL https://codedb.codegraff.com/install.sh | bash</div>
+  website/app/v02572.zig:258      \\    <div class="install-cmd" style="background:var(--dark3);border-color:rgba(255,255,255,0.08);color:rgba(255,255,255,0.7);">curl -fsSL https://codedb.codegraff.com/install.sh | bash</div>
+  website/app/index.zig:168      \\    <span class="prompt">$</span> curl -fsSL https://codedb.codegraff.com/install.sh | bash
+  website/app/index.zig:354      \\      <span class="prompt">$</span> curl -fsSL https://codedb.codegraff.com/install.sh | bash
+  .github/workflows/bench-regression.yml:37            curl --fail --show-error --location --retry 3 \
+  .github/workflows/bench-regression.yml:39            curl --fail --show-error --location --retry 3 \
+  .github/workflows/bench-regression.yml:47            curl --fail --show-error --location --retry 3 \
+  bench/swe-lite/validators/run_validation.sh:26  api_post() { curl -s -X POST "$BASE$1" -H "X-API-Key: $API_KEY" -H "Content-Type: ${3:-application/json}" -d "$2"; }
+  bench/swe-lite/validators/run_validation.sh:27  api_del()  { curl -s -X DELETE "$BASE$1" -H "X-API-Key: $API_KEY"; }
+  bench/swe-lite/validators/run_validation.sh:36      curl -s -X POST "$BASE/v1/boxes/$box/exec" -H "X-API-Key: $API_KEY" -H "Content-Type: text/plain" -d "$cmd" --max-time 600
+  bench/swe-lite/validators/run_validation.sh:41      curl -s -X PUT "$BASE/v1/boxes/$box/files" -H "X-API-Key: $API_KEY" -H "X-File-Path: $path" --data-binary "@$src" > /dev/null
+  docs/cli.md:13  | Debuggable | Opaque stdio | curl, jq, logs |
+  docs/cli.md:21  codedb-cli <command>             # bash + curl + jq
+  docs/cli.md:109  The CLI overhead is ~7ms (curl + jq) on top of the raw HTTP query time (~8ms).
+  docs/cli.md:113  - `curl` and `jq` (both standard on most systems)
+  install/install.sh:14    version="$(curl -fsSL -A 'codedb-installer' \
+  install/install.sh:21      version="$(curl -fsSL -A 'codedb-installer' "$BASE_URL/latest.json" 2>/dev/null \
+  install/install.sh:554    if curl -fsSL -A 'codedb-installer' "$url" -o "$tmp" 2>/dev/null; then
+  install/install.sh:557      checksum_text="$(curl -fsSL -A 'codedb-installer' "$checksum_url" 2>/dev/null || true)"
+  website/app/install_script.sh:14    version="$(curl -fsSL -A 'codedb-installer' \
+  website/app/install_script.sh:21      version="$(curl -fsSL -A 'codedb-installer' "$BASE_URL/latest.json" 2>/dev/null \
+  website/app/install_script.sh:554    if curl -fsSL -A 'codedb-installer' "$url" -o "$tmp" 2>/dev/null; then
+  website/app/install_script.sh:557      checksum_text="$(curl -fsSL -A 'codedb-installer' "$checksum_url" 2>/dev/null || true)"
+  src/test_parser.zig:1653          \\    fprintf(stderr, "curl_easy_perform() failed: %s\n",
+  src/test_parser.zig:1654          \\            curl_easy_strerror(res));
+  src/test_parser.zig:1666                  std.mem.eql(u8, sym.name, "curl_easy_perform") or
+  src/test_parser.zig:1667                  std.mem.eql(u8, sym.name, "curl_easy_strerror") or
+  scripts/codedb-cli:10  _ping() { curl -sf "$BASE/health" >/dev/null 2>&1; }
+  scripts/codedb-cli:49  _get() { curl -sf "$BASE$1"; }
+  website/app/quickstart.zig:25              \\curl -fsSL https://codedb.codegraff.com/install.sh | bash
+  website/app/quickstart.zig:63              \\curl localhost:7719/tree
+  website/app/quickstart.zig:69              \\curl "localhost:7719/outline?path=src/store.zig"
+  website/app/quickstart.zig:75              \\curl "localhost:7719/symbol?name=AgentRegistry"
+  website/app/quickstart.zig:79              \\curl "localhost:7719/search?q=handleAuth&max=10"
+  website/app/quickstart.zig:82              \\curl "localhost:7719/changes?since=42"
+  README.md:76  curl -fsSL https://codedb.codegraff.com/install.sh | bash
+  README.md:128  curl -fsSL https://codedb.codegraff.com/install.sh | bash
+  README.md:269  curl localhost:7719/tree
+  README.md:275  curl "localhost:7719/outline?path=src/store.zig"
+  README.md:281  curl "localhost:7719/symbol?name=AgentRegistry"
+  README.md:285  curl "localhost:7719/search?q=handleAuth&max=10"
+  README.md:288  curl "localhost:7719/changes?since=42"

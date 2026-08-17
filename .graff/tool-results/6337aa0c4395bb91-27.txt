@@ -1,0 +1,326 @@
+        try branch_props.put(a, "tool", .{ .object = tool_const });
+        try branch_props.put(a, "arguments", sub_schema);
+
+        var branch: std.json.ObjectMap = .{};
+        try branch.put(a, "properties", .{ .object = branch_props });
+
+        try one_of.append(.{ .object = branch });
+    }
+
+    try bundle_items.object.put(a, "oneOf", .{ .array = one_of });
+    const augmented_in_arena = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
+    return try alloc.dupe(u8, augmented_in_arena);
+}
+
+// ── MCP Server ──────────────────────────────────────────────────────────────
+
+/// Monotonic timestamp of last MCP request, used for activity accounting.
+pub var last_activity: std.atomic.Value(i64) = std.atomic.Value(i64).init(0);
+
+/// How often the watchdog checks whether the MCP client disconnected.
+pub const dead_client_poll_ms: u64 = 1000;
+
+pub var stdout_broken: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+
+// ── Serve-first scan state (issue #207) ─────────────────────────────────────
+//
+// MCP serves immediately on startup; the file walk + index build runs in a
+// background thread. Tools that query the explorer during this window may see
+// partial results, so we expose the current scan phase via codedb_status so
+// callers can decide whether to retry or proceed with what's available.
+
+pub const ScanState = enum(u8) {
+    loading_snapshot = 0,
+    walking = 1,
+    indexing = 2,
+    ready = 3,
+
+    pub fn name(self: ScanState) []const u8 {
+        return switch (self) {
+            .loading_snapshot => "loading_snapshot",
+            .walking => "walking",
+            .indexing => "indexing",
+            .ready => "ready",
+        };
+    }
+};
+
+var scan_state_atomic: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(ScanState.ready));
+
+pub fn setScanState(s: ScanState) void {
+    scan_state_atomic.store(@intFromEnum(s), .release);
+}
+
+pub fn getScanState() ScanState {
+    return @enumFromInt(scan_state_atomic.load(.acquire));
+}
+
+pub var scan_wait_timeout_ms: u64 = 2000;
+
+fn waitForScanReady(timeout_ms: u64) void {
+    if (getScanState() == .ready) return;
+    const deadline = cio.milliTimestamp() + @as(i64, @intCast(timeout_ms));
+    while (getScanState() != .ready) {
+        if (cio.milliTimestamp() >= deadline) return;
+        cio.sleepMs(25);
+    }
+}
+
+// ── Session state for MCP protocol ──────────────────────────────────────────
+
+const Session = struct {
+    alloc: std.mem.Allocator,
+    stdout: cio.File,
+    next_id: i64 = 100,
+    client_supports_roots: bool = false,
+    client_roots_list_changed: bool = false,
+    client_name: ?[]const u8 = null,
+    pending_roots_id: ?i64 = null,
+    roots: std.ArrayList(Root) = .empty,
+    deferred_scan: ?*DeferredScan = null,
+    /// Convergence governor state (#624): recent call signatures for this session.
+    governor: ConvergenceGovernor = .{},
+
+    fn freeRoots(self: *Session) void {
+        for (self.roots.items) |r| {
+            self.alloc.free(r.uri);
+            self.alloc.free(r.name);
+        }
+        self.roots.clearRetainingCapacity();
+    }
+
+    fn deinit(self: *Session) void {
+        if (self.client_name) |cn| self.alloc.free(cn);
+        self.freeRoots();
+        self.roots.deinit(self.alloc);
+    }
+};
+
+/// Convergence governor (#624): tracks recent tool-call signatures within a
+/// session so a non-convergent agent that keeps firing the *same* navigation
+/// call gets an in-band nudge to change strategy instead of looping (the 3–5×
+/// token runaways seen on large repos). It never changes a tool's result — it
+/// only lets handleCall append a one-line hint once a call repeats.
+pub const ConvergenceGovernor = struct {
+    pub const HISTORY = 8; // ring-buffer window of recent calls
+    // WARN_AT=2: tool results are deterministic within a session, so the
+    // SECOND identical call is already pure waste — don't wait for a third.
+    pub const WARN_AT = 2; // same signature this many times in the window -> nudge
+    pub const NAME_WARN_AT = 4; // same query-tool (any args) this many times -> strategy nudge
+
+    sigs: [HISTORY]u64 = @splat(0),
+    head: usize = 0,
+    name_sigs: [HISTORY]u64 = @splat(0),
+    name_head: usize = 0,
+
+    /// Record a call signature and return how many times it has occurred within
+    /// the recent window (including this call). >= WARN_AT means it's looping.
+    pub fn record(self: *ConvergenceGovernor, sig: u64) usize {
+        const s = if (sig == 0) 1 else sig; // 0 is the empty-slot sentinel
+        var occurrences: usize = 1;
+        for (self.sigs) |prev| {
+            if (prev == s) occurrences += 1;
+        }
+        self.sigs[self.head] = s;
+        self.head = (self.head + 1) % HISTORY;
+        return occurrences;
+    }
+
+    /// Record a tool-name-only signature. Catches reformulation loops — the
+    /// classic runaway is search "nosec" → search "nosec directive" →
+    /// search "nosec suppress": different exact sigs, same wasted strategy.
+    pub fn recordName(self: *ConvergenceGovernor, name_sig: u64) usize {
+        const s = if (name_sig == 0) 1 else name_sig;
+        var occurrences: usize = 1;
+        for (self.name_sigs) |prev| {
+            if (prev == s) occurrences += 1;
+        }
+        self.name_sigs[self.name_head] = s;
+        self.name_head = (self.name_head + 1) % HISTORY;
+        return occurrences;
+    }
+};
+
+/// Stable signature of a tool call (name + its argument values) so two identical
+/// calls hash equal. Iteration order is consistent for an identical call shape.
+fn callSignature(name: []const u8, args: *const std.json.ObjectMap) u64 {
+    var h = std.hash.Wyhash.init(0);
+    h.update(name);
+    var it = args.iterator();
+    while (it.next()) |e| {
+        h.update(e.key_ptr.*);
+        switch (e.value_ptr.*) {
+            .string => |sv| h.update(sv),
+            .integer => |n| h.update(std.mem.asBytes(&n)),
+            .float => |f| h.update(std.mem.asBytes(&f)),
+            .bool => |b| h.update(if (b) "1" else "0"),
+            else => {},
+        }
+    }
+    return h.final();
+}
+
+/// Navigation tools where a repeated identical call is a runaway signal worth
+/// nudging on. Write/admin tools (edit, status, changes, projects) are excluded.
+fn isGovernedNavTool(name: []const u8) bool {
+    return std.mem.eql(u8, name, "codedb_search") or
+        std.mem.eql(u8, name, "codedb_find") or
+        std.mem.eql(u8, name, "codedb_word") or
+        std.mem.eql(u8, name, "codedb_read") or
+        std.mem.eql(u8, name, "codedb_outline") or
+        std.mem.eql(u8, name, "codedb_symbol") or
+        std.mem.eql(u8, name, "codedb_callers") or
+        std.mem.eql(u8, name, "codedb_context");
+}
+
+/// Query-reformulation tools where repeated use with DRIFTING args signals a
+/// fishing expedition. Deliberately excludes read/outline/symbol/callers —
+/// hitting those repeatedly with distinct targets is legitimate sequential
+/// exploration, and a noisy nudge trains agents to ignore the real one.
+fn isGovernedQueryTool(name: []const u8) bool {
+    return std.mem.eql(u8, name, "codedb_search") or
+        std.mem.eql(u8, name, "codedb_find") or
+        std.mem.eql(u8, name, "codedb_word") or
+        std.mem.eql(u8, name, "codedb_context");
+}
+
+/// The convergence nudge text for a governed nav call, or null when no nudge
+/// should be surfaced. Pure + unit-tested (mirrors depsHint/fullFileReadHint).
+///
+/// Suppressed for `format=json` even at the loop threshold: the nudge is plain
+/// text and appending it to a JSON payload corrupts it — the #626 nudges
+/// (appendSearchSymbolNudge, depsHint) guard the same way. #624 shipped without
+/// this guard, so a looping `codedb_search format=json` returned invalid JSON.
+pub fn convergenceNudge(occurrences: usize, json_fmt: bool) ?[]const u8 {
+    if (occurrences < ConvergenceGovernor.WARN_AT) return null;
+    if (json_fmt) return null;
+    return "\n\n[codedb] You have issued this exact call before — results are deterministic within a session, the answer is already above. Change strategy: use a structural tool (codedb_symbol for a definition, codedb_callers for usages, codedb_deps for impact), open the file directly with codedb_read, or refine the query.";
+}
+
+/// Fired when the same QUERY tool is used repeatedly with drifting args —
+/// the reformulation loop the exact-signature nudge can't see.
+pub fn convergenceStrategyNudge(occurrences: usize, json_fmt: bool) ?[]const u8 {
+    if (occurrences < ConvergenceGovernor.NAME_WARN_AT) return null;
+    if (json_fmt) return null;
+    return "\n\n[codedb] Repeated searches with tweaked queries are not converging. Stop guessing phrasing: locate the exact identifier with codedb_symbol, then codedb_callers / codedb_read around its definition — or pull everything at once with codedb_context.";
+}
+
+pub fn run(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    store: *Store,
+    explorer: *Explorer,
+    agents: *AgentRegistry,
+    default_path: []const u8,
+    content_cache_capacity: u32,
+    telem: *telemetry_mod.Telemetry,
+    deferred_scan: ?*DeferredScan,
+    shutdown: *std.atomic.Value(bool),
+) void {
+    const stdout = cio.File.stdout();
+    const stdin = std.Io.File.stdin();
+    last_activity.store(cio.milliTimestamp(), .release);
+
+    var cache = ProjectCache.init(alloc, default_path, content_cache_capacity);
+    defer cache.deinit();
+
+    // Build the `tools/list` payload. The discriminated `oneOf` on the
+    // codedb_bundle ops items (issue #437) is incompatible with OpenAI's
+    // strict-mode tool-schema validator, which rejects `oneOf` outright with
+    // "'oneOf' is not permitted" — breaking codex/forgecode and any other
+    // OpenAI-Responses-API-backed MCP client. Default to the raw schema (which
+    // still has Stage 1's required: ["tool", "arguments"] from #434). Set
+    // CODEDB_DISCRIMINATED_SCHEMA=1 to opt back into the augmented oneOf for
+    // Anthropic-backed clients that benefit from it.
+    //
+    // Issue #443: even with all the above, OpenAI clients still emit empty
+    // `arguments: {}` for bundle sub-ops because the schema can't bind
+    // sub-tool argument shape without `oneOf`. Disable the bundle entirely
+    // by default — the dispatcher handler stays so cached-schema clients
+    // don't crash, but tools/list no longer advertises it. Set
+    // CODEDB_BUNDLE_ENABLED=1 to re-advertise.
+    const discriminated_opt_in = blk_opt: {
+        const v = cio.posixGetenv("CODEDB_DISCRIMINATED_SCHEMA") orelse break :blk_opt false;
+        break :blk_opt std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
+    };
+    const bundle_enabled = blk_be: {
+        const v = cio.posixGetenv("CODEDB_BUNDLE_ENABLED") orelse break :blk_be false;
+        break :blk_be std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
+    };
+    // CODEDB_TOOLS_PROFILE=core shrinks tools/list to the everyday set;
+    // =slim goes further — six tools, terse descriptions (~1k tokens total
+    // vs ~4k) since tool schemas ride along on every model call.
+    const profile_core = blk_pc: {
+        const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_pc false;
+        break :blk_pc std.mem.eql(u8, v, "core");
+    };
+    const profile_slim = blk_ps: {
+        const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_ps false;
+        break :blk_ps std.mem.eql(u8, v, "slim");
+    };
+    const profile_mini = blk_pm: {
+        const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_pm false;
+        break :blk_pm std.mem.eql(u8, v, "mini");
+    };
+    // Mini-by-default: with no explicit profile env var, agent harnesses
+    // get the mini list — the six everyday navigation tools with the full
+    // steering descriptions (~1.9k tokens/request vs core's ~2.7k, full's
+    // ~5.2k, and the schema rides along on EVERY round trip). A 12-question
+    // Opus 5 A/B (2026-08-04, QA over this repo, 2 reps per config)
+    // measured slim-by-default (terse descriptions) at +15% total input
+    // tokens vs the rich-description profiles, which land at
+    // parity-or-better with a no-MCP baseline; mini vs core is within
+    // run-to-run noise on outcomes, so the deterministically smaller
+    // surface wins. Everything still dispatches when called by name.
+    // Human-facing GUI clients (the mcpEmitRichBlocks allowlist) keep the
+    // full list for discoverability. Decided lazily at the first
+    // tools/list request, when clientInfo.name is known.
+    const profile_explicit = cio.posixGetenv("CODEDB_TOOLS_PROFILE") != null;
+    var session = Session{
+        .alloc = alloc,
+        .stdout = stdout,
+        .deferred_scan = deferred_scan,
+    };
+    defer session.deinit();
+
+    var read_buf: [4096]u8 = undefined;
+    var stdin_reader = stdin.reader(io, &read_buf);
+
+    while (!stdout_broken.load(.acquire) and !shutdown.load(.acquire)) {
+        const msg = mcpj.readLineBuf(alloc, &stdin_reader.interface) orelse break;
+        last_activity.store(cio.milliTimestamp(), .release);
+        defer alloc.free(msg);
+
+        const input = std.mem.trim(u8, msg, " \t\r");
+        if (input.len == 0) continue;
+
+        const parsed = std.json.parseFromSlice(std.json.Value, alloc, input, .{}) catch {
+            writeError(alloc, stdout, null, -32700, "Parse error");
+            continue;
+        };
+        defer parsed.deinit();
+
+        if (parsed.value != .object) {
+            writeError(alloc, stdout, null, -32600, "Invalid Request");
+            continue;
+        }
+
+        const root = &parsed.value.object;
+        const method_opt = mcpj.getStr(root, "method");
+        const has_id = root.contains("id");
+        const id = root.get("id");
+        const is_notification = !has_id;
+
+        if (method_opt == null) {
+            if (has_id) {
+                handleResponse(io, &session, root);
+            }
+            continue;
+        }
+        const method = method_opt.?;
+
+        // MCP 2026-07-28 stateless mode: a request may pin its protocol
+        // version in params._meta; answer versions we do not support with
+        // UnsupportedProtocolVersionError instead of guessing.
+        if (!is_notification) {
+            if (unsupportedMetaProtocolVersion(root)) |requested| {

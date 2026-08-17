@@ -1,0 +1,60 @@
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
+
+      - name: Build ${{ matrix.asset_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ runner.os }}" == "macOS" ]] &&
+             [[ "${{ matrix.zig_target }}" != "x86_64-macos" ]] &&
+             [[ -n "${CODEDB_CODESIGN_IDENTITY:-}" ]] &&
+             grep -q 'codesign-identity' build.zig; then
+            zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} -Dcodesign-identity="$CODEDB_CODESIGN_IDENTITY"
+          else
+            zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+          fi
+          binary=zig-out/bin/codedb
+          [[ -f "$binary" ]] || binary=zig-out/bin/codedb.exe
+          test -f "$binary"
+          cp "$binary" "${{ matrix.asset_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  publish:
+    name: upload-release-assets
+    runs-on: ubuntu-24.04
+    needs: build
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+
+      - name: Assemble release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          find dist -type f -name 'codedb-*' -exec cp {} assets/ \;
+          (
+            cd assets
+            sha256sum codedb-* | sort > checksums.sha256
+          )
+
+      - name: Upload assets to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" assets/codedb-* assets/checksums.sha256 --clobber --repo "$GITHUB_REPOSITORY"

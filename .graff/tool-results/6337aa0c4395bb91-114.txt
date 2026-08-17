@@ -1,0 +1,111 @@
+    // With 1s granularity, should respond well under 5s (not 30s)
+    // Using 100ms intervals in test, so should be ~500ms
+    if (elapsed > 0) {
+        // Just verify it didn't hang for 30 seconds
+        try testing.expect(elapsed < 5_000);
+    }
+}
+
+test "issue-278: MCP tracks activity without using it as a transport timeout" {
+    const mcp = @import("mcp.zig");
+
+    // Save and restore
+    const saved = mcp.last_activity.load(.acquire);
+    defer mcp.last_activity.store(saved, .release);
+
+    // Set activity to "just now"
+    mcp.last_activity.store(cio.milliTimestamp(), .release);
+
+    const last = mcp.last_activity.load(.acquire);
+    const now = cio.milliTimestamp();
+    try testing.expect(now - last < 1_000);
+}
+
+test "issue-278: MCP session may remain idle longer than old timeout" {
+    const mcp = @import("mcp.zig");
+    // Stale activity is now only an accounting signal. The stdio transport is
+    // kept alive until the client actually disconnects.
+    const old_idle_timeout_ms = 60 * 60 * 1000;
+    const older_than_old_timeout = cio.milliTimestamp() - old_idle_timeout_ms - 1_000;
+
+    // Save and restore
+    const saved = mcp.last_activity.load(.acquire);
+    defer mcp.last_activity.store(saved, .release);
+
+    mcp.last_activity.store(older_than_old_timeout, .release);
+    const last = mcp.last_activity.load(.acquire);
+    const now = cio.milliTimestamp();
+
+    try testing.expect(now - last > old_idle_timeout_ms);
+}
+
+test "issue-148: open pipe does not trigger HUP" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const pipe = try cio.makePipe();
+    defer cio.closeFd(pipe[0]);
+    defer cio.closeFd(pipe[1]);
+
+    var poll_fds = [_]std.posix.pollfd{.{
+        .fd = pipe[0],
+        .events = std.posix.POLL.IN | std.posix.POLL.HUP,
+        .revents = 0,
+    }};
+
+    const result = try std.posix.poll(&poll_fds, 0);
+    try testing.expectEqual(@as(usize, 0), result);
+}
+
+test "issue-148: codedb mcp exits when stdin is closed" {
+    // #620: this used to spawn `zig build run -- --mcp` from the repo root, which
+    // folded the compile step AND a full-repo snapshot load into the measured
+    // window, so it flaked over the 5s budget under load. Build once up front
+    // (outside the timing), then spawn the prebuilt binary against a tiny temp
+    // project so only the real stdin-EOF-to-exit path is timed.
+    try buildCliForHelpTests();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const proj_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const proj = path_buf[0..proj_len];
+    tmp.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const x = 1;\n" }) catch {};
+
+    // Integration test: spawn the built codedb mcp, close stdin, verify it exits
+    var child = std.process.spawn(io, .{
+        .argv = &.{ builtCodedbExe(), proj, "mcp" },
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    }) catch {
+        // If spawn fails (e.g., binary not built), skip the test
+        return;
+    };
+
+    // Send initialize then close stdin (simulate client crash)
+    const init_msg = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}";
+    const header = std.fmt.comptimePrint("Content-Length: {d}\r\n\r\n", .{init_msg.len});
+
+    if (child.stdin) |stdin| {
+        stdin.writeStreamingAll(io, header) catch {};
+        stdin.writeStreamingAll(io, init_msg) catch {};
+        // Close stdin — simulates client disconnecting
+        stdin.close(io);
+        child.stdin = null;
+    }
+
+    // Wait for the process to exit. The main read loop exits on stdin EOF;
+    // the watchdog also polls dead clients every second as a backup.
+    const start = cio.milliTimestamp();
+    const term = child.wait(io) catch {
+        // If wait fails, the process is stuck — test fails
+        try testing.expect(false);
+        return;
+    };
+
+    const elapsed = cio.milliTimestamp() - start;
+
+    // Should have exited (not been killed by us)
+    switch (term) {
+        .exited => |code| _ = code,
+        else => {},

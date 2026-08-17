@@ -1,0 +1,69 @@
+     1	diff --git a/src/test_mcp.zig b/src/test_mcp.zig
+     2	index 0356f3f..86dad34 100644
+     3	--- a/src/test_mcp.zig
+     4	+++ b/src/test_mcp.zig
+     5	@@ -434,6 +434,64 @@ test "auto-update: shouldRunAutoUpdate gates correctly" {
+     6	     try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false));
+     7	 }
+     8	 
+     9	+test "auto-update: routes through the built-in updater without a shell" {
+    10	+    const argv = update_mod.autoUpdateArgv("/tmp/codedb with spaces");
+    11	+
+    12	+    try testing.expectEqual(@as(usize, 2), argv.len);
+    13	+    try testing.expectEqualStrings("/tmp/codedb with spaces", argv[0]);
+    14	+    try testing.expectEqualStrings("update", argv[1]);
+    15	+}
+    16	+
+    17	+test "auto-update: update lock serializes replacement" {
+    18	+    var tmp = testing.tmpDir(.{});
+    19	+    defer tmp.cleanup();
+    20	+
+    21	+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    22	+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    23	+    const executable_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb", .{root_buf[0..root_len]});
+    24	+    defer testing.allocator.free(executable_path);
+    25	+
+    26	+    const first = update_mod.updateLockTryAcquire(executable_path) orelse return error.LockUnavailable;
+    27	+    try testing.expect(update_mod.updateLockTryAcquire(executable_path) == null);
+    28	+    update_mod.updateLockRelease(first);
+    29	+
+    30	+    const second = update_mod.updateLockTryAcquire(executable_path) orelse return error.LockUnavailable;
+    31	+    update_mod.updateLockRelease(second);
+    32	+}
+    33	+
+    34	+test "auto-update: failed Windows replacement restores previous binary" {
+    35	+    var tmp = testing.tmpDir(.{});
+    36	+    defer tmp.cleanup();
+    37	+
+    38	+    {
+    39	+        const dest = try tmp.dir.createFile(io, "codedb.exe", .{});
+    40	+        defer dest.close(io);
+    41	+        try dest.writeStreamingAll(io, "previous-binary");
+    42	+    }
+    43	+
+    44	+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    45	+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    46	+    const root = root_buf[0..root_len];
+    47	+    const replacement_path = try std.fmt.allocPrint(testing.allocator, "{s}/missing-replacement.exe", .{root});
+    48	+    defer testing.allocator.free(replacement_path);
+    49	+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.exe", .{root});
+    50	+    defer testing.allocator.free(dest_path);
+    51	+    const old_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.exe.old", .{root});
+    52	+    defer testing.allocator.free(old_path);
+    53	+
+    54	+    var replacement_failed = false;
+    55	+    update_mod.replaceBinaryWithRollback(io, replacement_path, dest_path, old_path) catch {
+    56	+        replacement_failed = true;
+    57	+    };
+    58	+    try testing.expect(replacement_failed);
+    59	+
+    60	+    const restored = try tmp.dir.openFile(io, "codedb.exe", .{});
+    61	+    defer restored.close(io);
+    62	+    var buf: [32]u8 = undefined;
+    63	+    const n = try restored.readPositionalAll(io, &buf, 0);
+    64	+    try testing.expectEqualStrings("previous-binary", buf[0..n]);
+    65	+}
+    66	+
+    67	 test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp stamp file" {
+    68	     // Reproduces the case where the stamp file contains a timestamp in the
+    69	     // future relative to the wall clock — for example, after an NTP clock

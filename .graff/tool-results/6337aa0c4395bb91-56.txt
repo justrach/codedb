@@ -1,0 +1,156 @@
+            continue;
+        }
+        const uri = s.alloc.dupe(u8, uri_raw) catch continue;
+        const name = s.alloc.dupe(u8, name_raw) catch {
+            s.alloc.free(uri);
+            continue;
+        };
+        s.roots.append(s.alloc, .{ .uri = uri, .name = name }) catch {
+            s.alloc.free(uri);
+            s.alloc.free(name);
+            continue;
+        };
+    }
+    if (s.deferred_scan) |ds| {
+        _ = triggerDeferredScanWithFallback(ds, s.roots.items, ds.fallback_cwd);
+    }
+}
+
+fn writeRequest(alloc: std.mem.Allocator, stdout: cio.File, id: i64, method: []const u8, params: []const u8) void {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
+    var tmp: [32]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&tmp, "{d}", .{id}) catch return;
+    buf.appendSlice(alloc, id_str) catch return;
+    buf.appendSlice(alloc, ",\"method\":\"") catch return;
+    buf.appendSlice(alloc, method) catch return;
+    buf.appendSlice(alloc, "\",\"params\":") catch return;
+    buf.appendSlice(alloc, params) catch return;
+    buf.appendSlice(alloc, "}\n") catch return;
+    stdout.writeAll(buf.items) catch {
+        stdout_broken.store(true, .release);
+        return;
+    };
+}
+
+fn handleCall(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    root: *const std.json.ObjectMap,
+    stdout: cio.File,
+    id: ?std.json.Value,
+    store: *Store,
+    explorer: *Explorer,
+    agents: *AgentRegistry,
+    cache: *ProjectCache,
+    telem: *telemetry_mod.Telemetry,
+    deferred_scan: ?*DeferredScan,
+    governor: ?*ConvergenceGovernor,
+    client_name: ?[]const u8,
+) void {
+    const is_notification = id == null;
+
+    const params_val = root.get("params") orelse {
+        if (!is_notification) writeError(alloc, stdout, id, -32602, "Missing params");
+        return;
+    };
+    if (params_val != .object) {
+        if (!is_notification) writeError(alloc, stdout, id, -32602, "params must be object");
+        return;
+    }
+    const params = &params_val.object;
+
+    const name = getStr(params, "name") orelse {
+        if (!is_notification) writeError(alloc, stdout, id, -32602, "Missing tool name");
+        return;
+    };
+    var args_value: std.json.Value = .{ .object = .empty };
+    var inline_args: std.json.ObjectMap = .empty;
+    defer inline_args.deinit(alloc);
+    const args = selectDirectCallArgs(alloc, params, &args_value, &inline_args) catch |err| {
+        if (!is_notification) writeError(alloc, stdout, id, -32602, switch (err) {
+            error.ArgumentsMustBeObject => "arguments must be object",
+            error.ArgsMustBeObject => "args must be object",
+            error.OutOfMemory => "out of memory",
+        });
+        return;
+    };
+
+    const tool = std.meta.stringToEnum(Tool, name) orelse {
+        if (!is_notification) writeError(alloc, stdout, id, -32602, "Unknown tool");
+        return;
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+
+    const t0 = cio.nanoTimestamp();
+    dispatch(io, alloc, tool, args, &out, store, explorer, agents, cache, deferred_scan);
+    const elapsed = cio.nanoTimestamp() - t0;
+
+    const is_error = std.mem.startsWith(u8, out.items, "error:");
+    telem.recordToolCall(name, elapsed, is_error, out.items.len);
+
+    if (std.mem.eql(u8, name, "codedb_search") or std.mem.eql(u8, name, "codedb_find") or std.mem.eql(u8, name, "codedb_word")) {
+        telem.recordSearchBreakdown(explorer.last_search_breakdown);
+    }
+
+    // Query + file access tracking WAL
+    if (!is_error) {
+        if (std.mem.eql(u8, name, "codedb_search") or std.mem.eql(u8, name, "codedb_find") or std.mem.eql(u8, name, "codedb_word")) {
+            if (getStr(args, "query") orelse getStr(args, "word")) |q| {
+                logQuery(io, name, q, out.items.len, elapsed);
+            }
+        } else if (std.mem.eql(u8, name, "codedb_read") or std.mem.eql(u8, name, "codedb_outline")) {
+            if (getStr(args, "path")) |p| {
+                logFileAccess(io, name, p, elapsed);
+            }
+        }
+    }
+
+    // Convergence governor (#624): if this exact navigation call keeps
+    // repeating within the session, nudge the agent to change strategy instead
+    // of looping. The nudge is appended to the assistant-visible output; it
+    // never alters the underlying result.
+    if (governor) |gov| {
+        if (isGovernedNavTool(name)) {
+            const occurrences = gov.record(callSignature(name, args));
+            // Record always (keeps loop detection accurate across mixed
+            // text/json calls); only surface the text nudge when it won't
+            // corrupt the result — convergenceNudge suppresses it for json.
+            if (convergenceNudge(occurrences, wantsJsonFormat(args))) |msg| {
+                out.appendSlice(alloc, msg) catch {};
+            }
+        }
+        if (isGovernedQueryTool(name)) {
+            const name_occurrences = gov.recordName(std.hash.Wyhash.hash(0, name));
+            if (convergenceStrategyNudge(name_occurrences, wantsJsonFormat(args))) |msg| {
+                out.appendSlice(alloc, msg) catch {};
+            }
+        }
+    }
+    if (is_notification) return;
+
+    const lean = !mcpEmitRichBlocks(client_name);
+
+    // Block 1: Human-readable colored summary (ANSI — preview pane always
+    // renders it). Skipped in lean mode (agents don't render ANSI; the
+    // summary duplicates info that's already in Block 2).
+    var summary: std.ArrayList(u8) = .empty;
+    defer summary.deinit(alloc);
+    if (!lean) {
+        summary.ensureTotalCapacity(alloc, 256) catch {};
+        summary.appendSlice(alloc, if (is_error) MCP_RED ++ MCP_CROSS ++ " " ++ MCP_RESET else MCP_GREEN ++ MCP_CHECK ++ " " ++ MCP_RESET) catch {};
+        summary.appendSlice(alloc, mcpToolIcon(name)) catch {};
+        mcpGenerateSummary(alloc, name, args, out.items, is_error, &summary);
+        var dur_buf: [96]u8 = undefined;
+        summary.appendSlice(alloc, mcpFormatDuration(&dur_buf, elapsed)) catch {};
+    }
+
+    // Block 3: Guidance hints. Skipped in lean mode for same reason.
+    var guidance: std.ArrayList(u8) = .empty;
+    defer guidance.deinit(alloc);
+    if (!lean) {
+        mcpGenerateGuidance(alloc, name, args, out.items, is_error, &guidance);
+    }

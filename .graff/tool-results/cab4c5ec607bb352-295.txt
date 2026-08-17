@@ -1,0 +1,120 @@
+2026-08-05T03:27:53.4588645Z ##[endgroup]
+2026-08-05T03:27:53.4589691Z ##[group]Setting up auth
+2026-08-05T03:27:53.4596010Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-08-05T03:27:53.4641594Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-08-05T03:27:53.4972021Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-08-05T03:27:53.5012175Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-08-05T03:27:53.5265617Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-05T03:27:53.5305276Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-08-05T03:27:53.5544895Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-08-05T03:27:53.5585312Z ##[endgroup]
+2026-08-05T03:27:53.5586193Z ##[group]Fetching the repository
+2026-08-05T03:27:53.5597099Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +refs/heads/v0.2.5838*:refs/remotes/origin/v0.2.5838* +refs/tags/v0.2.5838*:refs/tags/v0.2.5838*
+2026-08-05T03:27:54.7497157Z From https://github.com/justrach/codedb
+2026-08-05T03:27:54.7499579Z  * [new tag]         v0.2.5838  -> v0.2.5838
+2026-08-05T03:27:54.7539317Z ##[endgroup]
+2026-08-05T03:27:54.7549483Z ##[group]Determining the checkout info
+2026-08-05T03:27:54.7551217Z [command]/usr/bin/git branch --list --remote origin/v0.2.5838
+2026-08-05T03:27:54.7580551Z [command]/usr/bin/git tag --list v0.2.5838
+2026-08-05T03:27:54.7611026Z v0.2.5838
+2026-08-05T03:27:54.7616311Z ##[endgroup]
+2026-08-05T03:27:54.7620965Z [command]/usr/bin/git sparse-checkout disable
+2026-08-05T03:27:54.7668308Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-08-05T03:27:54.7709124Z ##[group]Checking out the ref
+2026-08-05T03:27:54.7712031Z [command]/usr/bin/git checkout --progress --force refs/tags/v0.2.5838
+2026-08-05T03:27:54.8499903Z Note: switching to 'refs/tags/v0.2.5838'.
+2026-08-05T03:27:54.8500943Z 
+2026-08-05T03:27:54.8501907Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-08-05T03:27:54.8504201Z changes and commit them, and you can discard any commits you make in this
+2026-08-05T03:27:54.8507832Z state without impacting any branches by switching back to a branch.
+2026-08-05T03:27:54.8509817Z 
+2026-08-05T03:27:54.8511060Z If you want to create a new branch to retain commits you create, you may
+2026-08-05T03:27:54.8513971Z do so (now or later) by using -c with the switch command. Example:
+2026-08-05T03:27:54.8515711Z 
+2026-08-05T03:27:54.8516461Z   git switch -c <new-branch-name>
+2026-08-05T03:27:54.8517664Z 
+2026-08-05T03:27:54.8518547Z Or undo this operation with:
+2026-08-05T03:27:54.8519616Z 
+2026-08-05T03:27:54.8520248Z   git switch -
+2026-08-05T03:27:54.8521063Z 
+2026-08-05T03:27:54.8522392Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-08-05T03:27:54.8524350Z 
+2026-08-05T03:27:54.8525876Z HEAD is now at f58517f release: 0.2.5838 â
+ precise lexical callers
+2026-08-05T03:27:54.8530048Z ##[endgroup]
+2026-08-05T03:27:54.8559726Z [command]/usr/bin/git log -1 --format=%H
+2026-08-05T03:27:54.8589475Z f58517feecbeba52878839be68fc87fafa586557
+2026-08-05T03:27:54.8945221Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-08-05T03:27:54.8951373Z ##[group]Run actions/setup-node@v4
+2026-08-05T03:27:54.8952503Z with:
+2026-08-05T03:27:54.8953346Z   node-version: 20
+2026-08-05T03:27:54.8954387Z   registry-url: https://registry.npmjs.org
+2026-08-05T03:27:54.8955634Z   always-auth: false
+2026-08-05T03:27:54.8956595Z   check-latest: false
+2026-08-05T03:27:54.8965466Z   token: ***
+2026-08-05T03:27:54.8966346Z ##[endgroup]
+2026-08-05T03:27:55.0366529Z Attempting to download 20...
+2026-08-05T03:27:55.0471258Z (node:2368) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-08-05T03:27:55.0475515Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-08-05T03:27:56.0791196Z Acquiring 20.20.2 - x64 from https://github.com/actions/node-versions/releases/download/20.20.2-23521894959/node-20.20.2-linux-x64.tar.gz
+2026-08-05T03:27:56.7299075Z Extracting ...
+2026-08-05T03:27:56.7420316Z [command]/usr/bin/tar xz --strip 1 --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/552687a9-60c6-43d2-a9f3-663b8b8e31be -f /home/runner/work/_temp/eb2b3a57-25e0-493f-be83-eef39309b92a
+2026-08-05T03:27:57.8191563Z Adding to the cache ...
+2026-08-05T03:27:59.5067836Z ##[group]Environment details
+2026-08-05T03:27:59.7218246Z node: v20.20.2
+2026-08-05T03:27:59.7218748Z npm: 10.8.2
+2026-08-05T03:27:59.7219045Z yarn: 1.22.22
+2026-08-05T03:27:59.7219715Z ##[endgroup]
+2026-08-05T03:27:59.7499893Z ##[group]Run set -euo pipefail
+2026-08-05T03:27:59.7500259Z 
+[36;1mset -euo pipefail
+2026-08-05T03:27:59.7500694Z 
+[36;1mecho "publishing codedeebee@$(node -p "require('./package.json').version")"
+2026-08-05T03:27:59.7501184Z 
+[36;1mnpm publish --access public
+2026-08-05T03:27:59.7556752Z shell: /usr/bin/bash -e {0}
+2026-08-05T03:27:59.7557057Z env:
+2026-08-05T03:27:59.7557352Z   NPM_CONFIG_USERCONFIG: /home/runner/work/_temp/.npmrc
+2026-08-05T03:27:59.7557687Z   NODE_AUTH_TOKEN: 
+2026-08-05T03:27:59.7557911Z ##[endgroup]
+2026-08-05T03:27:59.7982909Z publishing codedeebee@0.2.5838
+2026-08-05T03:28:00.1400932Z npm notice
+2026-08-05T03:28:00.1404244Z npm notice ð
+¦  codedeebee@0.2.5838
+2026-08-05T03:28:00.1404831Z npm notice Tarball Contents
+2026-08-05T03:28:00.1406460Z npm notice 3.0kB README.md
+2026-08-05T03:28:00.1406933Z npm notice 907B bin/codedb.js
+2026-08-05T03:28:00.1407404Z npm notice 826B package.json
+2026-08-05T03:28:00.1408276Z npm notice 4.8kB scripts/postinstall.js
+2026-08-05T03:28:00.1408897Z npm notice Tarball Details
+2026-08-05T03:28:00.1409366Z npm notice name: codedeebee
+2026-08-05T03:28:00.1409845Z npm notice version: 0.2.5838
+2026-08-05T03:28:00.1410475Z npm notice filename: codedeebee-0.2.5838.tgz
+2026-08-05T03:28:00.1411512Z npm notice package size: 3.6 kB
+2026-08-05T03:28:00.1412070Z npm notice unpacked size: 9.5 kB
+2026-08-05T03:28:00.1412767Z npm notice shasum: fc6251460178c812ba8c4e6c967d814eafcacfd5
+2026-08-05T03:28:00.1413619Z npm notice integrity: sha512-Ks4w2aoKF7vfq[...]9xw68ATmx24PA==
+2026-08-05T03:28:00.1414253Z npm notice total files: 4
+2026-08-05T03:28:00.1414640Z npm notice
+2026-08-05T03:28:00.1449684Z npm error code ENEEDAUTH
+2026-08-05T03:28:00.1450649Z npm error need auth This command requires you to be logged in to https://registry.npmjs.org/
+2026-08-05T03:28:00.1451817Z npm error need auth You need to authorize this machine using `npm adduser`
+2026-08-05T03:28:00.1462176Z npm error A complete log of this run can be found in: /home/runner/.npm/_logs/2026-08-05T03_27_59_854Z-debug-0.log
+2026-08-05T03:28:00.1517259Z ##[error]Process completed with exit code 1.
+2026-08-05T03:28:00.1653777Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-08-05T03:28:00.1655008Z Post job cleanup.
+2026-08-05T03:28:00.2498667Z [command]/usr/bin/git version
+2026-08-05T03:28:00.2539682Z git version 2.54.0
+2026-08-05T03:28:00.2575391Z Temporarily overriding HOME='/home/runner/work/_temp/738f3075-3344-4a62-8d0a-789e9b93813b' before making global git config changes
+2026-08-05T03:28:00.2576868Z Adding repository directory to the temporary git global config as a safe directory
+2026-08-05T03:28:00.2581815Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/codedb/codedb
+2026-08-05T03:28:00.2620796Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-08-05T03:28:00.2686119Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-08-05T03:28:00.2949027Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-08-05T03:28:00.2977376Z http.https://github.com/.extraheader
+2026-08-05T03:28:00.2991070Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-08-05T03:28:00.3025602Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-08-05T03:28:00.3333775Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-05T03:28:00.3362651Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-08-05T03:28:00.3861593Z Cleaning up orphan processes
+2026-08-05T03:28:00.4186876Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

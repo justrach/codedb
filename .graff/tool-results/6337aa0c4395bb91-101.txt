@@ -1,0 +1,46 @@
+    try testing.expect(!ca.mcpRootAcceptsEnv("mcp", "/proj"));
+    try testing.expect(!ca.mcpRootAcceptsEnv("status", "."));
+}
+
+test "issue-639: parsed ${workspaceFolder} feeds the gates like a bare `codedb mcp`" {
+    // The two halves of the bug must agree: the parse half (parsePositional)
+    // and the consume half (the gate predicates). Before the fix the
+    // placeholder parsed to (root="${workspaceFolder}", explicit=true), so
+    // both gates returned false and the #502 walk-up / deferred scan /
+    // CODEDB_ROOT fallback were all silently skipped.
+    const forms = [_][]const []const u8{
+        &.{ "codedb", "${workspaceFolder}", "mcp" },
+        &.{ "codedb", "mcp", "${workspaceFolder}" },
+    };
+    for (forms) |argv| {
+        const p = main_mod.parsePositional(argv);
+        try testing.expect(cli_args_mod.mcpRootIsImplicitCwd(p.cmd, p.root, p.root_is_explicit));
+        try testing.expect(cli_args_mod.mcpRootAcceptsEnv(p.cmd, p.root));
+    }
+}
+
+test "isolate: isHelpRequest matches the three help spellings, nothing else" {
+    const ca = cli_args_mod;
+    // The exact triple that was hand-written at four sites and drift-prone.
+    try testing.expect(ca.isHelpRequest("--help"));
+    try testing.expect(ca.isHelpRequest("-h"));
+    try testing.expect(ca.isHelpRequest("help"));
+    // Near-misses must not trip it — realistic typos / neighbouring flags.
+    try testing.expect(!ca.isHelpRequest("--helpme"));
+    try testing.expect(!ca.isHelpRequest("-help"));
+    try testing.expect(!ca.isHelpRequest("h"));
+    try testing.expect(!ca.isHelpRequest("--no-telemetry"));
+    try testing.expect(!ca.isHelpRequest(""));
+}
+
+test "isolate: parsePositional routes every help form through isHelpRequest" {
+    // Wiring: the parse half and the predicate must agree. Every argv that
+    // should print usage parses to a cmd isHelpRequest recognizes — including
+    // the #502 `codedb mcp --help` collapse to cmd="--help".
+    const ca = cli_args_mod;
+    inline for (.{ "--help", "-h", "help" }) |form| {
+        const bare = main_mod.parsePositional(&.{ "codedb", form });
+        try testing.expect(ca.isHelpRequest(bare.cmd));
+        const after_mcp = main_mod.parsePositional(&.{ "codedb", "mcp", form });
+        try testing.expect(ca.isHelpRequest(after_mcp.cmd));
+    }

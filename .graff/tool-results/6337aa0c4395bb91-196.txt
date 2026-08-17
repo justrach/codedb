@@ -1,0 +1,146 @@
+        .allocator = allocator,
+        .argv = &.{ "curl", "-fsSL", "-A", user_agent, url },
+        .max_output_bytes = max_output_bytes,
+    });
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        allocator.free(result.stdout);
+        return error.CurlFailed;
+    }
+
+    return result.stdout;
+}
+
+fn parseJsonStringField(allocator: std.mem.Allocator, json_text: []const u8, field_name: []const u8, trim_v_prefix: bool) !?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, json_text, .{}) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return null;
+    const field = parsed.value.object.get(field_name) orelse return null;
+    if (field != .string) return null;
+
+    const value = if (trim_v_prefix) trimVersionPrefix(field.string) else field.string;
+    if (value.len == 0) return null;
+    return try allocator.dupe(u8, value);
+}
+
+fn getBaseUrl(allocator: std.mem.Allocator) !struct { value: []const u8, owned: bool } {
+    if (cio.posixGetenv("CODEDB_URL")) |value| {
+        if (value.len != 0) {
+            const dup = try allocator.dupe(u8, value);
+            return .{ .value = dup, .owned = true };
+        }
+    }
+    return .{ .value = default_base_url, .owned = false };
+}
+
+fn trimVersionPrefix(value: []const u8) []const u8 {
+    return std.mem.trimStart(u8, value, "vV");
+}
+
+fn parseVersionPart(part: []const u8) !u64 {
+    const trimmed = std.mem.trim(u8, part, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidVersion;
+    return std.fmt.parseInt(u64, trimmed, 10);
+}
+
+fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: []const u8, asset_name: []const u8, dest_path: []const u8, expected_hash: []const u8) !void {
+    const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/{s}", .{ github_repo, version, asset_name });
+    defer allocator.free(url);
+
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ dest_path, cio.nanoTimestamp() });
+    defer allocator.free(tmp_path);
+    errdefer std.Io.Dir.deleteFileAbsolute(io, tmp_path) catch {};
+
+    try downloadToFile(allocator, url, tmp_path);
+
+    const actual_hash = try sha256FileHex(io, allocator, tmp_path);
+    defer allocator.free(actual_hash);
+    if (!std.ascii.eqlIgnoreCase(actual_hash, expected_hash)) {
+        return error.ChecksumMismatch;
+    }
+
+    {
+        var tmp_file = try std.Io.Dir.openFileAbsolute(io, tmp_path, .{ .mode = .read_write });
+        defer tmp_file.close(io);
+        if (@import("builtin").os.tag != .windows) {
+            // POSIX execute bits; Windows has no chmod equivalent for binaries.
+            try tmp_file.setPermissions(io, std.Io.File.Permissions.fromMode(0o755));
+        }
+    }
+
+    if (@import("builtin").os.tag == .windows) {
+        // Windows refuses to rename over a running .exe, but renaming the
+        // running image aside is allowed. Slide the old binary to .old (best
+        // effort); a stale .old from a prior update is replaced first.
+        const old_path = try std.fmt.allocPrint(allocator, "{s}.old", .{dest_path});
+        defer allocator.free(old_path);
+        std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+        std.Io.Dir.renameAbsolute(dest_path, old_path, io) catch {};
+    }
+    try std.Io.Dir.renameAbsolute(tmp_path, dest_path, io);
+}
+
+fn downloadToFile(allocator: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
+    const result = try cio.runCapture(.{
+        .allocator = allocator,
+        .argv = &.{ "curl", "-fsSL", "-A", user_agent, url, "-o", dest_path },
+        .max_output_bytes = 16 * 1024,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        return error.DownloadFailed;
+    }
+}
+
+fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [16 * 1024]u8 = undefined;
+    var offset: u64 = 0;
+    while (true) {
+        const read_len = try file.readPositionalAll(io, &buf, offset);
+        if (read_len == 0) break;
+        hasher.update(buf[0..read_len]);
+        offset += read_len;
+        if (read_len < buf.len) break;
+    }
+
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    hasher.final(&digest);
+    const digest_hex = std.fmt.bytesToHex(digest, .lower);
+    return allocator.dupe(u8, &digest_hex);
+}
+
+// ── Auto-update ──────────────────────────────────────────────────────────────
+//
+// On startup we kick off a detached invocation of the built-in, checksum-
+// verified updater. The check is:
+//   • disabled when CODEDB_NO_AUTO_UPDATE is set in the environment
+//   • throttled to at most once every 24 hours, tracked in
+//     ~/.codedb/last_auto_update_check (a u64 little-endian unix-ms timestamp)
+// The update itself runs in a background thread so network failures never block
+// server startup. If the binary on disk gets replaced mid-session, the kernel
+// keeps the old inode mapped for the running process; subsequent invocations
+// get the new binary.
+
+const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
+const auto_update_stamp_filename = "last_auto_update_check";
+
+/// Pure decision function — useful for tests. Returns true when the next
+/// auto-update attempt should fire.
+pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
+    if (env_disabled) return false;
+    const last = last_check_ms orelse return true;
+    if (last > now_ms) return true;
+    const delta: i128 = @as(i128, now_ms) - @as(i128, last);
+    return delta >= auto_update_throttle_ms;
+}
+
+pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+    const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;

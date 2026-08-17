@@ -1,0 +1,145 @@
+# Task
+Review current uncommitted lineCodePrefix comment scanner for concrete language edge cases PHP Swift Rust raw backticks shell operators and callers false positives
+
+## Keywords used
+- lineCodePrefix
+- PHP
+- uncommitted
+- backticks
+- operators
+
+## Symbol definitions
+- lineCodePrefix (function) — src/mcp.zig:2696
+        2696 | fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
+        2697 |     const markers: []const []const u8 = switch (language) {
+        2698 |         .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .swift, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
+        2699 |         .php => &.{ "//", "#" },
+        2700 |         .python, .ruby, .r, .shell => &.{"#"},
+        2701 |         .hcl => &.{ "#", "//" },
+        2702 |         .sql => &.{"--"},
+        2703 |         .fortran => &.{"!"},
+        2704 |         .llvm_ir => &.{";"},
+        2705 |         else => return line,
+        2706 |     };
+        2707 |     var i: usize = 0;
+        2708 |     while (i < line.len) {
+        2709 |         if (language == .rust) {
+        2710 |             if (rustRawLiteralAt(line, i)) |raw| {
+        2711 |                 if (raw.end) |end| {
+        2712 |                     i = end;
+        2713 |                     continue;
+        2714 |                 }
+        2715 |                 return line;
+        2716 |             }
+        2717 |         }
+        2718 |         if (line[i] == '"' or line[i] == '\'' or (line[i] == '`' and hasBacktickLiterals(language))) {
+        2719 |             if (stringLiteralEnd(line, i)) |end| {
+        2720 |                 i = end + 1;
+        2721 |                 continue;
+        2722 |             }
+        2723 |         }
+        2724 |         if (blockCommentAt(line, i, language)) |block| {
+        2725 |             if (block.end) |end| {
+        2726 |                 i = end;
+        2727 |                 continue;
+        2728 |             }
+        2729 |             return line;
+        2730 |         }
+        2731 |         for (markers) |m| {
+        2732 |             if (!std.mem.startsWith(u8, line[i..], m)) continue;
+        2733 |             // `#[` starts a PHP 8 attribute, not a hash comment.
+        2734 |             if (language == .php and m[0] == '#' and i + 1 < line.len and line[i + 1] == '[') break;
+        2735 |             // Shell: `#` opens a comment only when it begins a word. Operators
+
+## Callers (top non-test, non-import usages of these symbols)
+- src/mcp.zig:2586: if (!hasWholeWordMatchOutsideStrings(lineCodePrefix(r.line_text, lang), name)) continue;  [in handleCallers (function, L2505-L2601)]
+
+## Calls (graph-resolved callees of these symbols)
+- lineCodePrefix (function) calls:
+    → rustRawLiteralAt (function)  src/mcp.zig:2747
+    → hasBacktickLiterals (function)  src/mcp.zig:2771
+    → stringLiteralEnd (function)  src/mcp.zig:2833
+    → blockCommentAt (function)  src/mcp.zig:2778
+    → startsWith (function)  src/explore.zig:8542
+    → isShellCommentStart (function)  src/mcp.zig:2816
+
+## Most-relevant files
+- src/mcp.zig  (4 matches)
+- src/explore.zig  (2 matches)
+- src/codex_setup.zig  (1 matches)
+- src/watcher.zig  (1 matches)
+- src/update.zig  (1 matches)
+
+## Top sites (with ±2 lines of context)
+
+src/mcp.zig:2696
+```
+/// existing behavior for references inside them; skipping them here only
+/// prevents marker-like text from hiding real code later on the same line.
+fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
+    const markers: []const []const u8 = switch (language) {
+        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .swift, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
+```
+
+src/mcp.zig:2699
+```
+    const markers: []const []const u8 = switch (language) {
+        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .swift, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
+        .php => &.{ "//", "#" },
+        .python, .ruby, .r, .shell => &.{"#"},
+        .hcl => &.{ "#", "//" },
+```
+
+src/mcp.zig:2662
+```
+///     trailing comment, a Rust lifetime `&'a`, an open multi-line literal) is
+///     treated as ordinary code, so it can never swallow the rest of the line
+///   - backticks are not treated as quotes: Go raw strings and JS template
+///     literals routinely wrap real calls (`${render()}`)
+fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+```
+
+src/explore.zig:56
+```
+    name: []const u8,
+    kind: SymbolKind,
+    line_start: u32,
+    line_end: u32,
+    detail: ?[]const u8 = null,
+```
+
+src/explore.zig:164
+```
+};
+
+const PhpParseState = struct {
+    in_class: bool = false,
+    brace_depth: i32 = 0,
+```
+
+src/codex_setup.zig:77
+```
+    /// False when a begin marker had no matching end marker before EOF or
+    /// before the next begin marker. The span then covers only the damaged
+    /// begin line, so a repair replaces that line instead of swallowing every
+    /// byte of user text after it.
+    terminated: bool = true,
+```
+
+src/watcher.zig:290
+```
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir_prefix_len: usize = 0,
+    ignore_patterns: std.ArrayList([]const u8) = .empty,
+    real_root: []const u8 = &.{},
+```
+
+src/update.zig:141
+```
+
+pub fn compareVersions(current: []const u8, target: []const u8) !std.math.Order {
+    var current_it = std.mem.splitScalar(u8, trimVersionPrefix(current), '.');
+    var target_it = std.mem.splitScalar(u8, trimVersionPrefix(target), '.');
+
+```

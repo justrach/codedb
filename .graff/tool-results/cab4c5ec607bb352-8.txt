@@ -1,0 +1,79 @@
+✓ indexed  338.9ms
+# Task
+lineCodePrefix integration origin/main origin/release/0.2.5833-mcp2026 callers helpers
+
+## Keywords used
+- lineCodePrefix
+- integration
+- callers
+- helpers
+- mcp2026
+
+## Most-relevant files
+- src/codex_setup.zig  (1 matches)
+- src/mcp.zig  (2 matches)
+- install/install.sh  (2 matches)
+- src/explore.zig  (1 matches)
+- src/watcher.zig  (1 matches)
+
+## Top sites (with ±2 lines of context)
+
+src/codex_setup.zig:77
+```
+    /// False when a begin marker had no matching end marker before EOF or
+    /// before the next begin marker. The span then covers only the damaged
+    /// begin line, so a repair replaces that line instead of swallowing every
+    /// byte of user text after it.
+    terminated: bool = true,
+```
+
+src/mcp.zig:667
+```
+pub const tools_list =
+    \\{"ttlMs":3600000,"cacheScope":"public","tools":[
+    \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts; giant directories collapse into rollup lines. Use ONCE to orient in an unfamiliar project — to locate one file use codedb_find, for one directory use codedb_ls; do not re-call it per task.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Opt
+```
+
+src/mcp.zig:47
+```
+/// fire the deferred scan exactly once. Returns true when this call actually
+/// fired the trigger; false if it had already fired or no usable path is
+/// available. Callers must filter denied paths out of `indexable_roots` first;
+/// the `fallback_cwd` path is policy-checked here.
+pub fn triggerDeferredScanWithFallback(
+```
+
+install/install.sh:76
+```
+PYEOF
+
+  printf "  ${G}✓${N} claude code  ${D}→ $config${N}\n"
+}
+
+```
+
+install/install.sh:419
+```
+
+case "$FIRST" in
+  grep|rg|egrep|fgrep) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_search \"<text>\" (codedb_word for an exact identifier, codedb_callers for call sites) instead of $FIRST — ranked + fewer tokens. Native $FIRST is allowed outside this repo or with CODEDB_NO_HOOKS=1." >&2; exit 2 ;;
+  cat) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_read path=<file> (codedb_outline first for a map) instead of cat. CODEDB_NO_HOOKS=1 to disable." >&2; ex
+```
+
+src/explore.zig:56
+```
+    name: []const u8,
+    kind: SymbolKind,
+    line_start: u32,
+    line_end: u32,
+    detail: ?[]const u8 = null,
+```
+
+src/watcher.zig:290
+```
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir_prefix_len: usize = 0,
+    ignore_patterns: std.ArrayList([]const u8) = .empty,
+    real_root: []const u8 = &.{},
+```

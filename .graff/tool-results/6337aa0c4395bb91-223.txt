@@ -1,0 +1,119 @@
+✓ indexed  325.7ms
+1 results for 'runMcp':
+  src/commands.zig:384 (function) runMcp  // pub fn runMcp(ctx: *RunCtx) !void {
+  384 | pub fn runMcp(ctx: *RunCtx) !void {
+  385 |     const io = ctx.io;
+  386 |     const allocator = ctx.allocator;
+  387 |     const abs_root = ctx.abs_root;
+  388 |     const data_dir = ctx.data_dir;
+  389 |     const root = ctx.root;
+  390 |     const store = ctx.store;
+  391 |     const explorer = ctx.explorer;
+  392 |     const cfg = ctx.cfg;
+  393 |     const no_telemetry = ctx.no_telemetry;
+  394 |     const mcp_deferred_root = ctx.mcp_deferred_root;
+  395 |     // Background auto-update check (no-op when CODEDB_NO_AUTO_UPDATE is set
+  396 |     // or when the last check was within the last 24h). Detached thread, so
+  397 |     // this doesn't block server startup.
+  398 |     update_mod.maybeAutoUpdate(io, allocator);
+  399 | 
+  400 |     var agents = AgentRegistry.init(allocator);
+  401 |     defer agents.deinit();
+  402 |     _ = try agents.register("__filesystem__");
+  403 | 
+  404 |     const root_from_cwd = mcp_deferred_root;
+  405 | 
+  406 |     saveProjectInfo(io, allocator, data_dir, abs_root) catch {};
+  407 | 
+  408 |     // Set up query tracking WAL
+  409 |     const query_log = std.fmt.allocPrint(allocator, "{s}/queries.log", .{data_dir}) catch null;
+  410 |     if (query_log) |ql| mcp_server.setQueryLogPath(ql);
+  411 | 
+  412 |     const startup_t0 = cio.milliTimestamp();
+  413 |     // --no-telemetry is stripped globally above (#528 item 12); honor it
+  414 |     // here alongside CODEDB_NO_TELEMETRY (checked inside Telemetry.init).
+  415 |     const telemetry_disabled = no_telemetry;
+  416 | 
+  417 |     var telem = telemetry.Telemetry.init(io, data_dir, allocator, telemetry_disabled);
+  418 |     defer telem.deinit();
+  419 |     telem.startSyncThread();
+  420 |     telem.recordSessionStart();
+  421 | 
+  422 |     var shutdown = std.atomic.Value(bool).init(false);
+  423 | 
+  424 |     const queue = try allocator.create(watcher.EventQueue);
+  425 |     defer allocator.destroy(queue);
+  426 |     queue.* = watcher.EventQueue{};
+  427 | 
+  428 |     var scan_thread: ?std.Thread = null;
+  429 |     var watch_thread: std.Thread = undefined;
+  430 | 
+  431 |     var deferred: mcp_server.DeferredScan = undefined;
+  432 |     var maybe_deferred: ?*mcp_server.DeferredScan = null;
+  433 | 
+  434 |     if (root_from_cwd) {
+  435 |         deferred = .{
+  436 |             .io = io,
+  437 |             .allocator = allocator,
+  438 |             .store = store,
+  439 |             .explorer = explorer,
+  440 |             .scan_done = try allocator.create(std.atomic.Value(bool)),
+  441 |             .shutdown = &shutdown,
+  442 |             .telem = &telem,
+  443 |             .queue = queue,
+  444 |             .startup_t0 = startup_t0,
+  445 |             .fallback_cwd = abs_root,
+  446 |             .triggerFn = triggerScanFromRoots,
+  447 |         };
+  448 |         deferred.scan_done.* = std.atomic.Value(bool).init(false);
+  449 |         maybe_deferred = &deferred;
+  450 |         mcp_server.setScanState(.loading_snapshot);
+  451 |         watch_thread = try std.Thread.spawn(.{}, watcherDeferredLoop, .{&deferred});
+  452 |     } else {
+  453 |         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
+  454 |         mcp_server.setScanState(.loading_snapshot);
+  455 |         const snapshot_loaded = loadBestSnapshot(io, explorer, store, abs_root, data_dir, git_head, allocator);
+  456 |         var scan_done = std.atomic.Value(bool).init(snapshot_loaded);
+  457 |         if (!snapshot_loaded) {
+  458 |             mcp_server.setScanState(.walking);
+  459 |             scan_thread = try std.Thread.spawn(.{}, scanBg, .{ io, store, explorer, root, allocator, &scan_done, &shutdown, data_dir, abs_root, &telem, startup_t0 });
+  460 |         } else {
+  461 |             const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - startup_t0, 0));
+  462 |             loadTrigramFromDiskIfPresent(io, explorer, data_dir, allocator);
+  463 |             telem.recordCodebaseStats(explorer, startup_time_ms);
+  464 |             compactMcpReadyMemory(io, explorer, data_dir, git_head, allocator);
+  465 |             mcp_server.setScanState(.ready);
+  466 |         }
+  467 |         watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_done });
+  468 |     }
+  469 | 
+  470 |     const idle_thread = try std.Thread.spawn(.{}, idleWatchdog, .{&shutdown});
+  471 | 
+  472 |     std.log.info("codedb mcp: root={s} files={d} data={s} scan={s}", .{ abs_root, store.currentSeq(), data_dir, mcp_server.getScanState().name() });
+  473 | 
+  474 |     // Thin-CLI proxy listener (same as the serve branch): serve read-only
+  475 |     // query commands from this warm explorer/store over a per-project Unix
+  476 |     // socket so plain `codedb <root> <query>` calls skip a cold reload.
+  477 |     // Detached so it never blocks mcp_server.run(). Like serve, mcp has no
+  478 |     // idle timeout — throwaway activity/shutdown atomics that nobody watches.
+  479 |     // They outlive the detached thread because mcp_server.run() below blocks
+  480 |     // on this same stack frame for the whole process lifetime.
+  481 |     var cli_activity = std.atomic.Value(i64).init(cio.milliTimestamp());
+  482 |     var cli_listener_dead = std.atomic.Value(bool).init(false);
+  483 |     if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, data_dir, &cli_activity, &cli_listener_dead, true })) |cli_t| {
+  484 |         cli_t.detach();
+  485 |     } else |err| {
+  486 |         std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
+  487 |     }
+  488 |     spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
+  489 |     mcp_server.run(io, allocator, store, explorer, &agents, abs_root, cfg.max_cached, &telem, maybe_deferred, &shutdown);
+  490 | 
+  491 |     shutdown.store(true, .release);
+  492 |     if (scan_thread) |st| st.join();
+  493 |     if (maybe_deferred) |d| {
+  494 |         if (d.scan_thread) |st| st.join();
+  495 |     }
+  496 |     watch_thread.join();
+  497 |     idle_thread.join();
+  498 | }
+↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.

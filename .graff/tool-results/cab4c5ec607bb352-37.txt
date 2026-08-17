@@ -1,0 +1,111 @@
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or
+        c == '_';
+}
+
+/// Returns true iff `needle` occurs in `line` as a whole-word identifier
+/// (non-identifier characters or line boundaries on both sides) at a position
+/// that is NOT inside a string literal.
+///
+/// An occurrence that only ever appears between quotes is a mention, not a
+/// call: the Python table row `("renderPlainSearch", "src/explore.zig"),` and
+/// the Zig declaration `test "def-first: renderPlainSearch surfaces …" {` both
+/// name the symbol without invoking it, yet passed every other filter here.
+///
+/// Deliberately line-local and pragmatic, in the spirit of `isCommentOrBlank`:
+///   - tracks '…' and "…" spans, honouring backslash escapes
+///   - a quote with no closing partner on the line (an apostrophe in a
+///     trailing comment, a Rust lifetime `&'a`, an open multi-line literal) is
+///     treated as ordinary code, so it can never swallow the rest of the line
+///   - backticks are not treated as quotes: Go raw strings and JS template
+///     literals routinely wrap real calls (`${render()}`)
+fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or line.len < needle.len) return false;
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == '"' or line[i] == '\'') {
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+        }
+        // `i` is a code byte — try to anchor a whole-word match on it.
+        if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+            const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+            const after = i + needle.len;
+            const after_ok = after >= line.len or !isIdentChar(line[after]);
+            if (before_ok and after_ok) return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+/// The slice of `line` before its first line-comment marker outside string
+/// literals, per `language` — the part of the line that can actually contain a
+/// call. Lines with no marker, and languages without a line-comment syntax
+/// (OCaml's `(* *)` is block-only), come back whole. (#682)
+///
+/// Same line-local scanning discipline as `hasWholeWordMatchOutsideStrings`:
+/// quoted spans are skipped (so `"https://…"` never truncates), an unclosed
+/// quote is ordinary code. Mid-line block-comment openers are left alone — a
+/// false negative re-admits a mention; truncating at `/*` could drop the real
+/// call in `foo(); /* … */ bar()`.
+fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
+    const markers: []const []const u8 = switch (language) {
+        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
+        .python, .ruby, .r, .shell => &.{"#"},
+        .hcl => &.{ "#", "//" },
+        .sql => &.{"--"},
+        .fortran => &.{"!"},
+        .llvm_ir => &.{";"},
+        else => return line,
+    };
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == '"' or line[i] == '\'') {
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+        }
+        for (markers) |m| {
+            if (std.mem.startsWith(u8, line[i..], m)) {
+                // Shell: `#` only opens a comment at the start of a word —
+                // `${#var}` and `$#` are live syntax, not comments.
+                if (language == .shell and i != 0 and line[i - 1] != ' ' and line[i - 1] != '\t') break;
+                return line[0..i];
+            }
+        }
+        i += 1;
+    }
+    return line;
+}
+
+/// Index of the quote closing the literal opened at `open`, or null when the
+/// literal never closes on this line.
+fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+    const quote = line[open];
+    var i = open + 1;
+    while (i < line.len) : (i += 1) {
+        if (line[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (line[i] == quote) return i;
+    }
+    return null;
+}
+
+/// Languages where the concept of a "call site" is meaningful. Excludes
+/// data formats (json, yaml), markup/styling (markdown, css, scss),
+/// declarative schemas (protobuf), and unknown files — callers found
+/// inside these are mentions in prose or config, not real invocations.
+fn langHasCallSites(lang: explore_mod.Language) bool {
+    return switch (lang) {
+        .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
+        else => true,
+    };

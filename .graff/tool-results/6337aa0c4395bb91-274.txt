@@ -1,0 +1,36 @@
+  500     // (now - last) and only fires when that delta >= 24h, so a future
+  501     // `last` produces a negative delta and the check is silently skipped
+  502     // for as long as the stamp stays in the future — potentially many days.
+  503     //
+  504     // Expected: a wildly future stamp should NOT prevent the next check
+  505     // from firing. The simplest correct behavior is: if last > now, treat
+  506     // the stamp as invalid and allow the update check to run.
+  507 
+  508     const day_ms: i64 = 24 * 60 * 60 * 1000;
+  509     const now_ms: i64 = 1_700_000_000_000;
+  510     const future_last_ms: i64 = now_ms + day_ms * 30; // 30 days in the future
+  511 
+  512     try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, future_last_ms, false));
+  513 }
+  514 
+  515 test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corrupt" {
+  516     // Reproduces a panic when ~/.codedb/last_auto_update_check is corrupt
+  517     // and decodes to a very negative i64. readAutoUpdateStamp does no
+  518     // sanity check — it reads 8 bytes, calls std.mem.readInt(i64, ...),
+  519     // and feeds that straight into shouldRunAutoUpdate, which evaluates
+  520     // `now_ms - last` with checked subtraction. For last = minInt(i64)
+  521     // and any positive now_ms, the subtraction overflows and triggers an
+  522     // integer-overflow panic in Debug / ReleaseSafe builds (which is what
+  523     // `zig build test` and the shipped MCP binary use).
+  524     //
+  525     // Result: every `codedb mcp` startup crashes during the auto-update
+  526     // gate for any user whose stamp file got corrupted to a value with
+  527     // the high bit set (e.g. truncated write, partial flush, or any byte
+  528     // sequence starting with 0x80..0xFF in the stamp).
+  529     //
+  530     // Expected fix: clamp the delta with a saturating/wrapping subtraction
+  531     // or treat any last_ms <= 0 (or in the distant past) as invalid and
+  532     // run the update.
+  533 
+  534     const now_ms: i64 = 1_700_000_000_000;
+  535     const last_ms: i64 = std.math.minInt(i64);

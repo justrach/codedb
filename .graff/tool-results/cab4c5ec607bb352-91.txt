@@ -1,0 +1,41 @@
+   220	    if (std.mem.endsWith(u8, path, ".go")) return .go_lang;
+   221	    if (std.mem.endsWith(u8, path, ".php")) return .php;
+   222	    if (std.mem.endsWith(u8, path, ".rb") or std.mem.endsWith(u8, path, ".rake")) return .ruby;
+   223	    if (std.mem.endsWith(u8, path, ".tf") or std.mem.endsWith(u8, path, ".tfvars") or std.mem.endsWith(u8, path, ".hcl")) return .hcl;
+   224	    if (std.mem.endsWith(u8, path, ".r") or std.mem.endsWith(u8, path, ".R")) return .r;
+   225	    if (std.mem.endsWith(u8, path, ".md")) return .markdown;
+   226	    if (std.mem.endsWith(u8, path, ".json")) return .json;
+   227	    if (std.mem.endsWith(u8, path, ".yaml") or std.mem.endsWith(u8, path, ".yml")) return .yaml;
+   228	    if (std.mem.endsWith(u8, path, ".dart")) return .dart;
+   229	    if (std.mem.endsWith(u8, path, ".java")) return .java;
+   230	    if (std.mem.endsWith(u8, path, ".kt")) return .kotlin;
+   231	    if (std.mem.endsWith(u8, path, ".swift")) return .swift;
+   232	    if (std.mem.endsWith(u8, path, ".svelte")) return .svelte;
+   233	    if (std.mem.endsWith(u8, path, ".vue")) return .vue;
+   234	    if (std.mem.endsWith(u8, path, ".astro")) return .astro;
+   235	    if (std.mem.endsWith(u8, path, ".sh")) return .shell;
+   236	    if (std.mem.endsWith(u8, path, ".css")) return .css;
+   237	    if (std.mem.endsWith(u8, path, ".scss")) return .scss;
+   238	    if (std.mem.endsWith(u8, path, ".sql")) return .sql;
+   239	    if (std.mem.endsWith(u8, path, ".proto")) return .protobuf;
+   240	    if (std.mem.endsWith(u8, path, ".f90")) return .fortran;
+   241	    if (std.mem.endsWith(u8, path, ".ll")) return .llvm_ir;
+   242	    if (std.mem.endsWith(u8, path, ".mlir")) return .mlir;
+   243	    if (std.mem.endsWith(u8, path, ".td")) return .tablegen;
+   244	    if (std.mem.endsWith(u8, path, ".res") or std.mem.endsWith(u8, path, ".resi")) return .rescript;
+   245	    if (std.mem.endsWith(u8, path, ".ml") or std.mem.endsWith(u8, path, ".mli")) return .ocaml;
+   246	    return .unknown;
+   247	}
+   248	
+   249	/// Returns true for languages whose content is primarily prose / data /
+   250	/// markup rather than executable code. Used to deprioritise these files in
+   251	/// content search so a CHANGELOG.md or design doc cannot starve a canonical
+   252	/// source-file match (issue #430).
+   253	pub fn isDocLanguage(lang: Language) bool {
+   254	    return switch (lang) {
+   255	        .markdown, .json, .yaml, .unknown => true,
+   256	        else => false,
+   257	    };
+   258	}
+   259	
+   260	pub const SymbolResult = struct {

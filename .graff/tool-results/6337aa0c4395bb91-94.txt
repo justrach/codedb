@@ -1,0 +1,91 @@
+exit 0
+''',
+}
+
+for name, content in scripts.items():
+    if name == "codedb-block-legacy.sh" and skip_pretooluse:
+        continue
+    path = os.path.join(hooks_dir, name)
+    with open(path, "w") as f:
+        f.write(content)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+# Merge codedb hooks without clobbering existing hooks from other tools.
+# If a competing legacy-tools hook is already registered for the same
+# event/matcher (e.g. muonry's block-legacy-tools.sh), insert codedb's
+# entry at the FRONT of the list so its redirect wins the race; otherwise
+# append. Re-runs will also reshuffle an already-registered codedb hook
+# to the front if a competitor has appeared since the previous install.
+COMPETITOR_MARKERS = ("block-legacy-tools", "muonry", "zigrep", "zigread")
+
+def merge_hook(event, new_entry):
+    existing = hooks.get(event, [])
+    cmd = new_entry["hooks"][0]["command"]
+    matcher = new_entry.get("matcher", "")
+    competes = any(
+        e.get("matcher", "") == matcher
+        and any(any(m in h.get("command", "") for m in COMPETITOR_MARKERS) for h in e.get("hooks", []))
+        for e in existing
+    )
+    idx = None
+    for i, e in enumerate(existing):
+        if any(cmd in h.get("command", "") for h in e.get("hooks", [])):
+            idx = i
+            break
+    if idx is not None:
+        if competes and idx != 0:
+            existing.insert(0, existing.pop(idx))
+            hooks[event] = existing
+        return
+    if competes:
+        existing.insert(0, new_entry)
+    else:
+        existing.append(new_entry)
+    hooks[event] = existing
+
+if not skip_pretooluse:
+    merge_hook("PreToolUse", {"matcher": "Bash", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-block-legacy.sh"}]})
+    os.makedirs(os.path.dirname(hooks_receipt), exist_ok=True)
+    with open(hooks_receipt, "w") as f:
+        f.write("")
+merge_hook("SessionStart", {"matcher": "", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/codedb-warmup.sh"}]})
+
+# Auto-allow codedb's own MCP tools so callers aren't prompted for every
+# codedb_* call. Purely additive — we add only the codedb-scoped rule and
+# never touch other servers' permissions. The "mcp__codedb__*" form (literal
+# server prefix + tool glob) is the syntax Claude Code's permission validator
+# accepts; a bare "mcp__*" is rejected and silently skipped.
+perms = data.setdefault("permissions", {})
+allow = perms.setdefault("allow", [])
+if isinstance(allow, list) and "mcp__codedb__*" not in allow:
+    allow.append("mcp__codedb__*")
+with open(settings_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+  printf "  ${G}✓${N} hooks        ${D}→ ~/.claude/hooks/ + settings.json${N}\n"
+}
+
+print_hook_notes() {
+  local codedb_bin="$1"
+
+  echo ""
+  printf "  ${W}mcp command${N}\n"
+  printf "  ${C}$codedb_bin mcp${N}\n"
+}
+
+main() {
+  local platform version ext=""
+  platform="$(detect_platform)"
+
+  # #677: detect_platform runs in a command substitution, so it cannot print
+  # to the user or stop the script itself — handle Windows here, before any
+  # download is attempted.
+  if [ "$platform" = "windows" ]; then
+    echo ""
+    printf "  ${W}codedb installer${N}\n"
+    echo ""
+    printf "  ${Y}Windows detected${N} — codedb has a native Windows x86_64 binary.\n"
+    printf "  This Bash installer is for macOS/Linux. Run this in PowerShell:\n"
+    echo ""
+    printf "    ${C}irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5833/install/install.ps1 | iex${N}\n"

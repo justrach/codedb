@@ -1694,6 +1694,13 @@ fn rankingEnvFingerprint() u64 {
         "CODEDB_RVSM_AMP",
         "CODEDB_RVSM_K",
         "CODEDB_IN_DEGREE_CENTRALITY",
+        "CODEDB_CONTEXT_MAX_CANDIDATES",
+        "CODEDB_CONTEXT_TOP_FILES",
+        "CODEDB_CONTEXT_IDENT_SYMBOLS",
+        "CODEDB_CONTEXT_PHRASE",
+        "CODEDB_CONTEXT_PHRASE_BOOST",
+        "CODEDB_CONTEXT_DEMOTE_TESTS",
+        "CODEDB_CONTEXT_COVERAGE_BOOST",
     }) |name| {
         h.update(name);
         if (cio.posixGetenv(name)) |v| h.update(v) else h.update(&[_]u8{0});

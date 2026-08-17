@@ -1,0 +1,14 @@
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":0,"ev":"startup_phase","phase":"args","phase_ms":0,"startup_ms":0}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":0,"ev":"startup_phase","phase":"credentials/model","phase_ms":423,"startup_ms":423}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":0,"ev":"startup_phase","phase":"CA warm scheduled","phase_ms":0,"startup_ms":423}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":0,"ev":"startup_phase","phase":"banner","phase_ms":0,"startup_ms":423}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":0,"ev":"startup_phase","phase":"MCP registry","phase_ms":0,"startup_ms":423}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":0,"ev":"startup_phase","phase":"settings/theme","phase_ms":0,"startup_ms":423}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":2,"ev":"startup_phase","phase":"companion","phase_ms":3,"startup_ms":426}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":5,"ev":"startup_phase","phase":"approvals/hooks/fleet","phase_ms":3,"startup_ms":429}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":8,"ev":"startup_phase","phase":"system prompt","phase_ms":2,"startup_ms":431}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":37,"ev":"recipe","recipe_sha":"a87ef933827d7848","provider":"kimi","model":"kimi-for-coding","effort":"xhigh","prompt_sha":"f1a7e83ba58dd0c8","toolset_sha":"665a40367e28e75c","task_class":"interactive","harness_version":"0.0.264"}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":37,"ev":"session","detail":"kimi-for-coding"}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":37,"ev":"startup_phase","phase":"root agent","phase_ms":29,"startup_ms":460}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":37,"ev":"budget","detail":"final call: tools withheld so the run lands its answer (#390)"}
+{"run_id":"fb3e6da97b6c40ea","pid":25541,"session_id":"5c55437401a2576739efbfed6a7f690c","t":4980,"ev":"api","turn":1,"agent":"main","model":"kimi-for-coding","ms":4942,"req_bytes":21043,"resp_bytes":2017,"context_tokens":8313,"cache_read_tokens":6,"is_error":false}

@@ -1,0 +1,182 @@
+✓ indexed  218.5ms
+# Task
+current unstaged diff rollback locking repair updateLockTryAcquire updateLockRelease replaceBinaryWithRollback run direct local codedb update auto-worker E2E opt-out
+
+## Keywords used
+- updateLockTryAcquire
+- updateLockRelease
+- replaceBinaryWithRollback
+- rollback
+- unstaged
+
+## Symbol definitions
+- updateLockTryAcquire (function) — src/update.zig:41
+          41 | pub fn updateLockTryAcquire(executable_path: []const u8) ?UpdateLock {
+          42 |     var buf: [std.fs.max_path_bytes]u8 = undefined;
+          43 |     const lock_path = cio.bufPrintZ(&buf, "{s}.update.lock", .{executable_path}) catch return null;
+          44 | 
+          45 |     if (builtin.os.tag == .windows) {
+          46 |         const path_w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, lock_path) catch return null;
+          47 |         defer std.heap.page_allocator.free(path_w);
+          48 |         const handle = CreateFileW(path_w.ptr, generic_read | generic_write, 0, null, open_always, 0, null);
+          49 |         if (handle == invalid_handle_value) return null;
+          50 |         return handle;
+          51 |     }
+          52 | 
+          53 |     const fd = std.c.open(lock_path.ptr, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(c_uint, 0o600));
+          54 |     if (fd < 0) return null;
+          55 |     if (std.c.flock(fd, std.c.LOCK.EX | std.c.LOCK.NB) != 0) {
+          56 |         _ = std.c.close(fd);
+          57 |         return null;
+          58 |     }
+          59 |     return fd;
+          60 | }
+- updateLockRelease (function) — src/update.zig:62
+          62 | pub fn updateLockRelease(lock: UpdateLock) void {
+          63 |     if (builtin.os.tag == .windows) {
+          64 |         _ = CloseHandle(lock);
+          65 |         return;
+          66 |     }
+          67 |     _ = std.c.flock(lock, std.c.LOCK.UN);
+          68 |     _ = std.c.close(lock);
+          69 | }
+- replaceBinaryWithRollback (function) — src/update.zig:372
+         372 | pub fn replaceBinaryWithRollback(io: std.Io, replacement_path: []const u8, dest_path: []const u8, old_path: []const u8) !void {
+         373 |     std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+         374 | 
+         375 |     const moved_old = blk: {
+         376 |         std.Io.Dir.renameAbsolute(dest_path, old_path, io) catch break :blk false;
+         377 |         break :blk true;
+         378 |     };
+         379 | 
+         380 |     std.Io.Dir.renameAbsolute(replacement_path, dest_path, io) catch |install_err| {
+         381 |         if (moved_old) {
+         382 |             std.Io.Dir.renameAbsolute(old_path, dest_path, io) catch return error.UpdateRollbackFailed;
+         383 |         }
+         384 |         return install_err;
+         385 |     };
+         386 | }
+
+## Callers (top non-test, non-import usages of these symbols)
+- src/update.zig:107: defer updateLockRelease(update_lock);  [in run (function, L94-L162)]
+- src/update.zig:367: return replaceBinaryWithRollback(io, tmp_path, dest_path, old_path);  [in downloadAndReplaceBinary (function, L336-L370)]
+
+## Related tests (existing coverage touching these symbols)
+- src/test_mcp.zig:454: const first = update_mod.updateLockTryAcquire(executable_path) orelse return error.LockUnavailable;
+- src/test_mcp.zig:455: try testing.expect(update_mod.updateLockTryAcquire(executable_path) == null);
+- src/test_mcp.zig:458: const second = update_mod.updateLockTryAcquire(executable_path) orelse return error.LockUnavailable;
+- src/test_mcp.zig:456: update_mod.updateLockRelease(first);
+- src/test_mcp.zig:459: update_mod.updateLockRelease(second);
+- src/test_mcp.zig:483: update_mod.replaceBinaryWithRollback(io, replacement_path, dest_path, old_path) catch {
+
+## Calls (graph-resolved callees of these symbols)
+- updateLockTryAcquire (function) calls:
+    → bufPrintZ (function)  src/cio.zig:102
+
+## Most-relevant files
+- src/update.zig  (4 matches)
+- src/main.zig  (2 matches)
+- src/cli_proxy.zig  (2 matches)
+- src/cio.zig  (2 matches)
+- src/agent.zig  (2 matches)
+
+## Top sites (with ±2 lines of context)
+
+src/update.zig:41
+```
+};
+
+pub fn updateLockTryAcquire(executable_path: []const u8) ?UpdateLock {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const lock_path = cio.bufPrintZ(&buf, "{s}.update.lock", .{executable_path}) catch return null;
+```
+
+src/update.zig:62
+```
+}
+
+pub fn updateLockRelease(lock: UpdateLock) void {
+    if (builtin.os.tag == .windows) {
+        _ = CloseHandle(lock);
+```
+
+src/update.zig:372
+```
+}
+
+pub fn replaceBinaryWithRollback(io: std.Io, replacement_path: []const u8, dest_path: []const u8, old_path: []const u8) !void {
+    std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+
+```
+
+src/main.zig:124
+```
+
+const cli_proxy = @import("cli_proxy.zig");
+pub const daemonLockTryAcquire = cli_proxy.daemonLockTryAcquire;
+pub const daemonLockRelease = cli_proxy.daemonLockRelease;
+pub const daemonLockAvailable = cli_proxy.daemonLockAvailable;
+```
+
+src/main.zig:125
+```
+const cli_proxy = @import("cli_proxy.zig");
+pub const daemonLockTryAcquire = cli_proxy.daemonLockTryAcquire;
+pub const daemonLockRelease = cli_proxy.daemonLockRelease;
+pub const daemonLockAvailable = cli_proxy.daemonLockAvailable;
+const cliTryProxy = cli_proxy.cliTryProxy;
+```
+
+src/cli_proxy.zig:451
+```
+const DaemonLock = if (builtin.os.tag == .windows) win.HANDLE else c_int;
+
+pub fn daemonLockTryAcquire(data_dir: []const u8) ?DaemonLock {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const p = cio.bufPrintZ(&buf, "{s}/cli-daemon.lock", .{data_dir}) catch return null;
+```
+
+src/cli_proxy.zig:470
+```
+}
+
+pub fn daemonLockRelease(lock: DaemonLock) void {
+    if (builtin.os.tag == .windows) {
+        win.CloseHandle(lock);
+```
+
+src/cio.zig:221
+```
+        return winsync.TryAcquireSRWLockExclusive(&self.inner) != 0;
+    }
+    pub fn tryLockShared(self: *RwLock) bool {
+        return winsync.TryAcquireSRWLockShared(&self.inner) != 0;
+    }
+```
+
+src/cio.zig:3
+```
+//! cio.zig — 0.16 stdlib compatibility shim.
+//!
+//! 0.16 removed std.fs.File.{stdout,stderr,stdin}, cio.Mutex/RwLock,
+//! std.time.Timer, std.time.nanoTimestamp, std.process.Child.run, and
+//! cio.posixGetenv. This shim wraps libc/pthread primitives so existing
+```
+
+src/agent.zig:115
+```
+
+    /// Try to acquire an advisory lock on a file path for an agent.
+    pub fn tryLock(self: *AgentRegistry, agent_id: AgentId, path: []const u8, ttl_ms: i64) !bool {
+        self.mu.lock();
+        defer self.mu.unlock();
+```
+
+src/agent.zig:150
+```
+        return false;
+    }
+    pub fn releaseLock(self: *AgentRegistry, agent_id: AgentId, path: []const u8) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+```

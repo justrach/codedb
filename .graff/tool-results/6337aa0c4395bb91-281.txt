@@ -1,0 +1,167 @@
+  735 fn runCapturePosix(opts: RunOptions) !CaptureResult {
+  736     if (opts.argv.len == 0) return error.EmptyArgv;
+  737     const alloc = opts.allocator;
+  738 
+  739     const c_argv = try alloc.alloc(?[*:0]const u8, opts.argv.len + 1);
+  740     defer alloc.free(c_argv);
+  741     const arg_bufs = try alloc.alloc([]u8, opts.argv.len);
+  742     defer {
+  743         for (arg_bufs) |b| alloc.free(b);
+  744         alloc.free(arg_bufs);
+  745     }
+  746     for (opts.argv, 0..) |a, i| {
+  747         const buf = try alloc.alloc(u8, a.len + 1);
+  748         @memcpy(buf[0..a.len], a);
+  749         buf[a.len] = 0;
+  750         arg_bufs[i] = buf;
+  751         c_argv[i] = @ptrCast(buf.ptr);
+  752     }
+  753     c_argv[opts.argv.len] = null;
+  754     const c_argv_z: [*:null]const ?[*:0]const u8 = @ptrCast(c_argv.ptr);
+  755 
+  756     var out_pipe: [2]c_int = .{ -1, -1 };
+  757     var err_pipe: [2]c_int = .{ -1, -1 };
+  758     if (posix_libc.pipe(&out_pipe) != 0) return error.PipeFailed;
+  759     errdefer {
+  760         if (out_pipe[0] >= 0) _ = close(out_pipe[0]);
+  761         if (out_pipe[1] >= 0) _ = close(out_pipe[1]);
+  762     }
+  763     if (posix_libc.pipe(&err_pipe) != 0) return error.PipeFailed;
+  764     errdefer {
+  765         if (err_pipe[0] >= 0) _ = close(err_pipe[0]);
+  766         if (err_pipe[1] >= 0) _ = close(err_pipe[1]);
+  767     }
+  768 
+  769     var fa_storage: PosixSpawnFAStorage = undefined;
+  770     const fa: *PosixSpawnFileActions = @ptrCast(&fa_storage);
+  771     if (posix_spawn_file_actions_init(fa) != 0) return error.SpawnInitFailed;
+  772     defer _ = posix_spawn_file_actions_destroy(fa);
+  773 
+  774     if (opts.cwd) |cwd| {
+  775         var cwd_buf: [4096]u8 = undefined;
+  776         if (cwd.len >= cwd_buf.len) return error.PathTooLong;
+  777         @memcpy(cwd_buf[0..cwd.len], cwd);
+  778         cwd_buf[cwd.len] = 0;
+  779         // posix_spawn_file_actions_addchdir_np is glibc 2.29+ / macOS 10.15+.
+  780         // Returns ENOSYS on older systems — caller treats that as fatal here.
+  781         if (posix_spawn_file_actions_addchdir_np(fa, @ptrCast(&cwd_buf)) != 0) {
+  782             return error.CwdNotSupported;
+  783         }
+  784     }
+  785 
+  786     _ = posix_spawn_file_actions_adddup2(fa, out_pipe[1], 1);
+  787     _ = posix_spawn_file_actions_adddup2(fa, err_pipe[1], 2);
+  788     _ = posix_spawn_file_actions_addclose(fa, out_pipe[0]);
+  789     _ = posix_spawn_file_actions_addclose(fa, out_pipe[1]);
+  790     _ = posix_spawn_file_actions_addclose(fa, err_pipe[0]);
+  791     _ = posix_spawn_file_actions_addclose(fa, err_pipe[1]);
+  792 
+  793     const envp: [*:null]const ?[*:0]const u8 = if (builtin.os.tag == .macos)
+  794         @ptrCast(_NSGetEnviron().*)
+  795     else
+  796         @ptrCast(std.c.environ);
+  797 
+  798     var pid: pid_t = 0;
+  799     if (posix_spawnp(&pid, c_argv[0].?, fa, null, c_argv_z, envp) != 0)
+  800         return error.SpawnFailed;
+  801 
+  802     _ = close(out_pipe[1]);
+  803     out_pipe[1] = -1;
+  804     _ = close(err_pipe[1]);
+  805     err_pipe[1] = -1;
+  806 
+  807     // Drain stderr on a background thread so neither pipe can fill up and
+  808     // deadlock the child. Main thread drains stdout.
+  809     const DrainCtx = struct {
+  810         fd: c_int,
+  811         cap: usize,
+  812         alloc: std.mem.Allocator,
+  813         out: std.ArrayList(u8) = .empty,
+  814         err: ?anyerror = null,
+  815 
+  650     const term: CaptureResult.Term = switch (result.term) {
+  651         .exited => |code| .{ .Exited = code },
+  652         .signal => |sig| .{ .Signal = @intFromEnum(sig) },
+  653         .stopped => |sig| .{ .Stopped = @intFromEnum(sig) },
+  654         .unknown => |code| .{ .Unknown = code },
+  655     };
+  656     return .{
+  657         .stdout = result.stdout,
+  658         .stderr = result.stderr,
+  659         .term = term,
+  660     };
+  661 }
+  662 
+  663 const INVALID_FILE_ATTRIBUTES: u32 = 0xffff_ffff;
+  664 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+  665 
+  666 extern "kernel32" fn GetFileAttributesW(lpFileName: [*:0]const u16) callconv(.winapi) u32;
+  667 
+  668 fn windowsResolvedRunCaptureArgv0(allocator: std.mem.Allocator, argv0: []const u8, cwd: ?[]const u8) !?[]u8 {
+  669     if (!is_windows) return null;
+  670     if (argv0.len == 0) return error.EmptyArgv;
+  671 
+  672     if (windowsArgv0HasPathComponent(argv0)) {
+  673         if (std.fs.path.isAbsoluteWindows(argv0)) return null;
+  674         if (cwd != null) return error.UnsafeRelativeExecutable;
+  675         return null;
+  676     }
+  677 
+  678     return try resolveExecutableFromPathWindows(allocator, argv0) orelse error.ExecutableNotFound;
+  679 }
+  680 
+  681 fn windowsArgv0HasPathComponent(argv0: []const u8) bool {
+  682     return std.mem.indexOfAny(u8, argv0, "\\/:") != null;
+  683 }
+  684 
+  685 pub fn resolveExecutableFromPathWindows(allocator: std.mem.Allocator, name: []const u8) !?[]u8 {
+  686     if (!is_windows) return null;
+  687     if (name.len == 0 or windowsArgv0HasPathComponent(name)) return null;
+  688 
+  689     const explicit_ext = std.fs.path.extension(name);
+  690     if (explicit_ext.len > 0 and !isSafeWindowsExecutableExtension(explicit_ext)) return null;
+  691 
+  692     const path = posixGetenv("PATH") orelse return null;
+  693     var dirs = std.mem.splitScalar(u8, path, ';');
+  694     while (dirs.next()) |raw_dir| {
+  695         const dir = std.mem.trim(u8, raw_dir, " \t\"");
+  696         if (dir.len == 0 or !std.fs.path.isAbsoluteWindows(dir)) continue;
+  697 
+  698         if (explicit_ext.len > 0) {
+  699             if (try windowsExecutableCandidate(allocator, dir, name)) |candidate| return candidate;
+  700             continue;
+  701         }
+  702 
+  703         const safe_exts = [_][]const u8{ ".exe", ".com" };
+  704         for (safe_exts) |ext| {
+  705             const candidate_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ name, ext });
+  706             defer allocator.free(candidate_name);
+  707             if (try windowsExecutableCandidate(allocator, dir, candidate_name)) |candidate| return candidate;
+  708         }
+  709     }
+  710     return null;
+  711 }
+  712 
+  713 fn isSafeWindowsExecutableExtension(ext: []const u8) bool {
+  714     return std.ascii.eqlIgnoreCase(ext, ".exe") or std.ascii.eqlIgnoreCase(ext, ".com");
+  715 }
+  716 
+  717 fn windowsExecutableCandidate(allocator: std.mem.Allocator, dir: []const u8, file_name: []const u8) !?[]u8 {
+  718     const sep: []const u8 = if (std.mem.endsWith(u8, dir, "\\") or std.mem.endsWith(u8, dir, "/")) "" else "\\";
+  719     const candidate = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ dir, sep, file_name });
+  720     errdefer allocator.free(candidate);
+  721     if (!windowsFileExists(candidate, allocator)) {
+  722         allocator.free(candidate);
+  723         return null;
+  724     }
+  725     return candidate;
+  726 }
+  727 
+  728 fn windowsFileExists(path: []const u8, allocator: std.mem.Allocator) bool {
+  729     const w = std.unicode.utf8ToUtf16LeAllocZ(allocator, path) catch return false;
+  730     defer allocator.free(w);
+  731     const attrs = GetFileAttributesW(w.ptr);
+  732     return attrs != INVALID_FILE_ATTRIBUTES and (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+  733 }
+  734 
+  735 fn runCapturePosix(opts: RunOptions) !CaptureResult {

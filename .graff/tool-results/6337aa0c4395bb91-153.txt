@@ -1,0 +1,301 @@
+    try testing.expect(!root_policy.isIndexableRoot("/"));
+}
+
+test "issue-570: codedb_context falls back to plain words for all-lowercase tasks" {
+    // 'fix search ranking' has no identifier-shaped token (no snake_case, no
+    // camelCase, no quotes), so extractContextCandidates finds nothing and the
+    // handler dead-ends with 'no candidate identifiers found'. Natural-language
+    // tasks are the documented input shape — the composer must fall back to
+    // plain words instead of erroring.
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/ranking.zig", "pub fn rankingBoost() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{"task":"fix search ranking"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // An all-lowercase task must not dead-end…
+    try testing.expect(std.mem.indexOf(u8, out.items, "no candidate identifiers") == null);
+    // …its longest meaningful word ('ranking') must drive the composer.
+    try testing.expect(std.mem.indexOf(u8, out.items, "ranking") != null);
+}
+
+test "issue-573: cli bridge must not bind a leading flag as the positional name" {
+    // Live repro: `codedb callers --max-results 3 indexFile` reported
+    // "1 call sites for '--max-results'" — the bridge takes args[cmd_args_start]
+    // blindly, so a leading flag silently becomes the name. It must fall
+    // through to the command's usage error instead.
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/a.zig", "pub fn indexFile() void {}\npub fn caller() void {\n    indexFile();\n}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    const argv = [_][]const u8{ "--max-results", "3", "indexFile" };
+    const code = mcp_mod.runCliTool(io, testing.allocator, &explorer, &store, ".", "callers", &argv, 0, &out);
+    try testing.expect(code != null);
+    // The flag must not be reported as the function name…
+    try testing.expect(std.mem.indexOf(u8, out.items, "call sites for '--max-results'") == null);
+    // …the command fails to its usage line instead.
+    try testing.expect(std.mem.indexOf(u8, out.items, "callers <name>") != null);
+
+    // Companion UX defect, same audit: an explicitly empty symbol name must be
+    // a usage error (mirrors codedb_callers), not "no results for: ".
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const sargs_json =
+        \\{"name":""}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, sargs_json, .{});
+    defer parsed.deinit();
+
+    var sout: std.ArrayList(u8) = .empty;
+    defer sout.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_symbol, &parsed.value.object, &sout, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, sout.items, "error: empty name") != null);
+}
+
+test "issue-576: codedb_ls distinguishes a non-indexed path from an empty listing" {
+    // `codedb ls nonexistent/dir` printed 'no entries' with exit 0 —
+    // indistinguishable from a real-but-empty directory. An index only knows
+    // a directory through files under it, so an empty listing for a non-empty
+    // prefix always means the path is not indexed: say so (the 'error:' prefix
+    // also makes finishCli return exit 1 on the CLI bridge).
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/a.zig", "pub fn a() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const bad_json =
+        \\{"path":"nonexistent/dir"}
+    ;
+    const bad_parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bad_json, .{});
+    defer bad_parsed.deinit();
+
+    var bad_out: std.ArrayList(u8) = .empty;
+    defer bad_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_ls, &bad_parsed.value.object, &bad_out, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, bad_out.items, "error: no indexed files under 'nonexistent/dir'") != null);
+
+    // A real prefix still lists its entries.
+    const ok_json =
+        \\{"path":"src"}
+    ;
+    const ok_parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, ok_json, .{});
+    defer ok_parsed.deinit();
+
+    var ok_out: std.ArrayList(u8) = .empty;
+    defer ok_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_ls, &ok_parsed.value.object, &ok_out, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, ok_out.items, "a.zig") != null);
+}
+
+test "issue-578: cli bridge serves codedb_changes" {
+    // `codedb changes` parsed as a ROOT directory (unknown first token in the
+    // [root] <command> grammar) and printed usage — codedb_changes existed
+    // only as an MCP tool because the bridge had no store to hand to
+    // handleChanges. The bridge must serve it like the other read-only tools.
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/a.zig", "pub fn a() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    _ = store.recordSnapshot("src/a.zig", 10, 123) catch {};
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    const argv = [_][]const u8{};
+    const code = mcp_mod.runCliTool(io, testing.allocator, &explorer, &store, ".", "changes", &argv, 0, &out);
+    // Pre-#578 the bridge did not know 'changes' and returned null.
+    try testing.expect(code != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "seq:") != null);
+}
+
+// ─── audit (2026-06-09): latent-issue sweep — secret-path detection ───
+// src/watcher.zig + src/snapshot.zig isSensitivePath missed *.env suffix files and
+// .git-credentials, so those secrets were indexed/read.
+test "audit: isSensitivePath blocks *.env suffix files and .git-credentials" {
+    try testing.expect(watcher.isSensitivePath("production.env"));
+    try testing.expect(watcher.isSensitivePath("staging.env"));
+    try testing.expect(watcher.isSensitivePath("secrets.env"));
+    try testing.expect(watcher.isSensitivePath("deploy/secrets.env"));
+    try testing.expect(watcher.isSensitivePath(".git-credentials"));
+    // existing positive (prefix .env.* form) must still hold
+    try testing.expect(watcher.isSensitivePath(".env.production"));
+    // negatives — guard against an over-broad change
+    try testing.expect(!watcher.isSensitivePath("main.zig"));
+    try testing.expect(!watcher.isSensitivePath("environment.ts"));
+}
+
+// ─── #568: empty deps lists print '(none)' with no '(N files)' summary ───
+// Non-empty lists end with a '(N files)' summary; empty lists printed a body
+// line '  (none)' and no summary, so machine consumers that parse the list
+// body saw one entry (engram counted in-degree 1 for every zero-importer
+// file). The summary line must be present unconditionally.
+test "issue-568: deps empty list prints a (0 files) summary" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/lone.zig", "pub fn lonely() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    // imported_by (default): nothing imports src/lone.zig.
+    const rev_json =
+        \\{"path":"src/lone.zig"}
+    ;
+    const rev_parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, rev_json, .{});
+    defer rev_parsed.deinit();
+    var rev_out: std.ArrayList(u8) = .empty;
+    defer rev_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_deps, &rev_parsed.value.object, &rev_out, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, rev_out.items, "(none)") != null);
+    try testing.expect(std.mem.indexOf(u8, rev_out.items, "(0 files)") != null);
+
+    // depends_on: src/lone.zig imports nothing.
+    const fwd_json =
+        \\{"path":"src/lone.zig","direction":"depends_on"}
+    ;
+    const fwd_parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, fwd_json, .{});
+    defer fwd_parsed.deinit();
+    var fwd_out: std.ArrayList(u8) = .empty;
+    defer fwd_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_deps, &fwd_parsed.value.object, &fwd_out, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, fwd_out.items, "(none)") != null);
+    try testing.expect(std.mem.indexOf(u8, fwd_out.items, "(0 files)") != null);
+}
+
+test "issue-589: isSensitivePath blocks all OpenSSH default private key names" {
+    // The exact-name list covers id_rsa and id_ed25519 but misses the other
+    // ssh-keygen defaults: id_ecdsa, id_dsa, and the FIDO variants
+    // id_ecdsa_sk / id_ed25519_sk. Outside ~/.ssh (which the directory rule
+    // catches), a key copied into a repo — deploy/id_ecdsa — was indexed and
+    // readable while deploy/id_rsa was blocked.
+    const keys = [_][]const u8{ "id_ecdsa", "id_dsa", "id_ecdsa_sk", "id_ed25519_sk" };
+    for (keys) |k| {
+        try testing.expect(watcher.isSensitivePath(k));
+        try testing.expect(snapshot_mod.isSensitivePath(k));
+    }
+    try testing.expect(watcher.isSensitivePath("deploy/id_ecdsa"));
+    // negatives — names that merely start like a key must stay indexable
+    try testing.expect(!watcher.isSensitivePath("id_map.zig"));
+    try testing.expect(!watcher.isSensitivePath("identity.ts"));
+}
+
+test "issue-592: cli-daemon spawn lock is exclusive per project" {
+    // Concurrent cold CLI calls used to fork a cli-daemon EACH (no mutual
+    // exclusion), every duplicate re-scanned the index, and the stale-socket
+    // unlink let late arrivals steal the winner's socket — orphan daemons
+    // churned CPU long after the calls exited. The per-project flock makes
+    // spawn mutually exclusive: holders win, probes report unavailable, and
+    // the kernel releases the lock on any exit.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    if (builtin.os.tag == .windows) {
+        try tmp.dir.createDirPath(io, "unicode-å");
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, if (builtin.os.tag == .windows) "unicode-å" else ".", &path_buf);
+    const dir_path = path_buf[0..dir_len];
+
+    const held = main_mod.daemonLockTryAcquire(dir_path);
+    try testing.expect(held != null);
+    // A second acquire (the would-be duplicate daemon) must lose...
+    try testing.expect(main_mod.daemonLockTryAcquire(dir_path) == null);
+    // ...and the CLI spawn probe must report the lock as taken.
+    try testing.expect(!main_mod.daemonLockAvailable(dir_path));
+
+    main_mod.daemonLockRelease(held.?);
+    try testing.expect(main_mod.daemonLockAvailable(dir_path));
+}
+
+test "cli-mcp-parity: runCliTool bridges navigation commands to MCP handlers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    try exp.indexFile("src/store.zig", "pub const Store = struct {};\n");
+    try exp.indexFile("src/main.zig", "const Store = @import(\"store.zig\").Store;\npub fn main() void {}\n");
+
+    var store = Store.init(aa);
+
+    // glob: pattern -> matching indexed paths (reuses handleGlob)
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(aa);
+        const code = mcp_mod.runCliTool(io, aa, &exp, &store, ".", "glob", &.{ "codedb", ".", "glob", "src/*.zig" }, 3, &out);
+        try testing.expectEqual(@as(?u8, 0), code);
+        try testing.expect(std.mem.indexOf(u8, out.items, "src/store.zig") != null);
+        try testing.expect(std.mem.indexOf(u8, out.items, "src/main.zig") != null);
+    }
+
+    // symbol: name -> definition site (reuses handleSymbol)
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(aa);
+        const code = mcp_mod.runCliTool(io, aa, &exp, &store, ".", "symbol", &.{ "codedb", ".", "symbol", "Store" }, 3, &out);
+        try testing.expectEqual(@as(?u8, 0), code);
+        try testing.expect(std.mem.indexOf(u8, out.items, "src/store.zig") != null);
+    }
+
+    // unknown command -> null so runQuery falls through to its own usage error
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(aa);
+        try testing.expectEqual(@as(?u8, null), mcp_mod.runCliTool(io, aa, &exp, &store, ".", "bogus", &.{ "codedb", ".", "bogus" }, 3, &out));
+    }
+
+    // missing required arg -> usage line, exit 1
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(aa);
+        try testing.expectEqual(@as(?u8, 1), mcp_mod.runCliTool(io, aa, &exp, &store, ".", "glob", &.{ "codedb", ".", "glob" }, 3, &out));
+        try testing.expect(std.mem.indexOf(u8, out.items, "usage") != null);
+    }
+}
+
+test "issue-531: codedb_context max_tokens packs sections by value under the budget" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // A defined symbol with a fat body (inlined when unbudgeted) plus several
+    // mention files so the snippets section is large too.

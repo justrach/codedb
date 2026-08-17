@@ -1,0 +1,121 @@
+/// Versions of the MCP spec this server has been verified against. Listed
+/// newest-first because clients that send a newer version than we know
+/// should still get our newest known version back, not an old one.
+const SUPPORTED_PROTOCOL_VERSIONS = [_][]const u8{
+    "2026-07-28",
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+};
+
+/// Pick the protocol version to send back in initialize. Returns the
+/// client's requested version if we recognize it, the latest version we
+/// know about if the request is newer than that, or null if the request
+/// looks malformed and the caller should fall back to a default. See
+/// #505 / #506 — older clients (Zed, certain opencode versions) reject
+/// a server reply with a protocolVersion they don't understand.
+pub fn negotiateProtocolVersion(requested: []const u8) ?[]const u8 {
+    if (requested.len == 0) return null;
+    for (SUPPORTED_PROTOCOL_VERSIONS) |v| {
+        if (std.mem.eql(u8, v, requested)) return v;
+    }
+    // Unknown version. If it looks like a future date (lex-greater than our
+    // latest), reply with our latest. Otherwise reply with our oldest known
+    // version so older clients at least get a compatible-shaped response.
+    if (std.mem.order(u8, requested, SUPPORTED_PROTOCOL_VERSIONS[0]) == .gt) {
+        return SUPPORTED_PROTOCOL_VERSIONS[0];
+    }
+    return SUPPORTED_PROTOCOL_VERSIONS[SUPPORTED_PROTOCOL_VERSIONS.len - 1];
+}
+
+/// JSON array form of SUPPORTED_PROTOCOL_VERSIONS, built at comptime so
+/// server/discover and the -32022 error data can never drift from the
+/// negotiation list.
+pub const supported_versions_json = blk: {
+    var s: []const u8 = "[";
+    for (SUPPORTED_PROTOCOL_VERSIONS, 0..) |v, i| {
+        s = s ++ (if (i == 0) "\"" else ",\"") ++ v ++ "\"";
+    }
+    break :blk s ++ "]";
+};
+
+pub const mcp_instructions = "codedb is code intelligence, not your editor. Reach for structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline before reading a file, codedb_context to orient on a task. Use codedb_search only when the symbol name is unknown. Make edits with your native tools.";
+
+/// MCP 2026-07-28 `server/discover` — the stateless-mode probe/identity RPC.
+/// Prebuilt at comptime; declares resultType itself so assembleJsonRpcResult
+/// passes it through without re-splicing.
+pub const discover_result = "{\"resultType\":\"complete\",\"supportedVersions\":" ++ supported_versions_json ++
+    ",\"capabilities\":{\"tools\":{\"listChanged\":false},\"extensions\":{}}" ++
+    ",\"instructions\":\"" ++ mcp_instructions ++ "\"" ++
+    ",\"ttlMs\":3600000,\"cacheScope\":\"public\"" ++
+    ",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"" ++ release_info.semver ++ "\"}}}";
+
+/// The version string from params._meta["io.modelcontextprotocol/protocolVersion"]
+/// when it names a revision we do not support; null when the key is absent or
+/// the version is supported. Legacy clients never send the key, so the classic
+/// initialize negotiation path is untouched.
+pub fn unsupportedMetaProtocolVersion(root: *const std.json.ObjectMap) ?[]const u8 {
+    const p = root.get("params") orelse return null;
+    if (p != .object) return null;
+    const m = p.object.get("_meta") orelse return null;
+    if (m != .object) return null;
+    const v = mcpj.getStr(&m.object, "io.modelcontextprotocol/protocolVersion") orelse return null;
+    for (SUPPORTED_PROTOCOL_VERSIONS) |s| {
+        if (std.mem.eql(u8, s, v)) return null;
+    }
+    return v;
+}
+
+fn writeUnsupportedProtocolVersionError(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, requested: []const u8) void {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
+    appendId(alloc, &buf, id);
+    buf.appendSlice(alloc, ",\"error\":{\"code\":-32022,\"message\":\"Unsupported protocol version\",\"data\":{\"requested\":\"") catch return;
+    mcpj.writeEscaped(alloc, &buf, requested);
+    buf.appendSlice(alloc, "\",\"supported\":" ++ supported_versions_json ++ "}}}\n") catch return;
+    stdout.writeAll(buf.items) catch {
+        stdout_broken.store(true, .release);
+        return;
+    };
+}
+
+fn requestRoots(s: *Session) void {
+    const rid = s.next_id;
+    s.next_id += 1;
+    s.pending_roots_id = rid;
+    writeRequest(s.alloc, s.stdout, rid, "roots/list", "{}");
+}
+
+fn handleResponse(io: std.Io, s: *Session, root: *const std.json.ObjectMap) void {
+    const resp_id_val = root.get("id") orelse return;
+    const resp_id: i64 = switch (resp_id_val) {
+        .integer => |n| n,
+        else => return,
+    };
+    if (s.pending_roots_id) |pid| {
+        if (resp_id == pid) {
+            s.pending_roots_id = null;
+            if (root.get("error") != null) return;
+            const result_val = root.get("result") orelse return;
+            if (result_val != .object) return;
+            parseRoots(io, s, &result_val.object);
+        }
+    }
+}
+
+fn parseRoots(io: std.Io, s: *Session, result: *const std.json.ObjectMap) void {
+    s.freeRoots();
+    const roots_val = result.get("roots") orelse return;
+    if (roots_val != .array) return;
+    for (roots_val.array.items) |item| {
+        if (item != .object) continue;
+        const obj = item.object;
+        const uri_raw = mcpj.getStr(&obj, "uri") orelse continue;
+        const name_raw = mcpj.getStr(&obj, "name") orelse "";
+        // Strip file:// prefix for policy check
+        const path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+        if (!root_policy.isIndexableRoot(path) and !root_policy.isBootstrapableRoot(io, path)) {
+            std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
+            continue;

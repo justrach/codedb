@@ -1,0 +1,35 @@
+
+[stderr]
+test
++- run test 2 pass, 3 fail (5 total)
+error: 'test_mcp.test.issue-682: codedb_callers recognizes PHP and Swift trailing comments' failed:
+       /Users/rachpradhan/.local/share/zigup/0.17.0-dev.813+2153f8143/files/lib/std/testing.zig:607:14: 0x102aef27b in expect (test)
+           if (!ok) return error.TestUnexpectedResult;
+                    ^
+       /Users/rachpradhan/codedb/src/test_mcp.zig:3837:5: 0x102d99e0f in test.issue-682: codedb_callers recognizes PHP and Swift trailing comments (test)
+           try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'renderX'") != null);
+           ^
+error: 'test_mcp.test.issue-682: codedb_callers keeps calls after markers inside literals and block comments' failed:
+       /Users/rachpradhan/.local/share/zigup/0.17.0-dev.813+2153f8143/files/lib/std/testing.zig:607:14: 0x102aef27b in expect (test)
+           if (!ok) return error.TestUnexpectedResult;
+                    ^
+       /Users/rachpradhan/codedb/src/test_mcp.zig:3857:5: 0x102d992b7 in test.issue-682: codedb_callers keeps calls after markers inside literals and block comments (test)
+           try testing.expect(std.mem.indexOf(u8, out.items, "4 call sites for 'renderX'") != null);
+           ^
+error: 'test_mcp.test.issue-682: codedb_callers recognizes shell comments after operators' failed:
+       /Users/rachpradhan/.local/share/zigup/0.17.0-dev.813+2153f8143/files/lib/std/testing.zig:607:14: 0x102aef27b in expect (test)
+           if (!ok) return error.TestUnexpectedResult;
+                    ^
+       /Users/rachpradhan/codedb/src/test_mcp.zig:3875:5: 0x102aef4f3 in test.issue-682: codedb_callers recognizes shell comments after operators (test)
+           try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+           ^
+failed command: ./.zig-cache/o/efe8854ec22e7ca1e418e72be6ea086f/test --cache-dir=./.zig-cache --seed=0xb1198cbb --listen=-
+
+Build Summary: 21/23 steps succeeded (1 failed); 2/5 tests passed (3 failed)
+test transitive failure
++- run test 2 pass, 3 fail (5 total)
+
+error: the following maker command exited with code 1:
+/Users/rachpradhan/.cache/zig/o/6e33eef3319a5dd8ad4edd17ca1c17e1/maker --zig /Users/rachpradhan/.local/share/zigup/0.17.0-dev.813+2153f8143/files/zig --zig-lib-dir /Users/rachpradhan/.local/share/zigup/0.17.0-dev.813+2153f8143/files/lib --build-root /Users/rachpradhan/codedb --local-cache .zig-cache --global-cache /Users/rachpradhan/.cache/zig --configuration .zig-cache/c/81ef69dcb2d698f7ed5e0d4e498c8a21 --seed 0xb1198cbb test
+
+[exit code 1]

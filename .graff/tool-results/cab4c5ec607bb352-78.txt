@@ -1,0 +1,23 @@
+2 results for 'isCommentOrBlank':
+  src/explore.zig:8130 (function) isCommentOrBlank  // pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
+ 8130 | pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
+ 8131 |     const trimmed = std.mem.trim(u8, line, " \t");
+ 8132 |     if (trimmed.len == 0) return true;
+ 8133 |     return switch (language) {
+ 8134 |         .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
+ 8135 |         .python, .ruby, .r, .shell => std.mem.startsWith(u8, trimmed, "#"),
+ 8136 |         .hcl => std.mem.startsWith(u8, trimmed, "#") or std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+ 8137 |         .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .protobuf, .mlir, .tablegen => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+ 8138 |         .svelte, .vue, .astro => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*") or std.mem.startsWith(u8, trimmed, "<!--"),
+ 8139 |         .css => std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+ 8140 |         .scss => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+ 8141 |         .sql => std.mem.startsWith(u8, trimmed, "--") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+ 8142 |         .fortran => std.mem.startsWith(u8, trimmed, "!"),
+ 8143 |         .llvm_ir => std.mem.startsWith(u8, trimmed, ";"),
+ 8144 |         .rescript => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+ 8145 |         .ocaml => std.mem.startsWith(u8, trimmed, "(*"),
+ 8146 |         else => false,
+ 8147 |     };
+ 8148 | }
+  src/test_explore.zig:133 (constant) isCommentOrBlank  // const isCommentOrBlank = explore.isCommentOrBlank;
+  133 | const isCommentOrBlank = explore.isCommentOrBlank;

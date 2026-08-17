@@ -1,0 +1,116 @@
+fn runCapturePosix(opts: RunOptions) !CaptureResult {
+    if (opts.argv.len == 0) return error.EmptyArgv;
+    const alloc = opts.allocator;
+
+    const c_argv = try alloc.alloc(?[*:0]const u8, opts.argv.len + 1);
+    defer alloc.free(c_argv);
+    const arg_bufs = try alloc.alloc([]u8, opts.argv.len);
+    defer {
+        for (arg_bufs) |b| alloc.free(b);
+        alloc.free(arg_bufs);
+    }
+    for (opts.argv, 0..) |a, i| {
+        const buf = try alloc.alloc(u8, a.len + 1);
+        @memcpy(buf[0..a.len], a);
+        buf[a.len] = 0;
+        arg_bufs[i] = buf;
+        c_argv[i] = @ptrCast(buf.ptr);
+    }
+    c_argv[opts.argv.len] = null;
+    const c_argv_z: [*:null]const ?[*:0]const u8 = @ptrCast(c_argv.ptr);
+
+    var out_pipe: [2]c_int = .{ -1, -1 };
+    var err_pipe: [2]c_int = .{ -1, -1 };
+    if (posix_libc.pipe(&out_pipe) != 0) return error.PipeFailed;
+    errdefer {
+        if (out_pipe[0] >= 0) _ = close(out_pipe[0]);
+        if (out_pipe[1] >= 0) _ = close(out_pipe[1]);
+    }
+    if (posix_libc.pipe(&err_pipe) != 0) return error.PipeFailed;
+    errdefer {
+        if (err_pipe[0] >= 0) _ = close(err_pipe[0]);
+        if (err_pipe[1] >= 0) _ = close(err_pipe[1]);
+    }
+
+    var fa_storage: PosixSpawnFAStorage = undefined;
+    const fa: *PosixSpawnFileActions = @ptrCast(&fa_storage);
+    if (posix_spawn_file_actions_init(fa) != 0) return error.SpawnInitFailed;
+    defer _ = posix_spawn_file_actions_destroy(fa);
+
+    if (opts.cwd) |cwd| {
+        var cwd_buf: [4096]u8 = undefined;
+        if (cwd.len >= cwd_buf.len) return error.PathTooLong;
+        @memcpy(cwd_buf[0..cwd.len], cwd);
+        cwd_buf[cwd.len] = 0;
+        // posix_spawn_file_actions_addchdir_np is glibc 2.29+ / macOS 10.15+.
+        // Returns ENOSYS on older systems — caller treats that as fatal here.
+        if (posix_spawn_file_actions_addchdir_np(fa, @ptrCast(&cwd_buf)) != 0) {
+            return error.CwdNotSupported;
+        }
+    }
+
+    _ = posix_spawn_file_actions_adddup2(fa, out_pipe[1], 1);
+    _ = posix_spawn_file_actions_adddup2(fa, err_pipe[1], 2);
+    _ = posix_spawn_file_actions_addclose(fa, out_pipe[0]);
+    _ = posix_spawn_file_actions_addclose(fa, out_pipe[1]);
+    _ = posix_spawn_file_actions_addclose(fa, err_pipe[0]);
+    _ = posix_spawn_file_actions_addclose(fa, err_pipe[1]);
+
+    const envp: [*:null]const ?[*:0]const u8 = if (builtin.os.tag == .macos)
+        @ptrCast(_NSGetEnviron().*)
+    else
+        @ptrCast(std.c.environ);
+
+    var pid: pid_t = 0;
+    if (posix_spawnp(&pid, c_argv[0].?, fa, null, c_argv_z, envp) != 0)
+        return error.SpawnFailed;
+
+    _ = close(out_pipe[1]);
+    out_pipe[1] = -1;
+    _ = close(err_pipe[1]);
+    err_pipe[1] = -1;
+
+    // Drain stderr on a background thread so neither pipe can fill up and
+    // deadlock the child. Main thread drains stdout.
+    const DrainCtx = struct {
+        fd: c_int,
+        cap: usize,
+        alloc: std.mem.Allocator,
+        out: std.ArrayList(u8) = .empty,
+        err: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            var chunk: [64 * 1024]u8 = undefined;
+            while (self.out.items.len < self.cap) {
+                const want = @min(chunk.len, self.cap - self.out.items.len);
+                const n = read(self.fd, &chunk, want);
+                if (n <= 0) break;
+                self.out.appendSlice(self.alloc, chunk[0..@intCast(n)]) catch |e| {
+                    self.err = e;
+                    return;
+                };
+            }
+        }
+    };
+    var err_ctx: DrainCtx = .{ .fd = err_pipe[0], .cap = opts.max_output_bytes, .alloc = alloc };
+    errdefer err_ctx.out.deinit(alloc);
+    const err_thread = try std.Thread.spawn(.{}, DrainCtx.run, .{&err_ctx});
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var chunk: [64 * 1024]u8 = undefined;
+    while (out.items.len < opts.max_output_bytes) {
+        const want = @min(chunk.len, opts.max_output_bytes - out.items.len);
+        const n = read(out_pipe[0], &chunk, want);
+        if (n <= 0) break;
+        try out.appendSlice(alloc, chunk[0..@intCast(n)]);
+    }
+    _ = close(out_pipe[0]);
+    out_pipe[0] = -1;
+
+    err_thread.join();
+    _ = close(err_pipe[0]);
+    err_pipe[0] = -1;
+    if (err_ctx.err) |e| {
+        err_ctx.out.deinit(alloc);
+        return e;

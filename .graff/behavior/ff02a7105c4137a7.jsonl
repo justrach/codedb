@@ -1,0 +1,2 @@
+{"kind":"run_started","seq":1,"ts":1785901091.918572,"run_id":"ff02a7105c4137a7","schema":"codegraff.behavior.v1","version":"0.0.238","unix_ms":1785901091907,"provider":"codex","model":"gpt-5.6-sol","prompt_sha":"939661157d33e9d4","effort":"xhigh"}
+{"kind":"run_finished","seq":2,"ts":1785906457.969734,"run_id":"ff02a7105c4137a7","schema":"codegraff.behavior.v1","status":"closed","local_dropped":0}

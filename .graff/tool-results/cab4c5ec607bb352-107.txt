@@ -1,0 +1,110 @@
+     1	const std = @import("std");
+     2	const cio = @import("cio.zig");
+     3	const Store = @import("store.zig").Store;
+     4	const Explorer = @import("explore.zig").Explorer;
+     5	const AgentRegistry = @import("agent.zig").AgentRegistry;
+     6	const watcher = @import("watcher.zig");
+     7	const mcp = @import("mcp.zig");
+     8	const telemetry = @import("telemetry.zig");
+     9	
+    10	const HUGE_FN_COUNT: usize = 3600;
+    11	const HUGE_BODY_LINES: usize = 8;
+    12	const MANY_DIRS: usize = 40;
+    13	const MANY_FILES_PER_DIR: usize = 75;
+    14	
+    15	const CaseResult = struct {
+    16	    tool: []const u8,
+    17	    avg_latency_ns: u64,
+    18	    min_latency_ns: u64,
+    19	    response_bytes: usize,
+    20	    ops_per_sec: f64,
+    21	};
+    22	
+    23	const Case = struct {
+    24	    tool: mcp.Tool,
+    25	    name: []const u8,
+    26	    args_json: []const u8,
+    27	    iterations: usize,
+    28	    warmup: usize = 1,
+    29	    bust_search_cache: bool = false,
+    30	    reset_huge: bool = false,
+    31	};
+    32	
+    33	const cases = [_]Case{
+    34	    .{ .tool = .codedb_search, .name = "edge_search_common", .args_json = "{\"query\":\"hotword\",\"max_results\":20}", .iterations = 25, .bust_search_cache = true },
+    35	    .{ .tool = .codedb_search, .name = "edge_search_offset", .args_json = "{\"query\":\"hotword\",\"max_results\":20,\"offset\":400}", .iterations = 25, .bust_search_cache = true },
+    36	    .{ .tool = .codedb_search, .name = "edge_search_scope", .args_json = "{\"query\":\"hotword\",\"max_results\":20,\"scope\":true}", .iterations = 25, .bust_search_cache = true },
+    37	    .{ .tool = .codedb_search, .name = "edge_search_glob", .args_json = "{\"query\":\"hotword\",\"max_results\":20,\"path_glob\":\"many/**/*.zig\"}", .iterations = 25, .bust_search_cache = true },
+    38	    .{ .tool = .codedb_search, .name = "edge_search_regex", .args_json = "{\"query\":\"edgeHandler[A-Za-z]+_39_7[0-4]\",\"regex\":true,\"max_results\":20}", .iterations = 15, .bust_search_cache = true },
+    39	    .{ .tool = .codedb_search, .name = "edge_search_ranked", .args_json = "{\"query\":\"shared helper handler\",\"max_results\":20}", .iterations = 25, .bust_search_cache = true },
+    40	    .{ .tool = .codedb_search, .name = "edge_search_longline", .args_json = "{\"query\":\"fillpayload\",\"max_results\":20}", .iterations = 15, .bust_search_cache = true },
+    41	    .{ .tool = .codedb_search, .name = "edge_search_miss", .args_json = "{\"query\":\"zzqqxxyynotfound\",\"max_results\":20}", .iterations = 25, .bust_search_cache = true },
+    42	    .{ .tool = .codedb_symbol, .name = "edge_symbol_exact", .args_json = "{\"name\":\"edgeHandlerAlphaBeta_20_50\"}", .iterations = 50 },
+    43	    .{ .tool = .codedb_symbol, .name = "edge_symbol_fuzzy", .args_json = "{\"name\":\"edgeHandlerAlphaBata_20_50\",\"fuzzy\":true}", .iterations = 25 },
+    44	    .{ .tool = .codedb_symbol, .name = "edge_symbol_glob", .args_json = "{\"pattern\":\"edgeHandler*_2?_5*\"}", .iterations = 25 },
+    45	    .{ .tool = .codedb_callers, .name = "edge_callers_hot", .args_json = "{\"name\":\"sharedHelper\",\"max_results\":50}", .iterations = 15 },
+    46	    .{ .tool = .codedb_callpath, .name = "edge_callpath_deep", .args_json = "{\"from\":\"edgeHandlerAlphaBeta_39_74\",\"to\":\"edgeHandlerAlphaBeta_39_0\",\"max_hops\":80}", .iterations = 10 },
+    47	    .{ .tool = .codedb_outline, .name = "edge_outline_huge", .args_json = "{\"path\":\"huge.zig\"}", .iterations = 30 },
+    48	    .{ .tool = .codedb_read, .name = "edge_read_deep", .args_json = "{\"path\":\"huge.zig\",\"line_start\":40000,\"line_end\":40040}", .iterations = 30 },
+    49	    .{ .tool = .codedb_tree, .name = "edge_tree_many", .args_json = "{}", .iterations = 30 },
+    50	    .{ .tool = .codedb_ls, .name = "edge_ls_dir", .args_json = "{\"path\":\"many/d39\"}", .iterations = 50 },
+    51	    .{ .tool = .codedb_glob, .name = "edge_glob_many", .args_json = "{\"pattern\":\"many/**/*.zig\",\"max_results\":200}", .iterations = 25 },
+    52	    .{ .tool = .codedb_find, .name = "edge_find_fuzzy", .args_json = "{\"query\":\"edge_fle_39_74\"}", .iterations = 30 },
+    53	    .{ .tool = .codedb_word, .name = "edge_word_hot", .args_json = "{\"word\":\"hotword\"}", .iterations = 25 },
+    54	    .{ .tool = .codedb_deps, .name = "edge_deps_trans", .args_json = "{\"path\":\"many/d39/edge_file_39_74.zig\",\"transitive\":true}", .iterations = 25 },
+    55	};
+    56	
+    57	pub fn main(init: std.process.Init.Minimal) !void {
+    58	    cio.setProcessArgs(cio.bootstrapArgs(init.args));
+    59	    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    60	    defer _ = gpa.deinit();
+    61	    const allocator = gpa.allocator();
+    62	
+    63	    var threaded: std.Io.Threaded = .init(allocator, .{});
+    64	    defer threaded.deinit();
+    65	    const io = threaded.io();
+    66	
+    67	    var emit_json = false;
+    68	    var filter: ?[]const u8 = null;
+    69	    {
+    70	        const args = try cio.argsAlloc(allocator);
+    71	        defer cio.argsFree(allocator, args);
+    72	        for (args[1..]) |arg| {
+    73	            if (std.mem.eql(u8, arg, "--json")) emit_json = true;
+    74	            if (std.mem.startsWith(u8, arg, "--filter=")) {
+    75	                filter = try allocator.dupe(u8, arg["--filter=".len..]);
+    76	            }
+    77	        }
+    78	    }
+    79	    defer if (filter) |f| allocator.free(f);
+    80	
+    81	    var tmp_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    82	    const tmp_root = try makeTempCorpusDir(io, &tmp_path_buf);
+    83	    defer std.Io.Dir.cwd().deleteTree(io, tmp_root) catch {};
+    84	
+    85	    var repo_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    86	    const repo_root_len = try std.Io.Dir.cwd().realPathFile(io, ".", &repo_path_buf);
+    87	    const repo_root = repo_path_buf[0..repo_root_len];
+    88	
+    89	    const huge_content = try genCorpus(io, allocator, tmp_root);
+    90	    defer allocator.free(huge_content);
+    91	
+    92	    var store = Store.init(allocator);
+    93	    defer store.deinit();
+    94	
+    95	    var explorer = Explorer.init(allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    96	    defer explorer.deinit();
+    97	
+    98	    var agents = AgentRegistry.init(allocator);
+    99	    defer agents.deinit();
+   100	    _ = try agents.register("__filesystem__");
+   101	
+   102	    const scan_t0 = cio.nanoTimestamp();
+   103	    try watcher.initialScan(io, &store, &explorer, tmp_root, allocator, false);
+   104	    const scan_ns: u64 = @intCast(cio.nanoTimestamp() - scan_t0);
+   105	
+   106	    var bench_ctx = mcp.BenchContext.init(allocator, tmp_root, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+   107	    defer bench_ctx.deinit();
+   108	
+   109	    try std.process.setCurrentPath(io, tmp_root);
+   110	    defer std.process.setCurrentPath(io, repo_root) catch {};

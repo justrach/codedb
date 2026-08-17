@@ -1,0 +1,15 @@
+npm registry:
+npm error code E404
+npm error 404 Not Found - GET https://registry.npmjs.org/codedb-notary - Not found
+npm error 404
+npm error 404  The requested resource 'codedb-notary@*' could not be found or you do not have permission to access it.
+npm error 404
+npm error 404 Note that you can also install from a
+npm error 404 tarball, folder, http url, or git url.
+npm error A complete log of this run can be found in: /Users/rachpradhan/.npm/_logs/2026-08-05T03_14_14_284Z-debug-0.log
+
+pip index:
+ERROR: No matching distribution found for codedb-notary
+
+GitHub code search:
+[{"path":"CHANGELOG.md","repository":{"id":"MDEwOlJlcG9zaXRvcnkxMTU4Mjk0NjM2","isFork":false,"isPrivate":false,"nameWithOwner":"justrach/nanobrew","url":"https://github.com/justrach/nanobrew"},"url":"https://github.com/justrach/nanobrew/blob/308986a79bb706b4924100ffd0f51a59c02a4f61/CHANGELOG.md"},{"path":"scripts/notarize-macos.sh","repository":{"id":"MDEwOlJlcG9zaXRvcnkxMTU4Mjk0NjM2","isFork":false,"isPrivate":false,"nameWithOwner":"justrach/nanobrew","url":"https://github.com/justrach/nanobrew"},"url":"https://github.com/justrach/nanobrew/blob/308986a79bb706b4924100ffd0f51a59c02a4f61/scripts/notarize-macos.sh"},{"path":"docs/releases/macos-build-and-notarize.md","repository":{"id":"MDEwOlJlcG9zaXRvcnkxMjI2MTE3NjU3","isFork":false,"isPrivate":false,"nameWithOwner":"justrach/codegraff2","url":"https://github.com/justrach/codegraff2"},"url":"https://github.com/justrach/codegraff2/blob/e5610ede9cf38ac3bd71d5f984fa8936f21539d3/docs/releases/macos-build-and-notarize.md"},{"path":"RELEASE.md","repository":{"id":"MDEwOlJlcG9zaXRvcnkxMTU4Mjg5MzEw","isFork":false,"isPrivate":true,"nameWithOwner":"justrach/zigrepper","url":"https://github.com/justrach/zigrepper"},"url":"https://github.com/justrach/zigrepper/blob/c3c95079dd61f7147425d4fe1e8d5ab66ba7907d/RELEASE.md"},{"path":"README.md","repository":{"id":"MDEwOlJlcG9zaXRvcnkxMTU4Mjg5MzEw","isFork":false,"isPrivate":true,"nameWithOwner":"justrach/zigrepper","url":"https://github.com/justrach/zigrepper"},"url":"https://github.com/justrach/zigrepper/blob/c3c95079dd61f7147425d4fe1e8d5ab66ba7907d/README.md"},{"path":"release.sh","repository":{"id":"MDEwOlJlcG9zaXRvcnkxMTU4Mjg5MzEw","isFork":false,"isPrivate":true,"nameWithOwner":"justrach/zigrepper","url":"https://github.com/justrach/zigrepper"},"url":"https://github.com/justrach/zigrepper/blob/c3c95079dd61f7147425d4fe1e8d5ab66ba7907d/release.sh"}]

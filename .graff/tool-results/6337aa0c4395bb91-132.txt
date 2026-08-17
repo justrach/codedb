@@ -1,0 +1,116 @@
+
+    if (heads_match and initial_scan_ok) {
+        const current_count = @as(u32, @intCast(explorer.outlines.count()));
+        if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
+            if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
+                explorer.adoptTrigramIndex(.{ .mmap = loaded });
+                scan_done.store(true, .release);
+                mcp_server.setScanState(.ready);
+                if (shutdown.load(.acquire)) return;
+                telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
+                const snap_path_1 = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
+                defer if (snap_path_1) |p| allocator.free(p);
+                snapshot_mod.writeSnapshotDual(io, explorer, abs_root, snap_path_1 orelse "codedb.snapshot", allocator) catch |err| {
+                    std.log.warn("could not auto-write snapshot: {}", .{err});
+                };
+                const fc = explorer.outlines.count();
+                if (fc > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
+                    explorer.releaseContents();
+                    explorer.releaseSecondaryIndexes();
+                }
+                // Shrink index allocations to reclaim ArrayList over-allocation
+                if (explorer.trigram_index.asHeap()) |heap| heap.shrinkPostingLists();
+                explorer.word_index.shrinkAllocations();
+                return;
+            }
+            if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
+                explorer.adoptTrigramIndex(.{ .heap = loaded });
+                scan_done.store(true, .release);
+                mcp_server.setScanState(.ready);
+                if (shutdown.load(.acquire)) return;
+                telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
+                const snap_path_2 = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
+                defer if (snap_path_2) |p| allocator.free(p);
+                snapshot_mod.writeSnapshotDual(io, explorer, abs_root, snap_path_2 orelse "codedb.snapshot", allocator) catch |err| {
+                    std.log.warn("could not auto-write snapshot: {}", .{err});
+                };
+                const fc = explorer.outlines.count();
+                if (fc > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
+                    explorer.releaseContents();
+                    explorer.releaseSecondaryIndexes();
+                }
+                return;
+            }
+        }
+        // No reusable disk index (stale/missing/count mismatch) — fall
+        // through to the parallel trigram build below, same as a cold scan.
+    }
+
+    // Phase gate: bail before trigram build if shutting down
+    if (shutdown.load(.acquire)) {
+        scan_done.store(true, .release);
+        mcp_server.setScanState(.ready);
+        return;
+    }
+
+    // Build the trigram index in parallel from the ContentCache that
+    // initialScan just populated — mirrors watcher.buildTrigramsFromCache's
+    // use on the CLI cold-index path (bootstrap.zig). A shared (read) lock
+    // is held for the whole build: worker threads read file content slices
+    // straight out of ContentCache without copying, so any concurrent
+    // writer (incremental file-watcher commits, which all take
+    // the exclusive lock) must be excluded for the entire parallel section,
+    // not just while collecting entries. Other readers (search) can still
+    // run concurrently under the shared lock.
+    var trigram_written = false;
+    {
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        const tri_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
+        explorer.mu.lockShared();
+        const tmp_tri = watcher.buildTrigramsFromCache(&explorer.contents, allocator, std.heap.c_allocator, tri_workers) catch |err| blk: {
+            std.log.warn("could not build trigram index: {}", .{err});
+            break :blk null;
+        };
+        explorer.mu.unlockShared();
+        if (tmp_tri) |tri| {
+            defer {
+                tri.deinit();
+                std.heap.c_allocator.destroy(tri);
+            }
+            write_trigrams: {
+                tri.writeToDisk(io, data_dir, git_head) catch |err| {
+                    std.log.warn("could not persist trigram index: {}", .{err});
+                    break :write_trigrams;
+                };
+                trigram_written = true;
+            }
+        }
+    }
+
+    // Phase gate: bail before mmap swap if shutting down
+    if (shutdown.load(.acquire)) {
+        scan_done.store(true, .release);
+        mcp_server.setScanState(.ready);
+        return;
+    }
+
+    // Compact only the index written by this build. If building or persistence
+    // failed, an older on-disk index may describe another Git head; keep the
+    // ContentCache fallback instead of adopting stale candidate coverage.
+    var trigram_adopted = false;
+    if (trigram_written) {
+        if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
+            explorer.adoptTrigramIndex(.{ .mmap = loaded });
+            trigram_adopted = true;
+        } else if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
+            explorer.adoptTrigramIndex(.{ .heap = loaded });
+            trigram_adopted = true;
+        }
+    }
+
+    scan_done.store(true, .release);
+    mcp_server.setScanState(.ready);
+
+    if (shutdown.load(.acquire)) return;
+
+    telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));

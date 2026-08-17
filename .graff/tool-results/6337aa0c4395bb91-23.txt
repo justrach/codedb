@@ -1,0 +1,76 @@
+        std.log.warn("could not open data log at {s}: {}", .{ data_log_path, err });
+    };
+
+    var explorer = Explorer.init(allocator, cfg.max_cached);
+
+    const rerank_trace_path: ?[]u8 = if (cfg.rerank_trace)
+        (std.fmt.allocPrint(allocator, "{s}/rerank-traces.jsonl", .{data_dir}) catch null)
+    else
+        null;
+    defer if (rerank_trace_path) |p| allocator.free(p);
+    if (rerank_trace_path) |p| explorer.rerank_trace_path = p;
+
+    explorer.setRoot(io, root);
+    defer explorer.deinit();
+
+    // Per-project frequency table for sparse n-gram boundary selection.
+    // Loaded from disk (if present) before the initial scan so pairWeight
+    // uses project-specific frequencies.  Freed and reset at process exit.
+    var freq_table_heap: ?*[256][256]u16 = null;
+    defer if (freq_table_heap) |ft| {
+        index_mod.resetFrequencyTable();
+        allocator.destroy(ft);
+    };
+
+    try bootstrap.coldLoadOrScan(io, allocator, &store, &explorer, &out, s, cmd, args, cmd_args_start, abs_root, data_dir, root, &freq_table_heap);
+    var ctx = commands.RunCtx{
+        .io = io,
+        .allocator = allocator,
+        .out = &out,
+        .s = s,
+        .store = &store,
+        .explorer = &explorer,
+        .cfg = cfg,
+        .data_dir = data_dir,
+        .abs_root = abs_root,
+        .root = root,
+        .args = args,
+        .cmd_args_start = cmd_args_start,
+        .no_telemetry = no_telemetry,
+        .mcp_deferred_root = mcp_deferred_root,
+    };
+    if (cliIsQueryCmd(cmd)) {
+        const code = runQuery(io, allocator, &explorer, &store, abs_root, cmd, args, cmd_args_start, &out, s);
+        out.flush();
+        std.process.exit(code);
+    } else if (std.mem.eql(u8, cmd, "bench-engine")) {
+        commands.runBenchEngine(&ctx);
+    } else if (std.mem.eql(u8, cmd, "snapshot")) {
+        commands.runSnapshot(&ctx);
+    } else if (std.mem.eql(u8, cmd, "cli-daemon")) {
+        try commands.runCliDaemon(&ctx);
+    } else if (std.mem.eql(u8, cmd, "serve")) {
+        try commands.runServe(&ctx);
+    } else if (std.mem.eql(u8, cmd, "mcp")) {
+        try commands.runMcp(&ctx);
+    } else if (std.mem.eql(u8, cmd, "index")) {
+        // #633: `index` is a first-class command. coldLoadOrScan above already
+        // scanned + persisted the on-disk index for this cmd; confirm and exit
+        // cleanly. It used to fall through to "unknown command: index" + exit 1
+        // even though the index had been built.
+        explorer.mu.lockShared();
+        const file_count = explorer.outlines.count();
+        explorer.mu.unlockShared();
+        out.p("{s}\xe2\x9c\x93{s} {s}index ready{s}  {s}{d} files{s}\n", .{
+            s.green, s.reset, s.bold, s.reset, s.dim, file_count, s.reset,
+        });
+        out.flush();
+        std.process.exit(0);
+    } else {
+        out.p("{s}\xe2\x9c\x97{s} unknown command: {s}{s}{s}\n", .{
+            s.red, s.reset, s.bold, cmd, s.reset,
+        });
+        // #578: flush before exit — std.process.exit skips buffered output, so
+        // the 'unknown command' line was silently lost (observed as exit 1
+        // with no output at all).
+        out.flush();

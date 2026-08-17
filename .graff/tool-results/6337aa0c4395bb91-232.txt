@@ -1,0 +1,58 @@
+/// #592: per-project cli-daemon spawn lock. Open-or-create
+/// `<data_dir>/cli-daemon.lock` and take an exclusive non-blocking flock.
+/// Returns the fd on success — callers keep it open for the process lifetime
+/// (the kernel releases flocks on exit, so crashes never leave a stale lock).
+/// Returns null when another process holds the lock or the file can't be
+/// opened.
+const DaemonLock = if (builtin.os.tag == .windows) win.HANDLE else c_int;
+
+pub fn daemonLockTryAcquire(data_dir: []const u8) ?DaemonLock {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const p = cio.bufPrintZ(&buf, "{s}/cli-daemon.lock", .{data_dir}) catch return null;
+    if (builtin.os.tag == .windows) {
+        const path_w = windowsPathZ(std.heap.page_allocator, p) orelse return null;
+        defer std.heap.page_allocator.free(path_w);
+        const handle = CreateFileW(path_w.ptr, GENERIC_READ | GENERIC_WRITE, 0, null, OPEN_ALWAYS, 0, null);
+        if (handle == INVALID_HANDLE_VALUE) return null;
+        return handle;
+    }
+    const fd = std.c.open(p.ptr, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(c_uint, 0o600));
+    if (fd < 0) return null;
+    if (std.c.flock(fd, std.c.LOCK.EX | std.c.LOCK.NB) != 0) {
+        _ = std.c.close(fd);
+        return null;
+    }
+    return fd;
+}
+
+pub fn daemonLockRelease(lock: DaemonLock) void {
+    if (builtin.os.tag == .windows) {
+        win.CloseHandle(lock);
+        return;
+    }
+    _ = std.c.flock(lock, std.c.LOCK.UN);
+    _ = std.c.close(lock);
+}
+
+/// Probe whether the spawn lock is free without keeping it: used by the CLI
+/// auto-spawn path so racing cold calls don't fork duplicate daemons.
+pub fn daemonLockAvailable(data_dir: []const u8) bool {
+    const lock = daemonLockTryAcquire(data_dir) orelse return false;
+    daemonLockRelease(lock);
+    return true;
+}
+
+/// Named sockaddr.un bundle: the struct plus the byte length for bind()/connect().
+const SockAddr = struct { addr: std.c.sockaddr.un, len: std.c.socklen_t };
+
+/// One attempt to OWN the project socket: socket() + bind() + chmod 0600 +
+/// listen(). Returns the listening fd, or null if the path is already taken or
+/// a syscall failed (the fd is closed on any failure). Never unlinks — the
+/// caller decides whether a taken path is stale.
+fn cliBindListen(sa: SockAddr, sock_path_z: [:0]const u8) ?c_int {
+    const fd = std.c.socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
+    if (fd < 0) return null;
+    var sa_mut = sa;
+    if (std.c.bind(fd, @ptrCast(&sa_mut.addr), sa_mut.len) != 0) {
+        _ = std.c.close(fd);
+        return null;

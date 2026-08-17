@@ -1,0 +1,81 @@
+            .root_source_file = b.path("src/adversarial_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    adversarial_tests.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    test_step.dependOn(&b.addRunArtifact(adversarial_tests).step);
+
+    // ── Benchmarks ──
+    const bench = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+        }),
+    });
+    const bench_run = b.addRunArtifact(bench);
+    bench.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    bench_run.addPassthruArgs();
+    const bench_step = b.step("bench", "Run benchmarks");
+    bench_step.dependOn(&bench_run.step);
+
+    // ── Edge-case benchmarks (synthetic pathological corpus) ──
+    const bench_edge = b.addExecutable(.{
+        .name = "bench-edge",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench_edge.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+        }),
+    });
+    bench_edge.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    const bench_edge_run = b.addRunArtifact(bench_edge);
+    bench_edge_run.addPassthruArgs();
+    const bench_edge_step = b.step("bench-edge", "Run edge-case benchmarks (synthetic pathological corpus)");
+    bench_edge_step.dependOn(&bench_edge_run.step);
+
+    // ── Benchmark (repo benchmark — indexing speed, query latency, recall) ──
+    const benchmark = b.addExecutable(.{
+        .name = "benchmark",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/benchmark.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+        }),
+    });
+    benchmark.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    const benchmark_run = b.addRunArtifact(benchmark);
+    benchmark_run.addPassthruArgs();
+    const benchmark_step = b.step("benchmark", "Run repo benchmark (use -- --root /path/to/repo)");
+    benchmark_step.dependOn(&benchmark_run.step);
+
+    // Make module available so dependents don't need to wire it up manually
+    _ = codedb_mod;
+
+    // ── WASM build (for Cloudflare Workers) ──
+    const wasm = b.addExecutable(.{
+        .name = "codedb",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm.zig"),
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .wasm32,
+                .os_tag = .freestanding,
+            }),
+            .optimize = .ReleaseSmall,
+        }),
+    });
+    wasm.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    wasm.rdynamic = true;
+    wasm.entry = .disabled;
+
+    const wasm_step = b.step("wasm", "Build WASM module for Cloudflare Workers");
+    wasm_step.dependOn(&b.addInstallArtifact(wasm, .{
+        .dest_dir = .{ .override = .{ .custom = "../wasm" } },
+    }).step);
+}

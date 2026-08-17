@@ -1,0 +1,13 @@
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":0,"ev":"startup_phase","phase":"args","phase_ms":0,"startup_ms":0}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":0,"ev":"startup_phase","phase":"credentials/model","phase_ms":457,"startup_ms":457}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":0,"ev":"startup_phase","phase":"CA warm scheduled","phase_ms":0,"startup_ms":457}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":0,"ev":"startup_phase","phase":"banner","phase_ms":0,"startup_ms":457}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":0,"ev":"startup_phase","phase":"MCP registry","phase_ms":0,"startup_ms":457}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":0,"ev":"startup_phase","phase":"settings/theme","phase_ms":0,"startup_ms":457}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":4,"ev":"startup_phase","phase":"companion","phase_ms":4,"startup_ms":461}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":7,"ev":"startup_phase","phase":"approvals/hooks/fleet","phase_ms":4,"startup_ms":465}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":10,"ev":"startup_phase","phase":"system prompt","phase_ms":3,"startup_ms":468}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":37,"ev":"recipe","recipe_sha":"9151d6fa1ad679ee","provider":"kimi","model":"k3","effort":"xhigh","prompt_sha":"c98dcb331cd8829b","toolset_sha":"2840e24e9ae3d4aa","task_class":"interactive","harness_version":"0.0.264"}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":37,"ev":"session","detail":"k3"}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":37,"ev":"startup_phase","phase":"root agent","phase_ms":27,"startup_ms":495}
+{"run_id":"87f9806e8ed80de0","pid":25566,"session_id":"ce3877a7c83d042645b13388d55977c0","t":38,"ev":"budget","detail":"final call: tools withheld so the run lands its answer (#390)"}

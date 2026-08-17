@@ -1,0 +1,69 @@
+    for (markers) |marker| {
+        if (!std.mem.startsWith(u8, line[start..], marker)) continue;
+        // `#[` starts a PHP 8 attribute, not a hash comment.
+        if (language == .php and marker[0] == '#' and start + 1 < line.len and line[start + 1] == '[') return false;
+        // Shell: `#` opens a comment only when it begins a word. Operators are
+        // word boundaries too; `${#var}` and `$#` remain live syntax.
+        if (language == .shell and !isShellCommentStart(line, start)) return false;
+        return true;
+    }
+    return false;
+}
+
+const LineSpan = struct { end: ?usize };
+
+fn rustRawLiteralAt(line: []const u8, start: usize) ?LineSpan {
+    if (start != 0 and isIdentChar(line[start - 1])) return null;
+    var i = start;
+    if (line[i] == 'b') {
+        if (i + 1 >= line.len or line[i + 1] != 'r') return null;
+        i += 2;
+    } else if (line[i] == 'r') {
+        i += 1;
+    } else return null;
+
+    var hashes: usize = 0;
+    while (i < line.len and line[i] == '#') : (i += 1) hashes += 1;
+    if (i >= line.len or line[i] != '"') return null;
+
+    i += 1;
+    while (i < line.len) : (i += 1) {
+        if (line[i] != '"' or i + 1 + hashes > line.len) continue;
+        var matched: usize = 0;
+        while (matched < hashes and line[i + 1 + matched] == '#') : (matched += 1) {}
+        if (matched == hashes) return .{ .end = i + 1 + hashes };
+    }
+    return .{ .end = null };
+}
+
+fn hasBacktickLiterals(language: explore_mod.Language) bool {
+    return switch (language) {
+        .go_lang, .javascript, .typescript, .php, .ruby, .r, .svelte, .vue, .astro => true,
+        else => false,
+    };
+}
+
+fn hasTemplateLiterals(language: explore_mod.Language) bool {
+    return switch (language) {
+        .javascript, .typescript, .svelte, .vue, .astro => true,
+        else => false,
+    };
+}
+
+const TemplateScan = struct {
+    end: ?usize,
+    matched: bool,
+};
+
+fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, language: explore_mod.Language) TemplateScan {
+    var i = open + 1;
+    while (i < line.len) {
+        if (line[i] == '\\') {
+            i += if (line.len - i > 1) 2 else 1;
+            continue;
+        }
+        if (line[i] == '`') return .{ .end = i + 1, .matched = false };
+        if (line[i] == '$' and i + 1 < line.len and line[i + 1] == '{') {
+            const expression_start = i + 2;
+            const expression_end = templateExpressionEnd(line, expression_start, language);
+            const end = expression_end orelse line.len;

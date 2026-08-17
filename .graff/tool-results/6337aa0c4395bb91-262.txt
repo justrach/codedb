@@ -1,0 +1,212 @@
+     1	diff --git a/src/update.zig b/src/update.zig
+     2	index 92b2780..359022e 100644
+     3	--- a/src/update.zig
+     4	+++ b/src/update.zig
+     5	@@ -8,6 +8,25 @@ const github_repo = "justrach/codedb";
+     6	 const default_base_url = "https://codedb.codegraff.com";
+     7	 const user_agent = "codedb-update";
+     8	 
+     9	+const win = std.os.windows;
+    10	+const invalid_handle_value = win.INVALID_HANDLE_VALUE;
+    11	+const generic_read: u32 = 0x80000000;
+    12	+const generic_write: u32 = 0x40000000;
+    13	+const open_always: u32 = 4;
+    14	+
+    15	+extern "kernel32" fn CreateFileW(
+    16	+    lpFileName: [*:0]const u16,
+    17	+    dwDesiredAccess: u32,
+    18	+    dwShareMode: u32,
+    19	+    lpSecurityAttributes: ?*anyopaque,
+    20	+    dwCreationDisposition: u32,
+    21	+    dwFlagsAndAttributes: u32,
+    22	+    hTemplateFile: ?win.HANDLE,
+    23	+) callconv(.winapi) win.HANDLE;
+    24	+extern "kernel32" fn CloseHandle(hObject: win.HANDLE) callconv(.winapi) win.BOOL;
+    25	+
+    26	+pub const UpdateLock = if (builtin.os.tag == .windows) win.HANDLE else c_int;
+    27	+
+    28	 const Out = struct {
+    29	     file: cio.File,
+    30	     alloc: std.mem.Allocator,
+    31	@@ -19,6 +38,36 @@ const Out = struct {
+    32	     }
+    33	 };
+    34	 
+    35	+pub fn updateLockTryAcquire(executable_path: []const u8) ?UpdateLock {
+    36	+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    37	+    const lock_path = cio.bufPrintZ(&buf, "{s}.update.lock", .{executable_path}) catch return null;
+    38	+
+    39	+    if (builtin.os.tag == .windows) {
+    40	+        const path_w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, lock_path) catch return null;
+    41	+        defer std.heap.page_allocator.free(path_w);
+    42	+        const handle = CreateFileW(path_w.ptr, generic_read | generic_write, 0, null, open_always, 0, null);
+    43	+        if (handle == invalid_handle_value) return null;
+    44	+        return handle;
+    45	+    }
+    46	+
+    47	+    const fd = std.c.open(lock_path.ptr, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(c_uint, 0o600));
+    48	+    if (fd < 0) return null;
+    49	+    if (std.c.flock(fd, std.c.LOCK.EX | std.c.LOCK.NB) != 0) {
+    50	+        _ = std.c.close(fd);
+    51	+        return null;
+    52	+    }
+    53	+    return fd;
+    54	+}
+    55	+
+    56	+pub fn updateLockRelease(lock: UpdateLock) void {
+    57	+    if (builtin.os.tag == .windows) {
+    58	+        _ = CloseHandle(lock);
+    59	+        return;
+    60	+    }
+    61	+    _ = std.c.flock(lock, std.c.LOCK.UN);
+    62	+    _ = std.c.close(lock);
+    63	+}
+    64	+
+    65	 const VersionSource = enum {
+    66	     env,
+    67	     github,
+    68	@@ -45,6 +94,18 @@ const superseded_releases = [_]SupersededRelease{
+    69	 pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+    70	     const out = Out{ .file = stdout, .alloc = allocator };
+    71	 
+    72	+    const self_path = std.process.executablePathAlloc(io, allocator) catch |err| {
+    73	+        out.p("{s}✗{s} cannot locate current executable: {s}\n", .{ s.red, s.reset, @errorName(err) });
+    74	+        std.process.exit(1);
+    75	+    };
+    76	+    defer allocator.free(self_path);
+    77	+
+    78	+    const update_lock = updateLockTryAcquire(self_path) orelse {
+    79	+        out.p("{s}✗{s} another codedb update is already running\n", .{ s.red, s.reset });
+    80	+        std.process.exit(1);
+    81	+    };
+    82	+    defer updateLockRelease(update_lock);
+    83	+
+    84	     const resolved = resolveTargetVersion(allocator) catch |err| {
+    85	         out.p("{s}✗{s} failed to resolve update target: {s}\n", .{ s.red, s.reset, @errorName(err) });
+    86	         std.process.exit(1);
+    87	@@ -92,19 +153,12 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
+    88	         std.process.exit(1);
+    89	     };
+    90	 
+    91	-    const self_path = std.process.executablePathAlloc(io, allocator) catch |err| {
+    92	-        out.p("{s}✗{s} cannot locate current executable: {s}\n", .{ s.red, s.reset, @errorName(err) });
+    93	-        std.process.exit(1);
+    94	-    };
+    95	-    defer allocator.free(self_path);
+    96	-
+    97	     downloadAndReplaceBinary(io, allocator, resolved.value, asset_name, self_path, expected_hash) catch |err| {
+    98	         out.p("{s}✗{s} update failed: {s}\n", .{ s.red, s.reset, @errorName(err) });
+    99	         std.process.exit(1);
+   100	     };
+   101	 
+   102	     out.p("{s}✓{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });
+   103	-
+   104	 }
+   105	 
+   106	 pub fn assetNameForTarget(os_tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?[]const u8 {
+   107	@@ -304,18 +358,33 @@ fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: [
+   108	         }
+   109	     }
+   110	 
+   111	-    if (@import("builtin").os.tag == .windows) {
+   112	-        // Windows refuses to rename over a running .exe, but renaming the
+   113	-        // running image aside is allowed. Slide the old binary to .old (best
+   114	-        // effort); a stale .old from a prior update is replaced first.
+   115	+    if (builtin.os.tag == .windows) {
+   116	+        // Windows refuses to rename over a running .exe. Keep the previous
+   117	+        // binary at .old until the verified replacement lands, and restore it
+   118	+        // if that final rename fails.
+   119	         const old_path = try std.fmt.allocPrint(allocator, "{s}.old", .{dest_path});
+   120	         defer allocator.free(old_path);
+   121	-        std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+   122	-        std.Io.Dir.renameAbsolute(dest_path, old_path, io) catch {};
+   123	+        return replaceBinaryWithRollback(io, tmp_path, dest_path, old_path);
+   124	     }
+   125	     try std.Io.Dir.renameAbsolute(tmp_path, dest_path, io);
+   126	 }
+   127	 
+   128	+pub fn replaceBinaryWithRollback(io: std.Io, replacement_path: []const u8, dest_path: []const u8, old_path: []const u8) !void {
+   129	+    std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+   130	+
+   131	+    const moved_old = blk: {
+   132	+        std.Io.Dir.renameAbsolute(dest_path, old_path, io) catch break :blk false;
+   133	+        break :blk true;
+   134	+    };
+   135	+
+   136	+    std.Io.Dir.renameAbsolute(replacement_path, dest_path, io) catch |install_err| {
+   137	+        if (moved_old) {
+   138	+            std.Io.Dir.renameAbsolute(old_path, dest_path, io) catch return error.UpdateRollbackFailed;
+   139	+        }
+   140	+        return install_err;
+   141	+    };
+   142	+}
+   143	+
+   144	 fn downloadToFile(allocator: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
+   145	     const result = try cio.runCapture(.{
+   146	         .allocator = allocator,
+   147	@@ -353,17 +422,16 @@ fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
+   148	 
+   149	 // ── Auto-update ──────────────────────────────────────────────────────────────
+   150	 //
+   151	-// On startup we kick off a detached check that shells out to the public
+   152	-// install.sh. The check is:
+   153	+// On startup we kick off a detached invocation of the built-in, checksum-
+   154	+// verified updater. The check is:
+   155	 //   • disabled when CODEDB_NO_AUTO_UPDATE is set in the environment
+   156	 //   • throttled to at most once every 24 hours, tracked in
+   157	 //     ~/.codedb/last_auto_update_check (a u64 little-endian unix-ms timestamp)
+   158	-// The update itself runs in a background thread so it never blocks server
+   159	-// startup. If the binary on disk gets replaced mid-session, the kernel keeps
+   160	-// the old inode mapped for the running process; subsequent invocations get the
+   161	-// new binary.
+   162	+// The update itself runs in a background thread so network failures never block
+   163	+// server startup. If the binary on disk gets replaced mid-session, the kernel
+   164	+// keeps the old inode mapped for the running process; subsequent invocations
+   165	+// get the new binary.
+   166	 
+   167	-const auto_update_install_url = "https://codedb.codegraff.com/install.sh";
+   168	 const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
+   169	 const auto_update_stamp_filename = "last_auto_update_check";
+   170	 
+   171	@@ -393,21 +461,32 @@ pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+   172	     const now_ms = cio.milliTimestamp();
+   173	     if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+   174	 
+   175	-    // Persist the new timestamp before launching so concurrent invocations
+   176	-    // don't all race the same check.
+   177	+    const executable_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
+   178	+    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{executable_path}) catch {
+   179	+        std.heap.page_allocator.free(executable_path);
+   180	+        return;
+   181	+    };
+   182	+    thread.detach();
+   183	+
+   184	+    // Only throttle after the worker launches so a local spawn failure can be
+   185	+    // retried on the next MCP startup.
+   186	     writeAutoUpdateStamp(io, stamp_path, now_ms);
+   187	+}
+   188	 
+   189	-    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{}) catch return;
+   190	-    thread.detach();
+   191	+pub fn autoUpdateArgv(executable_path: []const u8) [2][]const u8 {
+   192	+    return .{ executable_path, "update" };
+   193	 }
+   194	 
+   195	-fn autoUpdateWorker() void {
+   196	-    // sh -c handles the curl-into-bash pipeline. We keep stdout/stderr captured
+   197	-    // and immediately discard so the install script's progress output doesn't
+   198	-    // leak into the parent's stdio (which is the MCP transport).
+   199	+fn autoUpdateWorker(executable_path: []u8) void {
+   200	+    defer std.heap.page_allocator.free(executable_path);
+   201	+
+   202	+    // Invoke the checksum-verifying built-in updater directly. Capturing and
+   203	+    // discarding its output keeps the MCP stdio transport clean, while avoiding
+   204	+    // a shell or execution of a remotely downloaded install script.
+   205	+    const argv = autoUpdateArgv(executable_path);
+   206	     const result = cio.runCapture(.{
+   207	         .allocator = std.heap.page_allocator,
+   208	-        .argv = &.{ "sh", "-c", "curl -fsSL " ++ auto_update_install_url ++ " | bash" },
+   209	+        .argv = &argv,
+   210	         .max_output_bytes = 64 * 1024,
+   211	     }) catch return;
+   212	     std.heap.page_allocator.free(result.stdout);

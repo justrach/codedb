@@ -1,0 +1,56 @@
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "url.zig:2") != null);
+}
+
+test "issue-682: codedb_callers recognizes PHP and Swift trailing comments" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "trail.php", "<?php\ninit(); // renderX() is documented here\ninit(); # renderX() is documented here\n" },
+        .{ "trail.swift", "func callerA() {\n    init() // renderX() is documented here\n}\n" },
+        .{ "call.php", "<?php\nrenderX();\n" },
+        .{ "attribute.php", "<?php\n#[SomeAttribute] function callerB() { renderX(); }\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "trail.php") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "trail.swift") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call.php:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "attribute.php:2") != null);
+}
+
+test "issue-682: codedb_callers keeps calls after markers inside literals and block comments" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "url.go", "func callerA() {\n    url := `https://example.test`; renderX()\n}\n" },
+        .{ "url.js", "function callerB() {\n    const url = `https://example.test`; renderX();\n}\n" },
+        .{ "block.c", "void callerC(void) {\n    init(); /* see https://example.test */ renderX();\n}\n" },
+        .{ "raw.rs", "fn caller_d() {\n    let text = r#\"say \"https://example.test\"\"#; renderX();\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "4 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "url.go:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "url.js:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "block.c:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "raw.rs:2") != null);
+}
+
+test "issue-682: codedb_callers recognizes shell comments after operators" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "trail.sh", "init;# renderX() is documented here\n" },
+        .{ "call.sh", "items=abc\nprintf '%s' \"${#items}\"; renderX\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);

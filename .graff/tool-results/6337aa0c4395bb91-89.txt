@@ -1,0 +1,91 @@
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf "  ${D}claude:  skip (python3 not found)${N}\n"
+    return
+  fi
+
+  python3 - "$config" "$codedb_bin" << 'PYEOF'
+import json, sys, os
+config_path, codedb_bin = sys.argv[1], sys.argv[2]
+try:
+    with open(config_path) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+servers = data.setdefault("mcpServers", {})
+servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
+with open(config_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+
+  printf "  ${G}✓${N} claude code  ${D}→ $config${N}\n"
+}
+
+register_codex() {
+  local codedb_bin="$1"
+  local config_dir="$HOME/.codex"
+  local config="$config_dir/config.toml"
+
+  mkdir -p "$config_dir"
+
+  if [ -f "$config" ] && grep -q '\[mcp_servers\.codedb\]' "$config" 2>/dev/null; then
+    printf "  ${G}✓${N} codex        ${D}→ $config (already registered)${N}\n"
+    return
+  fi
+
+  {
+    [ -f "$config" ] && [ -s "$config" ] && echo ""
+    echo '[mcp_servers.codedb]'
+    echo "command = \"$codedb_bin\""
+    echo 'args = ["mcp"]'
+    echo 'startup_timeout_sec = 30'
+  } >> "$config"
+
+  printf "  ${G}✓${N} codex        ${D}→ $config${N}\n"
+}
+
+register_codex_policy() {
+  local codedb_bin="$1"
+  # #680: auto-install the CodeDB-first AGENTS.md policy for Codex sessions.
+  # The binary owns the sticky opt-out (marker + removal receipt), so a user's
+  # removal survives re-runs and the 24h auto-update. Older binaries without
+  # the subcommand skip silently.
+  if "$codedb_bin" codex install >/dev/null 2>&1; then
+    printf "  ${G}✓${N} codex policy ${D}→ ~/.codex/AGENTS.md (remove: codedb codex uninstall)${N}\n"
+  fi
+}
+
+register_gemini() {
+  local codedb_bin="$1"
+  local config_dir="$HOME/.gemini"
+  local config="$config_dir/settings.json"
+
+  if [ ! -d "$config_dir" ]; then
+    return
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf "  ${D}gemini:  skip (python3 not found)${N}\n"
+    return
+  fi
+
+  python3 - "$config" "$codedb_bin" << 'PYEOF'
+import json, sys, os
+config_path, codedb_bin = sys.argv[1], sys.argv[2]
+try:
+    with open(config_path) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+servers = data.setdefault("mcpServers", {})
+servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
+with open(config_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+
+  printf "  ${G}✓${N} gemini cli   ${D}→ $config${N}\n"
+}
+
+register_cursor() {

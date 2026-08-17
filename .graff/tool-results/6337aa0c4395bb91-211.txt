@@ -1,0 +1,121 @@
+        // Returns ENOSYS on older systems — caller treats that as fatal here.
+        if (posix_spawn_file_actions_addchdir_np(fa, @ptrCast(&cwd_buf)) != 0) {
+            return error.CwdNotSupported;
+        }
+    }
+
+    _ = posix_spawn_file_actions_adddup2(fa, out_pipe[1], 1);
+    _ = posix_spawn_file_actions_adddup2(fa, err_pipe[1], 2);
+    _ = posix_spawn_file_actions_addclose(fa, out_pipe[0]);
+    _ = posix_spawn_file_actions_addclose(fa, out_pipe[1]);
+    _ = posix_spawn_file_actions_addclose(fa, err_pipe[0]);
+    _ = posix_spawn_file_actions_addclose(fa, err_pipe[1]);
+
+    const envp: [*:null]const ?[*:0]const u8 = if (builtin.os.tag == .macos)
+        @ptrCast(_NSGetEnviron().*)
+    else
+        @ptrCast(std.c.environ);
+
+    var pid: pid_t = 0;
+    if (posix_spawnp(&pid, c_argv[0].?, fa, null, c_argv_z, envp) != 0)
+        return error.SpawnFailed;
+
+    _ = close(out_pipe[1]);
+    out_pipe[1] = -1;
+    _ = close(err_pipe[1]);
+    err_pipe[1] = -1;
+
+    // Drain stderr on a background thread so neither pipe can fill up and
+    // deadlock the child. Main thread drains stdout.
+    const DrainCtx = struct {
+        fd: c_int,
+        cap: usize,
+        alloc: std.mem.Allocator,
+        out: std.ArrayList(u8) = .empty,
+        err: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            var chunk: [64 * 1024]u8 = undefined;
+            while (self.out.items.len < self.cap) {
+                const want = @min(chunk.len, self.cap - self.out.items.len);
+                const n = read(self.fd, &chunk, want);
+                if (n <= 0) break;
+                self.out.appendSlice(self.alloc, chunk[0..@intCast(n)]) catch |e| {
+                    self.err = e;
+                    return;
+                };
+            }
+        }
+    };
+    var err_ctx: DrainCtx = .{ .fd = err_pipe[0], .cap = opts.max_output_bytes, .alloc = alloc };
+    errdefer err_ctx.out.deinit(alloc);
+    const err_thread = try std.Thread.spawn(.{}, DrainCtx.run, .{&err_ctx});
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var chunk: [64 * 1024]u8 = undefined;
+    while (out.items.len < opts.max_output_bytes) {
+        const want = @min(chunk.len, opts.max_output_bytes - out.items.len);
+        const n = read(out_pipe[0], &chunk, want);
+        if (n <= 0) break;
+        try out.appendSlice(alloc, chunk[0..@intCast(n)]);
+    }
+    _ = close(out_pipe[0]);
+    out_pipe[0] = -1;
+
+    err_thread.join();
+    _ = close(err_pipe[0]);
+    err_pipe[0] = -1;
+    if (err_ctx.err) |e| {
+        err_ctx.out.deinit(alloc);
+        return e;
+    }
+
+    var status: c_int = 0;
+    _ = waitpid(pid, &status, 0);
+
+    const term: CaptureResult.Term = if ((status & 0x7f) == 0)
+        .{ .Exited = @intCast((status >> 8) & 0xff) }
+    else if ((status & 0x7f) != 0x7f)
+        .{ .Signal = @intCast(status & 0x7f) }
+    else
+        .{ .Stopped = @intCast((status >> 8) & 0xff) };
+
+    return .{
+        .stdout = try out.toOwnedSlice(alloc),
+        .stderr = try err_ctx.out.toOwnedSlice(alloc),
+        .term = term,
+    };
+}
+
+/// Fire-and-forget spawn of a detached child (used to launch the warm
+/// cli-daemon). POSIX uses posix_spawnp + /dev/null redirection; Windows uses
+/// CreateProcessW with detached/no-window flags.
+pub fn spawnDetached(allocator: std.mem.Allocator, argv: []const []const u8) void {
+    if (is_windows) {
+        spawnDetachedWindows(allocator, argv);
+        return;
+    } else {
+        spawnDetachedPosix(allocator, argv);
+    }
+}
+
+pub fn windowsCommandLine(allocator: std.mem.Allocator, argv: []const []const u8) ?[]u8 {
+    var cmd: std.ArrayList(u8) = .empty;
+    defer cmd.deinit(allocator);
+    for (argv, 0..) |arg, i| {
+        if (i != 0) cmd.append(allocator, ' ') catch return null;
+        cmd.append(allocator, '"') catch return null;
+        var backslashes: usize = 0;
+        for (arg) |ch| {
+            switch (ch) {
+                '\\' => backslashes += 1,
+                '"' => {
+                    cmd.appendNTimes(allocator, '\\', backslashes * 2 + 1) catch return null;
+                    cmd.append(allocator, '"') catch return null;
+                    backslashes = 0;
+                },
+                else => {
+                    if (backslashes > 0) {
+                        cmd.appendNTimes(allocator, '\\', backslashes) catch return null;
+                        backslashes = 0;

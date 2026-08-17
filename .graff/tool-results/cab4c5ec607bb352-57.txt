@@ -1,0 +1,25 @@
+✓ 24 results for "isCommentOrBlank"  12.3ms
+  src/explore.zig:8130  pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
+  src/explore.zig:1033              if (compact and isCommentOrBlank(line, language)) continue;
+  src/explore.zig:8092          if (compact and isCommentOrBlank(line, language)) continue;
+  src/explore.zig:8120          if (compact and isCommentOrBlank(line, language)) continue;
+  src/test_explore.zig:133  const isCommentOrBlank = explore.isCommentOrBlank;
+  src/mcp.zig:2220              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2228              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2258              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2270              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2311              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2327              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2423                  if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2474              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2572          if (explore_mod.isCommentOrBlank(r.line_text, lang)) continue;
+  src/mcp.zig:2657  /// Deliberately line-local and pragmatic, in the spirit of `isCommentOrBlank`:
+  src/test_explore.zig:616  test "isCommentOrBlank: detects language-specific comments" {
+  src/test_explore.zig:617      try testing.expect(isCommentOrBlank("  // zig comment", .zig));
+  src/test_explore.zig:618      try testing.expect(isCommentOrBlank("  # python comment", .python));
+  src/test_explore.zig:619      try testing.expect(isCommentOrBlank("  /* c comment */", .c));
+  src/test_explore.zig:620      try testing.expect(isCommentOrBlank("  * continuation", .javascript));
+  src/test_explore.zig:621      try testing.expect(isCommentOrBlank("   ", .zig));
+  src/test_explore.zig:622      try testing.expect(isCommentOrBlank("", .zig));
+  src/test_explore.zig:623      try testing.expect(!isCommentOrBlank("  const x = 1;", .zig));
+  src/test_explore.zig:624      try testing.expect(!isCommentOrBlank("  x = 1", .python));

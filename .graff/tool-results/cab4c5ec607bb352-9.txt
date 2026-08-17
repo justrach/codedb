@@ -1,0 +1,104 @@
+# Task
+line-comment detection implementation switch every language PR 683
+
+## Keywords used
+- implementation
+- detection
+- language
+- comment
+- switch
+
+## Most-relevant files
+- src/explore.zig  (2 matches)
+- src/wasm.zig  (2 matches)
+- src/mcp.zig  (2 matches)
+- src/codegraph.zig  (2 matches)
+- src/server.zig  (2 matches)
+
+## Top sites (with ±2 lines of context)
+
+src/explore.zig:98
+```
+pub const FileOutline = struct {
+    path: []const u8,
+    language: Language,
+    line_count: u32,
+    byte_size: u64,
+```
+
+src/explore.zig:43
+```
+    import,
+    test_decl,
+    comment_block,
+    trait_def,
+    impl_block,
+```
+
+src/wasm.zig:197
+```
+        writer.writeAll("{\"path\":\"") catch return null;
+        writeJsonEscaped(writer, entry.key_ptr.*);
+        writer.writeAll("\",\"language\":\"") catch return null;
+        writeJsonEscaped(writer, @tagName(outline.language));
+        writer.print("\",\"line_count\":{d},\"byte_size\":{d},\"symbol_count\":{d}}}", .{
+```
+
+src/wasm.zig:26
+```
+fn writeJsonEscaped(writer: anytype, s: []const u8) void {
+    for (s) |c| {
+        switch (c) {
+            '"' => writer.writeAll("\\\"") catch return,
+            '\\' => writer.writeAll("\\\\") catch return,
+```
+
+src/mcp.zig:284
+```
+    if (query.len < 2 or query.len > 256) return false;
+
+    // Single identifiers (legacy) AND multi-word / natural-language queries
+    // (which route to the BM25 ranked path) both resolve through the word
+    // index, so allow spaces between terms. Reject other punctuation so plain
+```
+
+src/mcp.zig:670
+```
+    \\{"name":"codedb_outline","description":"Replaces reading a whole file with cat/head/tail: symbol outline of one file — functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view — each symbol's declaration line with its body elided as '{ … N lines }', so a 2,000-line file collapses to ~one line per symbol.","inputSchema":{
+```
+
+src/codegraph.zig:11
+```
+//!
+//! The graph is the foundation for: centrality-boosted ranking, edge-aware
+//! context expansion, and community detection. It is always an ADDITIVE signal —
+//! never a filter — so a misresolved edge can never drop a real result.
+
+```
+
+src/codegraph.zig:33
+```
+};
+
+/// True for identifiers that precede `(` but are language keywords / control flow,
+/// not callees — so `if (`, `for (`, `while (`, `catch (`, `return (` etc. are not
+/// counted as calls. Deliberately a cross-language superset (codedb indexes ~40
+```
+
+src/server.zig:5
+```
+// This restores the port server that upstream stubbed out in commit 56ea465
+// (v0.2.578). The route set and JSON response shapes match the pre-0.16
+// implementation byte-for-byte; only the transport layer (listen/accept/read/
+// write/close) was rewritten against the new `std.Io.net` surface. MCP stdio
+// remains the primary entry, but `codedb serve --port` is once again usable
+```
+
+src/server.zig:38
+```
+
+    while (true) {
+        const stream = srv.accept(io) catch |err| switch (err) {
+            error.WouldBlock, error.ConnectionAborted => continue,
+            else => return err,
+```

@@ -1,0 +1,35 @@
+{
+  "schema": "codedb.react-graff.v1",
+  "corpus": "/tmp/react-hillclimb",
+  "commit": "eb8feb7",
+  "model": "5.6-luna",
+  "provider": "codex",
+  "codedb": "0.2.5841-cross-repo",
+  "suite": "hard",
+  "cases": [
+    {
+      "id": "task-dom-concurrent-root",
+      "tier": "hard",
+      "task": "Where does the DOM renderer attach a concurrent root to a container element? Reply with only path:line.",
+      "gold": "packages/react-dom/src/client/ReactDOMRoot.js:171"
+    },
+    {
+      "id": "task-scheduler-message-loop",
+      "tier": "hard",
+      "task": "Where does the scheduler post a message to keep draining its host task queue? Reply with only path:line.",
+      "gold": "packages/scheduler/src/forks/Scheduler.js:553"
+    },
+    {
+      "id": "task-passive-after-commit",
+      "tier": "hard",
+      "task": "Where does the reconciler run passive effects after a commit finishes? Reply with only path:line.",
+      "gold": "packages/react-reconciler/src/ReactFiberWorkLoop.js:4691"
+    },
+    {
+      "id": "task-file-hooks-dispatch",
+      "tier": "hard",
+      "task": "Which source file enqueues a hook state update onto the current fiber? Reply with only the path.",
+      "gold": "packages/react-reconciler/src/ReactFiberHooks.js"
+    }
+  ]
+}

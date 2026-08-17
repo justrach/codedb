@@ -1,0 +1,46 @@
+        // #639: unexpanded ${workspaceFolder} → cwd, non-explicit, so the
+        // CODEDB_ROOT fallback, #502 git-root walk-up, and mcp deferred-scan
+        // (all gated on root == "." / !root_is_explicit) apply.
+        if (std.mem.eql(u8, a1, workspace_placeholder))
+            return .{ .root = ".", .cmd = args[2], .cmd_args_start = 3, .root_is_explicit = false };
+        return .{ .root = a1, .cmd = args[2], .cmd_args_start = 3, .root_is_explicit = true };
+    }
+    return .{ .root = "", .cmd = "", .cmd_args_start = 0, .root_is_explicit = false, .usage_exit = true };
+}
+
+/// True when an `mcp` root points at cwd and was left implicit — a bare
+/// `codedb mcp` or a normalized ${workspaceFolder}. Single source of truth for
+/// the #502 git-root walk-up AND the deferred-scan handshake; both used to be
+/// hand-written inline in mainImpl and drifted out of sync, which is how #639
+/// hid (a placeholder arrived with root_is_explicit set and silently disabled
+/// both paths).
+pub fn mcpRootIsImplicitCwd(cmd: []const u8, root: []const u8, root_is_explicit: bool) bool {
+    return std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit;
+}
+
+/// True when an `mcp` root points at cwd and is therefore eligible for the
+/// CODEDB_ROOT env fallback (which pins the root, explicit or not).
+pub fn mcpRootAcceptsEnv(cmd: []const u8, root: []const u8) bool {
+    return std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".");
+}
+
+/// True for the three spellings of a help request — `--help`, `-h`, `help`.
+/// This exact three-way disjunction was hand-written at four sites
+/// (parsePositional twice, mainImpl twice); the `mcp --no-telemetry --help`
+/// combo bypass in mainImpl exists only because two of those copies couldn't
+/// see each other. Centralizing kills the drift surface the way the mcp gate
+/// predicates did for #639.
+pub fn isHelpRequest(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "help");
+}
+
+/// A 1-based inclusive line range as accepted by `read -L FROM-TO`. `end` is
+/// `std.math.maxInt(u32)` when the spec used `$`/`end` (read to end-of-file).
+pub const LineRange = struct { start: u32, end: u32 };
+
+pub const LineRangeError = error{ MissingDash, BadStart, BadEnd, ZeroLine, Reversed };
+
+/// True when positional args remain after the command name. Used by arity-zero
+/// CLI commands (tree/hot/status) so typos like `codedb tree typo` exit 1
+/// instead of silently ignoring the extra token. See issue #528 (item 13).
+pub fn hasExtraCliArgs(args: []const []const u8, cmd_args_start: usize) bool {

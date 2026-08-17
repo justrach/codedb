@@ -1,0 +1,46 @@
+- **[Architecture](docs/architecture.md)** — engine internals, index layout
+- **[Benchmarks](docs/benchmarks.md)** — micro-benchmarks + agentic-eval results vs codegraph, FTS5, lean-ctx
+- **[Raspberry Pi 4](docs/raspberry-pi.md)** — full-performance ARM64 setup, Cortex-A72 build, and on-device benchmark
+- **[Zig 0.17.0-dev migration guide](docs/zig-0.17-migration.md)** — repeatable zigup workflow and API change recipes
+
+| Platform | Binary | Signed |
+|----------|--------|--------|
+| macOS ARM64 (Apple Silicon) | `codedb-darwin-arm64` | ✅ codesigned + notarized |
+| macOS x86_64 (Intel) | `codedb-darwin-x86_64` | codesigned + notarized (0.2.5833+) |
+| Linux ARM64 | `codedb-linux-arm64` | — |
+| Linux x86_64 | `codedb-linux-x86_64` | — |
+| Windows x86_64 | `codedb-windows-x86_64.exe` | SHA256 verified automatically |
+
+Or install manually from [GitHub Releases](https://github.com/justrach/codedb/releases/latest). Always verify the binary against the attached `checksums.sha256` before running it.
+
+---
+
+## ⚡ Quick Start
+
+### As an MCP server (recommended)
+
+The macOS/Linux shell installer registers codedb automatically. For npm/npx installs on macOS/Linux and manual Windows installs, use the MCP configuration above or the client-specific examples in [docs/mcp.md](docs/mcp.md). Then open a project and the 21 MCP tools are available to your AI agent.
+
+```bash
+# Manual MCP start (auto-configured by install script)
+codedb mcp /path/to/your/project
+```
+
+### As an HTTP server
+
+```bash
+codedb serve /path/to/your/project
+# listening on localhost:7719
+```
+
+### CLI
+
+```bash
+codedb tree /path/to/project          # file tree with symbol counts
+codedb outline src/main.zig           # symbols in a file
+codedb find AgentRegistry             # find symbol definitions
+codedb search "handleAuth"            # full-text search (trigram-accelerated)
+codedb word Store                     # exact word lookup (inverted index, O(1))
+codedb hot                            # recently modified files
+```
+

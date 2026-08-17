@@ -1,0 +1,401 @@
+        } else |_| {}
+        self.sd.store(true, .release);
+        self.done.store(true, .release);
+    }
+};
+
+test "issue-619: serve/mcp daemon signals a live owner to yield instead of waiting out the retry cadence" {
+    if (@import("builtin").os.tag == .windows) return; // no unix-socket proxy on Windows
+
+    const abs_root = "/codedb-test-issue619-handover";
+    var pbuf: [128]u8 = undefined;
+    const sock_path = cli_proxy_mod.cliSocketPath(&pbuf, abs_root).?;
+    var zbuf: [128]u8 = undefined;
+    const sock_z = try cio.bufPrintZ(&zbuf, "{s}", .{sock_path});
+    _ = std.c.unlink(sock_z.ptr);
+    defer _ = std.c.unlink(sock_z.ptr);
+
+    // A live owner holds the socket (stands in for an auto-spawned
+    // cli-daemon or another serve/mcp daemon — same code path either way).
+    var owner_sd = std.atomic.Value(bool).init(false);
+    const owner_fd = cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &owner_sd).?;
+    var owner_sim = CliHandoverOwnerSim{ .fd = owner_fd, .sock_path = sock_path, .sd = &owner_sd };
+    const owner_thread = try std.Thread.spawn(.{}, CliHandoverOwnerSim.run, .{&owner_sim});
+
+    // Deliberately large retry interval: without an explicit yield signal,
+    // a passive retrying newcomer could only reclaim the socket after a full
+    // retry_interval_ms sleep (here 3000ms). The #619 handover instead sends
+    // a one-shot yield request the live owner honors immediately, so
+    // acquisition must complete far sooner than that passive cadence.
+    var newcomer_sd = std.atomic.Value(bool).init(false);
+    const start_ms = cio.milliTimestamp();
+    const newcomer_fd = cli_proxy_mod.cliAcquireListener(sock_path, true, 3000, &newcomer_sd);
+    const elapsed_ms = cio.milliTimestamp() - start_ms;
+
+    owner_thread.join();
+    try testing.expect(owner_sim.saw_sentinel); // owner actually received the sentinel frame
+    try testing.expect(newcomer_fd != null); // and the newcomer took the socket over
+    try testing.expect(elapsed_ms < 1500); // far under the passive 3000ms retry cadence
+    if (newcomer_fd) |fd| _ = std.c.close(fd);
+}
+
+test "windows: spawnDetached command line round-trips argv with trailing backslashes" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const alloc = testing.allocator;
+
+    const argv = [_][]const u8{ "C:\\tools\\codedb.exe", "D:\\", "cli-daemon", "say \"hi\"", "a\\\\b", "tail\\\\" };
+    const cmd = cio.windowsCommandLine(alloc, &argv) orelse return error.TestUnexpectedResult;
+    defer alloc.free(cmd);
+    const cmd_w = try std.unicode.utf8ToUtf16LeAlloc(alloc, cmd);
+    defer alloc.free(cmd_w);
+
+    var it = try std.process.Args.Iterator.Windows.init(alloc, cmd_w);
+    defer it.deinit();
+    for (argv) |expected| {
+        const got = it.next() orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings(expected, got);
+    }
+    try testing.expect(it.next() == null);
+}
+
+test "search: exact-symbol query surfaces the definition site inline (fewer round-trips, #1)" {
+    // codedb_search for a bare identifier that is an indexed symbol should lead
+    // with the def location, so the agent doesn't have to make a 2nd
+    // codedb_symbol call just to learn where it is defined.
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/thing.zig", "pub fn parseThing() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const search_json =
+        \\{"query":"parseThing"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, search_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "is defined at") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/thing.zig:1") != null);
+}
+
+test "mcp: emit-rich-blocks defaults lean for agent clients, rich for GUI panels" {
+    // Assumes a clean env (no CODEDB_MCP_LEAN/RICH override), as under `zig build test`.
+    // Agent harnesses forward tool text straight into model context, so they
+    // default LEAN — no colored summary / guidance blocks to pay output tokens for.
+    try testing.expect(!mcp_mod.mcpEmitRichBlocks(null)); // no clientInfo -> lean
+    try testing.expect(!mcp_mod.mcpEmitRichBlocks("claude-code"));
+    try testing.expect(!mcp_mod.mcpEmitRichBlocks("codex"));
+    try testing.expect(!mcp_mod.mcpEmitRichBlocks("cursor"));
+    // Desktop GUI chat clients render a human-facing result panel -> rich blocks,
+    // matched case-insensitively.
+    try testing.expect(mcp_mod.mcpEmitRichBlocks("claude-ai"));
+    try testing.expect(mcp_mod.mcpEmitRichBlocks("Claude-AI"));
+}
+
+test "issue-680: policy upsert never splices on a marker-shaped string in user prose" {
+    const block = try codex_setup.buildPolicyBlock(testing.allocator);
+    defer testing.allocator.free(block);
+
+    const original =
+        \\# House rules
+        \\
+        \\Do not touch the `<!-- codedb:begin v` marker by hand.
+        \\
+        \\SECRET USER INSTRUCTIONS THAT MUST SURVIVE
+        \\
+    ;
+
+    const updated = (try codex_setup.upsertPolicyBlock(testing.allocator, original, block)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(updated);
+
+    // Every byte the user wrote survives, in order, ahead of the block.
+    try testing.expect(std.mem.startsWith(u8, updated, std.mem.trimEnd(u8, original, "\n")));
+    try testing.expect(std.mem.indexOf(u8, updated, "SECRET USER INSTRUCTIONS THAT MUST SURVIVE") != null);
+    try testing.expect(std.mem.indexOf(u8, updated, "Do not touch the `<!-- codedb:begin v` marker by hand.") != null);
+    try testing.expect(std.mem.indexOf(u8, updated, codex_setup.end_marker) != null);
+
+    // ...and a re-install is still a no-op.
+    try testing.expect((try codex_setup.upsertPolicyBlock(testing.allocator, updated, block)) == null);
+}
+
+test "issue-680: policy upsert repairs an unterminated block instead of appending a second one" {
+    const block = try codex_setup.buildPolicyBlock(testing.allocator);
+    defer testing.allocator.free(block);
+
+    const damaged = "# House rules\n\n<!-- codedb:begin v0.0.1 -->\nHALF WRITTEN\nKEEP THIS USER LINE\n";
+
+    const first = (try codex_setup.upsertPolicyBlock(testing.allocator, damaged, block)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(first);
+
+    try testing.expect(std.mem.indexOf(u8, first, "KEEP THIS USER LINE") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "HALF WRITTEN") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "v0.0.1") == null);
+    // Exactly one begin marker, and it is terminated.
+    try testing.expectEqual(
+        std.mem.indexOf(u8, first, codex_setup.begin_marker_prefix).?,
+        std.mem.lastIndexOf(u8, first, codex_setup.begin_marker_prefix).?,
+    );
+    try testing.expectEqualStrings(release_info.semver, codex_setup.policyBlockVersion(first).?);
+
+    // Install must be idempotent from the second run on.
+    try testing.expect((try codex_setup.upsertPolicyBlock(testing.allocator, first, block)) == null);
+}
+
+test "issue-680: uninstall strips every codedb policy block, install collapses to one" {
+    const two =
+        "# House rules\n\n" ++
+        "<!-- codedb:begin v0.0.1 -->\nold one\n<!-- codedb:end -->\n\n" ++
+        "middle user text\n\n" ++
+        "<!-- codedb:begin v0.0.2 -->\nold two\n<!-- codedb:end -->\n\n" ++
+        "tail user text\n";
+
+    const removed = (try codex_setup.removePolicyBlock(testing.allocator, two)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(removed);
+
+    try testing.expect(std.mem.indexOf(u8, removed, codex_setup.begin_marker_prefix) == null);
+    try testing.expect(std.mem.indexOf(u8, removed, "old one") == null);
+    try testing.expect(std.mem.indexOf(u8, removed, "old two") == null);
+    try testing.expect(std.mem.indexOf(u8, removed, "middle user text") != null);
+    try testing.expect(std.mem.indexOf(u8, removed, "tail user text") != null);
+
+    const block = try codex_setup.buildPolicyBlock(testing.allocator);
+    defer testing.allocator.free(block);
+
+    const collapsed = (try codex_setup.upsertPolicyBlock(testing.allocator, two, block)) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(collapsed);
+
+    try testing.expectEqual(
+        std.mem.indexOf(u8, collapsed, codex_setup.begin_marker_prefix).?,
+        std.mem.lastIndexOf(u8, collapsed, codex_setup.begin_marker_prefix).?,
+    );
+    try testing.expect(std.mem.indexOf(u8, collapsed, "old two") == null);
+    try testing.expect(std.mem.indexOf(u8, collapsed, "middle user text") != null);
+    try testing.expect(std.mem.indexOf(u8, collapsed, "tail user text") != null);
+}
+
+test "installers: the website copies stay byte-identical to install/install.sh" {
+    const alloc = testing.allocator;
+    const canonical = std.Io.Dir.cwd().readFileAlloc(io, "install/install.sh", alloc, .limited(1 << 20)) catch
+        return error.SkipZigTest;
+    defer alloc.free(canonical);
+
+    // install/install.sh is the single source: the website copies are served
+    // from the same bytes, so a checksum-free or #658-free variant can never
+    // ship behind /install.sh.
+    const copies = [_][]const u8{ "website/app/install_script.sh", "website/dist/install.sh" };
+    for (copies) |rel| {
+        const copy = std.Io.Dir.cwd().readFileAlloc(io, rel, alloc, .limited(1 << 20)) catch
+            return error.SkipZigTest;
+        defer alloc.free(copy);
+        try testing.expectEqualStrings(canonical, copy);
+    }
+}
+
+test "tools/list core profile advertises the navigation set with full descriptions" {
+    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_core = true });
+    defer testing.allocator.free(resp);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    try testing.expectEqual(@as(usize, 10), tools.items.len);
+    var found_callers = false;
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_glob") or std.mem.eql(u8, name, "codedb_projects"))
+            return error.NonCoreToolAdvertised;
+        if (std.mem.eql(u8, name, "codedb_callers")) {
+            found_callers = true;
+            const desc = t.object.get("description").?.string;
+            try testing.expect(std.mem.indexOf(u8, desc, "PRIMARY tool") != null);
+        }
+    }
+    try testing.expect(found_callers);
+}
+
+test "tools/list slim profile stays six terse tools" {
+    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_slim = true });
+    defer testing.allocator.free(resp);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    try testing.expectEqual(@as(usize, 6), tools.items.len);
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_callers")) {
+            const desc = t.object.get("description").?.string;
+            try testing.expect(std.mem.indexOf(u8, desc, "PRIMARY tool") == null);
+        }
+    }
+}
+
+test "context: identifier candidates merge with plain concept words" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const A = arena.allocator();
+
+    const task = "find where the portable snapshot file with META/TREE sections is written to disk";
+    var cands: std.ArrayList([]const u8) = .empty;
+    mcp_mod.extractContextCandidates(task, A, &cands);
+    mcp_mod.extractContextFallbackWords(task, A, &cands);
+
+    var meta_count: usize = 0;
+    var has_snapshot = false;
+    for (cands.items) |c| {
+        if (std.mem.eql(u8, c, "META")) meta_count += 1;
+        if (std.ascii.eqlIgnoreCase(c, "snapshot")) has_snapshot = true;
+    }
+    try testing.expectEqual(@as(usize, 1), meta_count);
+    try testing.expect(has_snapshot);
+}
+
+test "tools/list mini profile advertises six tools with full descriptions" {
+    const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_mini = true });
+    defer testing.allocator.free(resp);
+
+    // tools/list rides on every model request, so the whole payload is the
+    // per-request tax. Keep the compressed mini surface under budget.
+    try testing.expect(resp.len < 6500);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    try testing.expectEqual(@as(usize, 6), tools.items.len);
+    var found_callers = false;
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_read") or std.mem.eql(u8, name, "codedb_word"))
+            return error.NonMiniToolAdvertised;
+        if (std.mem.eql(u8, name, "codedb_callers")) {
+            found_callers = true;
+            const desc = t.object.get("description").?.string;
+            // Compressed, but the steering claim survives.
+            try testing.expect(std.mem.indexOf(u8, desc, "grep") != null);
+            try testing.expect(std.mem.indexOf(u8, desc, "call site") != null);
+            try testing.expect(desc.len <= 220);
+        }
+    }
+    try testing.expect(found_callers);
+}
+
+test "issue: codedb_callers returns results when max_results is smaller than the filtered-out prefix" {
+    // Reported as "codedb_callers returns 0 call sites after a snapshot
+    // fast-load". The fast-load is a red herring — searchContentUncached
+    // already ensures both lazy indexes (explore.zig:3931 word index,
+    // explore.zig:3941 symbol index). The real defect is in handleCallers:
+    // it passes the user's max_results straight through as the cap on the
+    // RAW content search, then applies its four exclusion filters (non-code
+    // language, comment/blank line, definition site, whole-word) to that
+    // already-truncated slice. Ranked search deliberately floats the
+    // defining file (+20 prior, explore.zig:4524) and its definition lines
+    // (explore.zig:4598) to the front — exactly the rows this tool drops —
+    // so a small max_results spends its entire budget on rows that are then
+    // filtered away and the tool reports "0 call sites" for a symbol with
+    // real callers. max_results is documented as "Maximum call sites to
+    // return": it must cap the OUTPUT, not the pre-filter search.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    // One file, so tier0_per_file_cap == max_results (explore.zig:4125) and
+    // the raw hits are taken in line order: the first three are the doc
+    // comments, which handleCallers drops. The two genuine call sites sit
+    // just past the cap.
+    try explorer.indexFile("mod.zig",
+        \\// fooBar is the entry point
+        \\// fooBar is described again
+        \\// fooBar is described once more
+        \\pub fn fooBar() void {}
+        \\pub fn callerA() void {
+        \\    fooBar();
+        \\}
+        \\pub fn callerB() void {
+        \\    fooBar();
+        \\}
+        \\
+    );
+
+    const args_json =
+        \\{"name":"fooBar","max_results":3}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Both real call sites fit inside max_results=3 and must be reported.
+    try testing.expect(std.mem.indexOf(u8, out.items, "0 call sites") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'fooBar'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:6") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:9") != null);
+    // The filtered rows must still not leak into the output.
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:1:") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "mod.zig:4:") == null);
+}
+
+test "issue: codedb_callers caps the reported call sites at max_results" {
+    // Companion to the test above: over-fetching to survive the filters must
+    // not turn max_results into a no-op — the OUTPUT still has to honour it.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    try explorer.indexFile("def.zig", "pub fn fooBar() void {}\n");
+    try explorer.indexFile("many.zig",
+        \\pub fn callerA() void {
+        \\    fooBar();
+        \\    fooBar();
+        \\    fooBar();
+        \\    fooBar();
+        \\    fooBar();
+        \\}
+        \\
+    );
+
+    const args_json =
+        \\{"name":"fooBar","max_results":2}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'fooBar'") != null);
+}
+
+// ── codedb_callers: string-literal mentions are not call sites ──────────────

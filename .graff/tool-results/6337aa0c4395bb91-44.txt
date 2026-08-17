@@ -1,0 +1,530 @@
+✓ src/main.zig  zig  ⚡ 11.0µs
+    1 | const std = @import("std");
+    2 | const builtin = @import("builtin");
+    3 | const cio = @import("cio.zig");
+    4 | const Store = @import("store.zig").Store;
+    5 | const Explorer = @import("explore.zig").Explorer;
+    6 | const sty = @import("style.zig");
+    7 | const index_mod = @import("index.zig");
+    8 | const root_policy = @import("root_policy.zig");
+    9 | const nuke_mod = @import("nuke.zig");
+   10 | const update_mod = @import("update.zig");
+   11 | const codex_mod = @import("codex_setup.zig");
+   12 | const release_info = @import("release_info.zig");
+   13 | const Config = @import("config.zig").Config;
+   14 | 
+   15 | /// Buffered stdout wrapper. Formats into a 64KB stack-buffered window and
+   16 | /// flushes lazily; an explicit `flush()` runs from mainImpl's deferred cleanup.
+   17 | /// `word` on a high-count term (~2k hits) used to do 2k mallocs + 2k write()
+   18 | /// syscalls; this collapses that to a handful of batched writes.
+   19 | const out_mod = @import("out.zig");
+   20 | const Out = out_mod.Out;
+   21 | const printUsage = out_mod.printUsage;
+   22 | const cli_args = @import("cli_args.zig");
+   23 | // Re-exports so @import("main.zig") (tests, tooling) and the rest of main keep
+   24 | // the original flat call sites after the cli_args.zig extraction.
+   25 | pub const ParsedPositional = cli_args.ParsedPositional;
+   26 | pub const parsePositional = cli_args.parsePositional;
+   27 | pub const LineRange = cli_args.LineRange;
+   28 | pub const LineRangeError = cli_args.LineRangeError;
+   29 | pub const parseLineRange = cli_args.parseLineRange;
+   30 | pub const SearchArgs = cli_args.SearchArgs;
+   31 | pub const SearchArgError = cli_args.SearchArgError;
+   32 | pub const parseSearchArgs = cli_args.parseSearchArgs;
+   33 | pub const hasExtraCliArgs = cli_args.hasExtraCliArgs;
+   34 | pub const findGitRoot = cli_args.findGitRoot;
+   35 | pub const findGitRootFrom = cli_args.findGitRootFrom;
+   36 | pub const isValidMcpFlag = cli_args.isValidMcpFlag;
+   37 | pub const resolveRoot = cli_args.resolveRoot;
+   38 | const cliIsQueryCmd = cli_args.cliIsQueryCmd;
+   39 | const mcpRootIsImplicitCwd = cli_args.mcpRootIsImplicitCwd;
+   40 | const mcpRootAcceptsEnv = cli_args.mcpRootAcceptsEnv;
+   41 | const isHelpRequest = cli_args.isHelpRequest;
+   42 | 
+   43 | /// The real entry point. In Debug builds, Zig may merge all command-branch
+   44 | /// stack frames into one producing a frame that overflows the default OS stack,
+   45 | /// so those builds trampoline through a thread with an explicit 64 MB stack.
+   46 | /// Optimized builds have a ~190 KB frame and run directly on the process stack,
+   47 | /// avoiding an OS thread create/join on every CLI invocation.
+   48 | ///
+   49 | /// #504: must have a non-error-union return type. A Zig binary with
+   50 | /// `pub fn main(...) !void` ad-hoc-signed and run via Rosetta (or, in the
+   51 | /// user-reported case, on a native macOS Intel build that ends up with a
+   52 | /// similar startup-path tripwire) segfaults BEFORE main runs — the runtime's
+   53 | /// error-handling wrapper is what crashes. Verified with a minimal repro:
+   54 | /// `pub fn main(init) void { ... }` works; `!void` does not. Same crash
+   55 | /// happens if the entry point spawns a thread before writing to stderr.
+   56 | /// So we keep the entry point synchronous + infallible, and push any
+   57 | /// fallible work into mainImpl which runs after we've already had a chance
+   58 | /// to surface usage / --version output via the fast path.
+   59 | pub fn main(init: std.process.Init.Minimal) void {
+   60 |     const argv = cio.bootstrapArgs(init.args);
+   61 |     cio.setProcessArgs(argv);
+   62 |     if (handleFastPath(argv)) return;
+   63 |     if (builtin.mode != .Debug) {
+   64 |         mainInner(argv);
+   65 |         return;
+   66 |     }
+   67 |     mainTrampoline(argv) catch |err| {
+   68 |         // Surface the failure on stderr so users see something even if the
+   69 |         // worker thread crashes during startup.
+   70 |         var buf: [256]u8 = undefined;
+   71 |         if (std.fmt.bufPrint(&buf, "codedb: fatal startup error: {s}\n", .{@errorName(err)})) |msg| {
+   72 |             cio.File.stderr().writeAll(msg) catch {};
+   73 |         } else |_| {}
+   74 |         std.process.exit(1);
+   75 |     };
+   76 | }
+   77 | 
+   78 | fn mainTrampoline(argv: []const [*:0]const u8) !void {
+   79 |     const thread = try std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, mainInner, .{argv});
+   80 |     thread.join();
+   81 | }
+   82 | 
+   83 | /// Returns true if the invocation was handled and `main` should exit.
+   84 | /// Designed to be the cheapest possible path — uses raw stdout writes
+   85 | /// instead of any of the heavier init machinery in mainImpl, so a bug
+   86 | /// further down the stack can't take out plain `codedb` / `--help` /
+   87 | /// `--version` invocations.
+   88 | fn handleFastPath(argv: []const [*:0]const u8) bool {
+   89 |     const stdout_fd: c_int = 1;
+   90 |     const stderr_fd: c_int = 2;
+   91 | 
+   92 |     if (argv.len < 2) {
+   93 |         const msg =
+   94 |             "codedb  code intelligence server\n\n" ++
+   95 |             "  usage: codedb [root] <command> [args...]\n\n" ++
+   96 |             "  run `codedb --help` for the full command list.\n";
+   97 |         (cio.File{ .handle = stderr_fd }).writeAll(msg) catch {};
+   98 |         std.process.exit(1);
+   99 |     }
+  100 | 
+  101 |     const a1 = std.mem.span(argv[1]);
+  102 |     if (std.mem.eql(u8, a1, "--version") or std.mem.eql(u8, a1, "-v") or std.mem.eql(u8, a1, "version")) {
+  103 |         var buf: [128]u8 = undefined;
+  104 |         const out = std.fmt.bufPrint(&buf, "codedb {s}\n", .{release_info.semver}) catch {
+  105 |             std.process.exit(0);
+  106 |         };
+  107 |         (cio.File{ .handle = stdout_fd }).writeAll(out) catch {};
+  108 |         std.process.exit(0);
+  109 |     }
+  110 | 
+  111 |     return false;
+  112 | }
+  113 | 
+  114 | fn mainInner(argv: []const [*:0]const u8) void {
+  115 |     mainImpl(argv) catch |err| {
+  116 |         std.debug.print("fatal: {s}\n", .{@errorName(err)});
+  117 |         std.process.exit(1);
+  118 |     };
+  119 | }
+  120 | const query_mod = @import("query.zig");
+  121 | const runQuery = query_mod.runQuery;
+  122 | 
+  123 | const cli_proxy = @import("cli_proxy.zig");
+  124 | pub const daemonLockTryAcquire = cli_proxy.daemonLockTryAcquire;
+  125 | pub const daemonLockRelease = cli_proxy.daemonLockRelease;
+  126 | pub const daemonLockAvailable = cli_proxy.daemonLockAvailable;
+  127 | const cliTryProxy = cli_proxy.cliTryProxy;
+  128 | 
+  129 | const bootstrap = @import("bootstrap.zig");
+  130 | const loadUserConfig = bootstrap.loadUserConfig;
+  131 | const getDataDir = bootstrap.getDataDir;
+  132 | 
+  133 | const commands = @import("commands.zig");
+  134 | fn mainImpl(argv: []const [*:0]const u8) !void {
+  135 |     // Use c_allocator (libc malloc) — better page reclamation than GPA
+  136 |     const allocator = std.heap.c_allocator;
+  137 |     cio.ignoreSigpipe();
+  138 | 
+  139 |     // 0.16: single Threaded I/O instance passed down through every subsystem
+  140 |     // that touches fs/subprocess. See issue #282. `io` flows into mcp.run,
+  141 |     // update.run, nuke.run, watcher.initialScan, server.serve, Store, Explorer.
+  142 |     var threaded: std.Io.Threaded = .init(allocator, .{});
+  143 |     defer threaded.deinit();
+  144 |     const io = threaded.io();
+  145 | 
+  146 |     const stdout = cio.File.stdout();
+  147 |     const use_color = stdout.isTty();
+  148 |     const s = sty.style(use_color);
+  149 |     var out = Out{ .file = stdout, .alloc = allocator };
+  150 |     defer out.flush();
+  151 | 
+  152 |     // Extract --config-file=<path> / --config-file <path> before positional
+  153 |     // arg parsing so a leading `--config-file=X` isn't misread as the root.
+  154 |     // See #101, #102.
+  155 |     var explicit_config: ?[]const u8 = null;
+  156 |     var no_telemetry = false;
+  157 |     const args = blk: {
+  158 |         var filtered: std.ArrayList([]const u8) = .empty;
+  159 |         errdefer filtered.deinit(allocator);
+  160 |         try filtered.append(allocator, std.mem.span(argv[0]));
+  161 |         var i: usize = 1;
+  162 |         while (i < argv.len) : (i += 1) {
+  163 |             const a = std.mem.span(argv[i]);
+  164 |             if (std.mem.startsWith(u8, a, "--config-file=")) {
+  165 |                 explicit_config = a["--config-file=".len..];
+  166 |                 continue;
+  167 |             } else if (std.mem.eql(u8, a, "--config-file") and i + 1 < argv.len) {
+  168 |                 explicit_config = std.mem.span(argv[i + 1]);
+  169 |                 i += 1;
+  170 |                 continue;
+  171 |             } else if (std.mem.eql(u8, a, "--no-telemetry")) {
+  172 |                 // #528 item 12: --no-telemetry is documented as a global option,
+  173 |                 // so strip it before positional parsing (like --config-file)
+  174 |                 // instead of only honoring it after `mcp`. Telemetry.init also
+  175 |                 // honors CODEDB_NO_TELEMETRY.
+  176 |                 no_telemetry = true;
+  177 |                 continue;
+  178 |             } else if (std.mem.eql(u8, a, "--allow-temp")) {
+  179 |                 // #538: opt-in to indexing temp roots (/tmp, /private/tmp). Sets
+  180 |                 // CODEDB_ALLOW_TEMP so root_policy.tempIndexingAllowed (and any
+  181 |                 // daemon this CLI spawns) honors it; the env var alone works too —
+  182 |                 // the flag just flips it. Lets SWE-bench/CI harnesses index /tmp.
+  183 |                 cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
+  184 |                 continue;
+  185 |             }
+  186 |             try filtered.append(allocator, a);
+  187 |         }
+  188 |         break :blk try filtered.toOwnedSlice(allocator);
+  189 |     };
+  190 |     defer allocator.free(args);
+  191 | 
+  192 |     var root: []const u8 = undefined;
+  193 |     var cmd: []const u8 = undefined;
+  194 |     var cmd_args_start: usize = undefined;
+  195 |     var root_is_explicit: bool = false;
+  196 | 
+  197 |     const parsed = parsePositional(args);
+  198 |     if (parsed.usage_exit) {
+  199 |         printUsage(&out, s);
+  200 |         out.exitWithFlush(1);
+  201 |     }
+  202 |     root = parsed.root;
+  203 |     cmd = parsed.cmd;
+  204 |     cmd_args_start = parsed.cmd_args_start;
+  205 |     root_is_explicit = parsed.root_is_explicit;
+  206 | 
+  207 |     // CODEDB_ROOT env var lets clients (Claude Code MCP, shell scripts) pin
+  208 |     // the root without needing to pass a positional arg. Treated as explicit
+  209 |     // so the MCP scan kicks off at startup instead of waiting for a roots
+  210 |     // handshake — without this, every fresh `codedb mcp` call against a
+  211 |     // client that doesn't send roots/list_changed sees an empty index.
+  212 |     if (mcpRootAcceptsEnv(cmd, root)) {
+  213 |         if (cio.posixGetenv("CODEDB_ROOT")) |env_root| {
+  214 |             if (env_root.len > 0) {
+  215 |                 root = env_root;
+  216 |                 root_is_explicit = true;
+  217 |             }
+  218 |         }
+  219 |     }
+  220 | 
+  221 |     // #502: when `codedb mcp` is launched from a subdirectory of a git
+  222 |     // repo (e.g. opencode/Zed spawning from the buffer's directory), walk
+  223 |     // up to the repo root so the user gets the whole project indexed
+  224 |     // rather than the subdir they happen to be in. Skipped if the env var
+  225 |     // or a positional arg already pinned the root, or if no .git is found.
+  226 |     var git_root_buf: [std.fs.max_path_bytes]u8 = undefined;
+  227 |     if (mcpRootIsImplicitCwd(cmd, root, root_is_explicit)) {
+  228 |         if (findGitRoot(io, &git_root_buf)) |git_root| {
+  229 |             root = git_root;
+  230 |             root_is_explicit = true;
+  231 |         }
+  232 |     }
+  233 | 
+  234 |     // MCP stdio reserves stdout for JSON-RPC — route status/error output to
+  235 |     // stderr so startup/failure paths don't corrupt the protocol stream.
+  236 |     // See #304.
+  237 |     if (std.mem.eql(u8, cmd, "mcp")) {
+  238 |         out.file = cio.File.stderr();
+  239 |         // #502: reject unknown flags after `mcp` (e.g. `codedb mcp --snapshot`
+  240 |         // was previously consumed silently and the server started anyway,
+  241 |         // hiding the typo). Whitelist via isValidMcpFlag.
+  242 |         // Handle `--help` here too — parsePositional only catches it when it
+  243 |         // sits immediately after `mcp`; combos like `mcp --no-telemetry --help`
+  244 |         // need their own bypass.
+  245 |         for (args[cmd_args_start..]) |a| {
+  246 |             if (a.len == 0 or a[0] != '-') continue;
+  247 |             if (isHelpRequest(a)) {
+  248 |                 out.file = stdout;
+  249 |                 printUsage(&out, s);
+  250 |                 return;
+  251 |             }
+  252 |             if (!isValidMcpFlag(a)) {
+  253 |                 out.p("{s}\xe2\x9c\x97{s} unknown flag for {s}mcp{s}: {s}{s}{s}\n  valid: {s}--no-telemetry{s}, {s}--help{s}, {s}--config-file=<path>{s}\n", .{
+  254 |                     s.red,   s.reset,
+  255 |                     s.bold,  s.reset,
+  256 |                     s.bold,  a,
+  257 |                     s.reset, s.bold,
+  258 |                     s.reset, s.bold,
+  259 |                     s.reset, s.bold,
+  260 |                     s.reset,
+  261 |                 });
+  262 |                 out.exitWithFlush(1);
+  263 |             }
+  264 |         }
+  265 |     }
+  266 | 
+  267 |     // Handle --version early (no root needed)
+  268 |     if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-v") or std.mem.eql(u8, cmd, "version")) {
+  269 |         out.p("codedb {s}\n", .{release_info.semver});
+  270 |         return;
+  271 |     }
+  272 | 
+  273 |     // Handle --help early (no root needed)
+  274 |     if (isHelpRequest(cmd)) {
+  275 |         printUsage(&out, s);
+  276 |         return;
+  277 |     }
+  278 | 
+  279 |     // Handle update command early — before root resolution so it works from anywhere.
+  280 |     if (std.mem.eql(u8, cmd, "update")) {
+  281 |         update_mod.run(io, stdout, s, allocator);
+  282 |         return;
+  283 |     }
+  284 | 
+  285 |     // Handle nuke command early — before root resolution so it works from anywhere
+  286 |     if (std.mem.eql(u8, cmd, "nuke")) {
+  287 |         nuke_mod.run(io, stdout, s, allocator);
+  288 |         return;
+  289 |     }
+  290 | 
+  291 |     // #680: `codedb codex install|uninstall|verify` — the CodeDB-first Codex
+  292 |     // setup. Handled here with nuke/update because it targets $HOME (or an
+  293 |     // explicit --repo path); it must not require a resolvable, indexable root.
+  294 |     if (std.mem.eql(u8, cmd, "codex")) {
+  295 |         codex_mod.run(io, &out, s, allocator, args[cmd_args_start..]);
+  296 |         return;
+  297 |     }
+  298 | 
+  299 |     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+  300 |     const abs_root = resolveRoot(io, root, &root_buf) catch {
+  301 |         out.p("{s}\xe2\x9c\x97{s} cannot resolve root: {s}{s}{s}\n", .{
+  302 |             s.red, s.reset, s.bold, root, s.reset,
+  303 |         });
+  304 |         out.exitWithFlush(1);
+  305 |     };
+  306 |     // For `codedb mcp` from cwd, always go through deferred mode: we need the
+  307 |     // initialize handshake first to know whether the client is going to send
+  308 |     // workspace roots. If we eager-load here we'd race the client's roots/list
+  309 |     // reply and silently ignore an editor's actual workspace path. The trigger
+  310 |     // path is fast (snapshot load happens in-process when the trigger fires),
+  311 |     // and clients that don't advertise the roots capability fire the trigger
+  312 |     // immediately on notifications/initialized — see handleSession.
+  313 |     const mcp_deferred_root = mcpRootIsImplicitCwd(cmd, root, root_is_explicit);
+  314 |     if (!mcp_deferred_root and !root_policy.isIndexableRoot(abs_root)) {
+  315 |         // Load-only exception: the footgun guard exists to prevent *indexing*
+  316 |         // junk roots, but reading an already-built index is harmless. Bench/CI
+  317 |         // harnesses pre-index /tmp clones with CODEDB_ALLOW_TEMP=1 and then
+  318 |         // spawn the CLI without the env var — refusing here silently disables
+  319 |         // codedb for the whole session (agents fall back to grep/sed after one
+  320 |         // hard failure). Allow read-only query commands when an index exists.
+  321 |         const load_only_ok = cliIsQueryCmd(cmd) and blk: {
+  322 |             const data_dir = getDataDir(io, allocator, abs_root) catch break :blk false;
+  323 |             defer allocator.free(data_dir);
+  324 |             break :blk index_mod.readStatusMeta(io, data_dir, allocator).indexed;
+  325 |         };
+  326 |         // Bootstrap exception: a temp root that looks like a real project
+  327 |         // checkout (.git, pyproject.toml, …) may be indexed on the fly, so
+  328 |         // fresh clones work out of the box without the env var.
+  329 |         const bootstrap_ok = !load_only_ok and root_policy.isBootstrapableRoot(io, abs_root);
+  330 |         if (!load_only_ok and !bootstrap_ok) {
+  331 |             out.p("{s}\xe2\x9c\x97{s} refusing to index temporary root: {s}{s}{s}\n", .{
+  332 |                 s.red, s.reset, s.bold, abs_root, s.reset,
+  333 |             });
+  334 |             out.exitWithFlush(1);
+  335 |         }
+  336 |     }
+  337 | 
+  338 |     // #553: `status` must be a cheap, fast-exiting metadata query. It previously
+  339 |     // fell through to the full index bootstrap below (snapshot mmap, or — with no
+  340 |     // snapshot — a complete re-index + multi-GB snapshot rewrite) and, being in
+  341 |     // cliIsQueryCmd, also auto-spawned a warm cli-daemon. Backgrounded as a
+  342 |     // SessionStart warmup (`codedb . status &`), each call left a multi-GB
+  343 |     // resident orphan that stacked until the machine OOM'd. Report from on-disk
+  344 |     // metadata only — no Explorer load, no daemon spawn — and exit immediately.
+  345 |     if (std.mem.eql(u8, cmd, "status")) {
+  346 |         const t0 = cio.nanoTimestamp();
+  347 |         const data_dir = getDataDir(io, allocator, abs_root) catch {
+  348 |             out.p("{s}\xe2\x9c\x97{s} cannot resolve data dir for {s}{s}{s}\n", .{
+  349 |                 s.red, s.reset, s.bold, abs_root, s.reset,
+  350 |             });
+  351 |             out.exitWithFlush(1);
+  352 |         };
+  353 |         defer allocator.free(data_dir);
+  354 |         const meta = index_mod.readStatusMeta(io, data_dir, allocator);
+  355 |         const elapsed = cio.nanoTimestamp() - t0;
+  356 |         var dur_buf: [64]u8 = undefined;
+  357 |         out.p("{s}\xe2\x9c\x93{s} {s}codedb {s}{s}  {s}{s}{s}\n", .{
+  358 |             s.green,                               s.reset,
+  359 |             s.bold,                                release_info.semver,
+  360 |             s.reset,                               sty.durationColor(s, elapsed),
+  361 |             sty.formatDuration(&dur_buf, elapsed), s.reset,
+  362 |         });
+  363 |         out.p("  {s}root{s}      {s}{s}{s}\n", .{ s.dim, s.reset, s.cyan, root, s.reset });
+  364 |         if (meta.indexed) {
+  365 |             out.p("  {s}files{s}     {s}{d}{s} indexed\n", .{ s.dim, s.reset, s.bold, meta.file_count, s.reset });
+  366 |             if (meta.git_head) |h| {
+  367 |                 out.p("  {s}head{s}      {s}{s}{s}\n", .{ s.dim, s.reset, s.cyan, h[0..12], s.reset });
+  368 |             }
+  369 |         } else {
+  370 |             out.p("  {s}files{s}     {s}not indexed{s}  \xe2\x80\x94 run `codedb {s} index`\n", .{ s.dim, s.reset, s.bold, s.reset, root });
+  371 |         }
+  372 |         out.p("  {s}data{s}      {s}{s}{s}\n", .{ s.dim, s.reset, s.dim, data_dir, s.reset });
+  373 |         out.exitWithFlush(0);
+  374 |     }
+  375 | 
+  376 |     // Thin-client fast path: if a warm daemon (codedb <root> serve / mcp) is
+  377 |     // already listening for this project, proxy read-only query commands to it
+  378 |     // and skip the per-invocation snapshot reload entirely. Falls through to
+  379 |     // the cold in-process path below when no daemon answers. Must run before
+  380 |     // getDataDir + the load section so the proxied call pays none of that cost.
+  381 |     // CODEDB_NO_CLI_DAEMON disables the thin client ENTIRELY — proxy and
+  382 |     // auto-spawn — so benchmarks/tests pin the in-process path. It previously
+  383 |     // gated only the spawn, so a pre-existing daemon still answered queries
+  384 |     // despite the variable (observed while profiling #564: a stray cli-daemon
+  385 |     // served 'search' in 944µs with the variable set).
+  386 |     if (cliIsQueryCmd(cmd) and cio.posixGetenv("CODEDB_NO_CLI_DAEMON") == null) {
+  387 |         var probe_dir: ?[]u8 = null;
+  388 |         defer if (probe_dir) |d| allocator.free(d);
+  389 | 
+  390 |         if (builtin.os.tag == .windows and abs_root.len > 0) {
+  391 |             probe_dir = getDataDir(io, allocator, abs_root) catch null;
+  392 |         }
+  393 | 
+  394 |         if (cliTryProxy(io, allocator, abs_root, probe_dir, args, use_color)) |code| {
+  395 |             out.flush();
+  396 |             std.process.exit(code);
+  397 |         }
+  398 |         // No daemon answered. Auto-spawn a detached cli-daemon so the NEXT call
+  399 |         // is warm; this call still falls through to the cold path below. The
+  400 |         // daemon is the SAME binary (resolved via the self-exe path) run as
+  401 |         // `codedb <abs_root> cli-daemon`, with stdio redirected to /dev/null and
+  402 |         // no waitpid (fire-and-forget). Skipped for an empty root. cli-daemon is
+  403 |         // not a query command, so the spawned process won't recurse into this path.
+  404 |         // #592: also skipped while another daemon holds the per-project spawn
+  405 |         // lock — concurrent cold calls otherwise fork a daemon EACH, every
+  406 |         // duplicate rescans the index, and the stampede leaves orphans churning
+  407 |         // CPU. Losers of this probe simply cold-serve their one call.
+  408 |         if (abs_root.len > 0) {
+  409 |             if (probe_dir == null) {
+  410 |                 probe_dir = getDataDir(io, allocator, abs_root) catch null;
+  411 |             }
+  412 |             const lock_free = if (probe_dir) |d| daemonLockAvailable(d) else false;
+  413 |             if (lock_free) {
+  414 |                 if (std.process.executablePathAlloc(io, allocator)) |self_exe| {
+  415 |                     defer allocator.free(self_exe);
+  416 |                     const daemon_argv = [_][]const u8{ self_exe, abs_root, "cli-daemon" };
+  417 |                     cio.spawnDetached(allocator, &daemon_argv);
+  418 |                 } else |_| {}
+  419 |             }
+  420 |         }
+  421 |     }
+  422 | 
+  423 |     const data_dir = try getDataDir(io, allocator, abs_root);
+  424 |     defer allocator.free(data_dir);
+  425 | 
+  426 |     // #592: exactly one cli-daemon per project. Take the per-project flock
+  427 |     // BEFORE the expensive load below so a duplicate exits without paying a
+  428 |     // full rescan (or stealing the winner's socket via the stale-path unlink
+  429 |     // in cliDaemonListen). The fd is held for the process lifetime; the
+  430 |     // kernel drops the lock on any exit, so a crash never leaves it stale.
+  431 |     if (std.mem.eql(u8, cmd, "cli-daemon")) {
+  432 |         if (daemonLockTryAcquire(data_dir) == null) return;
+  433 |     }
+  434 | 
+  435 |     // Load user config (.codedbrc). Resolution: --config-file=<path>, then
+  436 |     // $CWD/.codedbrc, then <binary_dir>/.codedbrc. Silently falls back to
+  437 |     // defaults if nothing is found. See #101, #102.
+  438 |     const cfg = loadUserConfig(io, allocator, explicit_config) catch |err| blk: {
+  439 |         std.log.warn("config load failed ({s}) — using defaults", .{@errorName(err)});
+  440 |         break :blk Config.default;
+  441 |     };
+  442 | 
+  443 |     var store = Store.init(allocator);
+  444 |     store.max_versions = cfg.max_versions;
+  445 |     defer store.deinit();
+  446 | 
+  447 |     const data_log_path = try std.fmt.allocPrint(allocator, "{s}/data.log", .{data_dir});
+  448 |     defer allocator.free(data_log_path);
+  449 |     store.openDataLog(io, data_log_path) catch |err| {
+  450 |         std.log.warn("could not open data log at {s}: {}", .{ data_log_path, err });
+  451 |     };
+  452 | 
+  453 |     var explorer = Explorer.init(allocator, cfg.max_cached);
+  454 | 
+  455 |     const rerank_trace_path: ?[]u8 = if (cfg.rerank_trace)
+  456 |         (std.fmt.allocPrint(allocator, "{s}/rerank-traces.jsonl", .{data_dir}) catch null)
+  457 |     else
+  458 |         null;
+  459 |     defer if (rerank_trace_path) |p| allocator.free(p);
+  460 |     if (rerank_trace_path) |p| explorer.rerank_trace_path = p;
+  461 | 
+  462 |     explorer.setRoot(io, root);
+  463 |     defer explorer.deinit();
+  464 | 
+  465 |     // Per-project frequency table for sparse n-gram boundary selection.
+  466 |     // Loaded from disk (if present) before the initial scan so pairWeight
+  467 |     // uses project-specific frequencies.  Freed and reset at process exit.
+  468 |     var freq_table_heap: ?*[256][256]u16 = null;
+  469 |     defer if (freq_table_heap) |ft| {
+  470 |         index_mod.resetFrequencyTable();
+  471 |         allocator.destroy(ft);
+  472 |     };
+  473 | 
+  474 |     try bootstrap.coldLoadOrScan(io, allocator, &store, &explorer, &out, s, cmd, args, cmd_args_start, abs_root, data_dir, root, &freq_table_heap);
+  475 |     var ctx = commands.RunCtx{
+  476 |         .io = io,
+  477 |         .allocator = allocator,
+  478 |         .out = &out,
+  479 |         .s = s,
+  480 |         .store = &store,
+  481 |         .explorer = &explorer,
+  482 |         .cfg = cfg,
+  483 |         .data_dir = data_dir,
+  484 |         .abs_root = abs_root,
+  485 |         .root = root,
+  486 |         .args = args,
+  487 |         .cmd_args_start = cmd_args_start,
+  488 |         .no_telemetry = no_telemetry,
+  489 |         .mcp_deferred_root = mcp_deferred_root,
+  490 |     };
+  491 |     if (cliIsQueryCmd(cmd)) {
+  492 |         const code = runQuery(io, allocator, &explorer, &store, abs_root, cmd, args, cmd_args_start, &out, s);
+  493 |         out.flush();
+  494 |         std.process.exit(code);
+  495 |     } else if (std.mem.eql(u8, cmd, "bench-engine")) {
+  496 |         commands.runBenchEngine(&ctx);
+  497 |     } else if (std.mem.eql(u8, cmd, "snapshot")) {
+  498 |         commands.runSnapshot(&ctx);
+  499 |     } else if (std.mem.eql(u8, cmd, "cli-daemon")) {
+  500 |         try commands.runCliDaemon(&ctx);
+  501 |     } else if (std.mem.eql(u8, cmd, "serve")) {
+  502 |         try commands.runServe(&ctx);
+  503 |     } else if (std.mem.eql(u8, cmd, "mcp")) {
+  504 |         try commands.runMcp(&ctx);
+  505 |     } else if (std.mem.eql(u8, cmd, "index")) {
+  506 |         // #633: `index` is a first-class command. coldLoadOrScan above already
+  507 |         // scanned + persisted the on-disk index for this cmd; confirm and exit
+  508 |         // cleanly. It used to fall through to "unknown command: index" + exit 1
+  509 |         // even though the index had been built.
+  510 |         explorer.mu.lockShared();
+  511 |         const file_count = explorer.outlines.count();
+  512 |         explorer.mu.unlockShared();
+  513 |         out.p("{s}\xe2\x9c\x93{s} {s}index ready{s}  {s}{d} files{s}\n", .{
+  514 |             s.green, s.reset, s.bold, s.reset, s.dim, file_count, s.reset,
+  515 |         });
+  516 |         out.flush();
+  517 |         std.process.exit(0);
+  518 |     } else {
+  519 |         out.p("{s}\xe2\x9c\x97{s} unknown command: {s}{s}{s}\n", .{
+  520 |             s.red, s.reset, s.bold, cmd, s.reset,
+  521 |         });
+  522 |         // #578: flush before exit — std.process.exit skips buffered output, so
+  523 |         // the 'unknown command' line was silently lost (observed as exit 1
+  524 |         // with no output at all).
+  525 |         out.flush();
+  526 |         std.process.exit(1);
+  527 |     }
+  528 | }
+  529 | 

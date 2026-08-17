@@ -1,0 +1,74 @@
+[
+  {
+    "name": "graff-x86_64.notary.zip",
+    "createdDate": "2026-08-05T02:01:19.118Z",
+    "status": "Accepted",
+    "id": "a613523e-95e2-4410-b26c-af9663a4ea0e"
+  },
+  {
+    "name": "graff-aarch64.notary.zip",
+    "createdDate": "2026-08-05T02:00:50.433Z",
+    "status": "Accepted",
+    "id": "1c44c139-9ea0-47cb-8a5e-75116a61f1e5"
+  },
+  {
+    "createdDate": "2026-08-04T18:02:14.824Z",
+    "id": "6acdcf10-419c-48c8-b5b0-b85ff00fdc69",
+    "name": "codedb-darwin-x86_64.notary.zip",
+    "status": "Accepted"
+  },
+  {
+    "createdDate": "2026-08-04T17:59:36.108Z",
+    "name": "codedb-darwin-arm64.notary.zip",
+    "status": "Accepted",
+    "id": "695ee975-e721-4e2b-ace3-07d5d5555cc6"
+  },
+  {
+    "id": "295bd68b-d075-42d4-b538-6aa3535d8b3b",
+    "name": "graff-x64.zip",
+    "status": "Accepted",
+    "createdDate": "2026-08-04T07:00:01.373Z"
+  },
+  {
+    "id": "f8b460e3-765b-422d-be2f-23646a8ff691",
+    "createdDate": "2026-08-04T06:59:41.274Z",
+    "name": "graff-arm64.zip",
+    "status": "Accepted"
+  },
+  {
+    "name": "kuri-x86_64-macos.zip",
+    "createdDate": "2026-08-04T02:17:39.277Z",
+    "id": "320dcd75-221e-4463-837f-c14782ffdd02",
+    "status": "Accepted"
+  },
+  {
+    "createdDate": "2026-08-04T02:17:19.097Z",
+    "id": "2fcec564-f507-4fde-82e0-30ab23d98966",
+    "status": "Accepted",
+    "name": "kuri-aarch64-macos.zip"
+  },
+  {
+    "status": "Accepted",
+    "createdDate": "2026-08-03T17:26:51.432Z",
+    "name": "graff-x64.zip",
+    "id": "49dd4424-6ad4-4bc4-bd04-595cb5d4312d"
+  },
+  {
+    "status": "Accepted",
+    "id": "a4d72cdd-b69d-40db-ad4f-98219a9595d8",
+    "createdDate": "2026-08-03T17:26:32.439Z",
+    "name": "graff-arm64.zip"
+  },
+  {
+    "createdDate": "2026-08-03T17:26:13.479Z",
+    "id": "3325eb28-b148-4794-a0cb-e5d833f70f8d",
+    "name": "graff-x64.zip",
+    "status": "Accepted"
+  },
+  {
+    "createdDate": "2026-08-03T17:25:49.159Z",
+    "id": "f244e52e-476f-4f05-aaad-a8de33e24a29",
+    "status": "Accepted",
+    "name": "graff-arm64.zip"
+  }
+]

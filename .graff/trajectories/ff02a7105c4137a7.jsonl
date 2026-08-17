@@ -1,0 +1,3 @@
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","kind":"session","version":"0.0.238","unix_ms":1785901091907}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","kind":"playbook","items":1,"user_items":1,"learned_items":0,"ids":"pb-ada02221","t":10}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","kind":"recipe","recipe_sha":"4b36e7e0f376af32","provider":"codex","model":"gpt-5.6-sol","effort":"xhigh","prompt_sha":"939661157d33e9d4","toolset_sha":"67433cefec16cd83","task_class":"interactive","harness_version":"0.0.238","t":11}

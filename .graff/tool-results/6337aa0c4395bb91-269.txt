@@ -1,0 +1,122 @@
+  390         .allocator = allocator,
+  391         .argv = &.{ "curl", "-fsSL", "-A", user_agent, url, "-o", dest_path },
+  392         .max_output_bytes = 16 * 1024,
+  393     });
+  394     defer allocator.free(result.stdout);
+  395     defer allocator.free(result.stderr);
+  396 
+  397     if (result.term != .Exited or result.term.Exited != 0) {
+  398         return error.DownloadFailed;
+  399     }
+  400 }
+  401 
+  402 fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+  403     var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+  404     defer file.close(io);
+  405 
+  406     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+  407     var buf: [16 * 1024]u8 = undefined;
+  408     var offset: u64 = 0;
+  409     while (true) {
+  410         const read_len = try file.readPositionalAll(io, &buf, offset);
+  411         if (read_len == 0) break;
+  412         hasher.update(buf[0..read_len]);
+  413         offset += read_len;
+  414         if (read_len < buf.len) break;
+  415     }
+  416 
+  417     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+  418     hasher.final(&digest);
+  419     const digest_hex = std.fmt.bytesToHex(digest, .lower);
+  420     return allocator.dupe(u8, &digest_hex);
+  421 }
+  422 
+  423 // ── Auto-update ──────────────────────────────────────────────────────────────
+  424 //
+  425 // On startup we kick off a detached invocation of the built-in, checksum-
+  426 // verified updater. The check is:
+  427 //   • disabled when CODEDB_NO_AUTO_UPDATE is set in the environment
+  428 //   • throttled to at most once every 24 hours, tracked in
+  429 //     ~/.codedb/last_auto_update_check (a u64 little-endian unix-ms timestamp)
+  430 // The update itself runs in a background thread so network failures never block
+  431 // server startup. If the binary on disk gets replaced mid-session, the kernel
+  432 // keeps the old inode mapped for the running process; subsequent invocations
+  433 // get the new binary.
+  434 
+  435 const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
+  436 const auto_update_stamp_filename = "last_auto_update_check";
+  437 
+  438 /// Pure decision function — useful for tests. Returns true when the next
+  439 /// auto-update attempt should fire.
+  440 pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
+  441     if (env_disabled) return false;
+  442     const last = last_check_ms orelse return true;
+  443     if (last > now_ms) return true;
+  444     const delta: i128 = @as(i128, now_ms) - @as(i128, last);
+  445     return delta >= auto_update_throttle_ms;
+  446 }
+  447 
+  448 pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+  449     const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+  450     const home = cio.homeDir() orelse return;
+  451     if (home.len == 0) return;
+  452 
+  453     const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
+  454     defer allocator.free(dir_path);
+  455     std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+  456 
+  457     const stamp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, auto_update_stamp_filename }) catch return;
+  458     defer allocator.free(stamp_path);
+  459 
+  460     const last_ms = readAutoUpdateStamp(io, stamp_path);
+  461     const now_ms = cio.milliTimestamp();
+  462     if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+  463 
+  464     const executable_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
+  465     const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{executable_path}) catch {
+  466         std.heap.page_allocator.free(executable_path);
+  467         return;
+  468     };
+  469     thread.detach();
+  470 
+  471     // Only throttle after the worker launches so a local spawn failure can be
+  472     // retried on the next MCP startup.
+  473     writeAutoUpdateStamp(io, stamp_path, now_ms);
+  474 }
+  475 
+  476 pub fn autoUpdateArgv(executable_path: []const u8) [2][]const u8 {
+  477     return .{ executable_path, "update" };
+  478 }
+  479 
+  480 fn autoUpdateWorker(executable_path: []u8) void {
+  481     defer std.heap.page_allocator.free(executable_path);
+  482 
+  483     // Invoke the checksum-verifying built-in updater directly. Capturing and
+  484     // discarding its output keeps the MCP stdio transport clean, while avoiding
+  485     // a shell or execution of a remotely downloaded install script.
+  486     const argv = autoUpdateArgv(executable_path);
+  487     const result = cio.runCapture(.{
+  488         .allocator = std.heap.page_allocator,
+  489         .argv = &argv,
+  490         .max_output_bytes = 64 * 1024,
+  491     }) catch return;
+  492     std.heap.page_allocator.free(result.stdout);
+  493     std.heap.page_allocator.free(result.stderr);
+  494 }
+  495 
+  496 fn readAutoUpdateStamp(io: std.Io, path: []const u8) ?i64 {
+  497     var buf: [8]u8 = undefined;
+  498     var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+  499     defer f.close(io);
+  500     const n = f.readPositionalAll(io, &buf, 0) catch return null;
+  501     if (n < 8) return null;
+  502     return std.mem.readInt(i64, buf[0..8], .little);
+  503 }
+  504 
+  505 fn writeAutoUpdateStamp(io: std.Io, path: []const u8, ms: i64) void {
+  506     var buf: [8]u8 = undefined;
+  507     std.mem.writeInt(i64, &buf, ms, .little);
+  508     const f = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true }) catch return;
+  509     defer f.close(io);
+  510     f.writePositionalAll(io, &buf, 0) catch {};
+  511 }

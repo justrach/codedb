@@ -1,0 +1,200 @@
+src/test_mcp.zig:15:const update_mod = @import("update.zig");
+src/test_mcp.zig:416:test "auto-update: shouldRunAutoUpdate gates correctly" {
+src/test_mcp.zig:420:    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, true));
+src/test_mcp.zig:421:    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, null, true));
+src/test_mcp.zig:422:    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, 0, true));
+src/test_mcp.zig:425:    try testing.expect(update_mod.shouldRunAutoUpdate(0, null, false));
+src/test_mcp.zig:428:    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms - 1, 0, false));
+src/test_mcp.zig:431:    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms, 0, false));
+src/test_mcp.zig:434:    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false));
+src/test_mcp.zig:437:test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp stamp file" {
+src/test_mcp.zig:448:    // the stamp as invalid and allow the update check to run.
+src/test_mcp.zig:454:    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, future_last_ms, false));
+src/test_mcp.zig:457:test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corrupt" {
+src/test_mcp.zig:458:    // Reproduces a panic when ~/.codedb/last_auto_update_check is corrupt
+src/test_mcp.zig:459:    // and decodes to a very negative i64. readAutoUpdateStamp does no
+src/test_mcp.zig:461:    // and feeds that straight into shouldRunAutoUpdate, which evaluates
+src/test_mcp.zig:467:    // Result: every `codedb mcp` startup crashes during the auto-update
+src/test_mcp.zig:474:    // run the update.
+src/test_mcp.zig:479:    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, last_ms, false));
+src/test_mcp.zig:497:    try testing.expect(std.mem.indexOf(u8, result.stdout, "update") != null or
+src/test_mcp.zig:498:        std.mem.indexOf(u8, result.stderr, "update") != null);
+src/test_mcp.zig:520:test "update: compareVersions orders semantic versions" {
+src/test_mcp.zig:521:    try testing.expect(try update_mod.compareVersions("0.2.55", "0.2.56") == .lt);
+src/test_mcp.zig:522:    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56") == .eq);
+src/test_mcp.zig:523:    try testing.expect(try update_mod.compareVersions("v0.2.57", "0.2.56") == .gt);
+src/test_mcp.zig:524:    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56.0") == .eq);
+src/test_mcp.zig:527:test "update: compareVersionsForUpdate allows superseded release train typo" {
+src/test_mcp.zig:528:    try testing.expect(try update_mod.compareVersions("0.2.58181", "0.2.5823") == .gt);
+src/test_mcp.zig:529:    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5823") == .lt);
+src/test_mcp.zig:530:    try testing.expect(try update_mod.compareVersionsForUpdate("v0.2.58181", "v0.2.5823") == .lt);
+src/test_mcp.zig:531:    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5824") == .lt);
+src/test_mcp.zig:532:    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5822") == .gt);
+src/test_mcp.zig:533:    try testing.expect(!try update_mod.targetSupersedesCurrent("0.2.5823", "0.2.5824"));
+src/test_mcp.zig:536:test "update: checksumForBinary parses release manifest" {
+src/test_mcp.zig:545:        update_mod.checksumForBinary(manifest, "codedb-linux-arm64") orelse return error.TestUnexpectedResult,
+src/test_mcp.zig:547:    try testing.expect(update_mod.checksumForBinary(manifest, "codedb-linux-x86_64") == null);
+src/test_mcp.zig:550:test "update: asset names match published release naming" {
+src/test_mcp.zig:551:    try testing.expectEqualStrings("codedb-darwin-arm64", update_mod.assetNameForTarget(.macos, .aarch64).?);
+src/test_mcp.zig:552:    try testing.expectEqualStrings("codedb-darwin-x86_64", update_mod.assetNameForTarget(.macos, .x86_64).?);
+src/test_mcp.zig:553:    try testing.expectEqualStrings("codedb-linux-arm64", update_mod.assetNameForTarget(.linux, .aarch64).?);
+src/test_mcp.zig:554:    try testing.expectEqualStrings("codedb-linux-x86_64", update_mod.assetNameForTarget(.linux, .x86_64).?);
+src/test_mcp.zig:555:    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+src/test_mcp.zig:558:test "issue-677: update resolves the published Windows x86_64 asset" {
+src/test_mcp.zig:559:    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+src/test_mcp.zig:560:    try testing.expect(update_mod.assetNameForTarget(.windows, .aarch64) == null);
+src/test_mcp.zig:564:    try testing.expect(update_mod.shouldRegisterHooks(false, false, false, false));
+src/test_mcp.zig:565:    try testing.expect(update_mod.shouldRegisterHooks(false, false, true, true));
+src/test_mcp.zig:566:    try testing.expect(!update_mod.shouldRegisterHooks(false, false, true, false));
+src/test_mcp.zig:567:    try testing.expect(!update_mod.shouldRegisterHooks(true, false, false, false));
+src/test_mcp.zig:568:    try testing.expect(!update_mod.shouldRegisterHooks(false, true, true, true));
+src/test_mcp.zig:698:    const updated = (try codex_setup.upsertPolicyBlock(testing.allocator, stale, block)) orelse
+src/test_mcp.zig:700:    defer testing.allocator.free(updated);
+src/test_mcp.zig:702:    try testing.expect(std.mem.indexOf(u8, updated, "ancient wording") == null);
+src/test_mcp.zig:703:    try testing.expect(std.mem.indexOf(u8, updated, "v0.0.1") == null);
+src/test_mcp.zig:704:    try testing.expectEqualStrings(release_info.semver, codex_setup.policyBlockVersion(updated).?);
+src/test_mcp.zig:707:    const begin_at = std.mem.indexOf(u8, updated, codex_setup.begin_marker_prefix).?;
+src/test_mcp.zig:708:    const end_at = std.mem.indexOf(u8, updated, codex_setup.end_marker).?;
+src/test_mcp.zig:709:    try testing.expect(std.mem.indexOf(u8, updated, "# House rules").? < begin_at);
+src/test_mcp.zig:710:    try testing.expect(std.mem.indexOf(u8, updated, "keep me").? > end_at);
+src/test_mcp.zig:712:    try testing.expectEqual(end_at, std.mem.lastIndexOf(u8, updated, codex_setup.end_marker).?);
+src/test_mcp.zig:3418:    const updated = (try codex_setup.upsertPolicyBlock(testing.allocator, original, block)) orelse
+src/test_mcp.zig:3420:    defer testing.allocator.free(updated);
+src/test_mcp.zig:3423:    try testing.expect(std.mem.startsWith(u8, updated, std.mem.trimEnd(u8, original, "\n")));
+src/test_mcp.zig:3424:    try testing.expect(std.mem.indexOf(u8, updated, "SECRET USER INSTRUCTIONS THAT MUST SURVIVE") != null);
+src/test_mcp.zig:3425:    try testing.expect(std.mem.indexOf(u8, updated, "Do not touch the `<!-- codedb:begin v` marker by hand.") != null);
+src/test_mcp.zig:3426:    try testing.expect(std.mem.indexOf(u8, updated, codex_setup.end_marker) != null);
+src/test_mcp.zig:3429:    try testing.expect((try codex_setup.upsertPolicyBlock(testing.allocator, updated, block)) == null);
+src/test_mcp.zig:3497:    // from the same bytes, so a checksum-free or #658-free variant can never
+src/bench.zig:222:        hash.update(rel);
+src/bench.zig:223:        hash.update(&[_]u8{0});
+src/bench.zig:224:        hash.update(content);
+src/cli_args.zig:246:    const commands = cli_query_cmds ++ [_][]const u8{ "snapshot", "serve", "mcp", "update", "nuke", "codex", "cli-daemon", "index" };
+src/codex_setup.zig:29:/// Pure install-policy predicate, mirror of update.shouldRegisterHooks (#658).
+src/codex_setup.zig:588:    const updated = upsertPolicyBlock(allocator, existing orelse "", block) catch {
+src/codex_setup.zig:592:    if (updated == null) {
+src/codex_setup.zig:599:    defer allocator.free(updated.?);
+src/codex_setup.zig:604:    writeFileAtomic(io, allocator, path, updated.?) catch |err| {
+src/commands.zig:19:const update_mod = @import("update.zig");
+src/commands.zig:395:    // Background auto-update check (no-op when CODEDB_NO_AUTO_UPDATE is set
+src/commands.zig:398:    update_mod.maybeAutoUpdate(io, allocator);
+src/explore.zig:1612:        h.update(name);
+src/explore.zig:1613:        if (cio.posixGetenv(name)) |v| h.update(v) else h.update(&[_]u8{0});
+src/explore.zig:1955:            // updates, WASM fast-path). The file is in `outlines` + `contents` but
+src/hot_cache.zig:191:        // Scan the whole window: update an existing entry in place (a hole must
+src/hot_cache.zig:401:test "ContentCache: put updates existing key in place" {
+src/hot_cache.zig:572:test "ContentCache: owned_bytes accounting tracks update, remove, and clear" {
+src/index.zig:20:    /// Bulk builders can skip per-file term sets; incremental updates re-enable
+src/index.zig:357:        // sweep on the first update, after which incremental files are tracked.
+src/main.zig:10:const update_mod = @import("update.zig");
+src/main.zig:141:    // update.run, nuke.run, watcher.initialScan, server.serve, Store, Explorer.
+src/main.zig:279:    // Handle update command early — before root resolution so it works from anywhere.
+src/main.zig:280:    if (std.mem.eql(u8, cmd, "update")) {
+src/main.zig:281:        update_mod.run(io, stdout, s, allocator);
+src/main.zig:292:    // setup. Handled here with nuke/update because it targets $HOME (or an
+src/mcp.zig:678:    \\{"name":"codedb_changes","description":"Direct way to see WHAT changed since a point in time, instead of re-scanning the tree. Files changed since a given sequence number. Pair with codedb_status (which reports the current sequence number) to poll for updates.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
+src/mcp.zig:1137:    h.update(name);
+src/mcp.zig:1140:        h.update(e.key_ptr.*);
+src/mcp.zig:1142:            .string => |sv| h.update(sv),
+src/mcp.zig:1143:            .integer => |n| h.update(std.mem.asBytes(&n)),
+src/mcp.zig:1144:            .float => |f| h.update(std.mem.asBytes(&f)),
+src/mcp.zig:1145:            .bool => |b| h.update(if (b) "1" else "0"),
+src/mcp.zig:3101:        "update",
+src/mcp.zig:4099:    // sub-op updates the same timestamp. See #278.
+src/out.zig:103:        \\    {s}update{s}                    self-update to the latest verified release
+src/reader_md.zig:42:///       h.update(f); h.update(0); h.update(open(f).read()); h.update(0 0)
+src/reader_md.zig:168:        h.update(rel);
+src/reader_md.zig:169:        h.update(&[_]u8{0});
+src/reader_md.zig:170:        h.update(data);
+src/reader_md.zig:171:        h.update(&[_]u8{ 0, 0 });
+src/reader_md.zig:200:    //   h.update(b'a.txt'); h.update(b'\0')
+src/reader_md.zig:201:    //   h.update(b'hello'); h.update(b'\0\0')
+src/reader_md.zig:209:    h.update("a.txt");
+src/reader_md.zig:210:    h.update(&[_]u8{0});
+src/reader_md.zig:211:    h.update("hello");
+src/reader_md.zig:212:    h.update(&[_]u8{ 0, 0 });
+src/store.zig:171:    /// Rewrite live diff ranges to the front of the data log, update the
+src/telemetry.zig:169:        // for the lock + ring-write + atomic update only to drop it on the
+src/test_explore.zig:1588:test "symbol-index: re-index updates symbol_index" {
+src/test_explore.zig:2547:    // While incomplete, per-file index updates no-op — this outline lands
+src/test_index.zig:908:    _ = try store.recordSnapshot("hot-b.zig", 25, 0x4); // b updated again
+src/test_mcp.zig:15:const update_mod = @import("update.zig");
+src/test_mcp.zig:416:test "auto-update: shouldRunAutoUpdate gates correctly" {
+src/test_mcp.zig:420:    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, true));
+src/test_mcp.zig:421:    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, null, true));
+src/test_mcp.zig:422:    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, 0, true));
+src/test_mcp.zig:425:    try testing.expect(update_mod.shouldRunAutoUpdate(0, null, false));
+src/test_mcp.zig:428:    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms - 1, 0, false));
+src/test_mcp.zig:431:    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms, 0, false));
+src/test_mcp.zig:434:    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false));
+src/test_mcp.zig:437:test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp stamp file" {
+src/test_mcp.zig:448:    // the stamp as invalid and allow the update check to run.
+src/test_mcp.zig:454:    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, future_last_ms, false));
+src/test_mcp.zig:457:test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corrupt" {
+src/test_mcp.zig:458:    // Reproduces a panic when ~/.codedb/last_auto_update_check is corrupt
+src/test_mcp.zig:459:    // and decodes to a very negative i64. readAutoUpdateStamp does no
+src/test_mcp.zig:461:    // and feeds that straight into shouldRunAutoUpdate, which evaluates
+src/test_mcp.zig:467:    // Result: every `codedb mcp` startup crashes during the auto-update
+src/test_mcp.zig:474:    // run the update.
+src/test_mcp.zig:479:    try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, last_ms, false));
+src/test_mcp.zig:497:    try testing.expect(std.mem.indexOf(u8, result.stdout, "update") != null or
+src/test_mcp.zig:498:        std.mem.indexOf(u8, result.stderr, "update") != null);
+src/test_mcp.zig:520:test "update: compareVersions orders semantic versions" {
+src/test_mcp.zig:521:    try testing.expect(try update_mod.compareVersions("0.2.55", "0.2.56") == .lt);
+src/test_mcp.zig:522:    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56") == .eq);
+src/test_mcp.zig:523:    try testing.expect(try update_mod.compareVersions("v0.2.57", "0.2.56") == .gt);
+src/test_mcp.zig:524:    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56.0") == .eq);
+src/test_mcp.zig:527:test "update: compareVersionsForUpdate allows superseded release train typo" {
+src/test_mcp.zig:528:    try testing.expect(try update_mod.compareVersions("0.2.58181", "0.2.5823") == .gt);
+src/test_mcp.zig:529:    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5823") == .lt);
+src/test_mcp.zig:530:    try testing.expect(try update_mod.compareVersionsForUpdate("v0.2.58181", "v0.2.5823") == .lt);
+src/test_mcp.zig:531:    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5824") == .lt);
+src/test_mcp.zig:532:    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5822") == .gt);
+src/test_mcp.zig:533:    try testing.expect(!try update_mod.targetSupersedesCurrent("0.2.5823", "0.2.5824"));
+src/test_mcp.zig:536:test "update: checksumForBinary parses release manifest" {
+src/test_mcp.zig:545:        update_mod.checksumForBinary(manifest, "codedb-linux-arm64") orelse return error.TestUnexpectedResult,
+src/test_mcp.zig:547:    try testing.expect(update_mod.checksumForBinary(manifest, "codedb-linux-x86_64") == null);
+src/test_mcp.zig:550:test "update: asset names match published release naming" {
+src/test_mcp.zig:551:    try testing.expectEqualStrings("codedb-darwin-arm64", update_mod.assetNameForTarget(.macos, .aarch64).?);
+src/test_mcp.zig:552:    try testing.expectEqualStrings("codedb-darwin-x86_64", update_mod.assetNameForTarget(.macos, .x86_64).?);
+src/test_mcp.zig:553:    try testing.expectEqualStrings("codedb-linux-arm64", update_mod.assetNameForTarget(.linux, .aarch64).?);
+src/test_mcp.zig:554:    try testing.expectEqualStrings("codedb-linux-x86_64", update_mod.assetNameForTarget(.linux, .x86_64).?);
+src/test_mcp.zig:555:    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+src/test_mcp.zig:558:test "issue-677: update resolves the published Windows x86_64 asset" {
+src/test_mcp.zig:559:    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+src/test_mcp.zig:560:    try testing.expect(update_mod.assetNameForTarget(.windows, .aarch64) == null);
+src/test_mcp.zig:564:    try testing.expect(update_mod.shouldRegisterHooks(false, false, false, false));
+src/test_mcp.zig:565:    try testing.expect(update_mod.shouldRegisterHooks(false, false, true, true));
+src/test_mcp.zig:566:    try testing.expect(!update_mod.shouldRegisterHooks(false, false, true, false));
+src/test_mcp.zig:567:    try testing.expect(!update_mod.shouldRegisterHooks(true, false, false, false));
+src/test_mcp.zig:568:    try testing.expect(!update_mod.shouldRegisterHooks(false, true, true, true));
+src/test_mcp.zig:698:    const updated = (try codex_setup.upsertPolicyBlock(testing.allocator, stale, block)) orelse
+src/test_mcp.zig:700:    defer testing.allocator.free(updated);
+src/test_mcp.zig:702:    try testing.expect(std.mem.indexOf(u8, updated, "ancient wording") == null);
+src/test_mcp.zig:703:    try testing.expect(std.mem.indexOf(u8, updated, "v0.0.1") == null);
+src/test_mcp.zig:704:    try testing.expectEqualStrings(release_info.semver, codex_setup.policyBlockVersion(updated).?);
+src/test_mcp.zig:707:    const begin_at = std.mem.indexOf(u8, updated, codex_setup.begin_marker_prefix).?;
+src/test_mcp.zig:708:    const end_at = std.mem.indexOf(u8, updated, codex_setup.end_marker).?;
+src/test_mcp.zig:709:    try testing.expect(std.mem.indexOf(u8, updated, "# House rules").? < begin_at);
+src/test_mcp.zig:710:    try testing.expect(std.mem.indexOf(u8, updated, "keep me").? > end_at);
+src/test_mcp.zig:712:    try testing.expectEqual(end_at, std.mem.lastIndexOf(u8, updated, codex_setup.end_marker).?);
+src/test_mcp.zig:3418:    const updated = (try codex_setup.upsertPolicyBlock(testing.allocator, original, block)) orelse
+src/test_mcp.zig:3420:    defer testing.allocator.free(updated);
+src/test_mcp.zig:3423:    try testing.expect(std.mem.startsWith(u8, updated, std.mem.trimEnd(u8, original, "\n")));
+src/test_mcp.zig:3424:    try testing.expect(std.mem.indexOf(u8, updated, "SECRET USER INSTRUCTIONS THAT MUST SURVIVE") != null);
+src/test_mcp.zig:3425:    try testing.expect(std.mem.indexOf(u8, updated, "Do not touch the `<!-- codedb:begin v` marker by hand.") != null);
+src/test_mcp.zig:3426:    try testing.expect(std.mem.indexOf(u8, updated, codex_setup.end_marker) != null);
+src/test_mcp.zig:3429:    try testing.expect((try codex_setup.upsertPolicyBlock(testing.allocator, updated, block)) == null);
+src/test_mcp.zig:3497:    // from the same bytes, so a checksum-free or #658-free variant can never
+src/test_search.zig:912:test "bm25-state-sync: re-index and remove update total_tokens correctly" {
+src/update.zig:9:const user_agent = "codedb-update";
+src/update.zig:41:    // belongs before v0.2.5823 and should update forward normally.
+src/update.zig:49:        out.p("{s}✗{s} failed to resolve update target: {s}\n", .{ s.red, s.reset, @errorName(err) });
+src/update.zig:54:    const version_order = compareVersionsForUpdate(release_info.semver, resolved.value) catch |err| {
+src/update.zig:71:    const asset_name = assetNameForTarget(builtin.os.tag, builtin.cpu.arch) orelse {
+src/update.zig:72:        out.p("{s}✗{s} self-update is unsupported on this platform\n", .{ s.red, s.reset });
+src/update.zig:85:        out.p("{s}✗{s} failed to download checksums for v{s}: {s}\n", .{ s.red, s.reset, resolved.value, @errorName(err) });
+src/update.zig:90:    const expected_hash = checksumForBinary(manifest, asset_name) orelse {
+src/update.zig:91:        out.p("{s}✗{s} release v{s} is missing a checksum for {s}\n", .{ s.red, s.reset, resolved.value, asset_name });
+src/update.zig:102:        out.p("{s}✗{s} update failed: {s}\n", .{ s.red, s.reset, @errorName(err) });
+src/update.zig:106:    out.p("{s}✓{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });

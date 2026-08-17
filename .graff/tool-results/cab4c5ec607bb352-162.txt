@@ -1,0 +1,33 @@
+✓ 32 results for "detectLanguage"  ⚡ 637.0µs
+  src/explore.zig:208  pub fn detectLanguage(path: []const u8) Language {
+  src/query.zig:364          const lang = explore_mod.detectLanguage(path);
+  src/explore.zig:132              .language = detectLanguage(path),
+  src/explore.zig:3164              const lang = detectLanguage(path);
+  src/explore.zig:4224                          // detectLanguage(path) computed at outline init, and
+  src/explore.zig:4227                          // (detectLanguage + fileDefinesSymbol's own get).
+  src/explore.zig:4243                              is_doc = isDocLanguage(detectLanguage(hit_path));
+  src/explore.zig:4639                      .is_doc = isDocLanguage(detectLanguage(hit_path)),
+  src/explore.zig:5105              is_doc_lang = isDocLanguage(detectLanguage(path));
+  src/test_bench.zig:42  test "bench: detectLanguage + isDocLanguage" {
+  src/test_bench.zig:61          const lang = explore.detectLanguage(paths[i % paths.len]);
+  src/test_bench.zig:66      if (cio.posixGetenv("CODEDB_BENCH_VERBOSE") != null) std.debug.print("\n  detectLanguage+isDocLanguage: {d} calls in {d}ms ({d}ns/call, {d} docs)\n", .{
+  src/mcp.zig:2220              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2228              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2258              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2270              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2311              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2327              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2423                  if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2474              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2569          const lang = explore_mod.detectLanguage(r.path);
+  src/mcp.zig:3246                      if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
+  src/test_explore.zig:712  test "detectLanguage: public access and correct detection" {
+  src/test_explore.zig:713      try testing.expect(explore.detectLanguage("src/main.zig") == .zig);
+  src/test_explore.zig:714      try testing.expect(explore.detectLanguage("app.py") == .python);
+  src/test_explore.zig:715      try testing.expect(explore.detectLanguage("index.ts") == .typescript);
+  src/test_explore.zig:716      try testing.expect(explore.detectLanguage("style.css") == .css);
+  src/test_explore.zig:960  test "detectLanguage: all supported extensions" {
+  src/test_explore.zig:961      try testing.expect(explore.detectLanguage("main.zig") == .zig);
+  src/test_explore.zig:962      try testing.expect(explore.detectLanguage("lib.c") == .c);
+  src/test_explore.zig:963      try testing.expect(explore.detectLanguage("util.h") == .c);
+  src/test_explore.zig:964      try testing.expect(explore.detectLanguage("app.cpp") == .cpp);

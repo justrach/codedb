@@ -1,0 +1,51 @@
+✓ 50 results for "stdout"  ⚡ 373.0µs
+  src/cio.zig:109      pub fn stdout() File {
+  src/main.zig:146      const stdout = cio.File.stdout();
+  src/mcp.zig:1209      const stdout = cio.File.stdout();
+  src/cio.zig:657          .stdout = result.stdout,
+  src/mcp.zig:1270          .stdout = stdout,
+  src/cio.zig:3  //! 0.16 removed std.fs.File.{stdout,stderr,stdin}, cio.Mutex/RwLock,
+  src/cio.zig:78  /// stdin/stdout/stderr at /dev/null (so it never holds the terminal open or
+  src/cio.zig:562      stdout: []u8,
+  src/cio.zig:610  /// Captures stdout and stderr into separate streams (drained concurrently by
+  src/cio.zig:613  /// Run `argv` and capture stdout/stderr. POSIX uses a posix_spawnp fast path;
+  src/cio.zig:647          .stdout_limit = .limited(opts.max_output_bytes),
+  src/cio.zig:808      // deadlock the child. Main thread drains stdout.
+  src/cio.zig:864          .stdout = try out.toOwnedSlice(alloc),
+  src/main.zig:15  /// Buffered stdout wrapper. Formats into a 64KB stack-buffered window and
+  src/main.zig:84  /// Designed to be the cheapest possible path — uses raw stdout writes
+  src/main.zig:89      const stdout_fd: c_int = 1;
+  src/main.zig:107          (cio.File{ .handle = stdout_fd }).writeAll(out) catch {};
+  src/main.zig:147      const use_color = stdout.isTty();
+  src/main.zig:149      var out = Out{ .file = stdout, .alloc = allocator };
+  src/main.zig:234      // MCP stdio reserves stdout for JSON-RPC — route status/error output to
+  src/main.zig:248                  out.file = stdout;
+  src/main.zig:281          update_mod.run(io, stdout, s, allocator);
+  src/mcp.zig:553          stdout: cio.File,
+  src/mcp.zig:560          handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, null, null);
+  src/mcp.zig:1012  pub var stdout_broken: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+  src/mcp.zig:1062      stdout: cio.File,
+  src/mcp.zig:1278      while (!stdout_broken.load(.acquire) and !shutdown.load(.acquire)) {
+  src/mcp.zig:1287              writeError(alloc, stdout, null, -32700, "Parse error");
+  src/mcp.zig:1293              writeError(alloc, stdout, null, -32600, "Invalid Request");
+  src/mcp.zig:1316                  writeUnsupportedProtocolVersionError(alloc, stdout, id, requested);
+  src/test_mcp.zig:180      defer testing.allocator.free(build.stdout);
+  src/test_mcp.zig:233      defer testing.allocator.free(cold.stdout);
+  src/test_mcp.zig:247          defer testing.allocator.free(warm.stdout);
+  src/test_mcp.zig:251              std.mem.indexOf(u8, warm.stdout, "src/sample.zig") != null and
+  src/test_mcp.zig:252              std.mem.indexOf(u8, warm.stdout, "loaded snapshot") == null)
+  src/test_mcp.zig:344      defer testing.allocator.free(result.stdout);
+  src/test_mcp.zig:490      defer testing.allocator.free(result.stdout);
+  src/test_mcp.zig:495      try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
+  src/test_mcp.zig:497      try testing.expect(std.mem.indexOf(u8, result.stdout, "update") != null or
+  src/test_mcp.zig:499      try testing.expect(std.mem.indexOf(u8, result.stdout, "nuke") != null or
+  benchmarks/search-shootout/shootout.py:117              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+  benchmarks/search-shootout/shootout.py:132              if select.select([self.proc.stdout], [], [], 0.1)[0]:
+  benchmarks/search-shootout/shootout.py:133                  chunk = os.read(self.proc.stdout.fileno(), 1 << 16)
+  benchmarks/search-shootout/shootout.py:188              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+  benchmarks/search-shootout/shootout.py:203              if select.select([self.proc.stdout], [], [], 0.1)[0]:
+  benchmarks/search-shootout/shootout.py:204                  chunk = os.read(self.proc.stdout.fileno(), 1 << 16)
+  benchmarks/search-shootout/shootout.py:354              j = json.loads(r.stdout)
+  benchmarks/search-shootout/shootout.py:382      text = r.stdout.decode(errors="replace")
+  benchmarks/search-shootout/shootout.py:405              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+  benchmarks/search-shootout/shootout.py:420              if select.select([self.proc.stdout], [], [], 0.1)[0]:

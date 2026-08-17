@@ -1,0 +1,61 @@
+            if (unsupportedMetaProtocolVersion(root)) |requested| {
+                writeUnsupportedProtocolVersionError(alloc, stdout, id, requested);
+                continue;
+            }
+        }
+
+        if (mcpj.eql(method, "initialize")) {
+            handleInitialize(&session, root, id);
+        } else if (mcpj.eql(method, "notifications/initialized")) {
+            if (session.client_supports_roots) {
+                requestRoots(&session);
+            } else if (session.deferred_scan) |ds| {
+                // Client won't be sending workspace roots — fire the deferred
+                // scan now with the cwd fallback so we don't sit in
+                // loading_snapshot waiting for a roots/list reply that never
+                // comes.
+                const empty_roots: []const Root = &.{};
+                _ = triggerDeferredScanWithFallback(ds, empty_roots, ds.fallback_cwd);
+            }
+        } else if (mcpj.eql(method, "notifications/roots/list_changed")) {
+            if (session.client_supports_roots) {
+                requestRoots(&session);
+            }
+        } else if (mcpj.eql(method, "tools/list")) {
+            if (!is_notification) {
+                const mini_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
+                const resp = buildToolsListResponse(alloc, .{
+                    .bundle_enabled = bundle_enabled,
+                    .discriminated_opt_in = discriminated_opt_in,
+                    .profile_core = profile_core,
+                    .profile_slim = profile_slim,
+                    .profile_mini = profile_mini or mini_default,
+                }) catch tools_list;
+                defer if (resp.ptr != tools_list.ptr) alloc.free(resp);
+                writeResult(alloc, stdout, id, resp);
+            }
+        } else if (mcpj.eql(method, "tools/call")) {
+            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, &session.governor, session.client_name);
+        } else if (mcpj.eql(method, "ping")) {
+            if (!is_notification) writeResult(alloc, stdout, id, "{}");
+        } else if (mcpj.eql(method, "server/discover")) {
+            if (!is_notification) writeResult(alloc, stdout, id, discover_result);
+        } else {
+            if (!is_notification) writeError(alloc, stdout, id, -32601, "Method not found");
+        }
+    }
+}
+
+fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.Value) void {
+    caps: {
+        const p = root.get("params") orelse break :caps;
+        if (p != .object) break :caps;
+        const c = p.object.get("capabilities") orelse break :caps;
+        if (c != .object) break :caps;
+        const r = c.object.get("roots") orelse break :caps;
+        if (r != .object) break :caps;
+        s.client_supports_roots = true;
+        s.client_roots_list_changed = mcpj.getBool(&r.object, "listChanged");
+    }
+    // Extract client identity for agent registration (#37)
+    client_name: {

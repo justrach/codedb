@@ -1,0 +1,76 @@
+80:    -OutFile $downloadedBinary
+81:  Invoke-WebRequest -UseBasicParsing `
+82:    -Headers @{ "User-Agent" = "codedb-installer" } `
+83:    "$releaseUrl/checksums.sha256" `
+84:    -OutFile $downloadedChecksums
+85:
+86:  $checksumLine = Get-Content -LiteralPath $downloadedChecksums |
+87:    Where-Object { $_ -match "\s\*?$([regex]::Escape($assetName))$" } |
+88:    Select-Object -First 1
+89:  if (-not $checksumLine) {
+90:    throw "Release v$Version has no checksum for $assetName"
+91:  }
+92:
+93:  $expectedHash = ($checksumLine -split '\s+')[0]
+94:  if ($expectedHash -notmatch '^[0-9a-fA-F]{64}$') {
+95:    throw "Release v$Version contains an invalid checksum for $assetName"
+96:  }
+97:
+98:  $actualHash = (Get-FileHash -LiteralPath $downloadedBinary -Algorithm SHA256).Hash
+99:  if ($actualHash -ne $expectedHash.ToUpperInvariant()) {
+100:    throw "SHA256 mismatch for $assetName"
+101:  }
+102:  Write-Host "  verify    SHA256 OK"
+103:
+104:  Copy-Item -LiteralPath $downloadedBinary -Destination $stagedPath -Force
+105:  Unblock-File -LiteralPath $stagedPath -ErrorAction SilentlyContinue
+106:  if (Test-Path -LiteralPath $targetPath -PathType Leaf) {
+107:    $previousPath = Join-Path $InstallDir ("codedb.exe.old." + [guid]::NewGuid().ToString("N"))
+108:    Move-Item -LiteralPath $targetPath -Destination $previousPath
+109:  }
+110:  try {
+111:    Move-Item -LiteralPath $stagedPath -Destination $targetPath -Force
+112:    & $targetPath --version
+113:    if ($LASTEXITCODE -ne 0) {
+114:      throw "Installed codedb failed its version check"
+115:    }
+116:  } catch {
+117:    Remove-Item -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue
+118:    if ($previousPath -and
+119:        (Test-Path -LiteralPath $previousPath -PathType Leaf) -and
+120:        -not (Test-Path -LiteralPath $targetPath)) {
+121:      Move-Item -LiteralPath $previousPath -Destination $targetPath
+122:      $previousPath = $null
+123:    }
+124:    throw
+125:  }
+126:  if ($previousPath) {
+127:    Remove-Item -LiteralPath $previousPath -Force -ErrorAction SilentlyContinue
+128:    if (-not (Test-Path -LiteralPath $previousPath)) {
+129:      $previousPath = $null
+130:    }
+131:  }
+132:
+133:  if (-not $NoPath) {
+134:    # HKCU\Environment\Path is REG_EXPAND_SZ by default and normally holds
+135:    # %USERPROFILE%-style references. [Environment]::GetEnvironmentVariable
+136:    # expands those, and SetEnvironmentVariable writes the result back as
+137:    # REG_SZ — permanently flattening the user's PATH and downgrading its
+138:    # value kind on every install/update. Read and write the registry
+139:    # directly instead, preserving both the unexpanded text and the kind.
+140:    $envKey = "HKCU:\Environment"
+141:    $rawUserPath = ""
+142:    $pathKind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+143:    try {
+144:      $envItem = Get-Item -LiteralPath $envKey -ErrorAction Stop
+145:      $rawUserPath = [string]$envItem.GetValue(
+146:        "Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+147:      try {
+148:        $existingKind = $envItem.GetValueKind("Path")
+149:        if ($existingKind -eq [Microsoft.Win32.RegistryValueKind]::String) {
+150:          $pathKind = [Microsoft.Win32.RegistryValueKind]::String
+151:        }
+152:      } catch {
+153:        # No user Path value yet — create it as REG_EXPAND_SZ.
+154:      }
+155:    } catch {

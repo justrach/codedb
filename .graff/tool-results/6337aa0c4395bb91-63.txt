@@ -1,0 +1,47 @@
+217c12a fix: address review findings on release/0.2.5833
+6387fe3 fix(installer): #677 Windows routing + #658 hook removal that sticks
+1c1056a linter: persist the opt-in preference in $HOME/.codedb/linter_optin
+87c081d (tag: v0.2.5801) release: v0.2.5801 — hotfix batch (#401-#413) + auto-updater forward-port
+80dc1bc fix(update): forward-port auto-updater from v0.2.5799 + clamp against future/corrupt stamps (#402, #403) (#418)
+be37075 (tag: v0.2.5799) feat(update): auto-update on mcp startup; opt-out via CODEDB_NO_AUTO_UPDATE
+ae92815 fix(release): sync release_info.zig with build.zig.zon (0.2.578) (#294)
+
+Blame update hook:
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 354) // ── Auto-update ──────────────────────────────────────────────────────────────
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 355) //
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 356) // On startup we kick off a detached check that shells out to the public
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 357) // install.sh. The check is:
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 358) //   • disabled when CODEDB_NO_AUTO_UPDATE is set in the environment
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 359) //   • throttled to at most once every 24 hours, tracked in
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 360) //     ~/.codedb/last_auto_update_check (a u64 little-endian unix-ms timestamp)
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 361) // The update itself runs in a background thread so it never blocks server
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 362) // startup. If the binary on disk gets replaced mid-session, the kernel keeps
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 363) // the old inode mapped for the running process; subsequent invocations get the
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 364) // new binary.
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 365) 
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 366) const auto_update_install_url = "https://codedb.codegraff.com/install.sh";
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 367) const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 368) const auto_update_stamp_filename = "last_auto_update_check";
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 369) 
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 370) /// Pure decision function — useful for tests. Returns true when the next
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 371) /// auto-update attempt should fire.
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 372) pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
+80dc1bc1 (Rach     2026-05-05 11:31:27 +0800 373)     if (env_disabled) return false;
+
+Blame MCP call:
+42f28277 (justrach 2026-06-21 10:42:16 +0800 390)     const store = ctx.store;
+42f28277 (justrach 2026-06-21 10:42:16 +0800 391)     const explorer = ctx.explorer;
+42f28277 (justrach 2026-06-21 10:42:16 +0800 392)     const cfg = ctx.cfg;
+42f28277 (justrach 2026-06-21 10:42:16 +0800 393)     const no_telemetry = ctx.no_telemetry;
+42f28277 (justrach 2026-06-21 10:42:16 +0800 394)     const mcp_deferred_root = ctx.mcp_deferred_root;
+42f28277 (justrach 2026-06-21 10:42:16 +0800 395)     // Background auto-update check (no-op when CODEDB_NO_AUTO_UPDATE is set
+42f28277 (justrach 2026-06-21 10:42:16 +0800 396)     // or when the last check was within the last 24h). Detached thread, so
+42f28277 (justrach 2026-06-21 10:42:16 +0800 397)     // this doesn't block server startup.
+42f28277 (justrach 2026-06-21 10:42:16 +0800 398)     update_mod.maybeAutoUpdate(io, allocator);
+42f28277 (justrach 2026-06-21 10:42:16 +0800 399) 
+42f28277 (justrach 2026-06-21 10:42:16 +0800 400)     var agents = AgentRegistry.init(allocator);
+42f28277 (justrach 2026-06-21 10:42:16 +0800 401)     defer agents.deinit();
+42f28277 (justrach 2026-06-21 10:42:16 +0800 402)     _ = try agents.register("__filesystem__");
+42f28277 (justrach 2026-06-21 10:42:16 +0800 403) 
+42f28277 (justrach 2026-06-21 10:42:16 +0800 404)     const root_from_cwd = mcp_deferred_root;
+42f28277 (justrach 2026-06-21 10:42:16 +0800 405) 

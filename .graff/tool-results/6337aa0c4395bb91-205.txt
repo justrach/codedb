@@ -1,0 +1,133 @@
+# Task
+runCapture stdout stderr subprocess behavior
+
+## Keywords used
+- runCapture
+- subprocess
+- behavior
+- stderr
+- stdout
+
+## Symbol definitions
+- runCapture (function) — src/cio.zig:615
+- stderr (function) — src/cio.zig:112
+- stdout (constant) — src/main.zig:146
+- stdout (constant) — src/mcp.zig:1209
+- stdout (function) — src/cio.zig:109
+
+## Most-relevant files
+- src/cio.zig  (3 matches)
+- scripts/run-bench-json.py  (4 matches)
+- src/update.zig  (2 matches)
+- src/nuke.zig  (2 matches)
+- src/git.zig  (2 matches)
+
+## Top sites (with ±2 lines of context)
+
+src/cio.zig:668
+```
+extern "kernel32" fn GetFileAttributesW(lpFileName: [*:0]const u16) callconv(.winapi) u32;
+
+fn windowsResolvedRunCaptureArgv0(allocator: std.mem.Allocator, argv0: []const u8, cwd: ?[]const u8) !?[]u8 {
+    if (!is_windows) return null;
+    if (argv0.len == 0) return error.EmptyArgv;
+```
+
+src/cio.zig:3
+```
+//! cio.zig — 0.16 stdlib compatibility shim.
+//!
+//! 0.16 removed std.fs.File.{stdout,stderr,stdin}, cio.Mutex/RwLock,
+//! std.time.Timer, std.time.nanoTimestamp, std.process.Child.run, and
+//! cio.posixGetenv. This shim wraps libc/pthread primitives so existing
+```
+
+src/cio.zig:3
+```
+//! cio.zig — 0.16 stdlib compatibility shim.
+//!
+//! 0.16 removed std.fs.File.{stdout,stderr,stdin}, cio.Mutex/RwLock,
+//! std.time.Timer, std.time.nanoTimestamp, std.process.Child.run, and
+//! cio.posixGetenv. This shim wraps libc/pthread primitives so existing
+```
+
+scripts/run-bench-json.py:14
+```
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run `zig build bench -- --json` and persist the JSON payload.")
+    parser.add_argument("--bench-side", choices=("base", "head"))
+    parser.add_argument("--bench-pair", type=int)
+```
+
+scripts/run-bench-json.py:9
+```
+import pathlib
+import shutil
+import subprocess
+import sys
+
+```
+
+scripts/run-bench-json.py:26
+```
+
+
+def extract_json(stdout: str, stderr: str) -> str:
+    text = stdout.strip()
+    if text.startswith("{") and text.endswith("}"):
+```
+
+src/update.zig:45
+```
+};
+
+pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+    const out = Out{ .file = stdout, .alloc = allocator };
+
+```
+
+src/update.zig:45
+```
+};
+
+pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+    const out = Out{ .file = stdout, .alloc = allocator };
+
+```
+
+src/nuke.zig:43
+```
+};
+
+pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+    const out = Out{ .file = stdout, .alloc = allocator };
+    // HOME on POSIX; Windows exposes the equivalent as USERPROFILE.
+```
+
+src/nuke.zig:43
+```
+};
+
+pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+    const out = Out{ .file = stdout, .alloc = allocator };
+    // HOME on POSIX; Windows exposes the equivalent as USERPROFILE.
+```
+
+src/git.zig:6
+```
+const disabled_hooks_config = "core.hooksPath=/codedb-hooks-disabled-do-not-exist";
+
+/// Run `git rev-parse HEAD` in `root` and return the 40-char hex SHA.
+/// Returns null if `root` is not a git repo, git is unavailable, or HEAD
+/// has no commit yet (fresh repo).
+```
+
+src/git.zig:16
+```
+        .max_output_bytes = 256,
+    }) catch return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+```

@@ -1,0 +1,29 @@
+✓ 28 results for ""version""  ⚡ 1.9ms
+  experiments/reader-md/eval/runtime_cli.py:71                     "clientInfo": {"name": "eval", "version": "1.0"}},
+  src/main.zig:102      if (std.mem.eql(u8, a1, "--version") or std.mem.eql(u8, a1, "-v") or std.mem.eql(u8, a1, "version")) {
+  src/mcp.zig:1400          \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}},"extensions":{{}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"{s}"}}
+  src/update.zig:224      return parseJsonStringField(allocator, response, "version", false);
+  src/test_snapshot.zig:83      try testing.expect(symbol_index.contains("version"));
+  bench/recall-v058.py:35              "protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"bench","version":"1.0"}}})
+  bench/run-benchmarks.py:62                                  "clientInfo": {"name": "bench", "version": "1.0"}}})
+  bench/run-benchmarks.sh:76    INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"bench","version":"1.0"}}}'
+  benchmarks/search-shootout/shootout.py:158                         "clientInfo": {"name": "shootout", "version": "1.0"}}
+  docs/design/ace-integration.md:33    "version": 1,
+  harness.trajectory.jsonl:1  {"kind":"session","version":"0.0.193","unix_ms":1783703769355}
+  install/install.sh:22        | grep -oE '"version"\s*:\s*"[^"]*"' \
+  npm/package.json:3    "version": "0.2.5838",
+  scripts/rank-eval.py:67          '"clientInfo":{"name":"rank-eval","version":"1"}}}')
+  scripts/run-bench-json.py:106          "compiler_version": command_output(str(zig_path), "version"),
+  scripts/sync-telemetry.py:27      "version",
+  website/app/install_script.sh:22        | grep -oE '"version"\s*:\s*"[^"]*"' \
+  website/src/telemetry.zig:52          \\{{"level":"error","platform":"other","sdk":{{"name":"merjs","version":"{s}"}},"exception":{{"values":[{{"type":"{s}","value":"Route handler error on {s}"}}]}},"request":{{"url":"{s}"}},"tags":{{"framework":"merjs","zig":"{s}"}}}}
+  scripts/e2e_mcp_test.py:185              "clientInfo": {"name": "e2e-test", "version": "1"},
+  scripts/test_issue_357_bundle_diagnostic.py:113                  "clientInfo": {"name": "issue-357-test", "version": "1"},
+  bench/swe-lite/instances.json:11      "version": "2.3",
+  bench/swe-lite/instances_30.json:11      "version": "2.3",
+  bench/swe-lite/results-deepswe-5way/vulture-persistent-analysis-cache_codegraph.patch:18       parser.add_argument("--version", action="version", version=version)[m
+  bench/swe-lite/results-deepswe-5way/vulture-persistent-analysis-cache_graphify.patch:18       parser.add_argument("--version", action="version", version=version)[m
+  bench/swe-lite/results-deepswe-5way/vulture-persistent-analysis-cache_leanctx.patch:38       parser.add_argument("--version", action="version", version=version)[m
+  bench/swe-lite/results-deepswe/vulture-persistent-analysis-cache_baseline.patch:47       parser.add_argument("--version", action="version", version=version)[m
+  bench/swe-lite/results-deepswe/vulture-persistent-analysis-cache_codedb.patch:38       parser.add_argument("--version", action="version", version=version)[m
+  install/.wrangler/tmp/deploy-uk1dYp/worker.js.map:2    "version": 3,

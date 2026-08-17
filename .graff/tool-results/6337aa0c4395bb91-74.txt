@@ -1,0 +1,51 @@
+            i = j + 1;
+            continue;
+        }
+        // Identifier-like tokens.
+        if (isContextIdentStart(c)) {
+            const start = i;
+            while (i < task.len and isContextIdentCont(task[i])) : (i += 1) {}
+            const tok = task[start..i];
+            if (tok.len >= 3 and tok.len <= 64 and looksLikeContextIdentifier(tok) and !seen.contains(tok)) {
+                seen.put(tok, {}) catch {};
+                out.append(alloc, tok) catch {};
+                if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
+            }
+            continue;
+        }
+        i += 1;
+    }
+}
+
+// #570: fallback for tasks with no identifier-shaped token. Plain words
+// (≥4 chars, glue/generic words dropped) sorted longest-first — longer words
+// are more specific ("ranking" beats "fix") — capped like the identifier pass.
+pub fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+    const stop = [_][]const u8{
+        "that",   "this",   "with",    "from",    "into",      "when",   "where",
+        "what",   "which",  "then",    "them",    "they",      "have",   "will",
+        "should", "would",  "could",   "make",    "makes",     "using",  "used",
+        "does",   "like",   "also",    "than",    "each",      "more",   "most",
+        "some",   "such",   "very",    "just",    "been",      "being",  "about",
+        "after",  "before", "while",   "there",   "their",     "other",  "only",
+        "over",   "under",  "between", "improve", "implement", "ensure", "change",
+        "update",
+    };
+    var words: std.ArrayList([]const u8) = .empty;
+    defer words.deinit(alloc);
+    var seen = std.StringHashMap(void).init(alloc);
+    defer seen.deinit();
+    for (out.items) |existing| seen.put(existing, {}) catch {};
+    var i: usize = 0;
+    while (i < task.len) {
+        if (isContextIdentStart(task[i])) {
+            const start = i;
+            while (i < task.len and isContextIdentCont(task[i])) : (i += 1) {}
+            const tok = task[start..i];
+            if (tok.len >= 4 and tok.len <= 64 and !seen.contains(tok)) {
+                var is_stop = false;
+                for (stop) |s| {
+                    if (std.ascii.eqlIgnoreCase(tok, s)) {
+                        is_stop = true;
+                        break;
+                    }

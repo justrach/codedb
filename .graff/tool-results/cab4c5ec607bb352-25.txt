@@ -1,0 +1,331 @@
+  2500	        out.appendSlice(alloc, "error: word search failed") catch {};
+  2501	        return;
+  2502	    };
+  2503	}
+  2504	
+  2505	fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  2506	    const name = getStr(args, "name") orelse {
+  2507	        out.appendSlice(alloc, "error: missing 'name' argument") catch {};
+  2508	        appendBundleArgKeysDiagnostic(alloc, out, args);
+  2509	        return;
+  2510	    };
+  2511	    if (name.len == 0) {
+  2512	        out.appendSlice(alloc, "error: empty name — pass a non-empty 'name' string") catch {};
+  2513	        return;
+  2514	    }
+  2515	    if (getInt(args, "max_results")) |n| {
+  2516	        if (n <= 0) {
+  2517	            const w_err = cio.listWriter(out, alloc);
+  2518	            w_err.print("error: max_results ({d}) must be >= 1", .{n}) catch {};
+  2519	            return;
+  2520	        }
+  2521	    }
+  2522	    // Default trimmed from 50 -> 30 (Nov 2026) to match typical caller
+  2523	    // counts in real codebases; rare hot symbols can still request more.
+  2524	    const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 30;
+  2525	
+  2526	    const defs = explorer.findAllSymbols(name, alloc) catch {
+  2527	        out.appendSlice(alloc, "error: symbol lookup failed") catch {};
+  2528	        return;
+  2529	    };
+  2530	    defer {
+  2531	        for (defs) |d| {
+  2532	            alloc.free(d.path);
+  2533	            alloc.free(d.symbol.name);
+  2534	            if (d.symbol.detail) |dd| alloc.free(dd);
+  2535	        }
+  2536	        alloc.free(defs);
+  2537	    }
+  2538	
+  2539	    // max_results is documented as "Maximum call sites to return" — an OUTPUT
+  2540	    // cap. Passing it straight through as the RAW search cap starved the
+  2541	    // filter pass below: ranked search deliberately floats the defining file
+  2542	    // (+20 prior, explore.zig:4524) and its definition lines (explore.zig:4598)
+  2543	    // to the front, and a single file's share is capped at max_results/5
+  2544	    // (explore.zig:4125) — so the whole budget was spent on definition,
+  2545	    // comment and non-code rows that this tool then drops, reporting
+  2546	    // "0 call sites" for symbols with many real callers. Over-fetch, and let
+  2547	    // the kept-list cap below enforce max_results.
+  2548	    const search_cap: usize = @max(max_results, @min(max_results * 10 + 50, 5000));
+  2549	    const results = explorer.searchContentWithScope(name, alloc, search_cap) catch {
+  2550	        out.appendSlice(alloc, "error: search failed") catch {};
+  2551	        return;
+  2552	    };
+  2553	    defer {
+  2554	        for (results) |r| {
+  2555	            alloc.free(r.line_text);
+  2556	            alloc.free(r.path);
+  2557	            if (r.scope_name) |n2| alloc.free(n2);
+  2558	        }
+  2559	        alloc.free(results);
+  2560	    }
+  2561	
+  2562	    // #573: single filter pass — the header count and the printed entries come
+  2563	    // from the same accumulation, so a predicate edit cannot desync them (the
+  2564	    // previous count loop + print loop duplicated four predicates verbatim).
+  2565	    var kept: std.ArrayList(usize) = .empty;
+  2566	    defer kept.deinit(alloc);
+  2567	    for (results, 0..) |r, r_idx| {
+  2568	        if (kept.items.len >= max_results) break;
+  2569	        const lang = explore_mod.detectLanguage(r.path);
+  2570	        if (!langHasCallSites(lang)) continue;
+  2571	        // #562: a full-line comment mention is documentation, not a call site.
+  2572	        if (explore_mod.isCommentOrBlank(r.line_text, lang)) continue;
+  2573	        var is_def = false;
+  2574	        for (defs) |d| {
+  2575	            if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
+  2576	                is_def = true;
+  2577	                break;
+  2578	            }
+  2579	        }
+  2580	        if (is_def) continue;
+  2581	        // A whole-word match that only ever lands inside a string literal is a
+  2582	        // mention, not an invocation — a `("name", "file")` table row or a
+  2583	        // `test "…name…" {` declaration. Real calls in the same file (and even
+  2584	        // in the same test body) sit outside the quotes and survive.
+  2585	        if (!hasWholeWordMatchOutsideStrings(r.line_text, name)) continue;
+  2586	        kept.append(alloc, r_idx) catch {};
+  2587	    }
+  2588	
+  2589	    const w = cio.listWriter(out, alloc);
+  2590	    w.print("{d} call sites for '{s}':\n", .{ kept.items.len, name }) catch {};
+  2591	    for (kept.items) |kept_idx| {
+  2592	        const r = results[kept_idx];
+  2593	        if (r.scope_name) |sn| {
+  2594	            appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+  2595	            w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
+  2596	        } else {
+  2597	            appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
+  2598	        }
+  2599	    }
+  2600	}
+  2601	
+  2602	fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  2603	    const from_name = getStr(args, "from") orelse {
+  2604	        out.appendSlice(alloc, "error: missing 'from' argument") catch {};
+  2605	        appendBundleArgKeysDiagnostic(alloc, out, args);
+  2606	        return;
+  2607	    };
+  2608	    const to_name = getStr(args, "to") orelse {
+  2609	        out.appendSlice(alloc, "error: missing 'to' argument") catch {};
+  2610	        appendBundleArgKeysDiagnostic(alloc, out, args);
+  2611	        return;
+  2612	    };
+  2613	    if (from_name.len == 0 or to_name.len == 0) {
+  2614	        out.appendSlice(alloc, "error: 'from' and 'to' must be non-empty symbol names") catch {};
+  2615	        return;
+  2616	    }
+  2617	    const max_hops: usize = if (getInt(args, "max_hops")) |n| @intCast(@max(1, @min(n, 64))) else 12;
+  2618	
+  2619	    const steps = explorer.findCallPath(from_name, to_name, alloc, max_hops) catch {
+  2620	        out.appendSlice(alloc, "error: callpath search failed") catch {};
+  2621	        return;
+  2622	    };
+  2623	    const path = steps orelse {
+  2624	        const w = cio.listWriter(out, alloc);
+  2625	        w.print("no call path from '{s}' to '{s}' within {d} hops\n", .{ from_name, to_name, max_hops }) catch {};
+  2626	        return;
+  2627	    };
+  2628	    defer alloc.free(path);
+  2629	
+  2630	    const w = cio.listWriter(out, alloc);
+  2631	    w.print("call path ({d} hops): {s} → {s}\n", .{ path.len - 1, from_name, to_name }) catch {};
+  2632	    for (path, 0..) |step, i| {
+  2633	        if (i > 0) w.print("  → ", .{}) catch {};
+  2634	        w.print("{s}:{s}@L{d}", .{ step.path, step.name, step.line }) catch {};
+  2635	        if (i + 1 < path.len) w.print("\n", .{}) catch {};
+  2636	    }
+  2637	    w.print("\n", .{}) catch {};
+  2638	}
+  2639	
+  2640	fn isIdentChar(c: u8) bool {
+  2641	    return (c >= 'a' and c <= 'z') or
+  2642	        (c >= 'A' and c <= 'Z') or
+  2643	        (c >= '0' and c <= '9') or
+  2644	        c == '_';
+  2645	}
+  2646	
+  2647	/// Returns true iff `needle` occurs in `line` as a whole-word identifier
+  2648	/// (non-identifier characters or line boundaries on both sides) at a position
+  2649	/// that is NOT inside a string literal.
+  2650	///
+  2651	/// An occurrence that only ever appears between quotes is a mention, not a
+  2652	/// call: the Python table row `("renderPlainSearch", "src/explore.zig"),` and
+  2653	/// the Zig declaration `test "def-first: renderPlainSearch surfaces …" {` both
+  2654	/// name the symbol without invoking it, yet passed every other filter here.
+  2655	///
+  2656	/// Deliberately line-local and pragmatic, in the spirit of `isCommentOrBlank`:
+  2657	///   - tracks '…' and "…" spans, honouring backslash escapes
+  2658	///   - a quote with no closing partner on the line (an apostrophe in a
+  2659	///     trailing comment, a Rust lifetime `&'a`, an open multi-line literal) is
+  2660	///     treated as ordinary code, so it can never swallow the rest of the line
+  2661	///   - backticks are not treated as quotes: Go raw strings and JS template
+  2662	///     literals routinely wrap real calls (`${render()}`)
+  2663	fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+  2664	    if (needle.len == 0 or line.len < needle.len) return false;
+  2665	    var i: usize = 0;
+  2666	    while (i < line.len) {
+  2667	        if (line[i] == '"' or line[i] == '\'') {
+  2668	            if (stringLiteralEnd(line, i)) |end| {
+  2669	                i = end + 1;
+  2670	                continue;
+  2671	            }
+  2672	        }
+  2673	        // `i` is a code byte — try to anchor a whole-word match on it.
+  2674	        if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+  2675	            const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+  2676	            const after = i + needle.len;
+  2677	            const after_ok = after >= line.len or !isIdentChar(line[after]);
+  2678	            if (before_ok and after_ok) return true;
+  2679	        }
+  2680	        i += 1;
+  2681	    }
+  2682	    return false;
+  2683	}
+  2684	
+  2685	/// Index of the quote closing the literal opened at `open`, or null when the
+  2686	/// literal never closes on this line.
+  2687	fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+  2688	    const quote = line[open];
+  2689	    var i = open + 1;
+  2690	    while (i < line.len) : (i += 1) {
+  2691	        if (line[i] == '\\') {
+  2692	            i += 1;
+  2693	            continue;
+  2694	        }
+  2695	        if (line[i] == quote) return i;
+  2696	    }
+  2697	    return null;
+  2698	}
+  2699	
+  2700	/// Languages where the concept of a "call site" is meaningful. Excludes
+  2701	/// data formats (json, yaml), markup/styling (markdown, css, scss),
+  2702	/// declarative schemas (protobuf), and unknown files — callers found
+  2703	/// inside these are mentions in prose or config, not real invocations.
+  2704	fn langHasCallSites(lang: explore_mod.Language) bool {
+  2705	    return switch (lang) {
+  2706	        .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
+  2707	        else => true,
+  2708	    };
+  2709	}
+  2710	
+  2711	// ── codedb_context ──────────────────────────────────────────────────────────
+  2712	// Task-shaped composer. Takes a natural-language task, extracts candidate
+  2713	// identifiers (camelCase / snake_case / "quoted strings"), and returns ONE
+  2714	// composite text block: keywords + symbol defs + ranked files + top sites.
+  2715	// Replaces 3-5 separate search/word/symbol calls; targets parity with
+  2716	// codegraph_context on per-task token economy.
+  2717	
+  2718	fn isContextIdentStart(c: u8) bool {
+  2719	    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+  2720	}
+  2721	fn isContextIdentCont(c: u8) bool {
+  2722	    return isContextIdentStart(c) or (c >= '0' and c <= '9');
+  2723	}
+  2724	fn looksLikeContextIdentifier(tok: []const u8) bool {
+  2725	    // Filter out sentence-leading English words ("Find", "React", "Want")
+  2726	    // that incidentally start with a capital, while keeping real identifiers.
+  2727	    // Rules:
+  2728	    //   - snake_case (any underscore)              → always pass
+  2729	    //   - all-caps acronym, 3-8 chars (API, TODO)  → pass
+  2730	    //   - camelCase / PascalCase with an internal
+  2731	    //     lower→upper transition (getNextLanes)    → pass
+  2732	    //   - everything else                          → reject
+  2733	    if (tok.len < 3) return false;
+  2734	    if (std.mem.indexOfScalar(u8, tok, '_') != null) return true;
+  2735	    var all_upper = true;
+  2736	    for (tok) |c| {
+  2737	        if (c < 'A' or c > 'Z') {
+  2738	            all_upper = false;
+  2739	            break;
+  2740	        }
+  2741	    }
+  2742	    if (all_upper) return tok.len <= 8;
+  2743	    var i: usize = 1;
+  2744	    while (i < tok.len) : (i += 1) {
+  2745	        const prev_lower = tok[i - 1] >= 'a' and tok[i - 1] <= 'z';
+  2746	        const cur_upper = tok[i] >= 'A' and tok[i] <= 'Z';
+  2747	        if (prev_lower and cur_upper) return true;
+  2748	    }
+  2749	    return false;
+  2750	}
+  2751	
+  2752	// Cap at 3 candidates instead of 5. handleContext does one searchContent +
+  2753	// one findAllSymbols per candidate (the bench shows 30µs and ~5µs each on
+  2754	// codedb's own repo), so each extra candidate adds ~35µs of fixed cost
+  2755	// for diminishing return — the by_file ranking already heavily favors
+  2756	// the first 1–2 high-quality identifiers. End-to-end this drops
+  2757	// codedb_context from ~330µs → ~220µs on the standard bench task.
+  2758	const CONTEXT_MAX_CANDIDATES: usize = 5;
+  2759	// 20 was the original tier-search cap, but only CONTEXT_TOP_LINES_PER_FILE
+  2760	// (3) hits per file are ever kept after ranking — every additional result
+  2761	// is wasted work in search-content + per-file map churn. Empirically 8
+  2762	// covers the keep-window even on dense files.
+  2763	const CONTEXT_MAX_RESULTS_PER_KW: usize = 8;
+  2764	const CONTEXT_TOP_FILES: usize = 5;
+  2765	const CONTEXT_TOP_LINES_PER_FILE: usize = 3;
+  2766	
+  2767	pub fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+  2768	    var seen = std.StringHashMap(void).init(alloc);
+  2769	    defer seen.deinit();
+  2770	    var i: usize = 0;
+  2771	    while (i < task.len) {
+  2772	        const c = task[i];
+  2773	        // Quoted strings — taken literally as identifiers.
+  2774	        if (c == '"' or c == '`') {
+  2775	            const q = c;
+  2776	            const start = i + 1;
+  2777	            var j = start;
+  2778	            while (j < task.len and task[j] != q) : (j += 1) {}
+  2779	            if (j > start and j - start <= 64 and j - start >= 3) {
+  2780	                const slice = task[start..j];
+  2781	                if (!seen.contains(slice)) {
+  2782	                    seen.put(slice, {}) catch {};
+  2783	                    out.append(alloc, slice) catch {};
+  2784	                    if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
+  2785	                }
+  2786	            }
+  2787	            i = j + 1;
+  2788	            continue;
+  2789	        }
+  2790	        // Identifier-like tokens.
+  2791	        if (isContextIdentStart(c)) {
+  2792	            const start = i;
+  2793	            while (i < task.len and isContextIdentCont(task[i])) : (i += 1) {}
+  2794	            const tok = task[start..i];
+  2795	            if (tok.len >= 3 and tok.len <= 64 and looksLikeContextIdentifier(tok) and !seen.contains(tok)) {
+  2796	                seen.put(tok, {}) catch {};
+  2797	                out.append(alloc, tok) catch {};
+  2798	                if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
+  2799	            }
+  2800	            continue;
+  2801	        }
+  2802	        i += 1;
+  2803	    }
+  2804	}
+  2805	
+  2806	// #570: fallback for tasks with no identifier-shaped token. Plain words
+  2807	// (≥4 chars, glue/generic words dropped) sorted longest-first — longer words
+  2808	// are more specific ("ranking" beats "fix") — capped like the identifier pass.
+  2809	pub fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+  2810	    const stop = [_][]const u8{
+  2811	        "that",   "this",   "with",    "from",    "into",      "when",   "where",
+  2812	        "what",   "which",  "then",    "them",    "they",      "have",   "will",
+  2813	        "should", "would",  "could",   "make",    "makes",     "using",  "used",
+  2814	        "does",   "like",   "also",    "than",    "each",      "more",   "most",
+  2815	        "some",   "such",   "very",    "just",    "been",      "being",  "about",
+  2816	        "after",  "before", "while",   "there",   "their",     "other",  "only",
+  2817	        "over",   "under",  "between", "improve", "implement", "ensure", "change",
+  2818	        "update",
+  2819	    };
+  2820	    var words: std.ArrayList([]const u8) = .empty;
+  2821	    defer words.deinit(alloc);
+  2822	    var seen = std.StringHashMap(void).init(alloc);
+  2823	    defer seen.deinit();
+  2824	    for (out.items) |existing| seen.put(existing, {}) catch {};
+  2825	    var i: usize = 0;
+  2826	    while (i < task.len) {
+  2827	        if (isContextIdentStart(task[i])) {
+  2828	            const start = i;
+  2829	            while (i < task.len and isContextIdentCont(task[i])) : (i += 1) {}
+  2830	            const tok = task[start..i];

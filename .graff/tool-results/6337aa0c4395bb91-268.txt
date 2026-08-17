@@ -1,0 +1,91 @@
+   85 };
+   86 
+   87 const superseded_releases = [_]SupersededRelease{
+   88     // v0.2.58181 was an accidental release-train typo. Pure SemVer ordering
+   89     // treats its patch component as newer than v0.2.5823, but operationally it
+   90     // belongs before v0.2.5823 and should update forward normally.
+   91     .{ .current = "0.2.58181", .minimum_target = "0.2.5823" },
+   92 };
+   93 
+   94 pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+   95     const out = Out{ .file = stdout, .alloc = allocator };
+   96 
+   97     const self_path = std.process.executablePathAlloc(io, allocator) catch |err| {
+   98         out.p("{s}✗{s} cannot locate current executable: {s}\n", .{ s.red, s.reset, @errorName(err) });
+   99         std.process.exit(1);
+  100     };
+  101     defer allocator.free(self_path);
+  102 
+  103     const update_lock = updateLockTryAcquire(self_path) orelse {
+  104         out.p("{s}✗{s} another codedb update is already running\n", .{ s.red, s.reset });
+  105         std.process.exit(1);
+  106     };
+  107     defer updateLockRelease(update_lock);
+  108 
+  109     const resolved = resolveTargetVersion(allocator) catch |err| {
+  110         out.p("{s}✗{s} failed to resolve update target: {s}\n", .{ s.red, s.reset, @errorName(err) });
+  111         std.process.exit(1);
+  112     };
+  113     defer allocator.free(resolved.value);
+  114 
+  115     const version_order = compareVersionsForUpdate(release_info.semver, resolved.value) catch |err| {
+  116         out.p("{s}✗{s} invalid release version: {s}\n", .{ s.red, s.reset, @errorName(err) });
+  117         std.process.exit(1);
+  118     };
+  119 
+  120     switch (version_order) {
+  121         .eq => {
+  122             out.p("codedb {s} is already up to date\n", .{release_info.semver});
+  123             return;
+  124         },
+  125         .gt => {
+  126             out.p("{s}✗{s} refusing to replace codedb {s} with older release {s}\n", .{ s.red, s.reset, release_info.semver, resolved.value });
+  127             std.process.exit(1);
+  128         },
+  129         .lt => {},
+  130     }
+  131 
+  132     const asset_name = assetNameForTarget(builtin.os.tag, builtin.cpu.arch) orelse {
+  133         out.p("{s}✗{s} self-update is unsupported on this platform\n", .{ s.red, s.reset });
+  134         std.process.exit(1);
+  135     };
+  136 
+  137     out.p("updating codedb {s} -> {s}\n", .{ release_info.semver, resolved.value });
+  138     out.p("  source: {s}\n", .{switch (resolved.source) {
+  139         .env => "CODEDB_VERSION",
+  140         .github => "github releases",
+  141         .fallback => "codedb.codegraff.com/latest.json",
+  142     }});
+  143     out.p("  asset:  {s}\n", .{asset_name});
+  144 
+  145     const manifest = fetchChecksumsManifest(allocator, resolved.value) catch |err| {
+  146         out.p("{s}✗{s} failed to download checksums for v{s}: {s}\n", .{ s.red, s.reset, resolved.value, @errorName(err) });
+  147         std.process.exit(1);
+  148     };
+  149     defer allocator.free(manifest);
+  150 
+  151     const expected_hash = checksumForBinary(manifest, asset_name) orelse {
+  152         out.p("{s}✗{s} release v{s} is missing a checksum for {s}\n", .{ s.red, s.reset, resolved.value, asset_name });
+  153         std.process.exit(1);
+  154     };
+  155 
+  156     downloadAndReplaceBinary(io, allocator, resolved.value, asset_name, self_path, expected_hash) catch |err| {
+  157         out.p("{s}✗{s} update failed: {s}\n", .{ s.red, s.reset, @errorName(err) });
+  158         std.process.exit(1);
+  159     };
+  160 
+  161     out.p("{s}✓{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });
+  162 }
+  163 
+  164 pub fn assetNameForTarget(os_tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?[]const u8 {
+  165     return switch (os_tag) {
+  166         .macos => switch (arch) {
+  167             .aarch64 => "codedb-darwin-arm64",
+  168             .x86_64 => "codedb-darwin-x86_64",
+  169             else => null,
+  170         },
+  171         .linux => switch (arch) {
+  172             .aarch64 => "codedb-linux-arm64",
+  173             .x86_64 => "codedb-linux-x86_64",
+  174             else => null,
+  175         },

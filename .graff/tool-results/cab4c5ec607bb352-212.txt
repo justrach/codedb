@@ -1,0 +1,81 @@
+    in_class: bool = false,
+    brace_depth: i32 = 0,
+    class_brace_depth: i32 = 0,
+    in_block_comment: bool = false,
+};
+
+pub const Language = enum(u8) {
+    zig,
+    c,
+    cpp,
+    python,
+    javascript,
+    typescript,
+    rust,
+    go_lang,
+    php,
+    ruby,
+    hcl,
+    r,
+    markdown,
+    json,
+    yaml,
+    unknown,
+    dart,
+    java,
+    kotlin,
+    swift,
+    svelte,
+    vue,
+    astro,
+    shell,
+    css,
+    scss,
+    sql,
+    protobuf,
+    fortran,
+    llvm_ir,
+    mlir,
+    tablegen,
+    rescript,
+    ocaml,
+};
+
+pub fn detectLanguage(path: []const u8) Language {
+    if (std.mem.endsWith(u8, path, ".zig")) return .zig;
+    if (std.mem.endsWith(u8, path, ".c") or std.mem.endsWith(u8, path, ".h")) return .c;
+    if (std.mem.endsWith(u8, path, ".cpp") or std.mem.endsWith(u8, path, ".hpp") or
+        std.mem.endsWith(u8, path, ".cc") or std.mem.endsWith(u8, path, ".hh") or
+        std.mem.endsWith(u8, path, ".cxx") or std.mem.endsWith(u8, path, ".hxx") or
+        std.mem.endsWith(u8, path, ".mm"))
+        return .cpp;
+    if (std.mem.endsWith(u8, path, ".py")) return .python;
+    if (std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".jsx")) return .javascript;
+    if (std.mem.endsWith(u8, path, ".ts") or std.mem.endsWith(u8, path, ".tsx")) return .typescript;
+    if (std.mem.endsWith(u8, path, ".rs")) return .rust;
+    if (std.mem.endsWith(u8, path, ".go")) return .go_lang;
+    if (std.mem.endsWith(u8, path, ".php")) return .php;
+    if (std.mem.endsWith(u8, path, ".rb") or std.mem.endsWith(u8, path, ".rake")) return .ruby;
+    if (std.mem.endsWith(u8, path, ".tf") or std.mem.endsWith(u8, path, ".tfvars") or std.mem.endsWith(u8, path, ".hcl")) return .hcl;
+    if (std.mem.endsWith(u8, path, ".r") or std.mem.endsWith(u8, path, ".R")) return .r;
+    if (std.mem.endsWith(u8, path, ".md")) return .markdown;
+    if (std.mem.endsWith(u8, path, ".json")) return .json;
+    if (std.mem.endsWith(u8, path, ".yaml") or std.mem.endsWith(u8, path, ".yml")) return .yaml;
+    if (std.mem.endsWith(u8, path, ".dart")) return .dart;
+    if (std.mem.endsWith(u8, path, ".java")) return .java;
+    if (std.mem.endsWith(u8, path, ".kt")) return .kotlin;
+    if (std.mem.endsWith(u8, path, ".swift")) return .swift;
+    if (std.mem.endsWith(u8, path, ".svelte")) return .svelte;
+    if (std.mem.endsWith(u8, path, ".vue")) return .vue;
+    if (std.mem.endsWith(u8, path, ".astro")) return .astro;
+    if (std.mem.endsWith(u8, path, ".sh")) return .shell;
+    if (std.mem.endsWith(u8, path, ".css")) return .css;
+    if (std.mem.endsWith(u8, path, ".scss")) return .scss;
+    if (std.mem.endsWith(u8, path, ".sql")) return .sql;
+    if (std.mem.endsWith(u8, path, ".proto")) return .protobuf;
+    if (std.mem.endsWith(u8, path, ".f90")) return .fortran;
+    if (std.mem.endsWith(u8, path, ".ll")) return .llvm_ir;
+    if (std.mem.endsWith(u8, path, ".mlir")) return .mlir;
+    if (std.mem.endsWith(u8, path, ".td")) return .tablegen;
+    if (std.mem.endsWith(u8, path, ".res") or std.mem.endsWith(u8, path, ".resi")) return .rescript;
+    if (std.mem.endsWith(u8, path, ".ml") or std.mem.endsWith(u8, path, ".mli")) return .ocaml;

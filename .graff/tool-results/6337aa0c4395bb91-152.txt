@@ -1,0 +1,301 @@
+    // still classifies query vs non-query commands after the extraction.
+    try testing.expect(cli_args_mod.cliIsQueryCmd("search"));
+    try testing.expect(cli_args_mod.cliIsQueryCmd("outline"));
+    try testing.expect(!cli_args_mod.cliIsQueryCmd("serve"));
+    try testing.expect(!cli_args_mod.cliIsQueryCmd("mcp"));
+
+    // `codedb mcp <path>` is honored as `codedb <path> mcp` (#503).
+    const p = cli_args_mod.parsePositional(&[_][]const u8{ "codedb", "mcp", "/proj" });
+    try testing.expectEqualStrings("/proj", p.root);
+    try testing.expectEqualStrings("mcp", p.cmd);
+    try testing.expect(p.root_is_explicit);
+
+    try testing.expectError(error.Reversed, cli_args_mod.parseLineRange("9-2"));
+    try testing.expectError(error.UnknownFlag, cli_args_mod.parseSearchArgs(&[_][]const u8{ "search", "--bogus", "x" }, 1));
+}
+
+test "split: cli_proxy daemon lock works via main and cli_proxy" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const dir_path = path_buf[0..dir_len];
+
+    // Acquired via the cli_proxy module; main's re-export must see it held.
+    const held = cli_proxy_mod.daemonLockTryAcquire(dir_path);
+    try testing.expect(held != null);
+    defer cli_proxy_mod.daemonLockRelease(held.?);
+    try testing.expect(!main_mod.daemonLockAvailable(dir_path));
+    try testing.expect(cli_proxy_mod.daemonLockTryAcquire(dir_path) == null);
+}
+
+test "issue-624: convergence nudge is suppressed for format=json" {
+    // Regression: the #624 governor appended its plain-text nudge to the tool
+    // output for any governed nav tool at the loop threshold — including
+    // codedb_search, which supports format=json. Appending text to a JSON
+    // payload corrupts it (the #626 nudges guard with `if (!json_fmt)`; the
+    // governor did not). convergenceNudge now encodes that guard.
+    const MCP = @import("mcp.zig");
+    const warn = MCP.ConvergenceGovernor.WARN_AT;
+
+    // Text output at/after the loop threshold surfaces the nudge.
+    try testing.expect(MCP.convergenceNudge(warn, false) != null);
+    try testing.expect(MCP.convergenceNudge(warn + 1, false) != null);
+
+    // format=json must NOT — otherwise the appended text breaks the JSON.
+    try testing.expect(MCP.convergenceNudge(warn, true) == null);
+    try testing.expect(MCP.convergenceNudge(warn + 5, true) == null);
+
+    // Below the loop threshold, never nudge regardless of format.
+    try testing.expect(MCP.convergenceNudge(warn - 1, false) == null);
+    try testing.expect(MCP.convergenceNudge(warn - 1, true) == null);
+}
+
+test "issue-632: codedb_read raw mode returns byte-exact range without line-number prefixes" {
+    // #632: a ranged codedb_read emits line-number-prefixed output (handleRead
+    // hardcodes extractLines line_numbers=true), so its bytes are NOT a verbatim
+    // copy of the source. Agents therefore can't feed it to an exact-string
+    // editor and fall back to a native read for the pre-edit span — defeating
+    // codedb on the read path (see justrach/codegraff#66). A `raw` mode should
+    // return the exact lines so codedb can serve read+edit, not just locate.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+    const dir_path = dir_buf[0..dir_path_len];
+
+    const rel = "small.txt";
+    const full = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ dir_path, rel });
+    defer testing.allocator.free(full);
+    {
+        const f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
+        defer f.close(io);
+        try f.writePositionalAll(io, "alpha\nbeta\ngamma\n", 0);
+    }
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, dir_path);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, dir_path, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    // raw=true + a line range: expect the exact source bytes for lines 1-2,
+    // with NO "N | " line-number prefixes (so it can feed an exact-match edit).
+    const args_json = try std.fmt.allocPrint(testing.allocator, "{{\"path\":\"{s}\",\"line_start\":1,\"line_end\":2,\"raw\":true}}", .{rel});
+    defer testing.allocator.free(args_json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_read, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // The exact source lines must be present verbatim...
+    try testing.expect(std.mem.indexOf(u8, out.items, "alpha\nbeta") != null);
+    // ...and there must be no line-number prefix separator ("N | "), which would
+    // make the output non-byte-exact and unusable for an exact-string edit.
+    try testing.expect(std.mem.indexOf(u8, out.items, " | ") == null);
+}
+
+test "issue-633: `index` is a recognized command (not a usage/unknown error)" {
+    // `codedb <root> index` scanned + persisted (the cold-load path keys on
+    // cmd=="index") but then fell through the dispatch with no `index` branch →
+    // "unknown command: index" + exit 1; and `codedb index` (no root) was a
+    // usage error because isCommand() never listed it. `index` must parse as a
+    // first-class command.
+    // `codedb index` (no explicit root) must parse as cmd=index, root=".".
+    const p = main_mod.parsePositional(&[_][]const u8{ "codedb", "index" });
+    try testing.expect(!p.usage_exit);
+    try testing.expectEqualStrings("index", p.cmd);
+    try testing.expectEqualStrings(".", p.root);
+
+    // `codedb <root> index` (explicit root) also resolves cmd=index.
+    const p2 = main_mod.parsePositional(&[_][]const u8{ "codedb", "/proj", "index" });
+    try testing.expectEqualStrings("index", p2.cmd);
+    try testing.expectEqualStrings("/proj", p2.root);
+}
+
+test "issue-632: codedb_read raw mode coverage — full-file byte-exact, default unchanged" {
+    // Broader coverage for #632: (a) raw full-file read is byte-exact (no hash
+    // header, no line-number prefix, no full-file hint); (b) the default ranged
+    // read still has BOTH the hash header and the "N | " prefix (regression
+    // guard); (c) a raw ranged read drops both.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+    const dir_path = dir_buf[0..dir_path_len];
+
+    const rel = "small.txt";
+    const content = "alpha\nbeta\ngamma\n";
+    const full = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ dir_path, rel });
+    defer testing.allocator.free(full);
+    {
+        const f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
+        defer f.close(io);
+        try f.writePositionalAll(io, content, 0);
+    }
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, dir_path);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, dir_path, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const Run = struct {
+        fn call(ctx: *mcp_mod.BenchContext, st: *Store, ex: *Explorer, ag: *AgentRegistry, args_json: []const u8, out: *std.ArrayList(u8)) !void {
+            const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+            defer parsed.deinit();
+            ctx.runDispatch(io, testing.allocator, .codedb_read, &parsed.value.object, out, st, ex, ag);
+        }
+    };
+
+    // (a) raw full-file read → byte-exact copy of the source, nothing prepended.
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try Run.call(&bench_ctx, &store, &explorer, &agents, "{\"path\":\"small.txt\",\"raw\":true}", &out);
+        try testing.expectEqualStrings(content, out.items);
+    }
+    // (b) default ranged read → unchanged: hash header present AND "N | " prefix.
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try Run.call(&bench_ctx, &store, &explorer, &agents, "{\"path\":\"small.txt\",\"line_start\":1,\"line_end\":2}", &out);
+        try testing.expect(std.mem.indexOf(u8, out.items, "hash:") != null);
+        try testing.expect(std.mem.indexOf(u8, out.items, " | ") != null);
+    }
+    // (c) raw ranged read → exact line, no hash header, no line-number prefix.
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try Run.call(&bench_ctx, &store, &explorer, &agents, "{\"path\":\"small.txt\",\"line_start\":2,\"line_end\":2,\"raw\":true}", &out);
+        try testing.expect(std.mem.indexOf(u8, out.items, "beta") != null);
+        try testing.expect(std.mem.indexOf(u8, out.items, " | ") == null);
+        try testing.expect(std.mem.indexOf(u8, out.items, "hash:") == null);
+    }
+}
+
+// ── #619: cli-daemon socket reclaim ─────────────────────────────────────────
+// A long-lived serve/mcp daemon that loses the CLI-socket bind to an older
+// cli-daemon must reclaim the socket once that owner exits, instead of
+// disabling its proxy forever (the pre-fix single-shot behavior never retried).
+test "issue-619: serve/mcp daemon reclaims the cli socket after the owner exits" {
+    if (@import("builtin").os.tag == .windows) return; // no unix-socket proxy on Windows
+
+    const abs_root = "/codedb-test-issue619-reclaim";
+    var pbuf: [128]u8 = undefined;
+    const sock_path = cli_proxy_mod.cliSocketPath(&pbuf, abs_root).?;
+    var zbuf: [128]u8 = undefined;
+    const sock_z = try cio.bufPrintZ(&zbuf, "{s}", .{sock_path});
+    _ = std.c.unlink(sock_z.ptr);
+    defer _ = std.c.unlink(sock_z.ptr);
+
+    var sd = std.atomic.Value(bool).init(false);
+
+    // A live cli-daemon owns the socket: acquire + hold a listening fd.
+    const owner = cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &sd).?;
+
+    // Losing the race with no retry → give up at once (don't steal a live socket).
+    try testing.expect(cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &sd) == null);
+
+    // Losing the race with retry, but shutdown already signalled → return at once.
+    var sd_down = std.atomic.Value(bool).init(true);
+    try testing.expect(cli_proxy_mod.cliAcquireListener(sock_path, true, 1000, &sd_down) == null);
+
+    // A long-lived serve/mcp daemon (retry = true) keeps trying and reclaims the
+    // socket once the owner exits — the core #619 fix (pre-fix: never retried).
+    const Reclaimer = struct {
+        path: []const u8,
+        sd: *std.atomic.Value(bool),
+        fd: ?c_int,
+        done: std.atomic.Value(bool),
+        fn run(self: *@This()) void {
+            self.fd = cli_proxy_mod.cliAcquireListener(self.path, true, 10, self.sd);
+            self.done.store(true, .release);
+        }
+    };
+    var rc = Reclaimer{ .path = sock_path, .sd = &sd, .fd = null, .done = std.atomic.Value(bool).init(false) };
+    const t = try std.Thread.spawn(.{}, Reclaimer.run, .{&rc});
+
+    cio.sleepMs(30); // let the retry loop spin a few times
+    _ = std.c.close(owner); // owner idle-exits
+    t.join(); // reclaimer must return (pre-fix: no retry path → would never acquire)
+    try testing.expect(rc.fd != null);
+    if (rc.fd) |fd| _ = std.c.close(fd);
+}
+
+// ── #619: cli-daemon socket handover ────────────────────────────────────────
+// The reclaim test above covers a serve/mcp daemon retrying until a dead or
+// idle-exited owner lets go. This test covers the other half: an owner that
+// is still LIVE must be actively signalled to give the socket up right away
+// (freshest-wins), instead of the newcomer waiting out a full retry/idle
+// cadence. cliServeConn is a private helper, so the owner side is simulated
+// here with a tiny raw accept loop that mirrors exactly what it does on
+// receipt of cli_yield_sentinel: read the frame, verify it, then give the
+// socket up (close the listener + unlink the path).
+const CliHandoverOwnerSim = struct {
+    fd: c_int,
+    sock_path: []const u8,
+    sd: *std.atomic.Value(bool),
+    saw_sentinel: bool = false,
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn run(self: *@This()) void {
+        // Mirror the real accept loop: keep accepting connections and only
+        // give the socket up once one of them is the actual yield sentinel.
+        // A plain liveness probe (cliSocketLive — connect then close with no
+        // data) must NOT be mistaken for a yield request.
+        while (true) {
+            const conn = std.c.accept(self.fd, null, null);
+            if (conn < 0) break;
+            var matched = false;
+            var hdr: [5]u8 = undefined;
+            var off: usize = 0;
+            while (off < hdr.len) {
+                const n = std.c.read(conn, hdr[off..].ptr, hdr.len - off);
+                if (n <= 0) break;
+                off += @intCast(n);
+            }
+            if (off == hdr.len) {
+                const blob_len = std.mem.readInt(u32, hdr[1..5], .little);
+                if (blob_len > 0 and blob_len <= 256) {
+                    var buf: [256]u8 = undefined;
+                    var boff: usize = 0;
+                    while (boff < blob_len) {
+                        const n = std.c.read(conn, buf[boff..].ptr, blob_len - boff);
+                        if (n <= 0) break;
+                        boff += @intCast(n);
+                    }
+                    if (boff == blob_len) {
+                        matched = std.mem.eql(u8, buf[0..blob_len], cli_proxy_mod.cli_yield_sentinel);
+                    }
+                }
+            }
+            _ = std.c.close(conn);
+            if (matched) {
+                self.saw_sentinel = true;
+                break;
+            }
+        }
+        // Mirror the real accept loop's response to a yield request: give the
+        // socket up entirely rather than waiting for an idle timeout.
+        _ = std.c.close(self.fd);
+        var zbuf: [128]u8 = undefined;
+        if (cio.bufPrintZ(&zbuf, "{s}", .{self.sock_path})) |z| {
+            _ = std.c.unlink(z.ptr);
+        } else |_| {}

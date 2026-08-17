@@ -1,0 +1,159 @@
+[agent 5: completed in 442297ms · 51 tool call(s) · ~70426 context token(s) · 39424 cache-read token(s)]
+
+## Attack run
+
+I traced the current uncommitted path:
+
+`handleCallers` → `lineCodePrefix` → `hasWholeWordMatchOutsideStrings` at `src/mcp.zig:2586`.
+
+I also ran `zig build test`; the existing suite passes. It does not cover negative-only cases where the new scanner re-admits a mention. The shell and Swift examples below parse successfully.
+
+## Merge blockers
+
+### 1. Raw/backtick/block spans are skipped by the prefix scanner but not by the caller matcher
+
+`lineCodePrefix` now skips complete raw, backtick, and block-comment spans at `src/mcp.zig:2718-2731`, but deliberately returns those spans in the prefix (`src/mcp.zig:2692-2694`). The downstream matcher only skips ordinary `'` and `"` strings (`src/mcp.zig:2667-2680`).
+
+That creates direct regressions against the release parent.
+
+#### Rust raw literal: re-admits a trailing-comment mention
+
+```rust
+fn not_a_caller() {
+    let text = r#"// renderX()"#;
+}
+```
+
+`rustRawLiteralAt` recognizes the raw literal and skips over the `//` at `src/mcp.zig:2747-2769`. The full line then reaches `hasWholeWordMatchOutsideStrings`, which does not understand Rust raw literals and finds `renderX`.
+
+The release-parent scanner saw `//` and cut the line before the mention. This is a false caller introduced by the follow-up.
+
+The same occurs for a valid multiline raw literal:
+
+```rust
+let text = r#"// renderX()
+"#;
+```
+
+The unclosed-on-this-line path returns the whole line at `src/mcp.zig:2710-2714`, so the mention is again counted even though it is raw-string content.
+
+#### Go/JavaScript backtick literal: same regression
+
+```go
+text := `// renderX()`
+```
+
+or:
+
+```javascript
+const text = `// renderX()`;
+```
+
+`hasBacktickLiterals` causes the prefix scanner to skip the literal (`src/mcp.zig:2718`, `src/mcp.zig:2771-2776`), but the matcher still sees `renderX` as ordinary code. The parent cut at the embedded `//`.
+
+#### Inline block comment: same regression
+
+```c
+init(); /* documentation // renderX() */ next();
+```
+
+`blockCommentAt`/`delimitedCommentEnd` skip the comment while searching for a line marker (`src/mcp.zig:2778-2814`). The marker inside the block is therefore ignored, and the matcher sees `renderX` inside the block comment.
+
+The release parent stopped at that `//`, so it did not report this line. This is especially serious because the line is not removed by the earlier whole-line comment filter: it starts with executable code.
+
+**Classification: merge blocker.** Either the returned prefix must exclude/comment-mask these spans, or the caller matcher must skip the same raw/backtick/block constructs. The current two-stage contract is inconsistent.
+
+---
+
+### 2. `isShellCommentStart` hides a real caller after shell arithmetic/command substitution
+
+Current logic treats `)` as a word boundary at `src/mcp.zig:2819-2828`.
+
+This valid shell line is counterexample:
+
+```sh
+x=$(printf x)#suffix; renderX
+```
+
+Here `#suffix` is attached to the command-substitution expansion and is literal word content, not a comment. Bash accepts the line and reaches `renderX`.
+
+The current scanner sees `#`, observes the preceding `)` in `"|&;()<>”`, and truncates before it. The real caller after the semicolon disappears. The release parent did not treat `)` as sufficient shell-comment context and retained the line.
+
+The same shape applies to arithmetic expansion:
+
+```sh
+x=$((1))#suffix; renderX
+```
+
+**Classification: merge blocker.** The function needs shell lexical context, or at minimum must distinguish a closing `)` belonging to `$()`/`$(( ))` from a grouping/control operator. The current character-only test is not safe.
+
+---
+
+### 3. Adding Swift `//` support hides callers inside Swift regex literals
+
+Swift extended regex literals can contain `//`:
+
+```swift
+let r = #/https?://example/#; renderX()
+```
+
+This parses as Swift. The current language marker list adds Swift at `src/mcp.zig:2698`, but the scanner has no regex-literal handling. It sees the `//` inside the regex and returns the prefix before it.
+
+The release parent had no Swift line-comment marker and retained `renderX()`. This is a real caller hidden by the follow-up.
+
+**Classification: merge blocker** if Swift 5.7+ syntax is in scope. The same general issue exists for JavaScript regex literals, though the current diff does not newly add JavaScript markers.
+
+---
+
+### 4. PHP `#` handling regresses mixed PHP/HTML files
+
+The new PHP marker set is at `src/mcp.zig:2699`, with the `#[` exception at `src/mcp.zig:2733-2734`.
+
+The exact `#[` case is handled correctly:
+
+```php
+#[SomeAttribute] function caller() { renderX(); }
+```
+
+However, the scanner has no PHP-mode tracking. This valid mixed PHP line is a counterexample:
+
+```php
+# visible HTML text <?php renderX(); ?>
+```
+
+The leading `#` is HTML text, not a PHP comment. The current scanner truncates at byte zero and hides the actual PHP call. The release parent did not treat `#` as a PHP marker and retained it.
+
+**Classification: merge blocker** for mixed PHP/HTML support. If the intended contract explicitly excludes mixed-mode PHP, that needs to be documented; otherwise adding `#` globally is a regression.
+
+The `#[` exception itself is narrow but sound for the exact opener. It does not establish PHP lexical mode, and it only breaks out of the marker loop; later `#` characters are still independently classified.
+
+## Accepted heuristic limits
+
+These are limitations of the deliberate line-local approach, but are not new differential blockers unless the product promises parser-level accuracy:
+
+- Multiline block-comment state is not carried across lines. A later line inside:
+
+  ```c
+  /*
+  renderX()
+  */
+  ```
+
+  can still be treated as a caller. The current follow-up only handles a block opener and closer on the same physical line (`src/mcp.zig:2778-2814`).
+
+- Nested comment depth is byte-based. The Rust/Swift nested-comment behavior in `delimitedCommentEnd` is reasonable for comment bodies, but it is not a general lexer.
+
+- Template interpolation, heredocs/nowdocs, Swift multiline strings, and language-specific regex forms are not parsed. Backtick handling is particularly heuristic: it treats the whole span as opaque for comment detection while still exposing the span to the matcher.
+
+- The raw-literal boundary check only tests ASCII identifier bytes (`src/mcp.zig:2748`). Unicode-adjacent Rust token boundaries are therefore not fully lexical.
+
+## Verdict: **refuted**
+
+The follow-up does fix the positive “real call after marker-like text” cases covered by the current tests, but it fails its stronger safety requirement:
+
+- it **re-admits trailing-comment mentions** inside Rust raw strings, backtick literals, and inline block comments; and
+- it **hides real callers** after shell expansions, Swift regex literals, and PHP mixed-mode HTML.
+
+The first two classes are definite merge blockers because they arise directly from the new scanner/matcher contract and differ from the release parent.
+
+[subagent sa-003-10738a76 · inspect: .graff/subagents/sa-003-10738a76.md]

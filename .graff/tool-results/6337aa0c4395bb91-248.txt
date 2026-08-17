@@ -1,0 +1,106 @@
+    dwShareMode: u32,
+    lpSecurityAttributes: ?*anyopaque,
+    dwCreationDisposition: u32,
+    dwFlagsAndAttributes: u32,
+    hTemplateFile: ?win.HANDLE,
+) callconv(.winapi) win.HANDLE;
+extern "kernel32" fn CloseHandle(hObject: win.HANDLE) callconv(.winapi) win.BOOL;
+
+pub const UpdateLock = if (builtin.os.tag == .windows) win.HANDLE else c_int;
+
+const Out = struct {
+    file: cio.File,
+    alloc: std.mem.Allocator,
+
+    fn p(self: Out, comptime fmt: []const u8, args: anytype) void {
+        const str = std.fmt.allocPrint(self.alloc, fmt, args) catch return;
+        defer self.alloc.free(str);
+        self.file.writeAll(str) catch {};
+    }
+};
+
+pub fn updateLockTryAcquire(executable_path: []const u8) ?UpdateLock {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const lock_path = cio.bufPrintZ(&buf, "{s}.update.lock", .{executable_path}) catch return null;
+
+    if (builtin.os.tag == .windows) {
+        const path_w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, lock_path) catch return null;
+        defer std.heap.page_allocator.free(path_w);
+        const handle = CreateFileW(path_w.ptr, generic_read | generic_write, 0, null, open_always, 0, null);
+        if (handle == invalid_handle_value) return null;
+        return handle;
+    }
+
+    const fd = std.c.open(lock_path.ptr, .{ .ACCMODE = .RDWR, .CREAT = true }, @as(c_uint, 0o600));
+    if (fd < 0) return null;
+    if (std.c.flock(fd, std.c.LOCK.EX | std.c.LOCK.NB) != 0) {
+        _ = std.c.close(fd);
+        return null;
+    }
+    return fd;
+}
+
+pub fn updateLockRelease(lock: UpdateLock) void {
+    if (builtin.os.tag == .windows) {
+        _ = CloseHandle(lock);
+        return;
+    }
+    _ = std.c.flock(lock, std.c.LOCK.UN);
+    _ = std.c.close(lock);
+}
+
+const VersionSource = enum {
+    env,
+    github,
+    fallback,
+};
+
+const ResolvedVersion = struct {
+    value: []u8,
+    source: VersionSource,
+};
+
+const SupersededRelease = struct {
+    current: []const u8,
+    minimum_target: []const u8,
+};
+
+const superseded_releases = [_]SupersededRelease{
+    // v0.2.58181 was an accidental release-train typo. Pure SemVer ordering
+    // treats its patch component as newer than v0.2.5823, but operationally it
+    // belongs before v0.2.5823 and should update forward normally.
+    .{ .current = "0.2.58181", .minimum_target = "0.2.5823" },
+};
+
+pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Allocator) void {
+    const out = Out{ .file = stdout, .alloc = allocator };
+
+    const self_path = std.process.executablePathAlloc(io, allocator) catch |err| {
+        out.p("{s}✗{s} cannot locate current executable: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        std.process.exit(1);
+    };
+    defer allocator.free(self_path);
+
+    const update_lock = updateLockTryAcquire(self_path) orelse {
+        out.p("{s}✗{s} another codedb update is already running\n", .{ s.red, s.reset });
+        std.process.exit(1);
+    };
+    defer updateLockRelease(update_lock);
+
+    const resolved = resolveTargetVersion(allocator) catch |err| {
+        out.p("{s}✗{s} failed to resolve update target: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        std.process.exit(1);
+    };
+    defer allocator.free(resolved.value);
+
+    const version_order = compareVersionsForUpdate(release_info.semver, resolved.value) catch |err| {
+        out.p("{s}✗{s} invalid release version: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        std.process.exit(1);
+    };
+
+    switch (version_order) {
+        .eq => {
+            out.p("codedb {s} is already up to date\n", .{release_info.semver});
+            return;
+        },
+        .gt => {

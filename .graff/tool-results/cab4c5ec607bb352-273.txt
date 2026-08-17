@@ -1,0 +1,125 @@
+# Release process
+
+This repository's production release is the local macOS flow in `release.sh`.
+It publishes the 13-tool binary set to the `codegraff` R2 bucket and updates the
+metadata consumed by `install.sh`.
+
+## Versioning
+
+The canonical toolchain version is `version.zig`. All shipped tools move in
+lockstep. Set and propagate a new version with:
+
+```bash
+python3 scripts/bump_version.py X.Y.Z
+```
+
+The command updates the per-tool `src/version.zig` files, the inline `zigpar`
+version, and every shipped `build.zig.zon` package version. Update the root,
+embedded, and website changelogs for the same version before release.
+
+## Prerequisites
+
+- Apple Silicon macOS with the Developer ID certificate named in `release.sh`
+- the exact Zig snapshot from `.zigversion`, installed by the repository
+  bootstrap (it uses zigup's install directory when available)
+- `codedb-notary` stored as an `xcrun notarytool` keychain profile (override
+  with `NOTARY_PROFILE` only when intentionally using another profile)
+- an authenticated `wrangler` CLI with access to the `codegraff` R2 bucket
+- an uncommitted, rotated `SANDBOX_KEY` environment variable for the optional
+  remote Linux smoke test
+
+Select and verify the compiler:
+
+```bash
+./scripts/install-zig.sh
+export PATH="$HOME/.local/bin:$PATH"
+test "$(zig version)" = "$(cat .zigversion)"
+```
+
+`release.sh` enforces this exact version and stops on a mismatch.
+
+## Prepare and verify
+
+1. Choose a new immutable `X.Y.Z`; do not overwrite published artifact keys.
+2. Run `python3 scripts/bump_version.py X.Y.Z` and update release notes.
+3. Run the Debug tests and ReleaseFast builds required for the change.
+4. Verify the release inputs:
+
+   ```bash
+   bash -n release.sh
+   ./release.sh X.Y.Z --dry-run
+   git diff --check
+   ```
+
+5. Commit only the intended release files, push the commit, and release that
+   exact commit. Do not release from a worktree containing uncommitted source
+   changes that affect the binaries.
+
+## Publish
+
+With the sandbox smoke test:
+
+```bash
+SANDBOX_KEY='…' ./release.sh X.Y.Z
+```
+
+Without the remote sandbox test (for example, while rotating its credential):
+
+```bash
+./release.sh X.Y.Z --skip-sandbox
+```
+
+The default notary profile is `codedb-notary`. The script performs these phases
+sequentially and fails on a missing, malformed, unsigned, unnotarized, or
+unuploaded binary:
+
+1. build all 13 tools in `ReleaseFast` for native `darwin-arm64` with reserved
+   Mach-O signing-header space;
+2. Developer-ID sign and notarize the native binaries, aborting if codesign
+   changes any byte of `__TEXT,__text`;
+3. install the native binaries to `~/bin`;
+4. upload `darwin-arm64` artifacts to `vX.Y.Z/` in R2;
+5. cross-build, sign, execute under Rosetta, notarize, and upload
+   `darwin-x86_64` artifacts;
+6. cross-build and upload `linux-x86_64` artifacts;
+7. optionally download and execute `codedb-pro` in a Linux sandbox;
+8. update `latest.json` and `versions.json` only after artifact publication.
+
+Do not use `--skip-notarize` for production macOS artifacts.
+
+## Verify the published release
+
+Check metadata and representative artifacts after the script completes:
+
+```bash
+curl -fsSL https://codegraff.com/v/latest.json
+curl -fsSI "https://codegraff.com/v/vX.Y.Z/codedb-pro-darwin-arm64"
+curl -fsSI "https://codegraff.com/v/vX.Y.Z/codedb-pro-darwin-x86_64"
+curl -fsSI "https://codegraff.com/v/vX.Y.Z/codedb-pro-linux-x86_64"
+
+curl -fsSL https://codegraff.com/install.sh | sh
+codedb-pro --version
+```
+
+Also confirm all expected R2 objects exist and that downloaded macOS binaries
+pass `codesign --verify --strict --verbose=2`. Retain each `notarytool` Accepted
+result; `spctl --assess` can reject bare CLI executables as “not an app” even
+when their Developer ID signature and notarization are valid.
+
+## GitHub tags and releases
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which creates a
+separate GitHub Release archive set. That workflow is not the production R2
+publisher and does not replace `release.sh` signing, notarization, metadata, or
+sandbox verification. Push a tag only when a GitHub Release is intentionally
+wanted, after the R2 release commit has been validated.
+
+## Supported production artifacts
+
+| Platform | Build path | Signed | Notarized |
+|---|---|---:|---:|
+| `darwin-arm64` | native on Apple Silicon | yes | yes |
+| `darwin-x86_64` | Zig cross-build on Apple Silicon | yes | yes |
+| `linux-x86_64` | Zig cross-build on macOS | N/A | N/A |
+
+`linux-aarch64` is not currently published by the production R2 release flow.

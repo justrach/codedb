@@ -1,0 +1,973 @@
+✓ src/mcp.zig  zig  ⚡ 44.0µs
+    1 | // codedb MCP server — JSON-RPC 2.0 over stdio
+    2 | const cio = @import("cio.zig");
+    3 | //
+    4 | // Exposes codedb's exploration + edit engine as MCP tools.
+    5 | // Implements the JSON-RPC transport directly and adds roots support for workspace awareness.
+    6 | 
+    7 | const std = @import("std");
+    8 | const testing = std.testing;
+    9 | const mcpj = @import("mcp_json.zig");
+   10 | pub const Root = struct {
+   11 |     uri: []u8,
+   12 |     name: []u8,
+   13 | };
+   14 | const Store = @import("store.zig").Store;
+   15 | const explore_mod = @import("explore.zig");
+   16 | const Explorer = explore_mod.Explorer;
+   17 | const reader_md = @import("reader_md.zig");
+   18 | const AgentRegistry = @import("agent.zig").AgentRegistry;
+   19 | const snapshot_json = @import("snapshot_json.zig");
+   20 | const watcher = @import("watcher.zig");
+   21 | const idx = @import("index.zig");
+   22 | const snapshot_mod = @import("snapshot.zig");
+   23 | const telemetry_mod = @import("telemetry.zig");
+   24 | const git_mod = @import("git.zig");
+   25 | const root_policy = @import("root_policy.zig");
+   26 | const release_info = @import("release_info.zig");
+   27 | pub const DeferredScan = struct {
+   28 |     io: std.Io,
+   29 |     allocator: std.mem.Allocator,
+   30 |     store: *Store,
+   31 |     explorer: *Explorer,
+   32 |     scan_done: *std.atomic.Value(bool),
+   33 |     shutdown: *std.atomic.Value(bool),
+   34 |     telem: *telemetry_mod.Telemetry,
+   35 |     queue: *watcher.EventQueue,
+   36 |     startup_t0: i64,
+   37 |     triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+   38 |     scan_thread: ?std.Thread = null,
+   39 |     resolved_root: []const u8 = "",
+   40 |     fallback_cwd: []const u8 = "",
+   41 |     triggerFn: *const fn (ctx: *DeferredScan, abs_root: []const u8) void,
+   42 | };
+   43 | 
+   44 | /// Resolve which path to scan from (first indexable root, or cwd fallback) and
+   45 | /// fire the deferred scan exactly once. Returns true when this call actually
+   46 | /// fired the trigger; false if it had already fired or no usable path is
+   47 | /// available. Callers must filter denied paths out of `indexable_roots` first;
+   48 | /// the `fallback_cwd` path is policy-checked here.
+   49 | pub fn triggerDeferredScanWithFallback(
+   50 |     ds: *DeferredScan,
+   51 |     indexable_roots: []const Root,
+   52 |     fallback_cwd: []const u8,
+   53 | ) bool {
+   54 |     var path: []const u8 = "";
+   55 |     if (indexable_roots.len > 0) {
+   56 |         const uri_raw = indexable_roots[0].uri;
+   57 |         path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+   58 |     }
+   59 |     if (path.len == 0 and fallback_cwd.len > 0 and root_policy.isIndexableRoot(fallback_cwd)) {
+   60 |         path = fallback_cwd;
+   61 |     }
+   62 |     if (path.len == 0) return false;
+   63 |     if (ds.triggered.swap(true, .acq_rel)) return false;
+   64 |     ds.triggerFn(ds, path);
+   65 |     return true;
+   66 | }
+   67 | 
+   68 | // ── Project cache ────────────────────────────────────────────────────────────
+   69 | 
+   70 | const SnapshotCache = struct {
+   71 |     const MAX_CACHED_BYTES = 16 * 1024 * 1024;
+   72 | 
+   73 |     seq: u64 = std.math.maxInt(u64),
+   74 |     bytes: ?[]u8 = null,
+   75 |     mu: cio.Mutex = .{},
+   76 | 
+   77 |     fn deinit(self: *SnapshotCache, alloc: std.mem.Allocator) void {
+   78 |         if (self.bytes) |bytes| {
+   79 |             alloc.free(bytes);
+   80 |             self.bytes = null;
+   81 |         }
+   82 |     }
+   83 | 
+   84 |     fn appendIfFresh(self: *SnapshotCache, alloc: std.mem.Allocator, out: *std.ArrayList(u8), seq: u64) bool {
+   85 |         self.mu.lock();
+   86 |         defer self.mu.unlock();
+   87 |         const bytes = self.bytes orelse return false;
+   88 |         if (self.seq != seq) return false;
+   89 |         if (out.items.len == 0) {
+   90 |             // The MCP dispatch buffer is consumed before it is deinitialized,
+   91 |             // and snapshot cache owns these bytes until cache deinit/replacement.
+   92 |             // Expose a borrowed view to avoid memcpying multi-hundred-KB snapshots
+   93 |             // on every warm codedb_snapshot call.
+   94 |             out.items = bytes;
+   95 |             out.capacity = 0;
+   96 |             return true;
+   97 |         }
+   98 |         out.appendSlice(alloc, bytes) catch return false;
+   99 |         return true;
+  100 |     }
+  101 | 
+  102 |     /// Takes ownership of `fresh` if it becomes the cache entry. If another
+  103 |     /// caller filled the same seq first, frees `fresh` and appends the winner.
+  104 |     fn putAndAppend(self: *SnapshotCache, alloc: std.mem.Allocator, out: *std.ArrayList(u8), seq: u64, fresh: []u8) void {
+  105 |         self.mu.lock();
+  106 |         defer self.mu.unlock();
+  107 | 
+  108 |         if (fresh.len > MAX_CACHED_BYTES) {
+  109 |             if (self.bytes) |bytes| {
+  110 |                 alloc.free(bytes);
+  111 |                 self.bytes = null;
+  112 |             }
+  113 |             self.seq = std.math.maxInt(u64);
+  114 |             if (out.items.len == 0) {
+  115 |                 out.* = std.ArrayList(u8).fromOwnedSlice(fresh);
+  116 |             } else {
+  117 |                 out.appendSlice(alloc, fresh) catch {};
+  118 |                 alloc.free(fresh);
+  119 |             }
+  120 |             return;
+  121 |         }
+  122 | 
+  123 |         if (self.bytes) |bytes| {
+  124 |             if (self.seq == seq) {
+  125 |                 alloc.free(fresh);
+  126 |                 if (out.items.len == 0) {
+  127 |                     out.items = bytes;
+  128 |                     out.capacity = 0;
+  129 |                 } else {
+  130 |                     out.appendSlice(alloc, bytes) catch {};
+  131 |                 }
+  132 |                 return;
+  133 |             }
+  134 |             alloc.free(bytes);
+  135 |         }
+  136 | 
+  137 |         self.seq = seq;
+  138 |         self.bytes = fresh;
+  139 |         if (out.items.len == 0) {
+  140 |             out.items = fresh;
+  141 |             out.capacity = 0;
+  142 |         } else {
+  143 |             out.appendSlice(alloc, fresh) catch {};
+  144 |         }
+  145 |     }
+  146 | };
+  147 | 
+  148 | const DepsCache = struct {
+  149 |     seq: u64 = std.math.maxInt(u64),
+  150 |     path: ?[]u8 = null,
+  151 |     bytes: ?[]u8 = null,
+  152 |     mu: cio.Mutex = .{},
+  153 | 
+  154 |     fn deinit(self: *DepsCache, alloc: std.mem.Allocator) void {
+  155 |         if (self.path) |path| {
+  156 |             alloc.free(path);
+  157 |             self.path = null;
+  158 |         }
+  159 |         if (self.bytes) |bytes| {
+  160 |             alloc.free(bytes);
+  161 |             self.bytes = null;
+  162 |         }
+  163 |     }
+  164 | 
+  165 |     fn appendIfFresh(self: *DepsCache, out: *std.ArrayList(u8), seq: u64, path: []const u8) bool {
+  166 |         self.mu.lock();
+  167 |         defer self.mu.unlock();
+  168 | 
+  169 |         const cached_path = self.path orelse return false;
+  170 |         const cached_bytes = self.bytes orelse return false;
+  171 |         if (self.seq != seq or !std.mem.eql(u8, cached_path, path)) return false;
+  172 | 
+  173 |         // The dispatch buffer is consumed before deinit. Borrowing avoids
+  174 |         // spending more time copying the tiny deps result than dispatching it.
+  175 |         if (out.items.len == 0) {
+  176 |             out.items = cached_bytes;
+  177 |             out.capacity = 0;
+  178 |             return true;
+  179 |         }
+  180 |         return false;
+  181 |     }
+  182 | 
+  183 |     fn put(self: *DepsCache, alloc: std.mem.Allocator, seq: u64, path: []const u8, bytes: []const u8) void {
+  184 |         const owned_path = alloc.dupe(u8, path) catch return;
+  185 |         const owned_bytes = alloc.dupe(u8, bytes) catch {
+  186 |             alloc.free(owned_path);
+  187 |             return;
+  188 |         };
+  189 | 
+  190 |         self.mu.lock();
+  191 |         defer self.mu.unlock();
+  192 | 
+  193 |         if (self.path) |old_path| alloc.free(old_path);
+  194 |         if (self.bytes) |old_bytes| alloc.free(old_bytes);
+  195 |         self.seq = seq;
+  196 |         self.path = owned_path;
+  197 |         self.bytes = owned_bytes;
+  198 |     }
+  199 | };
+  200 | 
+  201 | const ProjectCtx = struct {
+  202 |     explorer: *Explorer,
+  203 |     store: *Store,
+  204 |     snapshot_cache: *SnapshotCache,
+  205 |     deps_cache: *DepsCache,
+  206 | };
+  207 | 
+  208 | fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
+  209 |     const hash = std.hash.Wyhash.hash(0, project_path);
+  210 |     const home = cio.homeDir() orelse {
+  211 |         return std.fmt.allocPrint(allocator, "{s}/.codedb", .{project_path}) catch null;
+  212 |     };
+  213 | 
+  214 |     return std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch null;
+  215 | }
+  216 | 
+  217 | fn loadProjectTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
+  218 |     explorer.mu.lockShared();
+  219 |     const disk_backed = explorer.trigram_index != .heap;
+  220 |     const heap_files = explorer.trigram_index.fileCount();
+  221 |     const total_files = explorer.outlines.count();
+  222 |     explorer.mu.unlockShared();
+  223 |     // Mirror main.zig's loadTrigramFromDiskIfPresent: a PARTIAL heap index
+  224 |     // (freshness reindex of changed files) must not block the disk load.
+  225 |     if (disk_backed or (heap_files > 0 and heap_files >= total_files)) return;
+  226 | 
+  227 |     const data_dir = getProjectDataDir(allocator, project_path) orelse return;
+  228 |     defer allocator.free(data_dir);
+  229 | 
+  230 |     if (idx.MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
+  231 |         explorer.adoptTrigramBase(loaded);
+  232 |     } else if (heap_files == 0) {
+  233 |         if (idx.TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
+  234 |             explorer.adoptTrigramIndex(.{ .heap = loaded });
+  235 |         }
+  236 |     }
+  237 | }
+  238 | 
+  239 | fn loadProjectWordIndexFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
+  240 |     if (!explorer.wordIndexCanLoadFromDisk()) return;
+  241 | 
+  242 |     const data_dir = getProjectDataDir(allocator, project_path) orelse {
+  243 |         explorer.disableWordIndexDiskLoad();
+  244 |         return;
+  245 |     };
+  246 |     defer allocator.free(data_dir);
+  247 | 
+  248 |     const header = idx.WordIndex.readDiskHeader(io, data_dir, allocator) catch null orelse {
+  249 |         explorer.disableWordIndexDiskLoad();
+  250 |         return;
+  251 |     };
+  252 | 
+  253 |     explorer.mu.lockShared();
+  254 |     const current_count = @as(u32, @intCast(explorer.outlines.count()));
+  255 |     explorer.mu.unlockShared();
+  256 |     if (header.file_count != current_count) {
+  257 |         explorer.disableWordIndexDiskLoad();
+  258 |         return;
+  259 |     }
+  260 | 
+  261 |     const current_git_head = git_mod.getGitHead(project_path, allocator) catch null;
+  262 |     const heads_match = blk: {
+  263 |         if (current_git_head == null and header.git_head == null) break :blk true;
+  264 |         if (current_git_head == null or header.git_head == null) break :blk false;
+  265 |         break :blk std.mem.eql(u8, &current_git_head.?, &header.git_head.?);
+  266 |     };
+  267 |     if (!heads_match) {
+  268 |         explorer.disableWordIndexDiskLoad();
+  269 |         return;
+  270 |     }
+  271 | 
+  272 |     if (idx.WordIndex.mmapFromDisk(io, data_dir, allocator) orelse idx.WordIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
+  273 |         explorer.replaceWordIndex(loaded);
+  274 |     } else {
+  275 |         explorer.disableWordIndexDiskLoad();
+  276 |     }
+  277 | }
+  278 | 
+  279 | fn shouldLoadWordIndexForSearch(args: *const std.json.ObjectMap) bool {
+  280 |     if (getBool(args, "regex")) return false;
+  281 |     const query = getStr(args, "query") orelse return false;
+  282 |     if (query.len < 2 or query.len > 256) return false;
+  283 | 
+  284 |     // Single identifiers (legacy) AND multi-word / natural-language queries
+  285 |     // (which route to the BM25 ranked path) both resolve through the word
+  286 |     // index, so allow spaces between terms. Reject other punctuation so plain
+  287 |     // literal-substring searches still skip the load.
+  288 |     var saw_word_char = false;
+  289 |     for (query) |c| {
+  290 |         const is_word_char =
+  291 |             (c >= 'a' and c <= 'z') or
+  292 |             (c >= 'A' and c <= 'Z') or
+  293 |             (c >= '0' and c <= '9') or
+  294 |             c == '_';
+  295 |         if (!is_word_char and c != ' ') return false;
+  296 |         if (is_word_char and c != '_') saw_word_char = true;
+  297 |     }
+  298 |     return saw_word_char;
+  299 | }
+  300 | 
+  301 | const ProjectCache = struct {
+  302 |     const MAX_CACHED = 5;
+  303 | 
+  304 |     const Entry = struct {
+  305 |         path: []u8,
+  306 |         explorer: Explorer,
+  307 |         store: Store,
+  308 |         snapshot_cache: SnapshotCache,
+  309 |         deps_cache: DepsCache,
+  310 |         last_used: i64,
+  311 |     };
+  312 | 
+  313 |     mu: cio.RwLock,
+  314 |     alloc: std.mem.Allocator,
+  315 |     entries: [MAX_CACHED]?*Entry,
+  316 |     default_path: []const u8,
+  317 |     default_snapshot_cache: SnapshotCache,
+  318 |     default_deps_cache: DepsCache,
+  319 |     content_cache_capacity: u32,
+  320 | 
+  321 |     fn init(alloc_: std.mem.Allocator, default_path_: []const u8, content_cache_capacity_: u32) ProjectCache {
+  322 |         return .{
+  323 |             .mu = .{},
+  324 |             .alloc = alloc_,
+  325 |             .entries = @splat(null),
+  326 |             .default_path = default_path_,
+  327 |             .default_snapshot_cache = .{},
+  328 |             .default_deps_cache = .{},
+  329 |             .content_cache_capacity = content_cache_capacity_,
+  330 |         };
+  331 |     }
+  332 | 
+  333 |     fn deinit(self: *ProjectCache) void {
+  334 |         self.default_snapshot_cache.deinit(self.alloc);
+  335 |         self.default_deps_cache.deinit(self.alloc);
+  336 |         for (&self.entries) |*slot| {
+  337 |             if (slot.*) |entry| {
+  338 |                 self.destroyEntry(entry);
+  339 |                 slot.* = null;
+  340 |             }
+  341 |         }
+  342 |     }
+  343 | 
+  344 |     fn destroyEntry(self: *ProjectCache, entry: *Entry) void {
+  345 |         entry.snapshot_cache.deinit(self.alloc);
+  346 |         entry.deps_cache.deinit(self.alloc);
+  347 |         entry.explorer.deinit();
+  348 |         entry.store.deinit();
+  349 |         self.alloc.free(entry.path);
+  350 |         self.alloc.destroy(entry);
+  351 |     }
+  352 | 
+  353 |     fn invalidate(self: *ProjectCache, path: []const u8) void {
+  354 |         self.mu.lock();
+  355 |         defer self.mu.unlock();
+  356 | 
+  357 |         for (&self.entries) |*slot| {
+  358 |             if (slot.*) |entry| {
+  359 |                 if (std.mem.eql(u8, entry.path, path)) {
+  360 |                     self.destroyEntry(entry);
+  361 |                     slot.* = null;
+  362 |                     return;
+  363 |                 }
+  364 |             }
+  365 |         }
+  366 |     }
+  367 | 
+  368 |     /// Drop every entry whose path starts with `prefix` (used when a whole
+  369 |     /// cache root is deleted out from under the warm entries).
+  370 |     fn invalidatePrefix(self: *ProjectCache, prefix: []const u8) void {
+  371 |         self.mu.lock();
+  372 |         defer self.mu.unlock();
+  373 | 
+  374 |         for (&self.entries) |*slot| {
+  375 |             if (slot.*) |entry| {
+  376 |                 if (std.mem.startsWith(u8, entry.path, prefix)) {
+  377 |                     self.destroyEntry(entry);
+  378 |                     slot.* = null;
+  379 |                 }
+  380 |             }
+  381 |         }
+  382 |     }
+  383 | 
+  384 |     fn get(
+  385 |         self: *ProjectCache,
+  386 |         io: std.Io,
+  387 |         path: ?[]const u8,
+  388 |         default_exp: *Explorer,
+  389 |         default_store: *Store,
+  390 |     ) !ProjectCtx {
+  391 |         const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
+  392 |         if (!root_policy.isIndexableRoot(p) and !root_policy.isBootstrapableRoot(io, p))
+  393 |             return error.PathNotAllowed;
+  394 | 
+  395 |         self.mu.lock();
+  396 |         defer self.mu.unlock();
+  397 | 
+  398 |         const now = cio.milliTimestamp();
+  399 |         for (&self.entries) |*slot| {
+  400 |             if (slot.*) |entry| {
+  401 |                 if (std.mem.eql(u8, entry.path, p)) {
+  402 |                     entry.last_used = now;
+  403 |                     return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store, .snapshot_cache = &entry.snapshot_cache, .deps_cache = &entry.deps_cache };
+  404 |                 }
+  405 |             }
+  406 |         }
+  407 | 
+  408 |         // Cache miss — load from snapshot
+  409 |         const new_entry = self.alloc.create(Entry) catch return error.OutOfMemory;
+  410 |         new_entry.path = self.alloc.dupe(u8, p) catch {
+  411 |             self.alloc.destroy(new_entry);
+  412 |             return error.OutOfMemory;
+  413 |         };
+  414 |         new_entry.explorer = Explorer.init(self.alloc, self.content_cache_capacity);
+  415 |         new_entry.explorer.setRoot(io, p);
+  416 |         new_entry.store = Store.init(self.alloc);
+  417 |         new_entry.snapshot_cache = .{};
+  418 |         new_entry.deps_cache = .{};
+  419 |         new_entry.last_used = now;
+  420 | 
+  421 |         var snap_buf: [std.fs.max_path_bytes]u8 = undefined;
+  422 |         const snap_path = std.fmt.bufPrint(&snap_buf, "{s}/codedb.snapshot", .{p}) catch {
+  423 |             new_entry.store.deinit();
+  424 |             new_entry.explorer.deinit();
+  425 |             self.alloc.free(new_entry.path);
+  426 |             self.alloc.destroy(new_entry);
+  427 |             return error.PathTooLong;
+  428 |         };
+  429 | 
+  430 |         if (!snapshot_mod.loadSnapshot(io, snap_path, &new_entry.explorer, &new_entry.store, self.alloc)) {
+  431 |             // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
+  432 |             const hash = std.hash.Wyhash.hash(0, p);
+  433 |             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
+  434 |             const loaded_central = blk: {
+  435 |                 const home = cio.homeDir() orelse break :blk false;
+  436 |                 const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
+  437 |                 break :blk snapshot_mod.loadSnapshot(io, central, &new_entry.explorer, &new_entry.store, self.alloc);
+  438 |             };
+  439 |             if (!loaded_central) {
+  440 |                 new_entry.store.deinit();
+  441 |                 new_entry.explorer.deinit();
+  442 |                 self.alloc.free(new_entry.path);
+  443 |                 self.alloc.destroy(new_entry);
+  444 |                 if (std.mem.eql(u8, p, self.default_path) and default_store.currentSeq() > 0) {
+  445 |                     return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
+  446 |                 }
+  447 |                 return error.SnapshotLoadFailed;
+  448 |             }
+  449 |         }
+  450 | 
+  451 |         loadProjectTrigramFromDiskIfPresent(io, &new_entry.explorer, p, self.alloc);
+  452 | 
+  453 |         // Release raw file contents retained by the snapshot load — outlines,
+  454 |         // trigram index, and word index are sufficient for all query tools.
+  455 |         const fc = new_entry.explorer.outlines.count();
+  456 |         if (fc > 1000) {
+  457 |             new_entry.explorer.releaseContents();
+  458 |             new_entry.explorer.releaseSecondaryIndexes();
+  459 |         }
+  460 | 
+  461 |         // Find free slot or evict LRU
+  462 |         var target_slot: usize = 0;
+  463 |         var found_free = false;
+  464 |         for (self.entries, 0..) |slot, i| {
+  465 |             if (slot == null) {
+  466 |                 target_slot = i;
+  467 |                 found_free = true;
+  468 |                 break;
+  469 |             }
+  470 |         }
+  471 |         if (!found_free) {
+  472 |             var oldest_i: usize = 0;
+  473 |             var oldest_t: i64 = self.entries[0].?.last_used;
+  474 |             for (self.entries[1..], 0..) |slot_opt, j| {
+  475 |                 if (slot_opt.?.last_used < oldest_t) {
+  476 |                     oldest_t = slot_opt.?.last_used;
+  477 |                     oldest_i = j + 1;
+  478 |                 }
+  479 |             }
+  480 |             const evict = self.entries[oldest_i].?;
+  481 |             self.destroyEntry(evict);
+  482 |             target_slot = oldest_i;
+  483 |         }
+  484 | 
+  485 |         self.entries[target_slot] = new_entry;
+  486 |         return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store, .snapshot_cache = &new_entry.snapshot_cache, .deps_cache = &new_entry.deps_cache };
+  487 |     }
+  488 | };
+  489 | 
+  490 | fn assembleMcpContentEnvelope(
+  491 |     alloc: std.mem.Allocator,
+  492 |     summary: []const u8,
+  493 |     output: []const u8,
+  494 |     guidance: []const u8,
+  495 |     is_error: bool,
+  496 |     result: *std.ArrayList(u8),
+  497 | ) bool {
+  498 |     result.ensureTotalCapacity(alloc, output.len + summary.len + guidance.len + 256) catch {};
+  499 |     result.appendSlice(alloc, "{\"content\":[") catch return false;
+  500 | 
+  501 |     if (summary.len > 0) {
+  502 |         result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return false;
+  503 |         mcpj.writeEscaped(alloc, result, summary);
+  504 |         result.appendSlice(alloc, "\"},") catch return false;
+  505 |     }
+  506 | 
+  507 |     result.appendSlice(alloc, "{\"type\":\"text\",\"annotations\":{\"audience\":[\"assistant\"]},\"text\":\"") catch return false;
+  508 |     mcpj.writeEscaped(alloc, result, output);
+  509 |     result.appendSlice(alloc, "\"}") catch return false;
+  510 | 
+  511 |     if (guidance.len > 0) {
+  512 |         result.appendSlice(alloc, ",{\"type\":\"text\",\"annotations\":{\"audience\":[\"user\"]},\"text\":\"") catch return false;
+  513 |         mcpj.writeEscaped(alloc, result, guidance);
+  514 |         result.appendSlice(alloc, "\"}") catch return false;
+  515 |     }
+  516 | 
+  517 |     result.appendSlice(alloc, if (is_error) "],\"isError\":true}" else "],\"isError\":false}") catch return false;
+  518 |     return true;
+  519 | }
+  520 | 
+  521 | pub const BenchContext = struct {
+  522 |     cache: ProjectCache,
+  523 | 
+  524 |     pub fn init(alloc: std.mem.Allocator, default_path: []const u8, content_cache_capacity: u32) BenchContext {
+  525 |         return .{
+  526 |             .cache = ProjectCache.init(alloc, default_path, content_cache_capacity),
+  527 |         };
+  528 |     }
+  529 | 
+  530 |     pub fn deinit(self: *BenchContext) void {
+  531 |         self.cache.deinit();
+  532 |     }
+  533 | 
+  534 |     pub fn runDispatch(
+  535 |         self: *BenchContext,
+  536 |         io: std.Io,
+  537 |         alloc: std.mem.Allocator,
+  538 |         tool: Tool,
+  539 |         args: *const std.json.ObjectMap,
+  540 |         out: *std.ArrayList(u8),
+  541 |         store: *Store,
+  542 |         explorer: *Explorer,
+  543 |         agents: *AgentRegistry,
+  544 |     ) void {
+  545 |         dispatch(io, alloc, tool, args, out, store, explorer, agents, &self.cache, null);
+  546 |     }
+  547 | 
+  548 |     pub fn runHandleCall(
+  549 |         self: *BenchContext,
+  550 |         io: std.Io,
+  551 |         alloc: std.mem.Allocator,
+  552 |         root: *const std.json.ObjectMap,
+  553 |         stdout: cio.File,
+  554 |         id: ?std.json.Value,
+  555 |         store: *Store,
+  556 |         explorer: *Explorer,
+  557 |         agents: *AgentRegistry,
+  558 |         telem: *telemetry_mod.Telemetry,
+  559 |     ) void {
+  560 |         handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, null, null);
+  561 |     }
+  562 | 
+  563 |     pub fn runToolCall(
+  564 |         self: *BenchContext,
+  565 |         io: std.Io,
+  566 |         alloc: std.mem.Allocator,
+  567 |         name: []const u8,
+  568 |         tool: Tool,
+  569 |         args: *const std.json.ObjectMap,
+  570 |         store: *Store,
+  571 |         explorer: *Explorer,
+  572 |         agents: *AgentRegistry,
+  573 |         telem: *telemetry_mod.Telemetry,
+  574 |     ) struct { dispatch_ns: u64, response_bytes: usize, response_hash: u64 } {
+  575 |         var out: std.ArrayList(u8) = .empty;
+  576 |         defer out.deinit(alloc);
+  577 | 
+  578 |         const t0 = cio.nanoTimestamp();
+  579 |         dispatch(io, alloc, tool, args, &out, store, explorer, agents, &self.cache, null);
+  580 |         const elapsed = cio.nanoTimestamp() - t0;
+  581 | 
+  582 |         const is_error = std.mem.startsWith(u8, out.items, "error:");
+  583 |         telem.recordToolCall(name, elapsed, is_error, out.items.len);
+  584 | 
+  585 |         var summary: std.ArrayList(u8) = .empty;
+  586 |         defer summary.deinit(alloc);
+  587 |         summary.ensureTotalCapacity(alloc, 256) catch {};
+  588 |         summary.appendSlice(alloc, if (is_error) MCP_RED ++ MCP_CROSS ++ " " ++ MCP_RESET else MCP_GREEN ++ MCP_CHECK ++ " " ++ MCP_RESET) catch {};
+  589 |         summary.appendSlice(alloc, mcpToolIcon(name)) catch {};
+  590 |         mcpGenerateSummary(alloc, name, args, out.items, is_error, &summary);
+  591 | 
+  592 |         // Normalize only the nondeterministic duration. Everything else in the
+  593 |         // client-visible MCP envelope participates in response parity.
+  594 |         var parity_summary: std.ArrayList(u8) = .empty;
+  595 |         defer parity_summary.deinit(alloc);
+  596 |         parity_summary.appendSlice(alloc, summary.items) catch {};
+  597 |         var parity_dur_buf: [96]u8 = undefined;
+  598 |         parity_summary.appendSlice(alloc, mcpFormatDuration(&parity_dur_buf, 0)) catch {};
+  599 | 
+  600 |         var dur_buf: [96]u8 = undefined;
+  601 |         summary.appendSlice(alloc, mcpFormatDuration(&dur_buf, elapsed)) catch {};
+  602 | 
+  603 |         var guidance: std.ArrayList(u8) = .empty;
+  604 |         defer guidance.deinit(alloc);
+  605 |         mcpGenerateGuidance(alloc, name, args, out.items, is_error, &guidance);
+  606 | 
+  607 |         var result: std.ArrayList(u8) = .empty;
+  608 |         defer result.deinit(alloc);
+  609 |         if (!assembleMcpContentEnvelope(alloc, summary.items, out.items, guidance.items, is_error, &result)) {
+  610 |             return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0, .response_hash = 0 };
+  611 |         }
+  612 | 
+  613 |         const bench_id = std.json.Value{ .integer = 1 };
+  614 |         var rpc_result: std.ArrayList(u8) = .empty;
+  615 |         defer rpc_result.deinit(alloc);
+  616 |         if (!assembleJsonRpcResult(alloc, bench_id, result.items, &rpc_result)) {
+  617 |             return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = 0, .response_hash = 0 };
+  618 |         }
+  619 | 
+  620 |         var parity_result: std.ArrayList(u8) = .empty;
+  621 |         defer parity_result.deinit(alloc);
+  622 |         if (!assembleMcpContentEnvelope(alloc, parity_summary.items, out.items, guidance.items, is_error, &parity_result)) {
+  623 |             return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = rpc_result.items.len, .response_hash = 0 };
+  624 |         }
+  625 |         var parity_rpc_result: std.ArrayList(u8) = .empty;
+  626 |         defer parity_rpc_result.deinit(alloc);
+  627 |         if (!assembleJsonRpcResult(alloc, bench_id, parity_result.items, &parity_rpc_result)) {
+  628 |             return .{ .dispatch_ns = @intCast(elapsed), .response_bytes = rpc_result.items.len, .response_hash = 0 };
+  629 |         }
+  630 | 
+  631 |         return .{
+  632 |             .dispatch_ns = @intCast(elapsed),
+  633 |             .response_bytes = rpc_result.items.len,
+  634 |             .response_hash = std.hash.Wyhash.hash(0, parity_rpc_result.items),
+  635 |         };
+  636 |     }
+  637 | };
+  638 | 
+  639 | // ── Tool definitions ────────────────────────────────────────────────────────
+  640 | 
+  641 | pub const Tool = enum {
+  642 |     codedb_tree,
+  643 |     codedb_outline,
+  644 |     codedb_symbol,
+  645 |     codedb_search,
+  646 |     codedb_word,
+  647 |     codedb_callers,
+  648 |     codedb_callpath,
+  649 |     codedb_hot,
+  650 |     codedb_deps,
+  651 |     codedb_read,
+  652 |     codedb_changes,
+  653 |     codedb_status,
+  654 |     codedb_snapshot,
+  655 |     codedb_bundle,
+  656 |     codedb_projects,
+  657 |     codedb_index,
+  658 |     codedb_find,
+  659 |     codedb_query,
+  660 |     codedb_glob,
+  661 |     codedb_ls,
+  662 |     codedb_context,
+  663 | };
+  664 | 
+  665 | pub const tools_list =
+  666 |     \\{"ttlMs":3600000,"cacheScope":"public","tools":[
+  667 |     \\{"name":"codedb_tree","description":"Whole-repo file tree with per-file language, line counts, and symbol counts; giant directories collapse into rollup lines. Use ONCE to orient in an unfamiliar project — to locate one file use codedb_find, for one directory use codedb_ls; do not re-call it per task.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+  668 |     \\{"name":"codedb_outline","description":"Replaces reading a whole file with cat/head/tail: symbol outline of one file — functions, structs, enums, imports, consts with line numbers. 4-15x smaller than reading the raw file. Run before codedb_read to find the lines you actually need. Pass skeleton=true for a signature view — each symbol's declaration line with its body elided as '{ … N lines }', so a 2,000-line file collapses to ~one line per symbol.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"compact":{"type":"boolean","description":"Condensed format without detail comments (default: false)"},"skeleton":{"type":"boolean","description":"Signature view: each symbol's declaration line with its body elided as '{ … N lines }'. Lossless at the API surface; codedb_read the range to expand a body (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+  669 |     \\{"name":"codedb_symbol","description":"Replaces grepping for a definition: PRIMARY tool for locating a definition — reach for this FIRST when you know or can guess a symbol name, instead of codedb_search. Finds symbol definitions across the index — exact name, prefix, glob pattern, fuzzy match, or kind filter. Returns file, line, kind, and score. Pass format=json for structured output.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"prefix":{"type":"string","description":"Prefix match (e.g. parse_)"},"pattern":{"type":"string","description":"Glob pattern on symbol name (e.g. *Manager)"},"kind":{"type":"string","description":"Filter by kind: function, struct, interface, class, method, enum"},"fuzzy":{"type":"boolean","description":"Fuzzy/typo-tolerant match when name is set (default: false)"},"body":{"type":"boolean","description":"Include source body for each symbol (default: false)"},"max_results":{"type":"integer","description":"Max results (default: 50, cap 200)"},"format":{"type":"string","description":"Set to json for structured JSON output"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+  670 |     \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+  671 |     \\{"name":"codedb_word","description":"O(1) exact-identifier occurrences via inverted index — every (file, line) one exact word appears. Use ONLY for a single exact identifier; for its definition prefer codedb_symbol, for substrings or phrases use codedb_search.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
+  672 |     \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+  673 |     \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Use after codedb_callers when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]}},
+  674 |     \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Replaces 3-5 sequential search/word/symbol calls — use for first-touch orientation on a new task. For narrow follow-ups stick with codedb_search/codedb_symbol.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]}},
+  675 |     \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+  676 |     \\{"name":"codedb_deps","description":"PRIMARY tool for impact/blast-radius — use this instead of grepping import lines. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set transitive=true for the full BFS blast radius.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"imported_by (default): who imports this file. depends_on: what this file imports."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth for transitive queries (default: unlimited)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+  677 |     \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Never dump whole large files — run codedb_outline or codedb_symbol first to pick a tight range. Pass if_hash to skip unchanged re-reads; compact=true for minified or long-line files.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"raw":{"type":"boolean","description":"Byte-exact output: no line-number prefixes and no hash header, so the result can feed an exact-string edit (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+  678 |     \\{"name":"codedb_changes","description":"Direct way to see WHAT changed since a point in time, instead of re-scanning the tree. Files changed since a given sequence number. Pair with codedb_status (which reports the current sequence number) to poll for updates.","inputSchema":{"type":"object","properties":{"since":{"type":"integer","description":"Sequence number to get changes since (default: 0)"}},"required":[]}},
+  679 |     \\{"name":"codedb_status","description":"Index health: file count, current sequence number, scan phase. Call once to learn the seq for codedb_changes polling, or when results look stale; not needed before ordinary queries.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+  680 |     \\{"name":"codedb_snapshot","description":"Full pre-rendered JSON of the ENTIRE index (tree, outlines, symbols, deps) — very large. For caching or shipping to edge workers, not routine exploration; use codedb_tree or codedb_outline instead.","inputSchema":{"type":"object","properties":{"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+  681 |     \\{"name":"codedb_bundle","description":"Run up to 20 codedb_* calls in one round-trip. Each op is either MCP-style {\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}} or inline {\"tool\":\"codedb_search\",\"query\":\"Agent\"} — both are accepted. Example: {\"ops\":[{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}},{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}}]}. Best for parallel outline/symbol/search; avoid bundling large codedb_read calls — responses are not size-capped. If a sub-op reports `received keys: []`, the wrapper field is misnamed: use `arguments` (MCP spec), not `args`.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","description":"Sub-tool calls to dispatch (max 20). Each item must have `tool` AND `arguments` (pass `{}` if the sub-tool takes none). Inline args alongside `tool` are still accepted as a fallback.","items":{"type":"object","properties":{"tool":{"type":"string","description":"codedb_* tool name to invoke (e.g. codedb_outline, codedb_symbol, codedb_search, codedb_word, codedb_callers, codedb_read, codedb_deps, codedb_tree, codedb_hot, codedb_status, codedb_changes). Required."},"arguments":{"type":"object","description":"Per-call args matching that tool's inputSchema. Field MUST be named `arguments` (MCP `tools/call` convention) — `args` is silently ignored. Pass `{}` only if the sub-tool takes no arguments. Required."}},"required":["tool","arguments"]}},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
+  682 |     \\{"name":"codedb_projects","description":"List every locally indexed project on this machine: path, data-dir hash, snapshot presence. Only for multi-repo setups or debugging project= resolution — call at most once per session.","inputSchema":{"type":"object","properties":{},"required":[]}},
+  683 |     \\{"name":"codedb_index","description":"Index a local FOLDER (not a file): builds outlines, trigrams, word index, writes codedb.snapshot. Only needed for a folder codedb has never indexed — the watched MCP project stays fresh automatically. Query the result via the project= param on any other tool.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the FOLDER (not a file) to index, e.g. /Users/you/myproject"}},"required":["path"]}},
+  684 |     \\{"name":"codedb_find","description":"Replaces find for filenames: fuzzy FILE-NAME search ONLY — typo-tolerant subsequence match against indexed file paths. NOT a content/symbol search: 'rerank' will NOT find files containing rerankSignalScore unless the filename itself contains 'rerank'. For symbol lookups use codedb_word/codedb_symbol; for content use codedb_search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy filename query (e.g. 'authmidlware' for auth_middleware.go, 'test_auth', 'main.zig'). Matched against path basenames, not file contents."},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+  685 |     \\{"name":"codedb_query","description":"Composable pipeline — chain find, search, filter, deps, outline, read, sort, limit in ONE request, each step feeding the next. Use for multi-step workflows that would take 2+ tool calls; for a single lookup call the direct tool instead — cheaper and sharper.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}; filter op: {\"op\":\"filter\",\"glob\":\"src/**\"} or {\"op\":\"filter\",\"ext\":\".zig\"} ('pattern' aliases 'glob'; bare patterns auto-promote to '**/<pattern>')"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
+  686 |     \\{"name":"codedb_glob","description":"Replaces find for path patterns: match indexed paths against a glob: * (no /), ** (across /), ? (one char), {a,b} alternatives. Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '**/*.{yaml,yml}', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
+  687 |     \\{"name":"codedb_ls","description":"List immediate children of a directory: dirs first (alphabetical), then files with language and line/symbol counts. Drill down level-by-level when codedb_tree is too verbose.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
+  688 |     \\]}
+  689 | ;
+  690 | 
+  691 | /// Build the augmented `tools/list` payload with a discriminated `oneOf` on
+  692 | /// the codedb_bundle ops items. Each branch pins `tool` to a const sub-tool
+  693 | /// name and `arguments` to that sub-tool's actual `inputSchema`, so a model
+  694 | /// emitting a bundle call is forced to populate `arguments` with the right
+  695 | /// keys for whichever sub-tool it picked. (Stage 2 of issue #437; Stage 1 in
+  696 | /// #434 added `arguments` to items.required.)
+  697 | ///
+  698 | /// codedb_bundle (recursive — rejected at handleBundle) is excluded from the oneOf.
+  699 | ///
+  700 | /// Caller owns returned slice. The intermediate parse and the slices it
+  701 | /// references are freed before return.
+  702 | pub const ToolsListOpts = struct {
+  703 |     bundle_enabled: bool = false,
+  704 |     discriminated_opt_in: bool = false,
+  705 |     profile_core: bool = false,
+  706 |     profile_slim: bool = false,
+  707 |     profile_mini: bool = false,
+  708 | };
+  709 | 
+  710 | /// CODEDB_TOOLS_PROFILE=mini advertises the six tools agents actually reach
+  711 | /// for, keeping the steering value of the full descriptions (slim's terse
+  712 | /// ones measured worse: agents never called the tools yet paid the surface)
+  713 | /// while compressing the wording — see mini_descriptions. Tools a
+  714 | /// native-editor client already has (read) and rarely-used extras (word,
+  715 | /// callpath, hot, tree, find, status) are unadvertised but still dispatch.
+  716 | const mini_profile_tools = [_][]const u8{
+  717 |     "codedb_outline",
+  718 |     "codedb_symbol",
+  719 |     "codedb_search",
+  720 |     "codedb_callers",
+  721 |     "codedb_deps",
+  722 |     "codedb_context",
+  723 | };
+  724 | 
+  725 | fn isMiniProfileTool(name: []const u8) bool {
+  726 |     for (&mini_profile_tools) |c| if (std.mem.eql(u8, name, c)) return true;
+  727 |     return false;
+  728 | }
+  729 | 
+  730 | /// CODEDB_TOOLS_PROFILE=core advertises only the everyday navigation set,
+  731 | /// keeping tools/list small for agents that get distracted by rare tools.
+  732 | /// Everything remains available with CODEDB_TOOLS_PROFILE=full (the default).
+  733 | const core_profile_tools = [_][]const u8{
+  734 |     "codedb_tree",
+  735 |     "codedb_outline",
+  736 |     "codedb_symbol",
+  737 |     "codedb_search",
+  738 |     "codedb_read",
+  739 |     "codedb_callers",
+  740 |     "codedb_deps",
+  741 |     "codedb_find",
+  742 |     "codedb_context",
+  743 |     "codedb_status",
+  744 | };
+  745 | 
+  746 | /// CODEDB_TOOLS_PROFILE=slim advertises only the six everyday tools with terse
+  747 | /// descriptions. Tool schemas ride along on EVERY model call, so the full
+  748 | /// 20-tool list costs ~4k tokens × every round trip of the session — the slim
+  749 | /// profile brings that to ~1k. Schemas are kept intact (clients bind args
+  750 | /// against them); only descriptions shrink. Everything still dispatches — a
+  751 | /// client that knows a rarer tool can call it; it's just not advertised.
+  752 | const slim_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
+  753 |     .{ .name = "codedb_search", .desc = "Full-text search across the repo; matching lines with path:line. Best first move for 'where is X'." },
+  754 |     .{ .name = "codedb_outline", .desc = "Symbol outline of one file (functions/types/imports with line numbers). Run before read to target a range." },
+  755 |     .{ .name = "codedb_read", .desc = "Read a file, optionally line_start..line_end. Prefer outline first; large rangeless reads are capped." },
+  756 |     .{ .name = "codedb_symbol", .desc = "Where a symbol is defined; body=true includes source (very large bodies capped)." },
+  757 |     .{ .name = "codedb_callers", .desc = "Call sites of a function." },
+  758 |     .{ .name = "codedb_context", .desc = "Task-shaped bundle (files, symbols, deps) for a natural-language task. Good session opener." },
+  759 | };
+  760 | 
+  761 | fn isSlimProfileTool(name: []const u8) bool {
+  762 |     for (&slim_descriptions) |sd| if (std.mem.eql(u8, name, sd.name)) return true;
+  763 |     return false;
+  764 | }
+  765 | 
+  766 | fn slimDescription(name: []const u8) ?[]const u8 {
+  767 |     for (&slim_descriptions) |sd| if (std.mem.eql(u8, name, sd.name)) return sd.desc;
+  768 |     return null;
+  769 | }
+  770 | 
+  771 | const PropDesc = struct { name: []const u8, desc: []const u8 };
+  772 | 
+  773 | /// Terse replacements for the wordiest shared property descriptions in slim
+  774 | /// mode (the full texts run 120-180 chars each and repeat across tools).
+  775 | /// Types/required/enums are untouched, so arg binding is unaffected.
+  776 | const slim_prop_descriptions = [_]PropDesc{
+  777 |     .{ .name = "offset", .desc = "Pagination offset into ranked results (default: 0)" },
+  778 |     .{ .name = "paths_only", .desc = "Return path:line only, no line text (default: false)" },
+  779 |     .{ .name = "path_glob", .desc = "Glob filter on paths, e.g. 'src/**/*.zig'" },
+  780 |     .{ .name = "max_tokens", .desc = "Response token budget (min 256, ~4 bytes/token)" },
+  781 |     .{ .name = "skeleton", .desc = "Declarations only; bodies elided (default: false)" },
+  782 |     .{ .name = "project", .desc = "Absolute path to another indexed project" },
+  783 | };
+  784 | 
+  785 | fn slimPropDescription(name: []const u8) ?[]const u8 {
+  786 |     return lookupPropDesc(&slim_prop_descriptions, name);
+  787 | }
+  788 | 
+  789 | /// One terse line (<= 60 chars) for every property the six mini tools expose.
+  790 | /// tools/list rides on EVERY model request, so the property prose — not the
+  791 | /// tool prose — is the bulk of the surface: tersing these cuts ~1.3k chars
+  792 | /// per request while the tool descriptions keep doing the steering.
+  793 | const mini_prop_descriptions = [_]PropDesc{
+  794 |     .{ .name = "project", .desc = "Absolute path to another indexed project" },
+  795 |     .{ .name = "path", .desc = "File path relative to project root" },
+  796 |     .{ .name = "compact", .desc = "Condensed output, less framing (default: false)" },
+  797 |     .{ .name = "skeleton", .desc = "Declarations only; bodies elided (default: false)" },
+  798 |     .{ .name = "name", .desc = "Exact symbol name" },
+  799 |     .{ .name = "prefix", .desc = "Prefix match, e.g. parse_" },
+  800 |     .{ .name = "pattern", .desc = "Glob on symbol name, e.g. *Manager" },
+  801 |     .{ .name = "kind", .desc = "function | struct | class | method | enum | interface" },
+  802 |     .{ .name = "fuzzy", .desc = "Typo-tolerant match for name (default: false)" },
+  803 |     .{ .name = "body", .desc = "Include each symbol source (default: false)" },
+  804 |     .{ .name = "max_results", .desc = "Max results (defaults: search 20, symbol 50, callers 30)" },
+  805 |     .{ .name = "format", .desc = "Set to json for structured output" },
+  806 |     .{ .name = "query", .desc = "Text to match; regex when regex=true" },
+  807 |     .{ .name = "offset", .desc = "Page offset; responses print the next offset=N" },
+  808 |     .{ .name = "scope", .desc = "Annotate hits with enclosing symbol (default: false)" },
+  809 |     .{ .name = "paths_only", .desc = "Return path:line only, no line text (default: false)" },
+  810 |     .{ .name = "regex", .desc = "Treat query as a regex (default: false)" },
+  811 |     .{ .name = "path_glob", .desc = "Glob filter on paths, e.g. 'src/**/*.zig'" },
+  812 |     .{ .name = "task", .desc = "Task in natural language; include likely identifiers" },
+  813 |     .{ .name = "max_tokens", .desc = "Response token budget (min 256, ~2.5 bytes/token)" },
+  814 |     .{ .name = "detail", .desc = "compact (default) or full sections" },
+  815 |     .{ .name = "direction", .desc = "imported_by (default) or depends_on" },
+  816 |     .{ .name = "transitive", .desc = "Follow the dependency chain (default: false)" },
+  817 |     .{ .name = "max_depth", .desc = "Depth cap for transitive (default: unlimited)" },
+  818 | };
+  819 | 
+  820 | /// Compressed mini tool descriptions: each <= 220 chars and each keeps the
+  821 | /// three things that actually steer a model — what the tool does, the native
+  822 | /// workflow it replaces, and the key parameter hint. The static tools_list
+  823 | /// JSON is shared with the core/full profiles, so it is left untouched and
+  824 | /// these are swapped in only on the mini path (mirrors slim_descriptions).
+  825 | const mini_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
+  826 |     .{ .name = "codedb_outline", .desc = "Replaces cat/head on a whole file: symbol outline of one file — functions, types, imports with line numbers, 4-15x smaller than the source. Run before reading to pick a range; skeleton=true elides bodies." },
+  827 |     .{ .name = "codedb_symbol", .desc = "Replaces grepping for a definition: where a symbol is defined — file, line, kind. Reach for this FIRST when you know or can guess the name; takes name, prefix, pattern, fuzzy or kind. body=true adds source." },
+  828 |     .{ .name = "codedb_search", .desc = "Replaces grep across the repo: ranked full-text (or regex=true) hits as path:line plus the line. Use ONLY when you do not know the symbol name; path_glob narrows, paths_only halves tokens." },
+  829 |     .{ .name = "codedb_callers", .desc = "Replaces grepping for usages: every call site of a symbol in one call — {path, line, snippet, enclosing scope}. Excludes the definition itself." },
+  830 |     .{ .name = "codedb_deps", .desc = "Replaces grepping for imports: file-level dependency edges — direction=imported_by (default) for who imports this file, depends_on for what it imports. transitive=true walks the chain." },
+  831 |     .{ .name = "codedb_context", .desc = "Replaces a manual grep-read-repeat sweep: one task-shaped bundle of files, symbols and deps for a natural-language task. Best opening move on a new task; max_tokens caps the budget." },
+  832 | };
+  833 | 
+  834 | fn miniDescription(name: []const u8) ?[]const u8 {
+  835 |     for (&mini_descriptions) |md| if (std.mem.eql(u8, name, md.name)) return md.desc;
+  836 |     return null;
+  837 | }
+  838 | 
+  839 | fn lookupPropDesc(table: []const PropDesc, name: []const u8) ?[]const u8 {
+  840 |     for (table) |pd| if (std.mem.eql(u8, name, pd.name)) return pd.desc;
+  841 |     return null;
+  842 | }
+  843 | 
+  844 | /// Swap in terse `description` strings for a tool's inputSchema properties.
+  845 | /// Only the description string of a property is ever rewritten — property
+  846 | /// names, types, enums and the schema's `required` list are left alone, so a
+  847 | /// client binding arguments against the schema sees no change.
+  848 | fn tersePropDescriptions(a: std.mem.Allocator, tool: *std.json.Value, table: []const PropDesc) void {
+  849 |     if (tool.* != .object) return;
+  850 |     const schema = tool.object.getPtr("inputSchema") orelse return;
+  851 |     if (schema.* != .object) return;
+  852 |     const props = schema.object.getPtr("properties") orelse return;
+  853 |     if (props.* != .object) return;
+  854 |     var it = props.object.iterator();
+  855 |     while (it.next()) |prop| {
+  856 |         if (prop.value_ptr.* != .object) continue;
+  857 |         const d = lookupPropDesc(table, prop.key_ptr.*) orelse continue;
+  858 |         prop.value_ptr.*.object.put(a, "description", .{ .string = d }) catch {};
+  859 |     }
+  860 | }
+  861 | 
+  862 | fn isCoreProfileTool(name: []const u8) bool {
+  863 |     for (&core_profile_tools) |c| if (std.mem.eql(u8, name, c)) return true;
+  864 |     return false;
+  865 | }
+  866 | 
+  867 | /// Build the runtime `tools/list` response. Honors the bundle and
+  868 | /// discriminated-schema env-var gates that run() reads. Always returns an
+  869 | /// allocator-owned slice the caller must free.
+  870 | pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]u8 {
+  871 |     if (opts.bundle_enabled and opts.discriminated_opt_in) {
+  872 |         return buildAugmentedToolsList(alloc);
+  873 |     }
+  874 | 
+  875 |     var arena = std.heap.ArenaAllocator.init(alloc);
+  876 |     defer arena.deinit();
+  877 |     const a = arena.allocator();
+  878 | 
+  879 |     var parsed = try std.json.parseFromSlice(std.json.Value, a, tools_list, .{});
+  880 | 
+  881 |     const root_obj = &parsed.value.object;
+  882 |     const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
+  883 |     if (tools_val.* != .array) return error.MalformedToolsList;
+  884 | 
+  885 |     if (!opts.bundle_enabled or opts.profile_core or opts.profile_mini) {
+  886 |         var filtered: std.json.Array = .init(a);
+  887 |         for (tools_val.array.items) |t| {
+  888 |             if (t == .object) {
+  889 |                 if (t.object.get("name")) |n| {
+  890 |                     if (n == .string) {
+  891 |                         if (!opts.bundle_enabled and std.mem.eql(u8, n.string, "codedb_bundle")) continue;
+  892 |                         if (opts.profile_core and !isCoreProfileTool(n.string)) continue;
+  893 |                         if (opts.profile_mini and !isMiniProfileTool(n.string)) continue;
+  894 |                     }
+  895 |                 }
+  896 |             }
+  897 |             try filtered.append(t);
+  898 |         }
+  899 |         tools_val.* = .{ .array = filtered };
+  900 |     }
+  901 | 
+  902 |     // Mini keeps the steering shape of the full descriptions but pays for it
+  903 |     // once, compressed: tool prose from mini_descriptions, property prose from
+  904 |     // mini_prop_descriptions. Schema structure is never touched.
+  905 |     if (opts.profile_mini) {
+  906 |         for (tools_val.array.items) |*t| {
+  907 |             if (t.* != .object) continue;
+  908 |             const name_v = t.object.get("name") orelse continue;
+  909 |             if (name_v != .string) continue;
+  910 |             if (miniDescription(name_v.string)) |d| {
+  911 |                 t.object.put(a, "description", .{ .string = d }) catch {};
+  912 |             }
+  913 |             tersePropDescriptions(a, t, &mini_prop_descriptions);
+  914 |         }
+  915 |     }
+  916 | 
+  917 |     if (opts.profile_slim) {
+  918 |         var filtered: std.json.Array = .init(a);
+  919 |         for (tools_val.array.items) |*t| {
+  920 |             if (t.* == .object) {
+  921 |                 if (t.*.object.get("name")) |n| {
+  922 |                     if (n == .string) {
+  923 |                         if (!isSlimProfileTool(n.string)) continue;
+  924 |                         if (slimDescription(n.string)) |d| {
+  925 |                             t.*.object.put(a, "description", .{ .string = d }) catch {};
+  926 |                         }
+  927 |                         tersePropDescriptions(a, t, &slim_prop_descriptions);
+  928 |                     }
+  929 |                 }
+  930 |             }
+  931 |             try filtered.append(t.*);
+  932 |         }
+  933 |         tools_val.* = .{ .array = filtered };
+  934 |     }
+  935 | 
+  936 |     const out_in_arena = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
+  937 |     return try alloc.dupe(u8, out_in_arena);
+  938 | }
+  939 | 
+  940 | pub fn buildAugmentedToolsList(alloc: std.mem.Allocator) ![]u8 {
+  941 |     var arena = std.heap.ArenaAllocator.init(alloc);
+  942 |     defer arena.deinit();
+  943 |     const a = arena.allocator();
+  944 | 
+  945 |     var parsed = try std.json.parseFromSlice(std.json.Value, a, tools_list, .{});
+  946 | 
+  947 |     const root_obj = &parsed.value.object;
+  948 |     const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
+  949 |     if (tools_val.* != .array) return error.MalformedToolsList;
+  950 |     const tools_arr = &tools_val.array;
+  951 | 
+  952 |     // Locate codedb_bundle items, and collect (name, inputSchema) for every
+  953 |     // other tool to use as oneOf branches.
+  954 |     var bundle_items_ptr: ?*std.json.Value = null;
+  955 |     for (tools_arr.items) |*t| {
+  956 |         if (t.* != .object) continue;
+  957 |         const name_v = t.object.get("name") orelse continue;
+  958 |         if (name_v != .string) continue;
+  959 |         if (!std.mem.eql(u8, name_v.string, "codedb_bundle")) continue;
+  960 | 
+  961 |         const schema = t.object.getPtr("inputSchema") orelse continue;
+  962 |         if (schema.* != .object) continue;
+  963 |         const props = schema.object.getPtr("properties") orelse continue;
+  964 |         if (props.* != .object) continue;
+  965 |         const ops = props.object.getPtr("ops") orelse continue;
+  966 |         if (ops.* != .object) continue;
+  967 |         bundle_items_ptr = ops.object.getPtr("items") orelse continue;
+  968 |         break;
+  969 |     }
+  970 |     if (bundle_items_ptr == null) return error.BundleNotFound;
+  971 |     const bundle_items = bundle_items_ptr.?;
+… [5167 more lines elided — run `outline src/mcp.zig` then `read src/mcp.zig -L FROM-TO` for the slice you need]

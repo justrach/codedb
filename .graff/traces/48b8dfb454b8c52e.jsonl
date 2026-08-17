@@ -1,0 +1,13 @@
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":0,"ev":"startup_phase","phase":"args","phase_ms":0,"startup_ms":0}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":0,"ev":"startup_phase","phase":"credentials/model","phase_ms":399,"startup_ms":399}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":0,"ev":"startup_phase","phase":"CA warm scheduled","phase_ms":0,"startup_ms":399}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":0,"ev":"startup_phase","phase":"banner","phase_ms":0,"startup_ms":399}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":1504,"ev":"startup_phase","phase":"MCP registry","phase_ms":1504,"startup_ms":1903}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":1504,"ev":"startup_phase","phase":"settings/theme","phase_ms":0,"startup_ms":1903}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":1504,"ev":"startup_phase","phase":"companion","phase_ms":0,"startup_ms":1903}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":1507,"ev":"startup_phase","phase":"approvals/hooks/fleet","phase_ms":3,"startup_ms":1906}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":1511,"ev":"startup_phase","phase":"system prompt","phase_ms":5,"startup_ms":1911}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":1558,"ev":"recipe","recipe_sha":"54323514b5f9cd65","provider":"kimi","model":"k3","effort":"xhigh","prompt_sha":"e972f54b708cf4cc","toolset_sha":"2f967cf1699e7fc8","task_class":"interactive","harness_version":"0.0.264"}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":1558,"ev":"session","detail":"k3"}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":1558,"ev":"startup_phase","phase":"root agent","phase_ms":47,"startup_ms":1958}
+{"run_id":"48b8dfb454b8c52e","pid":24221,"session_id":"658730aab9602f79b7cb8dba4d4204df","t":1559,"ev":"budget","detail":"final call: tools withheld so the run lands its answer (#390)"}

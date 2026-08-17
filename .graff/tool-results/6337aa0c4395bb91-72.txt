@@ -1,0 +1,55 @@
+const std = @import("std");
+const builtin = @import("builtin");
+const cio = @import("cio.zig");
+const Store = @import("store.zig").Store;
+const Explorer = @import("explore.zig").Explorer;
+const sty = @import("style.zig");
+const index_mod = @import("index.zig");
+const root_policy = @import("root_policy.zig");
+const nuke_mod = @import("nuke.zig");
+const update_mod = @import("update.zig");
+const codex_mod = @import("codex_setup.zig");
+const release_info = @import("release_info.zig");
+const Config = @import("config.zig").Config;
+
+/// Buffered stdout wrapper. Formats into a 64KB stack-buffered window and
+/// flushes lazily; an explicit `flush()` runs from mainImpl's deferred cleanup.
+/// `word` on a high-count term (~2k hits) used to do 2k mallocs + 2k write()
+/// syscalls; this collapses that to a handful of batched writes.
+const out_mod = @import("out.zig");
+const Out = out_mod.Out;
+const printUsage = out_mod.printUsage;
+const cli_args = @import("cli_args.zig");
+// Re-exports so @import("main.zig") (tests, tooling) and the rest of main keep
+// the original flat call sites after the cli_args.zig extraction.
+pub const ParsedPositional = cli_args.ParsedPositional;
+pub const parsePositional = cli_args.parsePositional;
+pub const LineRange = cli_args.LineRange;
+pub const LineRangeError = cli_args.LineRangeError;
+pub const parseLineRange = cli_args.parseLineRange;
+pub const SearchArgs = cli_args.SearchArgs;
+pub const SearchArgError = cli_args.SearchArgError;
+pub const parseSearchArgs = cli_args.parseSearchArgs;
+pub const hasExtraCliArgs = cli_args.hasExtraCliArgs;
+pub const findGitRoot = cli_args.findGitRoot;
+pub const findGitRootFrom = cli_args.findGitRootFrom;
+pub const isValidMcpFlag = cli_args.isValidMcpFlag;
+pub const resolveRoot = cli_args.resolveRoot;
+const cliIsQueryCmd = cli_args.cliIsQueryCmd;
+const mcpRootIsImplicitCwd = cli_args.mcpRootIsImplicitCwd;
+const mcpRootAcceptsEnv = cli_args.mcpRootAcceptsEnv;
+const isHelpRequest = cli_args.isHelpRequest;
+
+/// The real entry point. In Debug builds, Zig may merge all command-branch
+/// stack frames into one producing a frame that overflows the default OS stack,
+/// so those builds trampoline through a thread with an explicit 64 MB stack.
+/// Optimized builds have a ~190 KB frame and run directly on the process stack,
+/// avoiding an OS thread create/join on every CLI invocation.
+///
+/// #504: must have a non-error-union return type. A Zig binary with
+/// `pub fn main(...) !void` ad-hoc-signed and run via Rosetta (or, in the
+/// user-reported case, on a native macOS Intel build that ends up with a
+/// similar startup-path tripwire) segfaults BEFORE main runs — the runtime's
+/// error-handling wrapper is what crashes. Verified with a minimal repro:
+/// `pub fn main(init) void { ... }` works; `!void` does not. Same crash
+/// happens if the entry point spawns a thread before writing to stderr.

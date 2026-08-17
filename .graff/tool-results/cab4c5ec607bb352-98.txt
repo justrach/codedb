@@ -1,0 +1,161 @@
+    34	pub const SymbolKind = enum(u8) {
+    35	    function,
+    36	    struct_def,
+    37	    enum_def,
+    38	    union_def,
+    39	    constant,
+    40	    variable,
+    41	    import,
+    42	    test_decl,
+    43	    comment_block,
+    44	    trait_def,
+    45	    impl_block,
+    46	    type_alias,
+    47	    macro_def,
+    48	    method,
+    49	    class_def,
+    50	    interface_def,
+    51	};
+    52	
+    53	pub const Symbol = struct {
+    54	    name: []const u8,
+    55	    kind: SymbolKind,
+    56	    line_start: u32,
+    57	    line_end: u32,
+    58	    detail: ?[]const u8 = null,
+    59	};
+    60	
+    61	/// Query-independent path-prior flags shared by the rerankers — a pure
+    62	/// function of the path, see classifyPath.
+    63	pub const PathClass = struct {
+    64	    is_tooling: bool = false,
+    65	    is_test: bool = false,
+    66	    is_example: bool = false,
+    67	    is_vendor: bool = false,
+    68	};
+    69	
+    70	/// Classify `path` for the rerank path priors. Pure — the result is cached
+    71	/// on FileOutline at init; callers without an outline compute it directly.
+    72	pub fn classifyPath(path: []const u8) PathClass {
+    73	    var c: PathClass = .{};
+    74	    // One tokenize pass over the path instead of one per segment keyword.
+    75	    var iter = std.mem.tokenizeAny(u8, path, "/\\");
+    76	    while (iter.next()) |seg| {
+    77	        // #598: mention-dense tooling files (a bench script repeating the
+    78	        // term six times per line) saturate the per-line count and shrug off
+    79	        // the ×0.5 path prior — the occurrence BASE is capped for tooling.
+    80	        if (std.mem.eql(u8, seg, "bench") or std.mem.eql(u8, seg, "benchmarks") or
+    81	            std.mem.eql(u8, seg, "scripts") or std.mem.eql(u8, seg, "website") or
+    82	            std.mem.eql(u8, seg, "install")) c.is_tooling = true;
+    83	        if (std.mem.eql(u8, seg, "tests") or std.mem.eql(u8, seg, "test")) c.is_test = true;
+    84	        if (std.mem.eql(u8, seg, "examples") or std.mem.eql(u8, seg, "example")) c.is_example = true;
+    85	        if (std.mem.eql(u8, seg, "vendor") or std.mem.eql(u8, seg, "node_modules") or
+    86	            std.mem.eql(u8, seg, "third_party")) c.is_vendor = true;
+    87	    }
+    88	    // #580: match BM25's pathRelevanceMultiplier — test files identified by
+    89	    // BASENAME (tests.zig, test_*.zig, *_tests.zig) are tests even without
+    90	    // a test/ directory segment.
+   208	pub fn detectLanguage(path: []const u8) Language {
+   209	    if (std.mem.endsWith(u8, path, ".zig")) return .zig;
+   210	    if (std.mem.endsWith(u8, path, ".c") or std.mem.endsWith(u8, path, ".h")) return .c;
+   211	    if (std.mem.endsWith(u8, path, ".cpp") or std.mem.endsWith(u8, path, ".hpp") or
+   212	        std.mem.endsWith(u8, path, ".cc") or std.mem.endsWith(u8, path, ".hh") or
+   213	        std.mem.endsWith(u8, path, ".cxx") or std.mem.endsWith(u8, path, ".hxx") or
+   214	        std.mem.endsWith(u8, path, ".mm"))
+   215	        return .cpp;
+   216	    if (std.mem.endsWith(u8, path, ".py")) return .python;
+   217	    if (std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".jsx")) return .javascript;
+   218	    if (std.mem.endsWith(u8, path, ".ts") or std.mem.endsWith(u8, path, ".tsx")) return .typescript;
+   219	    if (std.mem.endsWith(u8, path, ".rs")) return .rust;
+   220	    if (std.mem.endsWith(u8, path, ".go")) return .go_lang;
+   221	    if (std.mem.endsWith(u8, path, ".php")) return .php;
+   222	    if (std.mem.endsWith(u8, path, ".rb") or std.mem.endsWith(u8, path, ".rake")) return .ruby;
+   223	    if (std.mem.endsWith(u8, path, ".tf") or std.mem.endsWith(u8, path, ".tfvars") or std.mem.endsWith(u8, path, ".hcl")) return .hcl;
+   224	    if (std.mem.endsWith(u8, path, ".r") or std.mem.endsWith(u8, path, ".R")) return .r;
+   225	    if (std.mem.endsWith(u8, path, ".md")) return .markdown;
+   226	    if (std.mem.endsWith(u8, path, ".json")) return .json;
+   227	    if (std.mem.endsWith(u8, path, ".yaml") or std.mem.endsWith(u8, path, ".yml")) return .yaml;
+   228	    if (std.mem.endsWith(u8, path, ".dart")) return .dart;
+   229	    if (std.mem.endsWith(u8, path, ".java")) return .java;
+   230	    if (std.mem.endsWith(u8, path, ".kt")) return .kotlin;
+   231	    if (std.mem.endsWith(u8, path, ".swift")) return .swift;
+   232	    if (std.mem.endsWith(u8, path, ".svelte")) return .svelte;
+   233	    if (std.mem.endsWith(u8, path, ".vue")) return .vue;
+   234	    if (std.mem.endsWith(u8, path, ".astro")) return .astro;
+   235	    if (std.mem.endsWith(u8, path, ".sh")) return .shell;
+   236	    if (std.mem.endsWith(u8, path, ".css")) return .css;
+   237	    if (std.mem.endsWith(u8, path, ".scss")) return .scss;
+   238	    if (std.mem.endsWith(u8, path, ".sql")) return .sql;
+   239	    if (std.mem.endsWith(u8, path, ".proto")) return .protobuf;
+   240	    if (std.mem.endsWith(u8, path, ".f90")) return .fortran;
+   241	    if (std.mem.endsWith(u8, path, ".ll")) return .llvm_ir;
+   242	    if (std.mem.endsWith(u8, path, ".mlir")) return .mlir;
+   243	    if (std.mem.endsWith(u8, path, ".td")) return .tablegen;
+   244	    if (std.mem.endsWith(u8, path, ".res") or std.mem.endsWith(u8, path, ".resi")) return .rescript;
+   245	    if (std.mem.endsWith(u8, path, ".ml") or std.mem.endsWith(u8, path, ".mli")) return .ocaml;
+   246	    return .unknown;
+   247	}
+   248	
+   249	/// Returns true for languages whose content is primarily prose / data /
+   250	/// markup rather than executable code. Used to deprioritise these files in
+   251	/// content search so a CHANGELOG.md or design doc cannot starve a canonical
+   252	/// source-file match (issue #430).
+   253	pub fn isDocLanguage(lang: Language) bool {
+   254	    return switch (lang) {
+   255	        .markdown, .json, .yaml, .unknown => true,
+   256	        else => false,
+   257	    };
+   258	}
+   259	
+   260	pub const SymbolResult = struct {
+   261	    path: []const u8,
+   262	    symbol: Symbol,
+   263	};
+   264	
+   265	pub const SearchResult = struct {
+   266	    path: []const u8,
+   267	    line_num: u32,
+   268	    line_text: []const u8,
+   269	    score: f32 = 0.0,
+   270	};
+   271	
+   272	pub const SearchBreakdown = struct {
+   273	    tier0_ns: i128 = 0,
+   274	    tier05_ns: i128 = 0,
+   275	    tier1_ns: i128 = 0,
+   276	    tier2_ns: i128 = 0,
+   277	    tier3_ns: i128 = 0,
+   278	    tier4_ns: i128 = 0,
+   279	    tier5_ns: i128 = 0,
+   280	    rerank_ns: i128 = 0,
+  8130	pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
+  8131	    const trimmed = std.mem.trim(u8, line, " \t");
+  8132	    if (trimmed.len == 0) return true;
+  8133	    return switch (language) {
+  8134	        .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
+  8135	        .python, .ruby, .r, .shell => std.mem.startsWith(u8, trimmed, "#"),
+  8136	        .hcl => std.mem.startsWith(u8, trimmed, "#") or std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8137	        .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .protobuf, .mlir, .tablegen => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8138	        .svelte, .vue, .astro => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*") or std.mem.startsWith(u8, trimmed, "<!--"),
+  8139	        .css => std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8140	        .scss => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8141	        .sql => std.mem.startsWith(u8, trimmed, "--") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8142	        .fortran => std.mem.startsWith(u8, trimmed, "!"),
+  8143	        .llvm_ir => std.mem.startsWith(u8, trimmed, ";"),
+  8144	        .rescript => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8145	        .ocaml => std.mem.startsWith(u8, trimmed, "(*"),
+  8146	        else => false,
+  8147	    };
+  8148	}
+  8149	
+  8150	fn appendTargetLineHits(
+  8151	    path: []const u8,
+  8152	    content: []const u8,
+  8153	    allocator: std.mem.Allocator,
+  8154	    target_lines: []const u32,
+  8155	    max_results: usize,
+  8156	    result_list: *std.ArrayList(SearchResult),
+  8157	) !void {
+  8158	    if (target_lines.len == 0 or result_list.items.len >= max_results) return;
+  8159	    result_list.ensureUnusedCapacity(allocator, @min(target_lines.len, max_results - result_list.items.len)) catch {};
+  8160	    var target_i: usize = 0;

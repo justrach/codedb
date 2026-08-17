@@ -1,0 +1,589 @@
+✓ loaded snapshot  650 files  ⚡ 3.8ms
+✓ src/test_mcp.zig  zig  3945 lines  ⚡ 42.0µs
+  imports: std, builtin, cio  (x3)
+  L4      constant        testing  const testing = std.testing;
+  L5      constant        io  const io = std.testing.io;
+  imports: Store, Explorer, explore  (x3)
+  L9      constant        Language  const Language = explore.Language;
+  imports: AgentRegistry, mcp_mod, main_mod, nuke_mod, codex_setup, update_mod, Config, telemetry_mod, release_info, root_policy, snapshot_mod, watcher, WordIndex, TrigramIndex, …  (x23)
+  L37     test_decl       test "mcp json: line reader preserves newline and EOF framing" {
+  L40     constant        first  const first = mcp_json.readLineBuf(testing.allocator, &reader) orelse return error.TestUnexpectedResult;
+  L44     constant        last  const last = mcp_json.readLineBuf(testing.allocator, &reader) orelse return error.TestUnexpectedResult;
+  L50     test_decl       test "mcp json: line reader enforces maximum message size" {
+  L51     constant        exact  const exact = try testing.allocator.alloc(u8, mcp_json.MAX_LINE);
+  L55     constant        accepted  const accepted = mcp_json.readLineBuf(testing.allocator, &exact_reader) orelse return error.TestUnexpectedResult;
+  L59     constant        oversized  const oversized = try testing.allocator.alloc(u8, mcp_json.MAX_LINE + 1);
+  L66     test_decl       test "mcp json: typed fields and escaping preserve protocol behavior" {
+  L67     constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+  L71     constant        object  const object = &parsed.value.object;
+  L88     function        zigExe  fn zigExe() []const u8 {
+  L95     function        builtCodedbExe  fn builtCodedbExe() []const u8 {
+  L99     struct_def      EnvVarGuard  const EnvVarGuard = struct {
+  L105    function        save  fn save(name: []const u8) EnvVarGuard {
+  L117    function        restore  fn restore(self: *const EnvVarGuard) void {
+  L126    test_decl       test "windows runCapture resolves executables from safe PATH entries only" {
+  L139    constant        bin_len  const bin_len = try tmp.dir.realPathFile(io, "bin", &bin_buf);
+  L140    constant        bin_abs  const bin_abs = bin_buf[0..bin_len];
+  L142    constant        old_path  const old_path = EnvVarGuard.save("PATH");
+  L144    constant        test_path  const test_path = try std.fmt.allocPrint(testing.allocator, ".;relative;{s}", .{bin_abs});
+  L148    constant        resolved  const resolved = try cio.resolveExecutableFromPathWindows(testing.allocator, "git") orelse return error.TestUnexpectedResult;
+  L157    test_decl       test "windows cli pipe metadata parser rejects spoofable records" {
+  L158    constant        owner  const owner = "pid=123\npipe=\\\\.\\pipe\\codedb-123-deadbeef\n";
+  L159    constant        ok  const ok = cli_proxy_mod.parseCliPipeMetadata(owner) orelse return error.TestUnexpectedResult;
+  L171    function        buildCliForHelpTests  fn buildCliForHelpTests() !void {
+  L175    constant        build  const build = try cio.runCapture(.{
+  L187    test_decl       test "windows cli-daemon auto-spawn proxies next query from unicode root" {
+  L202    constant        f  const f = try tmp.dir.createFile(io, "project-unicode-å/src/sample.zig", .{ .truncate = true });
+  L208    constant        project_len  const project_len = try tmp.dir.realPathFile(io, "project-unicode-å", &project_buf);
+  L209    constant        project_root  const project_root = project_buf[0..project_len];
+  L212    constant        home_len  const home_len = try tmp.dir.realPathFile(io, ".home", &home_buf);
+  L213    constant        test_home  const test_home = home_buf[0..home_len];
+  L215    constant        g_allow  const g_allow = EnvVarGuard.save("CODEDB_ALLOW_TEMP");
+  L217    constant        g_idle  const g_idle = EnvVarGuard.save("CODEDB_CLI_DAEMON_IDLE_MS");
+  L219    constant        g_home  const g_home = EnvVarGuard.save("HOME");
+  L221    constant        g_profile  const g_profile = EnvVarGuard.save("USERPROFILE");
+  L228    constant        cold  const cold = try cio.runCapture(.{
+  L242    constant        warm  const warm = try cio.runCapture(.{
+  L264    test_decl       test "issue-59: telemetry writes session, tool, and codebase stats ndjson" {
+  L269    constant        dir_path_len  const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+  L270    constant        dir_path  const dir_path = path_buf[0..dir_path_len];
+  L286    constant        ndjson_path  const ndjson_path = try std.fmt.allocPrint(testing.allocator, "{s}/telemetry.ndjson", .{dir_path});
+  L289    constant        contents  const contents = try std.Io.Dir.cwd().readFileAlloc(io, ndjson_path, testing.allocator, .limited(64 * 1024));
+  L293    constant        version_needle  const version_needle = try std.fmt.allocPrint(testing.allocator, "\"version\":\"{s}\"", .{release_info.semver});
+  L303    test_decl       test "issue-60: telemetry disabled path is a no-op" {
+  L314    test_decl       test "issue-77: mcp index accepts temporary-directory roots that cause pathological cache growth" {
+  L316    constant        tmp_name  const tmp_name = try std.fmt.bufPrint(&tmp_name_buf, "codedb-issue-77-{d}", .{@as(i64, @intCast(@divTrunc(cio.nanoTimestamp(), 1000)))});
+  L321    constant        tmp_base  const tmp_base = if (builtin.os.tag == .linux) "/tmp" else "/private/tmp";
+  L322    constant        tmp_root  const tmp_root = try std.fs.path.join(testing.allocator, &.{ tmp_base, tmp_name });
+  L331    constant        source_path  const source_path = try std.fs.path.join(testing.allocator, &.{ tmp_root, "sample.zig" });
+  L334    constant        file  const file = try std.Io.Dir.cwd().createFile(io, source_path, .{});
+  L339    constant        result  const result = try cio.runCapture(.{
+  L350    test_decl       test "issue-93: isSensitivePath blocks .env and credentials" {
+  L371    test_decl       test "issue-93: isPathSafe blocks traversal" {
+  imports: MCP  (x1)
+  L380    test_decl       test "issue-629: projectRelPath accepts absolute paths inside the project root" {
+  imports: MCP  (x1)
+  L382    constant        root  const root = "/Users/dev/project";
+  L399    test_decl       test "issue-624: convergence governor flags a repeated identical call" {
+  imports: MCP  (x1)
+  L402    constant        sig  const sig: u64 = 0xC0FFEE;
+  L416    test_decl       test "auto-update: shouldRunAutoUpdate gates correctly" {
+  L417    constant        day_ms  const day_ms: i64 = 24 * 60 * 60 * 1000;
+  L437    test_decl       test "auto-update: routes through the built-in updater without a shell" {
+  L438    constant        argv  const argv = update_mod.autoUpdateArgv("/tmp/codedb with spaces");
+  L445    test_decl       test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp stamp file" {
+  L458    constant        day_ms  const day_ms: i64 = 24 * 60 * 60 * 1000;
+  L459    constant        now_ms  const now_ms: i64 = 1_700_000_000_000;
+  L460    constant        future_last_ms  const future_last_ms: i64 = now_ms + day_ms * 30; // 30 days in the future
+  L465    test_decl       test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corrupt" {
+  L484    constant        now_ms  const now_ms: i64 = 1_700_000_000_000;
+  L485    constant        last_ms  const last_ms: i64 = std.math.minInt(i64);
+  L490    test_decl       test "issue-150: --help prints usage" {
+  L493    constant        result  const result = try cio.runCapture(.{
+  L511    test_decl       test "issue-150: -h prints usage" {
+  L514    constant        result  const result = try cio.runCapture(.{
+  L528    test_decl       test "update: compareVersions orders semantic versions" {
+  L535    test_decl       test "update: compareVersionsForUpdate allows superseded release train typo" {
+  L544    test_decl       test "update: checksumForBinary parses release manifest" {
+  L545    constant        manifest  const manifest =
+  L558    test_decl       test "update: asset names match published release naming" {
+  L566    test_decl       test "issue-677: update resolves the published Windows x86_64 asset" {
+  L571    test_decl       test "issue-658: hook registration is skipped after a user removes the hook" {
+  L579    test_decl       test "nuke: commandTargetsBinary only matches the current install path" {
+  L594    test_decl       test "nuke: removeJsonMcpServerEntry drops only codedb integration" {
+  L595    constant        input  const input =
+  L605    constant        output  const output = (try nuke_mod.removeJsonMcpServerEntry(testing.allocator, input, "codedb")) orelse
+  L614    test_decl       test "nuke: removeJsonMcpServerEntry removes empty mcpServers object" {
+  L615    constant        input  const input =
+  L624    constant        output  const output = (try nuke_mod.removeJsonMcpServerEntry(testing.allocator, input, "codedb")) orelse
+  L633    test_decl       test "nuke: removeCodexMcpServerBlock removes codedb block only" {
+  L634    constant        input  const input =
+  L645    constant        output  const output = (try nuke_mod.removeCodexMcpServerBlock(testing.allocator, input, "codedb")) orelse
+  L654    test_decl       test "nuke: removeCodexMcpServerBlock matches indented header with inline comment" {
+  L655    constant        input  const input =
+  L665    constant        output  const output = (try nuke_mod.removeCodexMcpServerBlock(testing.allocator, input, "codedb")) orelse
+  L673    test_decl       test "issue-680: codex policy block upserts idempotently" {
+  L674    constant        block  const block = try codex_setup.buildPolicyBlock(testing.allocator);
+  L677    constant        first  const first = (try codex_setup.upsertPolicyBlock(testing.allocator, "# House rules\n\nbe nice.\n", block)) orelse
+  L689    test_decl       test "issue-680: codex policy block replaces an older version in place" {
+  L690    constant        stale  const stale =
+  L703    constant        block  const block = try codex_setup.buildPolicyBlock(testing.allocator);
+  L706    constant        updated  const updated = (try codex_setup.upsertPolicyBlock(testing.allocator, stale, block)) orelse
+  L715    constant        begin_at  const begin_at = std.mem.indexOf(u8, updated, codex_setup.begin_marker_prefix).?;
+  L716    constant        end_at  const end_at = std.mem.indexOf(u8, updated, codex_setup.end_marker).?;
+  L723    test_decl       test "issue-680: codex policy removal preserves surrounding user text" {
+  L724    constant        original  const original = "# House rules\n\nbe nice.\n";
+  L726    constant        block  const block = try codex_setup.buildPolicyBlock(testing.allocator);
+  L729    constant        installed  const installed = (try codex_setup.upsertPolicyBlock(testing.allocator, original, block)) orelse
+  L733    constant        removed  const removed = (try codex_setup.removePolicyBlock(testing.allocator, installed)) orelse
+  L742    test_decl       test "nuke: deregisterJsonIntegrationFile handles configs larger than 64 KiB" {
+  L746    constant        rel_path  const rel_path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/large-claude.json", .{tmp.sub_path});
+  L768    constant        rewritten  const rewritten = try std.Io.Dir.cwd().readFileAlloc(io, rel_path, testing.allocator, .limited(std.math.maxInt(usize)));
+  L776    test_decl       test "issue-148: dead MCP clients are polled every second" {
+  imports: mcp  (x1)
+  L781    test_decl       test "issue-148: POLLHUP detects closed pipe" {
+  L785    constant        pipe  const pipe = try cio.makePipe();
+  L798    constant        n  const n = try std.posix.poll(&fds, 100); // 100ms timeout
+  L803    test_decl       test "issue-148: idle watchdog exits on shutdown signal" {
+  L808    constant        t0  const t0 = cio.milliTimestamp();
+  L810    struct_def      signal_thread  const signal_thread = try std.Thread.spawn(.{}, struct {
+  L811    function        run  fn run(s: *std.atomic.Value(bool)) void {
+  L827    constant        elapsed  const elapsed = cio.milliTimestamp() - t0;
+  L836    test_decl       test "issue-278: MCP tracks activity without using it as a transport timeout" {
+  imports: mcp  (x1)
+  L840    constant        saved  const saved = mcp.last_activity.load(.acquire);
+  L846    constant        last  const last = mcp.last_activity.load(.acquire);
+  L847    constant        now  const now = cio.milliTimestamp();
+  L851    test_decl       test "issue-278: MCP session may remain idle longer than old timeout" {
+  imports: mcp  (x1)
+  L855    constant        old_idle_timeout_ms  const old_idle_timeout_ms = 60 * 60 * 1000;
+  L856    constant        older_than_old_timeout  const older_than_old_timeout = cio.milliTimestamp() - old_idle_timeout_ms - 1_000;
+  L859    constant        saved  const saved = mcp.last_activity.load(.acquire);
+  L863    constant        last  const last = mcp.last_activity.load(.acquire);
+  L864    constant        now  const now = cio.milliTimestamp();
+  L869    test_decl       test "issue-148: open pipe does not trigger HUP" {
+  L872    constant        pipe  const pipe = try cio.makePipe();
+  L882    constant        result  const result = try std.posix.poll(&poll_fds, 0);
+  L886    test_decl       test "issue-148: codedb mcp exits when stdin is closed" {
+  L897    constant        proj_len  const proj_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+  L898    constant        proj  const proj = path_buf[0..proj_len];
+  L913    constant        init_msg  const init_msg = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}";
+  L914    constant        header  const header = std.fmt.comptimePrint("Content-Length: {d}\r\n\r\n", .{init_msg.len});
+  L926    constant        start  const start = cio.milliTimestamp();
+  L927    constant        term  const term = child.wait(io) catch {
+  L933    constant        elapsed  const elapsed = cio.milliTimestamp() - start;
+  L945    test_decl       test "issue-249: nuke.removeJsonMcpServerEntry returns null when key absent" {
+  L948    constant        result  const result = try nuke_mod.removeJsonMcpServerEntry(testing.allocator, "{\"other\":1}", "codedb");
+  L952    test_decl       test "issue-207: ScanState round-trips through atomic" {
+  L953    constant        initial  const initial = mcp_mod.getScanState();
+  L969    test_decl       test "issue-207: ScanState.name covers all states" {
+  L976    test_decl       test "issue-346: root_policy rejects dangerous ambient cwd roots" {
+  L986    test_decl       test "issue-357: bundle preserves nested 'arguments' for codedb_outline" {
+  L1002   constant        bundle_json  const bundle_json =
+  L1008   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+  L1021   test_decl       test "issue-357: bundle surfaces received keys when an op is missing required path" {
+  L1040   constant        bundle_json  const bundle_json =
+  L1043   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+  L1058   test_decl       test "issue-423: bundle emits 'received keys' exactly once per failing op" {
+  L1076   constant        bundle_json  const bundle_json =
+  L1079   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+  L1095   test_decl       test "issue-367: openDataLog truncates orphan bytes from prior session" {
+  L1100   constant        dir_path_len  const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+  L1101   constant        dir_path  const dir_path = dir_buf[0..dir_path_len];
+  L1103   constant        log_path  const log_path = try std.fmt.allocPrint(testing.allocator, "{s}/data.log", .{dir_path});
+  L1106   constant        orphan  const orphan = "ORPHAN_SECRET_TOKEN_FROM_PRIOR_SESSION";
+  L1108   constant        f  const f = try std.Io.Dir.cwd().createFile(io, log_path, .{ .truncate = true });
+  L1117   constant        f  const f = try std.Io.Dir.cwd().openFile(io, log_path, .{});
+  L1119   constant        len  const len = try f.length(io);
+  L1123   constant        diff  const diff = "fresh diff";
+  L1127   constant        f2  const f2 = try std.Io.Dir.cwd().openFile(io, log_path, .{});
+  L1129   constant        new_len  const new_len = try f2.length(io);
+  L1131   constant        read_len  const read_len = try f2.readPositionalAll(io, buf[0..diff.len], 0);
+  L1136   test_decl       test "issue-367-dx: tty summary surfaces received keys on missing-arg error" {
+  L1137   constant        args_json  const args_json =
+  L1140   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L1143   constant        raw_output  const raw_output = "error: missing 'path' argument\nreceived keys: [file_path, weird_key]";
+  L1161   test_decl       test "issue-bug2: tool calls during scan-in-progress hint at scan state" {
+  L1173   constant        prev_state  const prev_state = mcp_mod.getScanState();
+  L1177   constant        args_json  const args_json =
+  L1180   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L1191   test_decl       test "issue-378: search waits briefly for scan to reach ready instead of returning empty" {
+  L1203   constant        prev_state  const prev_state = mcp_mod.getScanState();
+  L1207   struct_def      Flipper  const Flipper = struct {
+  L1208   function        run  fn run(exp: *Explorer) void {
+  L1214   constant        t  const t = try std.Thread.spawn(.{}, Flipper.run, .{&explorer});
+  L1217   constant        args_json  const args_json =
+  L1220   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L1231   test_decl       test "issue-bug5: codedb_read returns binary stub instead of dumping bytes" {
+  L1236   constant        dir_path_len  const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+  L1237   constant        dir_path  const dir_path = dir_buf[0..dir_path_len];
+  L1239   constant        bin_rel  const bin_rel = "blob.bin";
+  L1240   constant        bin_full  const bin_full = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ dir_path, bin_rel });
+  L1243   constant        f  const f = try std.Io.Dir.cwd().createFile(io, bin_full, .{ .truncate = true });
+  L1245   constant        payload  const payload = [_]u8{ 'a', 'b', 0, 'c', 'd', 0, 'e' };
+  L1261   constant        args_json  const args_json = try std.fmt.allocPrint(testing.allocator, "{{\"path\":\"{s}\"}}", .{bin_rel});
+  L1263   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L1274   test_decl       test "issue-bug6: codedb_read errors when line_start > line_end" {
+  L1279   constant        dir_path_len  const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+  L1280   constant        dir_path  const dir_path = dir_buf[0..dir_path_len];
+  L1282   constant        rel  const rel = "small.txt";
+  L1283   constant        full  const full = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ dir_path, rel });
+  L1286   constant        f  const f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
+  L1303   constant        args_json  const args_json = try std.fmt.allocPrint(testing.allocator, "{{\"path\":\"{s}\",\"line_start\":100,\"line_end\":10}}", .{rel});
+  L1305   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L1316   test_decl       test "issue-bug7: codedb_search rejects empty query" {
+  L1327   constant        args_json  const args_json =
+  L1330   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L1340   test_decl       test "issue-bug7: codedb_search rejects negative max_results" {
+  L1351   constant        args_json  const args_json =
+  L1354   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L1364   test_decl       test "issue-bug11: codedb_bundle marks isError when all ops fail" {
+  L1375   constant        args_json  const args_json =
+  L1378   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L1387   test_decl       test "issue-386: telemetry recordToolCall preserves UTF-8 codepoint boundaries" {
+  L1392   constant        dir_path_len  const dir_path_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+  L1393   constant        dir_path  const dir_path = path_buf[0..dir_path_len];
+  L1401   constant        tool_name  const tool_name = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\xe2\x9c\x93_tail";
+  L1405   constant        ndjson_path  const ndjson_path = try std.fmt.allocPrint(testing.allocator, "{s}/telemetry.ndjson", .{dir_path});
+  L1408   constant        contents  const contents = try std.Io.Dir.cwd().readFileAlloc(io, ndjson_path, testing.allocator, .limited(64 * 1024));
+  L1411   constant        tool_field  const tool_field = "\"tool\":\"";
+  L1412   constant        idx  const idx = std.mem.indexOf(u8, contents, tool_field) orelse return error.ToolFieldMissing;
+  L1413   constant        after  const after = contents[idx + tool_field.len ..];
+  L1414   constant        end  const end = std.mem.indexOfScalar(u8, after, '"') orelse return error.ToolFieldUnterminated;
+  L1415   constant        recorded  const recorded = after[0..end];
+  L1422   test_decl       test "issue-387: appendId preserves JSON-RPC numeric and number_string ids" {
+  L1434   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "3.5", .{});
+  L1446   constant        v  const v = std.json.Value{ .number_string = "12345678901234567890" };
+  L1454   test_decl       test "issue-406: root_policy blocks /private/etc (macOS realpath of /etc)" {
+  L1465   test_decl       test "issue-407: root_policy blocks /var and its non-folders subtree" {
+  L1479   test_decl       test "issue-642: /var/home project dirs are indexable on OSTree (Silverblue/CoreOS)" {
+  L1494   test_decl       test "issue-412: bundle reports 'missing tool' for tool field of wrong type" {
+  L1505   constant        bundle_json  const bundle_json =
+  L1508   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+  L1517   test_decl       test "issue-413: bundle truncation drops subsequent ops without telling the caller" {
+  L1543   constant        bundle_json  const bundle_json =
+  L1550   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+  L1561   test_decl       test "issue-424-B: bundle falls through to inline args when arguments is empty object" {
+  L1580   constant        bundle_json  const bundle_json =
+  L1583   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+  L1596   test_decl       test "issue-512: direct tools call accepts inline args when arguments is empty" {
+  L1612   constant        call_json  const call_json =
+  L1615   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, call_json, .{});
+  L1618   constant        pipe  const pipe = try cio.makePipe();
+  L1635   constant        n_raw  const n_raw = cio.readFd(pipe[0], &response_buf);
+  L1637   constant        n  const n: usize = @intCast(n_raw);
+  L1638   constant        response  const response = response_buf[0..n];
+  L1644   test_decl       test "issue-424-D: received-keys diagnostic hints at inline-args workaround when empty" {
+  L1661   constant        bundle_json  const bundle_json =
+  L1664   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+  L1679   test_decl       test "issue-424-A: bundle envelope errors carry the 'error:' prefix consistently" {
+  L1696   constant        bad_shape  const bad_shape =
+  L1699   constant        parsed1  const parsed1 = try std.json.parseFromSlice(std.json.Value, testing.allocator, bad_shape, .{});
+  L1707   constant        no_tool  const no_tool =
+  L1710   constant        parsed2  const parsed2 = try std.json.parseFromSlice(std.json.Value, testing.allocator, no_tool, .{});
+  L1718   test_decl       test "issue-441: bundle rejects codedb_projects sub-op" {
+  L1737   constant        bundle_json  const bundle_json =
+  L1740   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+  L1751   test_decl       test "issue-441: codedb_projects branch is excluded from augmented oneOf" {
+  L1756   constant        augmented  const augmented = try mcp_mod.buildAugmentedToolsList(testing.allocator);
+  L1759   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, augmented, .{});
+  L1762   constant        tools  const tools = parsed.value.object.get("tools").?.array;
+  L1770   constant        one_of  const one_of = bundle_items.?.object.get("oneOf").?.array;
+  L1773   constant        props  const props = branch.object.get("properties").?.object;
+  L1774   constant        tool_v  const tool_v = props.get("tool").?;
+  L1775   constant        tool_const  const tool_const = tool_v.object.get("const") orelse continue;
+  L1780   test_decl       test "issue-443: codedb_bundle is omitted from default tools/list response" {
+  L1796   constant        response  const response = try mcp_mod.buildToolsListResponse(testing.allocator, .{
+  L1802   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+  L1805   constant        tools  const tools = parsed.value.object.get("tools").?.array;
+  L1807   constant        name  const name = t.object.get("name").?.string;
+  L1815   constant        name  const name = t.object.get("name").?.string;
+  L1823   test_decl       test "issue-443: codedb_bundle is advertised when CODEDB_BUNDLE_ENABLED=1" {
+  L1826   constant        response  const response = try mcp_mod.buildToolsListResponse(testing.allocator, .{
+  L1832   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+  L1835   constant        tools  const tools = parsed.value.object.get("tools").?.array;
+  L1843   test_decl       test "issue-434: codedb_bundle ops items schema requires arguments field" {
+  L1852   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, mcp_mod.tools_list, .{});
+  L1855   constant        tools  const tools = parsed.value.object.get("tools").?.array;
+  L1858   constant        name  const name = t.object.get("name").?.string;
+  L1866   constant        ops  const ops = bundle_schema.?.object.get("properties").?.object.get("ops").?;
+  L1867   constant        items  const items = ops.object.get("items").?;
+  L1868   constant        required  const required = items.object.get("required").?.array;
+  L1880   test_decl       test "issue-437: codedb_bundle ops items schema has discriminated oneOf per sub-tool" {
+  L1891   constant        augmented  const augmented = try mcp_mod.buildAugmentedToolsList(testing.allocator);
+  L1894   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, augmented, .{});
+  L1897   constant        tools  const tools = parsed.value.object.get("tools").?.array;
+  L1900   constant        name  const name = t.object.get("name").?.string;
+  L1909   constant        one_of_val  const one_of_val = bundle_items.?.object.get("oneOf");
+  L1911   constant        one_of  const one_of = one_of_val.?.array;
+  L1922   constant        props  const props = branch.object.get("properties").?.object;
+  L1923   constant        tool_v  const tool_v = props.get("tool").?;
+  L1924   constant        tool_const  const tool_const = tool_v.object.get("const");
+  L1929   constant        args_schema  const args_schema = props.get("arguments").?;
+  L1930   constant        args_props  const args_props = args_schema.object.get("properties").?.object;
+  L1933   constant        args_required  const args_required = args_schema.object.get("required").?.array;
+  L1945   constant        props  const props = branch.object.get("properties").?.object;
+  L1946   constant        tool_v  const tool_v = props.get("tool").?;
+  L1947   constant        tool_const  const tool_const = tool_v.object.get("const") orelse continue;
+  L1952   test_decl       test "issue-503: parsePositional treats `codedb mcp <path>` as path-as-root" {
+  L1958   constant        argv  const argv = [_][]const u8{ "codedb", "mcp", "/tmp/proj" };
+  L1959   constant        p  const p = main_mod.parsePositional(&argv);
+  L1966   test_decl       test "issue-503: `codedb <path> mcp` still works (original order)" {
+  L1967   constant        argv  const argv = [_][]const u8{ "codedb", "/tmp/proj", "mcp" };
+  L1968   constant        p  const p = main_mod.parsePositional(&argv);
+  L1975   test_decl       test "issue-503: `codedb mcp` alone keeps cwd-as-root deferred behavior" {
+  L1978   constant        argv  const argv = [_][]const u8{ "codedb", "mcp" };
+  L1979   constant        p  const p = main_mod.parsePositional(&argv);
+  L1986   test_decl       test "issue-502: `codedb mcp --help` rewrites to --help, does not start server" {
+  L1987   constant        argv  const argv = [_][]const u8{ "codedb", "mcp", "--help" };
+  L1988   constant        p  const p = main_mod.parsePositional(&argv);
+  L1993   test_decl       test "issue-502: `codedb mcp -h` rewrites to --help" {
+  L1994   constant        argv  const argv = [_][]const u8{ "codedb", "mcp", "-h" };
+  L1995   constant        p  const p = main_mod.parsePositional(&argv);
+  L2000   test_decl       test "parsePositional: existing commands still parse correctly (regression)" {
+  L2003   constant        argv  const argv = [_][]const u8{ "codedb", "tree" };
+  L2004   constant        p  const p = main_mod.parsePositional(&argv);
+  L2011   constant        argv  const argv = [_][]const u8{ "codedb", "/path/to/root", "tree" };
+  L2012   constant        p  const p = main_mod.parsePositional(&argv);
+  L2019   constant        argv  const argv = [_][]const u8{ "codedb", "--version" };
+  L2020   constant        p  const p = main_mod.parsePositional(&argv);
+  L2025   constant        argv  const argv = [_][]const u8{ "codedb", "--help" };
+  L2026   constant        p  const p = main_mod.parsePositional(&argv);
+  L2031   constant        argv  const argv = [_][]const u8{"codedb"};
+  L2032   constant        p  const p = main_mod.parsePositional(&argv);
+  L2037   constant        argv  const argv = [_][]const u8{ "codedb", "--mcp" };
+  L2038   constant        p  const p = main_mod.parsePositional(&argv);
+  L2043   test_decl       test "issue-639: unexpanded ${workspaceFolder} root normalizes to cwd, non-explicit" {
+  L2054   constant        argv  const argv = [_][]const u8{ "codedb", "${workspaceFolder}", "mcp" };
+  L2055   constant        p  const p = main_mod.parsePositional(&argv);
+  L2063   constant        argv  const argv = [_][]const u8{ "codedb", "mcp", "${workspaceFolder}" };
+  L2064   constant        p  const p = main_mod.parsePositional(&argv);
+  L2072   test_decl       test "issue-639: parsePositional root/explicit matrix across arg forms" {
+  L2078   struct_def      Case  const Case = struct {
+  L2084   constant        cases  const cases = [_]Case{
+  L2101   constant        p  const p = main_mod.parsePositional(c.argv);
+  L2109   test_decl       test "issue-639: placeholder is normalized in cli_args only, never re-rewritten in main" {
+  L2114   constant        main_src  const main_src = @embedFile("main.zig");
+  L2118   test_decl       test "issue-639: mcp root-resolution gate predicates" {
+  L2119   constant        ca  const ca = cli_args_mod;
+  L2132   test_decl       test "issue-639: parsed ${workspaceFolder} feeds the gates like a bare `codedb mcp`" {
+  L2138   constant        forms  const forms = [_][]const []const u8{
+  L2143   constant        p  const p = main_mod.parsePositional(argv);
+  L2149   test_decl       test "isolate: isHelpRequest matches the three help spellings, nothing else" {
+  L2150   constant        ca  const ca = cli_args_mod;
+  L2163   test_decl       test "isolate: parsePositional routes every help form through isHelpRequest" {
+  L2167   constant        ca  const ca = cli_args_mod;
+  L2169   constant        bare  const bare = main_mod.parsePositional(&.{ "codedb", form });
+  L2171   constant        after_mcp  const after_mcp = main_mod.parsePositional(&.{ "codedb", "mcp", form });
+  L2176   test_decl       test "isolate: hand-written help-flag triple is gone from main.zig" {
+  L2181   constant        main_src  const main_src = @embedFile("main.zig");
+  L2185   test_decl       test "issue-502: isValidMcpFlag whitelist rejects unknown flags" {
+  L2196   test_decl       test "issue-502: findGitRootFrom walks up to a .git directory" {
+  L2204   constant        tmp_path_len  const tmp_path_len = try tmp.dir.realPathFile(io, ".", &tmp_buf);
+  L2205   constant        tmp_path  const tmp_path = tmp_buf[0..tmp_path_len];
+  L2209   constant        deep  const deep = try std.fmt.bufPrint(&probe, "{s}/sub/deep", .{tmp_path});
+  L2212   constant        got  const got = main_mod.findGitRootFrom(io, &probe, deep.len);
+  L2217   test_decl       test "issue-502: findGitRootFrom returns null when no .git is found upward" {
+  L2224   constant        tmp_path_len  const tmp_path_len = try tmp.dir.realPathFile(io, ".", &tmp_buf);
+  L2225   constant        tmp_path  const tmp_path = tmp_buf[0..tmp_path_len];
+  L2228   constant        lonely  const lonely = try std.fmt.bufPrint(&probe, "{s}/lonely", .{tmp_path});
+  L2234   constant        got  const got = main_mod.findGitRootFrom(io, &probe, lonely.len);
+  L2240   test_decl       test "issue-506: negotiateProtocolVersion echoes a recognized client version" {
+  L2250   test_decl       test "issue-506: negotiateProtocolVersion returns latest for newer-than-known clients" {
+  L2254   test_decl       test "mcp-2026-07-28: 2025-11-25 clients keep their revision instead of dropping to 2024-11-05" {
+  L2258   test_decl       test "issue-680: auto policy install respects a prior user removal" {
+  L2266   test_decl       test "issue-506: negotiateProtocolVersion returns oldest for ancient/unknown clients" {
+  L2272   test_decl       test "issue-506: negotiateProtocolVersion returns null on empty input" {
+  L2276   test_decl       test "mcp-2026-07-28: server/discover payload advertises versions, caching, and identity" {
+  L2277   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, mcp_mod.discover_result, .{});
+  L2279   constant        root  const root = parsed.value.object;
+  L2281   constant        versions  const versions = root.get("supportedVersions").?.array;
+  L2287   constant        si  const si = root.get("_meta").?.object.get("io.modelcontextprotocol/serverInfo").?.object;
+  L2291   test_decl       test "mcp-2026-07-28: every result carries resultType and _meta serverInfo" {
+  L2296   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, buf.items, .{});
+  L2298   constant        result  const result = parsed.value.object.get("result").?.object;
+  L2300   constant        si  const si = result.get("_meta").?.object.get("io.modelcontextprotocol/serverInfo").?.object;
+  L2306   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, buf.items, .{});
+  L2308   constant        result  const result = parsed.value.object.get("result").?.object;
+  L2315   test_decl       test "mcp-2026-07-28: payload declaring resultType is not double-wrapped" {
+  L2322   test_decl       test "mcp-2026-07-28: unsupported params._meta protocol version is flagged, supported ones pass" {
+  L2324   constant        req  const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2030-01-01\"}}}";
+  L2325   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, req, .{});
+  L2330   constant        req  const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"}}}";
+  L2331   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, req, .{});
+  L2336   constant        req  const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}";
+  L2337   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, req, .{});
+  L2343   test_decl       test "mcp-2026-07-28: tools/list result carries ttlMs and cacheScope" {
+  L2344   constant        response  const response = try mcp_mod.buildToolsListResponse(testing.allocator, .{
+  L2349   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, response, .{});
+  L2351   constant        root  const root = parsed.value.object;
+  L2357   test_decl       test "issue-507: indexFileOutlineOnly files remain searchable via tier 3" {
+  L2369   constant        path  const path = "bin/orchestrator";
+  L2370   constant        content  const content =
+  L2383   constant        hits  const hits = try explorer.searchContent("Doran Orchestrator operating contract", testing.allocator, 10);
+  L2398   test_decl       test "issue-528: parseLineRange accepts valid ranges and EOF sentinel" {
+  L2399   constant        r  const r = try main_mod.parseLineRange("1-3");
+  L2403   constant        eof  const eof = try main_mod.parseLineRange("10-$");
+  L2407   constant        eof2  const eof2 = try main_mod.parseLineRange("5-end");
+  L2411   test_decl       test "issue-528: parseLineRange rejects malformed/zero/reversed ranges" {
+  L2423   test_decl       test "issue-528: parseSearchArgs flags any order, max-results, unknown/empty rejected" {
+  L2425   constant        a  const a = try main_mod.parseSearchArgs(&[_][]const u8{ "search", "--max-results", "1", "allocator" }, 1);
+  L2430   constant        b  const b = try main_mod.parseSearchArgs(&[_][]const u8{ "search", "allocator", "--paths-only" }, 1);
+  L2440   constant        c  const c = try main_mod.parseSearchArgs(&[_][]const u8{ "search", "--", "--foo" }, 1);
+  L2445   test_decl       test "issue-528: parseDepsArgs flags before/after path, rejects unknown + bad depth" {
+  L2447   constant        a  const a = try mcp_mod.parseDepsArgs(&[_][]const u8{ "deps", "--depends-on", "src/main.zig" }, 1);
+  L2453   constant        b  const b = try mcp_mod.parseDepsArgs(&[_][]const u8{ "deps", "src/main.zig", "--transitive", "--max-depth", "3" }, 1);
+  L2465   test_decl       test "issue-528: hasExtraCliArgs rejects unused positional args for arity-zero commands" {
+  L2472   test_decl       test "issue-528: finishCli maps error-prefixed handler output to exit 1" {
+  L2473   constant        alloc  const alloc = testing.allocator;
+  L2492   test_decl       test "issue-538: temp roots are indexable only when CODEDB_ALLOW_TEMP opts in" {
+  L2511   test_decl       test "issue-570: codedb_context falls back to plain words for all-lowercase tasks" {
+  L2530   constant        args_json  const args_json =
+  L2533   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L2546   test_decl       test "issue-573: cli bridge must not bind a leading flag as the positional name" {
+  L2560   constant        argv  const argv = [_][]const u8{ "--max-results", "3", "indexFile" };
+  L2561   constant        code  const code = mcp_mod.runCliTool(io, testing.allocator, &explorer, &store, ".", "callers", &argv, 0, &out);
+  L2576   constant        sargs_json  const sargs_json =
+  L2579   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, sargs_json, .{});
+  L2588   test_decl       test "issue-576: codedb_ls distinguishes a non-indexed path from an empty listing" {
+  L2607   constant        bad_json  const bad_json =
+  L2610   constant        bad_parsed  const bad_parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bad_json, .{});
+  L2619   constant        ok_json  const ok_json =
+  L2622   constant        ok_parsed  const ok_parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, ok_json, .{});
+  L2631   test_decl       test "issue-578: cli bridge serves codedb_changes" {
+  L2646   constant        argv  const argv = [_][]const u8{};
+  L2647   constant        code  const code = mcp_mod.runCliTool(io, testing.allocator, &explorer, &store, ".", "changes", &argv, 0, &out);
+  L2656   test_decl       test "audit: isSensitivePath blocks *.env suffix files and .git-credentials" {
+  L2674   test_decl       test "issue-568: deps empty list prints a (0 files) summary" {
+  L2689   constant        rev_json  const rev_json =
+  L2692   constant        rev_parsed  const rev_parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, rev_json, .{});
+  L2701   constant        fwd_json  const fwd_json =
+  L2704   constant        fwd_parsed  const fwd_parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, fwd_json, .{});
+  L2713   test_decl       test "issue-589: isSensitivePath blocks all OpenSSH default private key names" {
+  L2719   constant        keys  const keys = [_][]const u8{ "id_ecdsa", "id_dsa", "id_ecdsa_sk", "id_ed25519_sk" };
+  L2730   test_decl       test "issue-592: cli-daemon spawn lock is exclusive per project" {
+  L2743   constant        dir_len  const dir_len = try tmp.dir.realPathFile(io, if (builtin.os.tag == .windows) "unicode-å" else ".", &path_buf);
+  L2744   constant        dir_path  const dir_path = path_buf[0..dir_len];
+  L2746   constant        held  const held = main_mod.daemonLockTryAcquire(dir_path);
+  L2757   test_decl       test "cli-mcp-parity: runCliTool bridges navigation commands to MCP handlers" {
+  L2760   constant        aa  const aa = arena.allocator();
+  L2772   constant        code  const code = mcp_mod.runCliTool(io, aa, &exp, &store, ".", "glob", &.{ "codedb", ".", "glob", "src/*.zig" }, 3, &out);
+  L2782   constant        code  const code = mcp_mod.runCliTool(io, aa, &exp, &store, ".", "symbol", &.{ "codedb", ".", "symbol", "Store" }, 3, &out);
+  L2803   test_decl       test "issue-531: codedb_context max_tokens packs sections by value under the budget" {
+  L2837   constant        name  const name = try std.fmt.bufPrint(&name_buf, "src/mention_{d}.zig", .{i});
+  L2838   constant        content  const content = try std.fmt.bufPrint(&content_buf,
+  L2857   constant        args_full  const args_full =
+  L2860   constant        parsed_full  const parsed_full = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_full, .{});
+  L2866   constant        args_budget  const args_budget =
+  L2869   constant        parsed_budget  const parsed_budget = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_budget, .{});
+  L2893   test_decl       test "issue-626: isBareIdentifier gates the search nudge" {
+  L2907   test_decl       test "issue-626: fullFileReadHint only nudges on large whole-file reads" {
+  L2914   constant        hint  const hint = Explorer.fullFileReadHint(big.items);
+  L2919   test_decl       test "issue-626: depsHint fires only on a single unambiguous definition" {
+  L2922   constant        h  const h = mcp_mod.depsHint(1);
+  L2933   test_decl       test "split: extracted modules expose their public API" {
+  L2975   test_decl       test "split: main.zig re-exports forward to the extracted impls" {
+  L2978   constant        argv  const argv = [_][]const u8{ "codedb", "search", "needle" };
+  L2979   constant        via_main  const via_main = main_mod.parsePositional(&argv);
+  L2980   constant        via_mod  const via_mod = cli_args_mod.parsePositional(&argv);
+  L2985   constant        lr_main  const lr_main = try main_mod.parseLineRange("2-8");
+  L2986   constant        lr_mod  const lr_mod = try cli_args_mod.parseLineRange("2-8");
+  L2990   constant        sa_main  const sa_main = try main_mod.parseSearchArgs(&[_][]const u8{ "search", "--paths-only", "needle" }, 1);
+  L2991   constant        sa_mod  const sa_mod = try cli_args_mod.parseSearchArgs(&[_][]const u8{ "search", "--paths-only", "needle" }, 1);
+  L3005   test_decl       test "split: cli_args parsing behaviour survives the move" {
+  L3015   constant        p  const p = cli_args_mod.parsePositional(&[_][]const u8{ "codedb", "mcp", "/proj" });
+  L3024   test_decl       test "split: cli_proxy daemon lock works via main and cli_proxy" {
+  L3028   constant        dir_len  const dir_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+  L3029   constant        dir_path  const dir_path = path_buf[0..dir_len];
+  L3032   constant        held  const held = cli_proxy_mod.daemonLockTryAcquire(dir_path);
+  L3039   test_decl       test "issue-624: convergence nudge is suppressed for format=json" {
+  imports: MCP  (x1)
+  L3046   constant        warn  const warn = MCP.ConvergenceGovernor.WARN_AT;
+  L3061   test_decl       test "issue-632: codedb_read raw mode returns byte-exact range without line-number prefixes" {
+  L3072   constant        dir_path_len  const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+  L3073   constant        dir_path  const dir_path = dir_buf[0..dir_path_len];
+  L3075   constant        rel  const rel = "small.txt";
+  L3076   constant        full  const full = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ dir_path, rel });
+  L3079   constant        f  const f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
+  L3098   constant        args_json  const args_json = try std.fmt.allocPrint(testing.allocator, "{{\"path\":\"{s}\",\"line_start\":1,\"line_end\":2,\"raw\":true}}", .{rel});
+  L3100   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L3114   test_decl       test "issue-633: `index` is a recognized command (not a usage/unknown error)" {
+  L3121   constant        p  const p = main_mod.parsePositional(&[_][]const u8{ "codedb", "index" });
+  L3127   constant        p2  const p2 = main_mod.parsePositional(&[_][]const u8{ "codedb", "/proj", "index" });
+  L3132   test_decl       test "issue-632: codedb_read raw mode coverage — full-file byte-exact, default unchanged" {
+  L3141   constant        dir_path_len  const dir_path_len = try tmp_dir.dir.realPathFile(io, ".", &dir_buf);
+  L3142   constant        dir_path  const dir_path = dir_buf[0..dir_path_len];
+  L3144   constant        rel  const rel = "small.txt";
+  L3145   constant        content  const content = "alpha\nbeta\ngamma\n";
+  L3146   constant        full  const full = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ dir_path, rel });
+  L3149   constant        f  const f = try std.Io.Dir.cwd().createFile(io, full, .{ .truncate = true });
+  L3166   struct_def      Run  const Run = struct {
+  L3167   function        call  fn call(ctx: *mcp_mod.BenchContext, st: *Store, ex: *Explorer, ag: *AgentRegistry, args_json: []const u8, out: *std.ArrayList(u8)) !void {
+  L3168   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L3204   test_decl       test "issue-619: serve/mcp daemon reclaims the cli socket after the owner exits" {
+  L3207   constant        abs_root  const abs_root = "/codedb-test-issue619-reclaim";
+  L3209   constant        sock_path  const sock_path = cli_proxy_mod.cliSocketPath(&pbuf, abs_root).?;
+  L3211   constant        sock_z  const sock_z = try cio.bufPrintZ(&zbuf, "{s}", .{sock_path});
+  L3218   constant        owner  const owner = cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &sd).?;
+  L3229   struct_def      Reclaimer  const Reclaimer = struct {
+  L3234   function        run  fn run(self: *@This()) void {
+  L3240   constant        t  const t = try std.Thread.spawn(.{}, Reclaimer.run, .{&rc});
+  L3258   struct_def      CliHandoverOwnerSim  const CliHandoverOwnerSim = struct {
+  L3265   function        run  fn run(self: *@This()) void {
+  L3271   constant        conn  const conn = std.c.accept(self.fd, null, null);
+  L3277   constant        n  const n = std.c.read(conn, hdr[off..].ptr, hdr.len - off);
+  L3282   constant        blob_len  const blob_len = std.mem.readInt(u32, hdr[1..5], .little);
+  L3287   constant        n  const n = std.c.read(conn, buf[boff..].ptr, blob_len - boff);
+  L3314   test_decl       test "issue-619: serve/mcp daemon signals a live owner to yield instead of waiting out the retry cadence" {
+  L3317   constant        abs_root  const abs_root = "/codedb-test-issue619-handover";
+  L3319   constant        sock_path  const sock_path = cli_proxy_mod.cliSocketPath(&pbuf, abs_root).?;
+  L3321   constant        sock_z  const sock_z = try cio.bufPrintZ(&zbuf, "{s}", .{sock_path});
+  L3328   constant        owner_fd  const owner_fd = cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &owner_sd).?;
+  L3330   constant        owner_thread  const owner_thread = try std.Thread.spawn(.{}, CliHandoverOwnerSim.run, .{&owner_sim});
+  L3338   constant        start_ms  const start_ms = cio.milliTimestamp();
+  L3339   constant        newcomer_fd  const newcomer_fd = cli_proxy_mod.cliAcquireListener(sock_path, true, 3000, &newcomer_sd);
+  L3340   constant        elapsed_ms  const elapsed_ms = cio.milliTimestamp() - start_ms;
+  L3349   test_decl       test "windows: spawnDetached command line round-trips argv with trailing backslashes" {
+  L3351   constant        alloc  const alloc = testing.allocator;
+  L3353   constant        argv  const argv = [_][]const u8{ "C:\\tools\\codedb.exe", "D:\\", "cli-daemon", "say \"hi\"", "a\\\\b", "tail\\\\" };
+  L3354   constant        cmd  const cmd = cio.windowsCommandLine(alloc, &argv) orelse return error.TestUnexpectedResult;
+  L3356   constant        cmd_w  const cmd_w = try std.unicode.utf8ToUtf16LeAlloc(alloc, cmd);
+  L3362   constant        got  const got = it.next() orelse return error.TestUnexpectedResult;
+  L3368   test_decl       test "search: exact-symbol query surfaces the definition site inline (fewer round-trips, #1)" {
+  L3385   constant        search_json  const search_json =
+  L3388   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, search_json, .{});
+  L3399   test_decl       test "mcp: emit-rich-blocks defaults lean for agent clients, rich for GUI panels" {
+  L3413   test_decl       test "issue-680: policy upsert never splices on a marker-shaped string in user prose" {
+  L3414   constant        block  const block = try codex_setup.buildPolicyBlock(testing.allocator);
+  L3417   constant        original  const original =
+  L3426   constant        updated  const updated = (try codex_setup.upsertPolicyBlock(testing.allocator, original, block)) orelse
+  L3440   test_decl       test "issue-680: policy upsert repairs an unterminated block instead of appending a second one" {
+  L3441   constant        block  const block = try codex_setup.buildPolicyBlock(testing.allocator);
+  L3444   constant        damaged  const damaged = "# House rules\n\n<!-- codedb:begin v0.0.1 -->\nHALF WRITTEN\nKEEP THIS USER LINE\n";
+  L3446   constant        first  const first = (try codex_setup.upsertPolicyBlock(testing.allocator, damaged, block)) orelse
+  L3464   test_decl       test "issue-680: uninstall strips every codedb policy block, install collapses to one" {
+  L3465   constant        two  const two =
+  L3472   constant        removed  const removed = (try codex_setup.removePolicyBlock(testing.allocator, two)) orelse
+  L3482   constant        block  const block = try codex_setup.buildPolicyBlock(testing.allocator);
+  L3485   constant        collapsed  const collapsed = (try codex_setup.upsertPolicyBlock(testing.allocator, two, block)) orelse
+  L3498   test_decl       test "installers: the website copies stay byte-identical to install/install.sh" {
+  L3499   constant        alloc  const alloc = testing.allocator;
+  L3500   constant        canonical  const canonical = std.Io.Dir.cwd().readFileAlloc(io, "install/install.sh", alloc, .limited(1 << 20)) catch
+  L3507   constant        copies  const copies = [_][]const u8{ "website/app/install_script.sh", "website/dist/install.sh" };
+  L3509   constant        copy  const copy = std.Io.Dir.cwd().readFileAlloc(io, rel, alloc, .limited(1 << 20)) catch
+  L3516   test_decl       test "tools/list core profile advertises the navigation set with full descriptions" {
+  L3517   constant        resp  const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_core = true });
+  L3522   constant        tools  const tools = parsed.value.object.get("tools").?.array;
+  L3527   constant        name  const name = t.object.get("name").?.string;
+  L3532   constant        desc  const desc = t.object.get("description").?.string;
+  L3539   test_decl       test "tools/list slim profile stays six terse tools" {
+  L3540   constant        resp  const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_slim = true });
+  L3545   constant        tools  const tools = parsed.value.object.get("tools").?.array;
+  L3549   constant        name  const name = t.object.get("name").?.string;
+  L3551   constant        desc  const desc = t.object.get("description").?.string;
+  L3557   test_decl       test "context: identifier candidates merge with plain concept words" {
+  L3560   constant        A  const A = arena.allocator();
+  L3562   constant        task  const task = "find where the portable snapshot file with META/TREE sections is written to disk";
+  L3577   test_decl       test "tools/list mini profile advertises six tools with full descriptions" {
+  L3578   constant        resp  const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_mini = true });
+  L3587   constant        tools  const tools = parsed.value.object.get("tools").?.array;
+  L3592   constant        name  const name = t.object.get("name").?.string;
+  L3597   constant        desc  const desc = t.object.get("description").?.string;
+  L3607   test_decl       test "issue: codedb_callers returns results when max_results is smaller than the filtered-out prefix" {
+  L3651   constant        args_json  const args_json =
+  L3654   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L3670   test_decl       test "issue: codedb_callers caps the reported call sites at max_results" {
+  L3696   constant        args_json  const args_json =
+  L3699   constant        parsed  const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+  L3719   function        renderCallersFixture  fn renderCallersFixture(
+  L3742   test_decl       test "issue: codedb_callers excludes a line that mentions the symbol only inside string literals" {
+  L3759   test_decl       test "issue: codedb_callers excludes a test declaration that names the symbol in its title" {
+  L3777   test_decl       test "issue: codedb_callers keeps real calls inside and outside test bodies" {
+  L3796   test_decl       test "issue-682: codedb_callers excludes a symbol mentioned only in a trailing comment" {
+  L3816   test_decl       test "issue-682: codedb_callers keeps a call after a string containing the comment marker" {
+  L3832   test_decl       test "issue-682: codedb_callers recognizes PHP and Swift trailing comments" {
+  L3852   test_decl       test "issue-682: codedb_callers keeps calls after markers inside literals and block comments" {
+  L3872   test_decl       test "issue-682: codedb_callers excludes mentions inside raw literals and block comments" {
+  L3896   test_decl       test "issue-682: codedb_callers keeps template-regex and R backtick calls" {
+  L3914   test_decl       test "issue-682: codedb_callers recognizes shell comments after operators" {
+  L3930   test_decl       test "issue: codedb_callers keeps a symbol used outside a string on a line that has strings" {

@@ -1,0 +1,41 @@
+        if (compact and isCommentOrBlank(line, language)) continue;
+        if (line_numbers) {
+            try w.print("{s}{d:>5} | {s}\n", .{ line_prefix, line_num, line });
+        } else {
+            try w.print("{s}\n", .{line});
+        }
+    }
+}
+
+/// Returns true if a line is blank or a single-line comment for the given language.
+pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return true;
+    return switch (language) {
+        .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
+        .python, .ruby, .r, .shell => std.mem.startsWith(u8, trimmed, "#"),
+        .hcl => std.mem.startsWith(u8, trimmed, "#") or std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .protobuf, .mlir, .tablegen => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .svelte, .vue, .astro => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*") or std.mem.startsWith(u8, trimmed, "<!--"),
+        .css => std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .scss => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .sql => std.mem.startsWith(u8, trimmed, "--") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .fortran => std.mem.startsWith(u8, trimmed, "!"),
+        .llvm_ir => std.mem.startsWith(u8, trimmed, ";"),
+        .rescript => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+        .ocaml => std.mem.startsWith(u8, trimmed, "(*"),
+        else => false,
+    };
+}
+
+fn appendTargetLineHits(
+    path: []const u8,
+    content: []const u8,
+    allocator: std.mem.Allocator,
+    target_lines: []const u32,
+    max_results: usize,
+    result_list: *std.ArrayList(SearchResult),
+) !void {
+    if (target_lines.len == 0 or result_list.items.len >= max_results) return;
+    result_list.ensureUnusedCapacity(allocator, @min(target_lines.len, max_results - result_list.items.len)) catch {};
+    var target_i: usize = 0;

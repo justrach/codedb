@@ -1,0 +1,101 @@
+        .fallback => "codedb.codegraff.com/latest.json",
+    }});
+    out.p("  asset:  {s}\n", .{asset_name});
+
+    const manifest = fetchChecksumsManifest(allocator, resolved.value) catch |err| {
+        out.p("{s}✗{s} failed to download checksums for v{s}: {s}\n", .{ s.red, s.reset, resolved.value, @errorName(err) });
+        std.process.exit(1);
+    };
+    defer allocator.free(manifest);
+
+    const expected_hash = checksumForBinary(manifest, asset_name) orelse {
+        out.p("{s}✗{s} release v{s} is missing a checksum for {s}\n", .{ s.red, s.reset, resolved.value, asset_name });
+        std.process.exit(1);
+    };
+
+    const self_path = std.process.executablePathAlloc(io, allocator) catch |err| {
+        out.p("{s}✗{s} cannot locate current executable: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        std.process.exit(1);
+    };
+    defer allocator.free(self_path);
+
+    downloadAndReplaceBinary(io, allocator, resolved.value, asset_name, self_path, expected_hash) catch |err| {
+        out.p("{s}✗{s} update failed: {s}\n", .{ s.red, s.reset, @errorName(err) });
+        std.process.exit(1);
+    };
+
+    out.p("{s}✓{s} updated to codedb {s}\n", .{ s.green, s.reset, resolved.value });
+
+}
+
+pub fn assetNameForTarget(os_tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?[]const u8 {
+    return switch (os_tag) {
+        .macos => switch (arch) {
+            .aarch64 => "codedb-darwin-arm64",
+            .x86_64 => "codedb-darwin-x86_64",
+            else => null,
+        },
+        .linux => switch (arch) {
+            .aarch64 => "codedb-linux-arm64",
+            .x86_64 => "codedb-linux-x86_64",
+            else => null,
+        },
+        .windows => switch (arch) {
+            .x86_64 => "codedb-windows-x86_64.exe",
+            else => null,
+        },
+        else => null,
+    };
+}
+
+/// Policy for (re-)registering the Claude Code PreToolUse hook (#658),
+/// mirrored by install.sh: explicit opt-outs always win, and a receipt from a
+/// previous registration with no surviving settings entry means the user
+/// removed the hook — a removal that must stick across unattended updates.
+pub fn shouldRegisterHooks(env_no_hooks: bool, marker_exists: bool, receipt_exists: bool, entry_present: bool) bool {
+    if (env_no_hooks or marker_exists) return false;
+    if (receipt_exists and !entry_present) return false;
+    return true;
+}
+
+pub fn compareVersions(current: []const u8, target: []const u8) !std.math.Order {
+    var current_it = std.mem.splitScalar(u8, trimVersionPrefix(current), '.');
+    var target_it = std.mem.splitScalar(u8, trimVersionPrefix(target), '.');
+
+    while (true) {
+        const current_part = current_it.next();
+        const target_part = target_it.next();
+
+        if (current_part == null and target_part == null) return .eq;
+
+        const current_num = if (current_part) |part| try parseVersionPart(part) else 0;
+        const target_num = if (target_part) |part| try parseVersionPart(part) else 0;
+
+        if (current_num < target_num) return .lt;
+        if (current_num > target_num) return .gt;
+    }
+}
+
+pub fn compareVersionsForUpdate(current: []const u8, target: []const u8) !std.math.Order {
+    const order = try compareVersions(current, target);
+    if (order == .gt and try targetSupersedesCurrent(current, target)) return .lt;
+    return order;
+}
+
+pub fn targetSupersedesCurrent(current: []const u8, target: []const u8) !bool {
+    const normalized_current = trimVersionPrefix(current);
+    for (superseded_releases) |release| {
+        if (!std.mem.eql(u8, normalized_current, release.current)) continue;
+        return (try compareVersions(target, release.minimum_target)) != .lt;
+    }
+    return false;
+}
+
+pub fn checksumForBinary(manifest: []const u8, binary_name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, manifest, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+
+        const hash_end = std.mem.indexOfAny(u8, line, " \t") orelse continue;
+        const hash = line[0..hash_end];

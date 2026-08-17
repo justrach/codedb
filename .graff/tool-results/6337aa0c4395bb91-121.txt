@@ -1,0 +1,66 @@
+/// so those builds trampoline through a thread with an explicit 64 MB stack.
+/// Optimized builds have a ~190 KB frame and run directly on the process stack,
+/// avoiding an OS thread create/join on every CLI invocation.
+///
+/// #504: must have a non-error-union return type. A Zig binary with
+/// `pub fn main(...) !void` ad-hoc-signed and run via Rosetta (or, in the
+/// user-reported case, on a native macOS Intel build that ends up with a
+/// similar startup-path tripwire) segfaults BEFORE main runs — the runtime's
+/// error-handling wrapper is what crashes. Verified with a minimal repro:
+/// `pub fn main(init) void { ... }` works; `!void` does not. Same crash
+/// happens if the entry point spawns a thread before writing to stderr.
+/// So we keep the entry point synchronous + infallible, and push any
+/// fallible work into mainImpl which runs after we've already had a chance
+/// to surface usage / --version output via the fast path.
+pub fn main(init: std.process.Init.Minimal) void {
+    const argv = cio.bootstrapArgs(init.args);
+    cio.setProcessArgs(argv);
+    if (handleFastPath(argv)) return;
+    if (builtin.mode != .Debug) {
+        mainInner(argv);
+        return;
+    }
+    mainTrampoline(argv) catch |err| {
+        // Surface the failure on stderr so users see something even if the
+        // worker thread crashes during startup.
+        var buf: [256]u8 = undefined;
+        if (std.fmt.bufPrint(&buf, "codedb: fatal startup error: {s}\n", .{@errorName(err)})) |msg| {
+            cio.File.stderr().writeAll(msg) catch {};
+        } else |_| {}
+        std.process.exit(1);
+    };
+}
+
+fn mainTrampoline(argv: []const [*:0]const u8) !void {
+    const thread = try std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, mainInner, .{argv});
+    thread.join();
+}
+
+/// Returns true if the invocation was handled and `main` should exit.
+/// Designed to be the cheapest possible path — uses raw stdout writes
+/// instead of any of the heavier init machinery in mainImpl, so a bug
+/// further down the stack can't take out plain `codedb` / `--help` /
+/// `--version` invocations.
+fn handleFastPath(argv: []const [*:0]const u8) bool {
+    const stdout_fd: c_int = 1;
+    const stderr_fd: c_int = 2;
+
+    if (argv.len < 2) {
+        const msg =
+            "codedb  code intelligence server\n\n" ++
+            "  usage: codedb [root] <command> [args...]\n\n" ++
+            "  run `codedb --help` for the full command list.\n";
+        (cio.File{ .handle = stderr_fd }).writeAll(msg) catch {};
+        std.process.exit(1);
+    }
+
+    const a1 = std.mem.span(argv[1]);
+    if (std.mem.eql(u8, a1, "--version") or std.mem.eql(u8, a1, "-v") or std.mem.eql(u8, a1, "version")) {
+        var buf: [128]u8 = undefined;
+        const out = std.fmt.bufPrint(&buf, "codedb {s}\n", .{release_info.semver}) catch {
+            std.process.exit(0);
+        };
+        (cio.File{ .handle = stdout_fd }).writeAll(out) catch {};
+        std.process.exit(0);
+    }
+

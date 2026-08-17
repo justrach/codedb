@@ -1,0 +1,171 @@
+345:    }
+346:
+347:    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+348:    hasher.final(&digest);
+349:    const digest_hex = std.fmt.bytesToHex(digest, .lower);
+350:    return allocator.dupe(u8, &digest_hex);
+351:}
+352:
+353:// ── Auto-update ──────────────────────────────────────────────────────────────
+354://
+355:// On startup we kick off a detached invocation of the built-in, checksum-
+356:// verified updater. The check is:
+357://   • disabled when CODEDB_NO_AUTO_UPDATE is set in the environment
+358://   • throttled to at most once every 24 hours, tracked in
+359://     ~/.codedb/last_auto_update_check (a u64 little-endian unix-ms timestamp)
+360:// The update itself runs in a background thread so network failures never block
+361:// server startup. If the binary on disk gets replaced mid-session, the kernel
+362:// keeps the old inode mapped for the running process; subsequent invocations
+363:// get the new binary.
+364:
+365:const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
+366:const auto_update_stamp_filename = "last_auto_update_check";
+367:
+368:/// Pure decision function — useful for tests. Returns true when the next
+369:/// auto-update attempt should fire.
+370:pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
+371:    if (env_disabled) return false;
+372:    const last = last_check_ms orelse return true;
+373:    if (last > now_ms) return true;
+374:    const delta: i128 = @as(i128, now_ms) - @as(i128, last);
+375:    return delta >= auto_update_throttle_ms;
+376:}
+377:
+378:pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+379:    const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+380:    const home = cio.homeDir() orelse return;
+381:    if (home.len == 0) return;
+382:
+383:    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
+384:    defer allocator.free(dir_path);
+385:    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+386:
+387:    const stamp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, auto_update_stamp_filename }) catch return;
+388:    defer allocator.free(stamp_path);
+389:
+390:    const last_ms = readAutoUpdateStamp(io, stamp_path);
+391:    const now_ms = cio.milliTimestamp();
+392:    if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+393:
+394:    const executable_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
+395:    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{executable_path}) catch {
+396:        std.heap.page_allocator.free(executable_path);
+397:        return;
+398:    };
+399:    thread.detach();
+400:
+401:    // Only throttle after the worker launches so a local spawn failure can be
+402:    // retried on the next MCP startup.
+403:    writeAutoUpdateStamp(io, stamp_path, now_ms);
+404:}
+405:
+406:pub fn autoUpdateArgv(executable_path: []const u8) [2][]const u8 {
+407:    return .{ executable_path, "update" };
+408:}
+409:
+410:fn autoUpdateWorker(executable_path: []u8) void {
+411:    defer std.heap.page_allocator.free(executable_path);
+412:
+413:    // Invoke the checksum-verifying built-in updater directly. Capturing and
+414:    // discarding its output keeps the MCP stdio transport clean, while avoiding
+415:    // a shell or execution of a remotely downloaded install script.
+416:    const argv = autoUpdateArgv(executable_path);
+417:    const result = cio.runCapture(.{
+418:        .allocator = std.heap.page_allocator,
+419:        .argv = &argv,
+420:        .max_output_bytes = 64 * 1024,
+421:    }) catch return;
+422:    std.heap.page_allocator.free(result.stdout);
+423:    std.heap.page_allocator.free(result.stderr);
+424:}
+425:
+426:fn readAutoUpdateStamp(io: std.Io, path: []const u8) ?i64 {
+427:    var buf: [8]u8 = undefined;
+428:    var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+429:    defer f.close(io);
+430:    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+431:    if (n < 8) return null;
+432:    return std.mem.readInt(i64, buf[0..8], .little);
+433:}
+434:
+435:fn writeAutoUpdateStamp(io: std.Io, path: []const u8, ms: i64) void {
+408:}
+409:
+410:fn autoUpdateWorker(executable_path: []u8) void {
+411:    defer std.heap.page_allocator.free(executable_path);
+412:
+413:    // Invoke the checksum-verifying built-in updater directly. Capturing and
+414:    // discarding its output keeps the MCP stdio transport clean, while avoiding
+415:    // a shell or execution of a remotely downloaded install script.
+416:    const argv = autoUpdateArgv(executable_path);
+417:    const result = cio.runCapture(.{
+418:        .allocator = std.heap.page_allocator,
+419:        .argv = &argv,
+420:        .max_output_bytes = 64 * 1024,
+421:    }) catch return;
+422:    std.heap.page_allocator.free(result.stdout);
+423:    std.heap.page_allocator.free(result.stderr);
+424:}
+425:
+426:fn readAutoUpdateStamp(io: std.Io, path: []const u8) ?i64 {
+427:    var buf: [8]u8 = undefined;
+428:    var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+429:    defer f.close(io);
+430:    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+431:    if (n < 8) return null;
+432:    return std.mem.readInt(i64, buf[0..8], .little);
+433:}
+434:
+435:fn writeAutoUpdateStamp(io: std.Io, path: []const u8, ms: i64) void {
+436:    var buf: [8]u8 = undefined;
+437:    std.mem.writeInt(i64, &buf, ms, .little);
+438:    const f = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true }) catch return;
+439:    defer f.close(io);
+440:    f.writePositionalAll(io, &buf, 0) catch {};
+441:}
+410:    var gov2: MCP.ConvergenceGovernor = .{};
+411:    try testing.expectEqual(@as(usize, 1), gov2.record(1));
+412:    try testing.expectEqual(@as(usize, 1), gov2.record(2));
+413:    try testing.expectEqual(@as(usize, 1), gov2.record(3));
+414:}
+415:
+416:test "auto-update: shouldRunAutoUpdate gates correctly" {
+417:    const day_ms: i64 = 24 * 60 * 60 * 1000;
+418:
+419:    // Disabled by env: never runs
+420:    try testing.expect(!update_mod.shouldRunAutoUpdate(0, null, true));
+421:    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, null, true));
+422:    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms * 100, 0, true));
+423:
+424:    // First run (no stamp): always runs when not disabled
+425:    try testing.expect(update_mod.shouldRunAutoUpdate(0, null, false));
+426:
+427:    // Throttled: <24h since last check → skip
+428:    try testing.expect(!update_mod.shouldRunAutoUpdate(day_ms - 1, 0, false));
+429:
+430:    // Exactly 24h since last check → run
+431:    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms, 0, false));
+432:
+433:    // Long after last check → run
+434:    try testing.expect(update_mod.shouldRunAutoUpdate(day_ms * 7, 0, false));
+435:}
+436:
+437:test "auto-update: routes through the built-in updater without a shell" {
+438:    const argv = update_mod.autoUpdateArgv("/tmp/codedb with spaces");
+439:
+440:    try testing.expectEqual(@as(usize, 2), argv.len);
+441:    try testing.expectEqualStrings("/tmp/codedb with spaces", argv[0]);
+442:    try testing.expectEqualStrings("update", argv[1]);
+443:}
+444:
+445:test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp stamp file" {
+446:    // Reproduces the case where the stamp file contains a timestamp in the
+447:    // future relative to the wall clock — for example, after an NTP clock
+448:    // correction that rolls the clock back, or after a stamp written by a
+449:    // host with a fast clock. The current implementation computes
+450:    // (now - last) and only fires when that delta >= 24h, so a future
+451:    // `last` produces a negative delta and the check is silently skipped
+452:    // for as long as the stamp stays in the future — potentially many days.
+453:    //
+454:    // Expected: a wildly future stamp should NOT prevent the next check
+455:    // from firing. The simplest correct behavior is: if last > now, treat

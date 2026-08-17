@@ -1,0 +1,1031 @@
+✓ src/cio.zig  zig  ⚡ 51.0µs
+    1 | //! cio.zig — 0.16 stdlib compatibility shim.
+    2 | //!
+    3 | //! 0.16 removed std.fs.File.{stdout,stderr,stdin}, cio.Mutex/RwLock,
+    4 | //! std.time.Timer, std.time.nanoTimestamp, std.process.Child.run, and
+    5 | //! cio.posixGetenv. This shim wraps libc/pthread primitives so existing
+    6 | //! call sites continue to work with minimal import-line changes.
+    7 | 
+    8 | const std = @import("std");
+    9 | const builtin = @import("builtin");
+   10 | 
+   11 | const is_windows = builtin.os.tag == .windows;
+   12 | const is_freestanding = builtin.os.tag == .freestanding;
+   13 | 
+   14 | // POSIX libc byte-I/O on integer fds. On Windows the CRT spells the same
+   15 | // primitives with a leading underscore; the cross-platform wrappers below pick
+   16 | // the right symbol per target. Unreferenced externs are never linked, so the
+   17 | // posix decls cost nothing on a Windows build and vice-versa.
+   18 | const posix_libc = struct {
+   19 |     extern "c" fn write(fd: c_int, ptr: [*]const u8, len: usize) isize;
+   20 |     extern "c" fn read(fd: c_int, ptr: [*]u8, len: usize) isize;
+   21 |     extern "c" fn isatty(fd: c_int) c_int;
+   22 |     extern "c" fn close(fd: c_int) c_int;
+   23 |     extern "c" fn open(path: [*:0]const u8, oflag: c_int) c_int;
+   24 |     extern "c" fn pipe(fds: *[2]c_int) c_int;
+   25 |     extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+   26 |     extern "c" fn clock_gettime(id: c_int, ts: *std.c.timespec) c_int;
+   27 | };
+   28 | const win_libc = struct {
+   29 |     extern "c" fn _write(fd: c_int, ptr: [*]const u8, count: c_uint) c_int;
+   30 |     extern "c" fn _read(fd: c_int, ptr: [*]u8, count: c_uint) c_int;
+   31 |     extern "c" fn _isatty(fd: c_int) c_int;
+   32 |     extern "c" fn _close(fd: c_int) c_int;
+   33 |     extern "c" fn _pipe(fds: *[2]c_int, size: c_uint, mode: c_int) c_int;
+   34 |     extern "c" fn _putenv_s(name: [*:0]const u8, value: [*:0]const u8) c_int;
+   35 |     extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+   36 | };
+   37 | 
+   38 | fn write(fd: c_int, ptr: [*]const u8, len: usize) isize {
+   39 |     if (is_windows) return win_libc._write(fd, ptr, @intCast(@min(len, @as(usize, 0x7fff_ffff))));
+   40 |     return posix_libc.write(fd, ptr, len);
+   41 | }
+   42 | 
+   43 | fn read(fd: c_int, ptr: [*]u8, len: usize) isize {
+   44 |     if (is_windows) return win_libc._read(fd, ptr, @intCast(@min(len, @as(usize, 0x7fff_ffff))));
+   45 |     return posix_libc.read(fd, ptr, len);
+   46 | }
+   47 | 
+   48 | fn isatty(fd: c_int) c_int {
+   49 |     return if (is_windows) win_libc._isatty(fd) else posix_libc.isatty(fd);
+   50 | }
+   51 | 
+   52 | fn close(fd: c_int) c_int {
+   53 |     return if (is_windows) win_libc._close(fd) else posix_libc.close(fd);
+   54 | }
+   55 | 
+   56 | fn getenv(name: [*:0]const u8) ?[*:0]const u8 {
+   57 |     return if (is_windows) win_libc.getenv(name) else posix_libc.getenv(name);
+   58 | }
+   59 | 
+   60 | /// Ignore SIGPIPE so a closed downstream pipe (`codedb ... | head`) surfaces as
+   61 | /// a write error instead of killing the process. No-op on Windows — there is no
+   62 | /// SIGPIPE; a broken pipe is reported through the write call's return value.
+   63 | pub fn ignoreSigpipe() void {
+   64 |     if (is_windows or is_freestanding) {
+   65 |         return;
+   66 |     } else {
+   67 |         var act: std.posix.Sigaction = .{
+   68 |             .handler = .{ .handler = std.posix.SIG.IGN },
+   69 |             .mask = std.posix.sigemptyset(),
+   70 |             .flags = 0,
+   71 |         };
+   72 |         std.posix.sigaction(std.posix.SIG.PIPE, &act, null);
+   73 |     }
+   74 | }
+   75 | 
+   76 | /// Detach a daemonized child from its controlling terminal: start a new
+   77 | /// session (so it survives the spawning shell / parent CLI) and point
+   78 | /// stdin/stdout/stderr at /dev/null (so it never holds the terminal open or
+   79 | /// writes stray bytes to it). Best-effort — every step ignores errors, since a
+   80 | /// failure here only means the daemon keeps an inherited fd, not that it
+   81 | /// malfunctions. Called once at cli-daemon startup. On Windows the equivalent
+   82 | /// detachment is requested at spawn time (DETACHED_PROCESS), so this is a no-op.
+   83 | pub fn detachFromTerminal() void {
+   84 |     if (is_windows or is_freestanding) {
+   85 |         return;
+   86 |     } else {
+   87 |         _ = std.c.setsid();
+   88 |         // O_RDWR == 2 on both Darwin and Linux.
+   89 |         const fd = posix_libc.open("/dev/null", 2);
+   90 |         if (fd >= 0) {
+   91 |             _ = std.c.dup2(fd, 0);
+   92 |             _ = std.c.dup2(fd, 1);
+   93 |             _ = std.c.dup2(fd, 2);
+   94 |             if (fd > 2) _ = close(fd);
+   95 |         }
+   96 |     }
+   97 | }
+   98 | 
+   99 | // ── Stdio ────────────────────────────────────────────────────────────────
+  100 | 
+  101 | /// Zig 0.17 renamed std.fmt.bufPrintZ to bufPrintSentinel.
+  102 | pub fn bufPrintZ(buf: []u8, comptime fmt: []const u8, args: anytype) std.fmt.BufPrintError![:0]u8 {
+  103 |     return std.fmt.bufPrintSentinel(buf, fmt, args, 0);
+  104 | }
+  105 | 
+  106 | pub const File = struct {
+  107 |     handle: c_int,
+  108 | 
+  109 |     pub fn stdout() File {
+  110 |         return .{ .handle = 1 };
+  111 |     }
+  112 |     pub fn stderr() File {
+  113 |         return .{ .handle = 2 };
+  114 |     }
+  115 |     pub fn stdin() File {
+  116 |         return .{ .handle = 0 };
+  117 |     }
+  118 | 
+  119 |     pub fn isTty(self: File) bool {
+  120 |         return isatty(self.handle) != 0;
+  121 |     }
+  122 | 
+  123 |     pub fn writeAll(self: File, data: []const u8) !void {
+  124 |         var rem = data;
+  125 |         while (rem.len > 0) {
+  126 |             const n = write(self.handle, rem.ptr, rem.len);
+  127 |             if (n <= 0) return error.WriteFailed;
+  128 |             rem = rem[@intCast(n)..];
+  129 |         }
+  130 |     }
+  131 | 
+  132 |     pub fn print(self: File, comptime fmt: []const u8, args: anytype) !void {
+  133 |         var buf: [8192]u8 = undefined;
+  134 |         const s = std.fmt.bufPrint(&buf, fmt, args) catch {
+  135 |             const big = try std.fmt.allocPrint(std.heap.c_allocator, fmt, args);
+  136 |             defer std.heap.c_allocator.free(big);
+  137 |             return self.writeAll(big);
+  138 |         };
+  139 |         try self.writeAll(s);
+  140 |     }
+  141 | };
+  142 | 
+  143 | // ── Windows kernel32 (time + sync) ─────────────────────────────────────────
+  144 | // 0.16's std.time has no nanoTimestamp/Timer and std.Io.Mutex needs an Io, so
+  145 | // cio talks to the OS directly: pthread + clock_gettime on POSIX, SRWLOCK +
+  146 | // QueryPerformanceCounter / FILETIME on Windows.
+  147 | const winsync = if (is_windows) struct {
+  148 |     const BOOL = std.os.windows.BOOL;
+  149 |     const DWORD = std.os.windows.DWORD;
+  150 |     const FILETIME = extern struct { dwLowDateTime: u32, dwHighDateTime: u32 };
+  151 |     const SRWLOCK = extern struct { ptr: ?*anyopaque = null };
+  152 |     extern "kernel32" fn GetSystemTimePreciseAsFileTime(lpSystemTimeAsFileTime: *FILETIME) callconv(.winapi) void;
+  153 |     extern "kernel32" fn QueryPerformanceCounter(lpPerformanceCount: *i64) callconv(.winapi) BOOL;
+  154 |     extern "kernel32" fn QueryPerformanceFrequency(lpFrequency: *i64) callconv(.winapi) BOOL;
+  155 |     extern "kernel32" fn Sleep(dwMilliseconds: DWORD) callconv(.winapi) void;
+  156 |     extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;
+  157 |     extern "kernel32" fn AcquireSRWLockExclusive(l: *SRWLOCK) callconv(.winapi) void;
+  158 |     extern "kernel32" fn ReleaseSRWLockExclusive(l: *SRWLOCK) callconv(.winapi) void;
+  159 |     extern "kernel32" fn TryAcquireSRWLockExclusive(l: *SRWLOCK) callconv(.winapi) u8;
+  160 |     extern "kernel32" fn AcquireSRWLockShared(l: *SRWLOCK) callconv(.winapi) void;
+  161 |     extern "kernel32" fn ReleaseSRWLockShared(l: *SRWLOCK) callconv(.winapi) void;
+  162 |     extern "kernel32" fn TryAcquireSRWLockShared(l: *SRWLOCK) callconv(.winapi) u8;
+  163 | } else struct {};
+  164 | 
+  165 | const CLOCK_REALTIME: c_int = 0;
+  166 | const CLOCK_MONOTONIC: c_int = if (builtin.os.tag == .macos) 6 else 1;
+  167 | 
+  168 | // ── Threads / Sync ───────────────────────────────────────────────────────
+  169 | // POSIX: pthread. Windows: SRWLOCK (slim reader/writer lock; zero-init == valid).
+  170 | 
+  171 | pub const Mutex = if (is_windows) struct {
+  172 |     inner: winsync.SRWLOCK = .{},
+  173 | 
+  174 |     pub fn lock(self: *Mutex) void {
+  175 |         winsync.AcquireSRWLockExclusive(&self.inner);
+  176 |     }
+  177 |     pub fn unlock(self: *Mutex) void {
+  178 |         winsync.ReleaseSRWLockExclusive(&self.inner);
+  179 |     }
+  180 |     pub fn tryLock(self: *Mutex) bool {
+  181 |         return winsync.TryAcquireSRWLockExclusive(&self.inner) != 0;
+  182 |     }
+  183 | } else if (is_freestanding) struct {
+  184 |     pub fn lock(_: *Mutex) void {}
+  185 |     pub fn unlock(_: *Mutex) void {}
+  186 |     pub fn tryLock(_: *Mutex) bool {
+  187 |         return true;
+  188 |     }
+  189 | } else struct {
+  190 |     inner: std.c.pthread_mutex_t = .{},
+  191 | 
+  192 |     pub fn lock(self: *Mutex) void {
+  193 |         _ = std.c.pthread_mutex_lock(&self.inner);
+  194 |     }
+  195 |     pub fn unlock(self: *Mutex) void {
+  196 |         _ = std.c.pthread_mutex_unlock(&self.inner);
+  197 |     }
+  198 |     pub fn tryLock(self: *Mutex) bool {
+  199 |         return std.c.pthread_mutex_trylock(&self.inner) == .SUCCESS;
+  200 |     }
+  201 | };
+  202 | 
+  203 | pub const RwLock = if (is_windows) struct {
+  204 |     inner: winsync.SRWLOCK = .{},
+  205 | 
+  206 |     pub fn lock(self: *RwLock) void {
+  207 |         winsync.AcquireSRWLockExclusive(&self.inner);
+  208 |     }
+  209 |     pub fn unlock(self: *RwLock) void {
+  210 |         winsync.ReleaseSRWLockExclusive(&self.inner);
+  211 |     }
+  212 |     pub fn lockShared(self: *RwLock) void {
+  213 |         winsync.AcquireSRWLockShared(&self.inner);
+  214 |     }
+  215 |     pub fn unlockShared(self: *RwLock) void {
+  216 |         winsync.ReleaseSRWLockShared(&self.inner);
+  217 |     }
+  218 |     pub fn tryLock(self: *RwLock) bool {
+  219 |         return winsync.TryAcquireSRWLockExclusive(&self.inner) != 0;
+  220 |     }
+  221 |     pub fn tryLockShared(self: *RwLock) bool {
+  222 |         return winsync.TryAcquireSRWLockShared(&self.inner) != 0;
+  223 |     }
+  224 | } else if (is_freestanding) struct {
+  225 |     pub fn lock(_: *RwLock) void {}
+  226 |     pub fn unlock(_: *RwLock) void {}
+  227 |     pub fn lockShared(_: *RwLock) void {}
+  228 |     pub fn unlockShared(_: *RwLock) void {}
+  229 |     pub fn tryLock(_: *RwLock) bool {
+  230 |         return true;
+  231 |     }
+  232 |     pub fn tryLockShared(_: *RwLock) bool {
+  233 |         return true;
+  234 |     }
+  235 | } else struct {
+  236 |     inner: std.c.pthread_rwlock_t = .{},
+  237 | 
+  238 |     pub fn lock(self: *RwLock) void {
+  239 |         _ = std.c.pthread_rwlock_wrlock(&self.inner);
+  240 |     }
+  241 |     pub fn unlock(self: *RwLock) void {
+  242 |         _ = std.c.pthread_rwlock_unlock(&self.inner);
+  243 |     }
+  244 |     pub fn lockShared(self: *RwLock) void {
+  245 |         _ = std.c.pthread_rwlock_rdlock(&self.inner);
+  246 |     }
+  247 |     pub fn unlockShared(self: *RwLock) void {
+  248 |         _ = std.c.pthread_rwlock_unlock(&self.inner);
+  249 |     }
+  250 |     pub fn tryLock(self: *RwLock) bool {
+  251 |         return std.c.pthread_rwlock_trywrlock(&self.inner) == .SUCCESS;
+  252 |     }
+  253 |     pub fn tryLockShared(self: *RwLock) bool {
+  254 |         return std.c.pthread_rwlock_tryrdlock(&self.inner) == .SUCCESS;
+  255 |     }
+  256 | };
+  257 | 
+  258 | // ── Time ─────────────────────────────────────────────────────────────────
+  259 | 
+  260 | /// Wall-clock nanoseconds since the Unix epoch.
+  261 | pub fn nanoTimestamp() i128 {
+  262 |     if (is_freestanding) return 0;
+  263 |     if (is_windows) {
+  264 |         var ft: winsync.FILETIME = undefined;
+  265 |         winsync.GetSystemTimePreciseAsFileTime(&ft);
+  266 |         // 100-ns ticks since 1601-01-01; shift to the 1970 epoch.
+  267 |         const ticks: u64 = (@as(u64, ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+  268 |         return (@as(i128, ticks) - 116444736000000000) * 100;
+  269 |     } else {
+  270 |         var ts: std.c.timespec = undefined;
+  271 |         _ = posix_libc.clock_gettime(CLOCK_REALTIME, &ts);
+  272 |         return @as(i128, ts.sec) * 1_000_000_000 + ts.nsec;
+  273 |     }
+  274 | }
+  275 | 
+  276 | pub fn milliTimestamp() i64 {
+  277 |     return @intCast(@divTrunc(nanoTimestamp(), 1_000_000));
+  278 | }
+  279 | 
+  280 | /// Monotonic tick source for Timer (raw counter units, not nanoseconds).
+  281 | fn monoTicks() u64 {
+  282 |     if (is_freestanding) return 0;
+  283 |     if (is_windows) {
+  284 |         var ctr: i64 = undefined;
+  285 |         _ = winsync.QueryPerformanceCounter(&ctr);
+  286 |         return @intCast(ctr);
+  287 |     } else {
+  288 |         var ts: std.c.timespec = undefined;
+  289 |         _ = posix_libc.clock_gettime(CLOCK_MONOTONIC, &ts);
+  290 |         return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+  291 |     }
+  292 | }
+  293 | 
+  294 | fn ticksToNs(ticks: u64) u64 {
+  295 |     if (is_windows) {
+  296 |         var freq: i64 = undefined;
+  297 |         _ = winsync.QueryPerformanceFrequency(&freq);
+  298 |         return @intCast(@as(u128, ticks) * 1_000_000_000 / @as(u128, @intCast(freq)));
+  299 |     } else {
+  300 |         return ticks; // already nanoseconds
+  301 |     }
+  302 | }
+  303 | 
+  304 | pub const Timer = struct {
+  305 |     start_ticks: u64,
+  306 | 
+  307 |     pub fn start() !Timer {
+  308 |         return .{ .start_ticks = monoTicks() };
+  309 |     }
+  310 | 
+  311 |     pub fn read(self: *Timer) u64 {
+  312 |         return ticksToNs(monoTicks() - self.start_ticks);
+  313 |     }
+  314 | 
+  315 |     pub fn lap(self: *Timer) u64 {
+  316 |         const now = monoTicks();
+  317 |         const delta = ticksToNs(now - self.start_ticks);
+  318 |         self.start_ticks = now;
+  319 |         return delta;
+  320 |     }
+  321 | };
+  322 | 
+  323 | // ── Environment ──────────────────────────────────────────────────────────
+  324 | 
+  325 | /// Non-cryptographic random u64 mixing nanotime, PID, and thread ID.
+  326 | /// Replaces `std.crypto.random.int(u64)` (removed in 0.16) for tmp-file
+  327 | /// suffix collision avoidance. Thread-safe: each thread gets a unique
+  328 | /// mix per-call even at the same nanosecond.
+  329 | pub fn randU64() u64 {
+  330 |     const now: u128 = @bitCast(nanoTimestamp());
+  331 |     const ns: u64 = @truncate(now);
+  332 |     const sec: u64 = @truncate(now / 1_000_000_000);
+  333 |     const tid: u64 = if (is_freestanding) 0 else @intCast(std.Thread.getCurrentId());
+  334 |     const pid: u64 = if (is_freestanding)
+  335 |         0
+  336 |     else if (is_windows)
+  337 |         @intCast(winsync.GetCurrentProcessId())
+  338 |     else
+  339 |         @intCast(std.c.getpid());
+  340 |     // splitmix64-style final mixing to avoid close-timestamp collisions
+  341 |     var x = ns ^ (sec *% 2) ^ (tid *% (1 << 17)) ^ (pid *% (1 << 23));
+  342 |     x ^= x >> 33;
+  343 |     x *%= 0xff51afd7ed558ccd;
+  344 |     x ^= x >> 33;
+  345 |     x *%= 0xc4ceb9fe1a85ec53;
+  346 |     x ^= x >> 33;
+  347 |     return x;
+  348 | }
+  349 | 
+  350 | pub fn currentProcessId() u32 {
+  351 |     if (is_freestanding) return 0;
+  352 |     if (is_windows) return @intCast(winsync.GetCurrentProcessId());
+  353 |     return @intCast(std.c.getpid());
+  354 | }
+  355 | 
+  356 | pub fn userId() usize {
+  357 |     if (is_windows or is_freestanding) return 0;
+  358 |     return @intCast(std.c.getuid());
+  359 | }
+  360 | 
+  361 | pub fn sleepMs(ms: u64) void {
+  362 |     if (is_freestanding) return;
+  363 |     if (is_windows) {
+  364 |         winsync.Sleep(@intCast(@min(ms, @as(u64, std.math.maxInt(u32)))));
+  365 |     } else {
+  366 |         var ts: std.c.timespec = .{
+  367 |             .sec = @intCast(ms / 1000),
+  368 |             .nsec = @intCast((ms % 1000) * 1_000_000),
+  369 |         };
+  370 |         _ = std.c.nanosleep(&ts, null);
+  371 |     }
+  372 | }
+  373 | 
+  374 | pub const PipeError = error{PipeFailed};
+  375 | pub fn makePipe() PipeError![2]c_int {
+  376 |     var fds: [2]c_int = .{ -1, -1 };
+  377 |     if (is_windows) {
+  378 |         // msvcrt _pipe(fds, size, textmode); O_BINARY (0x8000) keeps bytes raw.
+  379 |         if (win_libc._pipe(&fds, 64 * 1024, 0x8000) != 0) return error.PipeFailed;
+  380 |     } else {
+  381 |         if (posix_libc.pipe(&fds) != 0) return error.PipeFailed;
+  382 |     }
+  383 |     return fds;
+  384 | }
+  385 | 
+  386 | pub fn closeFd(fd: c_int) void {
+  387 |     _ = close(fd);
+  388 | }
+  389 | 
+  390 | pub fn readFd(fd: c_int, buf: []u8) isize {
+  391 |     return read(fd, buf.ptr, buf.len);
+  392 | }
+  393 | 
+  394 | pub fn posixGetenv(name: []const u8) ?[]const u8 {
+  395 |     if (is_freestanding) return null;
+  396 |     var buf: [256]u8 = undefined;
+  397 |     if (name.len >= buf.len) return null;
+  398 |     @memcpy(buf[0..name.len], name);
+  399 |     buf[name.len] = 0;
+  400 |     const ptr = getenv(@ptrCast(&buf)) orelse return null;
+  401 |     return std.mem.span(ptr);
+  402 | }
+  403 | 
+  404 | /// The user's home directory. POSIX reads $HOME; Windows has no HOME and
+  405 | /// exposes the equivalent as %USERPROFILE%. Returns a borrowed env slice or
+  406 | /// null when neither is set.
+  407 | pub fn homeDir() ?[]const u8 {
+  408 |     if (posixGetenv("HOME")) |h| return h;
+  409 |     if (is_windows) {
+  410 |         if (posixGetenv("USERPROFILE")) |h| return h;
+  411 |     }
+  412 |     return null;
+  413 | }
+  414 | 
+  415 | extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+  416 | extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+  417 | 
+  418 | /// Set an environment variable (libc setenv), visible to subsequent posixGetenv
+  419 | /// reads in this process. Names ≥256 / values ≥4096 bytes are ignored. Used by
+  420 | /// CLI opt-in switches that flip in-process policy — e.g. `--allow-temp` sets
+  421 | /// CODEDB_ALLOW_TEMP (#538) — and by tests.
+  422 | pub fn posixSetenv(name: []const u8, value: []const u8) void {
+  423 |     var nbuf: [256]u8 = undefined;
+  424 |     var vbuf: [4096]u8 = undefined;
+  425 |     if (name.len >= nbuf.len or value.len >= vbuf.len) return;
+  426 |     @memcpy(nbuf[0..name.len], name);
+  427 |     nbuf[name.len] = 0;
+  428 |     @memcpy(vbuf[0..value.len], value);
+  429 |     vbuf[value.len] = 0;
+  430 |     if (is_windows) {
+  431 |         _ = win_libc._putenv_s(@ptrCast(&nbuf), @ptrCast(&vbuf));
+  432 |     } else {
+  433 |         _ = setenv(@ptrCast(&nbuf), @ptrCast(&vbuf), 1);
+  434 |     }
+  435 | }
+  436 | 
+  437 | /// Remove an environment variable (libc unsetenv).
+  438 | pub fn posixUnsetenv(name: []const u8) void {
+  439 |     var nbuf: [256]u8 = undefined;
+  440 |     if (name.len >= nbuf.len) return;
+  441 |     @memcpy(nbuf[0..name.len], name);
+  442 |     nbuf[name.len] = 0;
+  443 |     if (is_windows) {
+  444 |         // _putenv_s with an empty value removes the variable.
+  445 |         _ = win_libc._putenv_s(@ptrCast(&nbuf), "");
+  446 |     } else {
+  447 |         _ = unsetenv(@ptrCast(&nbuf));
+  448 |     }
+  449 | }
+  450 | 
+  451 | /// Read one line from stdin (fd 0) into `buf`, trimming trailing CR/LF. Returns
+  452 | /// null on EOF/error. For interactive CLI prompts only — NEVER call this in the
+  453 | /// MCP server path, where stdin is the JSON-RPC transport.
+  454 | pub fn readLine(buf: []u8) ?[]const u8 {
+  455 |     const n = read(0, buf.ptr, buf.len);
+  456 |     if (n <= 0) return null;
+  457 |     return std.mem.trimEnd(u8, buf[0..@intCast(n)], "\r\n");
+  458 | }
+  459 | 
+  460 | // ── Arguments ────────────────────────────────────────────────────────────
+  461 | 
+  462 | // Darwin: argv lives in __NSGetArgv() (libc, from <crt_externs.h>).
+  463 | // Linux/other POSIX: 0.16 doesn't expose argv globally — main() must call
+  464 | // `setProcessArgs(argv_slice)` once at startup to populate `process_args`.
+  465 | extern "c" fn _NSGetArgc() *c_int;
+  466 | extern "c" fn _NSGetArgv() *[*][*:0]u8;
+  467 | 
+  468 | var process_args: ?[]const [*:0]const u8 = null;
+  469 | 
+  470 | /// Called once by `pub fn main` to register the argv slice on non-Darwin
+  471 | /// platforms. No-op on macOS (it reads from `_NSGetArgv` directly).
+  472 | pub fn setProcessArgs(args: []const [*:0]const u8) void {
+  473 |     process_args = args;
+  474 | }
+  475 | 
+  476 | /// Cross-platform argv bootstrap for `pub fn main`. POSIX/macOS already hand
+  477 | /// the entry point a `[]const [*:0]const u8` vector; Windows hands a WTF-16
+  478 | /// command line that must be parsed and materialized into the same shape.
+  479 | /// Returns a slice usable by the fast path and `setProcessArgs`. On Windows the
+  480 | /// backing allocation lives for the process lifetime (argv is never freed),
+  481 | /// mirroring how the POSIX vector is owned by the runtime.
+  482 | pub fn bootstrapArgs(args: std.process.Args) []const [*:0]const u8 {
+  483 |     if (builtin.os.tag != .windows) return args.vector;
+  484 | 
+  485 |     const alloc = std.heap.page_allocator;
+  486 |     const slice = args.toSlice(alloc) catch return &[_][*:0]const u8{};
+  487 |     const out = alloc.alloc([*:0]const u8, slice.len) catch return &[_][*:0]const u8{};
+  488 |     for (out, slice) |*dst, src| dst.* = src.ptr;
+  489 |     return out;
+  490 | }
+  491 | 
+  492 | /// Shim for cio.argsAlloc (removed in 0.16). Returns a duplicated
+  493 | /// slice of argv strings owned by the allocator; free with argsFree.
+  494 | pub fn argsAlloc(alloc: std.mem.Allocator) ![][:0]u8 {
+  495 |     const argc: usize = if (builtin.os.tag == .macos)
+  496 |         @intCast(_NSGetArgc().*)
+  497 |     else
+  498 |         (process_args orelse return error.ProcessArgsNotSet).len;
+  499 |     const out = try alloc.alloc([:0]u8, argc);
+  500 |     errdefer alloc.free(out);
+  501 |     var filled: usize = 0;
+  502 |     errdefer {
+  503 |         var i: usize = 0;
+  504 |         while (i < filled) : (i += 1) alloc.free(out[i]);
+  505 |     }
+  506 |     while (filled < argc) : (filled += 1) {
+  507 |         const cstr: [*:0]const u8 = if (builtin.os.tag == .macos)
+  508 |             _NSGetArgv().*[filled]
+  509 |         else
+  510 |             process_args.?[filled];
+  511 |         const s = std.mem.span(cstr);
+  512 |         const dup = try alloc.allocSentinel(u8, s.len, 0);
+  513 |         @memcpy(dup[0..s.len], s);
+  514 |         out[filled] = dup;
+  515 |     }
+  516 |     return out;
+  517 | }
+  518 | 
+  519 | pub fn argsFree(alloc: std.mem.Allocator, args: [][:0]u8) void {
+  520 |     for (args) |a| alloc.free(a);
+  521 |     alloc.free(args);
+  522 | }
+  523 | 
+  524 | // ── ArrayList writer helper (replaces 0.15's ArrayList(u8).writer(alloc)) ────
+  525 | 
+  526 | pub const ListWriter = struct {
+  527 |     list: *std.ArrayList(u8),
+  528 |     alloc: std.mem.Allocator,
+  529 | 
+  530 |     pub fn writeAll(self: ListWriter, bytes: []const u8) !void {
+  531 |         try self.list.appendSlice(self.alloc, bytes);
+  532 |     }
+  533 |     pub fn writeByte(self: ListWriter, b: u8) !void {
+  534 |         try self.list.append(self.alloc, b);
+  535 |     }
+  536 |     pub fn writeByteNTimes(self: ListWriter, b: u8, n: usize) !void {
+  537 |         try self.list.appendNTimes(self.alloc, b, n);
+  538 |     }
+  539 |     pub fn writeBytesNTimes(self: ListWriter, bytes: []const u8, n: usize) !void {
+  540 |         var i: usize = 0;
+  541 |         while (i < n) : (i += 1) try self.list.appendSlice(self.alloc, bytes);
+  542 |     }
+  543 |     pub fn print(self: ListWriter, comptime fmt: []const u8, args: anytype) !void {
+  544 |         var stack_buf: [8192]u8 = undefined;
+  545 |         const s = std.fmt.bufPrint(&stack_buf, fmt, args) catch {
+  546 |             const big = try std.fmt.allocPrint(self.alloc, fmt, args);
+  547 |             defer self.alloc.free(big);
+  548 |             try self.list.appendSlice(self.alloc, big);
+  549 |             return;
+  550 |         };
+  551 |         try self.list.appendSlice(self.alloc, s);
+  552 |     }
+  553 | };
+  554 | 
+  555 | pub fn listWriter(list: *std.ArrayList(u8), alloc: std.mem.Allocator) ListWriter {
+  556 |     return .{ .list = list, .alloc = alloc };
+  557 | }
+  558 | 
+  559 | // ── Subprocess ───────────────────────────────────────────────────────────
+  560 | 
+  561 | pub const CaptureResult = struct {
+  562 |     stdout: []u8,
+  563 |     stderr: []u8,
+  564 |     term: Term,
+  565 | 
+  566 |     pub const Term = union(enum) {
+  567 |         Exited: u8,
+  568 |         Signal: u32,
+  569 |         Stopped: u32,
+  570 |         Unknown: u32,
+  571 |     };
+  572 | };
+  573 | 
+  574 | pub const RunOptions = struct {
+  575 |     allocator: std.mem.Allocator,
+  576 |     argv: []const []const u8,
+  577 |     cwd: ?[]const u8 = null,
+  578 |     max_output_bytes: usize = 50 * 1024 * 1024,
+  579 | };
+  580 | extern "c" fn _NSGetEnviron() *[*:null]?[*:0]u8;
+  581 | 
+  582 | // posix_spawn family — declared directly via extern "c" so this builds on
+  583 | // both Darwin and Linux. (std.c.posix_spawnp is gated to .isDarwin() in 0.16
+  584 | // and would fail to compile on Linux even though glibc/musl provide it.)
+  585 | const PosixSpawnFileActions = opaque {};
+  586 | const PosixSpawnAttr = opaque {};
+  587 | const pid_t = c_int;
+  588 | 
+  589 | extern "c" fn posix_spawnp(
+  590 |     pid: *pid_t,
+  591 |     path: [*:0]const u8,
+  592 |     file_actions: ?*const PosixSpawnFileActions,
+  593 |     attrp: ?*const PosixSpawnAttr,
+  594 |     argv: [*:null]const ?[*:0]const u8,
+  595 |     envp: [*:null]const ?[*:0]const u8,
+  596 | ) c_int;
+  597 | extern "c" fn posix_spawn_file_actions_init(fa: *PosixSpawnFileActions) c_int;
+  598 | extern "c" fn posix_spawn_file_actions_destroy(fa: *PosixSpawnFileActions) c_int;
+  599 | extern "c" fn posix_spawn_file_actions_adddup2(fa: *PosixSpawnFileActions, fd: c_int, newfd: c_int) c_int;
+  600 | extern "c" fn posix_spawn_file_actions_addclose(fa: *PosixSpawnFileActions, fd: c_int) c_int;
+  601 | extern "c" fn posix_spawn_file_actions_addchdir_np(fa: *PosixSpawnFileActions, path: [*:0]const u8) c_int;
+  602 | extern "c" fn posix_spawn_file_actions_addopen(fa: *PosixSpawnFileActions, fd: c_int, path: [*:0]const u8, oflag: c_int, mode: c_uint) c_int;
+  603 | extern "c" fn waitpid(pid: pid_t, status: *c_int, options: c_int) pid_t;
+  604 | 
+  605 | // posix_spawn_file_actions_t is a struct of unknown size on each libc. We
+  606 | // allocate a generously-sized buffer and cast to the opaque pointer type.
+  607 | const PosixSpawnFAStorage = [256]u8;
+  608 | 
+  609 | /// Shim for std.process.Child.run — fast posix_spawnp path.
+  610 | /// Captures stdout and stderr into separate streams (drained concurrently by
+  611 | /// a background thread to avoid pipe-buffer deadlock when the child writes
+  612 | /// substantially to either stream).
+  613 | /// Run `argv` and capture stdout/stderr. POSIX uses a posix_spawnp fast path;
+  614 | /// Windows falls back to std.process.run with matching output bounds.
+  615 | pub fn runCapture(opts: RunOptions) !CaptureResult {
+  616 |     if (is_windows) return runCaptureWindows(opts);
+  617 |     return runCapturePosix(opts);
+  618 | }
+  619 | 
+  620 | fn runCaptureWindows(opts: RunOptions) !CaptureResult {
+  621 |     const alloc = opts.allocator;
+  622 |     if (opts.argv.len == 0) return error.EmptyArgv;
+  623 | 
+  624 |     var resolved_argv0: ?[]u8 = null;
+  625 |     defer if (resolved_argv0) |path| alloc.free(path);
+  626 |     var argv_buf: ?[][]const u8 = null;
+  627 |     defer if (argv_buf) |buf| alloc.free(buf);
+  628 | 
+  629 |     const argv = blk: {
+  630 |         if (try windowsResolvedRunCaptureArgv0(alloc, opts.argv[0], opts.cwd)) |resolved| {
+  631 |             resolved_argv0 = resolved;
+  632 |             const copied = try alloc.alloc([]const u8, opts.argv.len);
+  633 |             @memcpy(copied, opts.argv);
+  634 |             copied[0] = resolved;
+  635 |             argv_buf = copied;
+  636 |             break :blk copied;
+  637 |         }
+  638 |         break :blk opts.argv;
+  639 |     };
+  640 | 
+  641 |     var threaded: std.Io.Threaded = .init(alloc, .{});
+  642 |     defer threaded.deinit();
+  643 |     const io = threaded.io();
+  644 |     const result = try std.process.run(alloc, io, .{
+  645 |         .argv = argv,
+  646 |         .cwd = if (opts.cwd) |cwd| .{ .path = cwd } else .inherit,
+  647 |         .stdout_limit = .limited(opts.max_output_bytes),
+  648 |         .stderr_limit = .limited(opts.max_output_bytes),
+  649 |     });
+  650 |     const term: CaptureResult.Term = switch (result.term) {
+  651 |         .exited => |code| .{ .Exited = code },
+  652 |         .signal => |sig| .{ .Signal = @intFromEnum(sig) },
+  653 |         .stopped => |sig| .{ .Stopped = @intFromEnum(sig) },
+  654 |         .unknown => |code| .{ .Unknown = code },
+  655 |     };
+  656 |     return .{
+  657 |         .stdout = result.stdout,
+  658 |         .stderr = result.stderr,
+  659 |         .term = term,
+  660 |     };
+  661 | }
+  662 | 
+  663 | const INVALID_FILE_ATTRIBUTES: u32 = 0xffff_ffff;
+  664 | const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+  665 | 
+  666 | extern "kernel32" fn GetFileAttributesW(lpFileName: [*:0]const u16) callconv(.winapi) u32;
+  667 | 
+  668 | fn windowsResolvedRunCaptureArgv0(allocator: std.mem.Allocator, argv0: []const u8, cwd: ?[]const u8) !?[]u8 {
+  669 |     if (!is_windows) return null;
+  670 |     if (argv0.len == 0) return error.EmptyArgv;
+  671 | 
+  672 |     if (windowsArgv0HasPathComponent(argv0)) {
+  673 |         if (std.fs.path.isAbsoluteWindows(argv0)) return null;
+  674 |         if (cwd != null) return error.UnsafeRelativeExecutable;
+  675 |         return null;
+  676 |     }
+  677 | 
+  678 |     return try resolveExecutableFromPathWindows(allocator, argv0) orelse error.ExecutableNotFound;
+  679 | }
+  680 | 
+  681 | fn windowsArgv0HasPathComponent(argv0: []const u8) bool {
+  682 |     return std.mem.indexOfAny(u8, argv0, "\\/:") != null;
+  683 | }
+  684 | 
+  685 | pub fn resolveExecutableFromPathWindows(allocator: std.mem.Allocator, name: []const u8) !?[]u8 {
+  686 |     if (!is_windows) return null;
+  687 |     if (name.len == 0 or windowsArgv0HasPathComponent(name)) return null;
+  688 | 
+  689 |     const explicit_ext = std.fs.path.extension(name);
+  690 |     if (explicit_ext.len > 0 and !isSafeWindowsExecutableExtension(explicit_ext)) return null;
+  691 | 
+  692 |     const path = posixGetenv("PATH") orelse return null;
+  693 |     var dirs = std.mem.splitScalar(u8, path, ';');
+  694 |     while (dirs.next()) |raw_dir| {
+  695 |         const dir = std.mem.trim(u8, raw_dir, " \t\"");
+  696 |         if (dir.len == 0 or !std.fs.path.isAbsoluteWindows(dir)) continue;
+  697 | 
+  698 |         if (explicit_ext.len > 0) {
+  699 |             if (try windowsExecutableCandidate(allocator, dir, name)) |candidate| return candidate;
+  700 |             continue;
+  701 |         }
+  702 | 
+  703 |         const safe_exts = [_][]const u8{ ".exe", ".com" };
+  704 |         for (safe_exts) |ext| {
+  705 |             const candidate_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ name, ext });
+  706 |             defer allocator.free(candidate_name);
+  707 |             if (try windowsExecutableCandidate(allocator, dir, candidate_name)) |candidate| return candidate;
+  708 |         }
+  709 |     }
+  710 |     return null;
+  711 | }
+  712 | 
+  713 | fn isSafeWindowsExecutableExtension(ext: []const u8) bool {
+  714 |     return std.ascii.eqlIgnoreCase(ext, ".exe") or std.ascii.eqlIgnoreCase(ext, ".com");
+  715 | }
+  716 | 
+  717 | fn windowsExecutableCandidate(allocator: std.mem.Allocator, dir: []const u8, file_name: []const u8) !?[]u8 {
+  718 |     const sep: []const u8 = if (std.mem.endsWith(u8, dir, "\\") or std.mem.endsWith(u8, dir, "/")) "" else "\\";
+  719 |     const candidate = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ dir, sep, file_name });
+  720 |     errdefer allocator.free(candidate);
+  721 |     if (!windowsFileExists(candidate, allocator)) {
+  722 |         allocator.free(candidate);
+  723 |         return null;
+  724 |     }
+  725 |     return candidate;
+  726 | }
+  727 | 
+  728 | fn windowsFileExists(path: []const u8, allocator: std.mem.Allocator) bool {
+  729 |     const w = std.unicode.utf8ToUtf16LeAllocZ(allocator, path) catch return false;
+  730 |     defer allocator.free(w);
+  731 |     const attrs = GetFileAttributesW(w.ptr);
+  732 |     return attrs != INVALID_FILE_ATTRIBUTES and (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+  733 | }
+  734 | 
+  735 | fn runCapturePosix(opts: RunOptions) !CaptureResult {
+  736 |     if (opts.argv.len == 0) return error.EmptyArgv;
+  737 |     const alloc = opts.allocator;
+  738 | 
+  739 |     const c_argv = try alloc.alloc(?[*:0]const u8, opts.argv.len + 1);
+  740 |     defer alloc.free(c_argv);
+  741 |     const arg_bufs = try alloc.alloc([]u8, opts.argv.len);
+  742 |     defer {
+  743 |         for (arg_bufs) |b| alloc.free(b);
+  744 |         alloc.free(arg_bufs);
+  745 |     }
+  746 |     for (opts.argv, 0..) |a, i| {
+  747 |         const buf = try alloc.alloc(u8, a.len + 1);
+  748 |         @memcpy(buf[0..a.len], a);
+  749 |         buf[a.len] = 0;
+  750 |         arg_bufs[i] = buf;
+  751 |         c_argv[i] = @ptrCast(buf.ptr);
+  752 |     }
+  753 |     c_argv[opts.argv.len] = null;
+  754 |     const c_argv_z: [*:null]const ?[*:0]const u8 = @ptrCast(c_argv.ptr);
+  755 | 
+  756 |     var out_pipe: [2]c_int = .{ -1, -1 };
+  757 |     var err_pipe: [2]c_int = .{ -1, -1 };
+  758 |     if (posix_libc.pipe(&out_pipe) != 0) return error.PipeFailed;
+  759 |     errdefer {
+  760 |         if (out_pipe[0] >= 0) _ = close(out_pipe[0]);
+  761 |         if (out_pipe[1] >= 0) _ = close(out_pipe[1]);
+  762 |     }
+  763 |     if (posix_libc.pipe(&err_pipe) != 0) return error.PipeFailed;
+  764 |     errdefer {
+  765 |         if (err_pipe[0] >= 0) _ = close(err_pipe[0]);
+  766 |         if (err_pipe[1] >= 0) _ = close(err_pipe[1]);
+  767 |     }
+  768 | 
+  769 |     var fa_storage: PosixSpawnFAStorage = undefined;
+  770 |     const fa: *PosixSpawnFileActions = @ptrCast(&fa_storage);
+  771 |     if (posix_spawn_file_actions_init(fa) != 0) return error.SpawnInitFailed;
+  772 |     defer _ = posix_spawn_file_actions_destroy(fa);
+  773 | 
+  774 |     if (opts.cwd) |cwd| {
+  775 |         var cwd_buf: [4096]u8 = undefined;
+  776 |         if (cwd.len >= cwd_buf.len) return error.PathTooLong;
+  777 |         @memcpy(cwd_buf[0..cwd.len], cwd);
+  778 |         cwd_buf[cwd.len] = 0;
+  779 |         // posix_spawn_file_actions_addchdir_np is glibc 2.29+ / macOS 10.15+.
+  780 |         // Returns ENOSYS on older systems — caller treats that as fatal here.
+  781 |         if (posix_spawn_file_actions_addchdir_np(fa, @ptrCast(&cwd_buf)) != 0) {
+  782 |             return error.CwdNotSupported;
+  783 |         }
+  784 |     }
+  785 | 
+  786 |     _ = posix_spawn_file_actions_adddup2(fa, out_pipe[1], 1);
+  787 |     _ = posix_spawn_file_actions_adddup2(fa, err_pipe[1], 2);
+  788 |     _ = posix_spawn_file_actions_addclose(fa, out_pipe[0]);
+  789 |     _ = posix_spawn_file_actions_addclose(fa, out_pipe[1]);
+  790 |     _ = posix_spawn_file_actions_addclose(fa, err_pipe[0]);
+  791 |     _ = posix_spawn_file_actions_addclose(fa, err_pipe[1]);
+  792 | 
+  793 |     const envp: [*:null]const ?[*:0]const u8 = if (builtin.os.tag == .macos)
+  794 |         @ptrCast(_NSGetEnviron().*)
+  795 |     else
+  796 |         @ptrCast(std.c.environ);
+  797 | 
+  798 |     var pid: pid_t = 0;
+  799 |     if (posix_spawnp(&pid, c_argv[0].?, fa, null, c_argv_z, envp) != 0)
+  800 |         return error.SpawnFailed;
+  801 | 
+  802 |     _ = close(out_pipe[1]);
+  803 |     out_pipe[1] = -1;
+  804 |     _ = close(err_pipe[1]);
+  805 |     err_pipe[1] = -1;
+  806 | 
+  807 |     // Drain stderr on a background thread so neither pipe can fill up and
+  808 |     // deadlock the child. Main thread drains stdout.
+  809 |     const DrainCtx = struct {
+  810 |         fd: c_int,
+  811 |         cap: usize,
+  812 |         alloc: std.mem.Allocator,
+  813 |         out: std.ArrayList(u8) = .empty,
+  814 |         err: ?anyerror = null,
+  815 | 
+  816 |         fn run(self: *@This()) void {
+  817 |             var chunk: [64 * 1024]u8 = undefined;
+  818 |             while (self.out.items.len < self.cap) {
+  819 |                 const want = @min(chunk.len, self.cap - self.out.items.len);
+  820 |                 const n = read(self.fd, &chunk, want);
+  821 |                 if (n <= 0) break;
+  822 |                 self.out.appendSlice(self.alloc, chunk[0..@intCast(n)]) catch |e| {
+  823 |                     self.err = e;
+  824 |                     return;
+  825 |                 };
+  826 |             }
+  827 |         }
+  828 |     };
+  829 |     var err_ctx: DrainCtx = .{ .fd = err_pipe[0], .cap = opts.max_output_bytes, .alloc = alloc };
+  830 |     errdefer err_ctx.out.deinit(alloc);
+  831 |     const err_thread = try std.Thread.spawn(.{}, DrainCtx.run, .{&err_ctx});
+  832 | 
+  833 |     var out: std.ArrayList(u8) = .empty;
+  834 |     errdefer out.deinit(alloc);
+  835 |     var chunk: [64 * 1024]u8 = undefined;
+  836 |     while (out.items.len < opts.max_output_bytes) {
+  837 |         const want = @min(chunk.len, opts.max_output_bytes - out.items.len);
+  838 |         const n = read(out_pipe[0], &chunk, want);
+  839 |         if (n <= 0) break;
+  840 |         try out.appendSlice(alloc, chunk[0..@intCast(n)]);
+  841 |     }
+  842 |     _ = close(out_pipe[0]);
+  843 |     out_pipe[0] = -1;
+  844 | 
+  845 |     err_thread.join();
+  846 |     _ = close(err_pipe[0]);
+  847 |     err_pipe[0] = -1;
+  848 |     if (err_ctx.err) |e| {
+  849 |         err_ctx.out.deinit(alloc);
+  850 |         return e;
+  851 |     }
+  852 | 
+  853 |     var status: c_int = 0;
+  854 |     _ = waitpid(pid, &status, 0);
+  855 | 
+  856 |     const term: CaptureResult.Term = if ((status & 0x7f) == 0)
+  857 |         .{ .Exited = @intCast((status >> 8) & 0xff) }
+  858 |     else if ((status & 0x7f) != 0x7f)
+  859 |         .{ .Signal = @intCast(status & 0x7f) }
+  860 |     else
+  861 |         .{ .Stopped = @intCast((status >> 8) & 0xff) };
+  862 | 
+  863 |     return .{
+  864 |         .stdout = try out.toOwnedSlice(alloc),
+  865 |         .stderr = try err_ctx.out.toOwnedSlice(alloc),
+  866 |         .term = term,
+  867 |     };
+  868 | }
+  869 | 
+  870 | /// Fire-and-forget spawn of a detached child (used to launch the warm
+  871 | /// cli-daemon). POSIX uses posix_spawnp + /dev/null redirection; Windows uses
+  872 | /// CreateProcessW with detached/no-window flags.
+  873 | pub fn spawnDetached(allocator: std.mem.Allocator, argv: []const []const u8) void {
+  874 |     if (is_windows) {
+  875 |         spawnDetachedWindows(allocator, argv);
+  876 |         return;
+  877 |     } else {
+  878 |         spawnDetachedPosix(allocator, argv);
+  879 |     }
+  880 | }
+  881 | 
+  882 | pub fn windowsCommandLine(allocator: std.mem.Allocator, argv: []const []const u8) ?[]u8 {
+  883 |     var cmd: std.ArrayList(u8) = .empty;
+  884 |     defer cmd.deinit(allocator);
+  885 |     for (argv, 0..) |arg, i| {
+  886 |         if (i != 0) cmd.append(allocator, ' ') catch return null;
+  887 |         cmd.append(allocator, '"') catch return null;
+  888 |         var backslashes: usize = 0;
+  889 |         for (arg) |ch| {
+  890 |             switch (ch) {
+  891 |                 '\\' => backslashes += 1,
+  892 |                 '"' => {
+  893 |                     cmd.appendNTimes(allocator, '\\', backslashes * 2 + 1) catch return null;
+  894 |                     cmd.append(allocator, '"') catch return null;
+  895 |                     backslashes = 0;
+  896 |                 },
+  897 |                 else => {
+  898 |                     if (backslashes > 0) {
+  899 |                         cmd.appendNTimes(allocator, '\\', backslashes) catch return null;
+  900 |                         backslashes = 0;
+  901 |                     }
+  902 |                     cmd.append(allocator, ch) catch return null;
+  903 |                 },
+  904 |             }
+  905 |         }
+  906 |         cmd.appendNTimes(allocator, '\\', backslashes * 2) catch return null;
+  907 |         cmd.append(allocator, '"') catch return null;
+  908 |     }
+  909 |     return cmd.toOwnedSlice(allocator) catch null;
+  910 | }
+  911 | 
+  912 | fn spawnDetachedWindows(allocator: std.mem.Allocator, argv: []const []const u8) void {
+  913 |     if (argv.len == 0) return;
+  914 | 
+  915 |     const cmd = windowsCommandLine(allocator, argv) orelse return;
+  916 |     defer allocator.free(cmd);
+  917 |     const cmd_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, cmd) catch return;
+  918 |     defer allocator.free(cmd_w);
+  919 | 
+  920 |     var si: std.os.windows.STARTUPINFOW = std.mem.zeroes(std.os.windows.STARTUPINFOW);
+  921 |     si.cb = @sizeOf(std.os.windows.STARTUPINFOW);
+  922 |     var pi: std.os.windows.PROCESS.INFORMATION = undefined;
+  923 |     const flags: std.os.windows.CreateProcessFlags = .{ .detached_process = true, .create_no_window = true };
+  924 |     if (std.os.windows.kernel32.CreateProcessW(null, cmd_w.ptr, null, null, .FALSE, flags, null, null, &si, &pi) == .FALSE) return;
+  925 |     std.os.windows.CloseHandle(pi.hThread);
+  926 |     std.os.windows.CloseHandle(pi.hProcess);
+  927 | }
+  928 | 
+  929 | /// Fire-and-forget spawn: posix_spawnp `argv` with stdin/stdout/stderr
+  930 | /// redirected to /dev/null, and do NOT wait on the child. Used to launch the
+  931 | /// warm cli-daemon from a cold CLI invocation. The child is expected to
+  932 | /// setsid() itself; once this CLI process exits the child is reparented to
+  933 | /// init, so we never reap it (no zombie outlives this short-lived CLI). All
+  934 | /// failures are swallowed — auto-spawn is best-effort and the cold path still
+  935 | /// produces correct output regardless.
+  936 | fn spawnDetachedPosix(allocator: std.mem.Allocator, argv: []const []const u8) void {
+  937 |     if (argv.len == 0) return;
+  938 | 
+  939 |     const c_argv = allocator.alloc(?[*:0]const u8, argv.len + 1) catch return;
+  940 |     defer allocator.free(c_argv);
+  941 |     const arg_bufs = allocator.alloc([]u8, argv.len) catch return;
+  942 |     var built: usize = 0;
+  943 |     defer {
+  944 |         for (arg_bufs[0..built]) |b| allocator.free(b);
+  945 |         allocator.free(arg_bufs);
+  946 |     }
+  947 |     for (argv, 0..) |a, i| {
+  948 |         const buf = allocator.alloc(u8, a.len + 1) catch return;
+  949 |         @memcpy(buf[0..a.len], a);
+  950 |         buf[a.len] = 0;
+  951 |         arg_bufs[i] = buf;
+  952 |         built = i + 1;
+  953 |         c_argv[i] = @ptrCast(buf.ptr);
+  954 |     }
+  955 |     c_argv[argv.len] = null;
+  956 |     const c_argv_z: [*:null]const ?[*:0]const u8 = @ptrCast(c_argv.ptr);
+  957 | 
+  958 |     var fa_storage: PosixSpawnFAStorage = undefined;
+  959 |     const fa: *PosixSpawnFileActions = @ptrCast(&fa_storage);
+  960 |     if (posix_spawn_file_actions_init(fa) != 0) return;
+  961 |     defer _ = posix_spawn_file_actions_destroy(fa);
+  962 | 
+  963 |     // Redirect 0/1/2 to /dev/null so the daemon holds no inherited terminal fds.
+  964 |     // O_RDWR == 2 on both Darwin and Linux. Errors are non-fatal — the daemon
+  965 |     // re-redirects to /dev/null itself after setsid() at startup.
+  966 |     const devnull: [*:0]const u8 = "/dev/null";
+  967 |     _ = posix_spawn_file_actions_addopen(fa, 0, devnull, 2, 0);
+  968 |     _ = posix_spawn_file_actions_addopen(fa, 1, devnull, 2, 0);
+  969 |     _ = posix_spawn_file_actions_addopen(fa, 2, devnull, 2, 0);
+  970 | 
+  971 |     const envp: [*:null]const ?[*:0]const u8 = if (builtin.os.tag == .macos)
+  972 |         @ptrCast(_NSGetEnviron().*)
+  973 |     else
+  974 |         @ptrCast(std.c.environ);
+  975 | 
+  976 |     var pid: pid_t = 0;
+  977 |     // Fire and forget: no waitpid. The child reparents to init once this CLI
+  978 |     // exits, so it never becomes a lingering zombie of ours.
+  979 |     _ = posix_spawnp(&pid, c_argv[0].?, fa, null, c_argv_z, envp);
+  980 | }
+  981 | 
+  982 | // ── Memory mapping ─────────────────────────────────────────────────────────
+  983 | // Zero-copy read-only file views. POSIX uses mmap(MAP_SHARED, PROT_READ);
+  984 | // Windows uses a file-mapping object + MapViewOfFile. Both return a page-aligned
+  985 | // const slice that must be released with munmap(). `handle` is the platform file
+  986 | // handle — pass `file.handle` from an opened std.Io.File (fd_t on POSIX,
+  987 | // windows.HANDLE on Windows; `anytype` keeps the per-target type exact).
+  988 | 
+  989 | pub const MmapError = error{MapFailed};
+  990 | 
+  991 | const winmap = if (is_windows) struct {
+  992 |     const HANDLE = std.os.windows.HANDLE;
+  993 |     const DWORD = std.os.windows.DWORD;
+  994 |     const BOOL = std.os.windows.BOOL;
+  995 |     const PAGE_READONLY: DWORD = 0x02;
+  996 |     const FILE_MAP_READ: DWORD = 0x0004;
+  997 |     extern "kernel32" fn CreateFileMappingW(hFile: HANDLE, lpAttributes: ?*anyopaque, flProtect: DWORD, dwMaximumSizeHigh: DWORD, dwMaximumSizeLow: DWORD, lpName: ?[*:0]const u16) callconv(.winapi) ?HANDLE;
+  998 |     extern "kernel32" fn MapViewOfFile(hFileMappingObject: HANDLE, dwDesiredAccess: DWORD, dwFileOffsetHigh: DWORD, dwFileOffsetLow: DWORD, dwNumberOfBytesToMap: usize) callconv(.winapi) ?*anyopaque;
+  999 |     extern "kernel32" fn UnmapViewOfFile(lpBaseAddress: *const anyopaque) callconv(.winapi) BOOL;
+ 1000 |     extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
+ 1001 | } else struct {};
+ 1002 | 
+ 1003 | /// mmap `len` bytes of `handle` read-only. Returns a page-aligned const view.
+ 1004 | pub fn mmapReadonly(handle: anytype, len: usize) MmapError![]align(std.heap.page_size_min) const u8 {
+ 1005 |     if (is_windows) {
+ 1006 |         // A 0 max-size maps the whole file; the view stays valid after the
+ 1007 |         // mapping handle is closed, so we close it eagerly.
+ 1008 |         const mapping = winmap.CreateFileMappingW(handle, null, winmap.PAGE_READONLY, 0, 0, null) orelse
+ 1009 |             return error.MapFailed;
+ 1010 |         defer _ = winmap.CloseHandle(mapping);
+ 1011 |         const base = winmap.MapViewOfFile(mapping, winmap.FILE_MAP_READ, 0, 0, len) orelse
+ 1012 |             return error.MapFailed;
+ 1013 |         const ptr: [*]align(std.heap.page_size_min) const u8 = @ptrCast(@alignCast(base));
+ 1014 |         return ptr[0..len];
+ 1015 |     } else {
+ 1016 |         return std.posix.mmap(null, len, .{ .READ = true }, .{ .TYPE = .SHARED }, handle, 0) catch
+ 1017 |             return error.MapFailed;
+ 1018 |     }
+ 1019 | }
+ 1020 | 
+ 1021 | /// Release a view previously returned by mmapReadonly.
+ 1022 | pub fn munmap(data: []align(std.heap.page_size_min) const u8) void {
+ 1023 |     if (is_freestanding) return;
+ 1024 |     if (is_windows) {
+ 1025 |         _ = winmap.UnmapViewOfFile(data.ptr);
+ 1026 |     } else {
+ 1027 |         std.posix.munmap(data);
+ 1028 |     }
+ 1029 | }
+ 1030 | 

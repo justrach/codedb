@@ -1,0 +1,140 @@
+     1	const builtin = @import("builtin");
+     2	const std = @import("std");
+     3	
+     4	pub fn build(b: *std.Build) void {
+     5	    const target = b.standardTargetOptions(.{});
+     6	    const optimize = b.standardOptimizeOption(.{});
+     7	    const codesign_identity = b.option(
+     8	        []const u8,
+     9	        "codesign-identity",
+    10	        "macOS codesign identity. Disabled by default and skipped for x86_64-macos.",
+    11	    );
+    12	
+    13	    // ── Exposed module: importable as @import("codedb") ──
+    14	    const codedb_mod = b.addModule("codedb", .{
+    15	        .root_source_file = b.path("src/lib.zig"),
+    16	        .target = target,
+    17	        .optimize = optimize,
+    18	    });
+    19	
+    20	    // ── CLI executable ──
+    21	    // In ReleaseFast/Small, strip debug info to shrink the binary (~10%)
+    22	    // and the RSS at runtime (smaller __TEXT footprint = fewer pages
+    23	    // resident under load). Debug/ReleaseSafe keep symbols for stack traces.
+    24	    const strip_debug = optimize == .ReleaseFast or optimize == .ReleaseSmall;
+    25	    const exe = b.addExecutable(.{
+    26	        .name = "codedb",
+    27	        .root_module = b.createModule(.{
+    28	            .root_source_file = b.path("src/main.zig"),
+    29	            .target = target,
+    30	            .optimize = optimize,
+    31	            .link_libc = true,
+    32	            .strip = strip_debug,
+    33	        }),
+    34	    });
+    35	
+    36	    // #618/#504: reserve Mach-O header padding so codesign can append its
+    37	    // LC_CODE_SIGNATURE load command without overwriting __text. The pinned
+    38	    // toolchain leaves only 8 bytes of slack on x86_64-macos (fixed upstream
+    39	    // on 0.17 master); 0x1000 matches the verified workaround.
+    40	    if ((target.query.os_tag orelse target.result.os.tag) == .macos) {
+    41	        exe.headerpad_size = 0x1000;
+    42	    }
+    43	
+    44	    // ── nanoregex dependency ──
+    45	    const nanoregex_dep = b.dependency("nanoregex", .{});
+    46	    exe.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    47	
+    48	    const install_exe = b.addInstallArtifact(exe, .{});
+    49	    b.getInstallStep().dependOn(&install_exe.step);
+    50	
+    51	    // #618: every macOS slice signs again. The x86_64 codesign crash (#504)
+    52	    // was missing load-command headerpad — codesign's appended
+    53	    // LC_CODE_SIGNATURE clobbered __text; the exe now reserves headerpad.
+    54	    if (codesign_identity) |identity| {
+    55	        const target_os = target.query.os_tag orelse target.result.os.tag;
+    56	        if (target_os == .macos and builtin.os.tag == .macos) {
+    57	            const codesign = b.addSystemCommand(&.{
+    58	                "codesign",
+    59	                "-f",
+    60	                "--options",
+    61	                "runtime",
+    62	                "--timestamp",
+    63	                "-s",
+    64	                identity,
+    65	            });
+    66	            codesign.addFileArg(exe.getEmittedBin());
+    67	            install_exe.step.dependOn(&codesign.step);
+    68	        }
+    69	    }
+    70	
+    71	    const run_cmd = b.addRunArtifact(exe);
+    72	    run_cmd.step.dependOn(b.getInstallStep());
+    73	    run_cmd.addPassthruArgs();
+    74	
+    75	    const run_step = b.step("run", "Run codedb daemon");
+    76	    run_step.dependOn(&run_cmd.step);
+    77	
+    78	    // ── Tests (split into independent binaries for faster compilation) ──
+    79	    const test_filter = b.option([]const u8, "test-filter", "Only run tests whose name contains this substring");
+    80	    const test_step = b.step("test", "Run all tests");
+    81	
+    82	    const test_files = [_]struct { name: []const u8, path: []const u8, needs_nanoregex: bool }{
+    83	        .{ .name = "test-core", .path = "src/test_core.zig", .needs_nanoregex = false },
+    84	        .{ .name = "test-explore", .path = "src/test_explore.zig", .needs_nanoregex = true },
+    85	        .{ .name = "test-index", .path = "src/test_index.zig", .needs_nanoregex = true },
+    86	        .{ .name = "test-parser", .path = "src/test_parser.zig", .needs_nanoregex = true },
+    87	        .{ .name = "test-search", .path = "src/test_search.zig", .needs_nanoregex = true },
+    88	        .{ .name = "test-snapshot", .path = "src/test_snapshot.zig", .needs_nanoregex = true },
+    89	        .{ .name = "test-mcp", .path = "src/test_mcp.zig", .needs_nanoregex = true },
+    90	        .{ .name = "test-query", .path = "src/test_query.zig", .needs_nanoregex = true },
+    91	        .{ .name = "test-bench", .path = "src/test_bench.zig", .needs_nanoregex = true },
+    92	    };
+    93	
+    94	    for (test_files) |tf| {
+    95	        const t = b.addTest(.{
+    96	            .root_module = b.createModule(.{
+    97	                .root_source_file = b.path(tf.path),
+    98	                .target = target,
+    99	                .optimize = optimize,
+   100	                .link_libc = true,
+   101	            }),
+   102	        });
+   103	        if (tf.needs_nanoregex) t.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+   104	        if (test_filter) |f| {
+   105	            const filters = b.allocator.alloc([]const u8, 1) catch @panic("oom");
+   106	            filters[0] = f;
+   107	            t.filters = filters;
+   108	        }
+   109	        const run = b.addRunArtifact(t);
+   110	        test_step.dependOn(&run.step);
+   111	
+   112	        const individual_step = b.step(tf.name, b.fmt("Run {s}", .{tf.name}));
+   113	        individual_step.dependOn(&run.step);
+   114	    }
+   115	
+   116	    // ── Library tests (verify the module root compiles) ──
+   117	    const lib_tests = b.addTest(.{
+   118	        .root_module = b.createModule(.{
+   119	            .root_source_file = b.path("src/lib.zig"),
+   120	            .target = target,
+   121	            .optimize = optimize,
+   122	            .link_libc = true,
+   123	        }),
+   124	    });
+   125	    test_step.dependOn(&b.addRunArtifact(lib_tests).step);
+   126	
+   127	    // ── Adversarial tests ──
+   128	    const adversarial_tests = b.addTest(.{
+   129	        .root_module = b.createModule(.{
+   130	            .root_source_file = b.path("src/adversarial_tests.zig"),
+   131	            .target = target,
+   132	            .optimize = optimize,
+   133	            .link_libc = true,
+   134	        }),
+   135	    });
+   136	    adversarial_tests.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+   137	    test_step.dependOn(&b.addRunArtifact(adversarial_tests).step);
+   138	
+   139	    // ── Benchmarks ──
+   140	    const bench = b.addExecutable(.{

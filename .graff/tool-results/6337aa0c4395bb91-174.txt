@@ -1,0 +1,62 @@
+ M src/test_mcp.zig
+ M src/update.zig
+2f14ea0 test(#682): exclude keyword-led regex mentions
+7e2b4c9 test(#682): cover template regexes and R backticks
+7e25eab test(#682): guard literal and block-comment mentions
+ src/test_mcp.zig |  8 ++++++++
+ src/update.zig   | 42 ++++++++++++++++++++++++++----------------
+ 2 files changed, 34 insertions(+), 16 deletions(-)
+
+pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+    const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+    const home = cio.homeDir() orelse return;
+    if (home.len == 0) return;
+
+    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
+    defer allocator.free(dir_path);
+    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+
+    const stamp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, auto_update_stamp_filename }) catch return;
+    defer allocator.free(stamp_path);
+
+    const last_ms = readAutoUpdateStamp(io, stamp_path);
+    const now_ms = cio.milliTimestamp();
+    if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+
+    // Persist the new timestamp before launching so concurrent invocations
+    // don't all race the same check.
+    writeAutoUpdateStamp(io, stamp_path, now_ms);
+
+    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{}) catch return;
+    thread.detach();
+}
+
+fn autoUpdateWorker() void {
+    // sh -c handles the curl-into-bash pipeline. We keep stdout/stderr captured
+    // and immediately discard so the install script's progress output doesn't
+    // leak into the parent's stdio (which is the MCP transport).
+    const result = cio.runCapture(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &.{ "sh", "-c", "curl -fsSL " ++ auto_update_install_url ++ " | bash" },
+        .max_output_bytes = 64 * 1024,
+    }) catch return;
+    std.heap.page_allocator.free(result.stdout);
+    std.heap.page_allocator.free(result.stderr);
+}
+
+fn readAutoUpdateStamp(io: std.Io, path: []const u8) ?i64 {
+    var buf: [8]u8 = undefined;
+    var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+    defer f.close(io);
+    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+    if (n < 8) return null;
+    return std.mem.readInt(i64, buf[0..8], .little);
+}
+
+fn writeAutoUpdateStamp(io: std.Io, path: []const u8, ms: i64) void {
+    var buf: [8]u8 = undefined;
+    std.mem.writeInt(i64, &buf, ms, .little);
+    const f = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true }) catch return;
+    defer f.close(io);
+    f.writePositionalAll(io, &buf, 0) catch {};
+}

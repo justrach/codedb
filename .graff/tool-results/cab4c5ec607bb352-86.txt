@@ -1,0 +1,97 @@
+   175	    python,
+   176	    javascript,
+   177	    typescript,
+   178	    rust,
+   179	    go_lang,
+   180	    php,
+   181	    ruby,
+   182	    hcl,
+   183	    r,
+   184	    markdown,
+   185	    json,
+   186	    yaml,
+   187	    unknown,
+   188	    dart,
+   189	    java,
+   190	    kotlin,
+   191	    swift,
+   192	    svelte,
+   193	    vue,
+   194	    astro,
+   195	    shell,
+   196	    css,
+   197	    scss,
+   198	    sql,
+   199	    protobuf,
+   200	    fortran,
+   201	    llvm_ir,
+   202	    mlir,
+   203	    tablegen,
+   204	    rescript,
+   205	    ocaml,
+   206	};
+   207	
+   208	pub fn detectLanguage(path: []const u8) Language {
+   209	    if (std.mem.endsWith(u8, path, ".zig")) return .zig;
+   210	    if (std.mem.endsWith(u8, path, ".c") or std.mem.endsWith(u8, path, ".h")) return .c;
+   211	    if (std.mem.endsWith(u8, path, ".cpp") or std.mem.endsWith(u8, path, ".hpp") or
+   212	        std.mem.endsWith(u8, path, ".cc") or std.mem.endsWith(u8, path, ".hh") or
+   213	        std.mem.endsWith(u8, path, ".cxx") or std.mem.endsWith(u8, path, ".hxx") or
+   214	        std.mem.endsWith(u8, path, ".mm"))
+   215	        return .cpp;
+   216	    if (std.mem.endsWith(u8, path, ".py")) return .python;
+   217	    if (std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".jsx")) return .javascript;
+   218	    if (std.mem.endsWith(u8, path, ".ts") or std.mem.endsWith(u8, path, ".tsx")) return .typescript;
+   219	    if (std.mem.endsWith(u8, path, ".rs")) return .rust;
+   220	    if (std.mem.endsWith(u8, path, ".go")) return .go_lang;
+   221	    if (std.mem.endsWith(u8, path, ".php")) return .php;
+   222	    if (std.mem.endsWith(u8, path, ".rb") or std.mem.endsWith(u8, path, ".rake")) return .ruby;
+   223	    if (std.mem.endsWith(u8, path, ".tf") or std.mem.endsWith(u8, path, ".tfvars") or std.mem.endsWith(u8, path, ".hcl")) return .hcl;
+   224	    if (std.mem.endsWith(u8, path, ".r") or std.mem.endsWith(u8, path, ".R")) return .r;
+   225	    if (std.mem.endsWith(u8, path, ".md")) return .markdown;
+   226	    if (std.mem.endsWith(u8, path, ".json")) return .json;
+   227	    if (std.mem.endsWith(u8, path, ".yaml") or std.mem.endsWith(u8, path, ".yml")) return .yaml;
+   228	    if (std.mem.endsWith(u8, path, ".dart")) return .dart;
+   229	    if (std.mem.endsWith(u8, path, ".java")) return .java;
+   230	    if (std.mem.endsWith(u8, path, ".kt")) return .kotlin;
+   231	    if (std.mem.endsWith(u8, path, ".swift")) return .swift;
+   232	    if (std.mem.endsWith(u8, path, ".svelte")) return .svelte;
+   233	    if (std.mem.endsWith(u8, path, ".vue")) return .vue;
+   234	    if (std.mem.endsWith(u8, path, ".astro")) return .astro;
+   235	    if (std.mem.endsWith(u8, path, ".sh")) return .shell;
+  8130	pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
+  8131	    const trimmed = std.mem.trim(u8, line, " \t");
+  8132	    if (trimmed.len == 0) return true;
+  8133	    return switch (language) {
+  8134	        .zig, .rust, .go_lang => std.mem.startsWith(u8, trimmed, "//"),
+  8135	        .python, .ruby, .r, .shell => std.mem.startsWith(u8, trimmed, "#"),
+  8136	        .hcl => std.mem.startsWith(u8, trimmed, "#") or std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8137	        .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .protobuf, .mlir, .tablegen => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8138	        .svelte, .vue, .astro => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*") or std.mem.startsWith(u8, trimmed, "<!--"),
+  8139	        .css => std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8140	        .scss => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8141	        .sql => std.mem.startsWith(u8, trimmed, "--") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8142	        .fortran => std.mem.startsWith(u8, trimmed, "!"),
+  8143	        .llvm_ir => std.mem.startsWith(u8, trimmed, ";"),
+  8144	        .rescript => std.mem.startsWith(u8, trimmed, "//") or std.mem.startsWith(u8, trimmed, "/*") or std.mem.startsWith(u8, trimmed, "*"),
+  8145	        .ocaml => std.mem.startsWith(u8, trimmed, "(*"),
+  8146	        else => false,
+  8147	    };
+  8148	}
+  8149	
+  8150	fn appendTargetLineHits(
+  8151	    path: []const u8,
+  8152	    content: []const u8,
+  8153	    allocator: std.mem.Allocator,
+  8154	    target_lines: []const u32,
+  8155	    max_results: usize,
+  8156	    result_list: *std.ArrayList(SearchResult),
+  8157	) !void {
+  8158	    if (target_lines.len == 0 or result_list.items.len >= max_results) return;
+  8159	    result_list.ensureUnusedCapacity(allocator, @min(target_lines.len, max_results - result_list.items.len)) catch {};
+  8160	    var target_i: usize = 0;
+  8161	    var line_num: u32 = 0;
+  8162	    var lines = std.mem.splitScalar(u8, content, '\n');
+  8163	    while (lines.next()) |line| {
+  8164	        line_num += 1;
+  8165	        while (target_i < target_lines.len and target_lines[target_i] < line_num) {

@@ -1,0 +1,46 @@
+        if (is_def) continue;
+        // A whole-word match that only ever lands inside a string literal or a
+        // trailing comment is a mention, not an invocation — a `("name",
+        // "file")` table row, a `test "…name…" {` declaration, or
+        // `init(); // then name() …`. Real calls sit on the code prefix of the
+        // line, outside the quotes, and survive both cuts. (#682)
+        if (!hasWholeWordMatchOutsideStrings(lineCodePrefix(r.line_text, lang), name)) continue;
+        kept.append(alloc, r_idx) catch {};
+    }
+
+    const w = cio.listWriter(out, alloc);
+    w.print("{d} call sites for '{s}':\n", .{ kept.items.len, name }) catch {};
+    for (kept.items) |kept_idx| {
+        const r = results[kept_idx];
+        if (r.scope_name) |sn| {
+            appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+            w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
+        } else {
+            appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
+        }
+    }
+}
+
+fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    const from_name = getStr(args, "from") orelse {
+        out.appendSlice(alloc, "error: missing 'from' argument") catch {};
+        appendBundleArgKeysDiagnostic(alloc, out, args);
+        return;
+    };
+    const to_name = getStr(args, "to") orelse {
+        out.appendSlice(alloc, "error: missing 'to' argument") catch {};
+        appendBundleArgKeysDiagnostic(alloc, out, args);
+        return;
+    };
+    if (from_name.len == 0 or to_name.len == 0) {
+        out.appendSlice(alloc, "error: 'from' and 'to' must be non-empty symbol names") catch {};
+        return;
+    }
+    const max_hops: usize = if (getInt(args, "max_hops")) |n| @intCast(@max(1, @min(n, 64))) else 12;
+
+    const steps = explorer.findCallPath(from_name, to_name, alloc, max_hops) catch {
+        out.appendSlice(alloc, "error: callpath search failed") catch {};
+        return;
+    };
+    const path = steps orelse {
+        const w = cio.listWriter(out, alloc);

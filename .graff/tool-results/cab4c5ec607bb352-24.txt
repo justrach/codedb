@@ -1,0 +1,251 @@
+  3200	    var pbuf: [128]u8 = undefined;
+  3201	    const sock_path = cli_proxy_mod.cliSocketPath(&pbuf, abs_root).?;
+  3202	    var zbuf: [128]u8 = undefined;
+  3203	    const sock_z = try cio.bufPrintZ(&zbuf, "{s}", .{sock_path});
+  3204	    _ = std.c.unlink(sock_z.ptr);
+  3205	    defer _ = std.c.unlink(sock_z.ptr);
+  3206	
+  3207	    var sd = std.atomic.Value(bool).init(false);
+  3208	
+  3209	    // A live cli-daemon owns the socket: acquire + hold a listening fd.
+  3210	    const owner = cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &sd).?;
+  3211	
+  3212	    // Losing the race with no retry → give up at once (don't steal a live socket).
+  3213	    try testing.expect(cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &sd) == null);
+  3214	
+  3215	    // Losing the race with retry, but shutdown already signalled → return at once.
+  3216	    var sd_down = std.atomic.Value(bool).init(true);
+  3217	    try testing.expect(cli_proxy_mod.cliAcquireListener(sock_path, true, 1000, &sd_down) == null);
+  3218	
+  3219	    // A long-lived serve/mcp daemon (retry = true) keeps trying and reclaims the
+  3220	    // socket once the owner exits — the core #619 fix (pre-fix: never retried).
+  3221	    const Reclaimer = struct {
+  3222	        path: []const u8,
+  3223	        sd: *std.atomic.Value(bool),
+  3224	        fd: ?c_int,
+  3225	        done: std.atomic.Value(bool),
+  3226	        fn run(self: *@This()) void {
+  3227	            self.fd = cli_proxy_mod.cliAcquireListener(self.path, true, 10, self.sd);
+  3228	            self.done.store(true, .release);
+  3229	        }
+  3230	    };
+  3231	    var rc = Reclaimer{ .path = sock_path, .sd = &sd, .fd = null, .done = std.atomic.Value(bool).init(false) };
+  3232	    const t = try std.Thread.spawn(.{}, Reclaimer.run, .{&rc});
+  3233	
+  3234	    cio.sleepMs(30); // let the retry loop spin a few times
+  3235	    _ = std.c.close(owner); // owner idle-exits
+  3236	    t.join(); // reclaimer must return (pre-fix: no retry path → would never acquire)
+  3237	    try testing.expect(rc.fd != null);
+  3238	    if (rc.fd) |fd| _ = std.c.close(fd);
+  3239	}
+  3240	
+  3241	// ── #619: cli-daemon socket handover ────────────────────────────────────────
+  3242	// The reclaim test above covers a serve/mcp daemon retrying until a dead or
+  3243	// idle-exited owner lets go. This test covers the other half: an owner that
+  3244	// is still LIVE must be actively signalled to give the socket up right away
+  3245	// (freshest-wins), instead of the newcomer waiting out a full retry/idle
+  3246	// cadence. cliServeConn is a private helper, so the owner side is simulated
+  3247	// here with a tiny raw accept loop that mirrors exactly what it does on
+  3248	// receipt of cli_yield_sentinel: read the frame, verify it, then give the
+  3249	// socket up (close the listener + unlink the path).
+  3250	const CliHandoverOwnerSim = struct {
+  3251	    fd: c_int,
+  3252	    sock_path: []const u8,
+  3253	    sd: *std.atomic.Value(bool),
+  3254	    saw_sentinel: bool = false,
+  3255	    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+  3256	
+  3257	    fn run(self: *@This()) void {
+  3258	        // Mirror the real accept loop: keep accepting connections and only
+  3259	        // give the socket up once one of them is the actual yield sentinel.
+  3260	        // A plain liveness probe (cliSocketLive — connect then close with no
+  3261	        // data) must NOT be mistaken for a yield request.
+  3262	        while (true) {
+  3263	            const conn = std.c.accept(self.fd, null, null);
+  3264	            if (conn < 0) break;
+  3265	            var matched = false;
+  3266	            var hdr: [5]u8 = undefined;
+  3267	            var off: usize = 0;
+  3268	            while (off < hdr.len) {
+  3269	                const n = std.c.read(conn, hdr[off..].ptr, hdr.len - off);
+  3270	                if (n <= 0) break;
+  3271	                off += @intCast(n);
+  3272	            }
+  3273	            if (off == hdr.len) {
+  3274	                const blob_len = std.mem.readInt(u32, hdr[1..5], .little);
+  3275	                if (blob_len > 0 and blob_len <= 256) {
+  3276	                    var buf: [256]u8 = undefined;
+  3277	                    var boff: usize = 0;
+  3278	                    while (boff < blob_len) {
+  3279	                        const n = std.c.read(conn, buf[boff..].ptr, blob_len - boff);
+  3280	                        if (n <= 0) break;
+  3281	                        boff += @intCast(n);
+  3282	                    }
+  3283	                    if (boff == blob_len) {
+  3284	                        matched = std.mem.eql(u8, buf[0..blob_len], cli_proxy_mod.cli_yield_sentinel);
+  3285	                    }
+  3286	                }
+  3287	            }
+  3288	            _ = std.c.close(conn);
+  3289	            if (matched) {
+  3290	                self.saw_sentinel = true;
+  3291	                break;
+  3292	            }
+  3293	        }
+  3294	        // Mirror the real accept loop's response to a yield request: give the
+  3295	        // socket up entirely rather than waiting for an idle timeout.
+  3296	        _ = std.c.close(self.fd);
+  3297	        var zbuf: [128]u8 = undefined;
+  3298	        if (cio.bufPrintZ(&zbuf, "{s}", .{self.sock_path})) |z| {
+  3299	            _ = std.c.unlink(z.ptr);
+  3300	        } else |_| {}
+  3301	        self.sd.store(true, .release);
+  3302	        self.done.store(true, .release);
+  3303	    }
+  3304	};
+  3305	
+  3306	test "issue-619: serve/mcp daemon signals a live owner to yield instead of waiting out the retry cadence" {
+  3307	    if (@import("builtin").os.tag == .windows) return; // no unix-socket proxy on Windows
+  3308	
+  3309	    const abs_root = "/codedb-test-issue619-handover";
+  3310	    var pbuf: [128]u8 = undefined;
+  3311	    const sock_path = cli_proxy_mod.cliSocketPath(&pbuf, abs_root).?;
+  3312	    var zbuf: [128]u8 = undefined;
+  3313	    const sock_z = try cio.bufPrintZ(&zbuf, "{s}", .{sock_path});
+  3314	    _ = std.c.unlink(sock_z.ptr);
+  3315	    defer _ = std.c.unlink(sock_z.ptr);
+  3316	
+  3317	    // A live owner holds the socket (stands in for an auto-spawned
+  3318	    // cli-daemon or another serve/mcp daemon — same code path either way).
+  3319	    var owner_sd = std.atomic.Value(bool).init(false);
+  3320	    const owner_fd = cli_proxy_mod.cliAcquireListener(sock_path, false, 0, &owner_sd).?;
+  3321	    var owner_sim = CliHandoverOwnerSim{ .fd = owner_fd, .sock_path = sock_path, .sd = &owner_sd };
+  3322	    const owner_thread = try std.Thread.spawn(.{}, CliHandoverOwnerSim.run, .{&owner_sim});
+  3323	
+  3324	    // Deliberately large retry interval: without an explicit yield signal,
+  3325	    // a passive retrying newcomer could only reclaim the socket after a full
+  3326	    // retry_interval_ms sleep (here 3000ms). The #619 handover instead sends
+  3327	    // a one-shot yield request the live owner honors immediately, so
+  3328	    // acquisition must complete far sooner than that passive cadence.
+  3329	    var newcomer_sd = std.atomic.Value(bool).init(false);
+  3330	    const start_ms = cio.milliTimestamp();
+  3331	    const newcomer_fd = cli_proxy_mod.cliAcquireListener(sock_path, true, 3000, &newcomer_sd);
+  3332	    const elapsed_ms = cio.milliTimestamp() - start_ms;
+  3333	
+  3334	    owner_thread.join();
+  3335	    try testing.expect(owner_sim.saw_sentinel); // owner actually received the sentinel frame
+  3336	    try testing.expect(newcomer_fd != null); // and the newcomer took the socket over
+  3337	    try testing.expect(elapsed_ms < 1500); // far under the passive 3000ms retry cadence
+  3338	    if (newcomer_fd) |fd| _ = std.c.close(fd);
+  3339	}
+  3340	
+  3341	test "windows: spawnDetached command line round-trips argv with trailing backslashes" {
+  3342	    if (builtin.os.tag != .windows) return error.SkipZigTest;
+  3343	    const alloc = testing.allocator;
+  3344	
+  3345	    const argv = [_][]const u8{ "C:\\tools\\codedb.exe", "D:\\", "cli-daemon", "say \"hi\"", "a\\\\b", "tail\\\\" };
+  3346	    const cmd = cio.windowsCommandLine(alloc, &argv) orelse return error.TestUnexpectedResult;
+  3347	    defer alloc.free(cmd);
+  3348	    const cmd_w = try std.unicode.utf8ToUtf16LeAlloc(alloc, cmd);
+  3349	    defer alloc.free(cmd_w);
+  3350	
+  3351	    var it = try std.process.Args.Iterator.Windows.init(alloc, cmd_w);
+  3352	    defer it.deinit();
+  3353	    for (argv) |expected| {
+  3354	        const got = it.next() orelse return error.TestUnexpectedResult;
+  3355	        try testing.expectEqualStrings(expected, got);
+  3356	    }
+  3357	    try testing.expect(it.next() == null);
+  3358	}
+  3359	
+  3360	test "search: exact-symbol query surfaces the definition site inline (fewer round-trips, #1)" {
+  3361	    // codedb_search for a bare identifier that is an indexed symbol should lead
+  3362	    // with the def location, so the agent doesn't have to make a 2nd
+  3363	    // codedb_symbol call just to learn where it is defined.
+  3364	    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  3365	    defer explorer.deinit();
+  3366	    try explorer.indexFile("src/thing.zig", "pub fn parseThing() void {}\n");
+  3367	
+  3368	    var store = Store.init(testing.allocator);
+  3369	    defer store.deinit();
+  3370	    var agents = AgentRegistry.init(testing.allocator);
+  3371	    defer agents.deinit();
+  3372	    _ = try agents.register("__filesystem__");
+  3373	
+  3374	    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  3375	    defer bench_ctx.deinit();
+  3376	
+  3377	    const search_json =
+  3378	        \\{"query":"parseThing"}
+  3379	    ;
+  3380	    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, search_json, .{});
+  3381	    defer parsed.deinit();
+  3382	
+  3383	    var out: std.ArrayList(u8) = .empty;
+  3384	    defer out.deinit(testing.allocator);
+  3385	    bench_ctx.runDispatch(io, testing.allocator, .codedb_search, &parsed.value.object, &out, &store, &explorer, &agents);
+  3386	
+  3387	    try testing.expect(std.mem.indexOf(u8, out.items, "is defined at") != null);
+  3388	    try testing.expect(std.mem.indexOf(u8, out.items, "src/thing.zig:1") != null);
+  3389	}
+  3390	
+  3391	test "mcp: emit-rich-blocks defaults lean for agent clients, rich for GUI panels" {
+  3392	    // Assumes a clean env (no CODEDB_MCP_LEAN/RICH override), as under `zig build test`.
+  3393	    // Agent harnesses forward tool text straight into model context, so they
+  3394	    // default LEAN — no colored summary / guidance blocks to pay output tokens for.
+  3395	    try testing.expect(!mcp_mod.mcpEmitRichBlocks(null)); // no clientInfo -> lean
+  3396	    try testing.expect(!mcp_mod.mcpEmitRichBlocks("claude-code"));
+  3397	    try testing.expect(!mcp_mod.mcpEmitRichBlocks("codex"));
+  3398	    try testing.expect(!mcp_mod.mcpEmitRichBlocks("cursor"));
+  3399	    // Desktop GUI chat clients render a human-facing result panel -> rich blocks,
+  3400	    // matched case-insensitively.
+  3401	    try testing.expect(mcp_mod.mcpEmitRichBlocks("claude-ai"));
+  3402	    try testing.expect(mcp_mod.mcpEmitRichBlocks("Claude-AI"));
+  3403	}
+  3404	
+  3405	test "issue-680: policy upsert never splices on a marker-shaped string in user prose" {
+  3406	    const block = try codex_setup.buildPolicyBlock(testing.allocator);
+  3407	    defer testing.allocator.free(block);
+  3408	
+  3409	    const original =
+  3410	        \\# House rules
+  3411	        \\
+  3412	        \\Do not touch the `<!-- codedb:begin v` marker by hand.
+  3413	        \\
+  3414	        \\SECRET USER INSTRUCTIONS THAT MUST SURVIVE
+  3415	        \\
+  3416	    ;
+  3417	
+  3418	    const updated = (try codex_setup.upsertPolicyBlock(testing.allocator, original, block)) orelse
+  3419	        return error.TestUnexpectedResult;
+  3420	    defer testing.allocator.free(updated);
+  3421	
+  3422	    // Every byte the user wrote survives, in order, ahead of the block.
+  3423	    try testing.expect(std.mem.startsWith(u8, updated, std.mem.trimEnd(u8, original, "\n")));
+  3424	    try testing.expect(std.mem.indexOf(u8, updated, "SECRET USER INSTRUCTIONS THAT MUST SURVIVE") != null);
+  3425	    try testing.expect(std.mem.indexOf(u8, updated, "Do not touch the `<!-- codedb:begin v` marker by hand.") != null);
+  3426	    try testing.expect(std.mem.indexOf(u8, updated, codex_setup.end_marker) != null);
+  3427	
+  3428	    // ...and a re-install is still a no-op.
+  3429	    try testing.expect((try codex_setup.upsertPolicyBlock(testing.allocator, updated, block)) == null);
+  3430	}
+  3431	
+  3432	test "issue-680: policy upsert repairs an unterminated block instead of appending a second one" {
+  3433	    const block = try codex_setup.buildPolicyBlock(testing.allocator);
+  3434	    defer testing.allocator.free(block);
+  3435	
+  3436	    const damaged = "# House rules\n\n<!-- codedb:begin v0.0.1 -->\nHALF WRITTEN\nKEEP THIS USER LINE\n";
+  3437	
+  3438	    const first = (try codex_setup.upsertPolicyBlock(testing.allocator, damaged, block)) orelse
+  3439	        return error.TestUnexpectedResult;
+  3440	    defer testing.allocator.free(first);
+  3441	
+  3442	    try testing.expect(std.mem.indexOf(u8, first, "KEEP THIS USER LINE") != null);
+  3443	    try testing.expect(std.mem.indexOf(u8, first, "HALF WRITTEN") != null);
+  3444	    try testing.expect(std.mem.indexOf(u8, first, "v0.0.1") == null);
+  3445	    // Exactly one begin marker, and it is terminated.
+  3446	    try testing.expectEqual(
+  3447	        std.mem.indexOf(u8, first, codex_setup.begin_marker_prefix).?,
+  3448	        std.mem.lastIndexOf(u8, first, codex_setup.begin_marker_prefix).?,
+  3449	    );
+  3450	    try testing.expectEqualStrings(release_info.semver, codex_setup.policyBlockVersion(first).?);

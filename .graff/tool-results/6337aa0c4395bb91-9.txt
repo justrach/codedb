@@ -1,0 +1,70 @@
+✓ src/main.zig  zig  529 lines  ⚡ 11.0µs
+  imports: std, builtin, cio, Store, Explorer, sty, index_mod, root_policy, nuke_mod, update_mod, codex_mod, release_info, Config, out_mod  (x14)
+  L20     constant        Out  const Out = out_mod.Out;
+  L21     constant        printUsage  const printUsage = out_mod.printUsage;
+  imports: cli_args  (x1)
+  L25     constant        ParsedPositional  pub const ParsedPositional = cli_args.ParsedPositional;
+  L26     constant        parsePositional  pub const parsePositional = cli_args.parsePositional;
+  L27     constant        LineRange  pub const LineRange = cli_args.LineRange;
+  L28     constant        LineRangeError  pub const LineRangeError = cli_args.LineRangeError;
+  L29     constant        parseLineRange  pub const parseLineRange = cli_args.parseLineRange;
+  L30     constant        SearchArgs  pub const SearchArgs = cli_args.SearchArgs;
+  L31     constant        SearchArgError  pub const SearchArgError = cli_args.SearchArgError;
+  L32     constant        parseSearchArgs  pub const parseSearchArgs = cli_args.parseSearchArgs;
+  L33     constant        hasExtraCliArgs  pub const hasExtraCliArgs = cli_args.hasExtraCliArgs;
+  L34     constant        findGitRoot  pub const findGitRoot = cli_args.findGitRoot;
+  L35     constant        findGitRootFrom  pub const findGitRootFrom = cli_args.findGitRootFrom;
+  L36     constant        isValidMcpFlag  pub const isValidMcpFlag = cli_args.isValidMcpFlag;
+  L37     constant        resolveRoot  pub const resolveRoot = cli_args.resolveRoot;
+  L38     constant        cliIsQueryCmd  const cliIsQueryCmd = cli_args.cliIsQueryCmd;
+  L39     constant        mcpRootIsImplicitCwd  const mcpRootIsImplicitCwd = cli_args.mcpRootIsImplicitCwd;
+  L40     constant        mcpRootAcceptsEnv  const mcpRootAcceptsEnv = cli_args.mcpRootAcceptsEnv;
+  L41     constant        isHelpRequest  const isHelpRequest = cli_args.isHelpRequest;
+  L59     function        main  pub fn main(init: std.process.Init.Minimal) void {
+  L60     constant        argv  const argv = cio.bootstrapArgs(init.args);
+  L78     function        mainTrampoline  fn mainTrampoline(argv: []const [*:0]const u8) !void {
+  L79     constant        thread  const thread = try std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, mainInner, .{argv});
+  L88     function        handleFastPath  fn handleFastPath(argv: []const [*:0]const u8) bool {
+  L89     constant        stdout_fd  const stdout_fd: c_int = 1;
+  L90     constant        stderr_fd  const stderr_fd: c_int = 2;
+  L93     constant        msg  const msg =
+  L101    constant        a1  const a1 = std.mem.span(argv[1]);
+  L104    constant        out  const out = std.fmt.bufPrint(&buf, "codedb {s}\n", .{release_info.semver}) catch {
+  L114    function        mainInner  fn mainInner(argv: []const [*:0]const u8) void {
+  imports: query_mod  (x1)
+  L121    constant        runQuery  const runQuery = query_mod.runQuery;
+  imports: cli_proxy  (x1)
+  L124    constant        daemonLockTryAcquire  pub const daemonLockTryAcquire = cli_proxy.daemonLockTryAcquire;
+  L125    constant        daemonLockRelease  pub const daemonLockRelease = cli_proxy.daemonLockRelease;
+  L126    constant        daemonLockAvailable  pub const daemonLockAvailable = cli_proxy.daemonLockAvailable;
+  L127    constant        cliTryProxy  const cliTryProxy = cli_proxy.cliTryProxy;
+  imports: bootstrap  (x1)
+  L130    constant        loadUserConfig  const loadUserConfig = bootstrap.loadUserConfig;
+  L131    constant        getDataDir  const getDataDir = bootstrap.getDataDir;
+  imports: commands  (x1)
+  L134    function        mainImpl  fn mainImpl(argv: []const [*:0]const u8) !void {
+  L136    constant        allocator  const allocator = std.heap.c_allocator;
+  L144    constant        io  const io = threaded.io();
+  L146    constant        stdout  const stdout = cio.File.stdout();
+  L147    constant        use_color  const use_color = stdout.isTty();
+  L148    constant        s  const s = sty.style(use_color);
+  L157    constant        args  const args = blk: {
+  L163    constant        a  const a = std.mem.span(argv[i]);
+  L197    constant        parsed  const parsed = parsePositional(args);
+  L300    constant        abs_root  const abs_root = resolveRoot(io, root, &root_buf) catch {
+  L313    constant        mcp_deferred_root  const mcp_deferred_root = mcpRootIsImplicitCwd(cmd, root, root_is_explicit);
+  L321    constant        load_only_ok  const load_only_ok = cliIsQueryCmd(cmd) and blk: {
+  L322    constant        data_dir  const data_dir = getDataDir(io, allocator, abs_root) catch break :blk false;
+  L329    constant        bootstrap_ok  const bootstrap_ok = !load_only_ok and root_policy.isBootstrapableRoot(io, abs_root);
+  L346    constant        t0  const t0 = cio.nanoTimestamp();
+  L347    constant        data_dir  const data_dir = getDataDir(io, allocator, abs_root) catch {
+  L354    constant        meta  const meta = index_mod.readStatusMeta(io, data_dir, allocator);
+  L355    constant        elapsed  const elapsed = cio.nanoTimestamp() - t0;
+  L412    constant        lock_free  const lock_free = if (probe_dir) |d| daemonLockAvailable(d) else false;
+  L416    constant        daemon_argv  const daemon_argv = [_][]const u8{ self_exe, abs_root, "cli-daemon" };
+  L423    constant        data_dir  const data_dir = try getDataDir(io, allocator, abs_root);
+  L438    constant        cfg  const cfg = loadUserConfig(io, allocator, explicit_config) catch |err| blk: {
+  L447    constant        data_log_path  const data_log_path = try std.fmt.allocPrint(allocator, "{s}/data.log", .{data_dir});
+  L455    constant        rerank_trace_path  const rerank_trace_path: ?[]u8 = if (cfg.rerank_trace)
+  L492    constant        code  const code = runQuery(io, allocator, &explorer, &store, abs_root, cmd, args, cmd_args_start, &out, s);
+  L511    constant        file_count  const file_count = explorer.outlines.count();

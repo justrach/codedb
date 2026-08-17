@@ -1,0 +1,42 @@
+✓ src/background.zig  zig  323 lines  ⚡ 13.0µs
+  imports: std, cio, Store, Explorer, AgentRegistry, watcher, mcp_server, telemetry, git_mod, snapshot_mod, TrigramIndex, MmapTrigramIndex, bootstrap  (x13)
+  L18     constant        persistWordIndexToDisk  const persistWordIndexToDisk = bootstrap.persistWordIndexToDisk;
+  L19     constant        loadBestSnapshot  const loadBestSnapshot = bootstrap.loadBestSnapshot;
+  L20     constant        loadTrigramFromDiskIfPresent  const loadTrigramFromDiskIfPresent = bootstrap.loadTrigramFromDiskIfPresent;
+  L21     constant        compactMcpReadyMemory  const compactMcpReadyMemory = bootstrap.compactMcpReadyMemory;
+  L22     constant        getDataDir  const getDataDir = bootstrap.getDataDir;
+  L24     function        reapLoop  pub fn reapLoop(agents: *AgentRegistry, shutdown: *std.atomic.Value(bool)) void {
+  L35     function        scanBg  pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, allocator: std.mem.Allocator, scan_done: *std.atomic.Value(bool), shutdown: *std.atomic.Value(bool), data_dir: []const u8, abs_root: []const u8, telem: *telemetry.Telemetry, startup_t0: i64) void {
+  L36     constant        git_head  const git_head = git_mod.getGitHead(root, allocator) catch null;
+  L37     constant        disk_hdr  const disk_hdr = TrigramIndex.readDiskHeader(io, data_dir, allocator) catch null;
+  L38     constant        heads_match  const heads_match = blk: {
+  L39     constant        a  const a = git_head orelse break :blk false;
+  L40     constant        b  const b = (disk_hdr orelse break :blk false).git_head orelse break :blk false;
+  L77     constant        current_count  const current_count = @as(u32, @intCast(explorer.outlines.count()));
+  L85     constant        snap_path_1  const snap_path_1 = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
+  L90     constant        fc  const fc = explorer.outlines.count();
+  L106    constant        snap_path_2  const snap_path_2 = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
+  L111    constant        fc  const fc = explorer.outlines.count();
+  L141    constant        cpu_count  const cpu_count = std.Thread.getCpuCount() catch 1;
+  L142    constant        tri_workers  const tri_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
+  L144    constant        tmp_tri  const tmp_tri = watcher.buildTrigramsFromCache(&explorer.contents, allocator, std.heap.c_allocator, tri_workers) catch |err| blk: {
+  L192    constant        snap_path_3  const snap_path_3 = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
+  L197    constant        file_count  const file_count = explorer.outlines.count();
+  L203    function        triggerScanFromRoots  pub fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8) void {
+  L204    constant        data_dir  const data_dir = getDataDir(ctx.io, ctx.allocator, abs_root) catch {
+  L209    constant        git_head  const git_head = git_mod.getGitHead(abs_root, ctx.allocator) catch null;
+  L211    constant        snapshot_loaded  const snapshot_loaded = loadBestSnapshot(ctx.io, ctx.explorer, ctx.store, abs_root, data_dir, git_head, ctx.allocator);
+  L217    constant        scan_thread  const scan_thread = std.Thread.spawn(.{}, scanBg, .{ ctx.io, ctx.store, ctx.explorer, abs_root, ctx.allocator, ctx.scan_done, ctx.shutdown, data_dir, abs_root, ctx.telem, ctx.startup_t0 }) catch return;
+  L220    constant        startup_time_ms  const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - ctx.startup_t0, 0));
+  L228    function        watcherDeferredLoop  pub fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
+  L229    constant        t0  const t0 = cio.milliTimestamp();
+  L230    constant        fallback_after_ms  const fallback_after_ms: i64 = 3000;
+  L238    constant        give_up_after_ms  const give_up_after_ms: i64 = 13000;
+  L242    constant        elapsed  const elapsed = cio.milliTimestamp() - t0;
+  L247    constant        empty_roots  const empty_roots: []const mcp_server.Root = &.{};
+  L263    function        idleWatchdog  pub fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {
+  imports: mcp  (x1)
+  L270    constant        stdin  const stdin = cio.File.stdin();
+  L281    constant        poll_result  const poll_result = std.posix.poll(&poll_fds, 0) catch 0;
+  L308    function        cliIdleWatchdog  pub fn cliIdleWatchdog(shutdown: *std.atomic.Value(bool), last_activity_ms: *std.atomic.Value(i64), idle_ms: i64) bool {
+  L314    constant        idle  const idle = cio.milliTimestamp() - last_activity_ms.load(.acquire);

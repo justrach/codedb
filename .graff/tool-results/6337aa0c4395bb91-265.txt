@@ -1,0 +1,500 @@
+✓ src/commands.zig  zig  ⚡ 4.0µs
+    1 | //! Non-query command handlers (bench-engine / snapshot / cli-daemon / serve /
+    2 | //! mcp). Extracted from mainImpl: each takes a RunCtx bundling the warm
+    3 | //! Store/Explorer plus the parsed invocation state, so mainImpl stays a thin
+    4 | //! dispatcher. The resources RunCtx points at (out/store/explorer/...) are
+    5 | //! owned by mainImpl and outlive every handler call.
+    6 | const std = @import("std");
+    7 | const cio = @import("cio.zig");
+    8 | const sty = @import("style.zig");
+    9 | const Store = @import("store.zig").Store;
+   10 | const Explorer = @import("explore.zig").Explorer;
+   11 | const explore_mod = @import("explore.zig");
+   12 | const AgentRegistry = @import("agent.zig").AgentRegistry;
+   13 | const watcher = @import("watcher.zig");
+   14 | const server = @import("server.zig");
+   15 | const mcp_server = @import("mcp.zig");
+   16 | const telemetry = @import("telemetry.zig");
+   17 | const git_mod = @import("git.zig");
+   18 | const snapshot_mod = @import("snapshot.zig");
+   19 | const update_mod = @import("update.zig");
+   20 | const index_mod = @import("index.zig");
+   21 | const Config = @import("config.zig").Config;
+   22 | const Out = @import("out.zig").Out;
+   23 | const cli_proxy = @import("cli_proxy.zig");
+   24 | const cliDaemonListen = cli_proxy.cliDaemonListen;
+   25 | const cliSocketPath = cli_proxy.cliSocketPath;
+   26 | const bootstrap = @import("bootstrap.zig");
+   27 | const loadWordIndexFromDiskIfPresent = bootstrap.loadWordIndexFromDiskIfPresent;
+   28 | const wordIndexMatchesOutlines = bootstrap.wordIndexMatchesOutlines;
+   29 | const persistWordIndexFromSource = bootstrap.persistWordIndexFromSource;
+   30 | const persistWordIndexToDisk = bootstrap.persistWordIndexToDisk;
+   31 | const loadBestSnapshot = bootstrap.loadBestSnapshot;
+   32 | const loadTrigramFromDiskIfPresent = bootstrap.loadTrigramFromDiskIfPresent;
+   33 | const compactMcpReadyMemory = bootstrap.compactMcpReadyMemory;
+   34 | const saveProjectInfo = bootstrap.saveProjectInfo;
+   35 | const spawnWarmup = bootstrap.spawnWarmup;
+   36 | const background = @import("background.zig");
+   37 | const reapLoop = background.reapLoop;
+   38 | const scanBg = background.scanBg;
+   39 | const triggerScanFromRoots = background.triggerScanFromRoots;
+   40 | const watcherDeferredLoop = background.watcherDeferredLoop;
+   41 | const idleWatchdog = background.idleWatchdog;
+   42 | const cliIdleWatchdog = background.cliIdleWatchdog;
+   43 | 
+   44 | /// Shared invocation state for the command handlers. `out`/`store`/`explorer`
+   45 | /// are pointers into mainImpl's stack frame, which lives for the whole process,
+   46 | /// so handlers may spawn threads that capture them.
+   47 | pub const RunCtx = struct {
+   48 |     io: std.Io,
+   49 |     allocator: std.mem.Allocator,
+   50 |     out: *Out,
+   51 |     s: sty.Style,
+   52 |     store: *Store,
+   53 |     explorer: *Explorer,
+   54 |     cfg: Config,
+   55 |     data_dir: []const u8,
+   56 |     abs_root: []const u8,
+   57 |     root: []const u8,
+   58 |     args: []const []const u8,
+   59 |     cmd_args_start: usize,
+   60 |     no_telemetry: bool,
+   61 |     mcp_deferred_root: bool,
+   62 | };
+   63 | 
+   64 | pub fn runBenchEngine(ctx: *RunCtx) void {
+   65 |     const allocator = ctx.allocator;
+   66 |     const args = ctx.args;
+   67 |     const cmd_args_start = ctx.cmd_args_start;
+   68 |     const explorer = ctx.explorer;
+   69 |     const out = ctx.out;
+   70 |     // Engine-vs-engine microbenchmark — bypasses MCP envelope, response
+   71 |     // formatting, and most of the CLI display path. Lets us compare
+   72 |     // codedb's pure engine cost against SQLite FTS5 head-to-head.
+   73 |     //
+   74 |     // Usage: codedb [root] bench-engine <op> <query> [iters]
+   75 |     //   op: word | word-fmt | search | search-fmt
+   76 |     //   iters defaults to 100.
+   77 |     //
+   78 |     // Output: a single line of JSON to stdout, e.g.
+   79 |     //   {"op":"word","query":"useState","iters":100,"hits":50,"p50_ns":1234,"p99_ns":5678}
+   80 |     if (args.len < cmd_args_start + 2) {
+   81 |         out.p("usage: codedb [root] bench-engine <word|word-fmt|search|search-fmt|search-paths> <query> [iters]\n", .{});
+   82 |         std.process.exit(1);
+   83 |     }
+   84 |     const op = args[cmd_args_start];
+   85 |     const query = args[cmd_args_start + 1];
+   86 |     const iters: usize = if (args.len > cmd_args_start + 2)
+   87 |         std.fmt.parseInt(usize, args[cmd_args_start + 2], 10) catch 100
+   88 |     else
+   89 |         100;
+   90 | 
+   91 |     // Warm once (mirrors how the Python bench harness measures latency).
+   92 |     if (std.mem.eql(u8, op, "word") or std.mem.eql(u8, op, "word-fmt")) {
+   93 |         const warm = explorer.searchWord(query, allocator) catch &[_]index_mod.WordHit{};
+   94 |         allocator.free(warm);
+   95 |     } else if (std.mem.eql(u8, op, "search") or std.mem.eql(u8, op, "search-fmt")) {
+   96 |         const warm = explorer.searchContent(query, allocator, 50) catch &[_]explore_mod.SearchResult{};
+   97 |         defer {
+   98 |             for (warm) |r| {
+   99 |                 allocator.free(r.path);
+  100 |                 allocator.free(r.line_text);
+  101 |             }
+  102 |             allocator.free(warm);
+  103 |         }
+  104 |     }
+  105 | 
+  106 |     var times = allocator.alloc(u64, iters) catch {
+  107 |         out.p("error: alloc failed\n", .{});
+  108 |         std.process.exit(1);
+  109 |     };
+  110 |     defer allocator.free(times);
+  111 | 
+  112 |     var hits_seen: usize = 0;
+  113 | 
+  114 |     var i: usize = 0;
+  115 |     while (i < iters) : (i += 1) {
+  116 |         const t0 = cio.nanoTimestamp();
+  117 | 
+  118 |         if (std.mem.eql(u8, op, "word")) {
+  119 |             const hits = explorer.searchWord(query, allocator) catch &[_]index_mod.WordHit{};
+  120 |             hits_seen = hits.len;
+  121 |             allocator.free(hits);
+  122 |         } else if (std.mem.eql(u8, op, "word-fmt")) {
+  123 |             const hits = explorer.searchWord(query, allocator) catch &[_]index_mod.WordHit{};
+  124 |             hits_seen = hits.len;
+  125 |             defer allocator.free(hits);
+  126 |             // Mimic the MCP handleWord format loop into a scratch buffer
+  127 |             // so we measure the same work the agent pays for.
+  128 |             var scratch: std.ArrayList(u8) = .empty;
+  129 |             defer scratch.deinit(allocator);
+  130 |             scratch.ensureTotalCapacity(allocator, 256 + hits.len * 80) catch {};
+  131 |             const w = cio.listWriter(&scratch, allocator);
+  132 |             w.print("{d} hits for '{s}':\n", .{ hits.len, query }) catch {};
+  133 |             explorer.mu.lockShared();
+  134 |             for (hits) |h| {
+  135 |                 w.print("  {s}:{d}\n", .{ explorer.word_index.hitPath(h), h.line_num }) catch {};
+  136 |             }
+  137 |             explorer.mu.unlockShared();
+  138 |         } else if (std.mem.eql(u8, op, "search")) {
+  139 |             const r = explorer.searchContent(query, allocator, 50) catch &[_]explore_mod.SearchResult{};
+  140 |             hits_seen = r.len;
+  141 |             for (r) |item| {
+  142 |                 allocator.free(item.path);
+  143 |                 allocator.free(item.line_text);
+  144 |             }
+  145 |             allocator.free(r);
+  146 |         } else if (std.mem.eql(u8, op, "search-fmt")) {
+  147 |             const r = explorer.searchContent(query, allocator, 50) catch &[_]explore_mod.SearchResult{};
+  148 |             hits_seen = r.len;
+  149 |             defer {
+  150 |                 for (r) |item| {
+  151 |                     allocator.free(item.path);
+  152 |                     allocator.free(item.line_text);
+  153 |                 }
+  154 |                 allocator.free(r);
+  155 |             }
+  156 |             var scratch: std.ArrayList(u8) = .empty;
+  157 |             defer scratch.deinit(allocator);
+  158 |             scratch.ensureTotalCapacity(allocator, 256 + r.len * 120) catch {};
+  159 |             const w = cio.listWriter(&scratch, allocator);
+  160 |             w.print("{d} results for '{s}':\n", .{ r.len, query }) catch {};
+  161 |             for (r) |item| {
+  162 |                 w.print("  {s}:{d}: {s}\n", .{ item.path, item.line_num, item.line_text }) catch {};
+  163 |             }
+  164 |         } else if (std.mem.eql(u8, op, "search-paths")) {
+  165 |             // Matched-shape benchmark op: produce a deduped path set
+  166 |             // for the query — same shape FTS5 `SELECT path` returns,
+  167 |             // letting us compare engines on identical work.
+  168 |             const r = explorer.searchContent(query, allocator, 50) catch &[_]explore_mod.SearchResult{};
+  169 |             hits_seen = r.len;
+  170 |             defer {
+  171 |                 for (r) |item| {
+  172 |                     allocator.free(item.path);
+  173 |                     allocator.free(item.line_text);
+  174 |                 }
+  175 |                 allocator.free(r);
+  176 |             }
+  177 |             var seen = std.StringHashMap(void).init(allocator);
+  178 |             defer seen.deinit();
+  179 |             var scratch: std.ArrayList(u8) = .empty;
+  180 |             defer scratch.deinit(allocator);
+  181 |             scratch.ensureTotalCapacity(allocator, 256 + r.len * 80) catch {};
+  182 |             const w = cio.listWriter(&scratch, allocator);
+  183 |             for (r) |item| {
+  184 |                 const gop = seen.getOrPut(item.path) catch continue;
+  185 |                 if (gop.found_existing) continue;
+  186 |                 w.print("{s}\n", .{item.path}) catch {};
+  187 |             }
+  188 |         } else {
+  189 |             out.p("error: unknown op '{s}' — use one of word|word-fmt|search|search-fmt|search-paths\n", .{op});
+  190 |             std.process.exit(1);
+  191 |         }
+  192 | 
+  193 |         const elapsed_i128: i128 = cio.nanoTimestamp() - t0;
+  194 |         times[i] = if (elapsed_i128 > 0) @intCast(elapsed_i128) else 0;
+  195 |     }
+  196 | 
+  197 |     std.mem.sort(u64, times, {}, std.sort.asc(u64));
+  198 |     const p50 = times[iters / 2];
+  199 |     const p99 = times[@min(iters - 1, (iters * 99) / 100)];
+  200 |     const p_min = times[0];
+  201 |     out.p(
+  202 |         "{{\"op\":\"{s}\",\"query\":\"{s}\",\"iters\":{d},\"hits\":{d},\"min_ns\":{d},\"p50_ns\":{d},\"p99_ns\":{d}}}\n",
+  203 |         .{ op, query, iters, hits_seen, p_min, p50, p99 },
+  204 |     );
+  205 | }
+  206 | 
+  207 | pub fn runSnapshot(ctx: *RunCtx) void {
+  208 |     const io = ctx.io;
+  209 |     const allocator = ctx.allocator;
+  210 |     const args = ctx.args;
+  211 |     const cmd_args_start = ctx.cmd_args_start;
+  212 |     const abs_root = ctx.abs_root;
+  213 |     const data_dir = ctx.data_dir;
+  214 |     const explorer = ctx.explorer;
+  215 |     const out = ctx.out;
+  216 |     const s = ctx.s;
+  217 |     const t0 = cio.nanoTimestamp();
+  218 |     const output = if (args.len > cmd_args_start) args[cmd_args_start] else blk: {
+  219 |         break :blk std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch "codedb.snapshot";
+  220 |     };
+  221 |     defer if (args.len <= cmd_args_start and output.len > "codedb.snapshot".len) allocator.free(output);
+  222 |     snapshot_mod.writeSnapshotDual(io, explorer, abs_root, output, allocator) catch |err| {
+  223 |         out.p("{s}\xe2\x9c\x97{s} snapshot failed: {}\n", .{ s.red, s.reset, err });
+  224 |         std.process.exit(1);
+  225 |     };
+  226 |     const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
+  227 |     loadWordIndexFromDiskIfPresent(io, explorer, data_dir, git_head, allocator);
+  228 |     if (!wordIndexMatchesOutlines(explorer)) {
+  229 |         persistWordIndexFromSource(io, explorer, abs_root, data_dir, git_head, allocator) catch |err| {
+  230 |             out.p("{s}\xe2\x9c\x97{s} word index persist failed: {}\n", .{ s.red, s.reset, err });
+  231 |             std.process.exit(1);
+  232 |         };
+  233 |     } else {
+  234 |         persistWordIndexToDisk(io, explorer, data_dir, git_head);
+  235 |     }
+  236 |     const elapsed = cio.nanoTimestamp() - t0;
+  237 |     var dur_buf: [64]u8 = undefined;
+  238 |     out.p("{s}\xe2\x9c\x93{s} {s}snapshot{s}  {s}{s}{s}  {s}{d} files{s}  {s}{s}{s}\n", .{
+  239 |         s.green,                       s.reset,
+  240 |         s.bold,                        s.reset,
+  241 |         s.cyan,                        output,
+  242 |         s.reset,                       s.dim,
+  243 |         explorer.outlines.count(),     s.reset,
+  244 |         sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed),
+  245 |         s.reset,
+  246 |     });
+  247 | }
+  248 | 
+  249 | pub fn runCliDaemon(ctx: *RunCtx) !void {
+  250 |     const io = ctx.io;
+  251 |     const allocator = ctx.allocator;
+  252 |     const abs_root = ctx.abs_root;
+  253 |     const data_dir = ctx.data_dir;
+  254 |     const root = ctx.root;
+  255 |     const store = ctx.store;
+  256 |     const explorer = ctx.explorer;
+  257 |     const out = ctx.out;
+  258 |     // Hidden command: a lightweight warm daemon spawned by a cold CLI query
+  259 |     // so the NEXT query is fast. It is `serve` minus the TCP server, agent
+  260 |     // registry, and reaper — just the warm explorer/store (loaded by the
+  261 |     // section above), an incremental watcher to keep the index fresh, the
+  262 |     // per-project CLI socket listener, and a time-based idle watchdog that
+  263 |     // exits the process once the socket has been quiet for a while. We do
+  264 |     // NOT auto-spawn `serve` here because two `serve` daemons would fight
+  265 |     // over the fixed TCP port; the CLI socket is per-project and conflict-free.
+  266 | 
+  267 |     // Detach from the controlling terminal so we outlive the spawning CLI
+  268 |     // and never touch its stdio. (spawnDetached already pointed 0/1/2 at
+  269 |     // /dev/null; this also starts a fresh session.)
+  270 |     cio.detachFromTerminal();
+  271 | 
+  272 |     const idle_ms: i64 = blk: {
+  273 |         const raw = cio.posixGetenv("CODEDB_CLI_DAEMON_IDLE_MS") orelse break :blk 5 * 60 * 1000;
+  274 |         break :blk std.fmt.parseInt(i64, raw, 10) catch (5 * 60 * 1000);
+  275 |     };
+  276 | 
+  277 |     var shutdown = std.atomic.Value(bool).init(false);
+  278 |     defer shutdown.store(true, .release);
+  279 |     // The load section above already loaded/scanned the index, so the
+  280 |     // watcher starts in the "scan done" state and only does incremental
+  281 |     // upkeep from here.
+  282 |     var scan_already_done = std.atomic.Value(bool).init(true);
+  283 | 
+  284 |     // Grace period: treat startup as activity so a freshly-spawned daemon
+  285 |     // gets the full idle window before the watchdog can fire.
+  286 |     var last_activity_ms = std.atomic.Value(i64).init(cio.milliTimestamp());
+  287 | 
+  288 |     const queue = try allocator.create(watcher.EventQueue);
+  289 |     defer allocator.destroy(queue);
+  290 |     queue.* = watcher.EventQueue{};
+  291 |     const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_already_done });
+  292 |     watch_thread.detach();
+  293 | 
+  294 |     std.log.info("cli-daemon: {d} files indexed, idle_timeout={d}ms", .{ store.currentSeq(), idle_ms });
+  295 | 
+  296 |     // CLI socket listener. Pass the REAL shutdown flag: if another daemon
+  297 |     // already owns the socket (we lost the bind race), cliDaemonListen sets
+  298 |     // shutdown and the watchdog below returns at once, so the redundant
+  299 |     // daemon exits instead of lingering idle.
+  300 |     if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, data_dir, &last_activity_ms, &shutdown, false })) |cli_t| {
+  301 |         cli_t.detach();
+  302 |     } else |err| {
+  303 |         std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
+  304 |         return;
+  305 |     }
+  306 | 
+  307 |     // Warm the word index + result caches in the background so the first
+  308 |     // proxied CLI queries hit a fully warm explorer (the daemon used to
+  309 |     // stay lean and charge the first `word`/`context` query the rebuild).
+  310 |     spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
+  311 | 
+  312 |     // Block here until idle (or a bind-race shutdown). On return the process
+  313 |     // exits immediately — std.process.exit reclaims everything and avoids
+  314 |     // racing the detached listener thread against freed explorer/store.
+  315 |     const idle_exit = cliIdleWatchdog(&shutdown, &last_activity_ms, idle_ms);
+  316 |     shutdown.store(true, .release);
+  317 |     // If WE owned the socket (exited on idle, not a bind-race loss), unlink
+  318 |     // it on the way out. The listener thread's own `defer unlink` never runs
+  319 |     // because std.process.exit kills it mid-accept; do it here so we don't
+  320 |     // leave a stale node behind. On a bind-race loss the socket belongs to
+  321 |     // the winning daemon, so idle_exit is false and we leave it alone.
+  322 |     if (idle_exit) {
+  323 |         var sock_buf: [128]u8 = undefined;
+  324 |         if (cliSocketPath(&sock_buf, abs_root)) |sock_path| {
+  325 |             var sock_z_buf: [128]u8 = undefined;
+  326 |             if (cio.bufPrintZ(&sock_z_buf, "{s}", .{sock_path})) |sock_z| {
+  327 |                 _ = std.c.unlink(sock_z.ptr);
+  328 |             } else |_| {}
+  329 |         }
+  330 |     }
+  331 |     out.flush();
+  332 |     std.process.exit(0);
+  333 | }
+  334 | 
+  335 | pub fn runServe(ctx: *RunCtx) !void {
+  336 |     const io = ctx.io;
+  337 |     const allocator = ctx.allocator;
+  338 |     const abs_root = ctx.abs_root;
+  339 |     const data_dir = ctx.data_dir;
+  340 |     const root = ctx.root;
+  341 |     const store = ctx.store;
+  342 |     const explorer = ctx.explorer;
+  343 |     const port: u16 = blk: {
+  344 |         const raw = cio.posixGetenv("CODEDB_PORT") orelse break :blk 6767;
+  345 |         break :blk std.fmt.parseInt(u16, raw, 10) catch 6767;
+  346 |     };
+  347 |     var agents = AgentRegistry.init(allocator);
+  348 |     defer agents.deinit();
+  349 |     _ = try agents.register("__filesystem__");
+  350 | 
+  351 |     var shutdown = std.atomic.Value(bool).init(false);
+  352 |     defer shutdown.store(true, .release);
+  353 |     var scan_already_done = std.atomic.Value(bool).init(true);
+  354 | 
+  355 |     const queue = try allocator.create(watcher.EventQueue);
+  356 |     defer allocator.destroy(queue);
+  357 |     queue.* = watcher.EventQueue{};
+  358 |     const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_already_done });
+  359 |     defer watch_thread.join();
+  360 | 
+  361 |     const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
+  362 |     defer reap_thread.join();
+  363 | 
+  364 |     std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
+  365 | 
+  366 |     // Thin-CLI proxy listener: lets `codedb <root> <query>` invocations
+  367 |     // reuse this warm explorer/store over a per-project Unix socket instead
+  368 |     // of paying a cold snapshot reload. Detached so it never blocks serve().
+  369 |     // serve has no idle timeout: it passes throwaway activity/shutdown
+  370 |     // atomics that nobody watches (a bind failure just disables the proxy).
+  371 |     // These outlive the detached thread because server.serve() below blocks
+  372 |     // on this same stack frame for the whole process lifetime.
+  373 |     var cli_activity = std.atomic.Value(i64).init(cio.milliTimestamp());
+  374 |     var cli_listener_dead = std.atomic.Value(bool).init(false);
+  375 |     if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, data_dir, &cli_activity, &cli_listener_dead, true })) |cli_t| {
+  376 |         cli_t.detach();
+  377 |     } else |err| {
+  378 |         std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
+  379 |     }
+  380 |     spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
+  381 |     try server.serve(io, allocator, store, &agents, explorer, queue, port);
+  382 | }
+  383 | 
+  384 | pub fn runMcp(ctx: *RunCtx) !void {
+  385 |     const io = ctx.io;
+  386 |     const allocator = ctx.allocator;
+  387 |     const abs_root = ctx.abs_root;
+  388 |     const data_dir = ctx.data_dir;
+  389 |     const root = ctx.root;
+  390 |     const store = ctx.store;
+  391 |     const explorer = ctx.explorer;
+  392 |     const cfg = ctx.cfg;
+  393 |     const no_telemetry = ctx.no_telemetry;
+  394 |     const mcp_deferred_root = ctx.mcp_deferred_root;
+  395 |     // Background auto-update check (no-op when CODEDB_NO_AUTO_UPDATE is set
+  396 |     // or when the last check was within the last 24h). Detached thread, so
+  397 |     // this doesn't block server startup.
+  398 |     update_mod.maybeAutoUpdate(io, allocator);
+  399 | 
+  400 |     var agents = AgentRegistry.init(allocator);
+  401 |     defer agents.deinit();
+  402 |     _ = try agents.register("__filesystem__");
+  403 | 
+  404 |     const root_from_cwd = mcp_deferred_root;
+  405 | 
+  406 |     saveProjectInfo(io, allocator, data_dir, abs_root) catch {};
+  407 | 
+  408 |     // Set up query tracking WAL
+  409 |     const query_log = std.fmt.allocPrint(allocator, "{s}/queries.log", .{data_dir}) catch null;
+  410 |     if (query_log) |ql| mcp_server.setQueryLogPath(ql);
+  411 | 
+  412 |     const startup_t0 = cio.milliTimestamp();
+  413 |     // --no-telemetry is stripped globally above (#528 item 12); honor it
+  414 |     // here alongside CODEDB_NO_TELEMETRY (checked inside Telemetry.init).
+  415 |     const telemetry_disabled = no_telemetry;
+  416 | 
+  417 |     var telem = telemetry.Telemetry.init(io, data_dir, allocator, telemetry_disabled);
+  418 |     defer telem.deinit();
+  419 |     telem.startSyncThread();
+  420 |     telem.recordSessionStart();
+  421 | 
+  422 |     var shutdown = std.atomic.Value(bool).init(false);
+  423 | 
+  424 |     const queue = try allocator.create(watcher.EventQueue);
+  425 |     defer allocator.destroy(queue);
+  426 |     queue.* = watcher.EventQueue{};
+  427 | 
+  428 |     var scan_thread: ?std.Thread = null;
+  429 |     var watch_thread: std.Thread = undefined;
+  430 | 
+  431 |     var deferred: mcp_server.DeferredScan = undefined;
+  432 |     var maybe_deferred: ?*mcp_server.DeferredScan = null;
+  433 | 
+  434 |     if (root_from_cwd) {
+  435 |         deferred = .{
+  436 |             .io = io,
+  437 |             .allocator = allocator,
+  438 |             .store = store,
+  439 |             .explorer = explorer,
+  440 |             .scan_done = try allocator.create(std.atomic.Value(bool)),
+  441 |             .shutdown = &shutdown,
+  442 |             .telem = &telem,
+  443 |             .queue = queue,
+  444 |             .startup_t0 = startup_t0,
+  445 |             .fallback_cwd = abs_root,
+  446 |             .triggerFn = triggerScanFromRoots,
+  447 |         };
+  448 |         deferred.scan_done.* = std.atomic.Value(bool).init(false);
+  449 |         maybe_deferred = &deferred;
+  450 |         mcp_server.setScanState(.loading_snapshot);
+  451 |         watch_thread = try std.Thread.spawn(.{}, watcherDeferredLoop, .{&deferred});
+  452 |     } else {
+  453 |         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
+  454 |         mcp_server.setScanState(.loading_snapshot);
+  455 |         const snapshot_loaded = loadBestSnapshot(io, explorer, store, abs_root, data_dir, git_head, allocator);
+  456 |         var scan_done = std.atomic.Value(bool).init(snapshot_loaded);
+  457 |         if (!snapshot_loaded) {
+  458 |             mcp_server.setScanState(.walking);
+  459 |             scan_thread = try std.Thread.spawn(.{}, scanBg, .{ io, store, explorer, root, allocator, &scan_done, &shutdown, data_dir, abs_root, &telem, startup_t0 });
+  460 |         } else {
+  461 |             const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - startup_t0, 0));
+  462 |             loadTrigramFromDiskIfPresent(io, explorer, data_dir, allocator);
+  463 |             telem.recordCodebaseStats(explorer, startup_time_ms);
+  464 |             compactMcpReadyMemory(io, explorer, data_dir, git_head, allocator);
+  465 |             mcp_server.setScanState(.ready);
+  466 |         }
+  467 |         watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_done });
+  468 |     }
+  469 | 
+  470 |     const idle_thread = try std.Thread.spawn(.{}, idleWatchdog, .{&shutdown});
+  471 | 
+  472 |     std.log.info("codedb mcp: root={s} files={d} data={s} scan={s}", .{ abs_root, store.currentSeq(), data_dir, mcp_server.getScanState().name() });
+  473 | 
+  474 |     // Thin-CLI proxy listener (same as the serve branch): serve read-only
+  475 |     // query commands from this warm explorer/store over a per-project Unix
+  476 |     // socket so plain `codedb <root> <query>` calls skip a cold reload.
+  477 |     // Detached so it never blocks mcp_server.run(). Like serve, mcp has no
+  478 |     // idle timeout — throwaway activity/shutdown atomics that nobody watches.
+  479 |     // They outlive the detached thread because mcp_server.run() below blocks
+  480 |     // on this same stack frame for the whole process lifetime.
+  481 |     var cli_activity = std.atomic.Value(i64).init(cio.milliTimestamp());
+  482 |     var cli_listener_dead = std.atomic.Value(bool).init(false);
+  483 |     if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, data_dir, &cli_activity, &cli_listener_dead, true })) |cli_t| {
+  484 |         cli_t.detach();
+  485 |     } else |err| {
+  486 |         std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
+  487 |     }
+  488 |     spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
+  489 |     mcp_server.run(io, allocator, store, explorer, &agents, abs_root, cfg.max_cached, &telem, maybe_deferred, &shutdown);
+  490 | 
+  491 |     shutdown.store(true, .release);
+  492 |     if (scan_thread) |st| st.join();
+  493 |     if (maybe_deferred) |d| {
+  494 |         if (d.scan_thread) |st| st.join();
+  495 |     }
+  496 |     watch_thread.join();
+  497 |     idle_thread.join();
+  498 | }
+  499 | 

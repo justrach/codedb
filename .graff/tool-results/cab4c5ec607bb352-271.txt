@@ -1,0 +1,65 @@
+# Changelog
+
+## 0.2.5837 - 2026-08-05
+
+- **OCaml** `.ml`/`.mli` parser support (#622): let/type/module outline symbols
+  with nested `(* ... *)` comment handling.
+- **Mini MCP tools profile is the agent default** — 6 tools with rich steering
+  descriptions and compressed schemas, replacing the terse slim profile after
+  A/B evals showed description quality drives agent success.
+- **NL→symbol search bridge** — natural-language queries bridge to symbol names,
+  machine-artifact hits are deranked, context words merge into the query; the
+  bridge is cached as an inverted token index so repeat queries cost ~0.
+- **Windows daemon reap** — `nuke` runs a bounded multi-pass reap so daemons
+  republished mid-nuke no longer survive it (#657).
+- `codedb_callers` fixes: no more zero call sites when `max_results` starved its
+  filters, and lines where the symbol appears only inside string literals are no
+  longer counted.
+- Indexer skips generated tool-output dirs (`.graff/`, `.harness/`,
+  `graphify-out/`).
+- Bench regression gate repaired (`codedb_context` parity exemption) and pinned
+  Zig dev builds fall back to the hexops mirror.
+
+## 0.2.5836 - 2026-08-02
+
+Agent token efficiency release — see the
+[v0.2.5836 release notes](https://github.com/justrach/codedb/releases/tag/v0.2.5836)
+for the full story (slim-by-default MCP profile, stale-index auto-refresh,
+context fixes, output caps). Also in this cut:
+
+- Preallocate each retained per-file trigram list once at its exact final count
+  and use capacity-proven appends. This removes geometric growth, intermediate
+  copying, and long-lived capacity slack without reducing caches, workers,
+  warmup, retained data, result limits, or query features. On an immutable
+  641-file corpus, 20 counterbalanced pairs measured initial indexing at
+  137 ms → 136 ms (0.73% faster paired median, 95% CI 0.36%-1.46%, 14/20 wins).
+- Add Raspberry Pi 4 full-performance guidance, a Cortex-A72 `ReleaseFast` build
+  recipe, and an on-device generic-versus-tuned benchmark with output parity.
+
+## 0.2.5830 - 2026-07-12
+
+The first performance batch for this release accelerates steady-state MCP and
+core read-only tools while preserving response and retrieval parity. Measured
+MCP round trips improve from **2.16x to 99.11x** across tree, outline, symbol,
+read, find, word, search, and bundle workloads. Large synthetic handler cases
+improve **12.8x-109.7x** for outlines, deep reads, trees, fuzzy file lookup, and
+word output; exact symbols improve **22.4x** through direct hash-index lookup.
+
+The implementation adds bounded, mutation-generation-validated render/score
+caches, cached content hashes and line offsets, offset-based context body
+extraction, a compact JSON-RPC framing fast path, and rolling generic trigram
+construction. Ranking, parser, path-security, telemetry, and MCP schema behavior
+are unchanged. Baseline/candidate MCP responses were byte-identical after ID
+normalization, and the full suite, WASM build, and MCP E2E (20/20) pass.
+
+Detailed methodology, per-tool tables, memory bounds, limitations, and follow-up
+targets are in [`docs/performance-0.2.5830.md`](docs/performance-0.2.5830.md).
+The release gate ran 20 counterbalanced AB/BA pairs against the immutable
+0.2.5829 source plus a pinned harness-only parity backport. Every parity-enabled
+tool matched across every measured iteration after normalizing only response
+duration, and no benchmark crossed the 10% plus 50us regression threshold. The
+runner enforces a shared corpus fingerprint, full JSON-RPC response hashes,
+commit/tree/compiler/corpus/order provenance, paired medians, and bootstrap
+intervals; single-run minima are diagnostic only.
+
+

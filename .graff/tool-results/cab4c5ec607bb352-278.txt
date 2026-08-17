@@ -1,0 +1,93 @@
+    exit 1
+  fi
+fi
+PROFILE="${NOTARY_PROFILE:-${NOTARYTOOL_PROFILE:-codedb-notary}}"
+
+OUT_DIR="$(cd "$(dirname "$BIN")" && pwd)"
+TARBALL="$OUT_DIR/nb-${ARCH_TAG}-apple-darwin.tar.gz"
+SHAFILE="$TARBALL.sha256"
+ZIPFILE="$OUT_DIR/nb-${ARCH_TAG}-apple-darwin-notarize.zip"
+
+echo "==> codesign ($IDENTITY)"
+codesign --sign "$IDENTITY" \
+  --options runtime \
+  --timestamp \
+  --force \
+  "$BIN"
+codesign --verify --deep --strict "$BIN"
+
+echo "==> notarize via profile '$PROFILE'"
+rm -f "$ZIPFILE"
+ditto -c -k --keepParent "$BIN" "$ZIPFILE"
+xcrun notarytool submit "$ZIPFILE" --keychain-profile "$PROFILE" --wait
+rm -f "$ZIPFILE"
+
+# Standalone Mach-O CLI binaries are not .app bundles, so `spctl --assess
+# --type execute` will reject them even when correctly notarized. Verify the
+# signature fields directly instead: Developer ID authority + hardened runtime.
+# Gatekeeper/syspolicyd will fetch the notarization ticket online on first run
+# for quarantined downloads.
+echo "==> verify signature fields"
+CS_OUT="$(codesign -dv --verbose=4 "$BIN" 2>&1 || true)"
+echo "$CS_OUT" | grep -E '^(Authority|TeamIdentifier|CodeDirectory v=|flags=)' || true
+if ! echo "$CS_OUT" | grep -q "Authority=Developer ID Application"; then
+  echo "notarize-macos.sh: binary is not signed with a Developer ID authority" >&2
+  exit 1
+fi
+if ! echo "$CS_OUT" | grep -q "flags=0x10000(runtime)"; then
+  echo "notarize-macos.sh: binary is missing the hardened runtime flag" >&2
+  exit 1
+fi
+
+if [[ "$ARCH_TAG" == "x86_64" ]]; then
+  MINOS="$(otool -l "$BIN" | awk '
+    $1 == "cmd" && $2 == "LC_BUILD_VERSION" { in_build = 1; next }
+    in_build && $1 == "minos" { print $2; exit }
+  ')"
+  case "$MINOS" in
+    10.*|11.*|12.*) ;;
+    *)
+      echo "notarize-macos.sh: x86_64 binary must target macOS 12.x or older; got minos '${MINOS:-unknown}'" >&2
+      echo "notarize-macos.sh: rebuild with: zig build -Dtarget=x86_64-macos.12.0 -Doptimize=ReleaseFast" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+echo "==> smoke test signed binary"
+set +e
+if [[ "$ARCH_TAG" == "x86_64" && "$(uname -m)" == "arm64" ]]; then
+  SMOKE_OUT="$(arch -x86_64 "$BIN" 2>&1)"
+  SMOKE_STATUS=$?
+else
+  SMOKE_OUT="$("$BIN" 2>&1)"
+  SMOKE_STATUS=$?
+fi
+set -e
+case "$SMOKE_STATUS" in
+  1) ;;
+  *)
+    echo "notarize-macos.sh: signed binary smoke test exited with $SMOKE_STATUS, expected 1 from usage path" >&2
+    echo "$SMOKE_OUT" >&2
+    exit 1
+    ;;
+esac
+if ! grep -q "nanobrew" <<<"$SMOKE_OUT"; then
+  echo "notarize-macos.sh: signed binary smoke test did not print usage" >&2
+  echo "$SMOKE_OUT" >&2
+  exit 1
+fi
+
+echo "==> package $TARBALL"
+STAGE_DIR="$(mktemp -d)"
+cp "$BIN" "$STAGE_DIR/nb"
+tar -czf "$TARBALL" -C "$STAGE_DIR" nb
+rm -rf "$STAGE_DIR"
+(cd "$OUT_DIR" && shasum -a 256 "$(basename "$TARBALL")" > "$(basename "$SHAFILE")")
+shasum -a 256 "$TARBALL" > "$SHAFILE"
+
+echo ""
+echo "done:"
+echo "  signed+notarized: $BIN"
+echo "  tarball:          $TARBALL"
+echo "  sha256:           $SHAFILE"

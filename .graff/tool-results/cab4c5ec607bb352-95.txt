@@ -1,0 +1,76 @@
+   600	    const content = "line1\nline2";
+   601	    const result = try extractLines(content, 10, 20, true, false, .unknown, testing.allocator);
+   602	    defer testing.allocator.free(result);
+   603	    try testing.expect(result.len == 0);
+   604	}
+   605	
+   606	test "extractLines: compact skips comments and blanks" {
+   607	    const content = "fn main() void {}\n// this is a comment\n\n    return 0;\n}";
+   608	    const result = try extractLines(content, 1, 5, false, true, .zig, testing.allocator);
+   609	    defer testing.allocator.free(result);
+   610	    // Should contain code lines but not the comment or blank line
+   611	    try testing.expect(std.mem.indexOf(u8, result, "fn main") != null);
+   612	    try testing.expect(std.mem.indexOf(u8, result, "// this is a comment") == null);
+   613	    try testing.expect(std.mem.indexOf(u8, result, "return 0") != null);
+   614	}
+   615	
+   616	test "isCommentOrBlank: detects language-specific comments" {
+   617	    try testing.expect(isCommentOrBlank("  // zig comment", .zig));
+   618	    try testing.expect(isCommentOrBlank("  # python comment", .python));
+   619	    try testing.expect(isCommentOrBlank("  /* c comment */", .c));
+   620	    try testing.expect(isCommentOrBlank("  * continuation", .javascript));
+   621	    try testing.expect(isCommentOrBlank("   ", .zig));
+   622	    try testing.expect(isCommentOrBlank("", .zig));
+   623	    try testing.expect(!isCommentOrBlank("  const x = 1;", .zig));
+   624	    try testing.expect(!isCommentOrBlank("  x = 1", .python));
+   625	    // unknown language: never strips
+   626	    try testing.expect(!isCommentOrBlank("// comment", .unknown));
+   627	}
+   628	
+   629	test "explorer: getSymbolBody returns source lines" {
+   630	    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+   631	    defer arena.deinit();
+   632	    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+   633	
+   634	    try exp.indexFile("test.zig", "const std = @import(\"std\");\npub fn main() !void {}\npub const Store = struct {};");
+   635	
+   636	    const body = try exp.getSymbolBody("test.zig", 2, 2, testing.allocator);
+   637	    if (body) |b| {
+   638	        defer testing.allocator.free(b);
+   639	        try testing.expect(std.mem.indexOf(u8, b, "pub fn main") != null);
+   640	    } else {
+   641	        return error.TestUnexpectedResult;
+   642	    }
+   643	}
+   644	
+   645	test "explorer: getSymbolBody returns null for unknown file" {
+   646	    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+   647	    defer arena.deinit();
+   648	    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+   649	
+   650	    const body = try exp.getSymbolBody("nonexistent.zig", 1, 5, testing.allocator);
+   651	    try testing.expect(body == null);
+   652	}
+   653	
+   654	test "explorer: searchContentWithScope annotates results" {
+   655	    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+   656	    defer arena.deinit();
+   657	    var exp = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+   658	
+   659	    // Use content where the search match line has no symbol definition itself
+   660	    try exp.indexFile("auth.zig", "pub fn handleAuth() void {\n    validate(token);\n}");
+   661	
+   662	    const results = try exp.searchContentWithScope("validate", testing.allocator, 50);
+   663	    defer {
+   664	        for (results) |r| {
+   665	            testing.allocator.free(r.line_text);
+   666	            testing.allocator.free(r.path);
+   667	            if (r.scope_name) |n| testing.allocator.free(n);
+   668	        }
+   669	        testing.allocator.free(results);
+   670	    }
+   671	
+   672	    try testing.expect(results.len == 1);
+   673	    try testing.expectEqualStrings("auth.zig", results[0].path);
+   674	    try testing.expect(results[0].line_num == 2);
+   675	    // Should have scope annotation — nearest preceding symbol is handleAuth

@@ -1,0 +1,51 @@
+}
+
+test "issue-150: --help prints usage" {
+    try buildCliForHelpTests();
+
+    const result = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ builtCodedbExe(), "--help" },
+        .max_output_bytes = 8192,
+    });
+    defer testing.allocator.free(result.stdout);
+    defer testing.allocator.free(result.stderr);
+
+    try testing.expect(result.term == .Exited);
+    try testing.expect(result.term.Exited == 0);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
+        std.mem.indexOf(u8, result.stderr, "usage:") != null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "update") != null or
+        std.mem.indexOf(u8, result.stderr, "update") != null);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "nuke") != null or
+        std.mem.indexOf(u8, result.stderr, "nuke") != null);
+}
+
+test "issue-150: -h prints usage" {
+    try buildCliForHelpTests();
+
+    const result = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ builtCodedbExe(), "-h" },
+        .max_output_bytes = 8192,
+    });
+    defer testing.allocator.free(result.stdout);
+    defer testing.allocator.free(result.stderr);
+
+    try testing.expect(result.term == .Exited);
+    try testing.expect(result.term.Exited == 0);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
+        std.mem.indexOf(u8, result.stderr, "usage:") != null);
+}
+
+test "update: compareVersions orders semantic versions" {
+    try testing.expect(try update_mod.compareVersions("0.2.55", "0.2.56") == .lt);
+    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56") == .eq);
+    try testing.expect(try update_mod.compareVersions("v0.2.57", "0.2.56") == .gt);
+    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56.0") == .eq);
+}
+
+test "update: compareVersionsForUpdate allows superseded release train typo" {
+    try testing.expect(try update_mod.compareVersions("0.2.58181", "0.2.5823") == .gt);
+    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5823") == .lt);
+    try testing.expect(try update_mod.compareVersionsForUpdate("v0.2.58181", "v0.2.5823") == .lt);

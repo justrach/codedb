@@ -1,0 +1,46 @@
+    // atomics that nobody watches (a bind failure just disables the proxy).
+    // These outlive the detached thread because server.serve() below blocks
+    // on this same stack frame for the whole process lifetime.
+    var cli_activity = std.atomic.Value(i64).init(cio.milliTimestamp());
+    var cli_listener_dead = std.atomic.Value(bool).init(false);
+    if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, data_dir, &cli_activity, &cli_listener_dead, true })) |cli_t| {
+        cli_t.detach();
+    } else |err| {
+        std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
+    }
+    spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
+    try server.serve(io, allocator, store, &agents, explorer, queue, port);
+}
+
+pub fn runMcp(ctx: *RunCtx) !void {
+    const io = ctx.io;
+    const allocator = ctx.allocator;
+    const abs_root = ctx.abs_root;
+    const data_dir = ctx.data_dir;
+    const root = ctx.root;
+    const store = ctx.store;
+    const explorer = ctx.explorer;
+    const cfg = ctx.cfg;
+    const no_telemetry = ctx.no_telemetry;
+    const mcp_deferred_root = ctx.mcp_deferred_root;
+    // Background auto-update check (no-op when CODEDB_NO_AUTO_UPDATE is set
+    // or when the last check was within the last 24h). Detached thread, so
+    // this doesn't block server startup.
+    update_mod.maybeAutoUpdate(io, allocator);
+
+    var agents = AgentRegistry.init(allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    const root_from_cwd = mcp_deferred_root;
+
+    saveProjectInfo(io, allocator, data_dir, abs_root) catch {};
+
+    // Set up query tracking WAL
+    const query_log = std.fmt.allocPrint(allocator, "{s}/queries.log", .{data_dir}) catch null;
+    if (query_log) |ql| mcp_server.setQueryLogPath(ql);
+
+    const startup_t0 = cio.milliTimestamp();
+    // --no-telemetry is stripped globally above (#528 item 12); honor it
+    // here alongside CODEDB_NO_TELEMETRY (checked inside Telemetry.init).
+    const telemetry_disabled = no_telemetry;

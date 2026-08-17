@@ -1,0 +1,151 @@
+bench/
+  recall-v058.py  python  140L  14 sym
+  run-benchmarks.py  python  484L  16 sym
+  run-benchmarks.sh  shell  192L  37 sym
+  swe-lite/
+    deep-swe-5way.sh  shell  301L  54 sym
+    deep-swe-big.sh  shell  301L  54 sym
+    deep-swe-harness.sh  shell  187L  49 sym
+    evaluate.sh  shell  105L  12 sym
+    harness.sh  shell  374L  85 sym
+    validators/
+      gen_summary.py  python  78L  3 sym
+      reparse.py  python  66L  1 sym
+      run_validation.sh  shell  179L  19 sym
+      validate_bandit.py  python  311L  14 sym
+      validate_cattrs.py  python  362L  24 sym
+      validate_fastapi_deprec.py  python  79L  9 sym
+      validate_fastapi_head.py  python  87L  10 sym
+      validate_httpx.py  python  295L  8 sym
+      validate_kombu.py  python  591L  14 sym
+      validate_langchain.py  python  67L  8 sym
+      validate_narwhals.py  python  256L  9 sym
+      validate_numba.py  python  81L  9 sym
+      validate_sqliteutils.py  python  373L  15 sym
+      validate_textual.py  python  75L  6 sym
+      validate_vulture.py  python  324L  11 sym
+benchmarks/
+  search-shootout/
+    eval/
+      judge.py  python  157L  10 sym
+      matrix.py  python  281L  16 sym
+    shootout.py  python  1036L  51 sym
+build.zig  zig  211L  35 sym
+docs/
+  telemetry/
+    postgres-schema.sql  sql  25L  3 sym
+experiments/
+  reader-md/
+    eval/
+      runtime_cli.py  python  138L  10 sym
+install/
+  install.sh  shell  629L  43 sym
+  worker.js  javascript  126L  20 sym
+npm/
+  bin/
+    codedb.js  javascript  34L  8 sym
+  scripts/
+    postinstall.js  javascript  164L  43 sym
+scripts/
+  bench-ab.sh  shell  113L  24 sym
+  bench-pi.sh  shell  100L  20 sym
+  compare-bench-paired.py  python  367L  17 sym
+  compare-bench.py  python  100L  11 sym
+  e2e_mcp_test.py  python  557L  41 sym
+  rank-eval.py  python  192L  15 sym
+  run-bench-json.py  python  139L  16 sym
+  sync-telemetry.py  python  216L  19 sym
+  test_compare_bench.py  python  36L  8 sym
+  test_compare_bench_paired.py  python  222L  20 sym
+  test_issue_357_bundle_diagnostic.py  python  292L  26 sym
+src/
+  adversarial_tests.zig  zig  720L  116 sym
+  agent.zig  zig  160L  20 sym
+  background.zig  zig  323L  53 sym
+  bench.zig  zig  340L  57 sym
+  bench_edge.zig  zig  389L  58 sym
+  benchmark.zig  zig  351L  50 sym
+  bootstrap.zig  zig  677L  105 sym
+  cio.zig  zig  1030L  187 sym
+  cli_args.zig  zig  258L  36 sym
+  cli_proxy.zig  zig  907L  164 sym
+  codegraph.zig  zig  309L  32 sym
+  codex_setup.zig  zig  817L  125 sym
+  commands.zig  zig  499L  124 sym
+  compat.zig  zig  135L  21 sym
+  config.zig  zig  158L  32 sym
+  explore.zig  zig  9750L  1254 sym
+  git.zig  zig  177L  28 sym
+  hot_cache.zig  zig  587L  88 sym
+  index.zig  zig  3682L  521 sym
+  lib.zig  zig  60L  40 sym
+  main.zig  zig  529L  82 sym
+  mcp.zig  zig  5992L  768 sym
+  mcp_json.zig  zig  98L  19 sym
+  nuke.zig  zig  481L  104 sym
+  out.zig  zig  142L  10 sym
+  query.zig  zig  505L  70 sym
+  reader_md.zig  zig  219L  26 sym
+  release_info.zig  zig  2L  1 sym
+  root_policy.zig  zig  211L  25 sym
+  server.zig  zig  765L  102 sym
+  snapshot.zig  zig  1528L  243 sym
+  snapshot_json.zig  zig  225L  28 sym
+  store.zig  zig  300L  45 sym
+  style.zig  zig  112L  15 sym
+  telemetry.zig  zig  422L  54 sym
+  test_bench.zig  zig  73L  17 sym
+  test_core.zig  zig  468L  89 sym
+  test_explore.zig  zig  2837L  394 sym
+  test_index.zig  zig  3531L  583 sym
+  test_mcp.zig  zig  3803L  604 sym
+  test_parser.zig  zig  2005L  162 sym
+  test_query.zig  zig  1194L  143 sym
+  test_search.zig  zig  2967L  325 sym
+  test_snapshot.zig  zig  1238L  211 sym
+  update.zig  zig  433L  88 sym
+  version.zig  zig  72L  11 sym
+  warmup.zig  zig  123L  21 sym
+  wasm.zig  zig  266L  32 sym
+  watcher.zig  zig  1580L  237 sym
+website/
+  app/
+    404.zig  zig  8L  3 sym
+    benchmarks.zig  zig  377L  5 sym
+    improvements.zig  zig  330L  5 sym
+    index.zig  zig  387L  5 sym
+    install.zig  zig  12L  3 sym
+    install_script.sh  shell  629L  43 sym
+    layout.zig  zig  176L  6 sym
+    privacy.zig  zig  63L  7 sym
+    quickstart.zig  zig  122L  7 sym
+    update.zig  zig  244L  5 sym
+    v0257.zig  zig  295L  5 sym
+    v02572.zig  zig  296L  5 sym
+  build.zig  zig  61L  16 sym
+  src/
+    css.zig  zig  97L  14 sym
+    dev.zig  zig  159L  17 sym
+    dispatch.zig  zig  215L  21 sym
+    env.zig  zig  131L  18 sym
+    fetch.zig  zig  156L  23 sym
+    generated/
+      routes.zig  zig  29L  16 sym
+    html.zig  zig  659L  111 sym
+    html_lint.zig  zig  123L  12 sym
+    main.zig  zig  75L  11 sym
+    mer.zig  zig  177L  56 sym
+    prerender.zig  zig  93L  16 sym
+    request.zig  zig  190L  27 sym
+    response.zig  zig  128L  17 sym
+    router.zig  zig  99L  18 sym
+    server.zig  zig  424L  53 sym
+    session.zig  zig  114L  39 sym
+    ssr.zig  zig  23L  5 sym
+    static.zig  zig  128L  20 sym
+    telemetry.zig  zig  175L  44 sym
+    watcher.zig  zig  136L  18 sym
+  worker/
+    worker.js  javascript  99L  20 sym
+… +523 non-code files omitted (no symbols or dotfiles)
+⚡ 598.0µs

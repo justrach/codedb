@@ -1,0 +1,80 @@
+src/explore.zig:132:            .language = detectLanguage(path),
+src/explore.zig:171:pub const Language = enum(u8) {
+src/explore.zig:208:pub fn detectLanguage(path: []const u8) Language {
+src/explore.zig:1033:            if (compact and isCommentOrBlank(line, language)) continue;
+src/explore.zig:3164:            const lang = detectLanguage(path);
+src/explore.zig:4224:                        // detectLanguage(path) computed at outline init, and
+src/explore.zig:4227:                        // (detectLanguage + fileDefinesSymbol's own get).
+src/explore.zig:4243:                            is_doc = isDocLanguage(detectLanguage(hit_path));
+src/explore.zig:4639:                    .is_doc = isDocLanguage(detectLanguage(hit_path)),
+src/explore.zig:5105:            is_doc_lang = isDocLanguage(detectLanguage(path));
+src/explore.zig:8092:        if (compact and isCommentOrBlank(line, language)) continue;
+src/explore.zig:8120:        if (compact and isCommentOrBlank(line, language)) continue;
+src/explore.zig:8130:pub fn isCommentOrBlank(line: []const u8, language: Language) bool {
+src/lib.zig:23:pub const Language = @import("explore.zig").Language;
+src/mcp.zig:2220:            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+src/mcp.zig:2228:            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+src/mcp.zig:2258:            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+src/mcp.zig:2270:            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+src/mcp.zig:2311:            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+src/mcp.zig:2327:            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+src/mcp.zig:2423:                if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+src/mcp.zig:2474:            if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+src/mcp.zig:2569:        const lang = explore_mod.detectLanguage(r.path);
+src/mcp.zig:2572:        if (explore_mod.isCommentOrBlank(r.line_text, lang)) continue;
+src/mcp.zig:2657:/// Deliberately line-local and pragmatic, in the spirit of `isCommentOrBlank`:
+src/mcp.zig:3246:                    if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
+src/mcp.zig:3729:        const lang = explore_mod.detectLanguage(path);
+src/mcp.zig:5498:        if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+src/mcp.zig:5520:        if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+src/query.zig:364:        const lang = explore_mod.detectLanguage(path);
+src/test_bench.zig:42:test "bench: detectLanguage + isDocLanguage" {
+src/test_bench.zig:61:        const lang = explore.detectLanguage(paths[i % paths.len]);
+src/test_bench.zig:66:    if (cio.posixGetenv("CODEDB_BENCH_VERBOSE") != null) std.debug.print("\n  detectLanguage+isDocLanguage: {d} calls in {d}ms ({d}ns/call, {d} docs)\n", .{
+src/test_explore.zig:133:const isCommentOrBlank = explore.isCommentOrBlank;
+src/test_explore.zig:616:test "isCommentOrBlank: detects language-specific comments" {
+src/test_explore.zig:617:    try testing.expect(isCommentOrBlank("  // zig comment", .zig));
+src/test_explore.zig:618:    try testing.expect(isCommentOrBlank("  # python comment", .python));
+src/test_explore.zig:619:    try testing.expect(isCommentOrBlank("  /* c comment */", .c));
+src/test_explore.zig:620:    try testing.expect(isCommentOrBlank("  * continuation", .javascript));
+src/test_explore.zig:621:    try testing.expect(isCommentOrBlank("   ", .zig));
+src/test_explore.zig:622:    try testing.expect(isCommentOrBlank("", .zig));
+src/test_explore.zig:623:    try testing.expect(!isCommentOrBlank("  const x = 1;", .zig));
+src/test_explore.zig:624:    try testing.expect(!isCommentOrBlank("  x = 1", .python));
+src/test_explore.zig:626:    try testing.expect(!isCommentOrBlank("// comment", .unknown));
+src/test_explore.zig:712:test "detectLanguage: public access and correct detection" {
+src/test_explore.zig:713:    try testing.expect(explore.detectLanguage("src/main.zig") == .zig);
+src/test_explore.zig:714:    try testing.expect(explore.detectLanguage("app.py") == .python);
+src/test_explore.zig:715:    try testing.expect(explore.detectLanguage("index.ts") == .typescript);
+src/test_explore.zig:716:    try testing.expect(explore.detectLanguage("style.css") == .css);
+src/test_explore.zig:784:test "isCommentOrBlank: rust double-slash" {
+src/test_explore.zig:785:    try testing.expect(isCommentOrBlank("  // rust comment", .rust));
+src/test_explore.zig:786:    try testing.expect(!isCommentOrBlank("  let x = 1;", .rust));
+src/test_explore.zig:789:test "isCommentOrBlank: go double-slash" {
+src/test_explore.zig:790:    try testing.expect(isCommentOrBlank("  // go comment", .go_lang));
+src/test_explore.zig:791:    try testing.expect(!isCommentOrBlank("  func main() {", .go_lang));
+src/test_explore.zig:794:test "isCommentOrBlank: dart comments" {
+src/test_explore.zig:795:    try testing.expect(isCommentOrBlank("  // dart comment", .dart));
+src/test_explore.zig:796:    try testing.expect(isCommentOrBlank("  /* dart block comment */", .dart));
+src/test_explore.zig:797:    try testing.expect(!isCommentOrBlank("  class WidgetBuilder {}", .dart));
+src/test_explore.zig:800:test "isCommentOrBlank: cpp block and line comments" {
+src/test_explore.zig:801:    try testing.expect(isCommentOrBlank("  // cpp line comment", .cpp));
+src/test_explore.zig:802:    try testing.expect(isCommentOrBlank("  /* cpp block comment */", .cpp));
+src/test_explore.zig:803:    try testing.expect(isCommentOrBlank("  * continued block comment", .cpp));
+src/test_explore.zig:804:    try testing.expect(!isCommentOrBlank("  int x = 0;", .cpp));
+src/test_explore.zig:807:test "isCommentOrBlank: detected extension language comments" {
+src/test_explore.zig:808:    try testing.expect(isCommentOrBlank("  // java line comment", .java));
+src/test_explore.zig:809:    try testing.expect(isCommentOrBlank("  // kotlin line comment", .kotlin));
+src/test_explore.zig:810:    try testing.expect(isCommentOrBlank("  <!-- component comment -->", .svelte));
+src/test_explore.zig:811:    try testing.expect(isCommentOrBlank("  <!-- component comment -->", .vue));
+src/test_explore.zig:812:    try testing.expect(isCommentOrBlank("  <!-- component comment -->", .astro));
+src/test_explore.zig:813:    try testing.expect(isCommentOrBlank("  # shell comment", .shell));
+src/test_explore.zig:814:    try testing.expect(isCommentOrBlank("  /* css block comment */", .css));
+src/test_explore.zig:815:    try testing.expect(isCommentOrBlank("  // scss line comment", .scss));
+src/test_explore.zig:816:    try testing.expect(isCommentOrBlank("  -- sql comment", .sql));
+src/test_explore.zig:817:    try testing.expect(isCommentOrBlank("  // proto comment", .protobuf));
+src/test_explore.zig:818:    try testing.expect(isCommentOrBlank("  ! fortran comment", .fortran));
+src/test_explore.zig:819:    try testing.expect(isCommentOrBlank("  ; llvm ir comment", .llvm_ir));
+src/test_explore.zig:820:    try testing.expect(isCommentOrBlank("  // mlir comment", .mlir));
+src/test_explore.zig:821:    try testing.expect(isCommentOrBlank("  // tablegen comment", .tablegen));
+src/test_explore.zig:822:    try testing.expect(!isCommentOrBlank("  SELECT * FROM users;", .sql));

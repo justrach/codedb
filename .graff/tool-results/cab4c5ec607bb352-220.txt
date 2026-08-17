@@ -1,0 +1,111 @@
+        w.print("{s}:{s}@L{d}", .{ step.path, step.name, step.line }) catch {};
+        if (i + 1 < path.len) w.print("\n", .{}) catch {};
+    }
+    w.print("\n", .{}) catch {};
+}
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or
+        c == '_';
+}
+
+/// Returns true iff `needle` occurs in `line` as a whole-word identifier
+/// (non-identifier characters or line boundaries on both sides) at a position
+/// that is NOT inside a string literal.
+///
+/// An occurrence that only ever appears between quotes is a mention, not a
+/// call: the Python table row `("renderPlainSearch", "src/explore.zig"),` and
+/// the Zig declaration `test "def-first: renderPlainSearch surfaces …" {` both
+/// name the symbol without invoking it, yet passed every other filter here.
+///
+/// Deliberately line-local and pragmatic, in the spirit of `isCommentOrBlank`:
+///   - tracks '…' and "…" spans, honouring backslash escapes
+///   - a quote with no closing partner on the line (an apostrophe in a
+///     trailing comment, a Rust lifetime `&'a`, an open multi-line literal) is
+///     treated as ordinary code, so it can never swallow the rest of the line
+///   - backticks are not treated as quotes: Go raw strings and JS template
+///     literals routinely wrap real calls (`${render()}`)
+fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or line.len < needle.len) return false;
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == '"' or line[i] == '\'') {
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+        }
+        // `i` is a code byte — try to anchor a whole-word match on it.
+        if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+            const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+            const after = i + needle.len;
+            const after_ok = after >= line.len or !isIdentChar(line[after]);
+            if (before_ok and after_ok) return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+/// The slice of `line` before its first line-comment marker outside string
+/// literals, per `language` — the part of the line that can actually contain a
+/// call. Lines with no marker, and languages without a line-comment syntax
+/// (OCaml's `(* *)` is block-only), come back whole. (#682)
+///
+/// This remains deliberately line-local, but skips complete quoted, raw,
+/// backtick, and block-comment spans while looking for a line-comment opener.
+/// The spans remain in the returned prefix so the caller matcher keeps its
+/// existing behavior for references inside them; skipping them here only
+/// prevents marker-like text from hiding real code later on the same line.
+fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
+    const markers: []const []const u8 = switch (language) {
+        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .swift, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
+        .php => &.{ "//", "#" },
+        .python, .ruby, .r, .shell => &.{"#"},
+        .hcl => &.{ "#", "//" },
+        .sql => &.{"--"},
+        .fortran => &.{"!"},
+        .llvm_ir => &.{";"},
+        else => return line,
+    };
+    var i: usize = 0;
+    while (i < line.len) {
+        if (language == .rust) {
+            if (rustRawLiteralAt(line, i)) |raw| {
+                if (raw.end) |end| {
+                    i = end;
+                    continue;
+                }
+                return line;
+            }
+        }
+        if (line[i] == '"' or line[i] == '\'' or (line[i] == '`' and hasBacktickLiterals(language))) {
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+        }
+        if (blockCommentAt(line, i, language)) |block| {
+            if (block.end) |end| {
+                i = end;
+                continue;
+            }
+            return line;
+        }
+        for (markers) |m| {
+            if (!std.mem.startsWith(u8, line[i..], m)) continue;
+            // `#[` starts a PHP 8 attribute, not a hash comment.
+            if (language == .php and m[0] == '#' and i + 1 < line.len and line[i + 1] == '[') break;
+            // Shell: `#` opens a comment only when it begins a word. Operators
+            // are word boundaries too; `${#var}` and `$#` remain live syntax.
+            if (language == .shell and !isShellCommentStart(line, i)) break;
+            return line[0..i];
+        }
+        i += 1;
+    }
+    return line;
+}
+
+const LineSpan = struct { end: ?usize };

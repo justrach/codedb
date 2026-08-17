@@ -1,0 +1,113 @@
++++ b/src/mcp.zig
+@@ -2650,0 +2651,6 @@ fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explo
++    return hasWholeWordMatchInCodeDepth(line, needle, language, 0);
++}
++
++const max_template_nesting = 16;
++
++fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: explore_mod.Language, template_depth: usize) bool {
+@@ -2670,0 +2677,8 @@ fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explo
++            if (language == .r) {
++                if (stringLiteralEnd(line, i)) |end| {
++                    if (std.mem.eql(u8, line[i + 1 .. end], needle)) return true;
++                    i = end + 1;
++                    continue;
++                }
++                return false;
++            }
+@@ -2672 +2686,8 @@ fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explo
++                if (template_depth >= max_template_nesting) {
++                    if (stringLiteralEnd(line, i)) |end| {
++                        i = end + 1;
++                        continue;
++                    }
++                    return false;
++                }
++                const template = scanTemplateLiteral(line, i, needle, language, template_depth);
+@@ -2685,0 +2707,6 @@ fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explo
++        if (hasTemplateLiterals(language) and line[i] == '/') {
++            if (javascriptRegexEndAt(line, i)) |end| {
++                i = end;
++                continue;
++            }
++        }
+@@ -2777 +2804 @@ const TemplateScan = struct {
++fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, language: explore_mod.Language, template_depth: usize) TemplateScan {
+@@ -2789 +2816 @@ fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, langua
++            if (hasWholeWordMatchInCodeDepth(line[expression_start..end], needle, language, template_depth + 1)) {
+@@ -2802,0 +2830,28 @@ fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, langua
++fn javascriptRegexEndAt(line: []const u8, start: usize) ?usize {
++    if (start + 1 >= line.len or line[start] != '/' or line[start + 1] == '/' or line[start + 1] == '*') return null;
++
++    var previous = start;
++    while (previous > 0 and (line[previous - 1] == ' ' or line[previous - 1] == '\t')) previous -= 1;
++    if (previous > 0 and std.mem.indexOfScalar(u8, "([{:;,=!?&|+-*%^~<>", line[previous - 1]) == null) return null;
++
++    var in_class = false;
++    var i = start + 1;
++    while (i < line.len) {
++        if (line[i] == '\\') {
++            i += if (line.len - i > 1) 2 else 1;
++            continue;
++        }
++        if (line[i] == '[') {
++            in_class = true;
++        } else if (line[i] == ']') {
++            in_class = false;
++        } else if (line[i] == '/' and !in_class) {
++            i += 1;
++            while (i < line.len and std.ascii.isAlphabetic(line[i])) i += 1;
++            return i;
++        }
++        i += 1;
++    }
++    return null;
++}
++
+@@ -2814,0 +2870,6 @@ fn templateExpressionEnd(line: []const u8, start: usize, language: explore_mod.L
++        if (line[i] == '/') {
++            if (javascriptRegexEndAt(line, i)) |end| {
++                i = end;
++                continue;
++            }
++        }
+            }
+            return false;
+        }
+        if (isLineCommentAt(line, i, language, markers)) return false;
+
+        if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+            const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+            const after = i + needle.len;
+            const after_ok = after >= line.len or !isIdentChar(line[after]);
+            if (before_ok and after_ok) return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+fn lineCommentMarkers(language: explore_mod.Language) []const []const u8 {
+    return switch (language) {
+        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .swift, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
+        .php => &.{ "//", "#" },
+        .python, .ruby, .r, .shell => &.{"#"},
+        .hcl => &.{ "#", "//" },
+        .sql => &.{"--"},
+        .fortran => &.{"!"},
+        .llvm_ir => &.{";"},
+        else => &.{},
+    };
+}
+
+fn isLineCommentAt(line: []const u8, start: usize, language: explore_mod.Language, markers: []const []const u8) bool {
+    for (markers) |marker| {
+        if (!std.mem.startsWith(u8, line[start..], marker)) continue;
+        // `#[` starts a PHP 8 attribute, not a hash comment.
+        if (language == .php and marker[0] == '#' and start + 1 < line.len and line[start + 1] == '[') return false;
+        // Shell: `#` opens a comment only when it begins a word. Operators are
+        // word boundaries too; `${#var}` and `$#` remain live syntax.
+        if (language == .shell and !isShellCommentStart(line, start)) return false;
+        return true;
+    }
+    return false;

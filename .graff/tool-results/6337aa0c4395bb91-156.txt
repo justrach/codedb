@@ -1,0 +1,101 @@
+pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, data_dir: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool), retry: bool) void {
+    if (builtin.os.tag == .windows) {
+        var name_buf: [256]u8 = undefined;
+
+        const sddl = currentUserPipeSddl(allocator) orelse {
+            shutdown.store(true, .release);
+            return;
+        };
+        defer allocator.free(sddl);
+        var sd: ?*anyopaque = null;
+        if (ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl.ptr, SDDL_REVISION_1, &sd, null) == .FALSE) {
+            shutdown.store(true, .release);
+            return;
+        }
+        defer _ = LocalFree(sd);
+        var sa_pipe: win.SECURITY_ATTRIBUTES = .{
+            .nLength = @sizeOf(win.SECURITY_ATTRIBUTES),
+            .lpSecurityDescriptor = sd,
+            .bInheritHandle = .FALSE,
+        };
+
+        var pipe_name: ?[:0]const u8 = null;
+        var listening_pipe: ?win.HANDLE = null;
+        var metadata_written = false;
+        var retry_failures: u32 = 0;
+        var first_pipe_instance = true;
+        const listener_pid = cio.currentProcessId();
+        var metadata_monitor_thread: ?std.Thread = null;
+        defer if (listening_pipe) |pipe| win.CloseHandle(pipe);
+        defer if (metadata_written and pipe_name != null) deleteCliPipeMetadataIfOwner(io, allocator, data_dir, listener_pid, pipe_name.?);
+        defer if (metadata_monitor_thread) |thread| thread.join();
+
+        while (!shutdown.load(.acquire)) {
+            if (pipe_name == null) {
+                pipe_name = cliRandomPipeName(&name_buf) orelse {
+                    shutdown.store(true, .release);
+                    return;
+                };
+            }
+            if (listening_pipe == null) {
+                const new_pipe = createCliPipeInstance(pipe_name.?, first_pipe_instance, &sa_pipe);
+                if (new_pipe == INVALID_HANDLE_VALUE) {
+                    if (!metadata_written) pipe_name = null;
+                    retry_failures = retry_failures +| 1;
+                    if (shouldLogPipeRetry(retry_failures)) {
+                        std.log.warn("cli-proxy: CreateNamedPipe failed {d} time(s); retrying", .{retry_failures});
+                    }
+                    cio.sleepMs(pipeRetryDelayMs(retry_failures));
+                    continue;
+                }
+                listening_pipe = new_pipe;
+                first_pipe_instance = false;
+            }
+            if (!metadata_written) {
+                if (!writeCliPipeMetadata(io, allocator, data_dir, listener_pid, pipe_name.?)) {
+                    win.CloseHandle(listening_pipe.?);
+                    listening_pipe = null;
+                    pipe_name = null;
+                    first_pipe_instance = true;
+                    retry_failures = retry_failures +| 1;
+                    if (shouldLogPipeRetry(retry_failures)) {
+                        std.log.warn("cli-proxy: could not publish pipe metadata {d} time(s); retrying", .{retry_failures});
+                    }
+                    cio.sleepMs(pipeRetryDelayMs(retry_failures));
+                    continue;
+                }
+                metadata_written = true;
+                retry_failures = 0;
+                if (retry and metadata_monitor_thread == null) {
+                    if (std.Thread.spawn(.{}, cliPipeMetadataMonitor, .{ io, allocator, data_dir, listener_pid, pipe_name.?, shutdown })) |thread| {
+                        metadata_monitor_thread = thread;
+                    } else |err| {
+                        std.log.warn("cli-proxy: could not start pipe metadata monitor: {s}", .{@errorName(err)});
+                    }
+                }
+            } else {
+                retry_failures = 0;
+            }
+            const pipe = listening_pipe.?;
+            listening_pipe = null;
+            const connected = ConnectNamedPipe(pipe, null) != .FALSE or win.GetLastError() == .PIPE_CONNECTED;
+            if (!connected) {
+                win.CloseHandle(pipe);
+                continue;
+            }
+            const next_pipe = createCliPipeInstance(pipe_name.?, false, &sa_pipe);
+            if (next_pipe != INVALID_HANDLE_VALUE) {
+                listening_pipe = next_pipe;
+                retry_failures = 0;
+            } else {
+                retry_failures = retry_failures +| 1;
+                if (shouldLogPipeRetry(retry_failures)) {
+                    std.log.warn("cli-proxy: CreateNamedPipe replacement failed {d} time(s); retrying", .{retry_failures});
+                }
+            }
+            last_activity_ms.store(cio.milliTimestamp(), .release);
+            _ = cliServeConn(io, allocator, explorer, store, abs_root, pipe);
+            _ = DisconnectNamedPipe(pipe);
+            win.CloseHandle(pipe);
+        }
+        return;

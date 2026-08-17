@@ -1,0 +1,44 @@
+✓ install/install.sh  shell  629 lines  ⚡ 10.0µs
+  L4      variable        BASE_URL  BASE_URL="${CODEDB_URL:-https://codedb.codegraff.com}"
+  L5      variable        INSTALL_DIR  INSTALL_DIR="${CODEDB_DIR:-$HOME/bin}"
+  L8      variable        R  R='\033[0;31m' G='\033[0;32m' Y='\033[0;33m' B='\033[0;34m'
+  L9      variable        C  C='\033[0;36m' W='\033[1;37m' D='\033[0;90m' N='\033[0m'
+  L11     function        fetch_latest_version  fetch_latest_version() {
+  L14     variable        version  version="$(curl -fsSL -A 'codedb-installer' \
+  L21     variable        version  version="$(curl -fsSL -A 'codedb-installer' "$BASE_URL/latest.json" 2>/dev/null \
+  L29     function        detect_platform  detect_platform() {
+  L31     variable        os  os="$(uname -s)"
+  L32     variable        arch  arch="$(uname -m)"
+  L52     function        register_claude  register_claude() {
+  L79     function        register_codex  register_codex() {
+  L102    function        register_codex_policy  register_codex_policy() {
+  L113    function        register_gemini  register_gemini() {
+  L145    function        register_cursor  register_cursor() {
+  L177    function        register_windsurf_devin  register_windsurf_devin() {
+  L196    function        _register_json_mcp  _register_json_mcp() {
+  L220    variable        DEEPWIKI_URL  DEEPWIKI_URL="https://mcp.deepwiki.com/mcp"
+  L222    function        _register_deepwiki_json  _register_deepwiki_json() {
+  L254    function        register_deepwiki  register_deepwiki() {
+  L307    function        register_hooks  register_hooks() {
+  L336    function        persist_no_hooks  persist_no_hooks()
+  L362    function        persist_no_hooks  persist_no_hooks()
+  L375    variable        INPUT  INPUT=$(cat)
+  L376    variable        CMD  CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+  L379    variable        STRIPPED  STRIPPED=$(echo "$CMD" | sed -E 's/^[[:space:]]*(env|sudo|command|builtin|exec|nohup)[[:space:]]+//')
+  L380    variable        STRIPPED  STRIPPED=$(echo "$STRIPPED" | sed -E 's/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+//')
+  L381    variable        FIRST  FIRST=$(echo "$STRIPPED" | awk '{print $1}')
+  L391    variable        PWD_ABS  PWD_ABS=$(pwd -P)
+  L392    variable        REPO_ROOT  REPO_ROOT=""
+  L395    variable        root  root=$(head -1 "$pt" 2>/dev/null)
+  L400    variable        REPO_ROOT  REPO_ROOT="$root"; break
+  L498    function        print_hook_notes  print_hook_notes() {
+  L506    function        main  main() {
+  L508    variable        platform  platform="$(detect_platform)"
+  L532    variable        version  version="${CODEDB_VERSION:-}"
+  L534    variable        version  version="$(fetch_latest_version)"
+  L557    variable        checksum_text  checksum_text="$(curl -fsSL -A 'codedb-installer' "$checksum_url" 2>/dev/null || true)"
+  L558    variable        expected_hash  expected_hash="$(printf '%s\n' "$checksum_text" | awk "/codedb-${platform}${ext}\$/ { print \$1 }")"
+  L561    variable        actual_hash  actual_hash="$(sha256sum "$tmp" | awk '{print $1}')"
+  L563    variable        actual_hash  actual_hash="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+  L568    variable        checksum_notice  checksum_notice="  ${Y}warning:${N} checksum NOT verified — neither sha256sum nor shasum is on PATH\n"
+  L578    variable        checksum_notice  checksum_notice="  ${Y}warning:${N} checksum verification skipped (checksums.sha256 unavailable)\n"

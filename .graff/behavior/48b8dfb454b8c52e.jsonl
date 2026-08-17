@@ -1,0 +1,3 @@
+{"kind":"run_started","seq":1,"ts":1786941643.376429,"run_id":"48b8dfb454b8c52e","schema":"codegraff.behavior.v1","version":"0.0.264","unix_ms":1786941641817,"provider":"kimi","model":"k3","prompt_sha":"e972f54b708cf4cc","effort":"xhigh"}
+{"kind":"turn_started","seq":2,"ts":1786941643.3764942,"run_id":"48b8dfb454b8c52e","schema":"codegraff.behavior.v1","turn":1,"parent_turn":0,"trajectory_node":0}
+{"kind":"run_finished","seq":3,"ts":1786941643.402219,"run_id":"48b8dfb454b8c52e","schema":"codegraff.behavior.v1","status":"error","local_dropped":0}

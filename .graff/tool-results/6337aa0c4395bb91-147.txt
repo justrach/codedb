@@ -1,0 +1,36 @@
+1 results for 'assembleJsonRpcResult':
+  src/mcp.zig:5450 (function) assembleJsonRpcResult  // pub fn assembleJsonRpcResult(alloc: std.mem.Allocator, id: ?std.json.Value, result: []const u8, buf: *std.ArrayList(u8)) bool {
+ 5450 | pub fn assembleJsonRpcResult(alloc: std.mem.Allocator, id: ?std.json.Value, result: []const u8, buf: *std.ArrayList(u8)) bool {
+ 5451 |     buf.ensureTotalCapacity(alloc, result.len + 64 + result_meta_prelude.len) catch {};
+ 5452 |     buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return false;
+ 5453 |     appendId(alloc, buf, id);
+ 5454 |     buf.appendSlice(alloc, ",\"result\":") catch return false;
+ 5455 |     var payload = result;
+ 5456 |     if (result.len >= 2 and result[0] == '{' and !std.mem.startsWith(u8, result, "{\"resultType\"")) {
+ 5457 |         buf.appendSlice(alloc, result_meta_prelude) catch return false;
+ 5458 |         if (std.mem.eql(u8, result, "{}")) {
+ 5459 |             buf.appendSlice(alloc, "}") catch return false;
+ 5460 |             payload = "";
+ 5461 |         } else {
+ 5462 |             buf.appendSlice(alloc, ",") catch return false;
+ 5463 |             payload = result[1..];
+ 5464 |         }
+ 5465 |     }
+ 5466 |     // MCP responses are normally compact JSON with no raw line breaks. Let
+ 5467 |     // std.mem's vectorized search prove that once, then copy the whole payload;
+ 5468 |     // retain the sanitizing fallback for any non-canonical producer.
+ 5469 |     if (std.mem.indexOfAny(u8, payload, "\n\r") == null) {
+ 5470 |         buf.appendSlice(alloc, payload) catch return false;
+ 5471 |     } else {
+ 5472 |         var i: usize = 0;
+ 5473 |         while (i < payload.len) {
+ 5474 |             const start = i;
+ 5475 |             while (i < payload.len and payload[i] != '\n' and payload[i] != '\r') : (i += 1) {}
+ 5476 |             if (i > start) buf.appendSlice(alloc, payload[start..i]) catch return false;
+ 5477 |             if (i < payload.len) i += 1;
+ 5478 |         }
+ 5479 |     }
+ 5480 |     buf.appendSlice(alloc, "}\n") catch return false;
+ 5481 |     return true;
+ 5482 | }
+↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.

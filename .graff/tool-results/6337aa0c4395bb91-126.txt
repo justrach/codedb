@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_URL="${CODEDB_URL:-https://codedb.codegraff.com}"
+INSTALL_DIR="${CODEDB_DIR:-$HOME/bin}"
+
+# Colors
+R='\033[0;31m' G='\033[0;32m' Y='\033[0;33m' B='\033[0;34m'
+C='\033[0;36m' W='\033[1;37m' D='\033[0;90m' N='\033[0m'
+
+fetch_latest_version() {
+  local version=""
+
+  version="$(curl -fsSL -A 'codedb-installer' \
+    "https://api.github.com/repos/justrach/codedb/releases/latest" 2>/dev/null \
+    | grep -oE '"tag_name"\s*:\s*"v[^"]*"' \
+    | cut -d'"' -f4 \
+    | sed 's/^v//')" || true
+
+  if [ -z "$version" ]; then
+    version="$(curl -fsSL -A 'codedb-installer' "$BASE_URL/latest.json" 2>/dev/null \
+      | grep -oE '"version"\s*:\s*"[^"]*"' \
+      | cut -d'"' -f4)" || true
+  fi
+
+  printf '%s' "$version"
+}
+
+detect_platform() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+  case "$os" in
+    Darwin) os="darwin" ;;
+    Linux)  os="linux" ;;
+    MINGW*|MSYS*|CYGWIN*)
+      # #677: we are inside $(...) — printing guidance or exiting here is
+      # swallowed by the subshell. Emit a sentinel for main() instead.
+      echo "windows"
+      return 0
+      ;;
+    *) printf "  ${R}Unsupported OS: $os${N}\n" >&2; exit 1 ;;
+  esac
+  case "$arch" in
+    arm64|aarch64) arch="arm64" ;;
+    x86_64|amd64)  arch="x86_64" ;;
+    *) printf "  ${R}Unsupported arch: $arch${N}\n" >&2; exit 1 ;;
+  esac
+  echo "${os}-${arch}"
+}
+
+register_claude() {
+  local codedb_bin="$1"
+  local config="$HOME/.claude.json"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf "  ${D}claude:  skip (python3 not found)${N}\n"
+    return
+  fi
+
+  python3 - "$config" "$codedb_bin" << 'PYEOF'
+import json, sys, os
+config_path, codedb_bin = sys.argv[1], sys.argv[2]
+try:
+    with open(config_path) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+servers = data.setdefault("mcpServers", {})
+servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
+with open(config_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PYEOF
+
+  printf "  ${G}✓${N} claude code  ${D}→ $config${N}\n"
+}
+
+register_codex() {
+  local codedb_bin="$1"

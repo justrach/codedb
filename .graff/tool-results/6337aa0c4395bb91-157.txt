@@ -1,0 +1,96 @@
+
+fn cliDaemonListenPosix(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool), retry: bool) void {
+    var path_buf: [128]u8 = undefined;
+    const sock_path = cliSocketPath(&path_buf, abs_root) orelse {
+        std.log.warn("cli-proxy: could not build socket path", .{});
+        shutdown.store(true, .release);
+        return;
+    };
+    var path_z_buf: [128]u8 = undefined;
+    const sock_path_z = cio.bufPrintZ(&path_z_buf, "{s}", .{sock_path}) catch {
+        shutdown.store(true, .release);
+        return;
+    };
+
+    // Acquire the socket. A long-lived daemon (retry) waits out the current
+    // owner and reclaims it when the owner exits; an auto-spawned duplicate
+    // (no retry) gives up at once and exits via the shutdown flag.
+    const listenfd = cliAcquireListener(sock_path, retry, cli_bind_retry_ms, shutdown) orelse {
+        if (!shutdown.load(.acquire)) {
+            std.log.warn("cli-proxy: bind {s} failed — proxy disabled", .{sock_path});
+        }
+        shutdown.store(true, .release);
+        return;
+    };
+    defer {
+        _ = std.c.close(listenfd);
+        _ = std.c.unlink(sock_path_z.ptr);
+    }
+
+    std.log.info("cli-proxy: listening on {s}", .{sock_path});
+
+    while (true) {
+        const conn = std.c.accept(listenfd, null, null);
+        if (conn < 0) {
+            if (std.c.errno(conn) == .INTR) continue;
+            // Listener went bad; stop the loop (daemon still serves its main API).
+            return;
+        }
+        // Record activity for the cli-daemon idle watchdog before serving.
+        last_activity_ms.store(cio.milliTimestamp(), .release);
+        const yield_requested = cliServeConn(io, allocator, explorer, store, abs_root, conn);
+        _ = std.c.close(conn);
+        if (yield_requested) {
+            // #619 handover: give the socket up right away. The `defer`
+            // above closes the listener and unlinks the path so the
+            // requesting daemon's next bind attempt succeeds; `shutdown` is
+            // set so any caller watching it (e.g. the cli-daemon idle
+            // watchdog) treats this exactly like a lost bind race.
+            shutdown.store(true, .release);
+            return;
+        }
+    }
+}
+
+/// Handle one client connection: read the framed request, run the query into a
+/// sink buffer via runQuery, and write the framed response.
+///
+/// Returns true when the request was the #619 yield sentinel (see
+/// cli_yield_sentinel): the caller must then stop listening and give the
+/// socket up so the requesting daemon can take over.
+fn cliServeConn(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, conn: CliConn) bool {
+    // Header: [u8 color][u32 blob_len]
+    var hdr: [5]u8 = undefined;
+    if (!cliReadFull(conn, &hdr)) return false;
+    const color = hdr[0] != 0;
+    const blob_len = std.mem.readInt(u32, hdr[1..5], .little);
+    if (blob_len == 0 or blob_len > cli_blob_max) {
+        cliRespond(conn, 1, "");
+        return false;
+    }
+
+    const blob = allocator.alloc(u8, blob_len) catch {
+        cliRespond(conn, 1, "");
+        return false;
+    };
+    defer allocator.free(blob);
+    if (!cliReadFull(conn, blob)) return false;
+
+    // #619 handover: a starting serve/mcp daemon asking us to give up the
+    // socket. Ack and tell the caller to stop listening — no query dispatch.
+    if (std.mem.eql(u8, blob, cli_yield_sentinel)) {
+        cliRespond(conn, 0, "");
+        return true;
+    }
+
+    // Rebuild argv = ["codedb"] ++ split(blob, '\0'), skipping empty fields.
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    argv.append(allocator, "codedb") catch {
+        cliRespond(conn, 1, "");
+        return false;
+    };
+    var it = std.mem.splitScalar(u8, blob, 0);
+    while (it.next()) |field| {
+        if (field.len == 0) continue;
+        argv.append(allocator, field) catch {

@@ -1,0 +1,161 @@
+✓ indexed  150.3ms
+# Task
+comment scanner follow-up rustRawLiteralAt blockCommentAt delimitedCommentEnd backtick PHP #[ isShellCommentStart
+
+## Keywords used
+- rustRawLiteralAt
+- blockCommentAt
+- delimitedCommentEnd
+- PHP
+- isShellCommentStart
+- backtick
+
+## Symbol definitions
+- rustRawLiteralAt (function) — src/mcp.zig:2747
+- blockCommentAt (function) — src/mcp.zig:2778
+- delimitedCommentEnd (function) — src/mcp.zig:2796
+- isShellCommentStart (function) — src/mcp.zig:2816
+
+## Most-relevant files
+- src/mcp.zig  (6 matches)
+- src/explore.zig  (5 matches)
+- src/codex_setup.zig  (3 matches)
+- src/nuke.zig  (3 matches)
+- src/test_explore.zig  (3 matches)
+
+## Top sites (with ±2 lines of context)
+
+src/mcp.zig:2747
+```
+const LineSpan = struct { end: ?usize };
+
+fn rustRawLiteralAt(line: []const u8, start: usize) ?LineSpan {
+    if (start != 0 and isIdentChar(line[start - 1])) return null;
+    var i = start;
+```
+
+src/mcp.zig:2778
+```
+}
+
+fn blockCommentAt(line: []const u8, start: usize, language: explore_mod.Language) ?LineSpan {
+    const slash_block = switch (language) {
+        .rust, .go_lang, .javascript, .typescript, .c, .cpp, .php, .hcl, .dart, .java, .kotlin, .swift, .svelte, .vue, .astro, .sql, .mlir, .tablegen, .rescript => true,
+```
+
+src/mcp.zig:2796
+```
+}
+
+fn delimitedCommentEnd(line: []const u8, start: usize, open: []const u8, close: []const u8, nested: bool) ?usize {
+    var depth: usize = 1;
+    var i = start + open.len;
+```
+
+src/explore.zig:71
+```
+
+/// Classify `path` for the rerank path priors. Pure — the result is cached
+/// on FileOutline at init; callers without an outline compute it directly.
+pub fn classifyPath(path: []const u8) PathClass {
+    var c: PathClass = .{};
+```
+
+src/explore.zig:71
+```
+
+/// Classify `path` for the rerank path priors. Pure — the result is cached
+/// on FileOutline at init; callers without an outline compute it directly.
+pub fn classifyPath(path: []const u8) PathClass {
+    var c: PathClass = .{};
+```
+
+src/explore.zig:57
+```
+    kind: SymbolKind,
+    line_start: u32,
+    line_end: u32,
+    detail: ?[]const u8 = null,
+};
+```
+
+src/codex_setup.zig:10
+```
+const cli_args = @import("cli_args.zig");
+
+/// Stable delimiters for the managed policy block. The begin marker carries the
+/// codedb version that wrote it so `install` can replace an older block in place
+/// and `verify` can report "outdated" instead of silently passing.
+```
+
+src/codex_setup.zig:15
+```
+pub const begin_marker_prefix = "<!-- codedb:begin v";
+pub const begin_marker_suffix = " -->";
+pub const end_marker = "<!-- codedb:end -->";
+
+/// Opt-out marker written by `codedb codex uninstall`. Deleting it re-enables
+```
+
+src/codex_setup.zig:252
+```
+    const no_cr = std.mem.trimEnd(u8, line, "\r");
+    const trimmed = std.mem.trim(u8, no_cr, " \t");
+    const comment_start = std.mem.indexOfScalar(u8, trimmed, '#') orelse return trimmed;
+    return std.mem.trimEnd(u8, trimmed[0..comment_start], " \t");
+}
+```
+
+src/nuke.zig:314
+```
+    if (deregisterCodexIntegrationFile(io, allocator, codex_config) catch false) removed += 1;
+
+    // #680: the managed policy block in the global Codex AGENTS.md is part of
+    // the same integration surface — drop it alongside the MCP registration so
+    // nuke leaves no codedb instructions behind.
+```
+
+src/nuke.zig:257
+```
+    const trimmed = std.mem.trim(u8, command_line, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    const exe_end = std.mem.indexOfScalar(u8, trimmed, ' ') orelse trimmed.len;
+    return trimmed[0..exe_end];
+}
+```
+
+src/nuke.zig:478
+```
+    const no_cr = std.mem.trimEnd(u8, line, "\r");
+    const trimmed = std.mem.trim(u8, no_cr, " \t");
+    const comment_start = std.mem.indexOfScalar(u8, trimmed, '#') orelse return trimmed;
+    return std.mem.trimEnd(u8, trimmed[0..comment_start], " \t");
+}
+```
+
+src/test_explore.zig:133
+```
+}
+
+const isCommentOrBlank = explore.isCommentOrBlank;
+const Language = explore.Language;
+const SymbolKind = explore.SymbolKind;
+```
+
+src/test_explore.zig:133
+```
+}
+
+const isCommentOrBlank = explore.isCommentOrBlank;
+const Language = explore.Language;
+const SymbolKind = explore.SymbolKind;
+```
+
+src/test_explore.zig:133
+```
+}
+
+const isCommentOrBlank = explore.isCommentOrBlank;
+const Language = explore.Language;
+const SymbolKind = explore.SymbolKind;
+```

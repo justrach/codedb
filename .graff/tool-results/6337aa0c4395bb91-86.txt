@@ -1,0 +1,27 @@
+✓ 26 results for "JSON-RPC"  ⚡ 965.0µs
+  src/cio.zig:453  /// MCP server path, where stdin is the JSON-RPC transport.
+  src/main.zig:234      // MCP stdio reserves stdout for JSON-RPC — route status/error output to
+  src/mcp.zig:1  // codedb MCP server — JSON-RPC 2.0 over stdio
+  src/mcp_json.zig:1  //! Small JSON-RPC helpers used by codedb's MCP transport.
+  src/out.zig:102          \\    {s}mcp{s}                       JSON-RPC/MCP server over stdio
+  src/test_mcp.zig:1414  test "issue-387: appendId preserves JSON-RPC numeric and number_string ids" {
+  CHANGELOG.md:77  extraction, a compact JSON-RPC framing fast path, and rolling generic trigram
+  CONTRIBUTING.md:166  full normalized JSON-RPC response parity for parity-enabled tools, and reports
+  README.md:49  > - **MCP protocol** is JSON-RPC 2.0 over stdio (stable)
+  bench/run-benchmarks.sh:13  # Send a JSON-RPC request to an MCP server via its stdin/stdout
+  docs/architecture.md:10  - **MCP server** over stdio — JSON-RPC for tool-calling LLMs
+  docs/bench-0.2.5830-paired-report.md:13  - Parity gate: duration-normalized full JSON-RPC response hash rolled across every measured iteration
+  docs/benchmarks.md:115  MCP Server      JSON-RPC 2.0 over stdio, 11 tools
+  docs/cli.md:7  codedb's MCP server is designed for AI agents over JSON-RPC stdio. The CLI gives you the same indexes and query speed from a normal terminal — composable with pipes, grep, scripts, and CI.
+  docs/linkedin-0.2.5830.md:11  Most importantly, every parity-enabled tool produced the same full normalized JSON-RPC response across every measured iteration.
+  docs/mcp.md:3  `codedb mcp` runs as a stdio JSON-RPC server speaking the
+  docs/performance-0.2.5830.md:18  - a compact JSON-RPC payload fast path that retains CR/LF sanitization.
+  docs/release-notes-0.2.5830.md:16  - **Compact JSON-RPC responses use a one-slice copy fast path.** Any payload containing raw CR/LF bytes still takes the original sanitizing fallback, preserving one-response-per-line MCP framing.
+  docs/rfc-346-mcp-root-resolution.md:23     startup (`main.zig` L636–638), before the first JSON-RPC message arrives.
+  harness.trajectory.jsonl:149  {"id":49,"parent":44,"kind":"subagent","label":"Audit MCP fast path","t":51379471,"ms":12210,"prompt_sha":"3fed77e59d320ff0","prompt_mutated":true,"niche":"skeptic","task":"Review current working-tree MCP/explore performance changes adversarially. Focus JSON-RPC framing sanitation in writeResult, exact symbol semantic ordering/filt","tools":"","ok":false,"context_tokens":0}
+  website/app/quickstart.zig:39          h.p(.{}, "The MCP server indexes your codebase on startup, then serves all queries over JSON-RPC 2.0 stdio. Sub-millisecond responses, every time."),
+  website/app/v0257.zig:219      \\    <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:16px;">Note: Internal search times measured. codedb trigram lookup ~500µs. ripgrep/grep cold disk scan 500-1,500ms. MCP overhead (JSON-RPC) adds ~20ms for codedb, not shown here.</p>
+  scripts/e2e_mcp_test.py:52      """Wraps a codedb mcp subprocess; sends/receives JSON-RPC over stdio."""
+  scripts/test_issue_357_bundle_diagnostic.py:8  This script drives the real codedb MCP over JSON-RPC stdio with several bundle
+  benchmarks/search-shootout/RESULTS.md:527  (stdio JSON-RPC) and FTS5 running through a persistent Python SQLite
+  benchmarks/v0.2.572-vs-fff.md:6  **Method:** JSON-RPC over stdio, wall time from request write to response read.

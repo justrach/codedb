@@ -1,0 +1,121 @@
+                 command: list[str] | None = None) -> None:
+        """
+        command: full argv override (default: [binary, "mcp"] + args).
+        Use command=[binary, root, "mcp"] for explicit-root invocation.
+        """
+        argv = command if command is not None else [binary, "mcp"] + args
+        self.proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            text=True,
+            bufsize=1,
+        )
+        self._id = 1
+        self._lock = threading.Lock()
+        self._lines: list[str] = []
+        self._stderr_lines: list[str] = []
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
+        self._stderr_reader = threading.Thread(target=self._stderr_loop, daemon=True)
+        self._stderr_reader.start()
+
+    def _read_loop(self) -> None:
+        assert self.proc.stdout
+        for line in self.proc.stdout:
+            line = line.strip()
+            if line:
+                with self._lock:
+                    self._lines.append(line)
+
+    def _stderr_loop(self) -> None:
+        assert self.proc.stderr
+        for line in self.proc.stderr:
+            with self._lock:
+                self._stderr_lines.append(line.rstrip())
+
+    def send(self, msg: dict[str, Any]) -> None:
+        assert self.proc.stdin
+        self.proc.stdin.write(json.dumps(msg) + "\n")
+        self.proc.stdin.flush()
+
+    def recv(self, timeout: float = 10.0) -> dict[str, Any] | None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._lines:
+                    return json.loads(self._lines.pop(0))
+            time.sleep(0.02)
+        return None
+
+    def recv_method(self, method: str, timeout: float = 10.0) -> dict[str, Any] | None:
+        """Wait for a message with a specific 'method' field (server→client request)."""
+        deadline = time.monotonic() + timeout
+        buf: list[str] = []
+        while time.monotonic() < deadline:
+            with self._lock:
+                remaining = list(self._lines)
+                self._lines.clear()
+            for raw in remaining:
+                msg = json.loads(raw)
+                if msg.get("method") == method:
+                    with self._lock:
+                        self._lines = buf + self._lines  # put others back
+                    return msg
+                buf.append(raw)
+            with self._lock:
+                self._lines = buf + self._lines
+            buf = []
+            time.sleep(0.02)
+        return None
+
+    def next_id(self) -> int:
+        self._id += 1
+        return self._id
+
+    def call_tool(self, name: str, args: dict[str, Any], timeout: float = 30.0) -> dict[str, Any] | None:
+        """Send a tools/call request and return the response."""
+        return self.call_tool_params({"name": name, "arguments": args}, timeout=timeout)
+
+    def call_tool_params(self, params: dict[str, Any], timeout: float = 30.0) -> dict[str, Any] | None:
+        """Send a tools/call request with raw params and return the response."""
+        req_id = self.next_id()
+        self.send({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": "tools/call",
+            "params": params,
+        })
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            msg = self.recv(timeout=1.0)
+            if msg is None:
+                continue
+            if msg.get("id") == req_id:
+                return msg
+        return None
+
+    def stderr_lines(self) -> list[str]:
+        with self._lock:
+            return list(self._stderr_lines)
+
+    def close(self) -> None:
+        try:
+            assert self.proc.stdin
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def do_initialize(p: MCPProcess, with_roots: bool = True) -> bool:
+    """Send initialize + initialized. Returns True if server replied."""
+    capabilities: dict[str, Any] = {}
+    if with_roots:

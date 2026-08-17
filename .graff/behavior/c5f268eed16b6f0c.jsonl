@@ -1,0 +1,3 @@
+{"kind":"run_started","seq":1,"ts":1786941897.673065,"run_id":"c5f268eed16b6f0c","schema":"codegraff.behavior.v1","version":"0.0.264","unix_ms":1786941897220,"provider":"codex","model":"gpt-5.6-sol","prompt_sha":"8480f169c0179a81","effort":"xhigh"}
+{"kind":"turn_started","seq":2,"ts":1786941902.435554,"run_id":"c5f268eed16b6f0c","schema":"codegraff.behavior.v1","turn":1,"parent_turn":0,"trajectory_node":1}
+{"kind":"run_finished","seq":3,"ts":1786942022.4905221,"run_id":"c5f268eed16b6f0c","schema":"codegraff.behavior.v1","status":"closed","local_dropped":0}

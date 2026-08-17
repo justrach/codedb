@@ -1,0 +1,250 @@
+7e2b4c9 (HEAD -> fix/issue-682-comment-edge-cases) test(#682): cover template regexes and R backticks
+49a31a3 fix(#682): match callers only in lexical code
+7e25eab test(#682): guard literal and block-comment mentions
+e0c60e4 fix(#682): harden callers comment-prefix scanning
+8efc924 test(#682): expose remaining comment scanner edge cases
+9695188 (origin/release/0.2.5833-mcp2026, release/0.2.5833-mcp2026) Merge pull request #683 from justrach/fix/issue-682-trailing-comment-callers
+1cc30d9 fix(#682): callers stops counting trailing-comment mentions as call sites
+3f9d022 test(#682): failing — callers counts trailing-comment mentions as call sites
+
+--- issue-682 refs ---
+src/adversarial_tests.zig:7:const regexMatch = @import("explore.zig").regexMatch;
+src/adversarial_tests.zig:16:const decomposeRegex = @import("index.zig").decomposeRegex;
+src/adversarial_tests.zig:298:// ADVERSARIAL: Regex quantifier {n,m} not consumed (#30 verification)
+src/adversarial_tests.zig:306:    var query = try decomposeRegex("abc{2,5}def", alloc);
+src/adversarial_tests.zig:327:    var query = try decomposeRegex("xyz{3}abc", alloc);
+src/adversarial_tests.zig:344:    var query = try decomposeRegex("foo{2,}bar", alloc);
+src/adversarial_tests.zig:358:// ADVERSARIAL: regexMatch edge cases
+src/adversarial_tests.zig:361:test "adversarial: regexMatch with nested groups" {
+src/adversarial_tests.zig:362:    try testing.expect(regexMatch("foobar", "(foo)(bar)"));
+src/adversarial_tests.zig:363:    try testing.expect(regexMatch("foobar", "(foo|baz)(bar|qux)"));
+src/adversarial_tests.zig:364:    try testing.expect(!regexMatch("fooqux", "(foo)(bar)"));
+src/adversarial_tests.zig:367:test "adversarial: regexMatch with escaped special chars" {
+src/adversarial_tests.zig:368:    try testing.expect(regexMatch("file.txt", "file\\.txt"));
+src/adversarial_tests.zig:369:    try testing.expect(!regexMatch("filextxt", "file\\.txt"));
+src/adversarial_tests.zig:370:    try testing.expect(regexMatch("a(b)c", "a\\(b\\)c"));
+src/adversarial_tests.zig:371:    try testing.expect(regexMatch("a+b", "a\\+b"));
+src/adversarial_tests.zig:374:test "adversarial: regexMatch with bracket edge cases" {
+src/adversarial_tests.zig:376:    try testing.expect(regexMatch("]", "[]]"));
+src/adversarial_tests.zig:378:    try testing.expect(regexMatch("-", "[a-]"));
+src/adversarial_tests.zig:380:    try testing.expect(!regexMatch("a", "[^a-z]"));
+src/adversarial_tests.zig:381:    try testing.expect(regexMatch("5", "[^a-z]"));
+src/adversarial_tests.zig:384:test "adversarial: regexMatch empty pattern matches everything" {
+src/adversarial_tests.zig:385:    try testing.expect(regexMatch("anything", ""));
+src/adversarial_tests.zig:386:    try testing.expect(regexMatch("", ""));
+src/adversarial_tests.zig:389:test "adversarial: regexMatch with ^ and $ anchors" {
+src/adversarial_tests.zig:390:    try testing.expect(regexMatch("hello", "^hello$"));
+src/adversarial_tests.zig:391:    try testing.expect(!regexMatch("hello world", "^hello$"));
+src/adversarial_tests.zig:392:    try testing.expect(regexMatch("hello world", "^hello"));
+src/adversarial_tests.zig:393:    try testing.expect(!regexMatch("say hello", "^hello"));
+src/adversarial_tests.zig:396:test "adversarial: regexMatch quantifier edge: a* matches empty" {
+src/adversarial_tests.zig:397:    try testing.expect(regexMatch("", "a*"));
+src/adversarial_tests.zig:398:    try testing.expect(regexMatch("b", "a*b"));
+src/adversarial_tests.zig:399:    try testing.expect(regexMatch("aaab", "a*b"));
+src/adversarial_tests.zig:402:test "adversarial: regexMatch quantifier edge: .+ requires at least one char" {
+src/adversarial_tests.zig:403:    try testing.expect(!regexMatch("", "^.+$"));
+src/adversarial_tests.zig:404:    try testing.expect(regexMatch("x", "^.+$"));
+src/adversarial_tests.zig:405:    try testing.expect(regexMatch("xyz", "^.+$"));
+src/adversarial_tests.zig:408:test "adversarial: regexMatch with 50 alternation branches does not crash" {
+src/adversarial_tests.zig:424:    try testing.expect(regexMatch("AAA", buf[0..pos]));
+src/adversarial_tests.zig:426:    try testing.expect(!regexMatch("999", buf[0..pos]));
+src/adversarial_tests.zig:473:test "adversarial: Explorer searchContentRegex with {n,m} finds correct results" {
+src/adversarial_tests.zig:481:    const results = try exp.searchContentRegex("ab{2,4}c", testing.allocator, 50);
+src/adversarial_tests.zig:613:// ADVERSARIAL: regexMatch pathological patterns
+src/adversarial_tests.zig:616:test "adversarial: regexMatch does not hang on catastrophic backtracking pattern" {
+src/adversarial_tests.zig:621:    const result = regexMatch("aaaaaaaaaaaaaaaaac", "(a+)+b");
+src/adversarial_tests.zig:625:test "adversarial: regexMatch with deeply nested quantifiers" {
+src/adversarial_tests.zig:626:    try testing.expect(regexMatch("aaa", "a*a*a*"));
+src/adversarial_tests.zig:627:    try testing.expect(regexMatch("", "a*b*c*"));
+src/adversarial_tests.zig:628:    try testing.expect(!regexMatch("d", "^a*b*c*$"));
+src/adversarial_tests.zig:631:test "adversarial: regexMatch pipe inside character class is literal" {
+src/adversarial_tests.zig:633:    try testing.expect(regexMatch("|", "[|]"));
+src/adversarial_tests.zig:634:    try testing.expect(regexMatch("a|b", "a[|]b"));
+src/adversarial_tests.zig:635:    try testing.expect(!regexMatch("a b", "a[|]b"));
+src/adversarial_tests.zig:638:test "adversarial: regexMatch \\d \\w \\s escapes" {
+src/adversarial_tests.zig:639:    try testing.expect(regexMatch("abc123", "\\w+\\d+"));
+src/adversarial_tests.zig:640:    try testing.expect(regexMatch("hello world", "\\w+\\s\\w+"));
+src/adversarial_tests.zig:641:    try testing.expect(!regexMatch("hello", "\\d+"));
+src/bench_edge.zig:38:    .{ .tool = .codedb_search, .name = "edge_search_regex", .args_json = "{\"query\":\"edgeHandler[A-Za-z]+_39_7[0-4]\",\"regex\":true,\"max_results\":20}", .iterations = 15, .bust_search_cache = true },
+src/bootstrap.zig:525:        // (outlines + contents + trigrams); single-token and --regex searches
+src/bootstrap.zig:530:            break :blk sa.use_regex or std.mem.indexOfScalar(u8, sa.query, ' ') == null;
+src/cli_args.zig:154:    use_regex: bool = false,
+src/cli_args.zig:161:/// Parse `search` args. Flags (`--regex`, `--paths-only`, `--max-results N`)
+src/cli_args.zig:176:        } else if (!flags_done and std.mem.eql(u8, a, "--regex")) {
+src/cli_args.zig:177:            result.use_regex = true;
+src/explore.zig:4:const nanoregex = @import("nanoregex");
+src/explore.zig:6053:    /// Search file contents using a regex pattern with trigram acceleration.
+src/explore.zig:6054:    /// Decomposes the regex to extract literal trigrams for candidate filtering,
+src/explore.zig:6055:    /// then does actual regex matching on candidates.
+src/explore.zig:6056:    pub fn searchContentRegex(self: *Explorer, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const SearchResult {
+src/explore.zig:6063:        // Surface invalid patterns as error.InvalidRegex instead of silently
+src/explore.zig:6067:            var probe = nanoregex.Regex.compile(allocator, pattern) catch return error.InvalidRegex;
+src/explore.zig:6071:        var query = idx.decomposeRegex(pattern, self.allocator) catch {
+src/explore.zig:6076:                try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+src/explore.zig:6083:        const candidate_paths = self.trigram_index.candidatesRegex(&query, allocator);
+src/explore.zig:6091:                try searchInContentRegex(path, ref.data, pattern, allocator, max_results, &result_list);
+src/explore.zig:6099:                try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+src/explore.zig:6111:                try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+src/explore.zig:7921:    /// Scoped regex search: same as searchContentWithScope but uses regex matching
+src/explore.zig:7923:    pub fn searchContentRegexWithScope(self: *Explorer, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const ScopedSearchResult {
+src/explore.zig:7937:        // Surface invalid patterns as error.InvalidRegex instead of silently
+src/explore.zig:7941:            var probe = nanoregex.Regex.compile(allocator, pattern) catch return error.InvalidRegex;
+src/explore.zig:7945:        var query = idx.decomposeRegex(pattern, self.allocator) catch {
+src/explore.zig:7950:                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+src/explore.zig:7957:        const candidate_paths = self.trigram_index.candidatesRegex(&query, allocator);
+src/explore.zig:7965:                try self.searchInContentRegexWithScope(path, ref.data, pattern, allocator, max_results, &result_list);
+src/explore.zig:7973:                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+src/explore.zig:7985:                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+src/explore.zig:8022:    fn searchInContentRegexWithScope(self: *Explorer, path: []const u8, content: []const u8, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(ScopedSearchResult)) !void {
+src/explore.zig:8023:        var rx = nanoregex.Regex.compile(allocator, pattern) catch return;
+src/explore.zig:8363:fn searchInContentRegex(path: []const u8, content: []const u8, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(SearchResult)) !void {
+src/explore.zig:8364:    var rx = nanoregex.Regex.compile(allocator, pattern) catch return;
+src/explore.zig:8386:pub fn regexMatch(haystack: []const u8, pattern: []const u8) bool {
+src/explore.zig:8387:    var rx = nanoregex.Regex.compile(std.heap.smp_allocator, pattern) catch return false;
+src/index.zig:1635:    pub fn candidatesRegex(self: *TrigramIndex, query: *const RegexQuery, allocator: std.mem.Allocator) ?[]const []const u8 {
+src/index.zig:2455:    pub fn candidatesRegex(self: *const MmapTrigramIndex, query: *const RegexQuery, allocator: std.mem.Allocator) ?[]const []const u8 {
+src/index.zig:2636:    pub fn candidatesRegex(self: *AnyTrigramIndex, query: *const RegexQuery, allocator: std.mem.Allocator) ?[]const []const u8 {
+src/index.zig:2638:            .heap => |*h| h.candidatesRegex(query, allocator),
+src/index.zig:2639:            .mmap => |*m| m.candidatesRegex(query, allocator),
+src/index.zig:2641:                const base = mo.base.candidatesRegex(query, allocator);
+src/index.zig:2642:                const over = mo.overlay.candidatesRegex(query, allocator);
+src/index.zig:2799:// ── Regex decomposition ─────────────────────────────────────
+src/index.zig:2801:pub const RegexQuery = struct {
+src/index.zig:2806:    pub fn deinit(self: *RegexQuery) void {
+src/index.zig:2815:/// Parse a regex pattern and extract literal segments that yield trigrams.
+src/index.zig:2819:pub fn decomposeRegex(pattern: []const u8, allocator: std.mem.Allocator) !RegexQuery {
+src/index.zig:2871:        // from regex metachars like `.`/`.*`), that branch can match a line that
+src/index.zig:2876:        // unconstrained query (candidatesRegex returns null -> scan everything).
+src/index.zig:2907:            return RegexQuery{
+src/index.zig:2920:        return RegexQuery{
+src/index.zig:2930:    return RegexQuery{
+src/index.zig:2937:/// Extract trigrams from literal runs in a regex fragment (no top-level |).
+src/mcp.zig:280:    if (getBool(args, "regex")) return false;
+src/mcp.zig:670:    \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+src/mcp.zig:806:    .{ .name = "query", .desc = "Text to match; regex when regex=true" },
+src/mcp.zig:810:    .{ .name = "regex", .desc = "Treat query as a regex (default: false)" },
+src/mcp.zig:828:    .{ .name = "codedb_search", .desc = "Replaces grep across the repo: ranked full-text (or regex=true) hits as path:line plus the line. Use ONLY when you do not know the symbol name; path_glob narrows, paths_only halves tokens." },
+src/mcp.zig:2178:    const is_regex = getBool(args, "regex");
+src/mcp.zig:2201:    if (scope and is_regex) {
+src/mcp.zig:2202:        const results = explorer.searchContentRegexWithScope(query, alloc, max_results) catch |e| {
+src/mcp.zig:2203:            out.appendSlice(alloc, if (e == error.InvalidRegex) "error: invalid regex" else "error: scoped regex search failed") catch {};
+src/mcp.zig:2293:    } else if (is_regex) {
+src/mcp.zig:2294:        const results = explorer.searchContentRegex(query, alloc, max_results) catch |e| {
+src/mcp.zig:2295:            out.appendSlice(alloc, if (e == error.InvalidRegex) "error: invalid regex" else "error: regex search failed") catch {};
+src/mcp.zig:2583:        // `test "…name…" {` declaration, or `init(); // then name() …`. (#682)
+src/mcp.zig:2654:const max_template_nesting = 16;
+src/mcp.zig:2676:        if (line[i] == '`' and hasBacktickLiterals(language)) {
+src/mcp.zig:2686:                if (template_depth >= max_template_nesting) {
+src/mcp.zig:2708:            if (javascriptRegexEndAt(line, i)) |end| {
+src/mcp.zig:2785:fn hasBacktickLiterals(language: explore_mod.Language) bool {
+src/mcp.zig:2830:fn javascriptRegexEndAt(line: []const u8, start: usize) ?usize {
+src/mcp.zig:2871:            if (javascriptRegexEndAt(line, i)) |end| {
+src/mcp.zig:3343:        //   T2 regex: Builder::build → meta::Regex::new in regex.rs
+src/mcp.zig:5985:        const has_regex_meta = blk: {
+src/mcp.zig:5986:            if (getBool(args, "regex")) break :blk false;
+src/mcp.zig:5994:        if (has_regex_meta) {
+src/mcp.zig:5995:            buf.appendSlice(alloc, MCP_DIM ++ MCP_ARROW ++ "hint: query has regex metachars but regex=false; matched as literal — pass regex=true for OR/grouping" ++ MCP_RESET) catch {};
+src/query.zig:155:                error.UnknownFlag => out.p("{s}\xe2\x9c\x97{s} unknown flag for {s}search{s}  (valid: {s}--regex{s}, {s}--paths-only{s}, {s}--max-results N{s})\n", .{
+src/query.zig:164:                error.MissingQuery, error.EmptyQuery => out.p("{s}\xe2\x9c\x97{s} usage: codedb [root] search [--regex] [--paths-only] [--max-results N] {s}<query>{s}\n", .{
+src/query.zig:171:        const use_regex = sa.use_regex;
+src/query.zig:174:        const results = if (use_regex)
+src/query.zig:175:            explorer.searchContentRegex(query, allocator, sa.max_results) catch |e| {
+src/query.zig:176:                if (e == error.InvalidRegex) {
+src/query.zig:177:                    out.p("{s}\xe2\x9c\x97{s} invalid regex: {s}{s}{s}\n", .{ s.red, s.reset, s.bold, query, s.reset });
+src/query.zig:203:                const mode_label: []const u8 = if (use_regex) " (regex)" else "";
+src/test_explore.zig:1038:test "explorer: searchContentRegex end-to-end" {
+src/test_explore.zig:1046:    const results = try explorer_inst.searchContentRegex("record\\w+", testing.allocator, 50);
+src/test_explore.zig:1067:test "explorer: searchContentRegex no match" {
+src/test_explore.zig:1073:    const results = try explorer_inst.searchContentRegex("zzz\\d+qqq", testing.allocator, 50);
+src/test_explore.zig:2226:test "issue-528: searchContentRegex surfaces invalid regex as error" {
+src/test_explore.zig:2231:    try testing.expectError(error.InvalidRegex, explorer_inst.searchContentRegex("[", testing.allocator, 50));
+src/test_index.zig:21:const decomposeRegex = @import("index.zig").decomposeRegex;
+src/test_index.zig:22:const RegexQuery = @import("index.zig").RegexQuery;
+src/test_index.zig:24:const regexMatch = explore.regexMatch;
+src/test_index.zig:1287:test "decomposeRegex: pure literal extracts trigrams" {
+src/test_index.zig:1288:    var q = try decomposeRegex("hello", testing.allocator);
+src/test_index.zig:1295:test "decomposeRegex: short literal yields no trigrams" {
+src/test_index.zig:1296:    var q = try decomposeRegex("ab", testing.allocator);
+src/test_index.zig:1301:test "decomposeRegex: dot breaks trigram chain" {
+src/test_index.zig:1302:    var q = try decomposeRegex("he.lo", testing.allocator);
+src/test_index.zig:1308:test "decomposeRegex: dot in longer literal" {
+src/test_index.zig:1309:    var q = try decomposeRegex("hello.world", testing.allocator);
+src/test_index.zig:1315:test "decomposeRegex: alternation creates OR groups" {
+src/test_index.zig:1316:    var q = try decomposeRegex("foo|bar", testing.allocator);
+src/test_index.zig:1326:    // "xy" is too short to yield a trigram. Pre-fix, decomposeRegex constrained
+src/test_index.zig:1330:    var q = try decomposeRegex("xy|createGateway", testing.allocator);
+src/test_index.zig:1336:    var q2 = try decomposeRegex(".*|createGateway", testing.allocator);
+src/test_index.zig:1342:    var q3 = try decomposeRegex("generateText|streamText", testing.allocator);
+src/test_index.zig:1347:test "decomposeRegex: quantifier removes preceding char" {
+src/test_index.zig:1348:    var q = try decomposeRegex("hel+o", testing.allocator);
+src/test_index.zig:1354:test "decomposeRegex: escaped literal preserved" {
+src/test_index.zig:1355:    var q = try decomposeRegex("a\\.bc", testing.allocator);
+src/test_index.zig:1361:test "decomposeRegex: character class breaks chain" {
+src/test_index.zig:1362:    var q = try decomposeRegex("abc[xy]def", testing.allocator);
+src/test_index.zig:1368:test "decomposeRegex: backslash-w breaks chain" {
+src/test_index.zig:1369:    var q = try decomposeRegex("abc\\wdef", testing.allocator);
+src/test_index.zig:1375:test "candidatesRegex: finds files with AND trigrams" {
+src/test_index.zig:1382:    var q = try decomposeRegex("record.*Snapshot", testing.allocator);
+src/test_index.zig:1387:    const cands = ti.candidatesRegex(&q, testing.allocator);
+src/test_index.zig:1399:test "candidatesRegex: OR groups union posting lists" {
+src/test_index.zig:1407:    var q = try decomposeRegex("foobar|bazqux", testing.allocator);
+src/test_index.zig:1412:    const cands = ti.candidatesRegex(&q, testing.allocator);
+src/test_index.zig:1425:test "regexMatch: literal match" {
+src/test_index.zig:1426:    try testing.expect(regexMatch("hello world", "hello"));
+src/test_index.zig:1427:    try testing.expect(regexMatch("hello world", "world"));
+src/test_index.zig:1428:    try testing.expect(!regexMatch("hello world", "xyz"));
+src/test_index.zig:1431:test "regexMatch: dot matches any char" {
+src/test_index.zig:1432:    try testing.expect(regexMatch("hello", "h.llo"));
+src/test_index.zig:1433:    try testing.expect(regexMatch("hello", "h..lo"));
+src/test_index.zig:1434:    try testing.expect(!regexMatch("hello", "h...lo"));
+src/test_index.zig:1437:test "regexMatch: star quantifier" {
+src/test_index.zig:1438:    try testing.expect(regexMatch("helllo", "hel*o"));
+src/test_index.zig:1439:    try testing.expect(regexMatch("heo", "hel*o"));
+src/test_index.zig:1440:    try testing.expect(regexMatch("aab", "a*b"));
+src/test_index.zig:1443:test "regexMatch: plus quantifier" {
+src/test_index.zig:1444:    try testing.expect(regexMatch("helllo", "hel+o"));
+src/test_index.zig:1445:    try testing.expect(!regexMatch("heo", "hel+o"));
+src/test_index.zig:1448:test "regexMatch: question quantifier" {
+src/test_index.zig:1449:    try testing.expect(regexMatch("color", "colou?r"));
+src/test_index.zig:1450:    try testing.expect(regexMatch("colour", "colou?r"));
+src/test_index.zig:1453:test "regexMatch: character class" {
+src/test_index.zig:1454:    try testing.expect(regexMatch("cat", "c[aeiou]t"));
+src/test_index.zig:1455:    try testing.expect(regexMatch("cot", "c[aeiou]t"));
+src/test_index.zig:1456:    try testing.expect(!regexMatch("cxt", "c[aeiou]t"));
+src/test_index.zig:1459:test "regexMatch: negated character class" {
+src/test_index.zig:1460:    try testing.expect(!regexMatch("cat", "c[^aeiou]t"));
+src/test_index.zig:1461:    try testing.expect(regexMatch("cxt", "c[^aeiou]t"));
+src/test_index.zig:1464:test "regexMatch: anchors" {
+src/test_index.zig:1465:    try testing.expect(regexMatch("hello", "^hello"));
+src/test_index.zig:1466:    try testing.expect(!regexMatch("say hello", "^hello"));
+src/test_index.zig:1467:    try testing.expect(regexMatch("hello", "hello$"));
+src/test_index.zig:1468:    try testing.expect(!regexMatch("hello world", "hello$"));
+src/test_index.zig:1471:test "regexMatch: escape sequences" {
+src/test_index.zig:1472:    try testing.expect(regexMatch("abc123", "\\d+"));
+src/test_index.zig:1473:    try testing.expect(regexMatch("hello world", "\\w+\\s\\w+"));
+src/test_index.zig:1474:    try testing.expect(regexMatch("a.b", "a\\.b"));
+src/test_index.zig:1475:    try testing.expect(!regexMatch("axb", "a\\.b"));
+src/test_index.zig:1478:test "regexMatch: alternation" {
+src/test_index.zig:1479:    try testing.expect(regexMatch("foo", "foo|bar"));
+src/test_index.zig:1480:    try testing.expect(regexMatch("bar", "foo|bar"));
+src/test_index.zig:1481:    try testing.expect(!regexMatch("baz", "foo|bar"));
+src/test_index.zig:1484:test "regexMatch: alternation with many branches does not stack overflow" {
+src/test_index.zig:1504:    try testing.expect(regexMatch("a000", pattern));
+src/test_index.zig:1505:    try testing.expect(regexMatch("a299", pattern));
+src/test_index.zig:1506:    try testing.expect(!regexMatch("a999", pattern));
+src/test_index.zig:1509:test "regexMatch: dot-star" {
+src/test_index.zig:1510:    try testing.expect(regexMatch("hello world", "hello.*world"));
+src/test_index.zig:1511:    try testing.expect(regexMatch("helloworld", "hello.*world"));
+src/test_index.zig:1514:test "issue-454: regex \\b word boundary matches whole-word, not literal 'b'" {
+src/test_index.zig:1517:    try testing.expect(regexMatch("foo bar", "\\bfoo\\b"));
+src/test_index.zig:1518:    try testing.expect(!regexMatch("foobar", "\\bfoo\\b"));
+src/test_index.zig:1520:    try testing.expect(regexMatch("foo bar", "\\bbar\\b"));
+src/test_index.zig:1521:    try testing.expect(!regexMatch("foobarbaz", "\\bbar\\b"));
+src/test_index.zig:1760:test "regex regression: trigram extraction counts" {
+src/test_index.zig:1764:        var q = try decomposeRegex("handleRequest", testing.allocator);
+src/test_index.zig:1771:        var q = try decomposeRegex("foo.*bar.*baz", testing.allocator);
+src/test_index.zig:1778:        var q = try decomposeRegex("alpha|beta|gamma", testing.allocator);
+src/test_index.zig:1788:test "regex regression: regexMatch edge cases" {
+src/test_index.zig:1790:    try testing.expect(regexMatch("anything", ""));
+src/test_index.zig:1793:    try testing.expect(regexMatch("abc", ".*"));
+src/test_index.zig:1794:    try testing.expect(regexMatch("", ".*"));

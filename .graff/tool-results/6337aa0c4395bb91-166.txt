@@ -1,0 +1,51 @@
+        \\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  *codedb-linux-arm64
+    ;
+
+    try testing.expectEqualStrings(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        update_mod.checksumForBinary(manifest, "codedb-linux-arm64") orelse return error.TestUnexpectedResult,
+    );
+    try testing.expect(update_mod.checksumForBinary(manifest, "codedb-linux-x86_64") == null);
+}
+
+test "update: asset names match published release naming" {
+    try testing.expectEqualStrings("codedb-darwin-arm64", update_mod.assetNameForTarget(.macos, .aarch64).?);
+    try testing.expectEqualStrings("codedb-darwin-x86_64", update_mod.assetNameForTarget(.macos, .x86_64).?);
+    try testing.expectEqualStrings("codedb-linux-arm64", update_mod.assetNameForTarget(.linux, .aarch64).?);
+    try testing.expectEqualStrings("codedb-linux-x86_64", update_mod.assetNameForTarget(.linux, .x86_64).?);
+    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+}
+
+test "issue-677: update resolves the published Windows x86_64 asset" {
+    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+    try testing.expect(update_mod.assetNameForTarget(.windows, .aarch64) == null);
+}
+
+test "issue-658: hook registration is skipped after a user removes the hook" {
+    try testing.expect(update_mod.shouldRegisterHooks(false, false, false, false));
+    try testing.expect(update_mod.shouldRegisterHooks(false, false, true, true));
+    try testing.expect(!update_mod.shouldRegisterHooks(false, false, true, false));
+    try testing.expect(!update_mod.shouldRegisterHooks(true, false, false, false));
+    try testing.expect(!update_mod.shouldRegisterHooks(false, true, true, true));
+}
+
+test "nuke: commandTargetsBinary only matches the current install path" {
+    try testing.expect(nuke_mod.commandTargetsBinary(
+        "/tmp/codedb-test/bin/codedb serve",
+        "/tmp/codedb-test/bin/codedb",
+    ));
+    try testing.expect(nuke_mod.commandTargetsBinary(
+        "/var/folders/example/codedb serve",
+        "/private/var/folders/example/codedb",
+    ));
+    try testing.expect(!nuke_mod.commandTargetsBinary(
+        "/Users/rachpradhan/bin/codedb --mcp",
+        "/tmp/codedb-test/bin/codedb",
+    ));
+}
+
+test "nuke: removeJsonMcpServerEntry drops only codedb integration" {
+    const input =
+        \\{
+        \\  "mcpServers": {
+        \\    "codedb": { "command": "/Users/me/bin/codedb", "args": ["mcp"] },

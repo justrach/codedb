@@ -1,0 +1,175 @@
+## 4. Notarize
+
+Apple's notary service only accepts archives (`.zip`, `.dmg`, `.pkg`), not bare
+executables. Zip the signed binaries, then submit and wait.
+
+### 4.1 Zip the signed binaries
+
+Use `ditto` so macOS metadata and the embedded signature are preserved exactly:
+
+```bash
+ditto -c -k --keepParent "$AARCH64_DIR/graff"     graff-aarch64.zip
+ditto -c -k --keepParent "$AARCH64_DIR/codegraff" codegraff-aarch64.zip
+ditto -c -k --keepParent "$X86_64_DIR/graff"      graff-x86_64.zip
+ditto -c -k --keepParent "$X86_64_DIR/codegraff"  codegraff-x86_64.zip
+```
+
+`zip` also works if you prefer it (`zip graff-aarch64.zip "$AARCH64_DIR/graff"`),
+but `ditto -c -k --keepParent` is the recommended, metadata-safe form.
+
+### 4.2 Submit and wait
+
+Submit each archive **sequentially** (see pitfall 6.4 — do not background these
+in parallel). `--wait` blocks until Apple returns a terminal status.
+
+```bash
+for z in graff-aarch64.zip codegraff-aarch64.zip graff-x86_64.zip codegraff-x86_64.zip; do
+  echo "=== submitting $z ==="
+  xcrun notarytool submit "$z" \
+    --keychain-profile codedb-notary \
+    --wait
+done
+```
+
+Read the status block at the end of each submission. A success looks like:
+
+```
+  status: Accepted
+```
+
+Anything else (`Invalid`, `Rejected`) means notarization failed for that
+archive — fetch the log (next step).
+
+### 4.3 Fetch the log on failure
+
+Every submission prints an `id:` (the submission UUID). To see exactly what Apple
+flagged:
+
+```bash
+xcrun notarytool log <submission-id> --keychain-profile codedb-notary
+```
+
+The JSON `issues[]` array lists each problem. The most common causes are a
+missing hardened runtime (`--options runtime` was omitted in step 3) or a missing
+secure timestamp (`--timestamp` was omitted). Fix, re-sign (step 3), re-zip
+(4.1), and re-submit.
+
+You can also list recent submissions to recover an ID you missed:
+
+```bash
+xcrun notarytool history --keychain-profile codedb-notary
+```
+
+---
+
+## 5. Staple & verify
+
+### 5.1 Stapling does not apply to bare CLI executables
+
+`xcrun stapler staple` attaches the notarization ticket to a **container** —
+a `.app` bundle, `.dmg`, or `.pkg`. **You cannot staple a bare Mach-O
+executable** like `graff` or `codegraff`; `stapler` will report that the format
+is unsupported.
+
+This is fine. For a bare CLI binary, Gatekeeper validates the notarization ticket
+**online** the first time the binary runs (the ticket is published on Apple's
+servers, keyed by the binary's code-signature hash). As long as the machine has
+network access on first launch, the online check confirms notarization. Stapling
+only matters when you wrap the binaries in a `.dmg`/`.pkg`/`.app` — in that case,
+staple the container:
+
+```bash
+# Only if you ship a .dmg / .pkg / .app:
+xcrun stapler staple codegraff-installer.dmg
+xcrun stapler validate codegraff-installer.dmg
+```
+
+### 5.2 Verify the bare binaries
+
+Confirm the signature is intact and strict:
+
+```bash
+codesign --verify --strict --verbose=2 "$AARCH64_DIR/graff"
+codesign --verify --strict --verbose=2 "$AARCH64_DIR/codegraff"
+codesign --verify --strict --verbose=2 "$X86_64_DIR/graff"
+codesign --verify --strict --verbose=2 "$X86_64_DIR/codegraff"
+```
+
+Run a Gatekeeper assessment. Since these are standalone executables (not bundled
+installers), assess them as installable items:
+
+```bash
+spctl -a -vvv -t install "$AARCH64_DIR/graff"
+spctl -a -vvv -t install "$AARCH64_DIR/codegraff"
+```
+
+A notarized, correctly signed binary reports:
+
+```
+source=Notarized Developer ID
+```
+
+### 5.3 Gatekeeper behavior for downloaded binaries
+
+When a user downloads one of these binaries via a browser or `curl`-from-a-page,
+macOS attaches a **quarantine** xattr (`com.apple.quarantine`). On first
+execution Gatekeeper performs an online notarization check; because the binaries
+are notarized, they are allowed to run without the "unidentified developer"
+block. If the binary were signed but **not** notarized, Gatekeeper would block
+it. This is exactly why notarization (section 4) is mandatory even though we
+cannot staple a bare CLI binary.
+
+---
+
+## 6. Common pitfalls
+
+### 6.1 `com.apple.provenance` / quarantine xattr — clear it on the destination
+
+macOS adds extended attributes (`com.apple.quarantine` on download,
+`com.apple.provenance` on execution-launch tracking). These can interfere with
+signature verification and launch behavior. On the **destination** machine/path,
+strip them from the installed binary:
+
+```bash
+xattr -c /usr/local/bin/graff
+xattr -c /usr/local/bin/codegraff
+```
+
+Inspect what is attached first if you want to confirm:
+
+```bash
+xattr -l /usr/local/bin/graff
+```
+
+### 6.2 Re-sign after any copy — `cp` can break the signature
+
+This matches the project's known **"graff/codegraff need re-signing after every
+build or `Killed: 9`"** failure mode. Copying, moving, regenerating, or otherwise
+touching a signed binary can invalidate the code signature, and macOS will kill
+an invalidly-signed hardened-runtime binary on launch with `Killed: 9`.
+
+After **any** `cp`/`install`/`lipo`/rebuild that produces or relocates the final
+artifact, re-run the codesign step (section 3) on the final file, then verify:
+
+```bash
+cp "$AARCH64_DIR/graff" /usr/local/bin/graff
+codesign --force --timestamp --options runtime \
+  --sign "Developer ID Application: Rachit Pradhan (WWP9DLJ27P)" \
+  /usr/local/bin/graff
+codesign --verify --strict --verbose=2 /usr/local/bin/graff
+```
+
+Always sign the file **at its final location**, or re-sign after moving it.
+
+### 6.3 Use `xattr -c`, not `xattr -cr`
+
+Use `xattr -c` (clear attributes on the file) — **not** `xattr -cr`. The
+recursive form `-cr` walks directories and is the wrong tool for individual
+binaries; it can also strip attributes from things you did not intend to touch.
+For a single executable, `xattr -c <bin>` is correct.
+
+### 6.4 Submit notarizations sequentially, not in parallel
+
+Run `notarytool submit ... --wait` calls **one at a time**. Do not background
+multiple submissions or fan them out in parallel — concurrent uploads against the
+notary service are unreliable and can stall or error. The loop in step 4.2 is

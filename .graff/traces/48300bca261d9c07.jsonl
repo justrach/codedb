@@ -1,0 +1,15 @@
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":0,"ev":"startup_phase","phase":"args","phase_ms":0,"startup_ms":0}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":0,"ev":"startup_phase","phase":"credentials/model","phase_ms":487,"startup_ms":487}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":0,"ev":"startup_phase","phase":"CA warm scheduled","phase_ms":0,"startup_ms":487}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":0,"ev":"startup_phase","phase":"banner","phase_ms":0,"startup_ms":487}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":1514,"ev":"startup_phase","phase":"MCP registry","phase_ms":1514,"startup_ms":2001}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":1514,"ev":"startup_phase","phase":"settings/theme","phase_ms":0,"startup_ms":2001}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":1514,"ev":"startup_phase","phase":"companion","phase_ms":0,"startup_ms":2001}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":1517,"ev":"startup_phase","phase":"approvals/hooks/fleet","phase_ms":4,"startup_ms":2005}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":1521,"ev":"startup_phase","phase":"system prompt","phase_ms":4,"startup_ms":2009}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":1567,"ev":"recipe","recipe_sha":"402109a60ecfdffa","provider":"codex","model":"gpt-5.6-luna","effort":"xhigh","prompt_sha":"735a8048a5bb6156","toolset_sha":"a0ff186c5e018a91","task_class":"interactive","harness_version":"0.0.264"}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":1567,"ev":"session","detail":"gpt-5.6-luna"}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":1567,"ev":"startup_phase","phase":"root agent","phase_ms":45,"startup_ms":2054}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":3873,"ev":"api","turn":1,"agent":"main","model":"gpt-5.6-luna","ms":2304,"req_bytes":30688,"resp_bytes":98789,"context_tokens":8173,"cache_read_tokens":0,"is_error":false}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":3881,"ev":"tool","turn":1,"name":"codedb","ms":8,"result_bytes":306,"is_error":false,"from_sub":false}
+{"run_id":"48300bca261d9c07","pid":3766,"session_id":"9cc0c62519d7cd93ad9ec67b468a4859","t":5333,"ev":"api","turn":1,"agent":"main","model":"gpt-5.6-luna","ms":1450,"req_bytes":32853,"resp_bytes":96274,"context_tokens":8715,"cache_read_tokens":6656,"is_error":false}

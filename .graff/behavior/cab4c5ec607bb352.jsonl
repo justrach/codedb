@@ -1,0 +1,8 @@
+{"kind":"run_started","seq":1,"ts":1785895279.4566689,"run_id":"cab4c5ec607bb352","schema":"codegraff.behavior.v1","version":"0.0.237","unix_ms":1785895279445,"provider":"kimi","model":"k3","prompt_sha":"309ab3aea44f8162","effort":"xhigh"}
+{"kind":"turn_started","seq":2,"ts":1785895291.1387572,"run_id":"cab4c5ec607bb352","schema":"codegraff.behavior.v1","turn":1,"parent_turn":0,"trajectory_node":1}
+{"kind":"turn_started","seq":3,"ts":1785895476.929548,"run_id":"cab4c5ec607bb352","schema":"codegraff.behavior.v1","turn":2,"parent_turn":1,"trajectory_node":2}
+{"kind":"turn_started","seq":4,"ts":1785895740.311432,"run_id":"cab4c5ec607bb352","schema":"codegraff.behavior.v1","turn":3,"parent_turn":2,"trajectory_node":3}
+{"kind":"turn_started","seq":5,"ts":1785895906.419602,"run_id":"cab4c5ec607bb352","schema":"codegraff.behavior.v1","turn":4,"parent_turn":3,"trajectory_node":4}
+{"kind":"turn_started","seq":6,"ts":1785899602.6618829,"run_id":"cab4c5ec607bb352","schema":"codegraff.behavior.v1","turn":5,"parent_turn":4,"trajectory_node":12}
+{"kind":"turn_started","seq":7,"ts":1785901061.865268,"run_id":"cab4c5ec607bb352","schema":"codegraff.behavior.v1","turn":6,"parent_turn":5,"trajectory_node":13}
+{"kind":"run_finished","seq":8,"ts":1785901082.628673,"run_id":"cab4c5ec607bb352","schema":"codegraff.behavior.v1","status":"closed","local_dropped":0}

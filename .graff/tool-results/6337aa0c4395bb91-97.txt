@@ -1,0 +1,116 @@
+    if with_roots:
+        capabilities["roots"] = {"listChanged": True}
+
+    p.send({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": capabilities,
+            "clientInfo": {"name": "e2e-test", "version": "1"},
+        },
+    })
+    resp = p.recv(timeout=10)
+    if resp is None or "result" not in resp:
+        return False
+    p.send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+    return True
+
+
+def reply_roots(p: MCPProcess, project_path: str, timeout: float = 5.0) -> bool:
+    """
+    Wait for the server's roots/list request, reply with project_path.
+    Returns True if the request arrived and we replied.
+    """
+    req = p.recv_method("roots/list", timeout=timeout)
+    if req is None:
+        return False
+    p.send({
+        "jsonrpc": "2.0",
+        "id": req["id"],
+        "result": {
+            "roots": [{"uri": f"file://{project_path}", "name": "project"}],
+        },
+    })
+    return True
+
+
+def all_tool_text(resp: dict[str, Any] | None) -> str:
+    """Concatenate all content[*].text from a tools/call response."""
+    if resp is None:
+        return ""
+    content = resp.get("result", {}).get("content", [])
+    return "\n".join(c.get("text", "") for c in content if isinstance(c, dict))
+
+
+def wait_for_scan(p: MCPProcess, timeout: float = 60.0) -> bool:
+    """Poll codedb_status until outlines > 0 (full scan + outline pass done) or timeout."""
+    import re
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        resp = p.call_tool("codedb_status", {}, timeout=5.0)
+        if resp and "result" in resp:
+            text = all_tool_text(resp)
+            m = re.search(r'\boutlines:\s*(\d+)', text)
+            if m and int(m.group(1)) > 0:
+                return True
+        time.sleep(1.0)
+    return False
+
+
+def tool_text(resp: dict[str, Any] | None) -> str:
+    """Return all content text joined — use all_tool_text directly for assertions."""
+    return all_tool_text(resp)
+
+
+# ── Test cases ────────────────────────────────────────────────────────────────
+
+class TestResult:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.passed = False
+        self.message = ""
+
+    def ok(self, msg: str = "") -> "TestResult":
+        self.passed = True
+        self.message = msg
+        return self
+
+    def fail(self, msg: str) -> "TestResult":
+        self.passed = False
+        self.message = msg
+        return self
+
+
+def run_scenario_1_issue346_regression(binary: str, project: str) -> list[TestResult]:
+    """
+    issue-346: spawn from cwd=/, roots handshake delivers real path, tools work.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S1] {name}")
+        results.append(r)
+        return r
+
+    p = MCPProcess(binary, [], cwd="/")
+
+    try:
+        r = t("initialize does not crash (no transport-closed)")
+        ok = do_initialize(p, with_roots=True)
+        if not ok:
+            r.fail("no initialize response — transport closed")
+            return results
+        r.ok()
+
+        r = t("server sends roots/list request")
+        got_roots_req = reply_roots(p, project, timeout=5.0)
+        if not got_roots_req:
+            r.fail("server never sent roots/list request")
+        else:
+            r.ok()
+
+        r = t("scan completes and files > 0")
+        scan_ok = wait_for_scan(p, timeout=90.0)
+        if not scan_ok:

@@ -1,0 +1,85 @@
+[agent 4: completed in 349388ms · 51 tool call(s) · ~61976 context token(s) · 28160 cache-read token(s)]
+
+`zig build test` passes, but the committed tests do not cover these cases.
+
+### Medium — newly introduced false positives from literals
+
+**Evidence:** `src/mcp.zig:2668-2672`, `src/mcp.zig:2709-2722`
+
+`lineCodePrefix` now skips complete backtick and Rust raw-literal spans, but `hasWholeWordMatchOutsideStrings` still skips only `'...'` and `"..."`. The skipped spans are returned unchanged to the matcher.
+
+Exact failure:
+
+```go
+var documentation = `https://example.test/renderX`
+```
+
+1. `lineCodePrefix` sees the Go backtick literal and skips over it.
+2. It returns the complete line.
+3. `hasWholeWordMatchOutsideStrings` does not recognize backticks, finds `renderX` inside the raw literal, and reports it as a call site.
+
+The same occurs for Rust:
+
+```rust
+let documentation = r#"https://example.test/renderX"#;
+```
+
+This is a regression caused by the new literal-skipping behavior; the internal `//` previously caused the line prefix to end before `renderX`. Static Go raw strings and Rust raw strings cannot contain executable calls, so this is not merely an ambiguity around JavaScript template interpolation.
+
+### Medium — newly introduced block-comment false positives involving URLs
+
+**Evidence:** `src/mcp.zig:2724-2729`, `src/mcp.zig:2668-2683`
+
+Exact failure:
+
+```c
+/* See https://example.test/renderX */
+```
+
+1. `blockCommentAt` recognizes and skips the complete block comment.
+2. `lineCodePrefix` returns the entire line because no later line marker exists.
+3. The matcher does not skip block comments and finds `renderX` inside the comment.
+4. `codedb_callers` reports a call site.
+
+A plain `/* renderX */` false positive is accepted pre-existing behavior: the old scanner already returned such lines intact. The newly introduced regression is specifically the interaction with a marker-like sequence inside the block comment: before this change, the `//` in `https://` truncated the prefix before `renderX`; now it is deliberately skipped and the comment contents become matchable.
+
+### Medium — Swift extended strings are misclassified as comments
+
+**Evidence:** `src/mcp.zig:2698`, `src/mcp.zig:2718-2722`
+
+Swift extended string literals use `#"` and `"#` delimiters, and ordinary quotes and `//` are valid contents.
+
+Exact failure:
+
+```swift
+let text = #"docs " // this is text"#; renderX()
+```
+
+1. The new `.swift` marker support enables scanning of this line.
+2. `stringLiteralEnd` treats the first inner `"` as the end of the string because it does not understand Swift’s `#` delimiter.
+3. The `//` inside the extended string is then treated as a Swift comment marker.
+4. The returned prefix excludes the real `renderX()` call after the literal.
+
+This is a newly introduced Swift regression: before `.swift` was added to the marker set, the line was returned whole.
+
+### Low — shell comment detection treats command-substitution `)` as a word boundary
+
+**Evidence:** `src/mcp.zig:2731-2737`, `src/mcp.zig:2816-2828`
+
+`isShellCommentStart` treats `)` as sufficient evidence that `#` begins a comment. That is incorrect when the `)` closes a command substitution occurring inside the same shell word.
+
+Exact failure:
+
+```sh
+printf '%s\n' $(printf x)#tag; renderX
+```
+
+In shell syntax, `$(printf x)#tag` is one word and expands to `x#tag`; `#tag` is not a comment because there is no word boundary before `#`. The semicolon then starts a separate command, `renderX`.
+
+The implementation sees `)` immediately before `#`, returns `true`, truncates at `#`, and misses the real `renderX` call. The prior unconditional `#` handling also missed this case, so this is an uncorrected edge case in the new operator-boundary heuristic rather than a newly created behavior.
+
+### Verdict
+
+The most dangerous defect is the new mismatch between `lineCodePrefix` and `hasWholeWordMatchOutsideStrings`: skipping backtick/raw/block spans while still matching inside them creates incorrect call-site reports for common documentation URLs and comments.
+
+[subagent sa-004-a06acb0c · inspect: .graff/subagents/sa-004-a06acb0c.md]

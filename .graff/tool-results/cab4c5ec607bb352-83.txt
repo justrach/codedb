@@ -1,0 +1,186 @@
+  8780	
+  8781	fn parseCssVariable(line: []const u8) ?[]const u8 {
+  8782	    if (startsWith(line, "$")) {
+  8783	        if (std.mem.indexOfScalar(u8, line, ':')) |colon| return line[0..colon];
+  8784	    }
+  8785	    if (startsWith(line, "--")) {
+  8786	        if (std.mem.indexOfScalar(u8, line, ':')) |colon| return line[0..colon];
+  8787	    }
+  8788	    return null;
+  8789	}
+  8790	
+  8791	fn parseCssSelector(line: []const u8) ?[]const u8 {
+  8792	    if (std.mem.indexOfScalar(u8, line, '{') == null) return null;
+  8793	    if (line.len < 2 or (line[0] != '.' and line[0] != '#')) return null;
+  8794	    var end: usize = 1;
+  8795	    while (end < line.len) : (end += 1) {
+  8796	        const ch = line[end];
+  8797	        if (!(std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '-')) break;
+  8798	    }
+  8799	    return if (end > 1) line[0..end] else null;
+  8800	}
+  8801	
+  8802	fn stripSqlLineComment(raw_line: []const u8) []const u8 {
+  8803	    const trimmed = std.mem.trim(u8, raw_line, " \t");
+  8804	    if (startsWith(trimmed, "--")) return "";
+  8805	    if (std.mem.indexOf(u8, trimmed, "--")) |pos| return std.mem.trimEnd(u8, trimmed[0..pos], " \t");
+  8806	    return trimmed;
+  8807	}
+  8808	
+  8809	const SqlSymbol = struct {
+  8810	    name: []const u8,
+  8811	    kind: SymbolKind,
+  8812	};
+  8813	
+  8814	fn parseSqlCreate(line: []const u8) ?SqlSymbol {
+  8815	    if (!startsWithIgnoreCase(line, "create ")) return null;
+  8816	    var rest = std.mem.trimStart(u8, line["create ".len..], " \t");
+  8817	    if (startsWithIgnoreCase(rest, "or replace ")) rest = std.mem.trimStart(u8, rest["or replace ".len..], " \t");
+  8818	    if (parseSqlCreateKind(rest, "table ", .struct_def)) |sym| return sym;
+  8819	    if (parseSqlCreateKind(rest, "view ", .struct_def)) |sym| return sym;
+  8820	    if (parseSqlCreateKind(rest, "index ", .constant)) |sym| return sym;
+  8821	    if (parseSqlCreateKind(rest, "function ", .function)) |sym| return sym;
+  8822	    if (parseSqlCreateKind(rest, "procedure ", .function)) |sym| return sym;
+  8823	    if (parseSqlCreateKind(rest, "trigger ", .method)) |sym| return sym;
+  8824	    if (parseSqlCreateKind(rest, "type ", .type_alias)) |sym| return sym;
+  8825	    return null;
+  8826	}
+  8827	
+  8828	fn parseSqlCreateKind(rest: []const u8, keyword: []const u8, kind: SymbolKind) ?SqlSymbol {
+  8829	    if (!startsWithIgnoreCase(rest, keyword)) return null;
+  8830	    var body = std.mem.trimStart(u8, rest[keyword.len..], " \t");
+  8831	    if (startsWithIgnoreCase(body, "if not exists ")) body = std.mem.trimStart(u8, body["if not exists ".len..], " \t");
+  8832	    const name = firstSqlIdent(body) orelse return null;
+  8833	    return .{ .name = name, .kind = kind };
+  8834	}
+  8835	
+  8836	fn firstSqlIdent(s: []const u8) ?[]const u8 {
+  8837	    const trimmed = std.mem.trimStart(u8, s, " \t\"`[");
+  8838	    if (trimmed.len == 0) return null;
+  8839	    var end: usize = 0;
+  8840	    while (end < trimmed.len and trimmed[end] != ' ' and trimmed[end] != '\t' and
+  8841	        trimmed[end] != '(' and trimmed[end] != ';' and trimmed[end] != '"' and
+  8842	        trimmed[end] != '`' and trimmed[end] != ']') : (end += 1)
+  8843	    {}
+  8844	    if (end == 0) return null;
+  8845	    const raw = trimmed[0..end];
+  8846	    if (std.mem.lastIndexOfScalar(u8, raw, '.')) |dot| {
+  8847	        if (dot + 1 < raw.len) return raw[dot + 1 ..];
+  8848	    }
+  8849	    return raw;
+  8850	}
+  8851	
+  8852	fn stripFortranComment(raw_line: []const u8) []const u8 {
+  8853	    const trimmed = std.mem.trim(u8, raw_line, " \t");
+  8854	    if (startsWith(trimmed, "!")) return "";
+  8855	    if (std.mem.indexOfScalar(u8, trimmed, '!')) |pos| return std.mem.trimEnd(u8, trimmed[0..pos], " \t");
+  8856	    return trimmed;
+  8857	}
+  8858	
+  8859	fn parseFortranUse(line: []const u8) ?[]const u8 {
+  8860	    if (!startsWithIgnoreCase(line, "use ")) return null;
+  8861	    var rest = std.mem.trimStart(u8, line[4..], " \t");
+  8862	    if (startsWithIgnoreCase(rest, "intrinsic")) return null;
+  8863	    if (std.mem.indexOf(u8, rest, "::")) |pos| rest = std.mem.trimStart(u8, rest[pos + 2 ..], " \t");
+  8864	    return extractIdent(rest);
+  8865	}
+  8866	
+  8867	fn parseFortranTypeName(line: []const u8) ?[]const u8 {
+  8868	    if (!startsWithIgnoreCase(line, "type")) return null;
+  8869	    const sep = std.mem.indexOf(u8, line, "::") orelse return null;
+  8870	    return extractIdent(std.mem.trimStart(u8, line[sep + 2 ..], " \t"));
+  8871	}
+  8872	
+  8873	fn extractAtName(line: []const u8) ?[]const u8 {
+  8874	    const at = std.mem.indexOfScalar(u8, line, '@') orelse return null;
+  8875	    return extractLlvmLikeName(line[at + 1 ..]);
+  8876	}
+  8877	
+  8878	fn extractLlvmGlobalName(line: []const u8) ?[]const u8 {
+  8879	    if (line.len == 0 or (line[0] != '@' and line[0] != '%')) return null;
+  8880	    return extractLlvmLikeName(line[1..]);
+  8881	}
+  8882	
+  8883	fn extractLlvmLikeName(s: []const u8) ?[]const u8 {
+  8884	    if (s.len == 0) return null;
+  8885	    if (s[0] == '"') {
+  8886	        if (std.mem.indexOfScalar(u8, s[1..], '"')) |end| return s[1 .. end + 1];
+  8887	        return null;
+  8888	    }
+  8889	    var end: usize = 0;
+  8890	    while (end < s.len) : (end += 1) {
+  8891	        const ch = s[end];
+  8892	        if (!(std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '-' or ch == '.' or ch == '$')) break;
+  8893	    }
+  8894	    return if (end > 0) s[0..end] else null;
+  8895	}
+  8896	
+  8897	const IdentSpan = struct {
+  8898	    text: []const u8,
+  8899	    start: usize,
+  8900	    end: usize,
+  8901	};
+  8902	
+  8903	fn extractLastIdentSpan(s: []const u8) ?IdentSpan {
+  8904	    if (s.len == 0) return null;
+  8905	
+  8906	    var end = s.len;
+  8907	    while (end > 0) {
+  8908	        const ch = s[end - 1];
+  8909	        if (std.ascii.isAlphanumeric(ch) or ch == '_') break;
+  8910	        end -= 1;
+  8911	    }
+  8912	    if (end == 0) return null;
+  8913	
+  8914	    var start = end;
+  8915	    while (start > 0) {
+  8916	        const ch = s[start - 1];
+  8917	        if (!(std.ascii.isAlphanumeric(ch) or ch == '_')) break;
+  8918	        start -= 1;
+  8919	    }
+  8920	    return .{ .text = s[start..end], .start = start, .end = end };
+  8921	}
+  8922	
+  8923	fn extractLastIdent(s: []const u8) ?[]const u8 {
+  8924	    return if (extractLastIdentSpan(s)) |span| span.text else null;
+  8925	}
+  8926	
+  8927	fn stripLineComment(raw_line: []const u8) []const u8 {
+  8928	    const trimmed = std.mem.trim(u8, raw_line, " \t");
+  8929	    if (startsWith(trimmed, "//")) return "";
+  8930	    if (std.mem.indexOf(u8, trimmed, "//")) |pos| {
+  8931	        return std.mem.trimEnd(u8, trimmed[0..pos], " \t");
+  8932	    }
+  8933	    return trimmed;
+  8934	}
+  8935	
+  8936	fn extractCIncludePath(line: []const u8) ?[]const u8 {
+  8937	    const keyword = if (startsWith(line, "#include"))
+  8938	        "#include"
+  8939	    else if (startsWith(line, "#import"))
+  8940	        "#import"
+  8941	    else
+  8942	        return null;
+  8943	    const rest = std.mem.trimStart(u8, line[keyword.len..], " \t");
+  8944	    if (rest.len >= 2 and rest[0] == '<') {
+  8945	        if (std.mem.indexOfScalar(u8, rest[1..], '>')) |end| {
+  8946	            if (end == 0) return null;
+  8947	            return rest[1 .. end + 1];
+  8948	        }
+  8949	    }
+  8950	    return extractStringLiteral(rest);
+  8951	}
+  8952	
+  8953	const CTypeSymbol = struct {
+  8954	    name: []const u8,
+  8955	    kind: SymbolKind,
+  8956	};
+  8957	
+  8958	fn parseCNamedType(line: []const u8) ?CTypeSymbol {
+  8959	    const stripped = stripCAttributesPrefix(line);
+  8960	    if (startsWith(stripped, "typedef ")) {
+  8961	        const rest = std.mem.trimStart(u8, stripped["typedef ".len..], " \t");
+  8962	        if (parseCBraceType(rest)) |sym| return sym;
+  8963	        if (std.mem.indexOf(u8, rest, "(*") != null) return null;
+  8964	        if (std.mem.indexOfScalar(u8, rest, ';')) |semi| {
+  8965	            const before_semi = rest[0..semi];

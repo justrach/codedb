@@ -1,0 +1,3 @@
+start have=0 target=100000 model=
+-- openclaw /tmp/openclaw-hillclimb
+   golds=3200

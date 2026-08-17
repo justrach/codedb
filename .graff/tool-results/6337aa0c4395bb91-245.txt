@@ -1,0 +1,292 @@
+    for (superseded_releases) |release| {
+        if (!std.mem.eql(u8, normalized_current, release.current)) continue;
+        return (try compareVersions(target, release.minimum_target)) != .lt;
+    }
+    return false;
+}
+
+pub fn checksumForBinary(manifest: []const u8, binary_name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, manifest, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+
+        const hash_end = std.mem.indexOfAny(u8, line, " \t") orelse continue;
+        const hash = line[0..hash_end];
+        var name = std.mem.trimStart(u8, line[hash_end..], " \t");
+        if (name.len == 0) continue;
+        if (name[0] == '*') name = name[1..];
+        if (std.mem.eql(u8, name, binary_name)) return hash;
+    }
+
+    return null;
+}
+
+fn resolveTargetVersion(allocator: std.mem.Allocator) !ResolvedVersion {
+    if (cio.posixGetenv("CODEDB_VERSION")) |value| {
+        if (value.len != 0) {
+            const dup = try allocator.dupe(u8, value);
+            return .{ .value = dup, .source = .env };
+        }
+    }
+
+    if (fetchLatestVersionFromGitHub(allocator) catch null) |value| {
+        return .{ .value = value, .source = .github };
+    }
+
+    if (fetchLatestVersionFromFallback(allocator) catch null) |value| {
+        return .{ .value = value, .source = .fallback };
+    }
+
+    return error.CouldNotResolveLatestVersion;
+}
+
+fn fetchLatestVersionFromGitHub(allocator: std.mem.Allocator) !?[]u8 {
+    const response = fetchUrlToMemory(allocator, "https://api.github.com/repos/" ++ github_repo ++ "/releases/latest", 1 * 1024 * 1024) catch return null;
+    defer allocator.free(response);
+    return parseJsonStringField(allocator, response, "tag_name", true);
+}
+
+fn fetchLatestVersionFromFallback(allocator: std.mem.Allocator) !?[]u8 {
+    const base_url = try getBaseUrl(allocator);
+    defer if (base_url.owned) allocator.free(base_url.value);
+
+    const url = try std.fmt.allocPrint(allocator, "{s}/latest.json", .{base_url.value});
+    defer allocator.free(url);
+
+    const response = fetchUrlToMemory(allocator, url, 256 * 1024) catch return null;
+    defer allocator.free(response);
+    return parseJsonStringField(allocator, response, "version", false);
+}
+
+fn fetchChecksumsManifest(allocator: std.mem.Allocator, version: []const u8) ![]u8 {
+    const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/checksums.sha256", .{ github_repo, version });
+    defer allocator.free(url);
+    return fetchUrlToMemory(allocator, url, 256 * 1024);
+}
+
+fn fetchUrlToMemory(allocator: std.mem.Allocator, url: []const u8, max_output_bytes: usize) ![]u8 {
+    const result = try cio.runCapture(.{
+        .allocator = allocator,
+        .argv = &.{ "curl", "-fsSL", "-A", user_agent, url },
+        .max_output_bytes = max_output_bytes,
+    });
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        allocator.free(result.stdout);
+        return error.CurlFailed;
+    }
+
+    return result.stdout;
+}
+
+fn parseJsonStringField(allocator: std.mem.Allocator, json_text: []const u8, field_name: []const u8, trim_v_prefix: bool) !?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, json_text, .{}) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return null;
+    const field = parsed.value.object.get(field_name) orelse return null;
+    if (field != .string) return null;
+
+    const value = if (trim_v_prefix) trimVersionPrefix(field.string) else field.string;
+    if (value.len == 0) return null;
+    return try allocator.dupe(u8, value);
+}
+
+fn getBaseUrl(allocator: std.mem.Allocator) !struct { value: []const u8, owned: bool } {
+    if (cio.posixGetenv("CODEDB_URL")) |value| {
+        if (value.len != 0) {
+            const dup = try allocator.dupe(u8, value);
+            return .{ .value = dup, .owned = true };
+        }
+    }
+    return .{ .value = default_base_url, .owned = false };
+}
+
+fn trimVersionPrefix(value: []const u8) []const u8 {
+    return std.mem.trimStart(u8, value, "vV");
+}
+
+fn parseVersionPart(part: []const u8) !u64 {
+    const trimmed = std.mem.trim(u8, part, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidVersion;
+    return std.fmt.parseInt(u64, trimmed, 10);
+}
+
+fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: []const u8, asset_name: []const u8, dest_path: []const u8, expected_hash: []const u8) !void {
+    const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/{s}", .{ github_repo, version, asset_name });
+    defer allocator.free(url);
+
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ dest_path, cio.nanoTimestamp() });
+    defer allocator.free(tmp_path);
+    errdefer std.Io.Dir.deleteFileAbsolute(io, tmp_path) catch {};
+
+    try downloadToFile(allocator, url, tmp_path);
+
+    const actual_hash = try sha256FileHex(io, allocator, tmp_path);
+    defer allocator.free(actual_hash);
+    if (!std.ascii.eqlIgnoreCase(actual_hash, expected_hash)) {
+        return error.ChecksumMismatch;
+    }
+
+    {
+        var tmp_file = try std.Io.Dir.openFileAbsolute(io, tmp_path, .{ .mode = .read_write });
+        defer tmp_file.close(io);
+        if (@import("builtin").os.tag != .windows) {
+            // POSIX execute bits; Windows has no chmod equivalent for binaries.
+            try tmp_file.setPermissions(io, std.Io.File.Permissions.fromMode(0o755));
+        }
+    }
+
+    if (builtin.os.tag == .windows) {
+        // Windows refuses to rename over a running .exe. Keep the previous
+        // binary at .old until the verified replacement lands, and restore it
+        // if that final rename fails.
+        const old_path = try std.fmt.allocPrint(allocator, "{s}.old", .{dest_path});
+        defer allocator.free(old_path);
+        return replaceBinaryWithRollback(io, tmp_path, dest_path, old_path);
+    }
+    try std.Io.Dir.renameAbsolute(tmp_path, dest_path, io);
+}
+
+pub fn replaceBinaryWithRollback(io: std.Io, replacement_path: []const u8, dest_path: []const u8, old_path: []const u8) !void {
+    std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+
+    const moved_old = blk: {
+        std.Io.Dir.renameAbsolute(dest_path, old_path, io) catch break :blk false;
+        break :blk true;
+    };
+
+    std.Io.Dir.renameAbsolute(replacement_path, dest_path, io) catch |install_err| {
+        if (moved_old) {
+            std.Io.Dir.renameAbsolute(old_path, dest_path, io) catch return error.UpdateRollbackFailed;
+        }
+        return install_err;
+    };
+}
+
+fn downloadToFile(allocator: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
+    const result = try cio.runCapture(.{
+        .allocator = allocator,
+        .argv = &.{ "curl", "-fsSL", "-A", user_agent, url, "-o", dest_path },
+        .max_output_bytes = 16 * 1024,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        return error.DownloadFailed;
+    }
+}
+
+fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [16 * 1024]u8 = undefined;
+    var offset: u64 = 0;
+    while (true) {
+        const read_len = try file.readPositionalAll(io, &buf, offset);
+        if (read_len == 0) break;
+        hasher.update(buf[0..read_len]);
+        offset += read_len;
+        if (read_len < buf.len) break;
+    }
+
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    hasher.final(&digest);
+    const digest_hex = std.fmt.bytesToHex(digest, .lower);
+    return allocator.dupe(u8, &digest_hex);
+}
+
+// ── Auto-update ──────────────────────────────────────────────────────────────
+//
+// On startup we kick off a detached invocation of the built-in, checksum-
+// verified updater. The check is:
+//   • disabled when CODEDB_NO_AUTO_UPDATE is set in the environment
+//   • throttled to at most once every 24 hours, tracked in
+//     ~/.codedb/last_auto_update_check (a u64 little-endian unix-ms timestamp)
+// The update itself runs in a background thread so network failures never block
+// server startup. If the binary on disk gets replaced mid-session, the kernel
+// keeps the old inode mapped for the running process; subsequent invocations
+// get the new binary.
+
+const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
+const auto_update_stamp_filename = "last_auto_update_check";
+
+/// Pure decision function — useful for tests. Returns true when the next
+/// auto-update attempt should fire.
+pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
+    if (env_disabled) return false;
+    const last = last_check_ms orelse return true;
+    if (last > now_ms) return true;
+    const delta: i128 = @as(i128, now_ms) - @as(i128, last);
+    return delta >= auto_update_throttle_ms;
+}
+
+pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+    const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+    const home = cio.homeDir() orelse return;
+    if (home.len == 0) return;
+
+    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
+    defer allocator.free(dir_path);
+    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+
+    const stamp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, auto_update_stamp_filename }) catch return;
+    defer allocator.free(stamp_path);
+
+    const last_ms = readAutoUpdateStamp(io, stamp_path);
+    const now_ms = cio.milliTimestamp();
+    if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+
+    const executable_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
+    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{executable_path}) catch {
+        std.heap.page_allocator.free(executable_path);
+        return;
+    };
+    thread.detach();
+
+    // Only throttle after the worker launches so a local spawn failure can be
+    // retried on the next MCP startup.
+    writeAutoUpdateStamp(io, stamp_path, now_ms);
+}
+
+pub fn autoUpdateArgv(executable_path: []const u8) [2][]const u8 {
+    return .{ executable_path, "update" };
+}
+
+fn autoUpdateWorker(executable_path: []u8) void {
+    defer std.heap.page_allocator.free(executable_path);
+
+    // Invoke the checksum-verifying built-in updater directly. Capturing and
+    // discarding its output keeps the MCP stdio transport clean, while avoiding
+    // a shell or execution of a remotely downloaded install script.
+    const argv = autoUpdateArgv(executable_path);
+    const result = cio.runCapture(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &argv,
+        .max_output_bytes = 64 * 1024,
+    }) catch return;
+    std.heap.page_allocator.free(result.stdout);
+    std.heap.page_allocator.free(result.stderr);
+}
+
+fn readAutoUpdateStamp(io: std.Io, path: []const u8) ?i64 {
+    var buf: [8]u8 = undefined;
+    var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+    defer f.close(io);
+    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+    if (n < 8) return null;
+    return std.mem.readInt(i64, buf[0..8], .little);
+}
+
+fn writeAutoUpdateStamp(io: std.Io, path: []const u8, ms: i64) void {
+    var buf: [8]u8 = undefined;
+    std.mem.writeInt(i64, &buf, ms, .little);
+    const f = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true }) catch return;
+    defer f.close(io);
+    f.writePositionalAll(io, &buf, 0) catch {};
+}

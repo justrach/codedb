@@ -1,0 +1,111 @@
+        self.passed = True
+        self.message = msg
+        return self
+
+    def fail(self, msg: str) -> "TestResult":
+        self.passed = False
+        self.message = msg
+        return self
+
+
+def run_scenario_1_issue346_regression(binary: str, project: str) -> list[TestResult]:
+    """
+    issue-346: spawn from cwd=/, roots handshake delivers real path, tools work.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S1] {name}")
+        results.append(r)
+        return r
+
+    p = MCPProcess(binary, [], cwd="/")
+
+    try:
+        r = t("initialize does not crash (no transport-closed)")
+        ok = do_initialize(p, with_roots=True)
+        if not ok:
+            r.fail("no initialize response — transport closed")
+            return results
+        r.ok()
+
+        r = t("server sends roots/list request")
+        got_roots_req = reply_roots(p, project, timeout=5.0)
+        if not got_roots_req:
+            r.fail("server never sent roots/list request")
+        else:
+            r.ok()
+
+        r = t("scan completes and files > 0")
+        scan_ok = wait_for_scan(p, timeout=90.0)
+        if not scan_ok:
+            r.fail("timed out waiting for scan (files stayed at 0)")
+        else:
+            r.ok()
+
+        r = t("codedb_tree returns non-empty result")
+        resp = p.call_tool("codedb_tree", {})
+        text = tool_text(resp)
+        if not text or len(text) < 20:
+            r.fail(f"tree response too short: {text!r}")
+        else:
+            r.ok(f"{len(text)} chars")
+
+        r = t("codedb_search finds 'DeferredScan' in project")
+        resp = p.call_tool("codedb_search", {"query": "DeferredScan", "max_results": 5})
+        text = tool_text(resp)
+        if "DeferredScan" not in text:
+            r.fail(f"DeferredScan not found in search results: {text[:200]!r}")
+        else:
+            r.ok()
+
+        r = t("codedb_hot returns recent files")
+        resp = p.call_tool("codedb_hot", {"limit": 5})
+        text = tool_text(resp)
+        if not text or len(text) < 10:
+            r.fail(f"hot response empty: {text!r}")
+        else:
+            r.ok(f"{len(text)} chars")
+
+        r = t("codedb_outline works on src/mcp.zig")
+        resp = p.call_tool("codedb_outline", {"path": "src/mcp.zig"})
+        text = tool_text(resp)
+        if "run" not in text and "DeferredScan" not in text:
+            r.fail(f"outline missing expected symbols: {text[:200]!r}")
+        else:
+            r.ok()
+
+        r = t("codedb_symbol finds 'DeferredScan'")
+        resp = p.call_tool("codedb_symbol", {"name": "DeferredScan"})
+        text = tool_text(resp)
+        if "DeferredScan" not in text:
+            r.fail(f"symbol lookup returned: {text[:200]!r}")
+        else:
+            r.ok()
+
+    finally:
+        p.close()
+
+    return results
+
+
+def run_scenario_2_normal_mode(binary: str, project: str) -> list[TestResult]:
+    """
+    Normal mode: explicit positional root (`codedb <project> mcp`), scan runs immediately,
+    no roots handshake needed.
+    """
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S2] {name}")
+        results.append(r)
+        return r
+
+    p = MCPProcess(binary, [], cwd="/", command=[binary, project, "mcp"])
+
+    try:
+        r = t("initialize succeeds")
+        ok = do_initialize(p, with_roots=False)
+        if not ok:
+            r.fail("no initialize response")
+            return results

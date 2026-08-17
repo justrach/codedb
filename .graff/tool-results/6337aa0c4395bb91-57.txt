@@ -1,0 +1,44 @@
+        const snapshot_loaded = loadBestSnapshot(io, explorer, store, abs_root, data_dir, git_head, allocator);
+        var scan_done = std.atomic.Value(bool).init(snapshot_loaded);
+        if (!snapshot_loaded) {
+            mcp_server.setScanState(.walking);
+            scan_thread = try std.Thread.spawn(.{}, scanBg, .{ io, store, explorer, root, allocator, &scan_done, &shutdown, data_dir, abs_root, &telem, startup_t0 });
+        } else {
+            const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - startup_t0, 0));
+            loadTrigramFromDiskIfPresent(io, explorer, data_dir, allocator);
+            telem.recordCodebaseStats(explorer, startup_time_ms);
+            compactMcpReadyMemory(io, explorer, data_dir, git_head, allocator);
+            mcp_server.setScanState(.ready);
+        }
+        watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_done });
+    }
+
+    const idle_thread = try std.Thread.spawn(.{}, idleWatchdog, .{&shutdown});
+
+    std.log.info("codedb mcp: root={s} files={d} data={s} scan={s}", .{ abs_root, store.currentSeq(), data_dir, mcp_server.getScanState().name() });
+
+    // Thin-CLI proxy listener (same as the serve branch): serve read-only
+    // query commands from this warm explorer/store over a per-project Unix
+    // socket so plain `codedb <root> <query>` calls skip a cold reload.
+    // Detached so it never blocks mcp_server.run(). Like serve, mcp has no
+    // idle timeout — throwaway activity/shutdown atomics that nobody watches.
+    // They outlive the detached thread because mcp_server.run() below blocks
+    // on this same stack frame for the whole process lifetime.
+    var cli_activity = std.atomic.Value(i64).init(cio.milliTimestamp());
+    var cli_listener_dead = std.atomic.Value(bool).init(false);
+    if (std.Thread.spawn(.{}, cliDaemonListen, .{ io, allocator, explorer, store, abs_root, data_dir, &cli_activity, &cli_listener_dead, true })) |cli_t| {
+        cli_t.detach();
+    } else |err| {
+        std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
+    }
+    spawnWarmup(io, allocator, explorer, data_dir, abs_root, &shutdown);
+    mcp_server.run(io, allocator, store, explorer, &agents, abs_root, cfg.max_cached, &telem, maybe_deferred, &shutdown);
+
+    shutdown.store(true, .release);
+    if (scan_thread) |st| st.join();
+    if (maybe_deferred) |d| {
+        if (d.scan_thread) |st| st.join();
+    }
+    watch_thread.join();
+    idle_thread.join();
+}

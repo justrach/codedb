@@ -1,0 +1,56 @@
+  450     const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+  451     const executable_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb", .{root_buf[0..root_len]});
+  452     defer testing.allocator.free(executable_path);
+  453 
+  454     const first = update_mod.updateLockTryAcquire(executable_path) orelse return error.LockUnavailable;
+  455     try testing.expect(update_mod.updateLockTryAcquire(executable_path) == null);
+  456     update_mod.updateLockRelease(first);
+  457 
+  458     const second = update_mod.updateLockTryAcquire(executable_path) orelse return error.LockUnavailable;
+  459     update_mod.updateLockRelease(second);
+  460 }
+  461 
+  462 test "auto-update: failed Windows replacement restores previous binary" {
+  463     var tmp = testing.tmpDir(.{});
+  464     defer tmp.cleanup();
+  465 
+  466     {
+  467         const dest = try tmp.dir.createFile(io, "codedb.exe", .{});
+  468         defer dest.close(io);
+  469         try dest.writeStreamingAll(io, "previous-binary");
+  470     }
+  471 
+  472     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+  473     const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+  474     const root = root_buf[0..root_len];
+  475     const replacement_path = try std.fmt.allocPrint(testing.allocator, "{s}/missing-replacement.exe", .{root});
+  476     defer testing.allocator.free(replacement_path);
+  477     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.exe", .{root});
+  478     defer testing.allocator.free(dest_path);
+  479     const old_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.exe.old", .{root});
+  480     defer testing.allocator.free(old_path);
+  481 
+  482     var replacement_failed = false;
+  483     update_mod.replaceBinaryWithRollback(io, replacement_path, dest_path, old_path) catch {
+  484         replacement_failed = true;
+  485     };
+  486     try testing.expect(replacement_failed);
+  487 
+  488     const restored = try tmp.dir.openFile(io, "codedb.exe", .{});
+  489     defer restored.close(io);
+  490     var buf: [32]u8 = undefined;
+  491     const n = try restored.readPositionalAll(io, &buf, 0);
+  492     try testing.expectEqualStrings("previous-binary", buf[0..n]);
+  493 }
+  494 
+  495 test "issue-394: shouldRunAutoUpdate permanently blocked by future-timestamp stamp file" {
+  496     // Reproduces the case where the stamp file contains a timestamp in the
+  497     // future relative to the wall clock — for example, after an NTP clock
+  498     // correction that rolls the clock back, or after a stamp written by a
+  499     // host with a fast clock. The current implementation computes
+  500     // (now - last) and only fires when that delta >= 24h, so a future
+  501     // `last` produces a negative delta and the check is silently skipped
+  502     // for as long as the stamp stays in the future — potentially many days.
+  503     //
+  504     // Expected: a wildly future stamp should NOT prevent the next check
+  505     // from firing. The simplest correct behavior is: if last > now, treat

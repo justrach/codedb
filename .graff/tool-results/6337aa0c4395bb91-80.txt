@@ -1,0 +1,29 @@
+✓ 28 results for "std.log"  ⚡ 890.0µs
+  src/explore.zig:2557                      std.log.warn("trigram OOM, skipping remaining files", .{});
+  src/main.zig:439          std.log.warn("config load failed ({s}) — using defaults", .{@errorName(err)});
+  src/main.zig:450          std.log.warn("could not open data log at {s}: {}", .{ data_log_path, err });
+  src/mcp.zig:1524              std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
+  src/mcp.zig:3611          std.log.info("ctx-prof ns: reader={d} cand={d} kwloop={d} rank={d} render={d} sites={d} emit={d} total={d}", .{
+  website/src/main.zig:14  const log = std.log.scoped(.main);
+  website/src/prerender.zig:12  const log = std.log.scoped(.prerender);
+  website/src/server.zig:13  const log = std.log.scoped(.server);
+  website/src/static.zig:7  const log = std.log.scoped(.static);
+  website/src/watcher.zig:6  const log = std.log.scoped(.watcher);
+  src/background.zig:59          std.log.warn("background scan failed: {}", .{err});
+  src/background.zig:88                      std.log.warn("could not auto-write snapshot: {}", .{err});
+  src/background.zig:109                      std.log.warn("could not auto-write snapshot: {}", .{err});
+  src/bootstrap.zig:127          std.log.warn("could not create data dir {s}: {}", .{ dir, err });
+  src/bootstrap.zig:166          std.log.debug("word.index disk load skipped: no readable header", .{});
+  src/bootstrap.zig:175          std.log.debug("word.index disk load skipped: file_count {d} != indexed {d}", .{ header.file_count, current_count });
+  src/cli_proxy.zig:243                  std.log.warn("cli-proxy: could not refresh pipe metadata", .{});
+  src/cli_proxy.zig:640                          std.log.warn("cli-proxy: CreateNamedPipe failed {d} time(s); retrying", .{retry_failures});
+  src/cli_proxy.zig:656                          std.log.warn("cli-proxy: could not publish pipe metadata {d} time(s); retrying", .{retry_failures});
+  src/commands.zig:294      std.log.info("cli-daemon: {d} files indexed, idle_timeout={d}ms", .{ store.currentSeq(), idle_ms });
+  src/commands.zig:303          std.log.warn("cli-proxy: could not start listener: {s}", .{@errorName(err)});
+  src/commands.zig:364      std.log.info("codedb: {d} files indexed, listening on :{d}", .{ store.currentSeq(), port });
+  src/watcher.zig:187              std.log.warn("codedb: not indexing {s} ({d} bytes > {d} cap) — reachable only via codedb_read", .{ path, size, max_indexed_file_bytes });
+  src/watcher.zig:1296              std.log.info("git HEAD changed — re-scanning", .{});
+  src/watcher.zig:1343              std.log.err("watcher: diff failed: {}", .{err});
+  website/src/dev.zig:78          \\&bull; Use <code>std.log.scoped(.mypage)</code> in your page handler for custom logs
+  website/src/dev.zig:120          try w.writeAll("\"Use std.log.scoped(.mypage) in page handlers\"");
+  website/src/dev.zig:149          try w.writeAll("<li>Use <code>std.log.scoped(.mypage)</code> in page handlers for route-level logs</li>");

@@ -1,0 +1,452 @@
+diff --git a/src/mcp.zig b/src/mcp.zig
+index ca94d9c..fe0d13b 100644
+--- a/src/mcp.zig
++++ b/src/mcp.zig
+@@ -2501,264 +2501,306 @@ fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *s
+         return;
+     };
+ }
+ 
+ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+     const name = getStr(args, "name") orelse {
+         out.appendSlice(alloc, "error: missing 'name' argument") catch {};
+         appendBundleArgKeysDiagnostic(alloc, out, args);
+         return;
+     };
+     if (name.len == 0) {
+         out.appendSlice(alloc, "error: empty name — pass a non-empty 'name' string") catch {};
+         return;
+     }
+     if (getInt(args, "max_results")) |n| {
+         if (n <= 0) {
+             const w_err = cio.listWriter(out, alloc);
+             w_err.print("error: max_results ({d}) must be >= 1", .{n}) catch {};
+             return;
+         }
+     }
+     // Default trimmed from 50 -> 30 (Nov 2026) to match typical caller
+     // counts in real codebases; rare hot symbols can still request more.
+     const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 30;
+ 
+     const defs = explorer.findAllSymbols(name, alloc) catch {
+         out.appendSlice(alloc, "error: symbol lookup failed") catch {};
+         return;
+     };
+     defer {
+         for (defs) |d| {
+             alloc.free(d.path);
+             alloc.free(d.symbol.name);
+             if (d.symbol.detail) |dd| alloc.free(dd);
+         }
+         alloc.free(defs);
+     }
+ 
+     // max_results is documented as "Maximum call sites to return" — an OUTPUT
+     // cap. Passing it straight through as the RAW search cap starved the
+     // filter pass below: ranked search deliberately floats the defining file
+     // (+20 prior, explore.zig:4524) and its definition lines (explore.zig:4598)
+     // to the front, and a single file's share is capped at max_results/5
+     // (explore.zig:4125) — so the whole budget was spent on definition,
+     // comment and non-code rows that this tool then drops, reporting
+     // "0 call sites" for symbols with many real callers. Over-fetch, and let
+     // the kept-list cap below enforce max_results.
+     const search_cap: usize = @max(max_results, @min(max_results * 10 + 50, 5000));
+     const results = explorer.searchContentWithScope(name, alloc, search_cap) catch {
+         out.appendSlice(alloc, "error: search failed") catch {};
+         return;
+     };
+     defer {
+         for (results) |r| {
+             alloc.free(r.line_text);
+             alloc.free(r.path);
+             if (r.scope_name) |n2| alloc.free(n2);
+         }
+         alloc.free(results);
+     }
+ 
+     // #573: single filter pass — the header count and the printed entries come
+     // from the same accumulation, so a predicate edit cannot desync them (the
+     // previous count loop + print loop duplicated four predicates verbatim).
+     var kept: std.ArrayList(usize) = .empty;
+     defer kept.deinit(alloc);
+     for (results, 0..) |r, r_idx| {
+         if (kept.items.len >= max_results) break;
+         const lang = explore_mod.detectLanguage(r.path);
+         if (!langHasCallSites(lang)) continue;
+         // #562: a full-line comment mention is documentation, not a call site.
+         if (explore_mod.isCommentOrBlank(r.line_text, lang)) continue;
+         var is_def = false;
+         for (defs) |d| {
+             if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
+                 is_def = true;
+                 break;
+             }
+         }
+         if (is_def) continue;
+-        // A whole-word match that only ever lands inside a string literal is a
+-        // mention, not an invocation — a `("name", "file")` table row or a
+-        // `test "…name…" {` declaration. Real calls in the same file (and even
+-        // in the same test body) sit outside the quotes and survive.
+-        if (!hasWholeWordMatchOutsideStrings(r.line_text, name)) continue;
++        // A whole-word match that only ever lands inside a string literal or a
++        // trailing comment is a mention, not an invocation — a `("name",
++        // "file")` table row, a `test "…name…" {` declaration, or
++        // `init(); // then name() …`. Real calls sit on the code prefix of the
++        // line, outside the quotes, and survive both cuts. (#682)
++        if (!hasWholeWordMatchOutsideStrings(lineCodePrefix(r.line_text, lang), name)) continue;
+         kept.append(alloc, r_idx) catch {};
+     }
+ 
+     const w = cio.listWriter(out, alloc);
+     w.print("{d} call sites for '{s}':\n", .{ kept.items.len, name }) catch {};
+     for (kept.items) |kept_idx| {
+         const r = results[kept_idx];
+         if (r.scope_name) |sn| {
+             appendMatchLineNoNL(w, "  ", r.path, r.line_num, r.line_text);
+             w.print("  [in {s} ({s}, L{d}-L{d})]\n", .{ sn, @tagName(r.scope_kind.?), r.scope_start, r.scope_end }) catch {};
+         } else {
+             appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
+         }
+     }
+ }
+ 
+ fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+     const from_name = getStr(args, "from") orelse {
+         out.appendSlice(alloc, "error: missing 'from' argument") catch {};
+         appendBundleArgKeysDiagnostic(alloc, out, args);
+         return;
+     };
+     const to_name = getStr(args, "to") orelse {
+         out.appendSlice(alloc, "error: missing 'to' argument") catch {};
+         appendBundleArgKeysDiagnostic(alloc, out, args);
+         return;
+     };
+     if (from_name.len == 0 or to_name.len == 0) {
+         out.appendSlice(alloc, "error: 'from' and 'to' must be non-empty symbol names") catch {};
+         return;
+     }
+     const max_hops: usize = if (getInt(args, "max_hops")) |n| @intCast(@max(1, @min(n, 64))) else 12;
+ 
+     const steps = explorer.findCallPath(from_name, to_name, alloc, max_hops) catch {
+         out.appendSlice(alloc, "error: callpath search failed") catch {};
+         return;
+     };
+     const path = steps orelse {
+         const w = cio.listWriter(out, alloc);
+         w.print("no call path from '{s}' to '{s}' within {d} hops\n", .{ from_name, to_name, max_hops }) catch {};
+         return;
+     };
+     defer alloc.free(path);
+ 
+     const w = cio.listWriter(out, alloc);
+     w.print("call path ({d} hops): {s} → {s}\n", .{ path.len - 1, from_name, to_name }) catch {};
+     for (path, 0..) |step, i| {
+         if (i > 0) w.print("  → ", .{}) catch {};
+         w.print("{s}:{s}@L{d}", .{ step.path, step.name, step.line }) catch {};
+         if (i + 1 < path.len) w.print("\n", .{}) catch {};
+     }
+     w.print("\n", .{}) catch {};
+ }
+ 
+ fn isIdentChar(c: u8) bool {
+     return (c >= 'a' and c <= 'z') or
+         (c >= 'A' and c <= 'Z') or
+         (c >= '0' and c <= '9') or
+         c == '_';
+ }
+ 
+ /// Returns true iff `needle` occurs in `line` as a whole-word identifier
+ /// (non-identifier characters or line boundaries on both sides) at a position
+ /// that is NOT inside a string literal.
+ ///
+ /// An occurrence that only ever appears between quotes is a mention, not a
+ /// call: the Python table row `("renderPlainSearch", "src/explore.zig"),` and
+ /// the Zig declaration `test "def-first: renderPlainSearch surfaces …" {` both
+ /// name the symbol without invoking it, yet passed every other filter here.
+ ///
+ /// Deliberately line-local and pragmatic, in the spirit of `isCommentOrBlank`:
+ ///   - tracks '…' and "…" spans, honouring backslash escapes
+ ///   - a quote with no closing partner on the line (an apostrophe in a
+ ///     trailing comment, a Rust lifetime `&'a`, an open multi-line literal) is
+ ///     treated as ordinary code, so it can never swallow the rest of the line
+ ///   - backticks are not treated as quotes: Go raw strings and JS template
+ ///     literals routinely wrap real calls (`${render()}`)
+ fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+     if (needle.len == 0 or line.len < needle.len) return false;
+     var i: usize = 0;
+     while (i < line.len) {
+         if (line[i] == '"' or line[i] == '\'') {
+             if (stringLiteralEnd(line, i)) |end| {
+                 i = end + 1;
+                 continue;
+             }
+         }
+         // `i` is a code byte — try to anchor a whole-word match on it.
+         if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+             const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+             const after = i + needle.len;
+             const after_ok = after >= line.len or !isIdentChar(line[after]);
+             if (before_ok and after_ok) return true;
+         }
+         i += 1;
+     }
+     return false;
+ }
+ 
++/// The slice of `line` before its first line-comment marker outside string
++/// literals, per `language` — the part of the line that can actually contain a
++/// call. Lines with no marker, and languages without a line-comment syntax
++/// (OCaml's `(* *)` is block-only), come back whole. (#682)
++///
++/// Same line-local scanning discipline as `hasWholeWordMatchOutsideStrings`:
++/// quoted spans are skipped (so `"https://…"` never truncates), an unclosed
++/// quote is ordinary code. Mid-line block-comment openers are left alone — a
++/// false negative re-admits a mention; truncating at `/*` could drop the real
++/// call in `foo(); /* … */ bar()`.
++fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
++    const markers: []const []const u8 = switch (language) {
++        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
++        .python, .ruby, .r, .shell => &.{"#"},
++        .hcl => &.{ "#", "//" },
++        .sql => &.{"--"},
++        .fortran => &.{"!"},
++        .llvm_ir => &.{";"},
++        else => return line,
++    };
++    var i: usize = 0;
++    while (i < line.len) {
++        if (line[i] == '"' or line[i] == '\'') {
++            if (stringLiteralEnd(line, i)) |end| {
++                i = end + 1;
++                continue;
++            }
++        }
++        for (markers) |m| {
++            if (std.mem.startsWith(u8, line[i..], m)) {
++                // Shell: `#` only opens a comment at the start of a word —
++                // `${#var}` and `$#` are live syntax, not comments.
++                if (language == .shell and i != 0 and line[i - 1] != ' ' and line[i - 1] != '\t') break;
++                return line[0..i];
++            }
++        }
++        i += 1;
++    }
++    return line;
++}
++
+ /// Index of the quote closing the literal opened at `open`, or null when the
+ /// literal never closes on this line.
+ fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+     const quote = line[open];
+     var i = open + 1;
+     while (i < line.len) : (i += 1) {
+         if (line[i] == '\\') {
+             i += 1;
+             continue;
+         }
+         if (line[i] == quote) return i;
+     }
+     return null;
+ }
+ 
+ /// Languages where the concept of a "call site" is meaningful. Excludes
+ /// data formats (json, yaml), markup/styling (markdown, css, scss),
+ /// declarative schemas (protobuf), and unknown files — callers found
+ /// inside these are mentions in prose or config, not real invocations.
+ fn langHasCallSites(lang: explore_mod.Language) bool {
+     return switch (lang) {
+         .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
+         else => true,
+     };
+ }
+ 
+ // ── codedb_context ──────────────────────────────────────────────────────────
+ // Task-shaped composer. Takes a natural-language task, extracts candidate
+ // identifiers (camelCase / snake_case / "quoted strings"), and returns ONE
+ // composite text block: keywords + symbol defs + ranked files + top sites.
+ // Replaces 3-5 separate search/word/symbol calls; targets parity with
+ // codegraph_context on per-task token economy.
+ 
+ fn isContextIdentStart(c: u8) bool {
+     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+ }
+ fn isContextIdentCont(c: u8) bool {
+     return isContextIdentStart(c) or (c >= '0' and c <= '9');
+ }
+ fn looksLikeContextIdentifier(tok: []const u8) bool {
+     // Filter out sentence-leading English words ("Find", "React", "Want")
+     // that incidentally start with a capital, while keeping real identifiers.
+     // Rules:
+     //   - snake_case (any underscore)              → always pass
+     //   - all-caps acronym, 3-8 chars (API, TODO)  → pass
+     //   - camelCase / PascalCase with an internal
+     //     lower→upper transition (getNextLanes)    → pass
+     //   - everything else                          → reject
+     if (tok.len < 3) return false;
+     if (std.mem.indexOfScalar(u8, tok, '_') != null) return true;
+     var all_upper = true;
+     for (tok) |c| {
+         if (c < 'A' or c > 'Z') {
+             all_upper = false;
+             break;
+         }
+     }
+     if (all_upper) return tok.len <= 8;
+     var i: usize = 1;
+     while (i < tok.len) : (i += 1) {
+         const prev_lower = tok[i - 1] >= 'a' and tok[i - 1] <= 'z';
+         const cur_upper = tok[i] >= 'A' and tok[i] <= 'Z';
+         if (prev_lower and cur_upper) return true;
+     }
+     return false;
+ }
+ 
+ // Cap at 3 candidates instead of 5. handleContext does one searchContent +
+ // one findAllSymbols per candidate (the bench shows 30µs and ~5µs each on
+ // codedb's own repo), so each extra candidate adds ~35µs of fixed cost
+ // for diminishing return — the by_file ranking already heavily favors
+ // the first 1–2 high-quality identifiers. End-to-end this drops
+ // codedb_context from ~330µs → ~220µs on the standard bench task.
+ const CONTEXT_MAX_CANDIDATES: usize = 5;
+ // 20 was the original tier-search cap, but only CONTEXT_TOP_LINES_PER_FILE
+ // (3) hits per file are ever kept after ranking — every additional result
+ // is wasted work in search-content + per-file map churn. Empirically 8
+ // covers the keep-window even on dense files.
+ const CONTEXT_MAX_RESULTS_PER_KW: usize = 8;
+ const CONTEXT_TOP_FILES: usize = 5;
+diff --git a/src/test_mcp.zig b/src/test_mcp.zig
+index 17eefb6..536684e 100644
+--- a/src/test_mcp.zig
++++ b/src/test_mcp.zig
+@@ -3708,95 +3708,131 @@ test "issue: codedb_callers caps the reported call sites at max_results" {
+ /// Index `files` (path/content pairs) into a fresh Explorer, run the
+ /// codedb_callers handler for `name`, and leave the rendered text in `out`.
+ /// `explorer_alloc` should be an arena — the Explorer is not deinit'ed.
+ fn renderCallersFixture(
+     explorer_alloc: std.mem.Allocator,
+     files: []const [2][]const u8,
+     name: []const u8,
+     out: *std.ArrayList(u8),
+ ) !void {
+     var explorer = Explorer.init(explorer_alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+     var store = Store.init(testing.allocator);
+     defer store.deinit();
+     var agents = AgentRegistry.init(testing.allocator);
+     defer agents.deinit();
+     _ = try agents.register("__filesystem__");
+     var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+     defer bench_ctx.deinit();
+ 
+     for (files) |f| try explorer.indexFile(f[0], f[1]);
+ 
+     var m: std.json.ObjectMap = .empty;
+     defer m.deinit(testing.allocator);
+     try m.put(testing.allocator, "name", .{ .string = name });
+     bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &m, out, &store, &explorer, &agents);
+ }
+ 
+ test "issue: codedb_callers excludes a line that mentions the symbol only inside string literals" {
+     // The scripts/rank-eval.py:56 case — a table of ("symbol", "file") pairs.
+     var arena = std.heap.ArenaAllocator.init(testing.allocator);
+     defer arena.deinit();
+     var out: std.ArrayList(u8) = .empty;
+     defer out.deinit(testing.allocator);
+ 
+     try renderCallersFixture(arena.allocator(), &.{
+         .{ "table.zig", "const t = (\"renderX\", \"y.zig\");\n" },
+         .{ "call.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+     }, "renderX", &out);
+ 
+     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "table.zig:1") == null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
+ }
+ 
+ test "issue: codedb_callers excludes a test declaration that names the symbol in its title" {
+     // The src/test_search.zig:1959 case — the symbol sits inside the quoted
+     // test name, so the declaration line is documentation, not an invocation.
+     var arena = std.heap.ArenaAllocator.init(testing.allocator);
+     defer arena.deinit();
+     var out: std.ArrayList(u8) = .empty;
+     defer out.deinit(testing.allocator);
+ 
+     try renderCallersFixture(arena.allocator(), &.{
+         .{ "t.zig", "test \"about renderX behavior\" {\n    const x = 1;\n    _ = x;\n}\n" },
+         .{ "call.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+     }, "renderX", &out);
+ 
+     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "t.zig:1") == null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
+ }
+ 
+ test "issue: codedb_callers keeps real calls inside and outside test bodies" {
+     // The body call at src/test_search.zig:1970 is a genuine caller: the new
+     // string filter must not follow the test declaration line out the door.
+     var arena = std.heap.ArenaAllocator.init(testing.allocator);
+     defer arena.deinit();
+     var out: std.ArrayList(u8) = .empty;
+     defer out.deinit(testing.allocator);
+ 
+     try renderCallersFixture(arena.allocator(), &.{
+         .{ "body.zig", "test \"about renderX behavior\" {\n    const r = explorer.renderX(1);\n    _ = r;\n}\n" },
+         .{ "plain.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+     }, "renderX", &out);
+ 
+     try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'renderX'") != null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "body.zig:2") != null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "plain.zig:2") != null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "body.zig:1") == null);
+ }
+ 
++test "issue-682: codedb_callers excludes a symbol mentioned only in a trailing comment" {
++    // `init(); // then renderX() draws the frame` — the mention lives in the
++    // trailing comment. The comment/blank filter passes the line (it starts
++    // with code) and the string filter sees no quotes, so the line is
++    // reported as a call site even though nothing on it invokes the symbol.
++    var arena = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena.deinit();
++    var out: std.ArrayList(u8) = .empty;
++    defer out.deinit(testing.allocator);
++
++    try renderCallersFixture(arena.allocator(), &.{
++        .{ "trail.zig", "pub fn callerA() void {\n    init(); // then renderX() draws the frame\n}\n" },
++        .{ "call.zig", "pub fn callerB() void {\n    renderX();\n}\n" },
++    }, "renderX", &out);
++
++    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
++    try testing.expect(std.mem.indexOf(u8, out.items, "trail.zig:2") == null);
++    try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
++}
++
++test "issue-682: codedb_callers keeps a call after a string containing the comment marker" {
++    // `fetch("https://x", renderX);` — the `//` sits inside the string literal,
++    // so the comment cut must not swallow the real reference after it.
++    var arena = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena.deinit();
++    var out: std.ArrayList(u8) = .empty;
++    defer out.deinit(testing.allocator);
++
++    try renderCallersFixture(arena.allocator(), &.{
++        .{ "url.zig", "pub fn callerA() void {\n    fetch(\"https://x\", renderX);\n}\n" },
++    }, "renderX", &out);
++
++    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
++    try testing.expect(std.mem.indexOf(u8, out.items, "url.zig:2") != null);
++}
++
+ test "issue: codedb_callers keeps a symbol used outside a string on a line that has strings" {
+     // `foo("msg", renderX)` passes the function by reference next to a string
+     // literal — the mention is real code and must survive the filter.
+     var arena = std.heap.ArenaAllocator.init(testing.allocator);
+     defer arena.deinit();
+     var out: std.ArrayList(u8) = .empty;
+     defer out.deinit(testing.allocator);
+ 
+     try renderCallersFixture(arena.allocator(), &.{
+         .{ "mixed.zig", "pub fn callerA() void {\n    foo(\"msg\", renderX);\n}\n" },
+     }, "renderX", &out);
+ 
+     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+     try testing.expect(std.mem.indexOf(u8, out.items, "mixed.zig:2") != null);
+ }

@@ -1,0 +1,61 @@
+  515 test "issue-395: shouldRunAutoUpdate panics on i64 underflow when stamp is corrupt" {
+  516     // Reproduces a panic when ~/.codedb/last_auto_update_check is corrupt
+  517     // and decodes to a very negative i64. readAutoUpdateStamp does no
+  518     // sanity check — it reads 8 bytes, calls std.mem.readInt(i64, ...),
+  519     // and feeds that straight into shouldRunAutoUpdate, which evaluates
+  520     // `now_ms - last` with checked subtraction. For last = minInt(i64)
+  521     // and any positive now_ms, the subtraction overflows and triggers an
+  522     // integer-overflow panic in Debug / ReleaseSafe builds (which is what
+  523     // `zig build test` and the shipped MCP binary use).
+  524     //
+  525     // Result: every `codedb mcp` startup crashes during the auto-update
+  526     // gate for any user whose stamp file got corrupted to a value with
+  527     // the high bit set (e.g. truncated write, partial flush, or any byte
+  528     // sequence starting with 0x80..0xFF in the stamp).
+  529     //
+  530     // Expected fix: clamp the delta with a saturating/wrapping subtraction
+  531     // or treat any last_ms <= 0 (or in the distant past) as invalid and
+  532     // run the update.
+  533 
+  534     const now_ms: i64 = 1_700_000_000_000;
+  535     const last_ms: i64 = std.math.minInt(i64);
+  536 
+  537     try testing.expect(update_mod.shouldRunAutoUpdate(now_ms, last_ms, false));
+  538 }
+  539 
+  540 test "issue-150: --help prints usage" {
+  541     try buildCliForHelpTests();
+  542 
+  543     const result = try cio.runCapture(.{
+  544         .allocator = testing.allocator,
+  545         .argv = &.{ builtCodedbExe(), "--help" },
+  546         .max_output_bytes = 8192,
+  547     });
+  548     defer testing.allocator.free(result.stdout);
+  549     defer testing.allocator.free(result.stderr);
+  550 
+  551     try testing.expect(result.term == .Exited);
+  552     try testing.expect(result.term.Exited == 0);
+  553     try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
+  554         std.mem.indexOf(u8, result.stderr, "usage:") != null);
+  555     try testing.expect(std.mem.indexOf(u8, result.stdout, "update") != null or
+  556         std.mem.indexOf(u8, result.stderr, "update") != null);
+  557     try testing.expect(std.mem.indexOf(u8, result.stdout, "nuke") != null or
+  558         std.mem.indexOf(u8, result.stderr, "nuke") != null);
+  559 }
+  560 
+  561 test "issue-150: -h prints usage" {
+  562     try buildCliForHelpTests();
+  563 
+  564     const result = try cio.runCapture(.{
+  565         .allocator = testing.allocator,
+  566         .argv = &.{ builtCodedbExe(), "-h" },
+  567         .max_output_bytes = 8192,
+  568     });
+  569     defer testing.allocator.free(result.stdout);
+  570     defer testing.allocator.free(result.stderr);
+  571 
+  572     try testing.expect(result.term == .Exited);
+  573     try testing.expect(result.term.Exited == 0);
+  574     try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
+  575         std.mem.indexOf(u8, result.stderr, "usage:") != null);

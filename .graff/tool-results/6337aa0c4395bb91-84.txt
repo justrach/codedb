@@ -1,0 +1,220 @@
+<p align="center">
+  <img src="assets/codedb.png" alt="codedb" width="200" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/justrach/codedb/releases/latest"><img src="https://img.shields.io/github/v/release/justrach/codedb?style=flat-square&label=version" alt="Release" /></a>
+  <a href="https://github.com/justrach/codedb/blob/main/LICENSE"><img src="https://img.shields.io/github/license/justrach/codedb?style=flat-square" alt="License" /></a>
+  <img src="https://img.shields.io/badge/zig-0.17.0--dev-f7a41d?style=flat-square" alt="Zig 0.17.0-dev" />
+  <img src="https://img.shields.io/badge/status-alpha-orange?style=flat-square" alt="Alpha" />
+  <a href="https://deepwiki.com/justrach/codedb"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki" /></a>
+  <br />
+  <a href="https://trendshift.io/repositories/26207" target="_blank"><img src="https://trendshift.io/api/badge/repositories/26207" alt="justrach%2Fcodedb | Trendshift" width="250" height="55" /></a>
+</p>
+
+<h1 align="center">codedb</h1>
+
+<h3 align="center">Code intelligence server for AI agents. Zig core. MCP native. Zero dependencies.</h3>
+
+<p align="center">
+  Structural indexing · Trigram search · Word index · Dependency graph · File watching · MCP + HTTP
+</p>
+
+<p align="center">
+  <em><strong>A context engine, not an editor.</strong> codedb helps agents <strong>find and understand</strong> code — search, symbols, callers, dependencies, outlines — and hands editing back to your native tools. codedb has no edit capability.</em>
+</p>
+
+<p align="center">
+  <a href="#-status">Status</a> ·
+  <a href="#-install">Install</a> ·
+  <a href="#-quick-start">Quick Start</a> ·
+  <a href="#-mcp-tools">MCP Tools</a> ·
+  <a href="#-benchmarks">Benchmarks</a> ·
+  <a href="#️-architecture">Architecture</a> ·
+  <a href="#-data--privacy">Data & Privacy</a> ·
+  <a href="#-building-from-source">Building</a>
+</p>
+
+---
+
+## Status
+
+> **Alpha software — API is stabilizing but may change**
+>
+> codedb works and is used daily in production AI workflows, but:
+> - **Parser support** — Zig, C/C++, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, Dart/Flutter, OCaml
+> - **Lightweight outline support** — Java, Kotlin, Svelte, Vue, Astro, shell, CSS/SCSS, SQL, protobuf, Fortran, LLVM IR, MLIR, and TableGen
+> - **No auth** — HTTP server binds to localhost only
+> - **Snapshot format** may change between versions
+> - **MCP protocol** is JSON-RPC 2.0 over stdio (stable)
+
+| What works today                                       | What's in progress                       |
+|--------------------------------------------------------|------------------------------------------|
+| 21 MCP tools for full codebase intelligence            | Deeper parser coverage and edge-case handling |
+| Trigram v2: integer doc IDs, batch-accumulate, merge intersect | Incremental segment-based indexing |
+| 538x faster than ripgrep on pre-indexed queries        | WASM target for Cloudflare Workers       |
+| O(1) inverted word index for identifier lookup         | Multi-project support                    |
+| Structural outlines (functions, structs, imports)      | mmap-backed trigram index                |
+| Reverse dependency graph                               |                                          |
+| Fallback editor: atomic line-range edits + version tracking          |                                          |
+| Auto-registration in Claude, Codex, Gemini, Cursor, Windsurf, Devin |                                |
+| Polling file watcher with filtered directory walker    |                                          |
+| Portable snapshot for instant MCP startup              |                                          |
+| Singleton MCP with PID lock + 1h idle timeout          |                                          |
+| Sensitive file blocking (.env, credentials, keys)      |                                          |
+| Codesigned + notarized macOS binaries — ARM64 and Intel (0.2.5833+) |                                          |
+| SHA256-verified release downloads and npm packages     |                                          |
+| Cross-platform: macOS (ARM/x86), Linux (ARM/x86), Windows (x86_64) |                              |
+
+---
+
+## ⚡ Install
+
+### macOS and Linux
+
+```bash
+curl -fsSL https://codedb.codegraff.com/install.sh | bash
+```
+
+Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, and **Devin** — each written directly and additively into that tool's config (only when the tool is present). The installer prints the exact `codedb mcp` command it registered plus hook setup pointers for Codex and Claude Code.
+
+On Windows, run this command inside WSL only if you want the Linux binary inside WSL. For the native Windows binary, use PowerShell below.
+
+### Windows
+
+Run in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5838/install/install.ps1 | iex
+```
+
+Run the same command again to update codedb.
+
+### npm/npx on macOS and Linux
+
+```bash
+npx -y codedeebee mcp
+```
+
+Or install globally:
+
+```bash
+npm install -g codedeebee
+codedb mcp
+```
+
+The npm package is named [`codedeebee`](https://www.npmjs.com/package/codedeebee) (the bare `codedb` name is restricted on npm); it ships a thin launcher that downloads the matching native binary from GitHub Releases on `postinstall` and verifies the SHA256 checksum. The installed CLI is still called `codedb`.
+
+The launcher already knows how to fetch `codedb-windows-x86_64.exe`, but the currently published `codedeebee` predates that release asset, so `npx -y codedeebee mcp` does not work on Windows yet — it becomes available with the next published release. Use the PowerShell installer above until then.
+
+Useful for MCP clients (Claude Code, Cursor, opencode, Claude Desktop) that already use `npx`:
+
+```json
+{
+  "codedb": {
+    "type": "local",
+    "command": ["npx", "-y", "codedeebee"],
+    "args": ["mcp"],
+    "enabled": true
+  }
+}
+```
+
+### Updating or repairing an older install
+
+On macOS or Linux, if `codedb update` fails on an older release, rerun the installer:
+
+```bash
+curl -fsSL https://codedb.codegraff.com/install.sh | bash
+```
+
+This replaces the `codedb` binary with the latest GitHub Release and keeps your existing MCP registrations, config, caches, and snapshots. Use this path for any release whose built-in updater cannot fetch release checksums.
+
+Self-update works on native Windows from 0.2.5833 onward (`codedb update`). On older builds, rerun the PowerShell installer above to update or repair the binary.
+
+## Documentation
+
+- **[MCP setup](docs/mcp.md)** — per-client configurations (Claude Desktop, Cursor, VS Code, Claude Code, Codex CLI, Gemini CLI), root resolution, troubleshooting
+- **[Skill base & context files](docs/skills.md)** — `agents.md` / `CLAUDE.md` / `GEMINI.md`, `.codedbrc`, per-developer memory
+- **[CLI reference](docs/cli.md)** — every command, every flag
+- **[Architecture](docs/architecture.md)** — engine internals, index layout
+- **[Benchmarks](docs/benchmarks.md)** — micro-benchmarks + agentic-eval results vs codegraph, FTS5, lean-ctx
+- **[Raspberry Pi 4](docs/raspberry-pi.md)** — full-performance ARM64 setup, Cortex-A72 build, and on-device benchmark
+- **[Zig 0.17.0-dev migration guide](docs/zig-0.17-migration.md)** — repeatable zigup workflow and API change recipes
+
+| Platform | Binary | Signed |
+|----------|--------|--------|
+| macOS ARM64 (Apple Silicon) | `codedb-darwin-arm64` | ✅ codesigned + notarized |
+| macOS x86_64 (Intel) | `codedb-darwin-x86_64` | codesigned + notarized (0.2.5833+) |
+| Linux ARM64 | `codedb-linux-arm64` | — |
+| Linux x86_64 | `codedb-linux-x86_64` | — |
+| Windows x86_64 | `codedb-windows-x86_64.exe` | SHA256 verified automatically |
+
+Or install manually from [GitHub Releases](https://github.com/justrach/codedb/releases/latest). Always verify the binary against the attached `checksums.sha256` before running it.
+
+---
+
+## ⚡ Quick Start
+
+### As an MCP server (recommended)
+
+The macOS/Linux shell installer registers codedb automatically. For npm/npx installs on macOS/Linux and manual Windows installs, use the MCP configuration above or the client-specific examples in [docs/mcp.md](docs/mcp.md). Then open a project and the 21 MCP tools are available to your AI agent.
+
+```bash
+# Manual MCP start (auto-configured by install script)
+codedb mcp /path/to/your/project
+```
+
+### As an HTTP server
+
+```bash
+codedb serve /path/to/your/project
+# listening on localhost:7719
+```
+
+### CLI
+
+```bash
+codedb tree /path/to/project          # file tree with symbol counts
+codedb outline src/main.zig           # symbols in a file
+codedb find AgentRegistry             # find symbol definitions
+codedb search "handleAuth"            # full-text search (trigram-accelerated)
+codedb word Store                     # exact word lookup (inverted index, O(1))
+codedb hot                            # recently modified files
+```
+
+---
+
+## 🔧 MCP Tools
+
+20 tools over the Model Context Protocol (JSON-RPC 2.0 over stdio). codedb's job is to **give agents context** — fast structural search, symbols, callers, dependencies, and outlines — **not** to be your editor. codedb has no edit tool; use your client's native edit tools.
+
+| Tool | Description |
+|------|-------------|
+| `codedb_tree` | Full file tree with language, line counts, symbol counts |
+| `codedb_outline` | Symbols in a file: functions, structs, imports, with line numbers |
+| `codedb_symbol` | Find where a symbol is defined across the codebase |
+| `codedb_search` | Trigram-accelerated full-text search (supports regex, scoped results) |
+| `codedb_word` | O(1) inverted index word lookup |
+| `codedb_callers` | Every call site of a symbol — word index ∩ outline scope, in one round-trip |
+| `codedb_context` | Task-shaped composer — pass a NL task, get keywords + symbol defs + ranked files + top snippets in one block (replaces 3–5 sequential calls) |
+| `codedb_hot` | Most recently modified files |
+| `codedb_deps` | Dependency graph: `imported_by` (default) or `depends_on`; `transitive=true` for full BFS |
+| `codedb_read` | Read file content (line ranges, `if_hash` skip-unchanged, `compact` mode) |
+| `codedb_changes` | Changed files since a sequence number |
+| `codedb_status` | Index status (file count, current sequence, scan phase) |
+| `codedb_snapshot` | Full pre-rendered JSON snapshot of the codebase |
+| `codedb_projects` | List all locally indexed projects on this machine |
+| `codedb_index` | Index a local folder and write `codedb.snapshot` |
+| `codedb_find` | Fuzzy **file-name** search (typo-tolerant subsequence match against indexed paths — not a content/symbol search) |
+| `codedb_glob` | Match indexed paths against a glob pattern (`src/**/*.zig`, `*.md`, …) |
+| `codedb_ls` | List immediate children of a directory — dirs first, then files with language + counts |
+| `codedb_query` | Composable pipeline — chain `find`, `search`, `filter`, `deps`, `outline`, `read`, `sort`, `limit` in one request |
+
+`codedb_context` accepts `max_tokens` as a conservative approximate response
+budget. Compact evidence is admitted progressively; when the remaining
+evidence does not fit, the response reports the omission once instead of
+overflowing the request with lower-priority sections.
+
+MCP responses are plain text by default, without ANSI styling. Set
+`CODEDB_MCP_ANSI=1` in the MCP server environment to opt into ANSI-colored

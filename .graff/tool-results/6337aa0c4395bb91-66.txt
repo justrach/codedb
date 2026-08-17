@@ -1,0 +1,259 @@
+✓ src/cli_args.zig  zig  ⚡ 11.0µs
+    1 | //! Pure CLI argument parsing — root/command resolution, line-range and search
+    2 | //! flag parsing, git-root discovery, and the read-only query-command table.
+    3 | //! Extracted from main.zig; all functions here are side-effect-free (no
+    4 | //! Explorer/Store/IO state) so they are trivially unit-testable.
+    5 | const std = @import("std");
+    6 | 
+    7 | /// The read-only query commands — single source of truth (#578 grew from
+    8 | /// three hand-maintained copies drifting: cliIsQueryCmd, isCommand, and the
+    9 | /// runQuery dispatch chain in mainImpl). isCommand appends the non-query
+   10 | /// commands; the dispatch chain calls cliIsQueryCmd directly.
+   11 | pub const cli_query_cmds = [_][]const u8{ "tree", "outline", "find", "search", "word", "read", "hot", "status", "symbol", "callers", "callpath", "deps", "glob", "ls", "file", "context", "changes" };
+   12 | 
+   13 | /// Editors that don't expand the placeholder pass the literal token as the
+   14 | /// root. #639: normalized here (not in mainImpl) so it lands before the
+   15 | /// root == "." / !root_is_explicit gates.
+   16 | pub const workspace_placeholder = "${workspaceFolder}";
+   17 | 
+   18 | /// True for the read-only query commands the daemon will serve / the client
+   19 | /// will proxy. Everything else (serve, mcp, snapshot, index, ...) is handled
+   20 | /// only by the cold path.
+   21 | pub fn cliIsQueryCmd(cmd: []const u8) bool {
+   22 |     for (cli_query_cmds) |c| {
+   23 |         if (std.mem.eql(u8, cmd, c)) return true;
+   24 |     }
+   25 |     return false;
+   26 | }
+   27 | 
+   28 | pub const ParsedPositional = struct {
+   29 |     root: []const u8,
+   30 |     cmd: []const u8,
+   31 |     cmd_args_start: usize,
+   32 |     root_is_explicit: bool,
+   33 |     usage_exit: bool = false,
+   34 | };
+   35 | 
+   36 | /// Parse positional args into root/cmd. Pure, side-effect-free — caller is
+   37 | /// responsible for printUsage()/exit when `usage_exit` is set.
+   38 | ///
+   39 | /// Special cases:
+   40 | ///   - `codedb mcp <path>` is honored as `codedb <path> mcp` (issue #503).
+   41 | ///     The wrong arg order is a frequent typo from users who think `mcp` is
+   42 | ///     a normal subcommand. Treating the path as root prevents the deferred
+   43 | ///     scan from hanging forever waiting for a `roots/list` that never comes.
+   44 | ///   - `codedb mcp --help` (or `-h`/`help`) prints usage instead of starting
+   45 | ///     the MCP server (issue #502).
+   46 | pub fn parsePositional(args: []const []const u8) ParsedPositional {
+   47 |     if (args.len < 2) {
+   48 |         return .{ .root = "", .cmd = "", .cmd_args_start = 0, .root_is_explicit = false, .usage_exit = true };
+   49 |     }
+   50 |     const a1 = args[1];
+   51 |     if (std.mem.eql(u8, a1, "--mcp")) {
+   52 |         return .{ .root = ".", .cmd = "mcp", .cmd_args_start = 2, .root_is_explicit = false };
+   53 |     }
+   54 |     if (std.mem.eql(u8, a1, "--version") or std.mem.eql(u8, a1, "-v")) {
+   55 |         return .{ .root = ".", .cmd = "--version", .cmd_args_start = 2, .root_is_explicit = false };
+   56 |     }
+   57 |     if (isHelpRequest(a1)) {
+   58 |         return .{ .root = ".", .cmd = a1, .cmd_args_start = 2, .root_is_explicit = false };
+   59 |     }
+   60 |     if (isCommand(a1)) {
+   61 |         // `codedb mcp --help` → print help, do not start server. #502.
+   62 |         if (std.mem.eql(u8, a1, "mcp") and args.len >= 3) {
+   63 |             const a2 = args[2];
+   64 |             if (isHelpRequest(a2)) {
+   65 |                 return .{ .root = ".", .cmd = "--help", .cmd_args_start = 3, .root_is_explicit = false };
+   66 |             }
+   67 |             // `codedb mcp <path>` → honor path as root. #503.
+   68 |             // Only when args[2] doesn't look like a flag; otherwise it's a
+   69 |             // legitimate command-arg that the mcp subcommand may consume.
+   70 |             if (a2.len > 0 and a2[0] != '-') {
+   71 |                 // #639: `codedb mcp ${workspaceFolder}` (unexpanded) → cwd, non-explicit.
+   72 |                 if (std.mem.eql(u8, a2, workspace_placeholder))
+   73 |                     return .{ .root = ".", .cmd = "mcp", .cmd_args_start = 3, .root_is_explicit = false };
+   74 |                 return .{ .root = a2, .cmd = "mcp", .cmd_args_start = 3, .root_is_explicit = true };
+   75 |             }
+   76 |         }
+   77 |         return .{ .root = ".", .cmd = a1, .cmd_args_start = 2, .root_is_explicit = false };
+   78 |     }
+   79 |     if (args.len >= 3) {
+   80 |         // #639: unexpanded ${workspaceFolder} → cwd, non-explicit, so the
+   81 |         // CODEDB_ROOT fallback, #502 git-root walk-up, and mcp deferred-scan
+   82 |         // (all gated on root == "." / !root_is_explicit) apply.
+   83 |         if (std.mem.eql(u8, a1, workspace_placeholder))
+   84 |             return .{ .root = ".", .cmd = args[2], .cmd_args_start = 3, .root_is_explicit = false };
+   85 |         return .{ .root = a1, .cmd = args[2], .cmd_args_start = 3, .root_is_explicit = true };
+   86 |     }
+   87 |     return .{ .root = "", .cmd = "", .cmd_args_start = 0, .root_is_explicit = false, .usage_exit = true };
+   88 | }
+   89 | 
+   90 | /// True when an `mcp` root points at cwd and was left implicit — a bare
+   91 | /// `codedb mcp` or a normalized ${workspaceFolder}. Single source of truth for
+   92 | /// the #502 git-root walk-up AND the deferred-scan handshake; both used to be
+   93 | /// hand-written inline in mainImpl and drifted out of sync, which is how #639
+   94 | /// hid (a placeholder arrived with root_is_explicit set and silently disabled
+   95 | /// both paths).
+   96 | pub fn mcpRootIsImplicitCwd(cmd: []const u8, root: []const u8, root_is_explicit: bool) bool {
+   97 |     return std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".") and !root_is_explicit;
+   98 | }
+   99 | 
+  100 | /// True when an `mcp` root points at cwd and is therefore eligible for the
+  101 | /// CODEDB_ROOT env fallback (which pins the root, explicit or not).
+  102 | pub fn mcpRootAcceptsEnv(cmd: []const u8, root: []const u8) bool {
+  103 |     return std.mem.eql(u8, cmd, "mcp") and std.mem.eql(u8, root, ".");
+  104 | }
+  105 | 
+  106 | /// True for the three spellings of a help request — `--help`, `-h`, `help`.
+  107 | /// This exact three-way disjunction was hand-written at four sites
+  108 | /// (parsePositional twice, mainImpl twice); the `mcp --no-telemetry --help`
+  109 | /// combo bypass in mainImpl exists only because two of those copies couldn't
+  110 | /// see each other. Centralizing kills the drift surface the way the mcp gate
+  111 | /// predicates did for #639.
+  112 | pub fn isHelpRequest(arg: []const u8) bool {
+  113 |     return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "help");
+  114 | }
+  115 | 
+  116 | /// A 1-based inclusive line range as accepted by `read -L FROM-TO`. `end` is
+  117 | /// `std.math.maxInt(u32)` when the spec used `$`/`end` (read to end-of-file).
+  118 | pub const LineRange = struct { start: u32, end: u32 };
+  119 | 
+  120 | pub const LineRangeError = error{ MissingDash, BadStart, BadEnd, ZeroLine, Reversed };
+  121 | 
+  122 | /// True when positional args remain after the command name. Used by arity-zero
+  123 | /// CLI commands (tree/hot/status) so typos like `codedb tree typo` exit 1
+  124 | /// instead of silently ignoring the extra token. See issue #528 (item 13).
+  125 | pub fn hasExtraCliArgs(args: []const []const u8, cmd_args_start: usize) bool {
+  126 |     return args.len > cmd_args_start;
+  127 | }
+  128 | 
+  129 | /// Parse a `FROM-TO` line-range spec (the argument to `read -L`). `TO` may be
+  130 | /// `$` or `end` for end-of-file. Rejects malformed, non-numeric, zero-based,
+  131 | /// and reversed ranges so the CLI surfaces a clear error instead of silently
+  132 | /// defaulting (`abc-10` → 1) or printing empty output (`20-1`). Mirrors the
+  133 | /// MCP read validation. See issue #528 (items 3, 4, 7).
+  134 | pub fn parseLineRange(spec: []const u8) LineRangeError!LineRange {
+  135 |     const dash = std.mem.indexOfScalar(u8, spec, '-') orelse return error.MissingDash;
+  136 |     const start = std.fmt.parseInt(u32, spec[0..dash], 10) catch return error.BadStart;
+  137 |     if (start < 1) return error.ZeroLine;
+  138 |     const end_str = spec[dash + 1 ..];
+  139 |     const end: u32 = if (std.mem.eql(u8, end_str, "$") or std.mem.eql(u8, end_str, "end"))
+  140 |         std.math.maxInt(u32)
+  141 |     else blk: {
+  142 |         const e = std.fmt.parseInt(u32, end_str, 10) catch return error.BadEnd;
+  143 |         if (e < 1) return error.ZeroLine;
+  144 |         break :blk e;
+  145 |     };
+  146 |     if (end != std.math.maxInt(u32) and start > end) return error.Reversed;
+  147 |     return .{ .start = start, .end = end };
+  148 | }
+  149 | 
+  150 | /// Parsed `search` invocation. `max_results` defaults to 50 (the prior
+  151 | /// hard-coded cap) and is clamped to 1..200.
+  152 | pub const SearchArgs = struct {
+  153 |     query: []const u8,
+  154 |     use_regex: bool = false,
+  155 |     paths_only: bool = false,
+  156 |     max_results: usize = 50,
+  157 | };
+  158 | 
+  159 | pub const SearchArgError = error{ UnknownFlag, MissingMaxResults, BadMaxResults, MissingQuery, EmptyQuery, ExtraArg };
+  160 | 
+  161 | /// Parse `search` args. Flags (`--regex`, `--paths-only`, `--max-results N`)
+  162 | /// may appear before or after the query, in any order. Unknown `--flags` are
+  163 | /// rejected rather than silently treated as the query text (`--max-results 1
+  164 | /// foo` used to search for the literal "--max-results"), and an empty/missing
+  165 | /// query is a usage error. A bare `--` ends flag parsing so a literal
+  166 | /// `--`-prefixed string can still be searched. See issue #528 (item 9).
+  167 | pub fn parseSearchArgs(args: []const []const u8, start: usize) SearchArgError!SearchArgs {
+  168 |     var result: SearchArgs = .{ .query = "" };
+  169 |     var query: ?[]const u8 = null;
+  170 |     var flags_done = false;
+  171 |     var i = start;
+  172 |     while (i < args.len) : (i += 1) {
+  173 |         const a = args[i];
+  174 |         if (!flags_done and std.mem.eql(u8, a, "--")) {
+  175 |             flags_done = true;
+  176 |         } else if (!flags_done and std.mem.eql(u8, a, "--regex")) {
+  177 |             result.use_regex = true;
+  178 |         } else if (!flags_done and std.mem.eql(u8, a, "--paths-only")) {
+  179 |             result.paths_only = true;
+  180 |         } else if (!flags_done and std.mem.eql(u8, a, "--max-results")) {
+  181 |             if (i + 1 >= args.len) return error.MissingMaxResults;
+  182 |             i += 1;
+  183 |             const n = std.fmt.parseInt(usize, args[i], 10) catch return error.BadMaxResults;
+  184 |             if (n < 1) return error.BadMaxResults;
+  185 |             result.max_results = @min(n, 200);
+  186 |         } else if (!flags_done and a.len > 1 and a[0] == '-' and a[1] == '-') {
+  187 |             return error.UnknownFlag;
+  188 |         } else if (query == null) {
+  189 |             query = a;
+  190 |         } else {
+  191 |             return error.ExtraArg;
+  192 |         }
+  193 |     }
+  194 |     result.query = query orelse return error.MissingQuery;
+  195 |     if (result.query.len == 0) return error.EmptyQuery;
+  196 |     return result;
+  197 | }
+  198 | 
+  199 | /// Walk up from cwd looking for a `.git` directory or file (git worktree).
+  200 | /// Returns a slice into `buf` containing the absolute path, or null if no
+  201 | /// repo root is found before reaching the filesystem root. Used to make
+  202 | /// `codedb mcp` from inside a subdir of a git repo Just Work (#502).
+  203 | pub fn findGitRoot(io: std.Io, buf: *[std.fs.max_path_bytes]u8) ?[]const u8 {
+  204 |     const cwd_len = std.Io.Dir.cwd().realPathFile(io, ".", buf) catch return null;
+  205 |     return findGitRootFrom(io, buf, cwd_len);
+  206 | }
+  207 | 
+  208 | /// Test-friendly variant: walk up from `buf[0..start_len]` (must already be
+  209 | /// an absolute path) looking for `.git`. Mutates buf in place. Returns slice
+  210 | /// or null. Kept separate so tests can hand in synthetic absolute paths
+  211 | /// without chdir'ing the process.
+  212 | pub fn findGitRootFrom(io: std.Io, buf: *[std.fs.max_path_bytes]u8, start_len: usize) ?[]const u8 {
+  213 |     var len = start_len;
+  214 |     var probe_buf: [std.fs.max_path_bytes]u8 = undefined;
+  215 |     while (len > 0) {
+  216 |         const here = buf[0..len];
+  217 |         const probe = std.fmt.bufPrint(&probe_buf, "{s}/.git", .{here}) catch return null;
+  218 |         if (std.Io.Dir.cwd().statFile(io, probe, .{})) |_| {
+  219 |             return here;
+  220 |         } else |_| {}
+  221 |         if (std.mem.lastIndexOfScalar(u8, here, '/')) |slash| {
+  222 |             if (slash == 0) {
+  223 |                 // Reached "/<dir>"; one more step to filesystem root, no match.
+  224 |                 return null;
+  225 |             }
+  226 |             len = slash;
+  227 |         } else {
+  228 |             return null;
+  229 |         }
+  230 |     }
+  231 |     return null;
+  232 | }
+  233 | 
+  234 | /// Whitelist of post-command flags accepted by `codedb mcp`. Anything else
+  235 | /// starting with `-` is rejected at startup (#502). `--config-file=<path>`
+  236 | /// is stripped before positional parsing and never reaches this whitelist;
+  237 | /// `--help`/`-h`/`help` are rewritten by parsePositional and also never
+  238 | /// reach here as a command arg.
+  239 | pub fn isValidMcpFlag(arg: []const u8) bool {
+  240 |     return std.mem.eql(u8, arg, "--no-telemetry");
+  241 | }
+  242 | 
+  243 | fn isCommand(arg: []const u8) bool {
+  244 |     // cli_query_cmds is the shared query-command table (see its doc); only the
+  245 |     // non-query commands are listed here.
+  246 |     const commands = cli_query_cmds ++ [_][]const u8{ "snapshot", "serve", "mcp", "update", "nuke", "codex", "cli-daemon", "index" };
+  247 |     for (commands) |c| {
+  248 |         if (std.mem.eql(u8, arg, c)) return true;
+  249 |     }
+  250 |     return false;
+  251 | }
+  252 | 
+  253 | pub fn resolveRoot(io: std.Io, root: []const u8, buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
+  254 |     const sub = if (std.mem.eql(u8, root, ".")) "." else root;
+  255 |     const n = std.Io.Dir.cwd().realPathFile(io, sub, buf) catch return error.ResolveFailed;
+  256 |     return buf[0..n];
+  257 | }
+  258 | 

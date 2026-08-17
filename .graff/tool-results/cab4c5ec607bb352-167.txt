@@ -1,0 +1,43 @@
+1 results for 'detectLanguage':
+  src/explore.zig:208 (function) detectLanguage  // pub fn detectLanguage(path: []const u8) Language {
+  208 | pub fn detectLanguage(path: []const u8) Language {
+  209 |     if (std.mem.endsWith(u8, path, ".zig")) return .zig;
+  210 |     if (std.mem.endsWith(u8, path, ".c") or std.mem.endsWith(u8, path, ".h")) return .c;
+  211 |     if (std.mem.endsWith(u8, path, ".cpp") or std.mem.endsWith(u8, path, ".hpp") or
+  212 |         std.mem.endsWith(u8, path, ".cc") or std.mem.endsWith(u8, path, ".hh") or
+  213 |         std.mem.endsWith(u8, path, ".cxx") or std.mem.endsWith(u8, path, ".hxx") or
+  214 |         std.mem.endsWith(u8, path, ".mm"))
+  215 |         return .cpp;
+  216 |     if (std.mem.endsWith(u8, path, ".py")) return .python;
+  217 |     if (std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".jsx")) return .javascript;
+  218 |     if (std.mem.endsWith(u8, path, ".ts") or std.mem.endsWith(u8, path, ".tsx")) return .typescript;
+  219 |     if (std.mem.endsWith(u8, path, ".rs")) return .rust;
+  220 |     if (std.mem.endsWith(u8, path, ".go")) return .go_lang;
+  221 |     if (std.mem.endsWith(u8, path, ".php")) return .php;
+  222 |     if (std.mem.endsWith(u8, path, ".rb") or std.mem.endsWith(u8, path, ".rake")) return .ruby;
+  223 |     if (std.mem.endsWith(u8, path, ".tf") or std.mem.endsWith(u8, path, ".tfvars") or std.mem.endsWith(u8, path, ".hcl")) return .hcl;
+  224 |     if (std.mem.endsWith(u8, path, ".r") or std.mem.endsWith(u8, path, ".R")) return .r;
+  225 |     if (std.mem.endsWith(u8, path, ".md")) return .markdown;
+  226 |     if (std.mem.endsWith(u8, path, ".json")) return .json;
+  227 |     if (std.mem.endsWith(u8, path, ".yaml") or std.mem.endsWith(u8, path, ".yml")) return .yaml;
+  228 |     if (std.mem.endsWith(u8, path, ".dart")) return .dart;
+  229 |     if (std.mem.endsWith(u8, path, ".java")) return .java;
+  230 |     if (std.mem.endsWith(u8, path, ".kt")) return .kotlin;
+  231 |     if (std.mem.endsWith(u8, path, ".swift")) return .swift;
+  232 |     if (std.mem.endsWith(u8, path, ".svelte")) return .svelte;
+  233 |     if (std.mem.endsWith(u8, path, ".vue")) return .vue;
+  234 |     if (std.mem.endsWith(u8, path, ".astro")) return .astro;
+  235 |     if (std.mem.endsWith(u8, path, ".sh")) return .shell;
+  236 |     if (std.mem.endsWith(u8, path, ".css")) return .css;
+  237 |     if (std.mem.endsWith(u8, path, ".scss")) return .scss;
+  238 |     if (std.mem.endsWith(u8, path, ".sql")) return .sql;
+  239 |     if (std.mem.endsWith(u8, path, ".proto")) return .protobuf;
+  240 |     if (std.mem.endsWith(u8, path, ".f90")) return .fortran;
+  241 |     if (std.mem.endsWith(u8, path, ".ll")) return .llvm_ir;
+  242 |     if (std.mem.endsWith(u8, path, ".mlir")) return .mlir;
+  243 |     if (std.mem.endsWith(u8, path, ".td")) return .tablegen;
+  244 |     if (std.mem.endsWith(u8, path, ".res") or std.mem.endsWith(u8, path, ".resi")) return .rescript;
+  245 |     if (std.mem.endsWith(u8, path, ".ml") or std.mem.endsWith(u8, path, ".mli")) return .ocaml;
+  246 |     return .unknown;
+  247 | }
+↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.

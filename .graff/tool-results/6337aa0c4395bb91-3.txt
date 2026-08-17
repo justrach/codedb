@@ -1,0 +1,139 @@
+# Task
+update version install release binary
+
+## Keywords used
+- install
+- release
+- version
+- binary
+
+## Symbol definitions
+- release (constant) — install/worker.js:58
+- release (constant) — install/worker.js:89
+- release (constant) — install/.wrangler/tmp/deploy-uk1dYp/worker.js:49
+- version (constant) — src/codex_setup.zig:135
+- version (constant) — install/worker.js:59
+- version (variable) — website/app/install_script.sh:14
+
+## Most-relevant files
+- install/worker.js  (4 matches)
+- install/.wrangler/tmp/deploy-uk1dYp/worker.js  (4 matches)
+- install/install.ps1  (4 matches)
+- website/worker/worker.js  (3 matches)
+- website/app/install_script.sh  (1 matches)
+
+## Top sites (with ±2 lines of context)
+
+install/worker.js:3
+```
+const GITHUB_REPO = "justrach/codedb";
+const FALLBACK_VERSION = "0.2.56";
+const INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/install/install.sh`;
+
+export default {
+```
+
+install/worker.js:15
+```
+    }
+
+    // GET /latest.json → fetch latest release from GitHub
+    if (path === "/latest.json") {
+      return serveLatestVersion();
+```
+
+install/worker.js:2
+```
+const GITHUB_REPO = "justrach/codedb";
+const FALLBACK_VERSION = "0.2.56";
+const INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/install/install.sh`;
+
+```
+
+install/.wrangler/tmp/deploy-uk1dYp/worker.js:7
+```
+var GITHUB_REPO = "justrach/codedb";
+var FALLBACK_VERSION = "0.2.0";
+var INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/install/install.sh`;
+var worker_default = {
+  async fetch(request) {
+```
+
+install/.wrangler/tmp/deploy-uk1dYp/worker.js:21
+```
+    if (binaryMatch) {
+      const [, version, assetName] = binaryMatch;
+      return proxyReleaseBinary(version, assetName);
+    }
+    return new Response("not found", { status: 404 });
+```
+
+install/.wrangler/tmp/deploy-uk1dYp/worker.js:6
+```
+// worker.js
+var GITHUB_REPO = "justrach/codedb";
+var FALLBACK_VERSION = "0.2.0";
+var INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/install/install.sh`;
+var worker_default = {
+```
+
+install/install.ps1:4
+```
+param(
+  [string]$Version = $env:CODEDB_VERSION,
+  [string]$InstallDir = $env:CODEDB_DIR,
+  [switch]$NoPath
+)
+```
+
+install/install.ps1:42
+```
+if (-not $Version) {
+  try {
+    $release = Invoke-RestMethod `
+      -Headers @{ "User-Agent" = "codedb-installer" } `
+      "https://api.github.com/repos/$repo/releases/latest"
+```
+
+install/install.ps1:3
+```
+[CmdletBinding()]
+param(
+  [string]$Version = $env:CODEDB_VERSION,
+  [string]$InstallDir = $env:CODEDB_DIR,
+  [switch]$NoPath
+```
+
+website/worker/worker.js:20
+```
+    const path = url.pathname;
+
+    // /latest.json — GitHub release version
+    if (path === "/latest.json") {
+      return serveLatestVersion();
+```
+
+website/worker/worker.js:4
+```
+
+const GITHUB_REPO = "justrach/codedb";
+const FALLBACK_VERSION = "0.2.2";
+
+const securityHeaders = {
+```
+
+website/worker/worker.js:1
+```
+// codedb — Cloudflare Workers fetch handler (static site + install binary proxy)
+
+const GITHUB_REPO = "justrach/codedb";
+```
+
+website/app/install_script.sh:5
+```
+
+BASE_URL="${CODEDB_URL:-https://codedb.codegraff.com}"
+INSTALL_DIR="${CODEDB_DIR:-$HOME/bin}"
+
+# Colors
+```

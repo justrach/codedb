@@ -1,0 +1,25 @@
+✓ 24 results for "roots/list"  ⚡ 796.0µs
+  src/cli_args.zig:43  ///     scan from hanging forever waiting for a `roots/list` that never comes.
+  src/main.zig:211      // client that doesn't send roots/list_changed sees an empty index.
+  src/main.zig:308      // workspace roots. If we eager-load here we'd race the client's roots/list
+  src/mcp.zig:1329                  // loading_snapshot waiting for a roots/list reply that never
+  src/mcp.zig:1334          } else if (mcpj.eql(method, "notifications/roots/list_changed")) {
+  src/mcp.zig:1492      writeRequest(s.alloc, s.stdout, rid, "roots/list", "{}");
+  src/test_mcp.zig:1948      // MCP `roots/list` message that a user invoking from a shell will never
+  src/test_mcp.zig:1969      // an MCP client may still send roots/list. Don't break that path.
+  docs/mcp.md:112  Cursor advertises the open workspace via the `roots/list` MCP handshake,
+  docs/mcp.md:178  1. **MCP `roots/list` handshake** (preferred). When a client supports it
+  docs/mcp.md:180     `roots/list` immediately after `initialize` and uses the first workspace
+  docs/mcp.md:198  3. **Process `cwd`**. If the client doesn't speak `roots/list` and no
+  docs/mcp.md:246  - the client doesn't speak `roots/list`, or
+  docs/rfc-346-mcp-root-resolution.md:20     supports a `roots/list` request that editors use to advertise open
+  docs/rfc-346-mcp-root-resolution.md:66  > `roots/list` response from the client.
+  docs/rfc-346-mcp-root-resolution.md:102    - On notifications/initialized → send roots/list request.
+  docs/rfc-346-mcp-root-resolution.md:103    - On roots/list response → pick first acceptable root, transition to phase 2.
+  docs/rfc-346-mcp-root-resolution.md:105        {"error": "codedb: no project root yet — waiting for roots/list response"}
+  scripts/e2e_mcp_test.py:197      Wait for the server's roots/list request, reply with project_path.
+  scripts/e2e_mcp_test.py:200      req = p.recv_method("roots/list", timeout=timeout)
+  scripts/e2e_mcp_test.py:281          r = t("server sends roots/list request")
+  scripts/e2e_mcp_test.py:284              r.fail("server never sent roots/list request")
+  scripts/e2e_mcp_test.py:363          r = t("server does NOT send roots/list (scan is immediate)")
+  scripts/e2e_mcp_test.py:364          # Give 2 seconds — if no roots/list arrives, that's correct for explicit-root mode

@@ -1,0 +1,81 @@
+    try testing.expect(std.mem.indexOf(u8, contents, "\"languages\":[\"zig\",\"python\"]") != null);
+}
+
+test "issue-60: telemetry disabled path is a no-op" {
+    var telem = telemetry_mod.Telemetry.init(io, "/tmp", testing.allocator, true);
+    defer telem.deinit();
+
+    telem.recordSessionStart();
+    telem.recordToolCall("codedb_search", 99, true, 10);
+    try testing.expect(!telem.enabled);
+    try testing.expect(telem.file == null);
+    try testing.expect(telem.head.load(.monotonic) == 0);
+}
+
+test "issue-77: mcp index accepts temporary-directory roots that cause pathological cache growth" {
+    var tmp_name_buf: [128]u8 = undefined;
+    const tmp_name = try std.fmt.bufPrint(&tmp_name_buf, "codedb-issue-77-{d}", .{@as(i64, @intCast(@divTrunc(cio.nanoTimestamp(), 1000)))});
+    // /private/tmp is macOS's canonical temp root; it doesn't exist on Linux
+    // (creating it needs root, so this test could never pass there — caught by
+    // the first full Linux suite run). /tmp is the same policy-denied class;
+    // Windows keeps the original spelling.
+    const tmp_base = if (builtin.os.tag == .linux) "/tmp" else "/private/tmp";
+    const tmp_root = try std.fs.path.join(testing.allocator, &.{ tmp_base, tmp_name });
+    defer testing.allocator.free(tmp_root);
+
+    std.Io.Dir.cwd().createDirPath(io, tmp_root) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_root) catch {};
+
+    const source_path = try std.fs.path.join(testing.allocator, &.{ tmp_root, "sample.zig" });
+    defer testing.allocator.free(source_path);
+    {
+        const file = try std.Io.Dir.cwd().createFile(io, source_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "pub fn sample() void {}\n");
+    }
+
+    const result = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "zig", "build", "run", "--", tmp_root, "snapshot" },
+        .max_output_bytes = 256 * 1024,
+    });
+    defer testing.allocator.free(result.stdout);
+    defer testing.allocator.free(result.stderr);
+
+    try testing.expect(result.term.Exited != 0);
+}
+
+test "issue-93: isSensitivePath blocks .env and credentials" {
+    try testing.expect(watcher.isSensitivePath(".env"));
+    try testing.expect(watcher.isSensitivePath(".env.local"));
+    try testing.expect(watcher.isSensitivePath(".env.production"));
+    try testing.expect(watcher.isSensitivePath("credentials.json"));
+    try testing.expect(watcher.isSensitivePath("service-account.json"));
+    try testing.expect(watcher.isSensitivePath("id_rsa"));
+    try testing.expect(watcher.isSensitivePath("secrets.yaml"));
+    try testing.expect(watcher.isSensitivePath("config/secrets.yml"));
+    try testing.expect(watcher.isSensitivePath("server.key"));
+    try testing.expect(watcher.isSensitivePath("cert.pem"));
+    try testing.expect(watcher.isSensitivePath("keystore.jks"));
+    try testing.expect(watcher.isSensitivePath("identity.pfx"));
+    try testing.expect(watcher.isSensitivePath(".ssh/known_hosts"));
+    // Normal files should NOT be blocked
+    try testing.expect(!watcher.isSensitivePath("main.zig"));
+    try testing.expect(!watcher.isSensitivePath("src/server.zig"));
+    try testing.expect(!watcher.isSensitivePath("README.md"));
+    try testing.expect(!watcher.isSensitivePath("package.json"));
+}
+
+test "issue-93: isPathSafe blocks traversal" {
+    const MCP = @import("mcp.zig");
+    try testing.expect(!MCP.isPathSafe("../../../etc/passwd"));
+    try testing.expect(!MCP.isPathSafe("/etc/passwd"));
+    try testing.expect(!MCP.isPathSafe(""));
+    try testing.expect(MCP.isPathSafe("src/main.zig"));
+    try testing.expect(MCP.isPathSafe("README.md"));
+}
+
+test "issue-629: projectRelPath accepts absolute paths inside the project root" {

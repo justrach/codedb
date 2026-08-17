@@ -1,0 +1,136 @@
+    // The augmented schema is built at runtime from the per-sub-tool
+    // schemas already advertised in tools_list, so there is no
+    // hand-maintained duplication.
+    const augmented = try mcp_mod.buildAugmentedToolsList(testing.allocator);
+    defer testing.allocator.free(augmented);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, augmented, .{});
+    defer parsed.deinit();
+
+    const tools = parsed.value.object.get("tools").?.array;
+    var bundle_items: ?std.json.Value = null;
+    for (tools.items) |t| {
+        const name = t.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "codedb_bundle")) {
+            bundle_items = t.object.get("inputSchema").?.object.get("properties").?.object.get("ops").?.object.get("items").?;
+            break;
+        }
+    }
+    try testing.expect(bundle_items != null);
+
+    // `oneOf` array must exist on items.
+    const one_of_val = bundle_items.?.object.get("oneOf");
+    try testing.expect(one_of_val != null);
+    const one_of = one_of_val.?.array;
+
+    // Must have at least one branch per dispatchable codedb_* sub-tool.
+    // codedb_bundle (recursive).are explicitly
+    // rejected by handleBundle, so they are excluded.
+    try testing.expect(one_of.items.len >= 10);
+
+    // Find the codedb_outline branch and verify it pins tool to a const
+    // and binds arguments to a populated schema (with `path` property).
+    var found_outline = false;
+    for (one_of.items) |branch| {
+        const props = branch.object.get("properties").?.object;
+        const tool_v = props.get("tool").?;
+        const tool_const = tool_v.object.get("const");
+        if (tool_const == null) continue;
+        if (!std.mem.eql(u8, tool_const.?.string, "codedb_outline")) continue;
+        found_outline = true;
+
+        const args_schema = props.get("arguments").?;
+        const args_props = args_schema.object.get("properties").?.object;
+        try testing.expect(args_props.get("path") != null);
+        // codedb_outline requires `path` — preserved by the augmentation.
+        const args_required = args_schema.object.get("required").?.array;
+        var path_required = false;
+        for (args_required.items) |r| {
+            if (std.mem.eql(u8, r.string, "path")) path_required = true;
+        }
+        try testing.expect(path_required);
+        break;
+    }
+    try testing.expect(found_outline);
+
+    // No branch should be for the recursive codedb_bundle.
+    for (one_of.items) |branch| {
+        const props = branch.object.get("properties").?.object;
+        const tool_v = props.get("tool").?;
+        const tool_const = tool_v.object.get("const") orelse continue;
+        try testing.expect(!std.mem.eql(u8, tool_const.string, "codedb_bundle"));
+    }
+}
+
+test "issue-503: parsePositional treats `codedb mcp <path>` as path-as-root" {
+    // Before fix: parser took the isCommand("mcp") branch, set root=".",
+    // root_is_explicit=false, and silently dropped /tmp/proj. That tripped
+    // the deferred-scan branch in mainImpl() which waited forever for an
+    // MCP `roots/list` message that a user invoking from a shell will never
+    // send.
+    const argv = [_][]const u8{ "codedb", "mcp", "/tmp/proj" };
+    const p = main_mod.parsePositional(&argv);
+    try testing.expect(!p.usage_exit);
+    try testing.expectEqualStrings("/tmp/proj", p.root);
+    try testing.expectEqualStrings("mcp", p.cmd);
+    try testing.expect(p.root_is_explicit);
+}
+
+test "issue-503: `codedb <path> mcp` still works (original order)" {
+    const argv = [_][]const u8{ "codedb", "/tmp/proj", "mcp" };
+    const p = main_mod.parsePositional(&argv);
+    try testing.expect(!p.usage_exit);
+    try testing.expectEqualStrings("/tmp/proj", p.root);
+    try testing.expectEqualStrings("mcp", p.cmd);
+    try testing.expect(p.root_is_explicit);
+}
+
+test "issue-503: `codedb mcp` alone keeps cwd-as-root deferred behavior" {
+    // The deferred-mode behavior is intentional when no path is given —
+    // an MCP client may still send roots/list. Don't break that path.
+    const argv = [_][]const u8{ "codedb", "mcp" };
+    const p = main_mod.parsePositional(&argv);
+    try testing.expect(!p.usage_exit);
+    try testing.expectEqualStrings(".", p.root);
+    try testing.expectEqualStrings("mcp", p.cmd);
+    try testing.expect(!p.root_is_explicit);
+}
+
+test "issue-502: `codedb mcp --help` rewrites to --help, does not start server" {
+    const argv = [_][]const u8{ "codedb", "mcp", "--help" };
+    const p = main_mod.parsePositional(&argv);
+    try testing.expect(!p.usage_exit);
+    try testing.expectEqualStrings("--help", p.cmd);
+}
+
+test "issue-502: `codedb mcp -h` rewrites to --help" {
+    const argv = [_][]const u8{ "codedb", "mcp", "-h" };
+    const p = main_mod.parsePositional(&argv);
+    try testing.expect(!p.usage_exit);
+    try testing.expectEqualStrings("--help", p.cmd);
+}
+
+test "parsePositional: existing commands still parse correctly (regression)" {
+    // `codedb tree` → cwd-as-root tree
+    {
+        const argv = [_][]const u8{ "codedb", "tree" };
+        const p = main_mod.parsePositional(&argv);
+        try testing.expectEqualStrings(".", p.root);
+        try testing.expectEqualStrings("tree", p.cmd);
+        try testing.expect(!p.root_is_explicit);
+    }
+    // `codedb /path/to/root tree` → explicit-root tree
+    {
+        const argv = [_][]const u8{ "codedb", "/path/to/root", "tree" };
+        const p = main_mod.parsePositional(&argv);
+        try testing.expectEqualStrings("/path/to/root", p.root);
+        try testing.expectEqualStrings("tree", p.cmd);
+        try testing.expect(p.root_is_explicit);
+    }
+    // `codedb --version` → version
+    {
+        const argv = [_][]const u8{ "codedb", "--version" };
+        const p = main_mod.parsePositional(&argv);
+        try testing.expectEqualStrings("--version", p.cmd);
+    }
+    // `codedb --help` → help

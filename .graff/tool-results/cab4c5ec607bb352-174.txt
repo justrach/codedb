@@ -1,0 +1,63 @@
+
+--- \[\[\ x\ ==\ @\(x\|#y\)\ \]\]\ \&\&\ echo\ renderX
+syntax=2
+bash: line 1: syntax error in conditional expression: unexpected token `('
+bash: line 1: syntax error near `@(x'
+bash: line 1: `[[ x == @(x|#y) ]] && echo renderX'
+status=2
+
+--- \[\[\ x\ ==\ \(x\|#y\)\ \]\]\ \&\&\ echo\ renderX
+syntax=2
+bash: line 1: unexpected argument `(' to conditional binary operator
+bash: line 1: syntax error near `(x'
+bash: line 1: `[[ x == (x|#y) ]] && echo renderX'
+status=2
+
+--- case\ x\ in\ \(x\|#y\)\ echo\ renderX\;\;\ esac
+syntax=2
+bash: line 1: syntax error near unexpected token `newline'
+bash: line 1: `case x in (x|#y) echo renderX;; esac'
+status=2
+
+--- case\ x\ in\ x\|#y\)\ echo\ renderX\;\;\ esac
+syntax=2
+bash: line 1: syntax error near unexpected token `newline'
+bash: line 1: `case x in x|#y) echo renderX;; esac'
+status=2
+
+--- echo\ x\ \&\&#\ c\\necho\ renderX
+syntax=2
+bash: line 2: syntax error: unexpected end of file
+status=2
+
+--- echo\ x\ \|\|#\ c\\necho\ renderX
+syntax=2
+bash: line 2: syntax error: unexpected end of file
+status=2
+
+--- echo\ x\ \>\&\ #foo\;\ echo\ renderX
+syntax=2
+bash: line 1: syntax error near unexpected token `newline'
+bash: line 1: `echo x >& #foo; echo renderX'
+status=2
+
+--- echo\ x\ \>\&1#foo\;\ echo\ renderX
+syntax=0
+renderX
+status=0
+
+[stderr]
+bash: line 1: syntax error in conditional expression: unexpected token `('
+bash: line 1: syntax error near `@(x'
+bash: line 1: `[[ x == @(x|#y) ]] && echo renderX'
+bash: line 1: unexpected argument `(' to conditional binary operator
+bash: line 1: syntax error near `(x'
+bash: line 1: `[[ x == (x|#y) ]] && echo renderX'
+bash: line 1: syntax error near unexpected token `newline'
+bash: line 1: `case x in (x|#y) echo renderX;; esac'
+bash: line 1: syntax error near unexpected token `newline'
+bash: line 1: `case x in x|#y) echo renderX;; esac'
+bash: line 2: syntax error: unexpected end of file
+bash: line 2: syntax error: unexpected end of file
+bash: line 1: syntax error near unexpected token `newline'
+bash: line 1: `echo x >& #foo; echo renderX'

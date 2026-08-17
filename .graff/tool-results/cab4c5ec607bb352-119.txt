@@ -1,0 +1,81 @@
+  3710	/// `explorer_alloc` should be an arena — the Explorer is not deinit'ed.
+  3711	fn renderCallersFixture(
+  3712	    explorer_alloc: std.mem.Allocator,
+  3713	    files: []const [2][]const u8,
+  3714	    name: []const u8,
+  3715	    out: *std.ArrayList(u8),
+  3716	) !void {
+  3717	    var explorer = Explorer.init(explorer_alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  3718	    var store = Store.init(testing.allocator);
+  3719	    defer store.deinit();
+  3720	    var agents = AgentRegistry.init(testing.allocator);
+  3721	    defer agents.deinit();
+  3722	    _ = try agents.register("__filesystem__");
+  3723	    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+  3724	    defer bench_ctx.deinit();
+  3725	
+  3726	    for (files) |f| try explorer.indexFile(f[0], f[1]);
+  3727	
+  3728	    var m: std.json.ObjectMap = .empty;
+  3729	    defer m.deinit(testing.allocator);
+  3730	    try m.put(testing.allocator, "name", .{ .string = name });
+  3731	    bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &m, out, &store, &explorer, &agents);
+  3732	}
+  3733	
+  3734	test "issue: codedb_callers excludes a line that mentions the symbol only inside string literals" {
+  3735	    // The scripts/rank-eval.py:56 case — a table of ("symbol", "file") pairs.
+  3736	    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+  3737	    defer arena.deinit();
+  3738	    var out: std.ArrayList(u8) = .empty;
+  3739	    defer out.deinit(testing.allocator);
+  3740	
+  3741	    try renderCallersFixture(arena.allocator(), &.{
+  3742	        .{ "table.zig", "const t = (\"renderX\", \"y.zig\");\n" },
+  3743	        .{ "call.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+  3744	    }, "renderX", &out);
+  3745	
+  3746	    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+  3747	    try testing.expect(std.mem.indexOf(u8, out.items, "table.zig:1") == null);
+  3748	    try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
+  3749	}
+  3750	
+  3751	test "issue: codedb_callers excludes a test declaration that names the symbol in its title" {
+  3752	    // The src/test_search.zig:1959 case — the symbol sits inside the quoted
+  3753	    // test name, so the declaration line is documentation, not an invocation.
+  3754	    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+  3755	    defer arena.deinit();
+  3756	    var out: std.ArrayList(u8) = .empty;
+  3757	    defer out.deinit(testing.allocator);
+  3758	
+  3759	    try renderCallersFixture(arena.allocator(), &.{
+  3760	        .{ "t.zig", "test \"about renderX behavior\" {\n    const x = 1;\n    _ = x;\n}\n" },
+  3761	        .{ "call.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+  3762	    }, "renderX", &out);
+  3763	
+  3764	    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
+  3765	    try testing.expect(std.mem.indexOf(u8, out.items, "t.zig:1") == null);
+  3766	    try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
+  3767	}
+  3768	
+  3769	test "issue: codedb_callers keeps real calls inside and outside test bodies" {
+  3770	    // The body call at src/test_search.zig:1970 is a genuine caller: the new
+  3771	    // string filter must not follow the test declaration line out the door.
+  3772	    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+  3773	    defer arena.deinit();
+  3774	    var out: std.ArrayList(u8) = .empty;
+  3775	    defer out.deinit(testing.allocator);
+  3776	
+  3777	    try renderCallersFixture(arena.allocator(), &.{
+  3778	        .{ "body.zig", "test \"about renderX behavior\" {\n    const r = explorer.renderX(1);\n    _ = r;\n}\n" },
+  3779	        .{ "plain.zig", "pub fn callerA() void {\n    renderX();\n}\n" },
+  3780	    }, "renderX", &out);
+  3781	
+  3782	    try testing.expect(std.mem.indexOf(u8, out.items, "2 call sites for 'renderX'") != null);
+  3783	    try testing.expect(std.mem.indexOf(u8, out.items, "body.zig:2") != null);
+  3784	    try testing.expect(std.mem.indexOf(u8, out.items, "plain.zig:2") != null);
+  3785	    try testing.expect(std.mem.indexOf(u8, out.items, "body.zig:1") == null);
+  3786	}
+  3787	
+  3788	test "issue-682: codedb_callers excludes a symbol mentioned only in a trailing comment" {
+  3789	    // `init(); // then renderX() draws the frame` — the mention lives in the
+  3790	    // trailing comment. The comment/blank filter passes the line (it starts

@@ -1,0 +1,58 @@
+378:pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+379:    const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+380:    const home = cio.homeDir() orelse return;
+381:    if (home.len == 0) return;
+382:
+383:    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
+384:    defer allocator.free(dir_path);
+385:    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+386:
+387:    const stamp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, auto_update_stamp_filename }) catch return;
+388:    defer allocator.free(stamp_path);
+389:
+390:    const last_ms = readAutoUpdateStamp(io, stamp_path);
+391:    const now_ms = cio.milliTimestamp();
+392:    if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+393:
+394:    const executable_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
+395:    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{executable_path}) catch {
+396:        std.heap.page_allocator.free(executable_path);
+397:        return;
+398:    };
+399:    thread.detach();
+400:
+401:    // Only throttle after the worker launches so a local spawn failure can be
+402:    // retried on the next MCP startup.
+403:    writeAutoUpdateStamp(io, stamp_path, now_ms);
+404:}
+405:
+406:pub fn autoUpdateArgv(executable_path: []const u8) [2][]const u8 {
+407:    return .{ executable_path, "update" };
+408:}
+409:
+410:fn autoUpdateWorker(executable_path: []u8) void {
+411:    defer std.heap.page_allocator.free(executable_path);
+412:
+413:    // Invoke the checksum-verifying built-in updater directly. Capturing and
+414:    // discarding its output keeps the MCP stdio transport clean, while avoiding
+415:    // a shell or execution of a remotely downloaded install script.
+416:    const argv = autoUpdateArgv(executable_path);
+417:    const result = cio.runCapture(.{
+418:        .allocator = std.heap.page_allocator,
+419:        .argv = &argv,
+420:        .max_output_bytes = 64 * 1024,
+421:    }) catch return;
+422:    std.heap.page_allocator.free(result.stdout);
+423:    std.heap.page_allocator.free(result.stderr);
+424:}
+425:
+426:fn readAutoUpdateStamp(io: std.Io, path: []const u8) ?i64 {
+427:    var buf: [8]u8 = undefined;
+428:    var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+429:    defer f.close(io);
+430:    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+431:    if (n < 8) return null;
+432:    return std.mem.readInt(i64, buf[0..8], .little);
+433:}
+434:
+435:fn writeAutoUpdateStamp(io: std.Io, path: []const u8, ms: i64) void {

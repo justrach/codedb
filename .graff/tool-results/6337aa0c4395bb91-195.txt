@@ -1,0 +1,111 @@
+        },
+        else => null,
+    };
+}
+
+/// Policy for (re-)registering the Claude Code PreToolUse hook (#658),
+/// mirrored by install.sh: explicit opt-outs always win, and a receipt from a
+/// previous registration with no surviving settings entry means the user
+/// removed the hook — a removal that must stick across unattended updates.
+pub fn shouldRegisterHooks(env_no_hooks: bool, marker_exists: bool, receipt_exists: bool, entry_present: bool) bool {
+    if (env_no_hooks or marker_exists) return false;
+    if (receipt_exists and !entry_present) return false;
+    return true;
+}
+
+pub fn compareVersions(current: []const u8, target: []const u8) !std.math.Order {
+    var current_it = std.mem.splitScalar(u8, trimVersionPrefix(current), '.');
+    var target_it = std.mem.splitScalar(u8, trimVersionPrefix(target), '.');
+
+    while (true) {
+        const current_part = current_it.next();
+        const target_part = target_it.next();
+
+        if (current_part == null and target_part == null) return .eq;
+
+        const current_num = if (current_part) |part| try parseVersionPart(part) else 0;
+        const target_num = if (target_part) |part| try parseVersionPart(part) else 0;
+
+        if (current_num < target_num) return .lt;
+        if (current_num > target_num) return .gt;
+    }
+}
+
+pub fn compareVersionsForUpdate(current: []const u8, target: []const u8) !std.math.Order {
+    const order = try compareVersions(current, target);
+    if (order == .gt and try targetSupersedesCurrent(current, target)) return .lt;
+    return order;
+}
+
+pub fn targetSupersedesCurrent(current: []const u8, target: []const u8) !bool {
+    const normalized_current = trimVersionPrefix(current);
+    for (superseded_releases) |release| {
+        if (!std.mem.eql(u8, normalized_current, release.current)) continue;
+        return (try compareVersions(target, release.minimum_target)) != .lt;
+    }
+    return false;
+}
+
+pub fn checksumForBinary(manifest: []const u8, binary_name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, manifest, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+
+        const hash_end = std.mem.indexOfAny(u8, line, " \t") orelse continue;
+        const hash = line[0..hash_end];
+        var name = std.mem.trimStart(u8, line[hash_end..], " \t");
+        if (name.len == 0) continue;
+        if (name[0] == '*') name = name[1..];
+        if (std.mem.eql(u8, name, binary_name)) return hash;
+    }
+
+    return null;
+}
+
+fn resolveTargetVersion(allocator: std.mem.Allocator) !ResolvedVersion {
+    if (cio.posixGetenv("CODEDB_VERSION")) |value| {
+        if (value.len != 0) {
+            const dup = try allocator.dupe(u8, value);
+            return .{ .value = dup, .source = .env };
+        }
+    }
+
+    if (fetchLatestVersionFromGitHub(allocator) catch null) |value| {
+        return .{ .value = value, .source = .github };
+    }
+
+    if (fetchLatestVersionFromFallback(allocator) catch null) |value| {
+        return .{ .value = value, .source = .fallback };
+    }
+
+    return error.CouldNotResolveLatestVersion;
+}
+
+fn fetchLatestVersionFromGitHub(allocator: std.mem.Allocator) !?[]u8 {
+    const response = fetchUrlToMemory(allocator, "https://api.github.com/repos/" ++ github_repo ++ "/releases/latest", 1 * 1024 * 1024) catch return null;
+    defer allocator.free(response);
+    return parseJsonStringField(allocator, response, "tag_name", true);
+}
+
+fn fetchLatestVersionFromFallback(allocator: std.mem.Allocator) !?[]u8 {
+    const base_url = try getBaseUrl(allocator);
+    defer if (base_url.owned) allocator.free(base_url.value);
+
+    const url = try std.fmt.allocPrint(allocator, "{s}/latest.json", .{base_url.value});
+    defer allocator.free(url);
+
+    const response = fetchUrlToMemory(allocator, url, 256 * 1024) catch return null;
+    defer allocator.free(response);
+    return parseJsonStringField(allocator, response, "version", false);
+}
+
+fn fetchChecksumsManifest(allocator: std.mem.Allocator, version: []const u8) ![]u8 {
+    const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/checksums.sha256", .{ github_repo, version });
+    defer allocator.free(url);
+    return fetchUrlToMemory(allocator, url, 256 * 1024);
+}
+
+fn fetchUrlToMemory(allocator: std.mem.Allocator, url: []const u8, max_output_bytes: usize) ![]u8 {
+    const result = try cio.runCapture(.{
+        .allocator = allocator,

@@ -1,0 +1,73 @@
+/// auto-update attempt should fire.
+pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
+    if (env_disabled) return false;
+    const last = last_check_ms orelse return true;
+    if (last > now_ms) return true;
+    const delta: i128 = @as(i128, now_ms) - @as(i128, last);
+    return delta >= auto_update_throttle_ms;
+}
+
+pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+    const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+    const home = cio.homeDir() orelse return;
+    if (home.len == 0) return;
+
+    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
+    defer allocator.free(dir_path);
+    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+
+    const stamp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, auto_update_stamp_filename }) catch return;
+    defer allocator.free(stamp_path);
+
+    const last_ms = readAutoUpdateStamp(io, stamp_path);
+    const now_ms = cio.milliTimestamp();
+    if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+
+    const executable_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
+    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{executable_path}) catch {
+        std.heap.page_allocator.free(executable_path);
+        return;
+    };
+    thread.detach();
+
+    // Only throttle after the worker launches so a local spawn failure can be
+    // retried on the next MCP startup.
+    writeAutoUpdateStamp(io, stamp_path, now_ms);
+}
+
+pub fn autoUpdateArgv(executable_path: []const u8) [2][]const u8 {
+    return .{ executable_path, "update" };
+}
+
+fn autoUpdateWorker(executable_path: []u8) void {
+    defer std.heap.page_allocator.free(executable_path);
+
+    // Invoke the checksum-verifying built-in updater directly. Capturing and
+    // discarding its output keeps the MCP stdio transport clean, while avoiding
+    // a shell or execution of a remotely downloaded install script.
+    const argv = autoUpdateArgv(executable_path);
+    const result = cio.runCapture(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &argv,
+        .max_output_bytes = 64 * 1024,
+    }) catch return;
+    std.heap.page_allocator.free(result.stdout);
+    std.heap.page_allocator.free(result.stderr);
+}
+
+fn readAutoUpdateStamp(io: std.Io, path: []const u8) ?i64 {
+    var buf: [8]u8 = undefined;
+    var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+    defer f.close(io);
+    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+    if (n < 8) return null;
+    return std.mem.readInt(i64, buf[0..8], .little);
+}
+
+fn writeAutoUpdateStamp(io: std.Io, path: []const u8, ms: i64) void {
+    var buf: [8]u8 = undefined;
+    std.mem.writeInt(i64, &buf, ms, .little);
+    const f = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true }) catch return;
+    defer f.close(io);
+    f.writePositionalAll(io, &buf, 0) catch {};
+}

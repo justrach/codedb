@@ -1,0 +1,51 @@
+✓ 50 results for "comment"  ⚡ 185.0µs
+  src/test_explore.zig:133  const isCommentOrBlank = explore.isCommentOrBlank;
+  src/test_explore.zig:616  test "isCommentOrBlank: detects language-specific comments" {
+  src/test_explore.zig:617      try testing.expect(isCommentOrBlank("  // zig comment", .zig));
+  src/test_explore.zig:618      try testing.expect(isCommentOrBlank("  # python comment", .python));
+  src/test_explore.zig:619      try testing.expect(isCommentOrBlank("  /* c comment */", .c));
+  src/test_search.zig:1870      // comment as call sites. A full-line comment is documentation, not a
+  src/explore.zig:43      comment_block,
+  src/explore.zig:168      in_block_comment: bool = false,
+  src/explore.zig:1033              if (compact and isCommentOrBlank(line, language)) continue;
+  src/explore.zig:2008                  .import, .variable, .constant, .comment_block, .type_alias, .macro_def => continue,
+  src/explore.zig:2032          var in_line_comment = false;
+  src/explore.zig:2033          var in_block_comment = false;
+  src/explore.zig:2042                  in_line_comment = false;
+  src/explore.zig:2048              if (in_line_comment) continue;
+  src/explore.zig:2050              if (in_block_comment) {
+  src/explore.zig:2052                      in_block_comment = false;
+  src/mcp.zig:670      \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+  src/mcp.zig:677      \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Never dump whole large files — run codedb_outline or codedb_symbol first to pick a tight range. Pass if_hash to skip unchanged re-reads; compact=true for minified or long-line files.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"raw":{"type":"boolean","description":"Byte-exact output: no line-number prefixes and no hash header, so the result can feed an exact-string edit (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
+  src/mcp.zig:2070      // inline. Prefer real definitions over import/comment matches (same filter as
+  src/mcp.zig:2074          if (r.symbol.kind != .import and r.symbol.kind != .comment_block) {
+  src/mcp.zig:2081          const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+  src/mcp.zig:2089          const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+  src/mcp.zig:2220              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2228              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2258              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/mcp.zig:2270              if (compact and explore_mod.isCommentOrBlank(r.line_text, explore_mod.detectLanguage(r.path))) continue;
+  src/test_explore.zig:607      const content = "fn main() void {}\n// this is a comment\n\n    return 0;\n}";
+  src/test_explore.zig:610      // Should contain code lines but not the comment or blank line
+  src/test_explore.zig:612      try testing.expect(std.mem.indexOf(u8, result, "// this is a comment") == null);
+  src/test_explore.zig:620      try testing.expect(isCommentOrBlank("  * continuation", .javascript));
+  src/test_explore.zig:621      try testing.expect(isCommentOrBlank("   ", .zig));
+  src/test_parser.zig:57      // A comment (or string) that merely contains `from "..."` must NOT become a
+  src/test_parser.zig:405          \\/* function blockComment() */
+  src/test_parser.zig:609          \\function afterComment()
+  src/test_parser.zig:680  test "issue-php-17: PHP code after block comment terminator is parsed" {
+  src/test_parser.zig:953  test "issue-179: block comment does not produce phantom symbols" {
+  src/test_parser.zig:974  test "issue-179: code after single-line /* */ comment is parsed" {
+  src/test_parser.zig:1099  test "issue-108: HCL comment lines skipped" {
+  src/test_parser.zig:1105          \\# This is a comment
+  src/test_parser.zig:1106          \\// Another comment
+  src/test_parser.zig:1245          \\// int fake_comment(void) {
+  src/test_search.zig:266      // comment — the bug is purely in the bookkeeping.
+  src/test_search.zig:1126      // Two files. "aaa.zig" has a passing comment mention of `fooSym`. The
+  src/test_search.zig:1129      // promotes the comment mention ("aaa" < "zzz"). Post-fix the rerank
+  src/test_search.zig:1136      try explorer.indexFile("aaa.zig", "// fooSym is referenced here in a comment\n");
+  src/test_search.zig:1867  test "issue-562: codedb_callers excludes full-line comment mentions" {
+  src/test_search.zig:1899      // The comment mention must not appear as a call site…
+  src/test_search.zig:1963      // A comment mentioning `gadget` appears BEFORE its definition; several call
+  src/test_search.zig:1964      // sites follow. Line-order rendering would show the line-1 comment first.
+  src/test_search.zig:1973      // the def line (`pub fn gadget`, line 4) must render before the comment mention (line 1)

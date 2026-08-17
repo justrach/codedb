@@ -1,0 +1,129 @@
+✓ indexed  288.3ms
+# Task
+MCP startup control flow roots project scanning JSON-RPC issue-346 auto-update
+
+## Keywords used
+- MCP
+- JSON
+- RPC
+- scanning
+- control
+
+## Symbol definitions
+- MCP (import) — src/test_mcp.zig:372
+         372 |     const MCP = @import("mcp.zig");
+- MCP (import) — src/test_mcp.zig:381
+         381 |     const MCP = @import("mcp.zig");
+- MCP (import) — src/test_mcp.zig:400
+         400 |     const MCP = @import("mcp.zig");
+
+## Callers (top non-test, non-import usages of these symbols)
+- src/background.zig:3: //! watchdogs (MCP stdin-HUP and cli-daemon timeout). Extracted from mainImpl;
+- src/background.zig:4: //! driven by commands.zig (serve/mcp/cli-daemon).
+
+## Related tests (existing coverage touching these symbols)
+- src/test_mcp.zig:11: const mcp_mod = @import("mcp.zig");
+- src/test_mcp.zig:32: const mcp_json = @import("mcp_json.zig");
+- src/test_mcp.zig:37: test "mcp json: line reader preserves newline and EOF framing" {
+- src/test_mcp.zig:40: const first = mcp_json.readLineBuf(testing.allocator, &reader) orelse return error.TestUnexpectedResult;
+- src/test_mcp.zig:44: const last = mcp_json.readLineBuf(testing.allocator, &reader) orelse return error.TestUnexpectedResult;
+- src/test_mcp.zig:47: try testing.expect(mcp_json.readLineBuf(testing.allocator, &reader) == null);
+… +7 more test hits (codedb_search in tests/ for the rest)
+
+## Most-relevant files
+- src/mcp_json.zig  (3 matches)
+- src/mcp.zig  (2 matches)
+- install/.wrangler/tmp/deploy-uk1dYp/worker.js  (2 matches)
+- install/worker.js  (2 matches)
+- website/worker/worker.js  (2 matches)
+
+## Top sites (with ±2 lines of context)
+
+src/mcp_json.zig:1
+```
+//! Small JSON-RPC helpers used by codedb's MCP transport.
+//!
+//! These were formerly supplied by mcp-zig. Keeping the protocol-neutral
+```
+
+src/mcp_json.zig:1
+```
+//! Small JSON-RPC helpers used by codedb's MCP transport.
+//!
+//! These were formerly supplied by mcp-zig. Keeping the protocol-neutral
+```
+
+src/mcp_json.zig:1
+```
+//! Small JSON-RPC helpers used by codedb's MCP transport.
+//!
+//! These were formerly supplied by mcp-zig. Keeping the protocol-neutral
+```
+
+src/mcp.zig:1
+```
+// codedb MCP server — JSON-RPC 2.0 over stdio
+const cio = @import("cio.zig");
+//
+```
+
+src/mcp.zig:1
+```
+// codedb MCP server — JSON-RPC 2.0 over stdio
+const cio = @import("cio.zig");
+//
+```
+
+install/.wrangler/tmp/deploy-uk1dYp/worker.js:15
+```
+      return serveInstallScript();
+    }
+    if (path === "/latest.json") {
+      return serveLatestVersion();
+    }
+```
+
+install/.wrangler/tmp/deploy-uk1dYp/worker.js:38
+```
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "public, max-age=300"
+    }
+  });
+```
+
+install/worker.js:15
+```
+    }
+
+    // GET /latest.json → fetch latest release from GitHub
+    if (path === "/latest.json") {
+      return serveLatestVersion();
+```
+
+install/worker.js:46
+```
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "public, max-age=300",
+    },
+  });
+```
+
+website/worker/worker.js:20
+```
+    const path = url.pathname;
+
+    // /latest.json — GitHub release version
+    if (path === "/latest.json") {
+      return serveLatestVersion();
+```
+
+website/worker/worker.js:55
+```
+    const version = release.tag_name.replace(/^v/, "");
+    return new Response(JSON.stringify({ version }), {
+      headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300" },
+    });
+  }
+```

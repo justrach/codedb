@@ -1,0 +1,90 @@
+diff --git a/src/mcp.zig b/src/mcp.zig
+index ca94d9c..fe0d13b 100644
+--- a/src/mcp.zig
++++ b/src/mcp.zig
+@@ -2573,21 +2573,22 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
+         var is_def = false;
+         for (defs) |d| {
+             if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
+                 is_def = true;
+                 break;
+             }
+         }
+         if (is_def) continue;
+-        // A whole-word match that only ever lands inside a string literal is a
+-        // mention, not an invocation — a `("name", "file")` table row or a
+-        // `test "…name…" {` declaration. Real calls in the same file (and even
+-        // in the same test body) sit outside the quotes and survive.
+-        if (!hasWholeWordMatchOutsideStrings(r.line_text, name)) continue;
++        // A whole-word match that only ever lands inside a string literal or a
++        // trailing comment is a mention, not an invocation — a `("name",
++        // "file")` table row, a `test "…name…" {` declaration, or
++        // `init(); // then name() …`. Real calls sit on the code prefix of the
++        // line, outside the quotes, and survive both cuts. (#682)
++        if (!hasWholeWordMatchOutsideStrings(lineCodePrefix(r.line_text, lang), name)) continue;
+         kept.append(alloc, r_idx) catch {};
+     }
+ 
+     const w = cio.listWriter(out, alloc);
+     w.print("{d} call sites for '{s}':\n", .{ kept.items.len, name }) catch {};
+     for (kept.items) |kept_idx| {
+         const r = results[kept_idx];
+         if (r.scope_name) |sn| {
+@@ -2677,16 +2678,57 @@ fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+             const after_ok = after >= line.len or !isIdentChar(line[after]);
+             if (before_ok and after_ok) return true;
+         }
+         i += 1;
+     }
+     return false;
+ }
+ 
++/// The slice of `line` before its first line-comment marker outside string
++/// literals, per `language` — the part of the line that can actually contain a
++/// call. Lines with no marker, and languages without a line-comment syntax
++/// (OCaml's `(* *)` is block-only), come back whole. (#682)
++///
++/// Same line-local scanning discipline as `hasWholeWordMatchOutsideStrings`:
++/// quoted spans are skipped (so `"https://…"` never truncates), an unclosed
++/// quote is ordinary code. Mid-line block-comment openers are left alone — a
++/// false negative re-admits a mention; truncating at `/*` could drop the real
++/// call in `foo(); /* … */ bar()`.
++fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
++    const markers: []const []const u8 = switch (language) {
++        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
++        .python, .ruby, .r, .shell => &.{"#"},
++        .hcl => &.{ "#", "//" },
++        .sql => &.{"--"},
++        .fortran => &.{"!"},
++        .llvm_ir => &.{";"},
++        else => return line,
++    };
++    var i: usize = 0;
++    while (i < line.len) {
++        if (line[i] == '"' or line[i] == '\'') {
++            if (stringLiteralEnd(line, i)) |end| {
++                i = end + 1;
++                continue;
++            }
++        }
++        for (markers) |m| {
++            if (std.mem.startsWith(u8, line[i..], m)) {
++                // Shell: `#` only opens a comment at the start of a word —
++                // `${#var}` and `$#` are live syntax, not comments.
++                if (language == .shell and i != 0 and line[i - 1] != ' ' and line[i - 1] != '\t') break;
++                return line[0..i];
++            }
++        }
++        i += 1;
++    }
++    return line;
++}
++
+ /// Index of the quote closing the literal opened at `open`, or null when the
+ /// literal never closes on this line.
+ fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+     const quote = line[open];
+     var i = open + 1;
+     while (i < line.len) : (i += 1) {
+         if (line[i] == '\\') {
+             i += 1;

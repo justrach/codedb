@@ -1,0 +1,61 @@
+        try filtered.append(allocator, std.mem.span(argv[0]));
+        var i: usize = 1;
+        while (i < argv.len) : (i += 1) {
+            const a = std.mem.span(argv[i]);
+            if (std.mem.startsWith(u8, a, "--config-file=")) {
+                explicit_config = a["--config-file=".len..];
+                continue;
+            } else if (std.mem.eql(u8, a, "--config-file") and i + 1 < argv.len) {
+                explicit_config = std.mem.span(argv[i + 1]);
+                i += 1;
+                continue;
+            } else if (std.mem.eql(u8, a, "--no-telemetry")) {
+                // #528 item 12: --no-telemetry is documented as a global option,
+                // so strip it before positional parsing (like --config-file)
+                // instead of only honoring it after `mcp`. Telemetry.init also
+                // honors CODEDB_NO_TELEMETRY.
+                no_telemetry = true;
+                continue;
+            } else if (std.mem.eql(u8, a, "--allow-temp")) {
+                // #538: opt-in to indexing temp roots (/tmp, /private/tmp). Sets
+                // CODEDB_ALLOW_TEMP so root_policy.tempIndexingAllowed (and any
+                // daemon this CLI spawns) honors it; the env var alone works too —
+                // the flag just flips it. Lets SWE-bench/CI harnesses index /tmp.
+                cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
+                continue;
+            }
+            try filtered.append(allocator, a);
+        }
+        break :blk try filtered.toOwnedSlice(allocator);
+    };
+    defer allocator.free(args);
+
+    var root: []const u8 = undefined;
+    var cmd: []const u8 = undefined;
+    var cmd_args_start: usize = undefined;
+    var root_is_explicit: bool = false;
+
+    const parsed = parsePositional(args);
+    if (parsed.usage_exit) {
+        printUsage(&out, s);
+        out.exitWithFlush(1);
+    }
+    root = parsed.root;
+    cmd = parsed.cmd;
+    cmd_args_start = parsed.cmd_args_start;
+    root_is_explicit = parsed.root_is_explicit;
+
+    // CODEDB_ROOT env var lets clients (Claude Code MCP, shell scripts) pin
+    // the root without needing to pass a positional arg. Treated as explicit
+    // so the MCP scan kicks off at startup instead of waiting for a roots
+    // handshake — without this, every fresh `codedb mcp` call against a
+    // client that doesn't send roots/list_changed sees an empty index.
+    if (mcpRootAcceptsEnv(cmd, root)) {
+        if (cio.posixGetenv("CODEDB_ROOT")) |env_root| {
+            if (env_root.len > 0) {
+                root = env_root;
+                root_is_explicit = true;
+            }
+        }
+    }
+

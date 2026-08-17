@@ -1,0 +1,51 @@
+✓ 50 results for "roots"  ⚡ 289.0µs
+  src/commands.zig:39  const triggerScanFromRoots = background.triggerScanFromRoots;
+  src/main.zig:308      // workspace roots. If we eager-load here we'd race the client's roots/list
+  src/cli_args.zig:43  ///     scan from hanging forever waiting for a `roots/list` that never comes.
+  src/commands.zig:446              .triggerFn = triggerScanFromRoots,
+  src/root_policy.zig:79  /// True when `path` sits under one of the temp/system-volatile roots the
+  src/root_policy.zig:81  /// project dirs are NOT temp roots — they are accepted unconditionally above.
+  src/root_policy.zig:168      // Already-allowed roots are never "bootstrapable" (no fs probe needed).
+  src/background.zig:2  //! background index scan, the deferred-roots watcher loop, and the two idle
+  src/background.zig:203  pub fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8) void {
+  src/background.zig:245              // Client never sent indexable roots — fall back to cwd so the
+  src/background.zig:247              const empty_roots: []const mcp_server.Root = &.{};
+  src/background.zig:248              _ = mcp_server.triggerDeferredScanWithFallback(ctx, empty_roots, ctx.fallback_cwd);
+  src/test_search.zig:1104      // "src/sample.zig". Post-fix path priors push code roots above
+  src/main.zig:179                  // #538: opt-in to indexing temp roots (/tmp, /private/tmp). Sets
+  src/main.zig:209      // so the MCP scan kicks off at startup instead of waiting for a roots
+  src/main.zig:211      // client that doesn't send roots/list_changed sees an empty index.
+  src/main.zig:311      // and clients that don't advertise the roots capability fire the trigger
+  src/main.zig:316          // junk roots, but reading an already-built index is harmless. Bench/CI
+  scripts/rank-eval.py:35      (codedb refuses to index temp roots by default).
+  docs/rfc-346-mcp-root-resolution.md:19  2. **`scanBg` fires before roots handshake completes.** The MCP protocol
+  docs/rfc-346-mcp-root-resolution.md:20     supports a `roots/list` request that editors use to advertise open
+  docs/rfc-346-mcp-root-resolution.md:22     (`mcp.zig:requestRoots`), but `scanBg` is spawned unconditionally at
+  src/test_mcp.zig:314  test "issue-77: mcp index accepts temporary-directory roots that cause pathological cache growth" {
+  src/test_mcp.zig:968  test "issue-346: root_policy rejects dangerous ambient cwd roots" {
+  src/test_mcp.zig:1948      // MCP `roots/list` message that a user invoking from a shell will never
+  src/test_mcp.zig:1969      // an MCP client may still send roots/list. Don't break that path.
+  src/test_mcp.zig:2484  test "issue-538: temp roots are indexable only when CODEDB_ALLOW_TEMP opts in" {
+  src/test_mcp.zig:2485      // Default (footgun guard, #80/#346): temp roots are refused so codedb never
+  src/test_mcp.zig:2497      // The opt-in must NOT widen the guard to real system roots.
+  src/test_mcp.zig:2954          _ = background_mod.triggerScanFromRoots;
+  src/mcp.zig:5  // Implements the JSON-RPC transport directly and adds roots support for workspace awareness.
+  src/mcp.zig:47  /// available. Callers must filter denied paths out of `indexable_roots` first;
+  src/mcp.zig:51      indexable_roots: []const Root,
+  src/mcp.zig:55      if (indexable_roots.len > 0) {
+  src/mcp.zig:56          const uri_raw = indexable_roots[0].uri;
+  src/mcp.zig:1064      client_supports_roots: bool = false,
+  src/mcp.zig:1065      client_roots_list_changed: bool = false,
+  src/mcp.zig:1067      pending_roots_id: ?i64 = null,
+  src/mcp.zig:1068      roots: std.ArrayList(Root) = .empty,
+  src/mcp.zig:1073      fn freeRoots(self: *Session) void {
+  scripts/e2e_mcp_test.py:10    3. No-roots client: spawn from cwd=/, client declares no roots capability, MCP
+  scripts/e2e_mcp_test.py:6    1. issue-346 regression: spawn from cwd=/, complete MCP handshake via roots, wait
+  scripts/e2e_mcp_test.py:9       and tools return data without needing a roots handshake.
+  scripts/e2e_mcp_test.py:172  def do_initialize(p: MCPProcess, with_roots: bool = True) -> bool:
+  scripts/e2e_mcp_test.py:175      if with_roots:
+  scripts/e2e_mcp_test.py:176          capabilities["roots"] = {"listChanged": True}
+  scripts/e2e_mcp_test.py:195  def reply_roots(p: MCPProcess, project_path: str, timeout: float = 5.0) -> bool:
+  scripts/e2e_mcp_test.py:197      Wait for the server's roots/list request, reply with project_path.
+  scripts/e2e_mcp_test.py:200      req = p.recv_method("roots/list", timeout=timeout)
+  scripts/e2e_mcp_test.py:207              "roots": [{"uri": f"file://{project_path}", "name": "project"}],

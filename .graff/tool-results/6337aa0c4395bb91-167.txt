@@ -1,0 +1,39 @@
+1 results for 'downloadAndReplaceBinary':
+  src/update.zig:282 (function) downloadAndReplaceBinary  // fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: []const u8, asset_name: []const u8, dest_path: []const u8, expected_hash: []const u8) !void {
+  282 | fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: []const u8, asset_name: []const u8, dest_path: []const u8, expected_hash: []const u8) !void {
+  283 |     const url = try std.fmt.allocPrint(allocator, "https://github.com/{s}/releases/download/v{s}/{s}", .{ github_repo, version, asset_name });
+  284 |     defer allocator.free(url);
+  285 | 
+  286 |     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}", .{ dest_path, cio.nanoTimestamp() });
+  287 |     defer allocator.free(tmp_path);
+  288 |     errdefer std.Io.Dir.deleteFileAbsolute(io, tmp_path) catch {};
+  289 | 
+  290 |     try downloadToFile(allocator, url, tmp_path);
+  291 | 
+  292 |     const actual_hash = try sha256FileHex(io, allocator, tmp_path);
+  293 |     defer allocator.free(actual_hash);
+  294 |     if (!std.ascii.eqlIgnoreCase(actual_hash, expected_hash)) {
+  295 |         return error.ChecksumMismatch;
+  296 |     }
+  297 | 
+  298 |     {
+  299 |         var tmp_file = try std.Io.Dir.openFileAbsolute(io, tmp_path, .{ .mode = .read_write });
+  300 |         defer tmp_file.close(io);
+  301 |         if (@import("builtin").os.tag != .windows) {
+  302 |             // POSIX execute bits; Windows has no chmod equivalent for binaries.
+  303 |             try tmp_file.setPermissions(io, std.Io.File.Permissions.fromMode(0o755));
+  304 |         }
+  305 |     }
+  306 | 
+  307 |     if (@import("builtin").os.tag == .windows) {
+  308 |         // Windows refuses to rename over a running .exe, but renaming the
+  309 |         // running image aside is allowed. Slide the old binary to .old (best
+  310 |         // effort); a stale .old from a prior update is replaced first.
+  311 |         const old_path = try std.fmt.allocPrint(allocator, "{s}.old", .{dest_path});
+  312 |         defer allocator.free(old_path);
+  313 |         std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+  314 |         std.Io.Dir.renameAbsolute(dest_path, old_path, io) catch {};
+  315 |     }
+  316 |     try std.Io.Dir.renameAbsolute(tmp_path, dest_path, io);
+  317 | }
+↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.

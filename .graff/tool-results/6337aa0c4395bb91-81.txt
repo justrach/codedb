@@ -1,0 +1,51 @@
+✓ 50 results for "stderr"  ⚡ 123.0µs
+  src/cio.zig:112      pub fn stderr() File {
+  src/bench_edge.zig:141      try writeHumanSummary(allocator, cio.File.stderr(), corpus.files, corpus.bytes, scan_ns, results.items);
+  src/bench_edge.zig:186          cio.File.stderr().writeAll("=== DUMP ") catch {};
+  src/bench_edge.zig:187          cio.File.stderr().writeAll(case.name) catch {};
+  src/bench_edge.zig:188          cio.File.stderr().writeAll(" ===\n") catch {};
+  src/bench_edge.zig:189          cio.File.stderr().writeAll(dump_out.items) catch {};
+  src/bench_edge.zig:190          cio.File.stderr().writeAll("\n=== END ===\n") catch {};
+  src/main.zig:55  /// happens if the entry point spawns a thread before writing to stderr.
+  src/main.zig:68          // Surface the failure on stderr so users see something even if the
+  src/main.zig:72              cio.File.stderr().writeAll(msg) catch {};
+  src/main.zig:90      const stderr_fd: c_int = 2;
+  src/main.zig:97          (cio.File{ .handle = stderr_fd }).writeAll(msg) catch {};
+  src/main.zig:235      // stderr so startup/failure paths don't corrupt the protocol stream.
+  src/main.zig:238          out.file = cio.File.stderr();
+  src/cio.zig:658          .stderr = result.stderr,
+  benchmarks/search-shootout/eval/judge.py:81          print(f"claude --print failed (exit {r.returncode})", file=sys.stderr)
+  scripts/run-bench-json.py:122          sys.stderr.write(proc.stderr)
+  src/cio.zig:3  //! 0.16 removed std.fs.File.{stdout,stderr,stdin}, cio.Mutex/RwLock,
+  src/cio.zig:78  /// stdin/stdout/stderr at /dev/null (so it never holds the terminal open or
+  src/cio.zig:563      stderr: []u8,
+  src/cio.zig:610  /// Captures stdout and stderr into separate streams (drained concurrently by
+  src/cio.zig:613  /// Run `argv` and capture stdout/stderr. POSIX uses a posix_spawnp fast path;
+  src/cio.zig:648          .stderr_limit = .limited(opts.max_output_bytes),
+  src/cio.zig:807      // Drain stderr on a background thread so neither pipe can fill up and
+  src/cio.zig:865          .stderr = try err_ctx.out.toOwnedSlice(alloc),
+  benchmarks/search-shootout/shootout.py:118              stderr=subprocess.DEVNULL, bufsize=0,
+  benchmarks/search-shootout/shootout.py:189              stderr=subprocess.DEVNULL, bufsize=0, cwd=root,
+  benchmarks/search-shootout/shootout.py:406              stderr=subprocess.DEVNULL, bufsize=0,
+  benchmarks/search-shootout/shootout.py:652              print(f"  session {sid} failed (exit {r.returncode})", file=sys.stderr)
+  benchmarks/search-shootout/shootout.py:657              print(f"  session {sid} json parse failed: {e}", file=sys.stderr)
+  benchmarks/search-shootout/shootout.py:660          print("no sessions completed successfully", file=sys.stderr)
+  benchmarks/search-shootout/shootout.py:860          print("corpus path does not exist: " + str(corpus), file=sys.stderr)
+  scripts/run-bench-json.py:26  def extract_json(stdout: str, stderr: str) -> str:
+  scripts/run-bench-json.py:31      for stream in (stdout, stderr):
+  scripts/run-bench-json.py:120      # Always surface stderr so CI logs show compile errors even on success.
+  scripts/run-bench-json.py:121      if proc.stderr:
+  scripts/run-bench-json.py:124          sys.stderr.write(f"\n[run-bench-json] zig build bench exited {proc.returncode}\n")
+  scripts/run-bench-json.py:126              sys.stderr.write("---- stdout ----\n")
+  scripts/run-bench-json.py:127              sys.stderr.write(proc.stdout)
+  scripts/run-bench-json.py:129      payload = json.loads(extract_json(proc.stdout, proc.stderr))
+  src/test_mcp.zig:181      defer testing.allocator.free(build.stderr);
+  src/test_mcp.zig:234      defer testing.allocator.free(cold.stderr);
+  src/test_mcp.zig:248          defer testing.allocator.free(warm.stderr);
+  src/test_mcp.zig:345      defer testing.allocator.free(result.stderr);
+  src/test_mcp.zig:491      defer testing.allocator.free(result.stderr);
+  src/test_mcp.zig:496          std.mem.indexOf(u8, result.stderr, "usage:") != null);
+  src/test_mcp.zig:498          std.mem.indexOf(u8, result.stderr, "update") != null);
+  src/test_mcp.zig:500          std.mem.indexOf(u8, result.stderr, "nuke") != null);
+  src/test_mcp.zig:512      defer testing.allocator.free(result.stderr);
+  src/test_mcp.zig:517          std.mem.indexOf(u8, result.stderr, "usage:") != null);

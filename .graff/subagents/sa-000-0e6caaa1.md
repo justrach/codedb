@@ -1,0 +1,125 @@
+# subagent sa-000-0e6caaa1
+
+- label: Trace update mechanisms
+- kind: subagent
+- status: ok
+- elapsed_ms: 488801
+- tools: bash,codedb,codedb,codedb,codedb,bash,bash,codedb,codedb,codedb,codedb,bash,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,bash!,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,codedb,read_file,read_file,codedb,codedb,codedb,codedb,codedb,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file,read_file
+
+## task
+
+HARD CONSTRAINTS (user, do not violate):
+- When discussing this release, describe only the latest unreleased changes just pushed, not v0.2.5837.
+
+In the current codedb repository, inspect existing update/version/install mechanisms. Do not edit files. Identify CLI commands, scripts, release URLs, verification/security measures, tests, docs, and reusable code relevant to automatically updating the binary. Report exact paths and symbols/line references, plus risks and a minimal implementation recommendation. Remember project policy: codedb is code-intelligence, not an editor; installer scripts must not execute untrusted code or skip verification.
+
+## report
+
+## Scope
+
+I treated the current worktree delta in `src/update.zig` and `src/test_mcp.zig` as the latest unreleased change. The change hardens background updating by removing the shell/downloaded-installer path and routing through the binary’s built-in updater.
+
+## Verified mechanisms
+
+### CLI and version handling
+
+- `codedb update` is a recognized command in `src/cli_args.zig:246` and is dispatched before root resolution, so it works without an indexable project root in `src/main.zig:276-283`.
+- `codedb --version`, `codedb -v`, and `codedb version` are handled as fast paths in `src/main.zig:93-112`; the compiled version comes from `src/release_info.zig:1`.
+- The updater first honors `CODEDB_VERSION`, then queries GitHub Releases, then falls back to `${CODEDB_URL:-https://codedb.codegraff.com}/latest.json` in `src/update.zig:190-224`.
+- The updater supports macOS ARM64/x86_64, Linux ARM64/x86_64, and Windows x86_64 through `assetNameForTarget` in `src/update.zig:110-127`.
+
+### Latest unreleased auto-update change
+
+- Background updating runs from `runMcp` in `src/commands.zig:390-399`; it is not started for ordinary query commands or the HTTP server path.
+- The check is disabled by `CODEDB_NO_AUTO_UPDATE`, throttled to 24 hours, and tracked under `~/.codedb/last_auto_update_check` in `src/update.zig:353-375`.
+- `maybeAutoUpdate` now obtains the current executable path, starts a detached worker, and writes the throttle stamp only after the worker launches in `src/update.zig:378-403`. This means a local thread-spawn failure can be retried on the next MCP startup.
+- The new `autoUpdateArgv` symbol returns exactly `[executable_path, "update"]` in `src/update.zig:406-408`.
+- `autoUpdateWorker` invokes that argv through `cio.runCapture`; it no longer invokes `sh`, `curl | bash`, or a remotely downloaded installer script in `src/update.zig:410-423`.
+- The added regression test specifically verifies that executable paths containing spaces are passed as one argv element and that the second argument is `update` in `src/test_mcp.zig:437-443`.
+
+### Built-in updater verification and replacement
+
+- `run` refuses equal versions, refuses downgrades, selects a platform asset, downloads the checksum manifest, requires a checksum entry, locates the current executable, and then replaces it in `src/update.zig:45-108`.
+- The checksum manifest is fetched from the GitHub release URL `https://github.com/justrach/codedb/releases/download/v{version}/checksums.sha256` in `src/update.zig:227-230`.
+- The binary is downloaded to a temporary path, hashed with SHA-256, compared case-insensitively against the manifest, assigned executable permissions on POSIX, and only then renamed into place in `src/update.zig:282-305`.
+- Windows attempts to move the old executable aside before renaming the verified temporary file in `src/update.zig:307-316`.
+- The updater’s URL fetches use `curl -fsSL` and fail on non-successful exit status in `src/update.zig:319-330`.
+- SHA-256 calculation is implemented internally with Zig’s crypto library in `src/update.zig:333-351`.
+- Existing unit coverage checks throttle behavior, future timestamps, corrupt timestamp arithmetic, version ordering, checksum parsing, platform asset names, and the new shell-free argv construction in `src/test_mcp.zig:416-443` and `src/test_mcp.zig:520-566`.
+- `test_mcp` is included in the normal test matrix in `build.zig:78-110`.
+
+### Installers and package launchers
+
+- The macOS/Linux installer is exposed at `https://codedb.codegraff.com/install.sh`; the README instructs users to pipe it into Bash in `README.md:73-85`.
+- `install/install.sh` resolves the latest version from GitHub or the Codegraff fallback, constructs a GitHub release asset URL, downloads the binary, and installs it at `$CODEDB_DIR` or `$HOME/bin` in `install/install.sh:532-554`.
+- The shell installer detects a checksum when available, but explicitly proceeds with a warning if `checksums.sha256` is unavailable or no hashing tool exists in `install/install.sh:555-579`; it then moves and chmods the file in `install/install.sh:580-582`.
+- The shell installer also registers MCP integrations and hooks after installation in `install/install.sh:600-610`.
+- The PowerShell installer uses `Invoke-WebRequest`, requires a checksum entry, validates a 64-character hexadecimal hash, computes SHA-256 with `Get-FileHash`, stages the binary, checks `codedb.exe --version`, and rolls back on failure in `install/install.ps1:80-122`.
+- The npm postinstall path derives a version-pinned GitHub release URL and checksum URL in `npm/scripts/postinstall.js:101-109`, requires a matching checksum entry in `npm/scripts/postinstall.js:114-131`, hashes the downloaded file, rejects mismatches, and renames the verified temporary file in `npm/scripts/postinstall.js:133-160`.
+- The npm launcher itself only forwards arguments, stdio, cwd, and environment to the installed native binary in `npm/bin/codedb.js:10-31`.
+- The package exposes `codedb` through `codedeebee` and runs the postinstall downloader from `npm/package.json:1-31`.
+
+### Release URLs and publishing
+
+- Release builds target the same five platform assets recognized by the updater in `.github/workflows/release-binaries.yml:15-48`.
+- The publish job computes `checksums.sha256` from all `codedb-*` artifacts and uploads both binaries and the manifest to the GitHub Release in `.github/workflows/release-binaries.yml:150-164`.
+- The Codegraff worker serves `/latest.json`, proxies `/v{version}/{asset}`, and obtains release metadata and assets from GitHub in `install/worker.js:7-24` and `install/worker.js:51-126`.
+- The separate website worker implements a similar latest-version and binary-proxy path in `website/worker/worker.js:1-75`, creating two pieces of release-proxy logic that can drift.
+- The installer worker serves the current `main/install/install.sh` dynamically from `raw.githubusercontent.com` in `install/worker.js:31-48`.
+
+### Documentation and project scope
+
+- README documentation presents `codedb update` as the repair/update path when the built-in updater cannot fetch checksums in `README.md:125-136`.
+- README describes codedb as a context/code-intelligence engine with no edit capability in `README.md:21-24`.
+- npm documentation states that postinstall downloads a matching native binary and verifies it against `checksums.sha256` in `npm/README.md:45-53`.
+
+## Security and operational risks
+
+### Verified risks
+
+1. **The latest change fixes the highest-risk auto-update behavior.** The prior auto-update implementation was replaced in the worktree; the current worker directly invokes `codedb update` and does not execute a remotely downloaded shell script, as shown by `src/update.zig:410-423`.
+
+2. **The shell installer still fails open on verification.** It can install when the checksum manifest is unavailable or when neither `sha256sum` nor `shasum` exists, merely printing a warning in `install/install.sh:565-579`. That conflicts with the project policy that installers must not skip verification.
+
+3. **The manual documentation still recommends piped remote code execution.** The macOS/Linux instructions use `curl ... | bash` in `README.md:73-78`, and the Windows guidance uses `irm ... | iex` in `README.md:91-95`. Those commands execute network-fetched scripts without a review or signature-verification step.
+
+4. **The release checksum is not independently signed.** The workflow generates and uploads a plain SHA-256 manifest in `.github/workflows/release-binaries.yml:150-164`; no signing or signature-verification step is present there. This protects against accidental corruption, but not against a compromised release channel or an attacker able to replace both the binary and manifest.
+
+5. **The fallback metadata endpoint is configurable, while the binary remains GitHub-pinned.** `CODEDB_URL` controls fallback version metadata in `src/update.zig:215-224`, but the checksum and binary URLs are constructed against GitHub in `src/update.zig:227-230` and `src/update.zig:282-284`. A malicious metadata source could select an existing release, but the updater’s numeric ordering prevents a straightforward downgrade through the normal path in `src/update.zig:140-168`.
+
+6. **The new “stamp after spawn” behavior has a concurrency window.** Two simultaneous MCP startups can both observe an expired/missing stamp before either writes the new stamp in `src/update.zig:390-403`, potentially launching multiple updater children. This is an operational race, not a shell-injection issue.
+
+7. **Windows replacement behavior is not covered by the current tests.** The Windows path depends on renaming the running executable aside before replacing it in `src/update.zig:307-316`; the update tests cover asset naming but do not exercise an actual Windows background replacement in `src/test_mcp.zig:552-566`.
+
+### Inference
+
+- Invoking the installer from the background updater would also have caused configuration and hook side effects, because `install/install.sh` registers multiple integrations and hooks after moving the binary in `install/install.sh:600-610`. The latest direct-updater change avoids those side effects and better preserves codedb’s “code intelligence, not editor” boundary.
+- The most important remaining supply-chain weakness is not the current auto-update process itself; it is the unsigned release manifest and the fail-open shell installer.
+
+## Minimal implementation recommendation
+
+1. **Keep the latest direct self-update design.** The background worker should continue spawning the same executable with the literal `update` argument through argv, as implemented by `autoUpdateArgv` and `autoUpdateWorker` in `src/update.zig:406-423`. Do not restore any `shell -c`, `curl | bash`, or `irm | iex` path.
+
+2. **Make every installer fail closed.** In `install/install.sh:555-579`, require:
+   - a successfully downloaded checksum manifest;
+   - an exact 64-hex checksum for the selected asset;
+   - an available hashing implementation;
+   - a matching digest before `mv`.
+   
+   A missing manifest or hashing tool should terminate without installing.
+
+3. **Add authenticated release verification.** Extend `.github/workflows/release-binaries.yml:150-164` to publish a signed checksum manifest or signed artifact attestations, and verify that signature before accepting the binary in `src/update.zig`, the shell installer, PowerShell, and npm.
+
+4. **Add focused tests for the new behavior.** Keep the argv unit test and add tests for spawn-failure retry semantics, concurrent stamp handling, failed checksum replacement, and Windows replacement/rollback behavior. The current test matrix already runs `test_mcp` through `build.zig:78-110`.
+
+5. **Update documentation to avoid piped execution.** Replace the README’s network-piped installer examples in `README.md:73-95` with a download-to-file, signature/checksum verification, then explicit execution flow. Manual installation should remain binary-only and should not silently register hooks or alter unrelated tool configuration.
+
+## Three load-bearing facts
+
+1. The latest worktree change routes background updates through `codedb update` using argv, eliminating remote installer-script execution from the automatic path (`src/update.zig:406-423`).
+2. The built-in updater already verifies the selected release binary with SHA-256 before replacement (`src/update.zig:282-305`), while the shell installer still allows unverified installation (`install/install.sh:565-579`).
+3. Release publishing currently uploads an unsigned checksum manifest alongside the binaries (`.github/workflows/release-binaries.yml:150-164`).
+
+## Open question
+
+Should the project adopt a specific signature/attestation format and trusted public-key distribution mechanism, or is strict HTTPS-delivered SHA-256 verification the intended security boundary?

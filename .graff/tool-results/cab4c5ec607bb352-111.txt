@@ -1,0 +1,114 @@
+commit 1cc30d94029ea5976d0fbf0d3e01e39917e6fd7a
+Author: justrach <54503978+justrach@users.noreply.github.com>
+Date:   Wed Aug 5 02:15:17 2026 +0800
+
+    fix(#682): callers stops counting trailing-comment mentions as call sites
+    
+    hasWholeWordMatchOutsideStrings now scans only the line's code prefix:
+    lineCodePrefix truncates at the first line-comment marker outside string
+    literals, using the same language table as isCommentOrBlank and the same
+    quote-skipping scan as the string filter. Block-comment openers and
+    backticks stay untouched (false negatives only re-admit mentions), a
+    string'd "https://…" never truncates, and shell's `#` only counts at a
+    word start (`${#var}` is live syntax).
+    
+    Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+    Claude-Session: https://claude.ai/code/session_018teBQSh5eSDmojrx12k2jY
+
+diff --git a/src/mcp.zig b/src/mcp.zig
+index ca94d9c..fe0d13b 100644
+--- a/src/mcp.zig
++++ b/src/mcp.zig
+@@ -2578,11 +2578,12 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
+             }
+         }
+         if (is_def) continue;
+-        // A whole-word match that only ever lands inside a string literal is a
+-        // mention, not an invocation — a `("name", "file")` table row or a
+-        // `test "…name…" {` declaration. Real calls in the same file (and even
+-        // in the same test body) sit outside the quotes and survive.
+-        if (!hasWholeWordMatchOutsideStrings(r.line_text, name)) continue;
++        // A whole-word match that only ever lands inside a string literal or a
++        // trailing comment is a mention, not an invocation — a `("name",
++        // "file")` table row, a `test "…name…" {` declaration, or
++        // `init(); // then name() …`. Real calls sit on the code prefix of the
++        // line, outside the quotes, and survive both cuts. (#682)
++        if (!hasWholeWordMatchOutsideStrings(lineCodePrefix(r.line_text, lang), name)) continue;
+         kept.append(alloc, r_idx) catch {};
+     }
+ 
+@@ -2682,6 +2683,47 @@ fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+     return false;
+ }
+ 
++/// The slice of `line` before its first line-comment marker outside string
++/// literals, per `language` — the part of the line that can actually contain a
++/// call. Lines with no marker, and languages without a line-comment syntax
++/// (OCaml's `(* *)` is block-only), come back whole. (#682)
++///
++/// Same line-local scanning discipline as `hasWholeWordMatchOutsideStrings`:
++/// quoted spans are skipped (so `"https://…"` never truncates), an unclosed
++/// quote is ordinary code. Mid-line block-comment openers are left alone — a
++/// false negative re-admits a mention; truncating at `/*` could drop the real
++/// call in `foo(); /* … */ bar()`.
++fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
++    const markers: []const []const u8 = switch (language) {
++        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
++        .python, .ruby, .r, .shell => &.{"#"},
++        .hcl => &.{ "#", "//" },
++        .sql => &.{"--"},
++        .fortran => &.{"!"},
++        .llvm_ir => &.{";"},
++        else => return line,
++    };
++    var i: usize = 0;
++    while (i < line.len) {
++        if (line[i] == '"' or line[i] == '\'') {
++            if (stringLiteralEnd(line, i)) |end| {
++                i = end + 1;
++                continue;
++            }
++        }
++        for (markers) |m| {
++            if (std.mem.startsWith(u8, line[i..], m)) {
++                // Shell: `#` only opens a comment at the start of a word —
++                // `${#var}` and `$#` are live syntax, not comments.
++                if (language == .shell and i != 0 and line[i - 1] != ' ' and line[i - 1] != '\t') break;
++                return line[0..i];
++            }
++        }
++        i += 1;
++    }
++    return line;
++}
++
+ /// Index of the quote closing the literal opened at `open`, or null when the
+ /// literal never closes on this line.
+ fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+diff --git a/src/test_mcp.zig b/src/test_mcp.zig
+index 059284c..536684e 100644
+--- a/src/test_mcp.zig
++++ b/src/test_mcp.zig
+@@ -3805,6 +3805,22 @@ test "issue-682: codedb_callers excludes a symbol mentioned only in a trailing c
+     try testing.expect(std.mem.indexOf(u8, out.items, "call.zig:2") != null);
+ }
+ 
++test "issue-682: codedb_callers keeps a call after a string containing the comment marker" {
++    // `fetch("https://x", renderX);` — the `//` sits inside the string literal,
++    // so the comment cut must not swallow the real reference after it.
++    var arena = std.heap.ArenaAllocator.init(testing.allocator);
++    defer arena.deinit();
++    var out: std.ArrayList(u8) = .empty;
++    defer out.deinit(testing.allocator);
++
++    try renderCallersFixture(arena.allocator(), &.{
++        .{ "url.zig", "pub fn callerA() void {\n    fetch(\"https://x\", renderX);\n}\n" },
++    }, "renderX", &out);
++
++    try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
++    try testing.expect(std.mem.indexOf(u8, out.items, "url.zig:2") != null);
++}
++
+ test "issue: codedb_callers keeps a symbol used outside a string on a line that has strings" {
+     // `foo("msg", renderX)` passes the function by reference next to a string
+     // literal — the mention is real code and must survive the filter.

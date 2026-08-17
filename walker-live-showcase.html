@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>codedb walker — before vs after</title>
+  <style>
+    :root {
+      --bg: #07090e;
+      --before: #1a1014;
+      --after: #0d1614;
+      --before-line: #fb718544;
+      --after-line: #34d39944;
+      --before-fg: #fb7185;
+      --after-fg: #34d399;
+      --text: #f4f6fb;
+      --muted: rgba(244,246,251,0.62);
+      --dim: rgba(244,246,251,0.38);
+      --card: #10141d;
+      --line: rgba(255,255,255,0.08);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+    a { color: #7dd3fc; }
+    .hero { padding: 40px 28px 20px; max-width: 1200px; margin: 0 auto; }
+    .kicker { letter-spacing: 0.14em; text-transform: uppercase; font-size: 11px; color: var(--dim); font-weight: 700; }
+    h1 { font-size: 38px; letter-spacing: -0.035em; margin: 8px 0 10px; line-height: 1.1; }
+    .sub { color: var(--muted); max-width: 720px; }
+    .split { display: grid; grid-template-columns: 1fr 1fr; min-height: 40vh; }
+    .pane { padding: 28px 32px 40px; }
+    .pane.before { background: linear-gradient(180deg, #1c0f13 0%, #0b080a 100%); border-right: 1px solid var(--before-line); }
+    .pane.after { background: linear-gradient(180deg, #0c1a16 0%, #070b0a 100%); }
+    .label {
+      display: inline-block; font-size: 11px; font-weight: 800; letter-spacing: 0.16em;
+      text-transform: uppercase; padding: 4px 10px; border-radius: 999px; margin-bottom: 14px;
+    }
+    .before .label { color: var(--before-fg); background: #fb71851a; border: 1px solid var(--before-line); }
+    .after .label { color: var(--after-fg); background: #34d3991a; border: 1px solid var(--after-line); }
+    .pane h2 { font-size: 22px; margin: 0 0 8px; letter-spacing: -0.02em; }
+    .pane .ver { color: var(--dim); font-size: 13px; margin-bottom: 22px; }
+    .stat {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 18px 0 22px;
+    }
+    .stat div {
+      background: rgba(0,0,0,0.28); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+    }
+    .stat .n { font-size: 28px; font-weight: 700; letter-spacing: -0.04em; }
+    .before .stat .n { color: var(--before-fg); }
+    .after .stat .n { color: var(--after-fg); }
+    .stat span { display: block; color: var(--dim); font-size: 12px; margin-top: 2px; }
+    ol.steps { margin: 0; padding-left: 18px; color: var(--muted); }
+    ol.steps li { margin: 8px 0; }
+    ol.steps code { color: var(--text); font-size: 13px; }
+    .waste { color: var(--before-fg); }
+    .win { color: var(--after-fg); }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 36px 28px 80px; }
+    h3 { font-size: 18px; letter-spacing: -0.02em; margin: 36px 0 14px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; background: var(--card); border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+    th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+    td.b { color: var(--before-fg); font-weight: 650; }
+    td.a { color: var(--after-fg); font-weight: 650; }
+    .bars { display: grid; gap: 14px; }
+    .bar-row { display: grid; grid-template-columns: 160px 1fr 80px; gap: 12px; align-items: center; }
+    .bar-row .name { color: var(--muted); font-size: 13px; }
+    .track { height: 22px; background: #121722; border-radius: 6px; overflow: hidden; position: relative; }
+    .fill { height: 100%; border-radius: 6px; }
+    .fill.b { background: #fb7185; }
+    .fill.a { background: #34d399; }
+    .bar-row .val { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); text-align: right; }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    pre {
+      margin: 0; padding: 14px 16px; background: #0a0d14; border: 1px solid var(--line);
+      border-radius: 12px; font: 12px/1.55 ui-monospace, Menlo, monospace; color: #d6e4ff; overflow-x: auto;
+    }
+    .pair .cap { font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 8px; font-weight: 700; }
+    .pair .cap.b { color: var(--before-fg); }
+    .pair .cap.a { color: var(--after-fg); }
+    footer { color: var(--dim); font-size: 13px; margin-top: 40px; }
+    @media (max-width: 860px) {
+      .split, .pair, .stat, .bar-row { grid-template-columns: 1fr; }
+      .bar-row .val { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <div class="kicker">issue-694-failing-test · measured on this machine · Zig 0.17.0-dev</div>
+    <h1>Same save. Two walkers.</h1>
+    <p class="sub">You edit one file in a 500-file tree. Left is <strong>0.2.5840 / main</strong> after the dir-mtime prune. Right is this branch after #693 + #694. Numbers are from the experiment test and Scenario 7 e2e, not estimates.</p>
+  </div>
+
+  <div class="split">
+    <div class="pane before">
+      <span class="label">Before</span>
+      <h2>Stat the world, then maybe notice the save</h2>
+      <div class="ver">0.2.5840 · skip readdir, still scan + stat everyone</div>
+      <div class="stat">
+        <div><div class="n">360</div><span>full-map scans / quiet cycle<br>40 files × 9 dirs</span></div>
+        <div><div class="n">500</div><span>statFile calls / quiet cycle<br>on a 500-file tree</span></div>
+        <div><div class="n">≤ 2s</div><span>until MCP outline/search<br>see the new symbol</span></div>
+        <div><div class="n">2s</div><span>hard sleep every poll<br>even if nothing changed</span></div>
+      </div>
+      <ol class="steps">
+        <li>You save <code>src/keep.py</code>. Parent dir mtime often does <em>not</em> change.</li>
+        <li>Walker is asleep for up to <span class="waste">2 seconds</span>.</li>
+        <li>Wakes up. For <em>every</em> unchanged directory, iterates the <em>entire</em> <code>known</code> map (<span class="waste">O(F × D)</span>).</li>
+        <li>Then <code>statFile</code> on <em>every</em> known file, just in case one of them was the save.</li>
+        <li>Your file’s mtime finally differs. Read + reindex. MCP tools update.</li>
+        <li>If you <code>codedb_search</code> first, you can still get 0 hits until outline/read or that poll lands.</li>
+      </ol>
+    </div>
+    <div class="pane after">
+      <span class="label">After</span>
+      <h2>Kernel says which file. Walker only stats that one.</h2>
+      <div class="ver">#693 parent index + #694 dirty-set + kqueue/inotify</div>
+      <div class="stat">
+        <div><div class="n">0</div><span>full-map scans / quiet cycle<br>bucketed by parent once</span></div>
+        <div><div class="n">0</div><span>statFile calls / quiet cycle<br>same 500-file tree</span></div>
+        <div><div class="n">~100ms</div><span>until MCP outline/search/read/symbol<br>same process, no codedb_index</span></div>
+        <div><div class="n">1</div><span>stat on the save<br>3ms to reindex that file</span></div>
+      </div>
+      <ol class="steps">
+        <li>You save <code>src/keep.py</code> (in-place or atomic rename).</li>
+        <li>Darwin <code>kqueue EVFILT.VNODE</code> / Linux <code>inotify</code> wakes the 2s poll early.</li>
+        <li>Path goes into the <span class="win">dirty-set</span>. Unchanged dirs skip everyone else.</li>
+        <li><code>statFile</code> + mtime/hash on <em>that file only</em>.</li>
+        <li>Explorer reindexes. Next outline / search / read / symbol already has it.</li>
+        <li>New sibling: dir mtime / inotify create, search finds it <em>before</em> outline-on-miss.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <h3>Head-to-head, same fixtures</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>What we measured</th>
+          <th>Before (0.2.5840)</th>
+          <th>After (#693 + #694)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Quiet cycle, 40 files / 8 dirs — map scans</td>
+          <td class="b">360</td>
+          <td class="a">0</td>
+        </tr>
+        <tr>
+          <td>Quiet cycle, 500 files — <code>statFile</code></td>
+          <td class="b">500</td>
+          <td class="a">0</td>
+        </tr>
+        <tr>
+          <td>Quiet cycle wall time (500 files, APFS)</td>
+          <td class="b">1–2ms + 2s sleep</td>
+          <td class="a">1ms, sleeps until an event</td>
+        </tr>
+        <tr>
+          <td>In-place edit of 1 file — stats</td>
+          <td class="b">500 (then notice 1)</td>
+          <td class="a">1</td>
+        </tr>
+        <tr>
+          <td>In-place edit — time to reindex</td>
+          <td class="b">up to 2000ms</td>
+          <td class="a">3ms once woken</td>
+        </tr>
+        <tr>
+          <td>MCP sees new symbol (same process)</td>
+          <td class="b">≤ 2s, or never if you only search</td>
+          <td class="a">96–104ms × 3 trials</td>
+        </tr>
+        <tr>
+          <td>Atomic editor save (tmp → rename)</td>
+          <td class="b">next 2s poll, if vnode even still armed</td>
+          <td class="a">101ms, vnode re-armed</td>
+        </tr>
+        <tr>
+          <td>New sibling via search first (no outline)</td>
+          <td class="b">0 hits until outline/read or poll</td>
+          <td class="a">105ms, walker saw dir change</td>
+        </tr>
+        <tr>
+          <td>Watch init fails</td>
+          <td class="b">stat-all (the only path)</td>
+          <td class="a">stat-all fallback, still correct</td>
+        </tr>
+        <tr>
+          <td>e2e MCP harness</td>
+          <td class="b">S1–S6 only</td>
+          <td class="a">56/56 including Scenario 7</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Cost of one quiet poll, drawn to scale</h3>
+    <p class="sub" style="margin-top:0">Map scans on the 40-file fixture. After is a 1px sliver because it is actually zero.</p>
+    <div class="bars" style="margin-top:16px">
+      <div class="bar-row">
+        <div class="name">Before · map scans</div>
+        <div class="track"><div class="fill b" style="width:100%"></div></div>
+        <div class="val">360</div>
+      </div>
+      <div class="bar-row">
+        <div class="name">After · map scans</div>
+        <div class="track"><div class="fill a" style="width:0.3%"></div></div>
+        <div class="val">0</div>
+      </div>
+      <div class="bar-row">
+        <div class="name">Before · stats (500 files)</div>
+        <div class="track"><div class="fill b" style="width:100%"></div></div>
+        <div class="val">500</div>
+      </div>
+      <div class="bar-row">
+        <div class="name">After · stats (quiet)</div>
+        <div class="track"><div class="fill a" style="width:0.3%"></div></div>
+        <div class="val">0</div>
+      </div>
+      <div class="bar-row">
+        <div class="name">Before · MCP freshness</div>
+        <div class="track"><div class="fill b" style="width:100%"></div></div>
+        <div class="val">2000ms</div>
+      </div>
+      <div class="bar-row">
+        <div class="name">After · MCP freshness</div>
+        <div class="track"><div class="fill a" style="width:5%"></div></div>
+        <div class="val">100ms</div>
+      </div>
+    </div>
+
+    <h3>The code path that changed</h3>
+    <div class="pair">
+      <div>
+        <div class="cap b">Before · walkRel unchanged dir</div>
+        <pre>// every unchanged directory
+var kiter = known.iterator();
+while (kiter.next()) |kv| {          // ALL files
+    if (parentRel(path) == prefix)
+        statFile(path);              // ALL files in dir
+    else
+        child_seen.put(firstComp);
+}
+// then recurse into every child dir
+// and do the full scan again</pre>
+      </div>
+      <div>
+        <div class="cap a">After · walkRel unchanged dir</div>
+        <pre>// parents built once per cycle
+for (parents.files.get(prefix)) |path| {
+    if (dirty) |d| {
+        if (d.get(path) == null) {   // not this save
+            mark seen; continue;     // NO stat
+        }
+    }
+    statFile(path);                  // dirty only
+}
+// child dirs from the same index</pre>
+      </div>
+    </div>
+
+    <h3>What the agent feels</h3>
+    <table>
+      <thead>
+        <tr><th>You do this</th><th>Before</th><th>After</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Edit a function, immediately <code>codedb_search</code></td>
+          <td class="b">Often 0 hits. Index is last poll.</td>
+          <td class="a">Hit in ~100ms. Same MCP process.</td>
+        </tr>
+        <tr>
+          <td>Add a file, search before outline</td>
+          <td class="b">Miss unless you outline/read first (5840 miss path).</td>
+          <td class="a">Walker sees the sibling. Search works first.</td>
+        </tr>
+        <tr>
+          <td>Sit idle in a big repo</td>
+          <td class="b">CPU + N stats every 2s forever.</td>
+          <td class="a">0 stats until the kernel reports a write.</td>
+        </tr>
+        <tr>
+          <td>Vim / VS Code atomic save</td>
+          <td class="b">Easy to miss if the fd died with the tmp file.</td>
+          <td class="a">Re-arm after DELETE/RENAME. 101ms.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <footer>
+      Before = main @ 2aebbe0 (0.2.5840). After = issue-694-failing-test @ f233a9b plus uncommitted experiment + Scenario 7.
+      Issues <a href="https://github.com/justrach/codedb/issues/693">#693</a> and <a href="https://github.com/justrach/codedb/issues/694">#694</a>.
+    </footer>
+  </div>
+</body>
+</html>

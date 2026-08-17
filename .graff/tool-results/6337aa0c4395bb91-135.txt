@@ -1,0 +1,86 @@
+        r = t("scan completes before inline-arg backtest")
+        scan_ok = wait_for_scan(p, timeout=90.0)
+        if not scan_ok:
+            r.fail("timed out waiting for scan")
+            return results
+        r.ok()
+
+        r = t("direct tools/call accepts inline path with empty arguments")
+        resp = p.call_tool_params({
+            "name": "codedb_outline",
+            "arguments": {},
+            "path": "src/mcp.zig",
+        })
+        text = tool_text(resp)
+        if resp is None:
+            r.fail("no response to inline-arg tools/call")
+        elif "missing 'path'" in text or "received keys: []" in text:
+            r.fail(f"inline path was dropped: {text[:220]!r}")
+        elif "src/mcp.zig" not in text and "handleCall" not in text:
+            r.fail(f"outline response missing expected file/symbol: {text[:220]!r}")
+        else:
+            r.ok()
+
+    finally:
+        p.close()
+
+    return results
+
+
+# ── Runner ────────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="codedb MCP E2E test harness")
+    parser.add_argument("--binary", default="zig-out/bin/codedb",
+                        help="Path to codedb binary (default: zig-out/bin/codedb)")
+    parser.add_argument("--project", default=os.getcwd(),
+                        help="Absolute path to project to index (default: cwd)")
+    args = parser.parse_args()
+
+    binary = str(Path(args.binary).resolve())
+    project = str(Path(args.project).resolve())
+
+    if not Path(binary).exists():
+        print(f"{RED}ERROR:{RESET} binary not found: {binary}")
+        print("Run `zig build` first, or pass --binary /path/to/codedb")
+        return 1
+
+    print(f"\n{BOLD}codedb MCP E2E test harness{RESET}")
+    print(f"  binary : {binary}")
+    print(f"  project: {project}\n")
+
+    all_results: list[TestResult] = []
+
+    print(f"{CYAN}── Scenario 1: issue-346 regression (spawn from /, roots handshake) ──{RESET}")
+    all_results += run_scenario_1_issue346_regression(binary, project)
+
+    print(f"\n{CYAN}── Scenario 2: normal mode (explicit --root) ──{RESET}")
+    all_results += run_scenario_2_normal_mode(binary, project)
+
+    print(f"\n{CYAN}── Scenario 3: no-roots client (spawn from /, no scan) ──{RESET}")
+    all_results += run_scenario_3_no_roots_client(binary)
+
+    print(f"\n{CYAN}── Scenario 4: issue-512 direct inline args ──{RESET}")
+    all_results += run_scenario_4_issue512_direct_inline_args(binary, project)
+
+    print()
+    passed = 0
+    failed = 0
+    for r in all_results:
+        status = PASS if r.passed else FAIL
+        detail = f"  {r.message}" if r.message else ""
+        print(f"  {status}  {r.name}{detail}")
+        if r.passed:
+            passed += 1
+        else:
+            failed += 1
+
+    print(f"\n{BOLD}Results: {passed}/{len(all_results)} passed{RESET}")
+    if failed:
+        print(f"{RED}{failed} test(s) failed.{RESET}")
+        return 1
+    print(f"{GREEN}All tests passed.{RESET}")
+    return 0
+
+
+if __name__ == "__main__":

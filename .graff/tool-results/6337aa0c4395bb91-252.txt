@@ -1,0 +1,61 @@
+        .allocator = allocator,
+        .argv = &.{ "curl", "-fsSL", "-A", user_agent, url, "-o", dest_path },
+        .max_output_bytes = 16 * 1024,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        return error.DownloadFailed;
+    }
+}
+
+fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [16 * 1024]u8 = undefined;
+    var offset: u64 = 0;
+    while (true) {
+        const read_len = try file.readPositionalAll(io, &buf, offset);
+        if (read_len == 0) break;
+        hasher.update(buf[0..read_len]);
+        offset += read_len;
+        if (read_len < buf.len) break;
+    }
+
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    hasher.final(&digest);
+    const digest_hex = std.fmt.bytesToHex(digest, .lower);
+    return allocator.dupe(u8, &digest_hex);
+}
+
+// ── Auto-update ──────────────────────────────────────────────────────────────
+//
+// On startup we kick off a detached invocation of the built-in, checksum-
+// verified updater. The check is:
+//   • disabled when CODEDB_NO_AUTO_UPDATE is set in the environment
+//   • throttled to at most once every 24 hours, tracked in
+//     ~/.codedb/last_auto_update_check (a u64 little-endian unix-ms timestamp)
+// The update itself runs in a background thread so network failures never block
+// server startup. If the binary on disk gets replaced mid-session, the kernel
+// keeps the old inode mapped for the running process; subsequent invocations
+// get the new binary.
+
+const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
+const auto_update_stamp_filename = "last_auto_update_check";
+
+/// Pure decision function — useful for tests. Returns true when the next
+/// auto-update attempt should fire.
+pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
+    if (env_disabled) return false;
+    const last = last_check_ms orelse return true;
+    if (last > now_ms) return true;
+    const delta: i128 = @as(i128, now_ms) - @as(i128, last);
+    return delta >= auto_update_throttle_ms;
+}
+
+pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+    const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+    const home = cio.homeDir() orelse return;

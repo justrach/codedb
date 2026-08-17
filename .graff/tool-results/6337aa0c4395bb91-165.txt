@@ -1,0 +1,61 @@
+    });
+    defer testing.allocator.free(result.stdout);
+    defer testing.allocator.free(result.stderr);
+
+    try testing.expect(result.term == .Exited);
+    try testing.expect(result.term.Exited == 0);
+    try testing.expect(std.mem.indexOf(u8, result.stdout, "usage:") != null or
+        std.mem.indexOf(u8, result.stderr, "usage:") != null);
+}
+
+test "update: compareVersions orders semantic versions" {
+    try testing.expect(try update_mod.compareVersions("0.2.55", "0.2.56") == .lt);
+    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56") == .eq);
+    try testing.expect(try update_mod.compareVersions("v0.2.57", "0.2.56") == .gt);
+    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56.0") == .eq);
+}
+
+test "update: compareVersionsForUpdate allows superseded release train typo" {
+    try testing.expect(try update_mod.compareVersions("0.2.58181", "0.2.5823") == .gt);
+    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5823") == .lt);
+    try testing.expect(try update_mod.compareVersionsForUpdate("v0.2.58181", "v0.2.5823") == .lt);
+    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5824") == .lt);
+    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5822") == .gt);
+    try testing.expect(!try update_mod.targetSupersedesCurrent("0.2.5823", "0.2.5824"));
+}
+
+test "update: checksumForBinary parses release manifest" {
+    const manifest =
+        \\7be38140d090b2e23723c8cde02be150171c818daa16b18c520b44cc1e078add  codedb-darwin-arm64
+        \\76bc7b81bc9fd211aa2c1ac59d1d26e8c80bc211ab560de2dc998ea9e04ec471  codedb-darwin-x86_64
+        \\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  *codedb-linux-arm64
+    ;
+
+    try testing.expectEqualStrings(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        update_mod.checksumForBinary(manifest, "codedb-linux-arm64") orelse return error.TestUnexpectedResult,
+    );
+    try testing.expect(update_mod.checksumForBinary(manifest, "codedb-linux-x86_64") == null);
+}
+
+test "update: asset names match published release naming" {
+    try testing.expectEqualStrings("codedb-darwin-arm64", update_mod.assetNameForTarget(.macos, .aarch64).?);
+    try testing.expectEqualStrings("codedb-darwin-x86_64", update_mod.assetNameForTarget(.macos, .x86_64).?);
+    try testing.expectEqualStrings("codedb-linux-arm64", update_mod.assetNameForTarget(.linux, .aarch64).?);
+    try testing.expectEqualStrings("codedb-linux-x86_64", update_mod.assetNameForTarget(.linux, .x86_64).?);
+    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+}
+
+test "issue-677: update resolves the published Windows x86_64 asset" {
+    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+    try testing.expect(update_mod.assetNameForTarget(.windows, .aarch64) == null);
+}
+
+test "issue-658: hook registration is skipped after a user removes the hook" {
+    try testing.expect(update_mod.shouldRegisterHooks(false, false, false, false));
+    try testing.expect(update_mod.shouldRegisterHooks(false, false, true, true));
+    try testing.expect(!update_mod.shouldRegisterHooks(false, false, true, false));
+    try testing.expect(!update_mod.shouldRegisterHooks(true, false, false, false));
+    try testing.expect(!update_mod.shouldRegisterHooks(false, true, true, true));
+}
+

@@ -1,0 +1,134 @@
+    90	    // a test/ directory segment.
+    91	    const basename = std.fs.path.basename(path);
+    92	    if (std.mem.startsWith(u8, basename, "test") or std.mem.indexOf(u8, basename, "_test") != null) c.is_test = true;
+    93	    return c;
+    94	}
+    95	
+    96	pub const FileOutline = struct {
+    97	    path: []const u8,
+    98	    language: Language,
+    99	    line_count: u32,
+   100	    byte_size: u64,
+   101	    symbols: std.ArrayList(Symbol) = .empty,
+   102	    imports: std.ArrayList([]const u8) = .empty,
+   103	    allocator: std.mem.Allocator,
+   104	    owns_path: bool = false,
+   105	    /// When true, `imports` and each `symbols[].name`/`.detail` are borrowed
+   106	    /// slices into an externally-owned buffer (the snapshot outline_state
+   107	    /// section, retained by the Explorer) rather than individual allocations,
+   108	    /// so deinit must not free them. The ArrayLists themselves are still owned.
+   109	    borrows_strings: bool = false,
+   110	    /// Optional packed backing for borrowed symbol/import strings. Worker-built
+   111	    /// outlines use one allocation instead of one malloc per string; snapshot
+   112	    /// outlines borrow external state and leave this null.
+   113	    owned_string_storage: ?[]u8 = null,
+   114	    /// Bitmask of symbol-name lengths present (bit min(len, 63)). A
+   115	    /// conservative superset — never cleared on symbol removal — that lets
+   116	    /// per-query definition scans (fileDefinesSymbol, pathRerankFacts) skip
+   117	    /// the whole symbol list when no name could match the query's length.
+   118	    /// Every site that appends to `symbols` must OR in the new name's bit.
+   119	    name_len_mask: u64 = 0,
+   120	    /// Query-independent path-prior classification (issue #429 signals),
+   121	    /// computed once at init — pure function of `path`, so reranks can read
+   122	    /// it instead of re-tokenizing the path on every query.
+   123	    path_class: PathClass = .{},
+   124	
+   125	    pub fn nameLenBit(len: usize) u64 {
+   126	        return @as(u64, 1) << @as(u6, @intCast(@min(len, 63)));
+   127	    }
+   128	
+   129	    pub fn init(allocator: std.mem.Allocator, path: []const u8) FileOutline {
+   130	        return .{
+   131	            .path = path,
+   132	            .language = detectLanguage(path),
+   133	            .line_count = 0,
+   134	            .byte_size = 0,
+   135	            .allocator = allocator,
+   136	            .path_class = classifyPath(path),
+   137	        };
+   138	    }
+   139	    pub fn deinit(self: *FileOutline) void {
+   140	        if (self.owns_path) self.allocator.free(self.path);
+   141	        if (self.owned_string_storage) |storage| {
+   142	            self.allocator.free(storage);
+   143	        } else if (!self.borrows_strings) {
+   144	            for (self.symbols.items) |sym| {
+   145	                self.allocator.free(sym.name);
+   146	                if (sym.detail) |d| self.allocator.free(d);
+   147	            }
+   148	            for (self.imports.items) |imp| self.allocator.free(imp);
+   149	        }
+   150	        self.symbols.deinit(self.allocator);
+   151	        self.imports.deinit(self.allocator);
+   152	    }
+   153	};
+   154	
+   155	pub const ParsedFile = struct {
+   156	    content: []const u8,
+   157	    outline: FileOutline,
+   158	
+   159	    pub fn deinit(self: *ParsedFile) void {
+   160	        self.outline.deinit();
+   161	    }
+   162	};
+   163	
+   164	const PhpParseState = struct {
+   165	    in_class: bool = false,
+   166	    brace_depth: i32 = 0,
+   167	    class_brace_depth: i32 = 0,
+   168	    in_block_comment: bool = false,
+   169	};
+   170	
+   171	pub const Language = enum(u8) {
+   172	    zig,
+   173	    c,
+   174	    cpp,
+   175	    python,
+   176	    javascript,
+   177	    typescript,
+   178	    rust,
+   179	    go_lang,
+   180	    php,
+   181	    ruby,
+   182	    hcl,
+   183	    r,
+   184	    markdown,
+   185	    json,
+   186	    yaml,
+   187	    unknown,
+   188	    dart,
+   189	    java,
+   190	    kotlin,
+   191	    swift,
+   192	    svelte,
+   193	    vue,
+   194	    astro,
+   195	    shell,
+   196	    css,
+   197	    scss,
+   198	    sql,
+   199	    protobuf,
+   200	    fortran,
+   201	    llvm_ir,
+   202	    mlir,
+   203	    tablegen,
+   204	    rescript,
+   205	    ocaml,
+   206	};
+   207	
+   208	pub fn detectLanguage(path: []const u8) Language {
+   209	    if (std.mem.endsWith(u8, path, ".zig")) return .zig;
+   210	    if (std.mem.endsWith(u8, path, ".c") or std.mem.endsWith(u8, path, ".h")) return .c;
+132:   132	            .language = detectLanguage(path),
+171:   171	pub const Language = enum(u8) {
+208:   208	pub fn detectLanguage(path: []const u8) Language {
+1033:  1033	            if (compact and isCommentOrBlank(line, language)) continue;
+3164:  3164	            const lang = detectLanguage(path);
+4224:  4224	                        // detectLanguage(path) computed at outline init, and
+4227:  4227	                        // (detectLanguage + fileDefinesSymbol's own get).
+4243:  4243	                            is_doc = isDocLanguage(detectLanguage(hit_path));
+4639:  4639	                    .is_doc = isDocLanguage(detectLanguage(hit_path)),
+5105:  5105	            is_doc_lang = isDocLanguage(detectLanguage(path));
+8092:  8092	        if (compact and isCommentOrBlank(line, language)) continue;
+8120:  8120	        if (compact and isCommentOrBlank(line, language)) continue;
+8130:  8130	pub fn isCommentOrBlank(line: []const u8, language: Language) bool {

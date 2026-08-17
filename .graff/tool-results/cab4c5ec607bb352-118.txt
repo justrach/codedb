@@ -1,0 +1,72 @@
+  2730	    const quote = line[open];
+  2731	    var i = open + 1;
+  2732	    while (i < line.len) : (i += 1) {
+  2733	        if (line[i] == '\\') {
+  2734	            i += 1;
+  2735	            continue;
+  2736	        }
+  2737	        if (line[i] == quote) return i;
+  2738	    }
+  2739	    return null;
+  2740	}
+  2741	
+  2742	/// Languages where the concept of a "call site" is meaningful. Excludes
+  2743	/// data formats (json, yaml), markup/styling (markdown, css, scss),
+  2744	/// declarative schemas (protobuf), and unknown files — callers found
+  2745	/// inside these are mentions in prose or config, not real invocations.
+  2746	fn langHasCallSites(lang: explore_mod.Language) bool {
+  2747	    return switch (lang) {
+  2748	        .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
+  2749	        else => true,
+  2750	    };
+  2751	}
+  2752	
+  2753	// ── codedb_context ──────────────────────────────────────────────────────────
+  2754	// Task-shaped composer. Takes a natural-language task, extracts candidate
+  2755	// identifiers (camelCase / snake_case / "quoted strings"), and returns ONE
+  2756	// composite text block: keywords + symbol defs + ranked files + top sites.
+  2757	// Replaces 3-5 separate search/word/symbol calls; targets parity with
+  2758	// codegraph_context on per-task token economy.
+  2759	
+  2760	fn isContextIdentStart(c: u8) bool {
+  2761	    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+  2762	}
+  2763	fn isContextIdentCont(c: u8) bool {
+  2764	    return isContextIdentStart(c) or (c >= '0' and c <= '9');
+  2765	}
+  2555	            alloc.free(r.line_text);
+  2556	            alloc.free(r.path);
+  2557	            if (r.scope_name) |n2| alloc.free(n2);
+  2558	        }
+  2559	        alloc.free(results);
+  2560	    }
+  2561	
+  2562	    // #573: single filter pass — the header count and the printed entries come
+  2563	    // from the same accumulation, so a predicate edit cannot desync them (the
+  2564	    // previous count loop + print loop duplicated four predicates verbatim).
+  2565	    var kept: std.ArrayList(usize) = .empty;
+  2566	    defer kept.deinit(alloc);
+  2567	    for (results, 0..) |r, r_idx| {
+  2568	        if (kept.items.len >= max_results) break;
+  2569	        const lang = explore_mod.detectLanguage(r.path);
+  2570	        if (!langHasCallSites(lang)) continue;
+  2571	        // #562: a full-line comment mention is documentation, not a call site.
+  2572	        if (explore_mod.isCommentOrBlank(r.line_text, lang)) continue;
+  2573	        var is_def = false;
+  2574	        for (defs) |d| {
+  2575	            if (r.line_num == d.symbol.line_start and std.mem.eql(u8, r.path, d.path)) {
+  2576	                is_def = true;
+  2577	                break;
+  2578	            }
+  2579	        }
+  2580	        if (is_def) continue;
+  2581	        // A whole-word match that only ever lands inside a string literal or a
+  2582	        // trailing comment is a mention, not an invocation — a `("name",
+  2583	        // "file")` table row, a `test "…name…" {` declaration, or
+  2584	        // `init(); // then name() …`. Real calls sit on the code prefix of the
+  2585	        // line, outside the quotes, and survive both cuts. (#682)
+  2586	        if (!hasWholeWordMatchOutsideStrings(lineCodePrefix(r.line_text, lang), name)) continue;
+  2587	        kept.append(alloc, r_idx) catch {};
+  2588	    }
+  2589	
+  2590	    const w = cio.listWriter(out, alloc);

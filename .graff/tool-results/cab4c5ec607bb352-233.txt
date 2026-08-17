@@ -1,0 +1,61 @@
+
+/// Returns true when `needle` occurs as a whole-word identifier in code rather
+/// than in a string, raw/template literal, or comment. This is deliberately a
+/// line-local lexical scan: it handles complete spans on the current line and
+/// conservatively treats an unclosed block/raw span as consuming the remainder.
+fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explore_mod.Language) bool {
+    if (needle.len == 0 or line.len < needle.len) return false;
+    const markers = lineCommentMarkers(language);
+    var i: usize = 0;
+    while (i < line.len) {
+        if (language == .rust) {
+            if (rustRawLiteralAt(line, i)) |raw| {
+                if (raw.end) |end| {
+                    i = end;
+                    continue;
+                }
+                return false;
+            }
+        }
+        if (line[i] == '"' or line[i] == '\'') {
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+        }
+        if (line[i] == '`' and hasBacktickLiterals(language)) {
+            if (hasTemplateLiterals(language)) {
+                const template = scanTemplateLiteral(line, i, needle, language);
+                if (template.matched) return true;
+                if (template.end) |end| {
+                    i = end;
+                    continue;
+                }
+                return false;
+            }
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+            return false;
+        }
+        if (blockCommentAt(line, i, language)) |block| {
+            if (block.end) |end| {
+                i = end;
+                continue;
+            }
+            return false;
+        }
+        if (isLineCommentAt(line, i, language, markers)) return false;
+
+        if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+            const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+            const after = i + needle.len;
+            const after_ok = after >= line.len or !isIdentChar(line[after]);
+            if (before_ok and after_ok) return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+

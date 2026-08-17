@@ -1,0 +1,688 @@
+✓ src/mcp.zig  zig  5992 lines  ⚡ 50.0µs
+  imports: cio, std  (x2)
+  L8      constant        testing  const testing = std.testing;
+  imports: mcpj  (x1)
+  L10     struct_def      Root  pub const Root = struct {
+  imports: Store, explore_mod  (x2)
+  L16     constant        Explorer  const Explorer = explore_mod.Explorer;
+  imports: reader_md, AgentRegistry, snapshot_json, watcher, idx, snapshot_mod, telemetry_mod, git_mod, root_policy, release_info  (x10)
+  L27     struct_def      DeferredScan  pub const DeferredScan = struct {
+  L49     function        triggerDeferredScanWithFallback  pub fn triggerDeferredScanWithFallback(
+  L56     constant        uri_raw  const uri_raw = indexable_roots[0].uri;
+  L70     struct_def      SnapshotCache  const SnapshotCache = struct {
+  L71     constant        MAX_CACHED_BYTES  const MAX_CACHED_BYTES = 16 * 1024 * 1024;
+  L77     function        deinit  fn deinit(self: *SnapshotCache, alloc: std.mem.Allocator) void {
+  L84     function        appendIfFresh  fn appendIfFresh(self: *SnapshotCache, alloc: std.mem.Allocator, out: *std.ArrayList(u8), seq: u64) bool {
+  L87     constant        bytes  const bytes = self.bytes orelse return false;
+  L104    function        putAndAppend  fn putAndAppend(self: *SnapshotCache, alloc: std.mem.Allocator, out: *std.ArrayList(u8), seq: u64, fresh: []u8) void {
+  L148    struct_def      DepsCache  const DepsCache = struct {
+  L154    function        deinit  fn deinit(self: *DepsCache, alloc: std.mem.Allocator) void {
+  L165    function        appendIfFresh  fn appendIfFresh(self: *DepsCache, out: *std.ArrayList(u8), seq: u64, path: []const u8) bool {
+  L169    constant        cached_path  const cached_path = self.path orelse return false;
+  L170    constant        cached_bytes  const cached_bytes = self.bytes orelse return false;
+  L183    function        put  fn put(self: *DepsCache, alloc: std.mem.Allocator, seq: u64, path: []const u8, bytes: []const u8) void {
+  L184    constant        owned_path  const owned_path = alloc.dupe(u8, path) catch return;
+  L185    constant        owned_bytes  const owned_bytes = alloc.dupe(u8, bytes) catch {
+  L201    struct_def      ProjectCtx  const ProjectCtx = struct {
+  L208    function        getProjectDataDir  fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
+  L209    constant        hash  const hash = std.hash.Wyhash.hash(0, project_path);
+  L210    constant        home  const home = cio.homeDir() orelse {
+  L217    function        loadProjectTrigramFromDiskIfPresent  fn loadProjectTrigramFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
+  L219    constant        disk_backed  const disk_backed = explorer.trigram_index != .heap;
+  L220    constant        heap_files  const heap_files = explorer.trigram_index.fileCount();
+  L221    constant        total_files  const total_files = explorer.outlines.count();
+  L227    constant        data_dir  const data_dir = getProjectDataDir(allocator, project_path) orelse return;
+  L239    function        loadProjectWordIndexFromDiskIfPresent  fn loadProjectWordIndexFromDiskIfPresent(io: std.Io, explorer: *Explorer, project_path: []const u8, allocator: std.mem.Allocator) void {
+  L242    constant        data_dir  const data_dir = getProjectDataDir(allocator, project_path) orelse {
+  L248    constant        header  const header = idx.WordIndex.readDiskHeader(io, data_dir, allocator) catch null orelse {
+  L254    constant        current_count  const current_count = @as(u32, @intCast(explorer.outlines.count()));
+  L261    constant        current_git_head  const current_git_head = git_mod.getGitHead(project_path, allocator) catch null;
+  L262    constant        heads_match  const heads_match = blk: {
+  L279    function        shouldLoadWordIndexForSearch  fn shouldLoadWordIndexForSearch(args: *const std.json.ObjectMap) bool {
+  L281    constant        query  const query = getStr(args, "query") orelse return false;
+  L290    constant        is_word_char  const is_word_char =
+  L301    struct_def      ProjectCache  const ProjectCache = struct {
+  L302    constant        MAX_CACHED  const MAX_CACHED = 5;
+  L304    struct_def      Entry  const Entry = struct {
+  L321    function        init  fn init(alloc_: std.mem.Allocator, default_path_: []const u8, content_cache_capacity_: u32) ProjectCache {
+  L333    function        deinit  fn deinit(self: *ProjectCache) void {
+  L344    function        destroyEntry  fn destroyEntry(self: *ProjectCache, entry: *Entry) void {
+  L353    function        invalidate  fn invalidate(self: *ProjectCache, path: []const u8) void {
+  L370    function        invalidatePrefix  fn invalidatePrefix(self: *ProjectCache, prefix: []const u8) void {
+  L384    function        get  fn get(
+  L391    constant        p  const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
+  L398    constant        now  const now = cio.milliTimestamp();
+  L409    constant        new_entry  const new_entry = self.alloc.create(Entry) catch return error.OutOfMemory;
+  L422    constant        snap_path  const snap_path = std.fmt.bufPrint(&snap_buf, "{s}/codedb.snapshot", .{p}) catch {
+  L432    constant        hash  const hash = std.hash.Wyhash.hash(0, p);
+  L434    constant        loaded_central  const loaded_central = blk: {
+  L435    constant        home  const home = cio.homeDir() orelse break :blk false;
+  L436    constant        central  const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
+  L455    constant        fc  const fc = new_entry.explorer.outlines.count();
+  L480    constant        evict  const evict = self.entries[oldest_i].?;
+  L490    function        assembleMcpContentEnvelope  fn assembleMcpContentEnvelope(
+  L521    struct_def      BenchContext  pub const BenchContext = struct {
+  L524    function        init  pub fn init(alloc: std.mem.Allocator, default_path: []const u8, content_cache_capacity: u32) BenchContext {
+  L530    function        deinit  pub fn deinit(self: *BenchContext) void {
+  L534    function        runDispatch  pub fn runDispatch(
+  L548    function        runHandleCall  pub fn runHandleCall(
+  L563    function        runToolCall  pub fn runToolCall(
+  L578    constant        t0  const t0 = cio.nanoTimestamp();
+  L580    constant        elapsed  const elapsed = cio.nanoTimestamp() - t0;
+  L582    constant        is_error  const is_error = std.mem.startsWith(u8, out.items, "error:");
+  L613    constant        bench_id  const bench_id = std.json.Value{ .integer = 1 };
+  L641    enum_def        Tool  pub const Tool = enum {
+  L665    constant        tools_list  pub const tools_list =
+  L702    struct_def      ToolsListOpts  pub const ToolsListOpts = struct {
+  L716    constant        mini_profile_tools  const mini_profile_tools = [_][]const u8{
+  L725    function        isMiniProfileTool  fn isMiniProfileTool(name: []const u8) bool {
+  L733    constant        core_profile_tools  const core_profile_tools = [_][]const u8{
+  L752    struct_def      slim_descriptions  const slim_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
+  L761    function        isSlimProfileTool  fn isSlimProfileTool(name: []const u8) bool {
+  L766    function        slimDescription  fn slimDescription(name: []const u8) ?[]const u8 {
+  L771    struct_def      PropDesc  const PropDesc = struct { name: []const u8, desc: []const u8 };
+  L776    constant        slim_prop_descriptions  const slim_prop_descriptions = [_]PropDesc{
+  L785    function        slimPropDescription  fn slimPropDescription(name: []const u8) ?[]const u8 {
+  L793    constant        mini_prop_descriptions  const mini_prop_descriptions = [_]PropDesc{
+  L825    struct_def      mini_descriptions  const mini_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
+  L834    function        miniDescription  fn miniDescription(name: []const u8) ?[]const u8 {
+  L839    function        lookupPropDesc  fn lookupPropDesc(table: []const PropDesc, name: []const u8) ?[]const u8 {
+  L848    function        tersePropDescriptions  fn tersePropDescriptions(a: std.mem.Allocator, tool: *std.json.Value, table: []const PropDesc) void {
+  L850    constant        schema  const schema = tool.object.getPtr("inputSchema") orelse return;
+  L852    constant        props  const props = schema.object.getPtr("properties") orelse return;
+  L857    constant        d  const d = lookupPropDesc(table, prop.key_ptr.*) orelse continue;
+  L862    function        isCoreProfileTool  fn isCoreProfileTool(name: []const u8) bool {
+  L870    function        buildToolsListResponse  pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]u8 {
+  L877    constant        a  const a = arena.allocator();
+  L881    constant        root_obj  const root_obj = &parsed.value.object;
+  L882    constant        tools_val  const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
+  L908    constant        name_v  const name_v = t.object.get("name") orelse continue;
+  L936    constant        out_in_arena  const out_in_arena = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
+  L940    function        buildAugmentedToolsList  pub fn buildAugmentedToolsList(alloc: std.mem.Allocator) ![]u8 {
+  L943    constant        a  const a = arena.allocator();
+  L947    constant        root_obj  const root_obj = &parsed.value.object;
+  L948    constant        tools_val  const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
+  L950    constant        tools_arr  const tools_arr = &tools_val.array;
+  L957    constant        name_v  const name_v = t.object.get("name") orelse continue;
+  L961    constant        schema  const schema = t.object.getPtr("inputSchema") orelse continue;
+  L963    constant        props  const props = schema.object.getPtr("properties") orelse continue;
+  L965    constant        ops  const ops = props.object.getPtr("ops") orelse continue;
+  L971    constant        bundle_items  const bundle_items = bundle_items_ptr.?;
+  L978    constant        sub_name_v  const sub_name_v = t.object.get("name") orelse continue;
+  L980    constant        sub_name  const sub_name = sub_name_v.string;
+  L984    constant        sub_schema  const sub_schema = t.object.get("inputSchema") orelse continue;
+  L1000   constant        augmented_in_arena  const augmented_in_arena = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
+  L1010   constant        dead_client_poll_ms  pub const dead_client_poll_ms: u64 = 1000;
+  L1021   constant        ScanState  pub const ScanState = enum(u8) {
+  L1027   function        name  pub fn name(self: ScanState) []const u8 {
+  L1039   function        setScanState  pub fn setScanState(s: ScanState) void {
+  L1043   function        getScanState  pub fn getScanState() ScanState {
+  L1049   function        waitForScanReady  fn waitForScanReady(timeout_ms: u64) void {
+  L1051   constant        deadline  const deadline = cio.milliTimestamp() + @as(i64, @intCast(timeout_ms));
+  L1060   struct_def      Session  const Session = struct {
+  L1073   function        freeRoots  fn freeRoots(self: *Session) void {
+  L1081   function        deinit  fn deinit(self: *Session) void {
+  L1093   struct_def      ConvergenceGovernor  pub const ConvergenceGovernor = struct {
+  L1094   constant        HISTORY  pub const HISTORY = 8; // ring-buffer window of recent calls
+  L1097   constant        WARN_AT  pub const WARN_AT = 2; // same signature this many times in the window -> nudge
+  L1098   constant        NAME_WARN_AT  pub const NAME_WARN_AT = 4; // same query-tool (any args) this many times -> strategy nudge
+  L1107   function        record  pub fn record(self: *ConvergenceGovernor, sig: u64) usize {
+  L1108   constant        s  const s = if (sig == 0) 1 else sig; // 0 is the empty-slot sentinel
+  L1121   function        recordName  pub fn recordName(self: *ConvergenceGovernor, name_sig: u64) usize {
+  L1122   constant        s  const s = if (name_sig == 0) 1 else name_sig;
+  L1135   function        callSignature  fn callSignature(name: []const u8, args: *const std.json.ObjectMap) u64 {
+  L1154   function        isGovernedNavTool  fn isGovernedNavTool(name: []const u8) bool {
+  L1169   function        isGovernedQueryTool  fn isGovernedQueryTool(name: []const u8) bool {
+  L1183   function        convergenceNudge  pub fn convergenceNudge(occurrences: usize, json_fmt: bool) ?[]const u8 {
+  L1191   function        convergenceStrategyNudge  pub fn convergenceStrategyNudge(occurrences: usize, json_fmt: bool) ?[]const u8 {
+  L1197   function        run  pub fn run(
+  L1209   constant        stdout  const stdout = cio.File.stdout();
+  L1210   constant        stdin  const stdin = std.Io.File.stdin();
+  L1231   constant        discriminated_opt_in  const discriminated_opt_in = blk_opt: {
+  L1232   constant        v  const v = cio.posixGetenv("CODEDB_DISCRIMINATED_SCHEMA") orelse break :blk_opt false;
+  L1235   constant        bundle_enabled  const bundle_enabled = blk_be: {
+  L1236   constant        v  const v = cio.posixGetenv("CODEDB_BUNDLE_ENABLED") orelse break :blk_be false;
+  L1242   constant        profile_core  const profile_core = blk_pc: {
+  L1243   constant        v  const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_pc false;
+  L1246   constant        profile_slim  const profile_slim = blk_ps: {
+  L1247   constant        v  const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_ps false;
+  L1250   constant        profile_mini  const profile_mini = blk_pm: {
+  L1251   constant        v  const v = cio.posixGetenv("CODEDB_TOOLS_PROFILE") orelse break :blk_pm false;
+  L1267   constant        profile_explicit  const profile_explicit = cio.posixGetenv("CODEDB_TOOLS_PROFILE") != null;
+  L1279   constant        msg  const msg = mcpj.readLineBuf(alloc, &stdin_reader.interface) orelse break;
+  L1283   constant        input  const input = std.mem.trim(u8, msg, " \t\r");
+  L1286   constant        parsed  const parsed = std.json.parseFromSlice(std.json.Value, alloc, input, .{}) catch {
+  L1297   constant        root  const root = &parsed.value.object;
+  L1298   constant        method_opt  const method_opt = mcpj.getStr(root, "method");
+  L1299   constant        has_id  const has_id = root.contains("id");
+  L1300   constant        id  const id = root.get("id");
+  L1301   constant        is_notification  const is_notification = !has_id;
+  L1309   constant        method  const method = method_opt.?;
+  L1331   constant        empty_roots  const empty_roots: []const Root = &.{};
+  L1340   constant        mini_default  const mini_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
+  L1341   constant        resp  const resp = buildToolsListResponse(alloc, .{
+  L1363   function        handleInitialize  fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.Value) void {
+  L1365   constant        p  const p = root.get("params") orelse break :caps;
+  L1367   constant        c  const c = p.object.get("capabilities") orelse break :caps;
+  L1369   constant        r  const r = c.object.get("roots") orelse break :caps;
+  L1376   constant        p  const p = root.get("params") orelse break :client_name;
+  L1378   constant        ci  const ci = p.object.get("clientInfo") orelse break :client_name;
+  L1394   constant        p  const p = root.get("params") orelse break :proto;
+  L1396   constant        requested  const requested = mcpj.getStr(&p.object, "protocolVersion") orelse break :proto;
+  L1399   constant        init_result  const init_result = std.fmt.allocPrint(s.alloc,
+  L1408   constant        SUPPORTED_PROTOCOL_VERSIONS  const SUPPORTED_PROTOCOL_VERSIONS = [_][]const u8{
+  L1422   function        negotiateProtocolVersion  pub fn negotiateProtocolVersion(requested: []const u8) ?[]const u8 {
+  L1439   constant        supported_versions_json  pub const supported_versions_json = blk: {
+  L1447   constant        mcp_instructions  pub const mcp_instructions = "codedb is code intelligence, not your editor. Reach for structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline before reading a file, codedb_context to orient on a task. Use codedb_search only when the symbol name is unknown. Make edits with your native tools.";
+  L1452   constant        discover_result  pub const discover_result = "{\"resultType\":\"complete\",\"supportedVersions\":" ++ supported_versions_json ++
+  L1462   function        unsupportedMetaProtocolVersion  pub fn unsupportedMetaProtocolVersion(root: *const std.json.ObjectMap) ?[]const u8 {
+  L1463   constant        p  const p = root.get("params") orelse return null;
+  L1465   constant        m  const m = p.object.get("_meta") orelse return null;
+  L1467   constant        v  const v = mcpj.getStr(&m.object, "io.modelcontextprotocol/protocolVersion") orelse return null;
+  L1474   function        writeUnsupportedProtocolVersionError  fn writeUnsupportedProtocolVersionError(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, requested: []const u8) void {
+  L1488   function        requestRoots  fn requestRoots(s: *Session) void {
+  L1489   constant        rid  const rid = s.next_id;
+  L1495   function        handleResponse  fn handleResponse(io: std.Io, s: *Session, root: *const std.json.ObjectMap) void {
+  L1496   constant        resp_id_val  const resp_id_val = root.get("id") orelse return;
+  L1497   constant        resp_id  const resp_id: i64 = switch (resp_id_val) {
+  L1505   constant        result_val  const result_val = root.get("result") orelse return;
+  L1512   function        parseRoots  fn parseRoots(io: std.Io, s: *Session, result: *const std.json.ObjectMap) void {
+  L1514   constant        roots_val  const roots_val = result.get("roots") orelse return;
+  L1518   constant        obj  const obj = item.object;
+  L1519   constant        uri_raw  const uri_raw = mcpj.getStr(&obj, "uri") orelse continue;
+  L1520   constant        name_raw  const name_raw = mcpj.getStr(&obj, "name") orelse "";
+  L1522   constant        path  const path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+  L1527   constant        uri  const uri = s.alloc.dupe(u8, uri_raw) catch continue;
+  L1528   constant        name  const name = s.alloc.dupe(u8, name_raw) catch {
+  L1543   function        writeRequest  fn writeRequest(alloc: std.mem.Allocator, stdout: cio.File, id: i64, method: []const u8, params: []const u8) void {
+  L1548   constant        id_str  const id_str = std.fmt.bufPrint(&tmp, "{d}", .{id}) catch return;
+  L1561   function        handleCall  fn handleCall(
+  L1576   constant        is_notification  const is_notification = id == null;
+  L1578   constant        params_val  const params_val = root.get("params") orelse {
+  L1586   constant        params  const params = &params_val.object;
+  L1588   constant        name  const name = getStr(params, "name") orelse {
+  L1595   constant        args  const args = selectDirectCallArgs(alloc, params, &args_value, &inline_args) catch |err| {
+  L1604   constant        tool  const tool = std.meta.stringToEnum(Tool, name) orelse {
+  L1612   constant        t0  const t0 = cio.nanoTimestamp();
+  L1614   constant        elapsed  const elapsed = cio.nanoTimestamp() - t0;
+  L1616   constant        is_error  const is_error = std.mem.startsWith(u8, out.items, "error:");
+  L1642   constant        occurrences  const occurrences = gov.record(callSignature(name, args));
+  L1651   constant        name_occurrences  const name_occurrences = gov.recordName(std.hash.Wyhash.hash(0, name));
+  L1659   constant        lean  const lean = !mcpEmitRichBlocks(client_name);
+  L1691   function        isDirectCallAdminKey  fn isDirectCallAdminKey(key: []const u8) bool {
+  L1699   function        copyDirectInlineArgs  fn copyDirectInlineArgs(
+  L1707   constant        key  const key = entry.key_ptr.*;
+  L1715   function        selectDirectCallArgs  fn selectDirectCallArgs(
+  L1742   function        dispatch  fn dispatch(
+  L1754   constant        project_path  const project_path = getStr(args, "project");
+  L1755   constant        ctx  const ctx = if (project_path) |path|
+  L1770   constant        keys  const keys = args.keys();
+  L1771   constant        values  const values = args.values();
+  L1774   constant        scan_ready  const scan_ready = getScanState() == .ready;
+  L1775   constant        seq  const seq = if (scan_ready) default_store.currentSeq() else 0;
+  L1804   constant        effective_project  const effective_project = project_path orelse cache.default_path;
+  L1838   function        appendScanProgressHint  fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), tool: Tool) void {
+  L1839   constant        state  const state = getScanState();
+  L1842   constant        looks_empty  const looks_empty =
+  L1846   constant        looks_unindexed  const looks_unindexed = std.mem.indexOf(u8, out.items, "file not indexed") != null;
+  L1853   function        toolDependsOnScannedIndex  fn toolDependsOnScannedIndex(tool: Tool) bool {
+  L1862   function        handleTree  fn handleTree(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L1868   function        handleOutline  fn handleOutline(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L1869   constant        path  const path = getStr(args, "path") orelse {
+  L1874   constant        compact  const compact = getBool(args, "compact");
+  L1875   constant        skeleton  const skeleton = getBool(args, "skeleton");
+  L1876   constant        found  const found = if (skeleton)
+  L1895   function        handleSymbol  fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L1896   constant        name  const name = getStr(args, "name");
+  L1897   constant        prefix  const prefix = getStr(args, "prefix");
+  L1898   constant        pattern  const pattern = getStr(args, "pattern");
+  L1899   constant        kind_str  const kind_str = getStr(args, "kind");
+  L1900   constant        fuzzy  const fuzzy = getBool(args, "fuzzy");
+  L1901   constant        include_body  const include_body = getBool(args, "body");
+  L1902   constant        json_fmt  const json_fmt = wantsJsonFormat(args);
+  L1925   constant        kind  const kind = if (kind_str) |k| Explorer.parseSymbolKind(k) else null;
+  L1935   constant        max_results  const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
+  L1936   constant        spec  const spec = Explorer.SymbolSearchSpec{
+  L1945   constant        results  const results = explorer.searchSymbols(spec, alloc) catch {
+  L1965   constant        cnt_s  const cnt_s = std.fmt.bufPrint(&cnt_buf, "{d}", .{results.len}) catch "0";
+  L1979   constant        line_s  const line_s = std.fmt.bufPrint(&line_buf, "{d}", .{r.symbol.line_start}) catch "0";
+  L1987   constant        score_s  const score_s = std.fmt.bufPrint(&score_buf, "{d}", .{@as(f64, r.score)}) catch "0";
+  L2004   constant        w  const w = cio.listWriter(out, alloc);
+  L2015   constant        body  const body = explorer.getSymbolBody(r.path, r.symbol.line_start, r.symbol.line_end, alloc) catch null;
+  L2025   constant        body_cap  const body_cap = 32 * 1024;
+  L2046   function        isBareIdentifier  pub fn isBareIdentifier(s: []const u8) bool {
+  L2055   function        appendSearchSymbolNudge  fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query: []const u8, out: *std.ArrayList(u8)) void {
+  L2057   constant        results  const results = explorer.findAllSymbols(query, alloc) catch return;
+  L2081   constant        is_def  const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+  L2084   constant        w  const w = cio.listWriter(out, alloc);
+  L2085   constant        cap  const cap: usize = 3;
+  L2089   constant        is_def  const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+  L2104   function        depsHint  pub fn depsHint(result_count: usize) ?[]const u8 {
+  L2111   constant        MAX_MATCH_LINE_BYTES  const MAX_MATCH_LINE_BYTES: usize = 200;
+  L2116   function        trimMatchText  fn trimMatchText(text: []const u8) struct { text: []const u8, truncated: bool } {
+  L2119   constant        trimmed  const trimmed = text[start..];
+  L2129   function        appendMatchLineNoNL  fn appendMatchLineNoNL(w: anytype, prefix: []const u8, path: []const u8, line_num: u32, line_text: []const u8) void {
+  L2130   constant        r  const r = trimMatchText(line_text);
+  L2141   function        appendMatchLine  fn appendMatchLine(w: anytype, prefix: []const u8, path: []const u8, line_num: u32, line_text: ?[]const u8) void {
+  L2150   function        handleSearch  fn handleSearch(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L2151   constant        query  const query = getStr(args, "query") orelse {
+  L2165   constant        w_err  const w_err = cio.listWriter(out, alloc);
+  L2173   constant        max_results  const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 20;
+  L2174   constant        offset_n  const offset_n: usize = if (getInt(args, "offset")) |n| @intCast(@max(0, @min(n, 100000))) else 0;
+  L2175   constant        scope  const scope = getBool(args, "scope");
+  L2176   constant        compact  const compact = getBool(args, "compact");
+  L2177   constant        paths_only  const paths_only = getBool(args, "paths_only");
+  L2178   constant        is_regex  const is_regex = getBool(args, "regex");
+  L2179   constant        path_glob_raw  const path_glob_raw = getStr(args, "path_glob");
+  L2185   constant        path_glob  const path_glob: ?[]const u8 = if (path_glob_raw) |g| blk: {
+  L2187   constant        promoted  const promoted = std.fmt.bufPrint(&pg_buf, "**/{s}", .{g}) catch break :blk g;
+  L2193   constant        json_fmt  const json_fmt = wantsJsonFormat(args);
+  L2202   constant        results  const results = explorer.searchContentRegexWithScope(query, alloc, max_results) catch |e| {
+  L2224   constant        w  const w = cio.listWriter(out, alloc);
+  L2239   constant        results  const results = explorer.searchContentWithScope(query, alloc, max_results) catch {
+  L2262   constant        w  const w = cio.listWriter(out, alloc);
+  L2266   constant        max_per_file  const max_per_file: u8 = 5;
+  L2271   constant        gop  const gop = file_counts.getOrPut(r.path) catch continue;
+  L2294   constant        results  const results = explorer.searchContentRegex(query, alloc, max_results) catch |e| {
+  L2319   constant        w  const w = cio.listWriter(out, alloc);
+  L2323   constant        max_per_file  const max_per_file: u8 = 5;
+  L2328   constant        gop  const gop = file_counts.getOrPut(r.path) catch continue;
+  L2345   constant        rendered  const rendered = explorer.renderPlainSearch(query, alloc, out, max_results, paths_only) catch {
+  L2359   constant        want_count  const want_count = @min(offset_n + max_results + 1, 100000);
+  L2376   constant        exhausted  const exhausted = fetched.len < fetch_count;
+  L2406   constant        page_src  const page_src: []const explore_mod.SearchResult = if (path_glob != null) glob_view.items else fetched;
+  L2407   constant        page_lo  const page_lo = @min(offset_n, page_src.len);
+  L2408   constant        page_hi  const page_hi = @min(offset_n + max_results, page_src.len);
+  L2409   constant        results  const results = page_src[page_lo..page_hi];
+  L2410   constant        has_more  const has_more = page_src.len > page_hi;
+  L2418   constant        simple_unfiltered  const simple_unfiltered = path_glob == null and !compact;
+  L2429   constant        w  const w = cio.listWriter(out, alloc);
+  L2435   struct_def      CountEntry  const CountEntry = struct { path: []const u8, count: u8 };
+  L2438   constant        max_per_file  const max_per_file: u8 = 5;
+  L2448   constant        count_idx  const count_idx = idx_opt orelse blk: {
+  L2470   constant        max_per_file  const max_per_file: u8 = 5;
+  L2475   constant        gop  const gop = file_counts.getOrPut(r.path) catch continue;
+  L2493   function        handleWord  fn handleWord(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L2494   constant        word  const word = getStr(args, "word") orelse {
+  L2505   function        handleCallers  fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L2506   constant        name  const name = getStr(args, "name") orelse {
+  L2517   constant        w_err  const w_err = cio.listWriter(out, alloc);
+  L2524   constant        max_results  const max_results: usize = if (getInt(args, "max_results")) |n| @intCast(@max(1, @min(n, 10000))) else 30;
+  L2526   constant        defs  const defs = explorer.findAllSymbols(name, alloc) catch {
+  L2548   constant        search_cap  const search_cap: usize = @max(max_results, @min(max_results * 10 + 50, 5000));
+  L2549   constant        results  const results = explorer.searchContentWithScope(name, alloc, search_cap) catch {
+  L2569   constant        lang  const lang = explore_mod.detectLanguage(r.path);
+  L2589   constant        w  const w = cio.listWriter(out, alloc);
+  L2592   constant        r  const r = results[kept_idx];
+  L2602   function        handleCallpath  fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L2603   constant        from_name  const from_name = getStr(args, "from") orelse {
+  L2608   constant        to_name  const to_name = getStr(args, "to") orelse {
+  L2617   constant        max_hops  const max_hops: usize = if (getInt(args, "max_hops")) |n| @intCast(@max(1, @min(n, 64))) else 12;
+  L2619   constant        steps  const steps = explorer.findCallPath(from_name, to_name, alloc, max_hops) catch {
+  L2623   constant        path  const path = steps orelse {
+  L2624   constant        w  const w = cio.listWriter(out, alloc);
+  L2630   constant        w  const w = cio.listWriter(out, alloc);
+  L2640   function        isIdentChar  fn isIdentChar(c: u8) bool {
+  L2663   function        hasWholeWordMatchOutsideStrings  fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+  L2675   constant        before_ok  const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+  L2676   constant        after  const after = i + needle.len;
+  L2677   constant        after_ok  const after_ok = after >= line.len or !isIdentChar(line[after]);
+  L2687   function        stringLiteralEnd  fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+  L2688   constant        quote  const quote = line[open];
+  L2704   function        langHasCallSites  fn langHasCallSites(lang: explore_mod.Language) bool {
+  L2718   function        isContextIdentStart  fn isContextIdentStart(c: u8) bool {
+  L2721   function        isContextIdentCont  fn isContextIdentCont(c: u8) bool {
+  L2724   function        looksLikeContextIdentifier  fn looksLikeContextIdentifier(tok: []const u8) bool {
+  L2745   constant        prev_lower  const prev_lower = tok[i - 1] >= 'a' and tok[i - 1] <= 'z';
+  L2746   constant        cur_upper  const cur_upper = tok[i] >= 'A' and tok[i] <= 'Z';
+  L2758   constant        CONTEXT_MAX_CANDIDATES  const CONTEXT_MAX_CANDIDATES: usize = 5;
+  L2763   constant        CONTEXT_MAX_RESULTS_PER_KW  const CONTEXT_MAX_RESULTS_PER_KW: usize = 8;
+  L2764   constant        CONTEXT_TOP_FILES  const CONTEXT_TOP_FILES: usize = 5;
+  L2765   constant        CONTEXT_TOP_LINES_PER_FILE  const CONTEXT_TOP_LINES_PER_FILE: usize = 3;
+  L2767   function        extractContextCandidates  pub fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+  L2772   constant        c  const c = task[i];
+  L2775   constant        q  const q = c;
+  L2776   constant        start  const start = i + 1;
+  L2780   constant        slice  const slice = task[start..j];
+  L2792   constant        start  const start = i;
+  L2794   constant        tok  const tok = task[start..i];
+  L2809   function        extractContextFallbackWords  pub fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+  L2810   constant        stop  const stop = [_][]const u8{
+  L2828   constant        start  const start = i;
+  L2830   constant        tok  const tok = task[start..i];
+  L2849   function        lessThan  pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+  L2865   function        isTestPath  fn isTestPath(path: []const u8) bool {
+  L2871   constant        base  const base = std.fs.path.basename(path);
+  L2876   function        handleContext  fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
+  L2877   constant        task  const task = getStr(args, "task") orelse {
+  L2887   constant        max_tokens  const max_tokens: ?u32 = if (getInt(args, "max_tokens")) |n| @intCast(@max(256, @min(n, 1_000_000))) else null;
+  L2893   constant        A  const A = arena.allocator();
+  L2894   constant        pf_t0  const pf_t0 = cio.nanoTimestamp();
+  L2927   constant        reader_md_gate  const reader_md_gate = task.len > 80;
+  L2932   constant        wr  const wr = cio.listWriter(&sec_reader, A);
+  L2948   constant        pf_reader  const pf_reader = cio.nanoTimestamp();
+  L2959   constant        pf_cand  const pf_cand = cio.nanoTimestamp();
+  L2966   struct_def      PerFileHit  const PerFileHit = struct { line: u32, text: []const u8 };
+  L2967   struct_def      PerFile  const PerFile = struct {
+  L2974   struct_def      SymRef  const SymRef = struct { kw: []const u8, kind: []const u8, path: []const u8, line: u32, line_end: u32 };
+  L2981   constant        take  const take = @min(defs.len, 3);
+  L2983   constant        key  const key = std.fmt.allocPrint(A, "{s}|{s}|{d}", .{ d.path, kw, d.symbol.line_start }) catch continue;
+  L2997   constant        hits  const hits = explorer.searchContentRanked(kw, A, CONTEXT_MAX_RESULTS_PER_KW) catch continue;
+  L2999   constant        gop  const gop = by_file.getOrPut(h.path) catch continue;
+  L3008   constant        pf_kwloop  const pf_kwloop = cio.nanoTimestamp();
+  L3017   struct_def      FileRank  const FileRank = struct { path: []const u8, hits: u32, score: f32, top: []const PerFileHit };
+  L3021   constant        path  const path = entry.key_ptr.*;
+  L3036   function        lt  fn lt(_: void, a: FileRank, b: FileRank) bool {
+  L3041   constant        top_n  const top_n = @min(ranked.items.len, CONTEXT_TOP_FILES);
+  L3042   constant        pf_rank  const pf_rank = cio.nanoTimestamp();
+  L3045   constant        wh  const wh = cio.listWriter(&sec_head, A);
+  L3051   constant        wsr  const wsr = cio.listWriter(&sec_syms_rich, A);
+  L3052   constant        wsl  const wsl = cio.listWriter(&sec_syms_lean, A);
+  L3060   constant        inline_bodies  const inline_bodies = sym_refs.items.len <= 3;
+  L3065   constant        body_end  const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line + 39) else sr.line;
+  L3079   constant        wc  const wc = cio.listWriter(&sec_callers, A);
+  L3080   constant        wt  const wt = cio.listWriter(&sec_tests, A);
+  L3096   constant        scoped  const scoped = explorer.searchContentWithScope(sr.kw, A, 30) catch continue;
+  L3107   constant        dedup_key  const dedup_key = std.fmt.allocPrint(A, "{s}:{d}", .{ r.path, r.line_num }) catch continue;
+  L3125   constant        dedup_key  const dedup_key = std.fmt.allocPrint(A, "{s}:{d}", .{ r.path, r.line_num }) catch continue;
+  L3153   constant        wcal  const wcal = cio.listWriter(&sec_calls, A);
+  L3157   constant        sym_key  const sym_key = std.fmt.allocPrint(A, "{s}:{d}", .{ sr.path, sr.line }) catch continue;
+  L3160   constant        callees  const callees = explorer.resolveCallees(sr.path, sr.line, sr.line_end, A, 6) catch continue;
+  L3173   constant        pf_render  const pf_render = cio.nanoTimestamp();
+  L3176   constant        wf  const wf = cio.listWriter(&sec_files, A);
+  L3181   constant        wts  const wts = cio.listWriter(&sec_sites, A);
+  L3194   constant        want_start  const want_start: u32 = if (h.line > 2) h.line - 2 else 1;
+  L3195   constant        want_end  const want_end: u32 = h.line + 2;
+  L3198   constant        n  const n = explorer.lineSpansFor(f.path, content, lines2[0..], spans2[0..]) orelse 0;
+  L3200   constant        start_off  const start_off = spans2[0].start;
+  L3203   constant        end_off  const end_off = if (n == 2) spans2[1].end else content.len;
+  L3204   constant        slice  const slice = content[start_off..end_off];
+  L3206   constant        cap  const cap = @min(slice.len, 480);
+  L3217   constant        file_content  const file_content: ?[]const u8 = blk: {
+  L3218   constant        got  const got = explorer.getContent(f.path, A) catch break :blk null;
+  L3224   constant        want_start  const want_start: u32 = if (h.line > 2) h.line - 2 else 1;
+  L3225   constant        want_end  const want_end: u32 = h.line + 2;
+  L3245   constant        end_off  const end_off = captured_end.?;
+  L3246   constant        slice  const slice = content[start_off..end_off];
+  L3248   constant        cap  const cap = @min(slice.len, 480);
+  L3258   constant        pf_sites  const pf_sites = cio.nanoTimestamp();
+  L3263   constant        budget  const budget: ?usize = if (max_tokens) |mt| @as(usize, mt) * 4 else null;
+  L3265   struct_def      fits  const fits = struct {
+  L3266   function        f  fn f(lim: ?usize, spent_: *usize, cost: usize) bool {
+  L3267   constant        b  const b = lim orelse return true;
+  L3274   constant        inc_files  const inc_files = fits(budget, &spent, sec_files.items.len);
+  L3283   constant        inc_reader  const inc_reader = fits(budget, &spent, sec_reader.items.len);
+  L3284   constant        inc_callers  const inc_callers = fits(budget, &spent, sec_callers.items.len);
+  L3285   constant        inc_calls  const inc_calls = fits(budget, &spent, sec_calls.items.len);
+  L3286   constant        inc_sites  const inc_sites = fits(budget, &spent, sec_sites.items.len);
+  L3288   constant        w  const w = cio.listWriter(out, alloc);
+  L3335   function        handleHot  fn handleHot(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer) void {
+  L3336   constant        limit  const limit: usize = if (getInt(args, "limit")) |n| @intCast(@min(@max(1, n), 1000)) else 10;
+  L3342   function        handleDeps  fn handleDeps(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L3343   constant        path  const path = getStr(args, "path") orelse {
+  L3356   constant        direction  const direction = getStr(args, "direction") orelse "imported_by";
+  L3357   constant        transitive  const transitive = getBool(args, "transitive");
+  L3358   constant        max_depth  const max_depth: ?u32 = if (getInt(args, "max_depth")) |n| @intCast(@max(1, n)) else null;
+  L3360   constant        is_forward  const is_forward = std.mem.eql(u8, direction, "depends_on");
+  L3371   constant        fwd  const fwd = explorer.dep_graph.getForwardDeps(path);
+  L3376   constant        d  const d = alloc.dupe(u8, dep) catch continue;
+  L3392   constant        w  const w = cio.listWriter(out, alloc);
+  L3394   constant        rendered  const rendered = explorer.renderImportedBy(path, alloc, out) catch {
+  L3413   constant        w  const w = cio.listWriter(out, alloc);
+  L3436   constant        known  const known = explorer.outlines.contains(path);
+  L3447   function        handleDepsPathOnly  fn handleDepsPathOnly(alloc: std.mem.Allocator, path: []const u8, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L3448   constant        w  const w = cio.listWriter(out, alloc);
+  L3450   constant        rendered  const rendered = explorer.renderImportedBy(path, alloc, out) catch {
+  L3463   function        handleRead  fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L3464   constant        path_arg  const path_arg = getStr(args, "path") orelse {
+  L3470   constant        root  const root: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, ".", &root_buf)) |n| root_buf[0..n] else |_| "";
+  L3471   constant        path  const path = projectRelPath(path_arg, root) orelse {
+  L3481   constant        line_start_raw  const line_start_raw = getInt(args, "line_start");
+  L3482   constant        line_end_raw  const line_end_raw = getInt(args, "line_end");
+  L3483   constant        compact  const compact = getBool(args, "compact");
+  L3486   constant        raw  const raw = getBool(args, "raw");
+  L3487   constant        has_range  const has_range = line_start_raw != null or line_end_raw != null;
+  L3506   constant        w_err  const w_err = cio.listWriter(out, alloc);
+  L3512   constant        if_hash  const if_hash = getStr(args, "if_hash");
+  L3526   constant        cached  const cached = explorer.getContent(path, alloc) catch {
+  L3530   constant        content  const content = if (cached) |owned_content|
+  L3537   constant        read_root  const read_root = explorer.root_dir orelse std.Io.Dir.cwd();
+  L3553   constant        probe_len  const probe_len = @min(content.len, 8 * 1024);
+  L3555   constant        w0  const w0 = cio.listWriter(out, alloc);
+  L3556   constant        hash_b  const hash_b = std.hash.Wyhash.hash(0, content);
+  L3562   constant        hash  const hash = std.hash.Wyhash.hash(0, content);
+  L3564   constant        hash_str  const hash_str = std.fmt.bufPrint(&hash_buf, "{x}", .{hash}) catch "";
+  L3576   constant        w  const w = cio.listWriter(out, alloc);
+  L3581   constant        start  const start: u32 = if (line_start_raw) |n| @intCast(@min(@max(1, n), std.math.maxInt(u32))) else 1;
+  L3582   constant        end  const end: u32 = if (line_end_raw) |n| @intCast(@min(@max(1, n), std.math.maxInt(u32))) else std.math.maxInt(u32);
+  L3583   constant        lang  const lang = explore_mod.detectLanguage(path);
+  L3584   constant        extracted  const extracted = explore_mod.extractLines(content, start, end, !raw, compact, lang, alloc) catch {
+  L3602   function        handleChanges  fn handleChanges(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store) void {
+  L3603   constant        since  const since: u64 = if (getInt(args, "since")) |n| @intCast(@min(@max(0, n), std.math.maxInt(u64))) else 0;
+  L3623   constant        seq  const seq = store.seq;
+  L3625   constant        w  const w = cio.listWriter(out, alloc);
+  L3645   function        handleStatus  fn handleStatus(alloc: std.mem.Allocator, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer) void {
+  L3647   constant        file_count  const file_count = store.files.count();
+  L3648   constant        seq  const seq = store.seq;
+  L3651   constant        index_bytes  const index_bytes = telemetry_mod.approxIndexSizeBytes(explorer);
+  L3654   constant        outline_count  const outline_count = explorer.outlines.count();
+  L3655   constant        content_count  const content_count = explorer.contents.count();
+  L3656   constant        trigram_type  const trigram_type: []const u8 = switch (explorer.trigram_index) {
+  L3661   constant        trigram_files  const trigram_files = explorer.trigram_index.fileCount();
+  L3665   constant        w  const w = cio.listWriter(out, alloc);
+  L3688   function        handleSnapshot  fn handleSnapshot(alloc: std.mem.Allocator, out: *std.ArrayList(u8), explorer: *Explorer, store: *Store, cache: *SnapshotCache) void {
+  L3689   constant        seq  const seq = store.currentSeq();
+  L3692   constant        snap  const snap = snapshot_json.buildSnapshot(explorer, store, alloc) catch {
+  L3703   function        appendBundleArgKeysDiagnostic  fn appendBundleArgKeysDiagnostic(
+  L3723   constant        k  const k = entry.key_ptr.*;
+  L3737   function        appendFuzzyPathSuggestions  fn appendFuzzyPathSuggestions(
+  L3743   constant        matches  const matches = explorer.fuzzyFindFiles(bad_path, alloc, 3) catch return;
+  L3758   function        finishQueryWithFailure  fn finishQueryWithFailure(
+  L3769   constant        w  const w = cio.listWriter(out, alloc);
+  L3780   function        handleBundle  fn handleBundle(
+  L3791   constant        ops_val  const ops_val = args.get("ops") orelse {
+  L3796   constant        ops  const ops = switch (ops_val) {
+  L3812   constant        w  const w = cio.listWriter(out, alloc);
+  L3829   constant        op_obj  const op_obj = &op.object;
+  L3830   constant        tool_name  const tool_name = getStr(op_obj, "tool") orelse {
+  L3840   constant        tool  const tool = std.meta.stringToEnum(Tool, tool_name) orelse {
+  L3890   constant        sub_args  const sub_args = sub_args_ptr.?;
+  L3894   constant        sub_reserve  const sub_reserve: usize = switch (tool) {
+  L3939   constant        prefix  const prefix = std.fmt.bufPrint(&prefix_buf, "error: all {d} bundle op(s) failed\n", .{fail_count}) catch "error: all bundle ops failed\n";
+  L3946   function        handleProjects  fn handleProjects(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
+  L3947   constant        home  const home = cio.homeDir() orelse {
+  L3952   constant        projects_dir  const projects_dir = std.fmt.allocPrint(alloc, "{s}/.codedb/projects", .{home}) catch {
+  L3971   constant        sub_path  const sub_path = std.fmt.bufPrint(&path_buf, "{s}/project.txt", .{entry.name}) catch continue;
+  L3972   constant        project_file  const project_file = dir.openFile(io, sub_path, .{}) catch continue;
+  L3975   constant        n  const n = project_file.readPositionalAll(io, &content_buf, 0) catch continue;
+  L3977   constant        project_path  const project_path = content_buf[0..n];
+  L3982   constant        snap_path  const snap_path = std.fmt.bufPrint(&snap_path_buf, "{s}/codedb.snapshot", .{project_path}) catch project_path;
+  L4000   function        handleIndex  fn handleIndex(
+  L4010   constant        path  const path = getStr(args, "path") orelse {
+  L4018   constant        abs_len  const abs_len = std.Io.Dir.cwd().realPathFile(io, path, &abs_buf) catch {
+  L4023   constant        abs_path  const abs_path = abs_buf[0..abs_len];
+  L4040   constant        exe_path  const exe_path = std.process.executablePathAlloc(io, alloc) catch {
+  L4046   constant        snapshot_path  const snapshot_path = std.fmt.allocPrint(alloc, "{s}/codedb.snapshot", .{abs_path}) catch {
+  L4052   constant        result  const result = cio.runCapture(.{
+  L4107   constant        ch  const ch = result.stdout[i];
+  L4131   function        looksLikeCompoundIdentifier  pub fn looksLikeCompoundIdentifier(q: []const u8) bool {
+  L4150   function        handleFind  fn handleFind(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L4154   constant        query  const query = getStr(args, "query") orelse getStr(args, "name") orelse getStr(args, "path") orelse getStr(args, "pattern") orelse getStr(args, "q") orelse {
+  L4164   constant        max_results  const max_results: usize = if (args.get("max_results")) |v| switch (v) {
+  L4171   constant        exact_count  const exact_count = explorer.renderExactFileFind(query, alloc, out, max_results) catch 0;
+  L4203   constant        broadened  const broadened = broadened_buf[0..blen];
+  L4204   constant        retry  const retry = explorer.fuzzyFindFiles(broadened, alloc, max_results) catch null;
+  L4221   constant        rank_str  const rank_str = std.fmt.bufPrint(&buf, "{d}. ", .{rank}) catch continue;
+  L4225   constant        score_str  const score_str = std.fmt.bufPrint(&score_buf, " (score: {d:.2})\n", .{m.score}) catch continue;
+  L4230   function        handleGlob  fn handleGlob(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L4231   constant        pattern  const pattern = getStr(args, "pattern") orelse {
+  L4241   constant        max_results  const max_results: usize = if (args.get("max_results")) |v| switch (v) {
+  L4246   constant        matches  const matches = explorer.globPaths(alloc, pattern, max_results) catch {
+  L4263   function        handleLs  fn handleLs(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+  L4264   constant        prefix  const prefix = getStr(args, "path") orelse "";
+  L4266   constant        entries  const entries = explorer.lsDir(alloc, prefix) catch {
+  L4278   constant        w  const w = cio.listWriter(out, alloc);
+  L4293   constant        meta  const meta = std.fmt.bufPrint(&buf, "  ({s}, {d}L, {d} sym)\n", .{
+  L4311   function        runCliTool  pub fn runCliTool(
+  L4326   constant        pos  const pos: ?[]const u8 = if (args.len > cmd_args_start and !std.mem.startsWith(u8, args[cmd_args_start], "-"))
+  L4330   constant        out_start  const out_start = out.items.len;
+  L4336   constant        name  const name = pos orelse return cliUsage(alloc, out, "symbol <name> [--body]");
+  L4344   constant        name  const name = pos orelse return cliUsage(alloc, out, "callers <name>");
+  L4356   constant        since  const since = std.fmt.parseInt(i64, p, 10) catch return cliUsage(alloc, out, "changes [since_seq]");
+  L4368   constant        da  const da = parseDepsArgs(args, cmd_args_start) catch |e| return cliDepsUsage(alloc, out, e);
+  L4376   constant        pattern  const pattern = pos orelse return cliUsage(alloc, out, "glob <pattern>");
+  L4385   constant        query  const query = pos orelse return cliUsage(alloc, out, "file <fuzzy-name>");
+  L4406   function        cliUsage  fn cliUsage(alloc: std.mem.Allocator, out: *std.ArrayList(u8), usage: []const u8) u8 {
+  L4420   function        finishCli  pub fn finishCli(out: *std.ArrayList(u8), start: usize) u8 {
+  L4425   struct_def      DepsArgs  pub const DepsArgs = struct {
+  L4432   constant        DepsArgError  pub const DepsArgError = error{ MissingPath, UnknownFlag, MissingMaxDepth, BadMaxDepth, ExtraArg };
+  L4440   function        parseDepsArgs  pub fn parseDepsArgs(args: []const []const u8, start: usize) DepsArgError!DepsArgs {
+  L4445   constant        a  const a = args[i];
+  L4453   constant        n  const n = std.fmt.parseInt(i64, args[i], 10) catch return error.BadMaxDepth;
+  L4468   function        cliDepsUsage  fn cliDepsUsage(alloc: std.mem.Allocator, out: *std.ArrayList(u8), e: DepsArgError) u8 {
+  L4469   constant        msg  const msg = switch (e) {
+  L4480   constant        COMBO_WINDOW_MS  const COMBO_WINDOW_MS: i64 = 5000; // 5 second window between query and file open
+  L4481   constant        COMBO_BOOST_PER_HIT  const COMBO_BOOST_PER_HIT: f32 = 5.0; // score boost per historical open
+  L4483   function        applyComboBoosts  fn applyComboBoosts(io: std.Io, alloc: std.mem.Allocator, query: []const u8, matches: []explore_mod.Explorer.FuzzyMatch) void {
+  L4484   constant        wal_path  const wal_path = query_log_path orelse return;
+  L4485   constant        data  const data = std.Io.Dir.cwd().readFileAlloc(io, wal_path, alloc, .limited(512 * 1024)) catch return;
+  L4511   constant        access_ts  const access_ts = extractJsonIntLocal(line, "ts") orelse continue;
+  L4516   constant        gop  const gop = boosts.getOrPut(path) catch continue;
+  L4537   function        lt  fn lt(_: void, a: explore_mod.Explorer.FuzzyMatch, b: explore_mod.Explorer.FuzzyMatch) bool {
+  L4544   function        extractJsonIntLocal  fn extractJsonIntLocal(line: []const u8, key: []const u8) ?i64 {
+  L4546   constant        needle  const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
+  L4547   constant        pos  const pos = std.mem.indexOf(u8, line, needle) orelse return null;
+  L4548   constant        start  const start = pos + needle.len;
+  L4555   function        extractJsonStrLocal  fn extractJsonStrLocal(line: []const u8, key: []const u8, out: *[256]u8) ?[]const u8 {
+  L4557   constant        needle  const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":\"", .{key}) catch return null;
+  L4558   constant        pos  const pos = std.mem.indexOf(u8, line, needle) orelse return null;
+  L4559   constant        start  const start = pos + needle.len;
+  L4560   constant        end  const end = std.mem.indexOfScalarPos(u8, line, start, '"') orelse return null;
+  L4561   constant        len  const len = @min(end - start, out.len);
+  L4566   function        handleQuery  fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, store: *Store) void {
+  L4568   constant        pipeline_val  const pipeline_val = args.get("pipeline") orelse {
+  L4573   constant        pipeline  const pipeline = switch (pipeline_val) {
+  L4591   constant        deps_alloc  const deps_alloc = deps_arena.allocator();
+  L4593   constant        w  const w = cio.listWriter(out, alloc);
+  L4597   struct_def      StageInfo  const StageInfo = struct { op: []const u8, files_out: usize };
+  L4606   constant        step  const step = &step_val.object;
+  L4607   constant        op  const op = getStr(step, "op") orelse blk: {
+  L4619   constant        query  const query = getStr(step, "query") orelse {
+  L4624   constant        max  const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
+  L4625   constant        matches  const matches = explorer.fuzzyFindFiles(query, alloc, max) catch {
+  L4650   constant        find_is_last  const find_is_last = step_i + 1 == pipeline.len;
+  L4659   constant        query  const query = getStr(step, "query") orelse {
+  L4664   constant        max  const max: usize = if (getInt(step, "max_results")) |n| @intCast(@max(1, @min(n, 200))) else 50;
+  L4665   constant        results  const results = explorer.searchContent(query, alloc, max) catch {
+  L4707   constant        duped  const duped = alloc.dupe(u8, r.path) catch continue;
+  L4725   constant        duped  const duped = deps_alloc.dupe(u8, p) catch {
+  L4739   constant        direction  const direction = getStr(step, "direction") orelse "imported_by";
+  L4740   constant        transitive  const transitive = getBool(step, "transitive");
+  L4741   constant        max_depth_val  const max_depth_val: ?u32 = if (getInt(step, "max_depth")) |n| @intCast(@max(1, n)) else null;
+  L4742   constant        is_forward  const is_forward = std.mem.eql(u8, direction, "depends_on");
+  L4749   constant        current_len  const current_len = file_set.items.len;
+  L4760   constant        fwd  const fwd = explorer.dep_graph.getForwardDeps(path);
+  L4765   constant        d  const d = alloc.dupe(u8, dep) catch continue;
+  L4793   constant        owned  const owned = deps_alloc.dupe(u8, dep) catch continue;
+  L4807   constant        ext  const ext = getStr(step, "ext");
+  L4808   constant        glob_raw  const glob_raw = getStr(step, "glob") orelse getStr(step, "pattern");
+  L4817   constant        glob_pat  const glob_pat: ?[]const u8 = if (glob_raw) |g| blk: {
+  L4842   constant        duped  const duped = alloc.dupe(u8, p) catch {
+  L4873   constant        duped  const duped = alloc.dupe(u8, p) catch {
+  L4888   constant        max_lines  const max_lines: usize = if (getInt(step, "lines")) |n| @intCast(@max(1, @min(n, 200))) else 50;
+  L4890   constant        content  const content = explorer.getContent(path, alloc) catch continue;
+  L4915   constant        by  const by = getStr(step, "by") orelse "path";
+  L4918   function        lt  fn lt(_: void, a: []const u8, b: []const u8) bool {
+  L4925   constant        word  const word = getStr(step, "word") orelse {
+  L4930   constant        hits  const hits = explorer.searchWord(word, alloc) catch {
+  L4945   constant        hp  const hp = explorer.word_index.hitPath(h);
+  L4967   constant        hp  const hp = explorer.word_index.hitPath(h);
+  L4970   constant        duped  const duped = alloc.dupe(u8, hp) catch continue;
+  L4984   constant        name  const name = getStr(step, "name") orelse {
+  L4989   constant        results  const results = explorer.findAllSymbols(name, alloc) catch {
+  L5011   constant        duped  const duped = alloc.dupe(u8, r.path) catch continue;
+  L5029   constant        n  const n: usize = if (getInt(step, "n")) |i| @intCast(@max(1, @min(i, 100))) else 10;
+  L5059   function        setQueryLogPath  pub fn setQueryLogPath(path: []const u8) void {
+  L5063   function        escapeJsonStr  fn escapeJsonStr(input: []const u8, out: *[256]u8) usize {
+  L5087   function        appendToWal  fn appendToWal(io: std.Io, line: []const u8) void {
+  L5088   constant        path  const path = query_log_path orelse return;
+  L5089   constant        file  const file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .write_only }) catch blk: {
+  L5093   constant        end_offset  const end_offset = file.length(io) catch return;
+  L5097   function        logQuery  fn logQuery(io: std.Io, tool: []const u8, query: []const u8, result_bytes: usize, latency_ns: i128) void {
+  L5099   constant        elen  const elen = escapeJsonStr(query, &escaped);
+  L5100   constant        latency_us  const latency_us: i64 = @intCast(@divTrunc(latency_ns, 1000));
+  L5102   constant        line  const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"ev\":\"query\",\"tool\":\"{s}\",\"query\":\"{s}\",\"result_bytes\":{d},\"latency_us\":{d}}}\n", .{
+  L5108   function        logFileAccess  fn logFileAccess(io: std.Io, tool: []const u8, file_path: []const u8, latency_ns: i128) void {
+  L5110   constant        elen  const elen = escapeJsonStr(file_path, &escaped);
+  L5111   constant        latency_us  const latency_us: i64 = @intCast(@divTrunc(latency_ns, 1000));
+  L5113   constant        line  const line = std.fmt.bufPrint(&buf, "{{\"ts\":{d},\"ev\":\"access\",\"tool\":\"{s}\",\"path\":\"{s}\",\"latency_us\":{d}}}\n", .{
+  L5118   function        globMatch  pub fn globMatch(pattern: []const u8, path: []const u8) bool {
+  L5122   function        isPathSafe  pub fn isPathSafe(path: []const u8) bool {
+  L5145   function        projectRelPath  pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
+  L5165   constant        result_meta_prelude  pub const result_meta_prelude = "{\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"" ++ release_info.semver ++ "\"}}";
+  L5167   function        assembleJsonRpcResult  pub fn assembleJsonRpcResult(alloc: std.mem.Allocator, id: ?std.json.Value, result: []const u8, buf: *std.ArrayList(u8)) bool {
+  L5191   constant        start  const start = i;
+  L5201   function        writeResult  fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8) void {
+  L5211   function        writeError  fn writeError(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, code: i32, msg: []const u8) void {
+  L5218   constant        cs  const cs = std.fmt.bufPrint(&tmp, "{d}", .{code}) catch return;
+  L5234   function        writeEscaped  fn writeEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
+  L5237   constant        start  const start = i;
+  L5239   constant        c  const c = s[i];
+  L5244   constant        c  const c = s[i];
+  L5252   constant        hex  const hex = "0123456789abcdef";
+  L5253   constant        esc  const esc = [6]u8{ '\\', 'u', '0', '0', hex[c >> 4], hex[c & 0x0f] };
+  L5260   constant        getStr  const getStr = mcpj.getStr;
+  L5261   constant        getInt  const getInt = mcpj.getInt;
+  L5262   constant        getBool  pub const getBool = mcpj.getBool;
+  L5264   function        wantsJsonFormat  fn wantsJsonFormat(args: *const std.json.ObjectMap) bool {
+  L5265   constant        fmt  const fmt = getStr(args, "format") orelse return false;
+  L5269   function        appendJsonStr  fn appendJsonStr(out: *std.ArrayList(u8), alloc: std.mem.Allocator, s: []const u8) void {
+  L5275   function        appendJsonKeyStr  fn appendJsonKeyStr(out: *std.ArrayList(u8), alloc: std.mem.Allocator, key: []const u8, value: []const u8) void {
+  L5281   function        appendJsonKeyBool  fn appendJsonKeyBool(out: *std.ArrayList(u8), alloc: std.mem.Allocator, key: []const u8, value: bool) void {
+  L5286   function        appendJsonKeyUsize  fn appendJsonKeyUsize(out: *std.ArrayList(u8), alloc: std.mem.Allocator, key: []const u8, value: usize) void {
+  L5290   constant        s  const s = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return;
+  L5294   function        appendJsonKeyU8  fn appendJsonKeyU8(out: *std.ArrayList(u8), alloc: std.mem.Allocator, key: []const u8, value: u8) void {
+  L5298   constant        s  const s = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return;
+  L5302   function        appendJsonKeyF32  fn appendJsonKeyF32(out: *std.ArrayList(u8), alloc: std.mem.Allocator, key: []const u8, value: f32) void {
+  L5306   constant        s  const s = std.fmt.bufPrint(&buf, "{d}", .{@as(f64, value)}) catch return;
+  L5310   function        writeJsonToolError  fn writeJsonToolError(out: *std.ArrayList(u8), alloc: std.mem.Allocator, tool: []const u8, code: []const u8, message: []const u8) void {
+  L5320   function        appendSearchProvenanceMeta  fn appendSearchProvenanceMeta(out: *std.ArrayList(u8), alloc: std.mem.Allocator, explorer: *Explorer) void {
+  L5321   constant        bd  const bd = explorer.last_search_breakdown;
+  L5322   constant        skip  const skip = explorer.skipTrigramFileCount();
+  L5323   constant        recall_complete  const recall_complete = skip == 0 or bd.tier_reached >= 5;
+  L5337   function        writeSearchResultsJson  fn writeSearchResultsJson(
+  L5360   constant        cnt_s  const cnt_s = std.fmt.bufPrint(&cnt_buf, "{d}", .{visible}) catch "0";
+  L5367   constant        off_s  const off_s = std.fmt.bufPrint(&off_buf, "{d}", .{offset + results.len}) catch "0";
+  L5380   constant        line_s  const line_s = std.fmt.bufPrint(&line_buf, "{d}", .{r.line_num}) catch "0";
+  L5387   constant        score_s  const score_s = std.fmt.bufPrint(&score_buf, "{d}", .{@as(f64, r.score)}) catch "0";
+  L5396   function        symbolMatchModeLabel  fn symbolMatchModeLabel(spec: Explorer.SymbolSearchSpec) []const u8 {
+  L5403   constant        eql  const eql = mcpj.eql;
+  L5405   function        appendId  pub fn appendId(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), id: ?std.json.Value) void {
+  L5409   constant        s  const s = std.fmt.bufPrint(&tmp, "{d}", .{n}) catch return;
+  L5419   constant        s  const s = std.fmt.bufPrint(&tmp, "{d}", .{f}) catch return;
+  L5434   enum_def        McpBlockPolicy  const McpBlockPolicy = enum { default, lean, rich };
+  L5437   function        mcpEnvTruthy  fn mcpEnvTruthy(v: []const u8) bool {
+  L5444   function        mcpEnvPolicy  fn mcpEnvPolicy() McpBlockPolicy {
+  L5460   function        mcpBuiltinRichClient  fn mcpBuiltinRichClient(name: []const u8) bool {
+  L5469   function        mcpEmitRichBlocks  pub fn mcpEmitRichBlocks(client_name: ?[]const u8) bool {
+  L5475   constant        name  const name = client_name orelse return false;
+  L5479   constant        trimmed  const trimmed = std.mem.trim(u8, entry, " \t");
+  L5486   constant        MCP_RESET  const MCP_RESET = "\x1b[0m";
+  L5487   constant        MCP_BOLD  const MCP_BOLD = "\x1b[1m";
+  L5488   constant        MCP_DIM  const MCP_DIM = "\x1b[2m";
+  L5489   constant        MCP_GREEN  const MCP_GREEN = "\x1b[32m";
+  L5490   constant        MCP_RED  const MCP_RED = "\x1b[31m";
+  L5491   constant        MCP_CYAN  const MCP_CYAN = "\x1b[36m";
+  L5492   constant        MCP_YELLOW  const MCP_YELLOW = "\x1b[33m";
+  L5493   constant        MCP_MAGENTA  const MCP_MAGENTA = "\x1b[35m";
+  L5494   constant        MCP_BLUE  const MCP_BLUE = "\x1b[34m";
+  L5495   constant        MCP_BRIGHT_GREEN  const MCP_BRIGHT_GREEN = "\x1b[92m";
+  L5497   constant        MCP_CHECK  const MCP_CHECK = "\xe2\x9c\x93"; // ✓
+  L5498   constant        MCP_CROSS  const MCP_CROSS = "\xe2\x9c\x97"; // ✗
+  L5499   constant        MCP_DASH  const MCP_DASH = " \xe2\x80\x94 "; //  —
+  L5500   constant        MCP_ARROW  const MCP_ARROW = "\xe2\x86\x92 "; // →
+  L5501   constant        MCP_DOT  const MCP_DOT = "\xe2\x80\xa2 "; // •
+  L5502   constant        MCP_ZAP  const MCP_ZAP = "\xe2\x9a\xa1"; // ⚡
+  L5504   function        mcpFormatDuration  fn mcpFormatDuration(buf: []u8, ns: i128) []const u8 {
+  L550
+[codedb output truncated at 64 KB — prefer targeted queries: outline <path>, symbol <name> --body, or search, instead of whole-file reads]

@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""
+E2E MCP test harness for codedb.
+
+Scenarios covered:
+  1. issue-346 regression: spawn from cwd=/, complete MCP handshake via roots, wait
+     for scan to finish, verify core tools return real data from the project.
+  2. Normal mode: spawn with explicit --root <path>, verify scan runs immediately
+     and tools return data without needing a roots handshake.
+  3. No-roots client: spawn from cwd=/, client declares no roots capability, MCP
+     stays alive and tools respond gracefully (0 files, no crash).
+  4. issue-512 regression: direct tools/call accepts inline params when
+     arguments is empty, matching codedb_bundle's compatibility fallback.
+
+Usage:
+  python3 scripts/e2e_mcp_test.py [--binary /path/to/codedb] [--project /path/to/project]
+
+Defaults:
+  --binary  : zig-out/bin/codedb (build artifact)
+  --project : current working directory (the codedb repo itself)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+
+# ── ANSI colours ──────────────────────────────────────────────────────────────
+
+GREEN = "\033[32m"
+RED = "\033[31m"
+YELLOW = "\033[33m"
+CYAN = "\033[36m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+PASS = f"{GREEN}PASS{RESET}"
+FAIL = f"{RED}FAIL{RESET}"
+SKIP = f"{YELLOW}SKIP{RESET}"
+
+
+# ── MCP subprocess wrapper ────────────────────────────────────────────────────
+
+class MCPProcess:
+    """Wraps a codedb mcp subprocess; sends/receives JSON-RPC over stdio."""
+
+    def __init__(self, binary: str, args: list[str], cwd: str,
+                 command: list[str] | None = None) -> None:
+        """
+        command: full argv override (default: [binary, "mcp"] + args).
+        Use command=[binary, root, "mcp"] for explicit-root invocation.
+        """
+        argv = command if command is not None else [binary, "mcp"] + args
+        self.proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            text=True,
+            bufsize=1,
+        )
+        self._id = 1
+        self._lock = threading.Lock()
+        self._lines: list[str] = []
+        self._stderr_lines: list[str] = []
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()

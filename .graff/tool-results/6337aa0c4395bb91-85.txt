@@ -1,0 +1,100 @@
+# Changelog
+
+## 0.2.5838 - 2026-08-05
+
+- **`codedb_callers` now matches names only in lexical code** (#682, #683,
+  #684). A whole-word mention that exists solely in a trailing comment, quoted
+  string, raw/backtick literal, JavaScript regular expression, or complete
+  inline block comment is no longer reported as a call site.
+- Real references later on the same line remain visible when an earlier string,
+  raw literal, backtick literal, or block comment contains marker-like text such
+  as `//`, `#`, or `https://`; filtering no longer truncates the line at a
+  marker that is not actually a comment.
+- Language-aware handling covers PHP `//`/`#` comments without hiding PHP 8
+  `#[Attribute]` syntax, Swift `//` comments, Rust raw strings, nested block
+  comments where the language permits them, and shell comments after unescaped
+  operators while preserving `${#var}` and `$#`.
+- JavaScript and TypeScript template text is ignored while code inside `${...}`
+  remains searchable. Regular-expression bodies are skipped after punctuation
+  and expression-leading keywords such as `return`, `throw`, `yield`, and
+  `await`, including braces that appear inside regexes embedded in templates.
+- R backtick identifiers such as `` `renderX`(1) `` remain valid caller matches;
+  backticks in languages that use them as raw/template strings remain excluded
+  unless the match occurs in an executable template expression.
+- The scanner is allocation-free and caps nested template-expression scanning
+  at 16 levels to bound stack use and hostile-input rescanning. It intentionally
+  remains line-local because ranked caller candidates contain isolated source
+  lines; comment or literal state opened on a previous line is therefore still
+  treated as a heuristic limitation.
+
+## 0.2.5837 - 2026-08-05
+
+- **OCaml** `.ml`/`.mli` parser support (#622): let/type/module outline symbols
+  with nested `(* ... *)` comment handling.
+- **Mini MCP tools profile is the agent default** — 6 tools with rich steering
+  descriptions and compressed schemas, replacing the terse slim profile after
+  A/B evals showed description quality drives agent success.
+- **NL→symbol search bridge** — natural-language queries bridge to symbol names,
+  machine-artifact hits are deranked, context words merge into the query; the
+  bridge is cached as an inverted token index so repeat queries cost ~0.
+- **Windows daemon reap** — `nuke` runs a bounded multi-pass reap so daemons
+  republished mid-nuke no longer survive it (#657).
+- `codedb_callers` fixes: no more zero call sites when `max_results` starved its
+  filters, and lines where the symbol appears only inside string literals are no
+  longer counted.
+- Indexer skips generated tool-output dirs (`.graff/`, `.harness/`,
+  `graphify-out/`).
+- Bench regression gate repaired (`codedb_context` parity exemption) and pinned
+  Zig dev builds fall back to the hexops mirror.
+
+## 0.2.5836 - 2026-08-02
+
+Agent token efficiency release — see the
+[v0.2.5836 release notes](https://github.com/justrach/codedb/releases/tag/v0.2.5836)
+for the full story (slim-by-default MCP profile, stale-index auto-refresh,
+context fixes, output caps). Also in this cut:
+
+- Preallocate each retained per-file trigram list once at its exact final count
+  and use capacity-proven appends. This removes geometric growth, intermediate
+  copying, and long-lived capacity slack without reducing caches, workers,
+  warmup, retained data, result limits, or query features. On an immutable
+  641-file corpus, 20 counterbalanced pairs measured initial indexing at
+  137 ms → 136 ms (0.73% faster paired median, 95% CI 0.36%-1.46%, 14/20 wins).
+- Add Raspberry Pi 4 full-performance guidance, a Cortex-A72 `ReleaseFast` build
+  recipe, and an on-device generic-versus-tuned benchmark with output parity.
+
+## 0.2.5830 - 2026-07-12
+
+The first performance batch for this release accelerates steady-state MCP and
+core read-only tools while preserving response and retrieval parity. Measured
+MCP round trips improve from **2.16x to 99.11x** across tree, outline, symbol,
+read, find, word, search, and bundle workloads. Large synthetic handler cases
+improve **12.8x-109.7x** for outlines, deep reads, trees, fuzzy file lookup, and
+word output; exact symbols improve **22.4x** through direct hash-index lookup.
+
+The implementation adds bounded, mutation-generation-validated render/score
+caches, cached content hashes and line offsets, offset-based context body
+extraction, a compact JSON-RPC framing fast path, and rolling generic trigram
+construction. Ranking, parser, path-security, telemetry, and MCP schema behavior
+are unchanged. Baseline/candidate MCP responses were byte-identical after ID
+normalization, and the full suite, WASM build, and MCP E2E (20/20) pass.
+
+Detailed methodology, per-tool tables, memory bounds, limitations, and follow-up
+targets are in [`docs/performance-0.2.5830.md`](docs/performance-0.2.5830.md).
+The release gate ran 20 counterbalanced AB/BA pairs against the immutable
+0.2.5829 source plus a pinned harness-only parity backport. Every parity-enabled
+tool matched across every measured iteration after normalizing only response
+duration, and no benchmark crossed the 10% plus 50us regression threshold. The
+runner enforces a shared corpus fingerprint, full JSON-RPC response hashes,
+commit/tree/compiler/corpus/order provenance, paired medians, and bootstrap
+intervals; single-run minima are diagnostic only.
+
+
+## 0.2.5829 - 2026-07-11
+
+The release toolchain moves to pinned Zig `0.17.0-dev.813+2153f8143` without
+changing codedb's retrieval semantics, while a focused performance pass makes
+user-facing search faster than the previous Zig 0.16.0 build. The migration,
+performance work, and retrieval-parity requirements are tracked in #673.
+
+### Zig 0.17 migration

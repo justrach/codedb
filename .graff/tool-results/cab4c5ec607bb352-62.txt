@@ -1,0 +1,81 @@
+  2785	    var i: usize = 1;
+  2786	    while (i < tok.len) : (i += 1) {
+  2787	        const prev_lower = tok[i - 1] >= 'a' and tok[i - 1] <= 'z';
+  2788	        const cur_upper = tok[i] >= 'A' and tok[i] <= 'Z';
+  2789	        if (prev_lower and cur_upper) return true;
+  2790	    }
+  2791	    return false;
+  2792	}
+  2793	
+  2794	// Cap at 3 candidates instead of 5. handleContext does one searchContent +
+  2795	// one findAllSymbols per candidate (the bench shows 30µs and ~5µs each on
+  2796	// codedb's own repo), so each extra candidate adds ~35µs of fixed cost
+  2797	// for diminishing return — the by_file ranking already heavily favors
+  2798	// the first 1–2 high-quality identifiers. End-to-end this drops
+  2799	// codedb_context from ~330µs → ~220µs on the standard bench task.
+  2800	const CONTEXT_MAX_CANDIDATES: usize = 5;
+  2801	// 20 was the original tier-search cap, but only CONTEXT_TOP_LINES_PER_FILE
+  2802	// (3) hits per file are ever kept after ranking — every additional result
+  2803	// is wasted work in search-content + per-file map churn. Empirically 8
+  2804	// covers the keep-window even on dense files.
+  2805	const CONTEXT_MAX_RESULTS_PER_KW: usize = 8;
+  2806	const CONTEXT_TOP_FILES: usize = 5;
+  2807	const CONTEXT_TOP_LINES_PER_FILE: usize = 3;
+  2808	
+  2809	pub fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+  2810	    var seen = std.StringHashMap(void).init(alloc);
+  2811	    defer seen.deinit();
+  2812	    var i: usize = 0;
+  2813	    while (i < task.len) {
+  2814	        const c = task[i];
+  2815	        // Quoted strings — taken literally as identifiers.
+  2816	        if (c == '"' or c == '`') {
+  2817	            const q = c;
+  2818	            const start = i + 1;
+  2819	            var j = start;
+  2820	            while (j < task.len and task[j] != q) : (j += 1) {}
+  2821	            if (j > start and j - start <= 64 and j - start >= 3) {
+  2822	                const slice = task[start..j];
+  2823	                if (!seen.contains(slice)) {
+  2824	                    seen.put(slice, {}) catch {};
+  2825	                    out.append(alloc, slice) catch {};
+  2826	                    if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
+  2827	                }
+  2828	            }
+  2829	            i = j + 1;
+  2830	            continue;
+  2831	        }
+  2832	        // Identifier-like tokens.
+  2833	        if (isContextIdentStart(c)) {
+  2834	            const start = i;
+  2835	            while (i < task.len and isContextIdentCont(task[i])) : (i += 1) {}
+  2836	            const tok = task[start..i];
+  2837	            if (tok.len >= 3 and tok.len <= 64 and looksLikeContextIdentifier(tok) and !seen.contains(tok)) {
+  2838	                seen.put(tok, {}) catch {};
+  2839	                out.append(alloc, tok) catch {};
+  2840	                if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
+  2841	            }
+  2842	            continue;
+  2843	        }
+  2844	        i += 1;
+  2845	    }
+  2846	}
+  2847	
+  2848	// #570: fallback for tasks with no identifier-shaped token. Plain words
+  2849	// (≥4 chars, glue/generic words dropped) sorted longest-first — longer words
+  2850	// are more specific ("ranking" beats "fix") — capped like the identifier pass.
+  2851	pub fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
+  2852	    const stop = [_][]const u8{
+  2853	        "that",   "this",   "with",    "from",    "into",      "when",   "where",
+  2854	        "what",   "which",  "then",    "them",    "they",      "have",   "will",
+  2855	        "should", "would",  "could",   "make",    "makes",     "using",  "used",
+  2856	        "does",   "like",   "also",    "than",    "each",      "more",   "most",
+  2857	        "some",   "such",   "very",    "just",    "been",      "being",  "about",
+  2858	        "after",  "before", "while",   "there",   "their",     "other",  "only",
+  2859	        "over",   "under",  "between", "improve", "implement", "ensure", "change",
+  2860	        "update",
+  2861	    };
+  2862	    var words: std.ArrayList([]const u8) = .empty;
+  2863	    defer words.deinit(alloc);
+  2864	    var seen = std.StringHashMap(void).init(alloc);
+  2865	    defer seen.deinit();

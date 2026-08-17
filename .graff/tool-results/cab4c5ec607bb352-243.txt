@@ -1,0 +1,206 @@
+    return (c >= 'a' and c <= 'z') or
+        (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or
+        c == '_';
+}
+
+/// Returns true when `needle` occurs as a whole-word identifier in code rather
+/// than in a string, raw/template literal, or comment. This is deliberately a
+/// line-local lexical scan: it handles complete spans on the current line and
+/// conservatively treats an unclosed block/raw span as consuming the remainder.
+fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explore_mod.Language) bool {
+    return hasWholeWordMatchInCodeDepth(line, needle, language, 0);
+}
+
+const max_template_nesting = 16;
+
+fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: explore_mod.Language, template_depth: usize) bool {
+    if (needle.len == 0 or line.len < needle.len) return false;
+    const markers = lineCommentMarkers(language);
+    var i: usize = 0;
+    while (i < line.len) {
+        if (language == .rust) {
+            if (rustRawLiteralAt(line, i)) |raw| {
+                if (raw.end) |end| {
+                    i = end;
+                    continue;
+                }
+                return false;
+            }
+        }
+        if (line[i] == '"' or line[i] == '\'') {
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+        }
+        if (line[i] == '`' and hasBacktickLiterals(language)) {
+            if (language == .r) {
+                if (stringLiteralEnd(line, i)) |end| {
+                    if (std.mem.eql(u8, line[i + 1 .. end], needle)) return true;
+                    i = end + 1;
+                    continue;
+                }
+                return false;
+            }
+            if (hasTemplateLiterals(language)) {
+                if (template_depth >= max_template_nesting) {
+                    if (stringLiteralEnd(line, i)) |end| {
+                        i = end + 1;
+                        continue;
+                    }
+                    return false;
+                }
+                const template = scanTemplateLiteral(line, i, needle, language, template_depth);
+                if (template.matched) return true;
+                if (template.end) |end| {
+                    i = end;
+                    continue;
+                }
+                return false;
+            }
+            if (stringLiteralEnd(line, i)) |end| {
+                i = end + 1;
+                continue;
+            }
+            return false;
+        }
+        if (hasTemplateLiterals(language) and line[i] == '/') {
+            if (javascriptRegexEndAt(line, i)) |end| {
+                i = end;
+                continue;
+            }
+        }
+        if (blockCommentAt(line, i, language)) |block| {
+            if (block.end) |end| {
+                i = end;
+                continue;
+            }
+            return false;
+        }
+        if (isLineCommentAt(line, i, language, markers)) return false;
+
+        if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+            const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+            const after = i + needle.len;
+            const after_ok = after >= line.len or !isIdentChar(line[after]);
+            if (before_ok and after_ok) return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+fn lineCommentMarkers(language: explore_mod.Language) []const []const u8 {
+    return switch (language) {
+        .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .swift, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
+        .php => &.{ "//", "#" },
+        .python, .ruby, .r, .shell => &.{"#"},
+        .hcl => &.{ "#", "//" },
+        .sql => &.{"--"},
+        .fortran => &.{"!"},
+        .llvm_ir => &.{";"},
+        else => &.{},
+    };
+}
+
+fn isLineCommentAt(line: []const u8, start: usize, language: explore_mod.Language, markers: []const []const u8) bool {
+    for (markers) |marker| {
+        if (!std.mem.startsWith(u8, line[start..], marker)) continue;
+        // `#[` starts a PHP 8 attribute, not a hash comment.
+        if (language == .php and marker[0] == '#' and start + 1 < line.len and line[start + 1] == '[') return false;
+        // Shell: `#` opens a comment only when it begins a word. Operators are
+        // word boundaries too; `${#var}` and `$#` remain live syntax.
+        if (language == .shell and !isShellCommentStart(line, start)) return false;
+        return true;
+    }
+    return false;
+}
+
+const LineSpan = struct { end: ?usize };
+
+fn rustRawLiteralAt(line: []const u8, start: usize) ?LineSpan {
+    if (start != 0 and isIdentChar(line[start - 1])) return null;
+    var i = start;
+    if (line[i] == 'b') {
+        if (i + 1 >= line.len or line[i + 1] != 'r') return null;
+        i += 2;
+    } else if (line[i] == 'r') {
+        i += 1;
+    } else return null;
+
+    var hashes: usize = 0;
+    while (i < line.len and line[i] == '#') : (i += 1) hashes += 1;
+    if (i >= line.len or line[i] != '"') return null;
+
+    i += 1;
+    while (i < line.len) : (i += 1) {
+        if (line[i] != '"' or i + 1 + hashes > line.len) continue;
+        var matched: usize = 0;
+        while (matched < hashes and line[i + 1 + matched] == '#') : (matched += 1) {}
+        if (matched == hashes) return .{ .end = i + 1 + hashes };
+    }
+    return .{ .end = null };
+}
+
+fn hasBacktickLiterals(language: explore_mod.Language) bool {
+    return switch (language) {
+        .go_lang, .javascript, .typescript, .php, .ruby, .r, .svelte, .vue, .astro => true,
+        else => false,
+    };
+}
+
+fn hasTemplateLiterals(language: explore_mod.Language) bool {
+    return switch (language) {
+        .javascript, .typescript, .svelte, .vue, .astro => true,
+        else => false,
+    };
+}
+
+const TemplateScan = struct {
+    end: ?usize,
+    matched: bool,
+};
+
+fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, language: explore_mod.Language, template_depth: usize) TemplateScan {
+    var i = open + 1;
+    while (i < line.len) {
+        if (line[i] == '\\') {
+            i += if (line.len - i > 1) 2 else 1;
+            continue;
+        }
+        if (line[i] == '`') return .{ .end = i + 1, .matched = false };
+        if (line[i] == '$' and i + 1 < line.len and line[i + 1] == '{') {
+            const expression_start = i + 2;
+            const expression_end = templateExpressionEnd(line, expression_start, language);
+            const end = expression_end orelse line.len;
+            if (hasWholeWordMatchInCodeDepth(line[expression_start..end], needle, language, template_depth + 1)) {
+                return .{ .end = expression_end, .matched = true };
+            }
+            if (expression_end) |close| {
+                i = close + 1;
+                continue;
+            }
+            return .{ .end = null, .matched = false };
+        }
+        i += 1;
+    }
+    return .{ .end = null, .matched = false };
+}
+
+fn javascriptRegexEndAt(line: []const u8, start: usize) ?usize {
+    if (start + 1 >= line.len or line[start] != '/' or line[start + 1] == '/' or line[start + 1] == '*') return null;
+
+    var previous = start;
+    while (previous > 0 and (line[previous - 1] == ' ' or line[previous - 1] == '\t')) previous -= 1;
+    if (previous > 0 and std.mem.indexOfScalar(u8, "([{:;,=!?&|+-*%^~<>", line[previous - 1]) == null) return null;
+
+    var in_class = false;
+    var i = start + 1;
+    while (i < line.len) {
+        if (line[i] == '\\') {
+            i += if (line.len - i > 1) 2 else 1;
+            continue;
+        }
+        if (line[i] == '[') {
+            in_class = true;

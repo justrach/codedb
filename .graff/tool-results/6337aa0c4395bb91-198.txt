@@ -1,0 +1,93 @@
+   340	    while (true) {
+   341	        const read_len = try file.readPositionalAll(io, &buf, offset);
+   342	        if (read_len == 0) break;
+   343	        hasher.update(buf[0..read_len]);
+   344	        offset += read_len;
+   345	        if (read_len < buf.len) break;
+   346	    }
+   347	
+   348	    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+   349	    hasher.final(&digest);
+   350	    const digest_hex = std.fmt.bytesToHex(digest, .lower);
+   351	    return allocator.dupe(u8, &digest_hex);
+   352	}
+   353	
+   354	// ── Auto-update ──────────────────────────────────────────────────────────────
+   355	//
+   356	// On startup we kick off a detached check that shells out to the public
+   357	// install.sh. The check is:
+   358	//   • disabled when CODEDB_NO_AUTO_UPDATE is set in the environment
+   359	//   • throttled to at most once every 24 hours, tracked in
+   360	//     ~/.codedb/last_auto_update_check (a u64 little-endian unix-ms timestamp)
+   361	// The update itself runs in a background thread so it never blocks server
+   362	// startup. If the binary on disk gets replaced mid-session, the kernel keeps
+   363	// the old inode mapped for the running process; subsequent invocations get the
+   364	// new binary.
+   365	
+   366	const auto_update_install_url = "https://codedb.codegraff.com/install.sh";
+   367	const auto_update_throttle_ms: i64 = 24 * 60 * 60 * 1000;
+   368	const auto_update_stamp_filename = "last_auto_update_check";
+   369	
+   370	/// Pure decision function — useful for tests. Returns true when the next
+   371	/// auto-update attempt should fire.
+   372	pub fn shouldRunAutoUpdate(now_ms: i64, last_check_ms: ?i64, env_disabled: bool) bool {
+   373	    if (env_disabled) return false;
+   374	    const last = last_check_ms orelse return true;
+   375	    if (last > now_ms) return true;
+   376	    const delta: i128 = @as(i128, now_ms) - @as(i128, last);
+   377	    return delta >= auto_update_throttle_ms;
+   378	}
+   379	
+   380	pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+   381	    const env_disabled = cio.posixGetenv("CODEDB_NO_AUTO_UPDATE") != null;
+   382	    const home = cio.homeDir() orelse return;
+   383	    if (home.len == 0) return;
+   384	
+   385	    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb", .{home}) catch return;
+   386	    defer allocator.free(dir_path);
+   387	    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+   388	
+   389	    const stamp_path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, auto_update_stamp_filename }) catch return;
+   390	    defer allocator.free(stamp_path);
+   391	
+   392	    const last_ms = readAutoUpdateStamp(io, stamp_path);
+   393	    const now_ms = cio.milliTimestamp();
+   394	    if (!shouldRunAutoUpdate(now_ms, last_ms, env_disabled)) return;
+   395	
+   396	    // Persist the new timestamp before launching so concurrent invocations
+   397	    // don't all race the same check.
+   398	    writeAutoUpdateStamp(io, stamp_path, now_ms);
+   399	
+   400	    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{}) catch return;
+   401	    thread.detach();
+   402	}
+   403	
+   404	fn autoUpdateWorker() void {
+   405	    // sh -c handles the curl-into-bash pipeline. We keep stdout/stderr captured
+   406	    // and immediately discard so the install script's progress output doesn't
+   407	    // leak into the parent's stdio (which is the MCP transport).
+   408	    const result = cio.runCapture(.{
+   409	        .allocator = std.heap.page_allocator,
+   410	        .argv = &.{ "sh", "-c", "curl -fsSL " ++ auto_update_install_url ++ " | bash" },
+   411	        .max_output_bytes = 64 * 1024,
+   412	    }) catch return;
+   413	    std.heap.page_allocator.free(result.stdout);
+   414	    std.heap.page_allocator.free(result.stderr);
+   415	}
+   416	
+   417	fn readAutoUpdateStamp(io: std.Io, path: []const u8) ?i64 {
+   418	    var buf: [8]u8 = undefined;
+   419	    var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
+   420	    defer f.close(io);
+   421	    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+   422	    if (n < 8) return null;
+   423	    return std.mem.readInt(i64, buf[0..8], .little);
+   424	}
+   425	
+   426	fn writeAutoUpdateStamp(io: std.Io, path: []const u8, ms: i64) void {
+   427	    var buf: [8]u8 = undefined;
+   428	    std.mem.writeInt(i64, &buf, ms, .little);
+   429	    const f = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true }) catch return;
+   430	    defer f.close(io);
+   431	    f.writePositionalAll(io, &buf, 0) catch {};
+   432	}

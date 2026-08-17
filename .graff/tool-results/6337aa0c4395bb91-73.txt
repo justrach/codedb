@@ -1,0 +1,50 @@
+//! Non-query command handlers (bench-engine / snapshot / cli-daemon / serve /
+//! mcp). Extracted from mainImpl: each takes a RunCtx bundling the warm
+//! Store/Explorer plus the parsed invocation state, so mainImpl stays a thin
+//! dispatcher. The resources RunCtx points at (out/store/explorer/...) are
+//! owned by mainImpl and outlive every handler call.
+const std = @import("std");
+const cio = @import("cio.zig");
+const sty = @import("style.zig");
+const Store = @import("store.zig").Store;
+const Explorer = @import("explore.zig").Explorer;
+const explore_mod = @import("explore.zig");
+const AgentRegistry = @import("agent.zig").AgentRegistry;
+const watcher = @import("watcher.zig");
+const server = @import("server.zig");
+const mcp_server = @import("mcp.zig");
+const telemetry = @import("telemetry.zig");
+const git_mod = @import("git.zig");
+const snapshot_mod = @import("snapshot.zig");
+const update_mod = @import("update.zig");
+const index_mod = @import("index.zig");
+const Config = @import("config.zig").Config;
+const Out = @import("out.zig").Out;
+const cli_proxy = @import("cli_proxy.zig");
+const cliDaemonListen = cli_proxy.cliDaemonListen;
+const cliSocketPath = cli_proxy.cliSocketPath;
+const bootstrap = @import("bootstrap.zig");
+const loadWordIndexFromDiskIfPresent = bootstrap.loadWordIndexFromDiskIfPresent;
+const wordIndexMatchesOutlines = bootstrap.wordIndexMatchesOutlines;
+const persistWordIndexFromSource = bootstrap.persistWordIndexFromSource;
+const persistWordIndexToDisk = bootstrap.persistWordIndexToDisk;
+const loadBestSnapshot = bootstrap.loadBestSnapshot;
+const loadTrigramFromDiskIfPresent = bootstrap.loadTrigramFromDiskIfPresent;
+const compactMcpReadyMemory = bootstrap.compactMcpReadyMemory;
+const saveProjectInfo = bootstrap.saveProjectInfo;
+const spawnWarmup = bootstrap.spawnWarmup;
+const background = @import("background.zig");
+const reapLoop = background.reapLoop;
+const scanBg = background.scanBg;
+const triggerScanFromRoots = background.triggerScanFromRoots;
+const watcherDeferredLoop = background.watcherDeferredLoop;
+const idleWatchdog = background.idleWatchdog;
+const cliIdleWatchdog = background.cliIdleWatchdog;
+
+/// Shared invocation state for the command handlers. `out`/`store`/`explorer`
+/// are pointers into mainImpl's stack frame, which lives for the whole process,
+/// so handlers may spawn threads that capture them.
+pub const RunCtx = struct {
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    out: *Out,

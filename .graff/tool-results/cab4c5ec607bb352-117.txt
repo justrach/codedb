@@ -1,0 +1,71 @@
+   280	
+   281	    return huge_content;
+   282	}
+   283	
+   284	fn writeFileUnder(io: std.Io, root: []const u8, rel: []const u8, content: []const u8) !void {
+   285	    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+   286	    const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ root, rel });
+   287	    if (std.fs.path.dirname(path)) |parent| {
+   288	        try std.Io.Dir.cwd().createDirPath(io, parent);
+   289	    }
+   290	    const file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+   291	    defer file.close(io);
+   292	    try file.writeStreamingAll(io, content);
+   293	}
+   294	
+   295	fn makeTempCorpusDir(io: std.Io, buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
+   296	    const base = cio.posixGetenv("TMPDIR") orelse "/tmp";
+   297	    const ns = cio.nanoTimestamp();
+   298	    const seed: u64 = @intCast(@as(u128, @bitCast(ns)) & 0xffff_ffff_ffff_ffff);
+   299	    const path = if (base.len > 0 and base[base.len - 1] == '/')
+   300	        try std.fmt.bufPrint(buf, "{s}codedb-bench-edge-{x}", .{ base, seed })
+   301	    else
+   302	        try std.fmt.bufPrint(buf, "{s}/codedb-bench-edge-{x}", .{ base, seed });
+   303	    try std.Io.Dir.cwd().createDirPath(io, path);
+   304	    return path;
+   305	}
+   306	
+   307	fn summarizeCorpus(explorer: *Explorer) struct { files: usize, bytes: u64 } {
+   308	    explorer.mu.lockShared();
+   309	    defer explorer.mu.unlockShared();
+   310	
+   311	    var files: usize = 0;
+   312	    var bytes: u64 = 0;
+   313	    var iter = explorer.outlines.iterator();
+   314	    while (iter.next()) |entry| {
+   315	        files += 1;
+   316	        bytes +|= entry.value_ptr.byte_size;
+   317	    }
+   318	    return .{ .files = files, .bytes = bytes };
+   319	}
+   320	
+   321	fn writeHumanSummary(allocator: std.mem.Allocator, file: cio.File, file_count: usize, total_bytes: u64, scan_ns: u64, results: []const CaseResult) !void {
+   322	    var out: std.ArrayList(u8) = .empty;
+   323	    defer out.deinit(allocator);
+   324	    const writer = cio.listWriter(&out, allocator);
+   325	    var scan_buf: [32]u8 = undefined;
+   326	    try writer.print("── Edge-Case Benchmarks ({d} files, {d}KB, initial scan {s}) ──\n", .{ file_count, total_bytes / 1024, formatNs(&scan_buf, scan_ns) });
+   327	    try writer.writeAll("Case                     Avg        Min        Size\n");
+   328	    for (results) |result| {
+   329	        var avg_buf: [32]u8 = undefined;
+   330	        var min_buf: [32]u8 = undefined;
+   331	        try writer.print("{s:<24} {s:<10} {s:<10} {d}\n", .{
+   332	            result.tool,
+   333	            formatNs(&avg_buf, result.avg_latency_ns),
+   334	            formatNs(&min_buf, result.min_latency_ns),
+   335	            result.response_bytes,
+   336	        });
+   337	    }
+   338	    try file.writeAll(out.items);
+   339	}
+   340	
+   341	fn writeJsonSummary(allocator: std.mem.Allocator, file: cio.File, repo_root: []const u8, corpus_root: []const u8, file_count: usize, total_bytes: u64, scan_ns: u64, results: []const CaseResult) !void {
+   342	    var out: std.ArrayList(u8) = .empty;
+   343	    defer out.deinit(allocator);
+   344	    const writer = cio.listWriter(&out, allocator);
+   345	    try writer.print("{{\"repo_root\":\"{s}\",\"corpus_root\":\"{s}\",\"file_count\":{d},\"total_bytes\":{d},\"scan_ns\":{d},\"tools\":[", .{
+   346	        repo_root,
+   347	        corpus_root,
+   348	        file_count,
+   349	        total_bytes,
+   350	        scan_ns,

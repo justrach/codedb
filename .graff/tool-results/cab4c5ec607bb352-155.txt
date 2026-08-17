@@ -1,0 +1,51 @@
+1 results for 'lineCodePrefix':
+  src/mcp.zig:2696 (function) lineCodePrefix  // fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
+ 2696 | fn lineCodePrefix(line: []const u8, language: explore_mod.Language) []const u8 {
+ 2697 |     const markers: []const []const u8 = switch (language) {
+ 2698 |         .zig, .rust, .go_lang, .javascript, .typescript, .c, .cpp, .dart, .java, .kotlin, .swift, .mlir, .tablegen, .rescript, .svelte, .vue, .astro => &.{"//"},
+ 2699 |         .php => &.{ "//", "#" },
+ 2700 |         .python, .ruby, .r, .shell => &.{"#"},
+ 2701 |         .hcl => &.{ "#", "//" },
+ 2702 |         .sql => &.{"--"},
+ 2703 |         .fortran => &.{"!"},
+ 2704 |         .llvm_ir => &.{";"},
+ 2705 |         else => return line,
+ 2706 |     };
+ 2707 |     var i: usize = 0;
+ 2708 |     while (i < line.len) {
+ 2709 |         if (language == .rust) {
+ 2710 |             if (rustRawLiteralAt(line, i)) |raw| {
+ 2711 |                 if (raw.end) |end| {
+ 2712 |                     i = end;
+ 2713 |                     continue;
+ 2714 |                 }
+ 2715 |                 return line;
+ 2716 |             }
+ 2717 |         }
+ 2718 |         if (line[i] == '"' or line[i] == '\'' or (line[i] == '`' and hasBacktickLiterals(language))) {
+ 2719 |             if (stringLiteralEnd(line, i)) |end| {
+ 2720 |                 i = end + 1;
+ 2721 |                 continue;
+ 2722 |             }
+ 2723 |         }
+ 2724 |         if (blockCommentAt(line, i, language)) |block| {
+ 2725 |             if (block.end) |end| {
+ 2726 |                 i = end;
+ 2727 |                 continue;
+ 2728 |             }
+ 2729 |             return line;
+ 2730 |         }
+ 2731 |         for (markers) |m| {
+ 2732 |             if (!std.mem.startsWith(u8, line[i..], m)) continue;
+ 2733 |             // `#[` starts a PHP 8 attribute, not a hash comment.
+ 2734 |             if (language == .php and m[0] == '#' and i + 1 < line.len and line[i + 1] == '[') break;
+ 2735 |             // Shell: `#` opens a comment only when it begins a word. Operators
+ 2736 |             // are word boundaries too; `${#var}` and `$#` remain live syntax.
+ 2737 |             if (language == .shell and !isShellCommentStart(line, i)) break;
+ 2738 |             return line[0..i];
+ 2739 |         }
+ 2740 |         i += 1;
+ 2741 |     }
+ 2742 |     return line;
+ 2743 | }
+↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.

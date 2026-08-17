@@ -1,0 +1,121 @@
+        try testing.expectEqualStrings("mcp", p.cmd);
+        try testing.expect(!p.root_is_explicit);
+    }
+    // `codedb mcp ${workspaceFolder}`
+    {
+        const argv = [_][]const u8{ "codedb", "mcp", "${workspaceFolder}" };
+        const p = main_mod.parsePositional(&argv);
+        try testing.expect(!p.usage_exit);
+        try testing.expectEqualStrings(".", p.root);
+        try testing.expectEqualStrings("mcp", p.cmd);
+        try testing.expect(!p.root_is_explicit);
+    }
+}
+
+test "issue-639: parsePositional root/explicit matrix across arg forms" {
+    // The matrix that hid the bug: each arg form maps to a (root, cmd,
+    // explicit) triple. The deferred-scan / git-root-walkup / CODEDB_ROOT
+    // gates all key off (cmd=="mcp" and root=="." and !explicit), so the
+    // placeholder rows MUST land on root=".", explicit=false to behave like
+    // a bare `codedb mcp`. Anything else silently disables those paths (#639).
+    const Case = struct {
+        argv: []const []const u8,
+        root: []const u8,
+        cmd: []const u8,
+        explicit: bool,
+    };
+    const cases = [_]Case{
+        // bare mcp → cwd, deferred (non-explicit)
+        .{ .argv = &.{ "codedb", "mcp" }, .root = ".", .cmd = "mcp", .explicit = false },
+        // explicit path before cmd
+        .{ .argv = &.{ "codedb", "/proj", "mcp" }, .root = "/proj", .cmd = "mcp", .explicit = true },
+        // explicit path after mcp (#503)
+        .{ .argv = &.{ "codedb", "mcp", "/proj" }, .root = "/proj", .cmd = "mcp", .explicit = true },
+        // unexpanded placeholder before cmd → normalized to cwd, non-explicit (#639)
+        .{ .argv = &.{ "codedb", "${workspaceFolder}", "mcp" }, .root = ".", .cmd = "mcp", .explicit = false },
+        // unexpanded placeholder after mcp → normalized (#639)
+        .{ .argv = &.{ "codedb", "mcp", "${workspaceFolder}" }, .root = ".", .cmd = "mcp", .explicit = false },
+        // placeholder with a non-mcp command (generic root form) → cwd recovery (#639)
+        .{ .argv = &.{ "codedb", "${workspaceFolder}", "search" }, .root = ".", .cmd = "search", .explicit = false },
+        // explicit path + query cmd stays explicit
+        .{ .argv = &.{ "codedb", "/proj", "search" }, .root = "/proj", .cmd = "search", .explicit = true },
+    };
+    for (cases) |c| {
+        const p = main_mod.parsePositional(c.argv);
+        try testing.expect(!p.usage_exit);
+        try testing.expectEqualStrings(c.root, p.root);
+        try testing.expectEqualStrings(c.cmd, p.cmd);
+        try testing.expectEqual(c.explicit, p.root_is_explicit);
+    }
+}
+
+test "issue-639: placeholder is normalized in cli_args only, never re-rewritten in main" {
+    // Reintroduction guard. The bug hid because the placeholder was rewritten
+    // late in the dispatcher (mainImpl), after the gates had already branched
+    // on the un-normalized value. Keep the literal in exactly one place
+    // (cli_args.zig); its presence in main.zig means a late rewrite is back.
+    const main_src = @embedFile("main.zig");
+    try testing.expect(std.mem.indexOf(u8, main_src, "${workspaceFolder}") == null);
+}
+
+test "issue-639: mcp root-resolution gate predicates" {
+    const ca = cli_args_mod;
+    // mcpRootIsImplicitCwd — single source for the #502 git-root walk-up AND
+    // the deferred-scan handshake. Fires only for an implicit cwd mcp root.
+    try testing.expect(ca.mcpRootIsImplicitCwd("mcp", ".", false)); // bare mcp → fire
+    try testing.expect(!ca.mcpRootIsImplicitCwd("mcp", ".", true)); // env/path-pinned → skip
+    try testing.expect(!ca.mcpRootIsImplicitCwd("mcp", "/proj", false)); // explicit path → skip
+    try testing.expect(!ca.mcpRootIsImplicitCwd("search", ".", false)); // non-mcp → skip
+    // mcpRootAcceptsEnv — gates the CODEDB_ROOT fallback (explicit or not).
+    try testing.expect(ca.mcpRootAcceptsEnv("mcp", "."));
+    try testing.expect(!ca.mcpRootAcceptsEnv("mcp", "/proj"));
+    try testing.expect(!ca.mcpRootAcceptsEnv("status", "."));
+}
+
+test "issue-639: parsed ${workspaceFolder} feeds the gates like a bare `codedb mcp`" {
+    // The two halves of the bug must agree: the parse half (parsePositional)
+    // and the consume half (the gate predicates). Before the fix the
+    // placeholder parsed to (root="${workspaceFolder}", explicit=true), so
+    // both gates returned false and the #502 walk-up / deferred scan /
+    // CODEDB_ROOT fallback were all silently skipped.
+    const forms = [_][]const []const u8{
+        &.{ "codedb", "${workspaceFolder}", "mcp" },
+        &.{ "codedb", "mcp", "${workspaceFolder}" },
+    };
+    for (forms) |argv| {
+        const p = main_mod.parsePositional(argv);
+        try testing.expect(cli_args_mod.mcpRootIsImplicitCwd(p.cmd, p.root, p.root_is_explicit));
+        try testing.expect(cli_args_mod.mcpRootAcceptsEnv(p.cmd, p.root));
+    }
+}
+
+test "isolate: isHelpRequest matches the three help spellings, nothing else" {
+    const ca = cli_args_mod;
+    // The exact triple that was hand-written at four sites and drift-prone.
+    try testing.expect(ca.isHelpRequest("--help"));
+    try testing.expect(ca.isHelpRequest("-h"));
+    try testing.expect(ca.isHelpRequest("help"));
+    // Near-misses must not trip it — realistic typos / neighbouring flags.
+    try testing.expect(!ca.isHelpRequest("--helpme"));
+    try testing.expect(!ca.isHelpRequest("-help"));
+    try testing.expect(!ca.isHelpRequest("h"));
+    try testing.expect(!ca.isHelpRequest("--no-telemetry"));
+    try testing.expect(!ca.isHelpRequest(""));
+}
+
+test "isolate: parsePositional routes every help form through isHelpRequest" {
+    // Wiring: the parse half and the predicate must agree. Every argv that
+    // should print usage parses to a cmd isHelpRequest recognizes — including
+    // the #502 `codedb mcp --help` collapse to cmd="--help".
+    const ca = cli_args_mod;
+    inline for (.{ "--help", "-h", "help" }) |form| {
+        const bare = main_mod.parsePositional(&.{ "codedb", form });
+        try testing.expect(ca.isHelpRequest(bare.cmd));
+        const after_mcp = main_mod.parsePositional(&.{ "codedb", "mcp", form });
+        try testing.expect(ca.isHelpRequest(after_mcp.cmd));
+    }
+}
+
+test "isolate: hand-written help-flag triple is gone from main.zig" {
+    // Reintroduction guard. The `--help`/`-h`/`help` disjunction lived inline
+    // in mainImpl at two sites; both now call isHelpRequest. The `-h` literal

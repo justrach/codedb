@@ -1,0 +1,51 @@
+✓ 50 results for "template"  ⚡ 286.0µs
+  src/mcp.zig:2693                  const template = scanTemplateLiteral(line, i, needle, language, template_depth);
+  src/mcp.zig:2686                  if (template_depth >= max_template_nesting) {
+  website/app/improvements.zig:77      \\    .stat-row { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; padding-bottom: 48px; }
+  website/app/improvements.zig:78      \\    @media (max-width: 700px) { .stat-row { grid-template-columns: repeat(2,1fr); } }
+  website/app/improvements.zig:97      \\    .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 48px 0; }
+  website/app/improvements.zig:98      \\    @media (max-width: 700px) { .chart-row { grid-template-columns: 1fr; } }
+  website/app/improvements.zig:108      \\    .timeline-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2px; margin-top: 2px; }
+  website/app/improvements.zig:109      \\    @media (max-width: 700px) { .timeline-grid { grid-template-columns: 1fr; } }
+  website/app/index.zig:92      \\    .stat-row { display: grid; grid-template-columns: repeat(4,1fr); border-top: 1px solid var(--border); max-width: 900px; margin: 0 auto; padding: 0 32px; }
+  website/app/index.zig:93      \\    @media (max-width: 700px) { .stat-row { grid-template-columns: repeat(2,1fr); } }
+  website/app/index.zig:108      \\    .feature-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 32px; }
+  website/app/index.zig:109      \\    @media (max-width: 600px) { .feature-grid { grid-template-columns: 1fr; } }
+  website/app/index.zig:123      \\    .tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 24px 0; }
+  website/app/index.zig:124      \\    @media (max-width: 600px) { .tool-grid { grid-template-columns: 1fr; } }
+  src/mcp.zig:2647  /// than in a string, raw/template literal, or comment. This is deliberately a
+  src/mcp.zig:2654  const max_template_nesting = 16;
+  src/mcp.zig:2656  fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: explore_mod.Language, template_depth: usize) bool {
+  src/mcp.zig:2685              if (hasTemplateLiterals(language)) {
+  src/mcp.zig:2694                  if (template.matched) return true;
+  src/mcp.zig:2695                  if (template.end) |end| {
+  src/mcp.zig:2707          if (hasTemplateLiterals(language) and line[i] == '/') {
+  src/mcp.zig:2792  fn hasTemplateLiterals(language: explore_mod.Language) bool {
+  website/app/update.zig:58      \\    .stat-row { display: grid; grid-template-columns: repeat(4,1fr); border-top: 1px solid rgba(255,255,255,0.08); }
+  website/app/update.zig:59      \\    @media (max-width: 700px) { .stat-row { grid-template-columns: repeat(2,1fr); } }
+  website/app/update.zig:70      \\    .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin: 48px 0; }
+  website/app/update.zig:71      \\    @media (max-width: 700px) { .chart-row { grid-template-columns: 1fr; } }
+  website/app/update.zig:75      \\    .changes-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin-top: 2px; }
+  website/app/update.zig:76      \\    @media (max-width: 700px) { .changes-grid { grid-template-columns: 1fr; } }
+  website/app/update.zig:94      \\    .stat-row { display: grid !important; grid-template-columns: repeat(4,1fr) !important; }
+  website/app/update.zig:95      \\    @media (max-width: 700px) { .stat-row { grid-template-columns: repeat(2,1fr) !important; } }
+  website/app/v0257.zig:71      \\    .stat-row { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; padding-bottom: 48px; }
+  website/app/v0257.zig:72      \\    @media (max-width: 700px) { .stat-row { grid-template-columns: repeat(2,1fr); } }
+  website/app/v0257.zig:88      \\    .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 48px 0; }
+  website/app/v0257.zig:89      \\    @media (max-width: 700px) { .chart-row { grid-template-columns: 1fr; } }
+  website/app/v0257.zig:94      \\    .timeline-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; }
+  website/app/v0257.zig:95      \\    @media (max-width: 900px) { .timeline-grid { grid-template-columns: repeat(2,1fr); } }
+  website/app/v0257.zig:96      \\    @media (max-width: 600px) { .timeline-grid { grid-template-columns: 1fr; } }
+  website/app/v0257.zig:101      \\    .contributors-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 12px; }
+  website/app/v0257.zig:102      \\    @media (max-width: 700px) { .contributors-grid { grid-template-columns: 1fr; } }
+  website/app/v0257.zig:169      \\    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px;">
+  website/app/v02572.zig:71      \\    .stat-row { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; padding-bottom: 48px; }
+  website/app/v02572.zig:72      \\    @media (max-width: 700px) { .stat-row { grid-template-columns: repeat(2,1fr); } }
+  website/app/v02572.zig:88      \\    .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 48px 0; }
+  website/app/v02572.zig:89      \\    @media (max-width: 700px) { .chart-row { grid-template-columns: 1fr; } }
+  website/app/v02572.zig:94      \\    .timeline-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; }
+  website/app/v02572.zig:95      \\    @media (max-width: 900px) { .timeline-grid { grid-template-columns: repeat(2,1fr); } }
+  website/app/v02572.zig:96      \\    @media (max-width: 600px) { .timeline-grid { grid-template-columns: 1fr; } }
+  website/app/v02572.zig:101      \\    .contributors-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 12px; }
+  website/app/v02572.zig:102      \\    @media (max-width: 700px) { .contributors-grid { grid-template-columns: 1fr; } }
+  website/app/v02572.zig:169      \\    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px;">

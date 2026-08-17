@@ -1,0 +1,86 @@
+  2640	fn isIdentChar(c: u8) bool {
+  2641	    return (c >= 'a' and c <= 'z') or
+  2642	        (c >= 'A' and c <= 'Z') or
+  2643	        (c >= '0' and c <= '9') or
+  2644	        c == '_';
+  2645	}
+  2646	
+  2647	/// Returns true iff `needle` occurs in `line` as a whole-word identifier
+  2648	/// (non-identifier characters or line boundaries on both sides) at a position
+  2649	/// that is NOT inside a string literal.
+  2650	///
+  2651	/// An occurrence that only ever appears between quotes is a mention, not a
+  2652	/// call: the Python table row `("renderPlainSearch", "src/explore.zig"),` and
+  2653	/// the Zig declaration `test "def-first: renderPlainSearch surfaces …" {` both
+  2654	/// name the symbol without invoking it, yet passed every other filter here.
+  2655	///
+  2656	/// Deliberately line-local and pragmatic, in the spirit of `isCommentOrBlank`:
+  2657	///   - tracks '…' and "…" spans, honouring backslash escapes
+  2658	///   - a quote with no closing partner on the line (an apostrophe in a
+  2659	///     trailing comment, a Rust lifetime `&'a`, an open multi-line literal) is
+  2660	///     treated as ordinary code, so it can never swallow the rest of the line
+  2661	///   - backticks are not treated as quotes: Go raw strings and JS template
+  2662	///     literals routinely wrap real calls (`${render()}`)
+  2663	fn hasWholeWordMatchOutsideStrings(line: []const u8, needle: []const u8) bool {
+  2664	    if (needle.len == 0 or line.len < needle.len) return false;
+  2665	    var i: usize = 0;
+  2666	    while (i < line.len) {
+  2667	        if (line[i] == '"' or line[i] == '\'') {
+  2668	            if (stringLiteralEnd(line, i)) |end| {
+  2669	                i = end + 1;
+  2670	                continue;
+  2671	            }
+  2672	        }
+  2673	        // `i` is a code byte — try to anchor a whole-word match on it.
+  2674	        if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+  2675	            const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+  2676	            const after = i + needle.len;
+  2677	            const after_ok = after >= line.len or !isIdentChar(line[after]);
+  2678	            if (before_ok and after_ok) return true;
+  2679	        }
+  2680	        i += 1;
+  2681	    }
+  2682	    return false;
+  2683	}
+  2684	
+  2685	/// Index of the quote closing the literal opened at `open`, or null when the
+  2686	/// literal never closes on this line.
+  2687	fn stringLiteralEnd(line: []const u8, open: usize) ?usize {
+  2688	    const quote = line[open];
+  2689	    var i = open + 1;
+  2690	    while (i < line.len) : (i += 1) {
+  2691	        if (line[i] == '\\') {
+  2692	            i += 1;
+  2693	            continue;
+  2694	        }
+  2695	        if (line[i] == quote) return i;
+  2696	    }
+  2697	    return null;
+  2698	}
+  2699	
+  2700	/// Languages where the concept of a "call site" is meaningful. Excludes
+  2701	/// data formats (json, yaml), markup/styling (markdown, css, scss),
+  2702	/// declarative schemas (protobuf), and unknown files — callers found
+  2703	/// inside these are mentions in prose or config, not real invocations.
+  2704	fn langHasCallSites(lang: explore_mod.Language) bool {
+  2705	    return switch (lang) {
+  2706	        .markdown, .json, .yaml, .css, .scss, .protobuf, .unknown => false,
+  2707	        else => true,
+  2708	    };
+  2709	}
+  2710	
+  2711	// ── codedb_context ──────────────────────────────────────────────────────────
+  2712	// Task-shaped composer. Takes a natural-language task, extracts candidate
+  2713	// identifiers (camelCase / snake_case / "quoted strings"), and returns ONE
+  2714	// composite text block: keywords + symbol defs + ranked files + top sites.
+  2715	// Replaces 3-5 separate search/word/symbol calls; targets parity with
+  2716	// codegraph_context on per-task token economy.
+  2717	
+  2718	fn isContextIdentStart(c: u8) bool {
+  2719	    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+  2720	}
+  2721	fn isContextIdentCont(c: u8) bool {
+  2722	    return isContextIdentStart(c) or (c >= '0' and c <= '9');
+  2723	}
+  2724	fn looksLikeContextIdentifier(tok: []const u8) bool {
+  2725	    // Filter out sentence-leading English words ("Find", "React", "Want")

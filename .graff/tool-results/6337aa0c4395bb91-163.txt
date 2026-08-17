@@ -1,0 +1,35 @@
+src/update.zig:54:    const version_order = compareVersionsForUpdate(release_info.semver, resolved.value) catch |err| {
+src/update.zig:71:    const asset_name = assetNameForTarget(builtin.os.tag, builtin.cpu.arch) orelse {
+src/update.zig:90:    const expected_hash = checksumForBinary(manifest, asset_name) orelse {
+src/update.zig:110:pub fn assetNameForTarget(os_tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) ?[]const u8 {
+src/update.zig:140:pub fn compareVersions(current: []const u8, target: []const u8) !std.math.Order {
+src/update.zig:158:pub fn compareVersionsForUpdate(current: []const u8, target: []const u8) !std.math.Order {
+src/update.zig:159:    const order = try compareVersions(current, target);
+src/update.zig:160:    if (order == .gt and try targetSupersedesCurrent(current, target)) return .lt;
+src/update.zig:164:pub fn targetSupersedesCurrent(current: []const u8, target: []const u8) !bool {
+src/update.zig:168:        return (try compareVersions(target, release.minimum_target)) != .lt;
+src/update.zig:173:pub fn checksumForBinary(manifest: []const u8, binary_name: []const u8) ?[]const u8 {
+src/test_mcp.zig:416:test "auto-update: shouldRunAutoUpdate gates correctly" {
+src/test_mcp.zig:520:test "update: compareVersions orders semantic versions" {
+src/test_mcp.zig:521:    try testing.expect(try update_mod.compareVersions("0.2.55", "0.2.56") == .lt);
+src/test_mcp.zig:522:    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56") == .eq);
+src/test_mcp.zig:523:    try testing.expect(try update_mod.compareVersions("v0.2.57", "0.2.56") == .gt);
+src/test_mcp.zig:524:    try testing.expect(try update_mod.compareVersions("0.2.56", "0.2.56.0") == .eq);
+src/test_mcp.zig:527:test "update: compareVersionsForUpdate allows superseded release train typo" {
+src/test_mcp.zig:528:    try testing.expect(try update_mod.compareVersions("0.2.58181", "0.2.5823") == .gt);
+src/test_mcp.zig:529:    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5823") == .lt);
+src/test_mcp.zig:530:    try testing.expect(try update_mod.compareVersionsForUpdate("v0.2.58181", "v0.2.5823") == .lt);
+src/test_mcp.zig:531:    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5824") == .lt);
+src/test_mcp.zig:532:    try testing.expect(try update_mod.compareVersionsForUpdate("0.2.58181", "0.2.5822") == .gt);
+src/test_mcp.zig:533:    try testing.expect(!try update_mod.targetSupersedesCurrent("0.2.5823", "0.2.5824"));
+src/test_mcp.zig:536:test "update: checksumForBinary parses release manifest" {
+src/test_mcp.zig:545:        update_mod.checksumForBinary(manifest, "codedb-linux-arm64") orelse return error.TestUnexpectedResult,
+src/test_mcp.zig:547:    try testing.expect(update_mod.checksumForBinary(manifest, "codedb-linux-x86_64") == null);
+src/test_mcp.zig:550:test "update: asset names match published release naming" {
+src/test_mcp.zig:551:    try testing.expectEqualStrings("codedb-darwin-arm64", update_mod.assetNameForTarget(.macos, .aarch64).?);
+src/test_mcp.zig:552:    try testing.expectEqualStrings("codedb-darwin-x86_64", update_mod.assetNameForTarget(.macos, .x86_64).?);
+src/test_mcp.zig:553:    try testing.expectEqualStrings("codedb-linux-arm64", update_mod.assetNameForTarget(.linux, .aarch64).?);
+src/test_mcp.zig:554:    try testing.expectEqualStrings("codedb-linux-x86_64", update_mod.assetNameForTarget(.linux, .x86_64).?);
+src/test_mcp.zig:555:    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+src/test_mcp.zig:559:    try testing.expectEqualStrings("codedb-windows-x86_64.exe", update_mod.assetNameForTarget(.windows, .x86_64).?);
+src/test_mcp.zig:560:    try testing.expect(update_mod.assetNameForTarget(.windows, .aarch64) == null);

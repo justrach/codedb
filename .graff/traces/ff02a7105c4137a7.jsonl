@@ -1,0 +1,12 @@
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":0,"ev":"startup_phase","phase":"args","phase_ms":0,"startup_ms":0}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":0,"ev":"startup_phase","phase":"credentials/model","phase_ms":38,"startup_ms":38}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":0,"ev":"startup_phase","phase":"CA warm scheduled","phase_ms":0,"startup_ms":38}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":0,"ev":"startup_phase","phase":"banner","phase_ms":0,"startup_ms":38}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":0,"ev":"startup_phase","phase":"MCP registry","phase_ms":1,"startup_ms":39}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":0,"ev":"startup_phase","phase":"settings/theme","phase_ms":0,"startup_ms":39}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":7,"ev":"startup_phase","phase":"companion","phase_ms":7,"startup_ms":46}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":9,"ev":"startup_phase","phase":"approvals/hooks/fleet","phase_ms":2,"startup_ms":48}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":10,"ev":"startup_phase","phase":"system prompt","phase_ms":1,"startup_ms":49}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":11,"ev":"recipe","recipe_sha":"4b36e7e0f376af32","provider":"codex","model":"gpt-5.6-sol","effort":"xhigh","prompt_sha":"939661157d33e9d4","toolset_sha":"67433cefec16cd83","task_class":"interactive","harness_version":"0.0.238"}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":11,"ev":"session","detail":"gpt-5.6-sol"}
+{"run_id":"ff02a7105c4137a7","pid":17159,"session_id":"c101c8d19a1ed43eb72ac33c85535b1d","t":11,"ev":"startup_phase","phase":"root agent","phase_ms":1,"startup_ms":50}

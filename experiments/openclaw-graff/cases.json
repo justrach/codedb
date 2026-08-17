@@ -1,0 +1,35 @@
+{
+  "schema": "codedb.openclaw-graff.v1",
+  "corpus": "/tmp/openclaw-hillclimb",
+  "commit": "1c35795",
+  "model": "5.6-luna",
+  "provider": "codex",
+  "codedb": "0.2.5841-context-phrase",
+  "suite": "hard",
+  "cases": [
+    {
+      "id": "task-lan-ipv4",
+      "tier": "hard",
+      "task": "Where does the gateway pick its primary LAN IPv4 address? Reply with only path:line.",
+      "gold": "src/gateway/net.ts:23"
+    },
+    {
+      "id": "task-apply-patch",
+      "tier": "hard",
+      "task": "Where is workspace file patch application implemented for the agent? Reply with only path:line.",
+      "gold": "src/agents/apply-patch.ts:129"
+    },
+    {
+      "id": "task-version-fast-path",
+      "tier": "hard",
+      "task": "Where does the CLI handle a root --version fast path before full startup? Reply with only path:line.",
+      "gold": "src/entry.ts:102"
+    },
+    {
+      "id": "task-file-lan",
+      "tier": "hard",
+      "task": "Which source file implements LAN IPv4 selection for the gateway bind? Reply with only the path.",
+      "gold": "src/gateway/net.ts"
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+✓ 50 results for "callers"  ⚡ 835.0µs
+  src/codex_setup.zig:48      \\- `codedb_symbol` for a definition, `codedb_callers` for usages, `codedb_outline`
+  src/codex_setup.zig:203  /// block is present, so callers skip the rewrite entirely.
+  src/index.zig:646      /// Returns 1.0 when no docs are tracked, so callers can divide safely.
+  src/index.zig:1199          // owns_paths=true stores a dup so callers can free their source memory.
+  src/index.zig:2595      /// (superseded or removed) paths. Returns null on alloc failure so callers
+  src/test_query.zig:743      // The partial-results tail must name the failing step so callers can
+  src/test_query.zig:1003      // callers can see which step did what without re-parsing the
+  src/test_query.zig:1055      // Phase 3 adds a 'codedb_index' hint so callers know how to recover
+  install/install.sh:419    grep|rg|egrep|fgrep) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_search \"<text>\" (codedb_word for an exact identifier, codedb_callers for call sites) instead of $FIRST — ranked + fewer tokens. Native $FIRST is allowed outside this repo or with CODEDB_NO_HOOKS=1." >&2; exit 2 ;;
+  install/install.sh:482  # Auto-allow codedb's own MCP tools so callers aren't prompted for every
+  src/explore.zig:71  /// on FileOutline at init; callers without an outline compute it directly.
+  src/explore.zig:296      /// imports normalized to repo paths). Raw specifiers handed in by callers
+  src/explore.zig:1370  /// keys; callers receive a copied match array so combo boosts remain per-call.
+  src/explore.zig:1699      /// mutation that can change search results; see bumpSearchGen callers.
+  src/explore.zig:3028      /// filled count, or null when the table can't be built (OOM) — callers
+  src/explore.zig:3056      /// file. Returns false when the path is not cached, so callers can fall
+  src/explore.zig:3949      /// filter used by the codedb_context callers section.
+  src/explore.zig:5277      /// Query-specific call-graph distance (#550): BFS outward — callers and
+  src/explore.zig:5306          // ensureCallGraph) makes the walk undirected so callers of a matched
+  src/explore.zig:5409      /// Public, lock-acquiring entry point for single-threaded callers (the
+  src/mcp.zig:47  /// available. Callers must filter denied paths out of `indexable_roots` first;
+  src/mcp.zig:647      codedb_callers,
+  src/mcp.zig:670      \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+  src/mcp.zig:672      \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+  src/mcp.zig:673      \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Use after codedb_callers when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]}},
+  src/mcp.zig:681      \\{"name":"codedb_bundle","description":"Run up to 20 codedb_* calls in one round-trip. Each op is either MCP-style {\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}} or inline {\"tool\":\"codedb_search\",\"query\":\"Agent\"} — both are accepted. Example: {\"ops\":[{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"Agent\"}},{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}}]}. Best for parallel outline/symbol/search; avoid bundling large codedb_read calls — responses are not size-capped. If a sub-op reports `received keys: []`, the wrapper field is misnamed: use `arguments` (MCP spec), not `args`.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","description":"Sub-tool calls to dispatch (max 20). Each item must have `tool` AND `arguments` (pass `{}` if the sub-tool takes none). Inline args alongside `tool` are still accepted as a fallback.","items":{"type":"object","properties":{"tool":{"type":"string","description":"codedb_* tool name to invoke (e.g. codedb_outline, codedb_symbol, codedb_search, codedb_word, codedb_callers, codedb_read, codedb_deps, codedb_tree, codedb_hot, codedb_status, codedb_changes). Required."},"arguments":{"type":"object","description":"Per-call args matching that tool's inputSchema. Field MUST be named `arguments` (MCP `tools/call` convention) — `args` is silently ignored. Pass `{}` only if the sub-tool takes no arguments. Required."}},"required":["tool","arguments"]}},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["ops"]}},
+  src/mcp.zig:720      "codedb_callers",
+  src/mcp.zig:739      "codedb_callers",
+  src/mcp.zig:757      .{ .name = "codedb_callers", .desc = "Call sites of a function." },
+  src/mcp.zig:804      .{ .name = "max_results", .desc = "Max results (defaults: search 20, symbol 50, callers 30)" },
+  src/test_mcp.zig:1448      // to /private/etc. Callers feed isIndexableRoot a path resolved by
+  src/test_mcp.zig:1452      // by the very normalization step the callers depend on.
+  src/test_mcp.zig:1787      // re-enables advertisement for callers that want to re-engage it.
+  src/test_mcp.zig:2539      // Live repro: `codedb callers --max-results 3 indexFile` reported
+  src/test_mcp.zig:2553      const code = mcp_mod.runCliTool(io, testing.allocator, &explorer, &store, ".", "callers", &argv, 0, &out);
+  src/test_mcp.zig:2558      try testing.expect(std.mem.indexOf(u8, out.items, "callers <name>") != null);
+  src/test_mcp.zig:2561      // a usage error (mirrors codedb_callers), not "no results for: ".
+  src/test_mcp.zig:3517      var found_callers = false;
+  src/test_mcp.zig:3522          if (std.mem.eql(u8, name, "codedb_callers")) {
+  src/test_mcp.zig:3523              found_callers = true;
+  src/test_search.zig:369  test "issue-391: codedb_callers tool exists" {
+  src/test_search.zig:370      // codedb_callers is the proposed reverse-callgraph tool: given a symbol
+  src/test_search.zig:375      // The minimum surface contract: the Tool enum exposes a codedb_callers
+  src/test_search.zig:378      try testing.expect(@hasField(mcp_mod.Tool, "codedb_callers"));
+  src/test_search.zig:381  test "issue-391: codedb_callers returns call sites with scope" {
+  src/test_search.zig:404      bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+  src/test_search.zig:414  test "issue-391: codedb_callers rejects missing name" {
+  src/test_search.zig:432      bench_ctx.runDispatch(io, testing.allocator, .codedb_callers, &parsed.value.object, &out, &store, &explorer, &agents);
+  src/test_search.zig:926  test "issue-425: codedb_callers excludes substring matches in unrelated identifiers" {
+  src/test_search.zig:927      // handleCallers (mcp.zig:1339) currently calls searchContentWithScope(name)

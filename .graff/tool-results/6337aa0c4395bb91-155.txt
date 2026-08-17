@@ -1,0 +1,109 @@
+2 results for 'cliDaemonListen':
+  src/cli_proxy.zig:595 (function) cliDaemonListen  // pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, data_dir: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool), retry: bool) void {
+  595 | pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, abs_root: []const u8, data_dir: []const u8, last_activity_ms: *std.atomic.Value(i64), shutdown: *std.atomic.Value(bool), retry: bool) void {
+  596 |     if (builtin.os.tag == .windows) {
+  597 |         var name_buf: [256]u8 = undefined;
+  598 | 
+  599 |         const sddl = currentUserPipeSddl(allocator) orelse {
+  600 |             shutdown.store(true, .release);
+  601 |             return;
+  602 |         };
+  603 |         defer allocator.free(sddl);
+  604 |         var sd: ?*anyopaque = null;
+  605 |         if (ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl.ptr, SDDL_REVISION_1, &sd, null) == .FALSE) {
+  606 |             shutdown.store(true, .release);
+  607 |             return;
+  608 |         }
+  609 |         defer _ = LocalFree(sd);
+  610 |         var sa_pipe: win.SECURITY_ATTRIBUTES = .{
+  611 |             .nLength = @sizeOf(win.SECURITY_ATTRIBUTES),
+  612 |             .lpSecurityDescriptor = sd,
+  613 |             .bInheritHandle = .FALSE,
+  614 |         };
+  615 | 
+  616 |         var pipe_name: ?[:0]const u8 = null;
+  617 |         var listening_pipe: ?win.HANDLE = null;
+  618 |         var metadata_written = false;
+  619 |         var retry_failures: u32 = 0;
+  620 |         var first_pipe_instance = true;
+  621 |         const listener_pid = cio.currentProcessId();
+  622 |         var metadata_monitor_thread: ?std.Thread = null;
+  623 |         defer if (listening_pipe) |pipe| win.CloseHandle(pipe);
+  624 |         defer if (metadata_written and pipe_name != null) deleteCliPipeMetadataIfOwner(io, allocator, data_dir, listener_pid, pipe_name.?);
+  625 |         defer if (metadata_monitor_thread) |thread| thread.join();
+  626 | 
+  627 |         while (!shutdown.load(.acquire)) {
+  628 |             if (pipe_name == null) {
+  629 |                 pipe_name = cliRandomPipeName(&name_buf) orelse {
+  630 |                     shutdown.store(true, .release);
+  631 |                     return;
+  632 |                 };
+  633 |             }
+  634 |             if (listening_pipe == null) {
+  635 |                 const new_pipe = createCliPipeInstance(pipe_name.?, first_pipe_instance, &sa_pipe);
+  636 |                 if (new_pipe == INVALID_HANDLE_VALUE) {
+  637 |                     if (!metadata_written) pipe_name = null;
+  638 |                     retry_failures = retry_failures +| 1;
+  639 |                     if (shouldLogPipeRetry(retry_failures)) {
+  640 |                         std.log.warn("cli-proxy: CreateNamedPipe failed {d} time(s); retrying", .{retry_failures});
+  641 |                     }
+  642 |                     cio.sleepMs(pipeRetryDelayMs(retry_failures));
+  643 |                     continue;
+  644 |                 }
+  645 |                 listening_pipe = new_pipe;
+  646 |                 first_pipe_instance = false;
+  647 |             }
+  648 |             if (!metadata_written) {
+  649 |                 if (!writeCliPipeMetadata(io, allocator, data_dir, listener_pid, pipe_name.?)) {
+  650 |                     win.CloseHandle(listening_pipe.?);
+  651 |                     listening_pipe = null;
+  652 |                     pipe_name = null;
+  653 |                     first_pipe_instance = true;
+  654 |                     retry_failures = retry_failures +| 1;
+  655 |                     if (shouldLogPipeRetry(retry_failures)) {
+  656 |                         std.log.warn("cli-proxy: could not publish pipe metadata {d} time(s); retrying", .{retry_failures});
+  657 |                     }
+  658 |                     cio.sleepMs(pipeRetryDelayMs(retry_failures));
+  659 |                     continue;
+  660 |                 }
+  661 |                 metadata_written = true;
+  662 |                 retry_failures = 0;
+  663 |                 if (retry and metadata_monitor_thread == null) {
+  664 |                     if (std.Thread.spawn(.{}, cliPipeMetadataMonitor, .{ io, allocator, data_dir, listener_pid, pipe_name.?, shutdown })) |thread| {
+  665 |                         metadata_monitor_thread = thread;
+  666 |                     } else |err| {
+  667 |                         std.log.warn("cli-proxy: could not start pipe metadata monitor: {s}", .{@errorName(err)});
+  668 |                     }
+  669 |                 }
+  670 |             } else {
+  671 |                 retry_failures = 0;
+  672 |             }
+  673 |             const pipe = listening_pipe.?;
+  674 |             listening_pipe = null;
+  675 |             const connected = ConnectNamedPipe(pipe, null) != .FALSE or win.GetLastError() == .PIPE_CONNECTED;
+  676 |             if (!connected) {
+  677 |                 win.CloseHandle(pipe);
+  678 |                 continue;
+  679 |             }
+  680 |             const next_pipe = createCliPipeInstance(pipe_name.?, false, &sa_pipe);
+  681 |             if (next_pipe != INVALID_HANDLE_VALUE) {
+  682 |                 listening_pipe = next_pipe;
+  683 |                 retry_failures = 0;
+  684 |             } else {
+  685 |                 retry_failures = retry_failures +| 1;
+  686 |                 if (shouldLogPipeRetry(retry_failures)) {
+  687 |                     std.log.warn("cli-proxy: CreateNamedPipe replacement failed {d} time(s); retrying", .{retry_failures});
+  688 |                 }
+  689 |             }
+  690 |             last_activity_ms.store(cio.milliTimestamp(), .release);
+  691 |             _ = cliServeConn(io, allocator, explorer, store, abs_root, pipe);
+  692 |             _ = DisconnectNamedPipe(pipe);
+  693 |             win.CloseHandle(pipe);
+  694 |         }
+  695 |         return;
+  696 |     }
+  697 | 
+  698 |     cliDaemonListenPosix(io, allocator, explorer, store, abs_root, last_activity_ms, shutdown, retry);
+  699 | }
+  src/commands.zig:24 (constant) cliDaemonListen  // const cliDaemonListen = cli_proxy.cliDaemonListen;
+   24 | const cliDaemonListen = cli_proxy.cliDaemonListen;

@@ -1,0 +1,53 @@
+[job 15: exited with code 1]
+test
++- run test failure
+error: the host system (aarch64-macos.26.5.1...26.5.1-none) is unable to execute binaries from the target (x86_64-windows.win10...win11_kr-gnu)
+failed command: ./.zig-cache/o/811687aef597261b5ba0cce755bf25e8/test.exe --cache-dir=./.zig-cache --seed=0x389bcc6d --listen=-
+
+test
++- run test failure
+error: the host system (aarch64-macos.26.5.1...26.5.1-none) is unable to execute binaries from the target (x86_64-windows.win10...win11_kr-gnu)
+failed command: ./.zig-cache/o/e63a8a7b3e40a4f00267ba8542c8bdb5/test.exe --cache-dir=./.zig-cache --seed=0x389bcc6d --listen=-
+
+test
++- run test failure
+error: the host system (aarch64-macos.26.5.1...26.5.1-none) is unable to execute binaries from the target (x86_64-windows.win10...win11_kr-gnu)
+failed command: ./.zig-cache/o/93ef7027b1720feef8888939709a2dbe/test.exe --cache-dir=./.zig-cache --seed=0x389bcc6d --listen=-
+
+test
++- run test failure
+error: the host system (aarch64-macos.26.5.1...26.5.1-none) is unable to execute binaries from the target (x86_64-windows.win10...win11_kr-gnu)
+failed command: ./.zig-cache/o/51765bfbaa62070b715d165e498db0ba/test.exe --cache-dir=./.zig-cache --seed=0x389bcc6d --listen=-
+
+test
++- run test failure
+error: the host system (aarch64-macos.26.5.1...26.5.1-none) is unable to execute binaries from the target (x86_64-windows.win10...win11_kr-gnu)
+failed command: ./.zig-cache/o/2c16efe92e6b1f7cf983557756501837/test.exe --cache-dir=./.zig-cache --seed=0x389bcc6d --listen=-
+
+Build Summary: 11/23 steps succeeded (11 failed)
+test transitive failure
++- run test failure
+|  +- compile test Debug x86_64-windows-gnu success 3s MaxRSS:359M
++- run test failure
+|  +- compile test Debug x86_64-windows-gnu success 5s MaxRSS:579M
++- run test failure
+|  +- compile test Debug x86_64-windows-gnu success 6s MaxRSS:1G
++- run test failure
+|  +- compile test Debug x86_64-windows-gnu success 3s MaxRSS:389M
++- run test failure
+|  +- compile test Debug x86_64-windows-gnu success 6s MaxRSS:705M
++- run test failure
+|  +- compile test Debug x86_64-windows-gnu success 4s MaxRSS:526M
++- run test failure
+|  +- compile test Debug x86_64-windows-gnu success 6s MaxRSS:711M
++- run test failure
+|  +- compile test Debug x86_64-windows-gnu success 5s MaxRSS:669M
++- run test failure
+|  +- compile test Debug x86_64-windows-gnu success 2s MaxRSS:314M
++- run test failure
+|  +- compile test Debug x86_64-windows-gnu success 2s MaxRSS:312M
++- run test failure
+   +- compile test Debug x86_64-windows-gnu success 4s MaxRSS:486M
+
+error: the following maker command exited with code 1:
+/Users/rachpradhan/.cache/zig/o/6e33eef3319a5dd8ad4edd17ca1c17e1/maker --zig /Users/rachpradhan/.local/share/zigup/0.17.0-dev.813+2153f8143/files/zig --zig-lib-dir /Users/rachpradhan/.local/share/zigup/0.17.0-dev.813+2153f8143/files/lib --build-root /Users/rachpradhan/codedb --local-cache .zig-cache --global-cache /Users/rachpradhan/.cache/zig --configuration .zig-cache/c/7a686139e224f37129d8f4e3424b542d --seed 0x389bcc6d test --summary all

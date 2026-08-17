@@ -1,0 +1,32 @@
+publish codedeebee to npm	Publish codedeebee	﻿2026-08-05T03:27:59.7499873Z ##[group]Run set -euo pipefail
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:27:59.7500255Z ^[[36;1mset -euo pipefail^[[0m
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:27:59.7500689Z ^[[36;1mecho "publishing codedeebee@$(node -p "require('./package.json').version")"^[[0m
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:27:59.7501163Z ^[[36;1mnpm publish --access public^[[0m
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:27:59.7556736Z shell: /usr/bin/bash -e {0}
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:27:59.7557044Z env:
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:27:59.7557347Z   NPM_CONFIG_USERCONFIG: /home/runner/work/_temp/.npmrc
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:27:59.7557684Z   NODE_AUTH_TOKEN: 
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:27:59.7557908Z ##[endgroup]
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:27:59.7982874Z publishing codedeebee@0.2.5838
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1400872Z npm notice
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1404223Z npm notice 📦  codedeebee@0.2.5838
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1404812Z npm notice Tarball Contents
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1406445Z npm notice 3.0kB README.md
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1406928Z npm notice 907B bin/codedb.js
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1407397Z npm notice 826B package.json
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1408165Z npm notice 4.8kB scripts/postinstall.js
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1408888Z npm notice Tarball Details
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1409359Z npm notice name: codedeebee
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1409839Z npm notice version: 0.2.5838
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1410467Z npm notice filename: codedeebee-0.2.5838.tgz
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1411502Z npm notice package size: 3.6 kB
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1412062Z npm notice unpacked size: 9.5 kB
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1412757Z npm notice shasum: fc6251460178c812ba8c4e6c967d814eafcacfd5
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1413611Z npm notice integrity: sha512-Ks4w2aoKF7vfq[...]9xw68ATmx24PA==
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1414245Z npm notice total files: 4
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1414635Z npm notice
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1449651Z npm error code ENEEDAUTH
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1450642Z npm error need auth This command requires you to be logged in to https://registry.npmjs.org/
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1451806Z npm error need auth You need to authorize this machine using `npm adduser`
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1462140Z npm error A complete log of this run can be found in: /home/runner/.npm/_logs/2026-08-05T03_27_59_854Z-debug-0.log
+publish codedeebee to npm	Publish codedeebee	2026-08-05T03:28:00.1517240Z ##[error]Process completed with exit code 1.

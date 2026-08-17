@@ -1,0 +1,70 @@
+-        std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
+-        std.Io.Dir.renameAbsolute(dest_path, old_path, io) catch {};
++        return replaceBinaryWithRollback(io, tmp_path, dest_path, old_path);
+@@ -318,0 +372,16 @@ fn downloadAndReplaceBinary(io: std.Io, allocator: std.mem.Allocator, version: [
++pub fn replaceBinaryWithRollback(io: std.Io, replacement_path: []const u8, dest_path: []const u8, old_path: []const u8) !void {
++    std.Io.Dir.deleteFileAbsolute(io, old_path) catch {};
++
++    const moved_old = blk: {
++        std.Io.Dir.renameAbsolute(dest_path, old_path, io) catch break :blk false;
++        break :blk true;
++    };
++
++    std.Io.Dir.renameAbsolute(replacement_path, dest_path, io) catch |install_err| {
++        if (moved_old) {
++            std.Io.Dir.renameAbsolute(old_path, dest_path, io) catch return error.UpdateRollbackFailed;
++        }
++        return install_err;
++    };
++}
++
+@@ -356,2 +425,2 @@ fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
+-// On startup we kick off a detached check that shells out to the public
+-// install.sh. The check is:
++// On startup we kick off a detached invocation of the built-in, checksum-
++// verified updater. The check is:
+@@ -361,4 +430,4 @@ fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
+-// The update itself runs in a background thread so it never blocks server
+-// startup. If the binary on disk gets replaced mid-session, the kernel keeps
+-// the old inode mapped for the running process; subsequent invocations get the
+-// new binary.
++// The update itself runs in a background thread so network failures never block
++// server startup. If the binary on disk gets replaced mid-session, the kernel
++// keeps the old inode mapped for the running process; subsequent invocations
++// get the new binary.
+@@ -366 +434,0 @@ fn sha256FileHex(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
+-const auto_update_install_url = "https://codedb.codegraff.com/install.sh";
+@@ -396,2 +464,9 @@ pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+-    // Persist the new timestamp before launching so concurrent invocations
+-    // don't all race the same check.
++    const executable_path = std.process.executablePathAlloc(io, std.heap.page_allocator) catch return;
++    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{executable_path}) catch {
++        std.heap.page_allocator.free(executable_path);
++        return;
++    };
++    thread.detach();
++
++    // Only throttle after the worker launches so a local spawn failure can be
++    // retried on the next MCP startup.
+@@ -398,0 +474 @@ pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
++}
+@@ -400,2 +476,2 @@ pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+-    const thread = std.Thread.spawn(.{}, autoUpdateWorker, .{}) catch return;
+-    thread.detach();
++pub fn autoUpdateArgv(executable_path: []const u8) [2][]const u8 {
++    return .{ executable_path, "update" };
+@@ -404,4 +480,7 @@ pub fn maybeAutoUpdate(io: std.Io, allocator: std.mem.Allocator) void {
+-fn autoUpdateWorker() void {
+-    // sh -c handles the curl-into-bash pipeline. We keep stdout/stderr captured
+-    // and immediately discard so the install script's progress output doesn't
+-    // leak into the parent's stdio (which is the MCP transport).
++fn autoUpdateWorker(executable_path: []u8) void {
++    defer std.heap.page_allocator.free(executable_path);
++
++    // Invoke the checksum-verifying built-in updater directly. Capturing and
++    // discarding its output keeps the MCP stdio transport clean, while avoiding
++    // a shell or execution of a remotely downloaded install script.
++    const argv = autoUpdateArgv(executable_path);
+@@ -410 +489 @@ fn autoUpdateWorker() void {
+-        .argv = &.{ "sh", "-c", "curl -fsSL " ++ auto_update_install_url ++ " | bash" },
++        .argv = &argv,

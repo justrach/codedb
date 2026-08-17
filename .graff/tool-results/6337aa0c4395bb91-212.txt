@@ -1,0 +1,151 @@
+        fd: c_int,
+        cap: usize,
+        alloc: std.mem.Allocator,
+        out: std.ArrayList(u8) = .empty,
+        err: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            var chunk: [64 * 1024]u8 = undefined;
+            while (self.out.items.len < self.cap) {
+                const want = @min(chunk.len, self.cap - self.out.items.len);
+                const n = read(self.fd, &chunk, want);
+                if (n <= 0) break;
+                self.out.appendSlice(self.alloc, chunk[0..@intCast(n)]) catch |e| {
+                    self.err = e;
+                    return;
+                };
+            }
+        }
+    };
+    var err_ctx: DrainCtx = .{ .fd = err_pipe[0], .cap = opts.max_output_bytes, .alloc = alloc };
+    errdefer err_ctx.out.deinit(alloc);
+    const err_thread = try std.Thread.spawn(.{}, DrainCtx.run, .{&err_ctx});
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var chunk: [64 * 1024]u8 = undefined;
+    while (out.items.len < opts.max_output_bytes) {
+        const want = @min(chunk.len, opts.max_output_bytes - out.items.len);
+        const n = read(out_pipe[0], &chunk, want);
+        if (n <= 0) break;
+        try out.appendSlice(alloc, chunk[0..@intCast(n)]);
+    }
+    _ = close(out_pipe[0]);
+    out_pipe[0] = -1;
+
+    err_thread.join();
+    _ = close(err_pipe[0]);
+    err_pipe[0] = -1;
+    if (err_ctx.err) |e| {
+        err_ctx.out.deinit(alloc);
+        return e;
+    }
+
+    var status: c_int = 0;
+    _ = waitpid(pid, &status, 0);
+
+    const term: CaptureResult.Term = if ((status & 0x7f) == 0)
+        .{ .Exited = @intCast((status >> 8) & 0xff) }
+    else if ((status & 0x7f) != 0x7f)
+        .{ .Signal = @intCast(status & 0x7f) }
+    else
+        .{ .Stopped = @intCast((status >> 8) & 0xff) };
+
+    return .{
+        .stdout = try out.toOwnedSlice(alloc),
+        .stderr = try err_ctx.out.toOwnedSlice(alloc),
+        .term = term,
+    };
+}
+
+/// Fire-and-forget spawn of a detached child (used to launch the warm
+/// cli-daemon). POSIX uses posix_spawnp + /dev/null redirection; Windows uses
+/// CreateProcessW with detached/no-window flags.
+pub fn spawnDetached(allocator: std.mem.Allocator, argv: []const []const u8) void {
+    if (is_windows) {
+        spawnDetachedWindows(allocator, argv);
+        return;
+    } else {
+        spawnDetachedPosix(allocator, argv);
+    }
+}
+
+pub fn windowsCommandLine(allocator: std.mem.Allocator, argv: []const []const u8) ?[]u8 {
+    var cmd: std.ArrayList(u8) = .empty;
+    defer cmd.deinit(allocator);
+    for (argv, 0..) |arg, i| {
+        if (i != 0) cmd.append(allocator, ' ') catch return null;
+        cmd.append(allocator, '"') catch return null;
+        var backslashes: usize = 0;
+        for (arg) |ch| {
+            switch (ch) {
+                '\\' => backslashes += 1,
+                '"' => {
+                    cmd.appendNTimes(allocator, '\\', backslashes * 2 + 1) catch return null;
+                    cmd.append(allocator, '"') catch return null;
+                    backslashes = 0;
+                },
+                else => {
+                    if (backslashes > 0) {
+                        cmd.appendNTimes(allocator, '\\', backslashes) catch return null;
+                        backslashes = 0;
+                    }
+                    cmd.append(allocator, ch) catch return null;
+                },
+            }
+        }
+        cmd.appendNTimes(allocator, '\\', backslashes * 2) catch return null;
+        cmd.append(allocator, '"') catch return null;
+    }
+    return cmd.toOwnedSlice(allocator) catch null;
+}
+
+fn spawnDetachedWindows(allocator: std.mem.Allocator, argv: []const []const u8) void {
+    if (argv.len == 0) return;
+
+    const cmd = windowsCommandLine(allocator, argv) orelse return;
+    defer allocator.free(cmd);
+    const cmd_w = std.unicode.utf8ToUtf16LeAllocZ(allocator, cmd) catch return;
+    defer allocator.free(cmd_w);
+
+    var si: std.os.windows.STARTUPINFOW = std.mem.zeroes(std.os.windows.STARTUPINFOW);
+    si.cb = @sizeOf(std.os.windows.STARTUPINFOW);
+    var pi: std.os.windows.PROCESS.INFORMATION = undefined;
+    const flags: std.os.windows.CreateProcessFlags = .{ .detached_process = true, .create_no_window = true };
+    if (std.os.windows.kernel32.CreateProcessW(null, cmd_w.ptr, null, null, .FALSE, flags, null, null, &si, &pi) == .FALSE) return;
+    std.os.windows.CloseHandle(pi.hThread);
+    std.os.windows.CloseHandle(pi.hProcess);
+}
+
+/// Fire-and-forget spawn: posix_spawnp `argv` with stdin/stdout/stderr
+/// redirected to /dev/null, and do NOT wait on the child. Used to launch the
+/// warm cli-daemon from a cold CLI invocation. The child is expected to
+/// setsid() itself; once this CLI process exits the child is reparented to
+/// init, so we never reap it (no zombie outlives this short-lived CLI). All
+/// failures are swallowed — auto-spawn is best-effort and the cold path still
+/// produces correct output regardless.
+fn spawnDetachedPosix(allocator: std.mem.Allocator, argv: []const []const u8) void {
+    if (argv.len == 0) return;
+
+    const c_argv = allocator.alloc(?[*:0]const u8, argv.len + 1) catch return;
+    defer allocator.free(c_argv);
+    const arg_bufs = allocator.alloc([]u8, argv.len) catch return;
+    var built: usize = 0;
+    defer {
+        for (arg_bufs[0..built]) |b| allocator.free(b);
+        allocator.free(arg_bufs);
+    }
+    for (argv, 0..) |a, i| {
+        const buf = allocator.alloc(u8, a.len + 1) catch return;
+        @memcpy(buf[0..a.len], a);
+        buf[a.len] = 0;
+        arg_bufs[i] = buf;
+        built = i + 1;
+        c_argv[i] = @ptrCast(buf.ptr);
+    }
+    c_argv[argv.len] = null;
+    const c_argv_z: [*:null]const ?[*:0]const u8 = @ptrCast(c_argv.ptr);
+
+    var fa_storage: PosixSpawnFAStorage = undefined;
+    const fa: *PosixSpawnFileActions = @ptrCast(&fa_storage);
+    if (posix_spawn_file_actions_init(fa) != 0) return;

@@ -1,0 +1,80 @@
+//! Thin CLI client → warm daemon proxy + the per-project spawn lock.
+const std = @import("std");
+const builtin = @import("builtin");
+const cio = @import("cio.zig");
+const sty = @import("style.zig");
+const Store = @import("store.zig").Store;
+const Explorer = @import("explore.zig").Explorer;
+const Out = @import("out.zig").Out;
+const runQuery = @import("query.zig").runQuery;
+const cli_args = @import("cli_args.zig");
+const parsePositional = cli_args.parsePositional;
+const cliIsQueryCmd = cli_args.cliIsQueryCmd;
+
+// ── Thin CLI client → warm daemon ──────────────────────────────────────────
+// When a `codedb <root> serve` or `codedb <root> mcp` daemon is already running
+// for a project, a fresh `codedb <root> <query>` invocation can skip the
+// per-process snapshot reload by proxying the command to that daemon over a
+// per-project Unix-domain socket. The daemon runs the exact same `runQuery`
+// rendering against its already-warm Explorer/Store and streams the rendered
+// bytes back. If no daemon is listening, the client transparently falls back to
+// the cold in-process path.
+//
+// Transport: blocking std.c (libc) Unix sockets. std.posix dropped the socket
+// syscalls in 0.16 and the std.Io.net UnixAddress Reader/Writer surface is
+// awkward for a tiny framed request/response, so we go straight to libc here.
+// runQuery itself still receives the daemon's real `io` (it reads files through
+// it); only the socket bytes move over libc.
+//
+// Wire protocol (little-endian, length-framed):
+//   request  (client→daemon): [u8 color][u32 blob_len][blob]
+//       blob = argv[1..] NUL-joined, e.g. "/proj\0find\0foo"
+//   response (daemon→client): [u8 exit_code][u32 out_len][out_bytes]
+const cli_blob_max: u32 = 64 * 1024;
+const cli_response_max: u32 = 16 * 1024 * 1024;
+
+fn cliResponseLenAllowed(out_len: u32) bool {
+    return out_len <= cli_response_max;
+}
+
+fn cliResponseSendAllowed(out_len: usize) bool {
+    return out_len <= @as(usize, cli_response_max);
+}
+
+test "cli response length cap rejects oversized frames" {
+    try std.testing.expect(cliResponseLenAllowed(0));
+    try std.testing.expect(cliResponseLenAllowed(cli_response_max));
+    try std.testing.expect(!cliResponseLenAllowed(cli_response_max + 1));
+    try std.testing.expect(cliResponseSendAllowed(cli_response_max));
+    try std.testing.expect(!cliResponseSendAllowed(@as(usize, cli_response_max) + 1));
+}
+
+const win = std.os.windows;
+const INVALID_HANDLE_VALUE = win.INVALID_HANDLE_VALUE;
+const GENERIC_READ: u32 = 0x80000000;
+const GENERIC_WRITE: u32 = 0x40000000;
+const OPEN_EXISTING: u32 = 3;
+const OPEN_ALWAYS: u32 = 4;
+const PIPE_ACCESS_DUPLEX: u32 = 0x00000003;
+const PIPE_TYPE_BYTE: u32 = 0x00000000;
+const PIPE_READMODE_BYTE: u32 = 0x00000000;
+const PIPE_WAIT: u32 = 0x00000000;
+const PIPE_UNLIMITED_INSTANCES: u32 = 255;
+const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x00080000;
+const SECURITY_SQOS_PRESENT: u32 = 0x00100000;
+const SECURITY_IDENTIFICATION: u32 = 0x00010000;
+const SDDL_REVISION_1: u32 = 1;
+const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x00000008;
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x00001000;
+const TOKEN_QUERY: u32 = 0x0008;
+const TokenUser: u32 = 1;
+
+extern "kernel32" fn CreateNamedPipeA(
+    lpName: [*:0]const u8,
+    dwOpenMode: u32,
+    dwPipeMode: u32,
+    nMaxInstances: u32,
+    nOutBufferSize: u32,
+    nInBufferSize: u32,
+    nDefaultTimeOut: u32,
+    lpSecurityAttributes: ?*anyopaque,

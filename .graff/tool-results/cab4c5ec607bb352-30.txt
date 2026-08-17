@@ -1,0 +1,361 @@
+  6680	        if (startsWith(line, "def ")) {
+  6681	            if (extractIdent(line[4..])) |name| {
+  6682	                try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6683	            }
+  6684	        } else if (startsWith(line, "class ")) {
+  6685	            if (extractIdent(line[6..])) |name| {
+  6686	                try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6687	            }
+  6688	        } else if (startsWith(line, "import ") or startsWith(line, "from ")) {
+  6689	            try appendOutlineSymbol(a, outline, line, .import, line_num, null);
+  6690	            if (startsWith(line, "from ")) {
+  6691	                // "from mypackage.utils import X" -> mypackage/utils.py (single module dep)
+  6692	                if (extractPythonModulePath(line)) |mod_path| {
+  6693	                    try appendPythonModuleDep(a, outline, mod_path);
+  6694	                }
+  6695	            } else {
+  6696	                // "import a, b.c, d as e" -- record one dep per comma-separated module.
+  6697	                const rest = std.mem.trimStart(u8, line[7..], " \t");
+  6698	                var it = std.mem.splitScalar(u8, rest, ',');
+  6699	                while (it.next()) |raw| {
+  6700	                    var mod = std.mem.trim(u8, raw, " \t");
+  6701	                    if (std.mem.indexOf(u8, mod, " as ")) |as_pos| mod = std.mem.trimEnd(u8, mod[0..as_pos], " \t");
+  6702	                    if (std.mem.indexOfScalar(u8, mod, ' ')) |sp| mod = mod[0..sp];
+  6703	                    if (mod.len == 0 or mod[0] == '.') continue;
+  6704	                    try appendPythonModuleDep(a, outline, mod);
+  6705	                }
+  6706	            }
+  6707	        }
+  6708	    }
+  6709	    fn parseTsLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6710	        const a = self.allocator;
+  6711	        if (containsAny(line, &.{ "function ", "const ", "let ", "var ", "class ", "interface ", "enum ", "type " })) {
+  6712	            const kind: SymbolKind = if (std.mem.indexOf(u8, line, "function") != null)
+  6713	                .function
+  6714	            else if (std.mem.indexOf(u8, line, "class ") != null)
+  6715	                .class_def
+  6716	            else if (std.mem.indexOf(u8, line, "interface ") != null)
+  6717	                .interface_def
+  6718	            else if (std.mem.indexOf(u8, line, "enum ") != null)
+  6719	                .enum_def
+  6720	            else if (std.mem.indexOf(u8, line, "type ") != null)
+  6721	                .type_alias
+  6722	            else
+  6723	                .constant;
+  6724	            const trimmed = skipKeywords(line);
+  6725	            if (extractIdent(trimmed)) |name| {
+  6726	                try appendOutlineSymbol(a, outline, name, kind, line_num, line);
+  6727	            }
+  6728	        }
+  6729	        if (startsWith(line, "import ") or containsAny(line, &.{"require("})) {
+  6730	            try appendOutlineSymbol(a, outline, line, .import, line_num, null);
+  6731	            if (extractStringLiteral(line)) |path| {
+  6732	                try appendImportPath(a, outline, path);
+  6733	            }
+  6734	        } else if (startsWith(line, "} from ") or
+  6735	            (startsWith(line, "export ") and containsAny(line, &.{ " from \"", " from '" })))
+  6736	        {
+  6737	            // Closing line of a multi-line import/export, e.g.
+  6738	            //   import {
+  6739	            //     a, b,
+  6740	            //   } from "../mod.ts";
+  6741	            // or a re-export like `export * from "./x.ts"`. The `from "..."`
+  6742	            // clause lands on a line that does not contain "import ", so without
+  6743	            // this branch the path is dropped (only single-line imports were
+  6744	            // captured). Gated on these concrete shapes so arbitrary `from "..."`
+  6745	            // inside strings/comments (e.g. SQL `select * from "users"`) is not
+  6746	            // mistaken for a dependency.
+  6747	            if (extractStringLiteral(line)) |path| {
+  6748	                try appendImportPath(a, outline, path);
+  6749	            }
+  6750	        }
+  6751	    }
+  6752	
+  6753	    fn parseJavaLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6754	        const a = self.allocator;
+  6755	        const line = stripLineComment(raw_line);
+  6756	        if (line.len == 0 or startsWith(line, "@")) return;
+  6757	
+  6758	        if (parseDelimitedImport(line, "import ", ";")) |imp| {
+  6759	            try appendImportSymbol(a, outline, imp, line_num, line);
+  6760	            return;
+  6761	        }
+  6762	
+  6763	        if (extractIdentAfterKeyword(line, "record ")) |name| {
+  6764	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6765	        } else if (extractIdentAfterKeyword(line, "class ")) |name| {
+  6766	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6767	        } else if (extractIdentAfterKeyword(line, "interface ")) |name| {
+  6768	            try appendOutlineSymbol(a, outline, name, .interface_def, line_num, line);
+  6769	        } else if (extractIdentAfterKeyword(line, "enum ")) |name| {
+  6770	            try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+  6771	        } else if (extractJvmMethodName(line)) |name| {
+  6772	            try appendOutlineSymbol(a, outline, name, .method, line_num, line);
+  6773	        }
+  6774	    }
+  6775	
+  6776	    fn parseKotlinLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6777	        const a = self.allocator;
+  6778	        const line = stripLineComment(raw_line);
+  6779	        if (line.len == 0 or startsWith(line, "@")) return;
+  6780	
+  6781	        if (parseDelimitedImport(line, "import ", "")) |imp| {
+  6782	            try appendImportSymbol(a, outline, imp, line_num, line);
+  6783	            return;
+  6784	        }
+  6785	
+  6786	        if (extractIdentAfterKeyword(line, "enum class ")) |name| {
+  6787	            try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+  6788	        } else if (extractIdentAfterKeyword(line, "interface ")) |name| {
+  6789	            try appendOutlineSymbol(a, outline, name, .interface_def, line_num, line);
+  6790	        } else if (extractIdentAfterKeyword(line, "class ")) |name| {
+  6791	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6792	        } else if (extractIdentAfterKeyword(line, "object ")) |name| {
+  6793	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6794	        } else if (extractIdentAfterKeyword(line, "fun ")) |name| {
+  6795	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6796	        } else if (extractIdentAfterKeyword(line, "val ")) |name| {
+  6797	            try appendOutlineSymbol(a, outline, name, .constant, line_num, line);
+  6798	        } else if (extractIdentAfterKeyword(line, "var ")) |name| {
+  6799	            try appendOutlineSymbol(a, outline, name, .variable, line_num, line);
+  6800	        }
+  6801	    }
+  6802	
+  6803	    fn parseSwiftLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6804	        const a = self.allocator;
+  6805	        const line = stripLineComment(raw_line);
+  6806	        if (line.len == 0 or startsWith(line, "@") or startsWith(line, "/*") or startsWith(line, "*")) return;
+  6807	
+  6808	        if (parseDelimitedImport(line, "import ", "")) |imp| {
+  6809	            try appendImportSymbol(a, outline, imp, line_num, line);
+  6810	            return;
+  6811	        }
+  6812	
+  6813	        if (extractIdentAfterKeyword(line, "struct ")) |name| {
+  6814	            try appendOutlineSymbol(a, outline, name, .struct_def, line_num, line);
+  6815	        } else if (extractIdentAfterKeyword(line, "protocol ")) |name| {
+  6816	            try appendOutlineSymbol(a, outline, name, .interface_def, line_num, line);
+  6817	        } else if (extractIdentAfterKeyword(line, "class ")) |name| {
+  6818	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6819	        } else if (extractIdentAfterKeyword(line, "enum ")) |name| {
+  6820	            try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+  6821	        } else if (extractIdentAfterKeyword(line, "func ")) |name| {
+  6822	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6823	        }
+  6824	    }
+  6825	
+  6826	    fn parseComponentLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6827	        const line = std.mem.trim(u8, raw_line, " \t");
+  6828	        if (line.len == 0 or startsWith(line, "<!--") or startsWith(line, "<script") or startsWith(line, "</script") or
+  6829	            startsWith(line, "<style") or startsWith(line, "</style"))
+  6830	            return;
+  6831	        if (startsWith(line, ".") or startsWith(line, "#") or startsWith(line, "@keyframes") or startsWith(line, "$") or startsWith(line, "--")) {
+  6832	            try self.parseStyleLine(line, line_num, outline);
+  6833	            return;
+  6834	        }
+  6835	        try self.parseTsLine(line, line_num, outline);
+  6836	    }
+  6837	
+  6838	    fn parseShellLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6839	        const a = self.allocator;
+  6840	        const line = std.mem.trim(u8, raw_line, " \t");
+  6841	        if (line.len == 0 or startsWith(line, "#")) return;
+  6842	
+  6843	        if (startsWith(line, "source ")) {
+  6844	            const imp = firstShellWord(line["source ".len..]) orelse return;
+  6845	            try appendImportSymbol(a, outline, imp, line_num, line);
+  6846	            return;
+  6847	        }
+  6848	        if (startsWith(line, ". ")) {
+  6849	            const imp = firstShellWord(line[2..]) orelse return;
+  6850	            try appendImportSymbol(a, outline, imp, line_num, line);
+  6851	            return;
+  6852	        }
+  6853	        if (extractIdentAfterKeyword(line, "function ")) |name| {
+  6854	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6855	            return;
+  6856	        }
+  6857	        if (std.mem.indexOf(u8, line, "()")) |pos| {
+  6858	            const before = std.mem.trim(u8, line[0..pos], " \t");
+  6859	            if (extractIdent(before)) |name| {
+  6860	                if (name.len == before.len) try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6861	            }
+  6862	            return;
+  6863	        }
+  6864	        if (parseShellAssignment(line)) |name| {
+  6865	            try appendOutlineSymbol(a, outline, name, .variable, line_num, line);
+  6866	        }
+  6867	    }
+  6868	
+  6869	    fn parseStyleLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6870	        const a = self.allocator;
+  6871	        const line = std.mem.trim(u8, raw_line, " \t");
+  6872	        if (line.len == 0 or startsWith(line, "/*") or startsWith(line, "*")) return;
+  6873	
+  6874	        if (extractIdentAfterKeyword(line, "@keyframes ")) |name| {
+  6875	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6876	        } else if (extractIdentAfterKeyword(line, "@mixin ")) |name| {
+  6877	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6878	        } else if (extractIdentAfterKeyword(line, "@function ")) |name| {
+  6879	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6880	        } else if (parseCssVariable(line)) |name| {
+  6881	            try appendOutlineSymbol(a, outline, name, .constant, line_num, line);
+  6882	        } else if (parseCssSelector(line)) |name| {
+  6883	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6884	        }
+  6885	    }
+  6886	
+  6887	    fn parseSqlLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6888	        const a = self.allocator;
+  6889	        const line = stripSqlLineComment(raw_line);
+  6890	        if (line.len == 0) return;
+  6891	
+  6892	        if (parseSqlCreate(line)) |sym| {
+  6893	            try appendOutlineSymbol(a, outline, sym.name, sym.kind, line_num, line);
+  6894	        }
+  6895	    }
+  6896	
+  6897	    fn parseProtoLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6898	        const a = self.allocator;
+  6899	        const line = stripLineComment(raw_line);
+  6900	        if (line.len == 0) return;
+  6901	
+  6902	        if (startsWith(line, "import ")) {
+  6903	            if (extractStringLiteral(line)) |imp| try appendImportSymbol(a, outline, imp, line_num, line);
+  6904	        } else if (extractIdentAfterKeyword(line, "message ")) |name| {
+  6905	            try appendOutlineSymbol(a, outline, name, .struct_def, line_num, line);
+  6906	        } else if (extractIdentAfterKeyword(line, "enum ")) |name| {
+  6907	            try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+  6908	        } else if (extractIdentAfterKeyword(line, "service ")) |name| {
+  6909	            try appendOutlineSymbol(a, outline, name, .interface_def, line_num, line);
+  6910	        } else if (extractIdentAfterKeyword(line, "rpc ")) |name| {
+  6911	            try appendOutlineSymbol(a, outline, name, .method, line_num, line);
+  6912	        }
+  6913	    }
+  6914	
+  6915	    fn parseFortranLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6916	        const a = self.allocator;
+  6917	        const line = stripFortranComment(raw_line);
+  6918	        if (line.len == 0) return;
+  6919	
+  6920	        if (parseFortranUse(line)) |imp| {
+  6921	            try appendImportSymbol(a, outline, imp, line_num, line);
+  6922	        } else if (extractIdentAfterKeywordIgnoreCase(line, "module ")) |name| {
+  6923	            if (!startsWithIgnoreCase(line, "module procedure ")) try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6924	        } else if (extractIdentAfterKeywordIgnoreCase(line, "program ")) |name| {
+  6925	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6926	        } else if (extractIdentAfterKeywordIgnoreCase(line, "subroutine ")) |name| {
+  6927	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6928	        } else if (extractIdentAfterKeywordIgnoreCase(line, "function ")) |name| {
+  6929	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6930	        } else if (parseFortranTypeName(line)) |name| {
+  6931	            try appendOutlineSymbol(a, outline, name, .struct_def, line_num, line);
+  6932	        }
+  6933	    }
+  6934	
+  6935	    fn parseLlvmIrLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6936	        const a = self.allocator;
+  6937	        const line = std.mem.trim(u8, raw_line, " \t");
+  6938	        if (line.len == 0 or startsWith(line, ";")) return;
+  6939	
+  6940	        if (startsWith(line, "define ") or startsWith(line, "declare ")) {
+  6941	            if (extractAtName(line)) |name| try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6942	        } else if (line[0] == '@') {
+  6943	            if (extractLlvmGlobalName(line)) |name| try appendOutlineSymbol(a, outline, name, .variable, line_num, line);
+  6944	        } else if (line[0] == '%' and std.mem.indexOf(u8, line, " = type") != null) {
+  6945	            if (extractLlvmGlobalName(line)) |name| try appendOutlineSymbol(a, outline, name, .type_alias, line_num, line);
+  6946	        }
+  6947	    }
+  6948	
+  6949	    fn parseMlirLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6950	        const a = self.allocator;
+  6951	        const line = stripLineComment(raw_line);
+  6952	        if (line.len == 0) return;
+  6953	
+  6954	        if (std.mem.indexOf(u8, line, "module @") != null) {
+  6955	            if (extractAtName(line)) |name| try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6956	        } else if (std.mem.indexOf(u8, line, "func") != null and std.mem.indexOfScalar(u8, line, '@') != null) {
+  6957	            if (extractAtName(line)) |name| try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6958	        }
+  6959	    }
+  6960	
+  6961	    fn parseTableGenLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6962	        const a = self.allocator;
+  6963	        const line = stripLineComment(raw_line);
+  6964	        if (line.len == 0) return;
+  6965	
+  6966	        if (startsWith(line, "include ")) {
+  6967	            if (extractStringLiteral(line)) |imp| try appendImportSymbol(a, outline, imp, line_num, line);
+  6968	        } else if (extractIdentAfterKeyword(line, "defm ")) |name| {
+  6969	            try appendOutlineSymbol(a, outline, name, .constant, line_num, line);
+  6970	        } else if (extractIdentAfterKeyword(line, "def ")) |name| {
+  6971	            try appendOutlineSymbol(a, outline, name, .constant, line_num, line);
+  6972	        } else if (extractIdentAfterKeyword(line, "multiclass ")) |name| {
+  6973	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6974	        } else if (extractIdentAfterKeyword(line, "class ")) |name| {
+  6975	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6976	        } else if (extractIdentAfterKeyword(line, "let ")) |name| {
+  6977	            try appendOutlineSymbol(a, outline, name, .variable, line_num, line);
+  6978	        }
+  6979	    }
+  6980	
+  6981	    fn parseCLine(self: *Explorer, raw_line: []const u8, trimmed: []const u8, line_num: u32, outline: *FileOutline, prev_trimmed: []const u8, brace_depth: *u32) !void {
+  6982	        const a = self.allocator;
+  6983	        const line = stripLineComment(trimmed);
+  6984	        if (line.len == 0) return;
+  6985	
+  6986	        if (startsWith(line, "#include") or startsWith(line, "#import")) {
+  6987	            if (extractCIncludePath(line)) |path| {
+  6988	                try appendImportPath(a, outline, path);
+  6989	            }
+  6990	            try appendOutlineSymbol(a, outline, line, .import, line_num, line);
+  6991	            return;
+  6992	        }
+  6993	
+  6994	        if (startsWith(line, "#define")) {
+  6995	            const rest = std.mem.trimStart(u8, line["#define".len..], " \t");
+  6996	            if (extractIdent(rest)) |name| {
+  6997	                try appendOutlineSymbol(a, outline, name, .macro_def, line_num, line);
+  6998	            }
+  6999	            return;
+  7000	        }
+  7001	
+  7002	        if (parseObjCType(line)) |type_sym| {
+  7003	            try appendOutlineSymbol(a, outline, type_sym.name, type_sym.kind, line_num, line);
+  7004	            applyBraceDelta(brace_depth, countBracesDelta(line));
+  7005	            return;
+  7006	        }
+  7007	
+  7008	        if (extractObjCMethodName(line)) |name| {
+  7009	            try appendOutlineSymbol(a, outline, name, .method, line_num, line);
+  7010	            applyBraceDelta(brace_depth, countBracesDelta(line));
+  7011	            return;
+  7012	        }
+  7013	
+  7014	        if (parseCNamedType(line)) |type_sym| {
+  7015	            try appendOutlineSymbol(a, outline, type_sym.name, type_sym.kind, line_num, line);
+  7016	            applyBraceDelta(brace_depth, countBracesDelta(line));
+  7017	            return;
+  7018	        }
+  7019	
+  7020	        const at_col0 = raw_line.len > 0 and raw_line[0] != ' ' and raw_line[0] != '\t';
+  7021	        if (extractCFunctionName(line, at_col0, prev_trimmed, brace_depth.*, outline.language == .cpp)) |name| {
+  7022	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  7023	        }
+  7024	
+  7025	        applyBraceDelta(brace_depth, countBracesDelta(line));
+  7026	    }
+  7027	
+  7028	    fn parseRustLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline, prev_line: []const u8) !void {
+  7029	        const a = self.allocator;
+  7030	
+  7031	        // fn / pub fn / pub(crate) fn / async fn / pub async fn / unsafe fn
+  7032	        if (containsAny(line, &.{"fn "})) {
+  7033	            const is_decl = startsWith(line, "fn ") or
+  7034	                startsWith(line, "pub fn ") or
+  7035	                startsWith(line, "pub(crate) fn ") or
+  7036	                startsWith(line, "pub(super) fn ") or
+  7037	                startsWith(line, "async fn ") or
+  7038	                startsWith(line, "pub async fn ") or
+  7039	                startsWith(line, "unsafe fn ") or
+  7040	                startsWith(line, "pub unsafe fn ") or

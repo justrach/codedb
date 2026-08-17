@@ -1,0 +1,1 @@
+{"schema":"codegraff.learn.graff-evaluator.v1","provider":"codex","model":"gpt-5.6-sol","effort":"low","max_model_calls":8,"max_tool_calls":8,"max_attempts":2,"task_timeout_seconds":120}

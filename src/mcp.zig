@@ -3040,6 +3040,9 @@ fn looksLikeContextIdentifier(tok: []const u8) bool {
         }
     }
     if (all_upper) return tok.len <= 8;
+    for (tok) |c| {
+        if (c >= '0' and c <= '9') return true;
+    }
     var i: usize = 1;
     while (i < tok.len) : (i += 1) {
         const prev_lower = tok[i - 1] >= 'a' and tok[i - 1] <= 'z';
@@ -3055,14 +3058,46 @@ fn looksLikeContextIdentifier(tok: []const u8) bool {
 // for diminishing return — the by_file ranking already heavily favors
 // the first 1–2 high-quality identifiers. End-to-end this drops
 // codedb_context from ~330µs → ~220µs on the standard bench task.
-const CONTEXT_MAX_CANDIDATES: usize = 5;
-// 20 was the original tier-search cap, but only CONTEXT_TOP_LINES_PER_FILE
-// (3) hits per file are ever kept after ranking — every additional result
-// is wasted work in search-content + per-file map churn. Empirically 8
-// covers the keep-window even on dense files.
+const CONTEXT_MAX_CANDIDATES: usize = 9;
 const CONTEXT_MAX_RESULTS_PER_KW: usize = 8;
 const CONTEXT_TOP_FILES: usize = 5;
 const CONTEXT_TOP_LINES_PER_FILE: usize = 3;
+
+fn envUsize(name: []const u8, default: usize) usize {
+    const v = cio.posixGetenv(name) orelse return default;
+    return std.fmt.parseInt(usize, v, 10) catch default;
+}
+fn envF32(name: []const u8, default: f32) f32 {
+    const v = cio.posixGetenv(name) orelse return default;
+    return std.fmt.parseFloat(f32, v) catch default;
+}
+fn envOn(name: []const u8, default: bool) bool {
+    const v = cio.posixGetenv(name) orelse return default;
+    if (std.mem.eql(u8, v, "0") or std.mem.eql(u8, v, "off") or std.mem.eql(u8, v, "false")) return false;
+    if (std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "on") or std.mem.eql(u8, v, "true")) return true;
+    return default;
+}
+fn contextMaxCandidates() usize {
+    return @max(1, @min(envUsize("CODEDB_CONTEXT_MAX_CANDIDATES", CONTEXT_MAX_CANDIDATES), 12));
+}
+fn contextTopFiles() usize {
+    return @max(1, @min(envUsize("CODEDB_CONTEXT_TOP_FILES", CONTEXT_TOP_FILES), 16));
+}
+fn contextIdentSymbolsOnly() bool {
+    return envOn("CODEDB_CONTEXT_IDENT_SYMBOLS", true);
+}
+fn contextPhraseEnabled() bool {
+    return envOn("CODEDB_CONTEXT_PHRASE", true);
+}
+fn contextPhraseBoost() f32 {
+    return envF32("CODEDB_CONTEXT_PHRASE_BOOST", 2.0);
+}
+fn contextDemoteTests() bool {
+    return envOn("CODEDB_CONTEXT_DEMOTE_TESTS", true);
+}
+fn contextCoverageBoost() f32 {
+    return envF32("CODEDB_CONTEXT_COVERAGE_BOOST", 0.0);
+}
 
 pub fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
     var seen = std.StringHashMap(void).init(alloc);
@@ -3081,7 +3116,7 @@ pub fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out:
                 if (!seen.contains(slice)) {
                     seen.put(slice, {}) catch {};
                     out.append(alloc, slice) catch {};
-                    if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
+                    if (out.items.len >= contextMaxCandidates()) return;
                 }
             }
             i = j + 1;
@@ -3095,7 +3130,7 @@ pub fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out:
             if (tok.len >= 3 and tok.len <= 64 and looksLikeContextIdentifier(tok) and !seen.contains(tok)) {
                 seen.put(tok, {}) catch {};
                 out.append(alloc, tok) catch {};
-                if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
+                if (out.items.len >= contextMaxCandidates()) return;
             }
             continue;
         }
@@ -3115,7 +3150,7 @@ pub fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, o
         "some",   "such",   "very",    "just",    "been",      "being",  "about",
         "after",  "before", "while",   "there",   "their",     "other",  "only",
         "over",   "under",  "between", "improve", "implement", "ensure", "change",
-        "update",
+        "update", "implements",
     };
     var words: std.ArrayList([]const u8) = .empty;
     defer words.deinit(alloc);
@@ -3153,7 +3188,7 @@ pub fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, o
     }.lessThan);
     for (words.items) |w| {
         out.append(alloc, w) catch {};
-        if (out.items.len >= CONTEXT_MAX_CANDIDATES) return;
+        if (out.items.len >= contextMaxCandidates()) return;
     }
 }
 
@@ -3384,6 +3419,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     const PerFileHit = struct { line: u32, text: []const u8 };
     const PerFile = struct {
         total: u32 = 0,
+        kws: u32 = 0,
         bm25: f32 = 0,
         top: std.ArrayList(PerFileHit) = .empty,
     };
@@ -3397,7 +3433,11 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     var callee_evidence: std.ArrayList(ContextEvidenceItem) = .empty;
 
     for (candidates.items) |kw| {
-        // Symbol definitions (best-effort; ignore failures).
+        // Symbol definitions only for identifier-shaped tokens. Plain NL
+        // words ("gateway", "primary") match unrelated `const gateway`
+        // hits and the 1.5× definition boost then buries the file that
+        // actually implements the task — extra codedb calls for the agent.
+        if (!contextIdentSymbolsOnly() or looksLikeContextIdentifier(kw)) {
         if (explorer.findAllSymbols(kw, A)) |defs| {
             const take = @min(defs.len, 3);
             for (defs[0..take]) |d| {
@@ -3413,16 +3453,37 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                 }) catch break;
             }
         } else |_| {}
+        }
 
         // Content search — small per-keyword cap keeps the arena lean.
         const hits = explorer.searchContentRanked(kw, A, CONTEXT_MAX_RESULTS_PER_KW) catch continue;
+        var kw_files = std.StringHashMap(void).init(A);
         for (hits) |h| {
             const gop = by_file.getOrPut(h.path) catch continue;
             if (!gop.found_existing) gop.value_ptr.* = .{};
             gop.value_ptr.total += 1;
             gop.value_ptr.bm25 += h.score;
+            const first = kw_files.getOrPut(h.path) catch continue;
+            if (!first.found_existing) gop.value_ptr.kws += 1;
             if (gop.value_ptr.top.items.len < CONTEXT_TOP_LINES_PER_FILE) {
                 gop.value_ptr.top.append(A, .{ .line = h.line_num, .text = h.line_text }) catch {};
+            }
+        }
+    }
+    // Full-task phrase pass: co-occurring terms (LAN + IPv4) beat files
+    // that only match a single extracted word.
+    if (contextPhraseEnabled() and std.mem.indexOfScalar(u8, task, ' ') != null) {
+        const phrase_hits = explorer.searchContentRanked(task, A, CONTEXT_MAX_RESULTS_PER_KW) catch null;
+        if (phrase_hits) |hits| {
+            const boost = contextPhraseBoost();
+            for (hits) |h| {
+                const gop = by_file.getOrPut(h.path) catch continue;
+                if (!gop.found_existing) gop.value_ptr.* = .{};
+                gop.value_ptr.total += 1;
+                gop.value_ptr.bm25 += h.score * boost;
+                if (gop.value_ptr.top.items.len < CONTEXT_TOP_LINES_PER_FILE) {
+                    gop.value_ptr.top.append(A, .{ .line = h.line_num, .text = h.line_text }) catch {};
+                }
             }
         }
     }
@@ -3446,6 +3507,10 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         // (definition beats usage — codedb_context's unique signal).
         var score: f32 = entry.value_ptr.bm25;
         if (symbol_files.contains(path)) score *= 1.5;
+        if (contextDemoteTests() and isTestPath(path)) score *= 0.4;
+        const extra_kws = if (entry.value_ptr.kws > 1) entry.value_ptr.kws - 1 else 0;
+        const cov = contextCoverageBoost();
+        if (cov != 0 and extra_kws > 0) score *= 1.0 + cov * @as(f32, @floatFromInt(extra_kws));
         ranked.append(A, .{
             .path = path,
             .hits = entry.value_ptr.total,
@@ -3459,7 +3524,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             return a.hits > b.hits;
         }
     }.lt);
-    const top_n = @min(ranked.items.len, CONTEXT_TOP_FILES);
+    const top_n = @min(ranked.items.len, contextTopFiles());
     const pf_rank = cio.nanoTimestamp();
 
     {

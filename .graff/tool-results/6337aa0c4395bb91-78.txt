@@ -1,0 +1,64 @@
+1 results for 'isIndexableRoot':
+  src/root_policy.zig:17 (function) isIndexableRoot  // pub fn isIndexableRoot(path: []const u8) bool {
+   17 | pub fn isIndexableRoot(path: []const u8) bool {
+   18 |     if (path.len == 0) return false;
+   19 |     if (std.mem.eql(u8, path, "/")) return false;
+   20 | 
+   21 |     // OSTree distros (Fedora Silverblue/CoreOS/Nobara) bind-mount /home onto
+   22 |     // /var/home, so /var/home/<user>/<project> is a real project path, not a
+   23 |     // system dir — and realPathFile canonicalizes /home/<user>/<project> to it
+   24 |     // (same as #406/#407 fold /etc→/private/etc, /var→/private/var). Accept it
+   25 |     // before the /var checks below, mirroring the /home + /Users home-dir
+   26 |     // rule: allow project subdirs, deny the bare home. No opt-in. (#642)
+   27 |     if (std.mem.startsWith(u8, path, "/var/home/")) {
+   28 |         const rest = path["/var/home/".len..];
+   29 |         // "user" (bare home) → deny; "user/project…" → allow.
+   30 |         return std.mem.indexOfScalar(u8, rest, '/') != null;
+   31 |     }
+   32 | 
+   33 |     // /tmp, /private/tmp, /var, and /private/var are refused by default
+   34 |     // (footgun guard) but allowed when temp indexing is opted in (#538, #642)
+   35 |     // — CI/SWE-bench harnesses clone into /tmp, and macOS TMPDIR resolves
+   36 |     // under /private/var/folders.
+   37 |     if (!tempIndexingAllowed()) {
+   38 |         if (isExactOrChild(path, "/private/tmp")) return false;
+   39 |         if (isExactOrChild(path, "/tmp")) return false;
+   40 |         if (isExactOrChild(path, "/private/var")) return false;
+   41 |         if (isExactOrChild(path, "/var")) return false;
+   42 |     }
+   43 | 
+   44 |     const system_prefixes = [_][]const u8{
+   45 |         "/Applications",
+   46 |         "/System",
+   47 |         "/Library",
+   48 |         "/usr",
+   49 |         "/opt",
+   50 |         "/bin",
+   51 |         "/sbin",
+   52 |         "/etc",
+   53 |         "/private/etc",
+   54 |         "/dev",
+   55 |         "/proc",
+   56 |         "/sys",
+   57 |         "/snap",
+   58 |         "/nix",
+   59 |     };
+   60 |     for (system_prefixes) |pfx| {
+   61 |         if (isExactOrChild(path, pfx)) return false;
+   62 |     }
+   63 | 
+   64 |     // Block home directory itself (not subdirectories) — prevents 17GB RAM spike (#174)
+   65 |     if (cio.homeDir()) |home| {
+   66 |         if (home.len > 0 and std.mem.eql(u8, path, home)) return false;
+   67 |     }
+   68 |     // Also block common home patterns directly
+   69 |     if (std.mem.eql(u8, path, "/root")) return false;
+   70 |     if (std.mem.startsWith(u8, path, "/home/") or std.mem.startsWith(u8, path, "/Users/")) {
+   71 |         // /home/user or /Users/user (no deeper path component) = home dir
+   72 |         const rest = if (std.mem.startsWith(u8, path, "/home/")) path[6..] else path[7..];
+   73 |         if (std.mem.indexOfScalar(u8, rest, '/') == null and rest.len > 0) return false;
+   74 |     }
+   75 | 
+   76 |     return true;
+   77 | }
+↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.

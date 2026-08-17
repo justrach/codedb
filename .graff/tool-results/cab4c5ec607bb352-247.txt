@@ -1,0 +1,79 @@
+1 results for 'hasWholeWordMatchInCodeDepth':
+  src/mcp.zig:2656 (function) hasWholeWordMatchInCodeDepth  // fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: explore_mod.Language, template_depth: usize) bool {
+ 2656 | fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: explore_mod.Language, template_depth: usize) bool {
+ 2657 |     if (needle.len == 0 or line.len < needle.len) return false;
+ 2658 |     const markers = lineCommentMarkers(language);
+ 2659 |     var i: usize = 0;
+ 2660 |     while (i < line.len) {
+ 2661 |         if (language == .rust) {
+ 2662 |             if (rustRawLiteralAt(line, i)) |raw| {
+ 2663 |                 if (raw.end) |end| {
+ 2664 |                     i = end;
+ 2665 |                     continue;
+ 2666 |                 }
+ 2667 |                 return false;
+ 2668 |             }
+ 2669 |         }
+ 2670 |         if (line[i] == '"' or line[i] == '\'') {
+ 2671 |             if (stringLiteralEnd(line, i)) |end| {
+ 2672 |                 i = end + 1;
+ 2673 |                 continue;
+ 2674 |             }
+ 2675 |         }
+ 2676 |         if (line[i] == '`' and hasBacktickLiterals(language)) {
+ 2677 |             if (language == .r) {
+ 2678 |                 if (stringLiteralEnd(line, i)) |end| {
+ 2679 |                     if (std.mem.eql(u8, line[i + 1 .. end], needle)) return true;
+ 2680 |                     i = end + 1;
+ 2681 |                     continue;
+ 2682 |                 }
+ 2683 |                 return false;
+ 2684 |             }
+ 2685 |             if (hasTemplateLiterals(language)) {
+ 2686 |                 if (template_depth >= max_template_nesting) {
+ 2687 |                     if (stringLiteralEnd(line, i)) |end| {
+ 2688 |                         i = end + 1;
+ 2689 |                         continue;
+ 2690 |                     }
+ 2691 |                     return false;
+ 2692 |                 }
+ 2693 |                 const template = scanTemplateLiteral(line, i, needle, language, template_depth);
+ 2694 |                 if (template.matched) return true;
+ 2695 |                 if (template.end) |end| {
+ 2696 |                     i = end;
+ 2697 |                     continue;
+ 2698 |                 }
+ 2699 |                 return false;
+ 2700 |             }
+ 2701 |             if (stringLiteralEnd(line, i)) |end| {
+ 2702 |                 i = end + 1;
+ 2703 |                 continue;
+ 2704 |             }
+ 2705 |             return false;
+ 2706 |         }
+ 2707 |         if (hasTemplateLiterals(language) and line[i] == '/') {
+ 2708 |             if (javascriptRegexEndAt(line, i)) |end| {
+ 2709 |                 i = end;
+ 2710 |                 continue;
+ 2711 |             }
+ 2712 |         }
+ 2713 |         if (blockCommentAt(line, i, language)) |block| {
+ 2714 |             if (block.end) |end| {
+ 2715 |                 i = end;
+ 2716 |                 continue;
+ 2717 |             }
+ 2718 |             return false;
+ 2719 |         }
+ 2720 |         if (isLineCommentAt(line, i, language, markers)) return false;
+ 2721 | 
+ 2722 |         if (line.len - i >= needle.len and std.mem.eql(u8, line[i..][0..needle.len], needle)) {
+ 2723 |             const before_ok = i == 0 or !isIdentChar(line[i - 1]);
+ 2724 |             const after = i + needle.len;
+ 2725 |             const after_ok = after >= line.len or !isIdentChar(line[after]);
+ 2726 |             if (before_ok and after_ok) return true;
+ 2727 |         }
+ 2728 |         i += 1;
+ 2729 |     }
+ 2730 |     return false;
+ 2731 | }
+↪ to see what imports this file (impact/blast radius), use codedb_deps path=<this file>.

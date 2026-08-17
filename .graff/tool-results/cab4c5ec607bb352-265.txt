@@ -1,0 +1,34 @@
+release branch changelog/version refs:
+origin/release/0.2.5833-mcp2026:CHANGELOG.md:3:## 0.2.5837 - 2026-08-05
+origin/release/0.2.5833-mcp2026:README.md:88:irm https://raw.githubusercontent.com/justrach/codedb/v0.2.5837/install/install.ps1 | iex
+origin/release/0.2.5833-mcp2026:build.zig.zon:4:    .version = "0.2.5837",
+origin/release/0.2.5833-mcp2026:npm/package.json:3:  "version": "0.2.5837",
+origin/release/0.2.5833-mcp2026:src/release_info.zig:1:pub const semver = "0.2.5837";
+origin/release/0.2.5833-mcp2026:website/build.zig.zon:4:    .version = "0.1.0",
+origin/release/0.2.5833-mcp2026:zig-pkg/nanoregex-0.0.1-EdkhcXoqAgC6HvjxEqNIedT0YWMRfouWk8dh4G5ZC2L9/build.zig.zon:3:    .version = "0.0.1",
+
+release commit graph:
+*   516d72a (origin/release/0.2.5833-mcp2026, release/0.2.5833-mcp2026) Merge pull request #684 from justrach/fix/issue-682-comment-edge-cases
+|\  
+| * 09b4e26 fix(#682): recognize keyword-led JavaScript regexes
+| * 2f14ea0 test(#682): exclude keyword-led regex mentions
+| * 154fb86 fix(#682): bound template scanning edge cases
+| * 7e2b4c9 test(#682): cover template regexes and R backticks
+| * 49a31a3 fix(#682): match callers only in lexical code
+| * 7e25eab test(#682): guard literal and block-comment mentions
+| * e0c60e4 fix(#682): harden callers comment-prefix scanning
+| * 8efc924 test(#682): expose remaining comment scanner edge cases
+|/  
+*   9695188 Merge pull request #683 from justrach/fix/issue-682-trailing-comment-callers
+|\  
+| * 1cc30d9 fix(#682): callers stops counting trailing-comment mentions as call sites
+| * 3f9d022 test(#682): failing — callers counts trailing-comment mentions as call sites
+|/  
+* 052c8aa (HEAD -> main, origin/main, origin/HEAD) docs: 0.2.5837 changelog section + README OCaml/installer-pin updates
+* b9788ee (tag: v0.2.5837) release: 0.2.5837 — OCaml parser, NL→symbol bridge cache, Windows daemon reap
+*   2aaea7d merge perf/raspberry-pi-profile: eval-thread tweet copy + 0.2.5830 thread reformat (perf commits already in lineage)
+|\  
+| * 10abf03 docs: tweet gate is release-cut only now that PR #681 is merged
+| * 687d606 docs: add eval-thread tweet copy + reformat 0.2.5830 thread
+* |   207da6c merge PR #622: OCaml (.ml/.mli) parser support
+|\ \  

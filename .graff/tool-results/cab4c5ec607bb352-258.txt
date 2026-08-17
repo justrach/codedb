@@ -1,0 +1,29 @@
+49a31a35 (justrach          2026-08-05 10:43:29 +0800 2828) }
+49a31a35 (justrach          2026-08-05 10:43:29 +0800 2829) 
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2830) fn javascriptRegexEndAt(line: []const u8, start: usize) ?usize {
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2831)     if (start + 1 >= line.len or line[start] != '/' or line[start + 1] == '/' or line[start + 1] == '*') return null;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2832) 
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2833)     var previous = start;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2834)     while (previous > 0 and (line[previous - 1] == ' ' or line[previous - 1] == '\t')) previous -= 1;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2835)     if (previous > 0 and std.mem.indexOfScalar(u8, "([{:;,=!?&|+-*%^~<>", line[previous - 1]) == null) return null;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2836) 
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2837)     var in_class = false;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2838)     var i = start + 1;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2839)     while (i < line.len) {
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2840)         if (line[i] == '\\') {
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2841)             i += if (line.len - i > 1) 2 else 1;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2842)             continue;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2843)         }
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2844)         if (line[i] == '[') {
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2845)             in_class = true;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2846)         } else if (line[i] == ']') {
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2847)             in_class = false;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2848)         } else if (line[i] == '/' and !in_class) {
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2849)             i += 1;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2850)             while (i < line.len and std.ascii.isAlphabetic(line[i])) i += 1;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2851)             return i;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2852)         }
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2853)         i += 1;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2854)     }
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2855)     return null;
+00000000 (Not Committed Yet 2026-08-05 10:48:45 +0800 2856) }

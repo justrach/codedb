@@ -1,0 +1,260 @@
+     1	const std = @import("std");
+     2	const builtin = @import("builtin");
+     3	const cio = @import("cio.zig");
+     4	const testing = std.testing;
+     5	const io = std.testing.io;
+     6	const Store = @import("store.zig").Store;
+     7	const Explorer = @import("explore.zig").Explorer;
+     8	const explore = @import("explore.zig");
+     9	const Language = explore.Language;
+    10	const AgentRegistry = @import("agent.zig").AgentRegistry;
+    11	const mcp_mod = @import("mcp.zig");
+    12	const main_mod = @import("main.zig");
+    13	const nuke_mod = @import("nuke.zig");
+    14	const codex_setup = @import("codex_setup.zig");
+    15	const update_mod = @import("update.zig");
+    16	const Config = @import("config.zig").Config;
+    17	const telemetry_mod = @import("telemetry.zig");
+    18	const release_info = @import("release_info.zig");
+    19	const root_policy = @import("root_policy.zig");
+    20	const snapshot_mod = @import("snapshot.zig");
+    21	const watcher = @import("watcher.zig");
+    22	const WordIndex = @import("index.zig").WordIndex;
+    23	const TrigramIndex = @import("index.zig").TrigramIndex;
+    24	const SparseNgramIndex = @import("index.zig").SparseNgramIndex;
+    25	const cli_args_mod = @import("cli_args.zig");
+    26	const out_mod = @import("out.zig");
+    27	const query_mod = @import("query.zig");
+    28	const cli_proxy_mod = @import("cli_proxy.zig");
+    29	const bootstrap_mod = @import("bootstrap.zig");
+    30	const background_mod = @import("background.zig");
+    31	const commands_mod = @import("commands.zig");
+    32	const mcp_json = @import("mcp_json.zig");
+    33	comptime {
+    34	    _ = @import("config.zig");
+    35	}
+    36	
+    37	test "mcp json: line reader preserves newline and EOF framing" {
+    38	    var reader: std.Io.Reader = .fixed("first\nlast");
+    39	
+    40	    const first = mcp_json.readLineBuf(testing.allocator, &reader) orelse return error.TestUnexpectedResult;
+    41	    defer testing.allocator.free(first);
+    42	    try testing.expectEqualStrings("first", first);
+    43	
+    44	    const last = mcp_json.readLineBuf(testing.allocator, &reader) orelse return error.TestUnexpectedResult;
+    45	    defer testing.allocator.free(last);
+    46	    try testing.expectEqualStrings("last", last);
+    47	    try testing.expect(mcp_json.readLineBuf(testing.allocator, &reader) == null);
+    48	}
+    49	
+    50	test "mcp json: line reader enforces maximum message size" {
+    51	    const exact = try testing.allocator.alloc(u8, mcp_json.MAX_LINE);
+    52	    defer testing.allocator.free(exact);
+    53	    @memset(exact, 'x');
+    54	    var exact_reader: std.Io.Reader = .fixed(exact);
+    55	    const accepted = mcp_json.readLineBuf(testing.allocator, &exact_reader) orelse return error.TestUnexpectedResult;
+    56	    defer testing.allocator.free(accepted);
+    57	    try testing.expectEqual(exact.len, accepted.len);
+    58	
+    59	    const oversized = try testing.allocator.alloc(u8, mcp_json.MAX_LINE + 1);
+    60	    defer testing.allocator.free(oversized);
+    61	    @memset(oversized, 'y');
+    62	    var oversized_reader: std.Io.Reader = .fixed(oversized);
+    63	    try testing.expect(mcp_json.readLineBuf(testing.allocator, &oversized_reader) == null);
+    64	}
+    65	
+    66	test "mcp json: typed fields and escaping preserve protocol behavior" {
+    67	    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+    68	        \\{"name":"codedb","count":7,"enabled":true,"other":null}
+    69	    , .{});
+    70	    defer parsed.deinit();
+    71	    const object = &parsed.value.object;
+    72	    try testing.expectEqualStrings("codedb", mcp_json.getStr(object, "name").?);
+    73	    try testing.expectEqual(@as(i64, 7), mcp_json.getInt(object, "count").?);
+    74	    try testing.expect(mcp_json.getBool(object, "enabled"));
+    75	    try testing.expect(mcp_json.getStr(object, "count") == null);
+    76	    try testing.expect(mcp_json.getInt(object, "name") == null);
+    77	    try testing.expect(!mcp_json.getBool(object, "missing"));
+    78	
+    79	    var escaped: std.ArrayList(u8) = .empty;
+    80	    defer escaped.deinit(testing.allocator);
+    81	    mcp_json.writeEscaped(testing.allocator, &escaped, "plain \"quote\" \\ slash\n\r\t\x00\x08\x0c\x1f");
+    82	    try testing.expectEqualStrings(
+    83	        "plain \\\"quote\\\" \\\\ slash\\n\\r\\t\\u0000\\u0008\\u000c\\u001f",
+    84	        escaped.items,
+    85	    );
+    86	}
+    87	
+    88	fn zigExe() []const u8 {
+    89	    // Machines with several zig installs (zigup + homebrew) need the same
+    90	    // binary that built the tests; a bare "zig" can resolve to an
+    91	    // incompatible version and fail the build these tests spawn.
+    92	    return cio.posixGetenv("ZIG") orelse "zig";
+    93	}
+    94	
+    95	fn builtCodedbExe() []const u8 {
+    96	    return if (builtin.os.tag == .windows) ".\\zig-out\\bin\\codedb.exe" else "./zig-out/bin/codedb";
+    97	}
+    98	
+    99	const EnvVarGuard = struct {
+   100	    name: []const u8,
+   101	    had_prev: bool,
+   102	    prev_len: usize,
+   103	    prev: [4096]u8,
+   104	
+   105	    fn save(name: []const u8) EnvVarGuard {
+   106	        var g = EnvVarGuard{ .name = name, .had_prev = false, .prev_len = 0, .prev = undefined };
+   107	        if (cio.posixGetenv(name)) |v| {
+   108	            if (v.len <= g.prev.len) {
+   109	                @memcpy(g.prev[0..v.len], v);
+   110	                g.prev_len = v.len;
+   111	                g.had_prev = true;
+   112	            }
+   113	        }
+   114	        return g;
+   115	    }
+   116	
+   117	    fn restore(self: *const EnvVarGuard) void {
+   118	        if (self.had_prev) {
+   119	            cio.posixSetenv(self.name, self.prev[0..self.prev_len]);
+   120	        } else {
+   121	            cio.posixUnsetenv(self.name);
+   122	        }
+   123	    }
+   124	};
+   125	
+   126	test "windows runCapture resolves executables from safe PATH entries only" {
+   127	    if (builtin.os.tag != .windows) return error.SkipZigTest;
+   128	
+   129	    var tmp = testing.tmpDir(.{});
+   130	    defer tmp.cleanup();
+   131	    try tmp.dir.createDirPath(io, "bin");
+   132	    try tmp.dir.createDirPath(io, "repo");
+   133	    var exe = try tmp.dir.createFile(io, "bin/git.exe", .{});
+   134	    exe.close(io);
+   135	    var planted_bat = try tmp.dir.createFile(io, "repo/git.bat", .{});
+   136	    planted_bat.close(io);
+   137	
+   138	    var bin_buf: [std.fs.max_path_bytes]u8 = undefined;
+   139	    const bin_len = try tmp.dir.realPathFile(io, "bin", &bin_buf);
+   140	    const bin_abs = bin_buf[0..bin_len];
+   141	
+   142	    const old_path = EnvVarGuard.save("PATH");
+   143	    defer old_path.restore();
+   144	    const test_path = try std.fmt.allocPrint(testing.allocator, ".;relative;{s}", .{bin_abs});
+   145	    defer testing.allocator.free(test_path);
+   146	    cio.posixSetenv("PATH", test_path);
+   147	
+   148	    const resolved = try cio.resolveExecutableFromPathWindows(testing.allocator, "git") orelse return error.TestUnexpectedResult;
+   149	    defer testing.allocator.free(resolved);
+   150	    try testing.expect(std.mem.endsWith(u8, resolved, "git.exe"));
+   151	    try testing.expect(std.mem.startsWith(u8, resolved, bin_abs));
+   152	
+   153	    try testing.expect((try cio.resolveExecutableFromPathWindows(testing.allocator, "git.bat")) == null);
+   154	    try testing.expect((try cio.resolveExecutableFromPathWindows(testing.allocator, ".\\git.exe")) == null);
+   155	}
+   156	
+   157	test "windows cli pipe metadata parser rejects spoofable records" {
+   158	    const owner = "pid=123\npipe=\\\\.\\pipe\\codedb-123-deadbeef\n";
+   159	    const ok = cli_proxy_mod.parseCliPipeMetadata(owner) orelse return error.TestUnexpectedResult;
+   160	    try testing.expect(ok.pid == 123);
+   161	    try testing.expect(std.mem.eql(u8, ok.pipe_name, "\\\\.\\pipe\\codedb-123-deadbeef"));
+   162	    try testing.expect(cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 123, "\\\\.\\pipe\\codedb-123-deadbeef"));
+   163	    try testing.expect(!cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 124, "\\\\.\\pipe\\codedb-123-deadbeef"));
+   164	    try testing.expect(!cli_proxy_mod.cliPipeMetadataMatchesOwner(owner, 123, "\\\\.\\pipe\\codedb-other"));
+   165	
+   166	    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pid=0\npipe=\\\\.\\pipe\\codedb-x\n") == null);
+   167	    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pid=123\npipe=\\\\.\\pipe\\other\n") == null);
+   168	    try testing.expect(cli_proxy_mod.parseCliPipeMetadata("pipe=\\\\.\\pipe\\codedb-x\n") == null);
+   169	}
+   170	
+   171	fn buildCliForHelpTests() !void {
+   172	    // `--global-cache-dir` is only accepted by newer zigs (the pinned
+   173	    // 0.17.0-dev.813 rejects it); prefer the env var, which every version
+   174	    // honors, and keep the arg off entirely.
+   175	    const build = try cio.runCapture(.{
+   176	        .allocator = testing.allocator,
+   177	        .argv = &.{ zigExe(), "build" },
+   178	        .max_output_bytes = 8192,
+   179	    });
+   180	    defer testing.allocator.free(build.stdout);
+   181	    defer testing.allocator.free(build.stderr);
+   182	
+   183	    try testing.expect(build.term == .Exited);
+   184	    try testing.expect(build.term.Exited == 0);
+   185	}
+   186	
+   187	test "windows cli-daemon auto-spawn proxies next query from unicode root" {
+   188	    // POSIX uses the Unix-socket daemon path. This test exercises the Windows
+   189	    // behavior-equivalent path: detached CreateProcessW startup plus named-pipe
+   190	    // proxying for the next process.
+   191	    if (builtin.os.tag != .windows) return error.SkipZigTest;
+   192	
+   193	    try buildCliForHelpTests();
+   194	
+   195	    var tmp = testing.tmpDir(.{});
+   196	    defer tmp.cleanup();
+   197	
+   198	    try tmp.dir.createDirPath(io, "project-unicode-å/src");
+   199	    try tmp.dir.createDirPath(io, ".home");
+   200	
+   201	    {
+   202	        const f = try tmp.dir.createFile(io, "project-unicode-å/src/sample.zig", .{ .truncate = true });
+   203	        defer f.close(io);
+   204	        try f.writeStreamingAll(io, "pub fn sampleSymbolForDaemon() void {}\n");
+   205	    }
+   206	
+   207	    var project_buf: [std.fs.max_path_bytes]u8 = undefined;
+   208	    const project_len = try tmp.dir.realPathFile(io, "project-unicode-å", &project_buf);
+   209	    const project_root = project_buf[0..project_len];
+   210	
+   211	    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+   212	    const home_len = try tmp.dir.realPathFile(io, ".home", &home_buf);
+   213	    const test_home = home_buf[0..home_len];
+   214	
+   215	    const g_allow = EnvVarGuard.save("CODEDB_ALLOW_TEMP");
+   216	    defer g_allow.restore();
+   217	    const g_idle = EnvVarGuard.save("CODEDB_CLI_DAEMON_IDLE_MS");
+   218	    defer g_idle.restore();
+   219	    const g_home = EnvVarGuard.save("HOME");
+   220	    defer g_home.restore();
+   221	    const g_profile = EnvVarGuard.save("USERPROFILE");
+   222	    defer g_profile.restore();
+   223	    cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
+   224	    cio.posixSetenv("CODEDB_CLI_DAEMON_IDLE_MS", "750");
+   225	    cio.posixSetenv("HOME", test_home);
+   226	    cio.posixSetenv("USERPROFILE", test_home);
+   227	
+   228	    const cold = try cio.runCapture(.{
+   229	        .allocator = testing.allocator,
+   230	        .argv = &.{ builtCodedbExe(), project_root, "status" },
+   231	        .max_output_bytes = 64 * 1024,
+   232	    });
+   233	    defer testing.allocator.free(cold.stdout);
+   234	    defer testing.allocator.free(cold.stderr);
+   235	    try testing.expect(cold.term == .Exited);
+   236	    try testing.expectEqual(@as(u8, 0), cold.term.Exited);
+   237	
+   238	    var warm_seen = false;
+   239	    var attempts: usize = 0;
+   240	    while (attempts < 20) : (attempts += 1) {
+   241	        cio.sleepMs(150);
+   242	        const warm = try cio.runCapture(.{
+   243	            .allocator = testing.allocator,
+   244	            .argv = &.{ builtCodedbExe(), project_root, "find", "sampleSymbolForDaemon" },
+   245	            .max_output_bytes = 64 * 1024,
+   246	        });
+   247	        defer testing.allocator.free(warm.stdout);
+   248	        defer testing.allocator.free(warm.stderr);
+   249	
+   250	        if (warm.term == .Exited and warm.term.Exited == 0 and
+   251	            std.mem.indexOf(u8, warm.stdout, "src/sample.zig") != null and
+   252	            std.mem.indexOf(u8, warm.stdout, "loaded snapshot") == null)
+   253	        {
+   254	            warm_seen = true;
+   255	            break;
+   256	        }
+   257	    }
+   258	
+   259	    // Let the short-idle detached daemon release files before tmp cleanup on Windows.
+   260	    cio.sleepMs(900);

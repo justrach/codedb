@@ -1,0 +1,206 @@
+  6620	                }
+  6621	            }
+  6622	        }
+  6623	
+  6624	        std.mem.sort(Entry, top.items, {}, struct {
+  6625	            fn cmp(_: void, a: Entry, b: Entry) bool {
+  6626	                return a.seq > b.seq;
+  6627	            }
+  6628	        }.cmp);
+  6629	
+  6630	        // We dropped the explorer lock above. The path refs are stable across
+  6631	        // outline insert/remove because the hashmap key is owned by the
+  6632	        // outlines entry and only freed when that entry is deleted; the
+  6633	        // window between unlock and reading the slice is too short for that
+  6634	        // in the MCP single-request path.
+  6635	        const w = cio.listWriter(out, allocator);
+  6636	        for (top.items, 0..) |e, i| {
+  6637	            try w.print("{d}. {s}\n", .{ i + 1, e.path });
+  6638	        }
+  6639	    }
+  6640	
+  6641	    // ── Language parsers ──────────────────────────────────────
+  6642	
+  6643	    fn parseZigLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6644	        const a = self.allocator;
+  6645	        if (startsWith(line, "pub fn ") or startsWith(line, "fn ")) {
+  6646	            const start: usize = if (startsWith(line, "pub fn ")) 7 else 3;
+  6647	            if (extractIdent(line[start..])) |name| {
+  6648	                try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6649	            }
+  6650	        } else if (startsWith(line, "pub const ") or startsWith(line, "const ")) {
+  6651	            const start: usize = if (startsWith(line, "pub const ")) 10 else 6;
+  6652	            if (extractIdent(line[start..])) |name| {
+  6653	                const kind: SymbolKind = if (std.mem.indexOf(u8, line, "struct {") != null)
+  6654	                    .struct_def
+  6655	                else if (std.mem.indexOf(u8, line, "enum {") != null)
+  6656	                    .enum_def
+  6657	                else if (std.mem.indexOf(u8, line, "union {") != null or
+  6658	                    std.mem.indexOf(u8, line, "union(enum) {") != null)
+  6659	                    .union_def
+  6660	                else if (std.mem.indexOf(u8, line, "@import") != null)
+  6661	                    .import
+  6662	                else
+  6663	                    .constant;
+  6664	
+  6665	                try appendOutlineSymbol(a, outline, name, kind, line_num, line);
+  6666	
+  6667	                if (kind == .import) {
+  6668	                    if (extractStringLiteral(line)) |import_path| {
+  6669	                        try appendImportPath(a, outline, import_path);
+  6670	                    }
+  6671	                }
+  6672	            }
+  6673	        } else if (startsWith(line, "test ")) {
+  6674	            try appendOutlineSymbol(a, outline, line, .test_decl, line_num, null);
+  6675	        }
+  6676	    }
+  6677	
+  6678	    fn parsePythonLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6679	        const a = self.allocator;
+  6680	        if (startsWith(line, "def ")) {
+  6681	            if (extractIdent(line[4..])) |name| {
+  6682	                try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6683	            }
+  6684	        } else if (startsWith(line, "class ")) {
+  6685	            if (extractIdent(line[6..])) |name| {
+  6686	                try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6687	            }
+  6688	        } else if (startsWith(line, "import ") or startsWith(line, "from ")) {
+  6689	            try appendOutlineSymbol(a, outline, line, .import, line_num, null);
+  6690	            if (startsWith(line, "from ")) {
+  6691	                // "from mypackage.utils import X" -> mypackage/utils.py (single module dep)
+  6692	                if (extractPythonModulePath(line)) |mod_path| {
+  6693	                    try appendPythonModuleDep(a, outline, mod_path);
+  6694	                }
+  6695	            } else {
+  6696	                // "import a, b.c, d as e" -- record one dep per comma-separated module.
+  6697	                const rest = std.mem.trimStart(u8, line[7..], " \t");
+  6698	                var it = std.mem.splitScalar(u8, rest, ',');
+  6699	                while (it.next()) |raw| {
+  6700	                    var mod = std.mem.trim(u8, raw, " \t");
+  6701	                    if (std.mem.indexOf(u8, mod, " as ")) |as_pos| mod = std.mem.trimEnd(u8, mod[0..as_pos], " \t");
+  6702	                    if (std.mem.indexOfScalar(u8, mod, ' ')) |sp| mod = mod[0..sp];
+  6703	                    if (mod.len == 0 or mod[0] == '.') continue;
+  6704	                    try appendPythonModuleDep(a, outline, mod);
+  6705	                }
+  6706	            }
+  6707	        }
+  6708	    }
+  6709	    fn parseTsLine(self: *Explorer, line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6710	        const a = self.allocator;
+  6711	        if (containsAny(line, &.{ "function ", "const ", "let ", "var ", "class ", "interface ", "enum ", "type " })) {
+  6712	            const kind: SymbolKind = if (std.mem.indexOf(u8, line, "function") != null)
+  6713	                .function
+  6714	            else if (std.mem.indexOf(u8, line, "class ") != null)
+  6715	                .class_def
+  6716	            else if (std.mem.indexOf(u8, line, "interface ") != null)
+  6717	                .interface_def
+  6718	            else if (std.mem.indexOf(u8, line, "enum ") != null)
+  6719	                .enum_def
+  6720	            else if (std.mem.indexOf(u8, line, "type ") != null)
+  6721	                .type_alias
+  6722	            else
+  6723	                .constant;
+  6724	            const trimmed = skipKeywords(line);
+  6725	            if (extractIdent(trimmed)) |name| {
+  6726	                try appendOutlineSymbol(a, outline, name, kind, line_num, line);
+  6727	            }
+  6728	        }
+  6729	        if (startsWith(line, "import ") or containsAny(line, &.{"require("})) {
+  6730	            try appendOutlineSymbol(a, outline, line, .import, line_num, null);
+  6731	            if (extractStringLiteral(line)) |path| {
+  6732	                try appendImportPath(a, outline, path);
+  6733	            }
+  6734	        } else if (startsWith(line, "} from ") or
+  6735	            (startsWith(line, "export ") and containsAny(line, &.{ " from \"", " from '" })))
+  6736	        {
+  6737	            // Closing line of a multi-line import/export, e.g.
+  6738	            //   import {
+  6739	            //     a, b,
+  6740	            //   } from "../mod.ts";
+  6741	            // or a re-export like `export * from "./x.ts"`. The `from "..."`
+  6742	            // clause lands on a line that does not contain "import ", so without
+  6743	            // this branch the path is dropped (only single-line imports were
+  6744	            // captured). Gated on these concrete shapes so arbitrary `from "..."`
+  6745	            // inside strings/comments (e.g. SQL `select * from "users"`) is not
+  6746	            // mistaken for a dependency.
+  6747	            if (extractStringLiteral(line)) |path| {
+  6748	                try appendImportPath(a, outline, path);
+  6749	            }
+  6750	        }
+  6751	    }
+  6752	
+  6753	    fn parseJavaLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6754	        const a = self.allocator;
+  6755	        const line = stripLineComment(raw_line);
+  6756	        if (line.len == 0 or startsWith(line, "@")) return;
+  6757	
+  6758	        if (parseDelimitedImport(line, "import ", ";")) |imp| {
+  6759	            try appendImportSymbol(a, outline, imp, line_num, line);
+  6760	            return;
+  6761	        }
+  6762	
+  6763	        if (extractIdentAfterKeyword(line, "record ")) |name| {
+  6764	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6765	        } else if (extractIdentAfterKeyword(line, "class ")) |name| {
+  6766	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6767	        } else if (extractIdentAfterKeyword(line, "interface ")) |name| {
+  6768	            try appendOutlineSymbol(a, outline, name, .interface_def, line_num, line);
+  6769	        } else if (extractIdentAfterKeyword(line, "enum ")) |name| {
+  6770	            try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+  6771	        } else if (extractJvmMethodName(line)) |name| {
+  6772	            try appendOutlineSymbol(a, outline, name, .method, line_num, line);
+  6773	        }
+  6774	    }
+  6775	
+  6776	    fn parseKotlinLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6777	        const a = self.allocator;
+  6778	        const line = stripLineComment(raw_line);
+  6779	        if (line.len == 0 or startsWith(line, "@")) return;
+  6780	
+  6781	        if (parseDelimitedImport(line, "import ", "")) |imp| {
+  6782	            try appendImportSymbol(a, outline, imp, line_num, line);
+  6783	            return;
+  6784	        }
+  6785	
+  6786	        if (extractIdentAfterKeyword(line, "enum class ")) |name| {
+  6787	            try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+  6788	        } else if (extractIdentAfterKeyword(line, "interface ")) |name| {
+  6789	            try appendOutlineSymbol(a, outline, name, .interface_def, line_num, line);
+  6790	        } else if (extractIdentAfterKeyword(line, "class ")) |name| {
+  6791	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6792	        } else if (extractIdentAfterKeyword(line, "object ")) |name| {
+  6793	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6794	        } else if (extractIdentAfterKeyword(line, "fun ")) |name| {
+  6795	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6796	        } else if (extractIdentAfterKeyword(line, "val ")) |name| {
+  6797	            try appendOutlineSymbol(a, outline, name, .constant, line_num, line);
+  6798	        } else if (extractIdentAfterKeyword(line, "var ")) |name| {
+  6799	            try appendOutlineSymbol(a, outline, name, .variable, line_num, line);
+  6800	        }
+  6801	    }
+  6802	
+  6803	    fn parseSwiftLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {
+  6804	        const a = self.allocator;
+  6805	        const line = stripLineComment(raw_line);
+  6806	        if (line.len == 0 or startsWith(line, "@") or startsWith(line, "/*") or startsWith(line, "*")) return;
+  6807	
+  6808	        if (parseDelimitedImport(line, "import ", "")) |imp| {
+  6809	            try appendImportSymbol(a, outline, imp, line_num, line);
+  6810	            return;
+  6811	        }
+  6812	
+  6813	        if (extractIdentAfterKeyword(line, "struct ")) |name| {
+  6814	            try appendOutlineSymbol(a, outline, name, .struct_def, line_num, line);
+  6815	        } else if (extractIdentAfterKeyword(line, "protocol ")) |name| {
+  6816	            try appendOutlineSymbol(a, outline, name, .interface_def, line_num, line);
+  6817	        } else if (extractIdentAfterKeyword(line, "class ")) |name| {
+  6818	            try appendOutlineSymbol(a, outline, name, .class_def, line_num, line);
+  6819	        } else if (extractIdentAfterKeyword(line, "enum ")) |name| {
+  6820	            try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
+  6821	        } else if (extractIdentAfterKeyword(line, "func ")) |name| {
+  6822	            try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+  6823	        }
+  6824	    }
+  6825	

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>codedb × Kimi-K3 — embedding architecture</title>
+  <style>
+    :root {
+      --bg: #07090e;
+      --text: #f4f6fb;
+      --muted: rgba(244,246,251,0.62);
+      --dim: rgba(244,246,251,0.38);
+      --card: #10141d;
+      --line: rgba(255,255,255,0.08);
+      --kimi: #f59e0b;
+      --kimi-dim: #f59e0b33;
+      --serve: #34d399;
+      --serve-dim: #34d3991a;
+      --lex: #7dd3fc;
+      --no: #fb7185;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+    a { color: #7dd3fc; }
+    .hero { padding: 40px 28px 12px; max-width: 1100px; margin: 0 auto; }
+    .kicker { letter-spacing: 0.14em; text-transform: uppercase; font-size: 11px; color: var(--dim); font-weight: 700; }
+    h1 { font-size: 36px; letter-spacing: -0.035em; margin: 8px 0 10px; line-height: 1.1; }
+    .sub { color: var(--muted); max-width: 760px; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 12px 28px 80px; }
+    h2 { font-size: 18px; letter-spacing: -0.02em; margin: 36px 0 14px; }
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 8px; }
+    .pill {
+      font-size: 12px; font-weight: 700; letter-spacing: 0.04em;
+      padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line);
+    }
+    .pill.k { color: var(--kimi); background: var(--kimi-dim); border-color: #f59e0b44; }
+    .pill.s { color: var(--serve); background: var(--serve-dim); border-color: #34d39944; }
+    .pill.x { color: var(--no); background: #fb71851a; border-color: #fb718544; }
+    .flow {
+      display: grid; grid-template-columns: 1fr 28px 1fr 28px 1fr;
+      gap: 0; align-items: stretch; margin: 18px 0 8px;
+    }
+    .box {
+      background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 16px 14px;
+    }
+    .box h3 { margin: 0 0 8px; font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; }
+    .box.kimi { border-color: #f59e0b44; }
+    .box.kimi h3 { color: var(--kimi); }
+    .box.student { border-color: #34d39944; }
+    .box.student h3 { color: var(--serve); }
+    .box.blend { border-color: #7dd3fc44; }
+    .box.blend h3 { color: var(--lex); }
+    .box ul { margin: 0; padding-left: 16px; color: var(--muted); font-size: 13px; }
+    .box li { margin: 4px 0; }
+    .arrow { display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 22px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; background: var(--card); border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+    th, td { padding: 11px 14px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+    td.no { color: var(--no); font-weight: 650; }
+    td.yes { color: var(--serve); font-weight: 650; }
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .note { color: var(--muted); font-size: 14px; }
+    footer { color: var(--dim); font-size: 13px; margin-top: 40px; }
+    @media (max-width: 860px) {
+      .flow, .split { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); height: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <div class="kicker">sketch · delete if bad · moonshotai/Kimi-K3</div>
+    <h1>K3’s trick, 5M active.</h1>
+    <p class="sub">Not a 5M dense model and not a static bag-of-words table. Distill a <strong>~100M MoE code embedder that only fires ~5M params per token</strong> — 64–128 experts, top-2. Serve it on a <strong>cloud GPU with ZDR</strong>. Bootstrap (task, chunk) KV pairs from the codedb harness + codegraff, label in parallel streams. Kimi-K3 only grades pairs offline. Judge is still fewer <code>codedb</code> calls on OpenClaw and React.</p>
+    <div class="pills">
+      <span class="pill k">K3 · 896 experts · teacher</span>
+      <span class="pill s">student · ~100M stored · ~5M active</span>
+      <span class="pill s">ZDR cloud GPU · parallel streams</span>
+      <span class="pill s">harness + graff → KV pairs</span>
+      <span class="pill x">static mean cannot unweight “gateway bind”</span>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <h2>Data path</h2>
+    <div class="flow">
+      <div class="box kimi">
+        <h3>Offline · Kimi-K3</h3>
+        <ul>
+          <li>Grade (task, chunk) 0–3</li>
+          <li>codedb context + gold → KV</li>
+          <li>graff trajectory near-misses</li>
+          <li>Parallel streams, not serial</li>
+        </ul>
+      </div>
+      <div class="arrow">→</div>
+      <div class="box student">
+        <h3>Distill · 5M-active MoE</h3>
+        <ul>
+          <li>~100M stored, ~4.7M active</li>
+          <li>64 experts, top-2, d=256, L=6</li>
+          <li>Specialists: NL vs ident, def vs use</li>
+          <li>256-d L2, InfoNCE + K3 labels</li>
+        </ul>
+      </div>
+      <div class="arrow">→</div>
+      <div class="box blend">
+        <h3>Online · codedb</h3>
+        <ul>
+          <li>BM25 shortlist, top 64</li>
+          <li>ZDR GPU embed of the task</li>
+          <li>score = bm25 + λ·vec</li>
+          <li><code>CODEDB_EMBED_URL</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <h2>What K3 is vs what we ship</h2>
+    <table>
+      <thead><tr><th></th><th>Kimi-K3</th><th>Student we ship</th></tr></thead>
+      <tbody>
+        <tr><td>Role</td><td>Teacher / labeler</td><td>MoE bi-encoder</td></tr>
+        <tr><td>Stored / active</td><td>2.8T / 104B</td><td>~100M / <strong>~5M</strong></td></tr>
+        <tr><td>Experts</td><td>896, top-16</td><td>64–128, top-2</td></tr>
+        <tr><td>Where it runs</td><td>Kimi API or vLLM, offline</td><td>ZDR cloud GPU, batch streams</td></tr>
+        <tr><td>Out</td><td>next token / grade</td><td>256-d, cosine vs shortlist</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Why bother</h2>
+    <div class="split">
+      <div class="box">
+        <h3 style="color:var(--no)">Lexical miss</h3>
+        <p class="note">“gateway bind” beats <code>net.ts</code>. “flush passive effects” lands on a call site, not <code>flushPassiveEffects</code> at L4691. Knobs already took dual-repo calls 28 → 25. The rest is intent, not tokens.</p>
+      </div>
+      <div class="box">
+        <h3 style="color:var(--serve)">Keep rule</h3>
+        <p class="note">Train on OpenClaw + React + codedb. Hold one repo out. Keep the vec only if graff+luna <strong>call count drops</strong> on both suites and score does not fall. Cheap MRR up + calls up = discard.</p>
+      </div>
+    </div>
+
+    <h2>Ship order</h2>
+    <table>
+      <thead><tr><th>#</th><th>Step</th><th>Kill switch</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Mine KV pairs from codedb + graff harness (parallel)</td><td class="yes">running</td></tr>
+        <tr><td>2</td><td>Teacher-label in parallel streams (luna / K3)</td><td class="yes">offline</td></tr>
+        <tr><td>3</td><td>Distill 100M / 5M-active MoE; serve on ZDR GPU</td><td class="yes">ZDR</td></tr>
+        <tr><td>4</td><td><code>CODEDB_CONTEXT_VEC=1</code> blend in handleContext</td><td class="yes">env off</td></tr>
+        <tr><td>5</td><td>50-step λ climb, dual-repo calls</td><td class="no">must beat 25 / 75</td></tr>
+      </tbody>
+    </table>
+
+    <footer>
+      Source: <a href="embedding-architecture.md">embedding-architecture.md</a>
+      · teacher card <a href="https://huggingface.co/moonshotai/Kimi-K3">moonshotai/Kimi-K3</a>
+      · delete this HTML if it is noise.
+    </footer>
+  </div>
+</body>
+</html>

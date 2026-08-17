@@ -1,0 +1,81 @@
+        else => {},
+    }
+
+    // Should exit promptly after stdin closes.
+    try testing.expect(elapsed < 5_000);
+}
+
+test "issue-249: nuke.removeJsonMcpServerEntry returns null when key absent" {
+    // Verifies removeJsonMcpServerEntry does not signal a write when key is absent,
+    // which ensures the non-atomic rewriteConfigFile path is never triggered unnecessarily.
+    const result = try nuke_mod.removeJsonMcpServerEntry(testing.allocator, "{\"other\":1}", "codedb");
+    try testing.expect(result == null);
+}
+
+test "issue-207: ScanState round-trips through atomic" {
+    const initial = mcp_mod.getScanState();
+    defer mcp_mod.setScanState(initial);
+
+    mcp_mod.setScanState(.loading_snapshot);
+    try testing.expectEqual(mcp_mod.ScanState.loading_snapshot, mcp_mod.getScanState());
+
+    mcp_mod.setScanState(.walking);
+    try testing.expectEqual(mcp_mod.ScanState.walking, mcp_mod.getScanState());
+
+    mcp_mod.setScanState(.indexing);
+    try testing.expectEqual(mcp_mod.ScanState.indexing, mcp_mod.getScanState());
+
+    mcp_mod.setScanState(.ready);
+    try testing.expectEqual(mcp_mod.ScanState.ready, mcp_mod.getScanState());
+}
+
+test "issue-207: ScanState.name covers all states" {
+    try testing.expectEqualStrings("loading_snapshot", mcp_mod.ScanState.loading_snapshot.name());
+    try testing.expectEqualStrings("walking", mcp_mod.ScanState.walking.name());
+    try testing.expectEqualStrings("indexing", mcp_mod.ScanState.indexing.name());
+    try testing.expectEqualStrings("ready", mcp_mod.ScanState.ready.name());
+}
+
+test "issue-346: root_policy rejects dangerous ambient cwd roots" {
+    try testing.expect(!root_policy.isIndexableRoot("/"));
+    try testing.expect(!root_policy.isIndexableRoot("/Applications"));
+    try testing.expect(!root_policy.isIndexableRoot("/usr"));
+    try testing.expect(!root_policy.isIndexableRoot("/usr/local"));
+    try testing.expect(!root_policy.isIndexableRoot("/usr/local/bin"));
+    try testing.expect(!root_policy.isIndexableRoot("/opt"));
+    try testing.expect(!root_policy.isIndexableRoot("/opt/homebrew"));
+}
+
+test "issue-357: bundle preserves nested 'arguments' for codedb_outline" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+    try explorer.indexFile("src/lib.zig", "pub fn helper() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const bundle_json =
+        \\{"ops":[
+        \\  {"tool":"codedb_outline","arguments":{"path":"src/main.zig"}},
+        \\  {"tool":"codedb_outline","arguments":{"path":"src/lib.zig"}}
+        \\]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, bundle_json, .{});
+    defer parsed.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_bundle, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    // Nested-args bundle path must preserve 'path' for every op — no missing-arg errors.
+    try testing.expect(std.mem.indexOf(u8, out.items, "missing 'path' argument") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/main.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/lib.zig") != null);

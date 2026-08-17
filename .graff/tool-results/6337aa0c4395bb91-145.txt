@@ -1,0 +1,99 @@
+✓ src/mcp_json.zig  zig  ⚡ 3.0µs
+    1 | //! Small JSON-RPC helpers used by codedb's MCP transport.
+    2 | //!
+    3 | //! These were formerly supplied by mcp-zig. Keeping the protocol-neutral
+    4 | //! helpers local avoids coupling codedb's build to a second server framework.
+    5 | 
+    6 | const std = @import("std");
+    7 | 
+    8 | pub const MAX_LINE = 1024 * 1024;
+    9 | 
+   10 | /// Read one newline-terminated message from a buffered reader.
+   11 | /// The caller owns the returned slice.
+   12 | pub fn readLineBuf(alloc: std.mem.Allocator, reader: *std.Io.Reader) ?[]u8 {
+   13 |     var line: std.ArrayList(u8) = .empty;
+   14 |     while (true) {
+   15 |         const byte = reader.takeByte() catch {
+   16 |             if (line.items.len == 0) {
+   17 |                 line.deinit(alloc);
+   18 |                 return null;
+   19 |             }
+   20 |             return line.toOwnedSlice(alloc) catch null;
+   21 |         };
+   22 |         if (byte == '\n') return line.toOwnedSlice(alloc) catch null;
+   23 |         line.append(alloc, byte) catch {
+   24 |             line.deinit(alloc);
+   25 |             return null;
+   26 |         };
+   27 |         if (line.items.len > MAX_LINE) {
+   28 |             line.deinit(alloc);
+   29 |             return null;
+   30 |         }
+   31 |     }
+   32 | }
+   33 | 
+   34 | pub fn getStr(obj: *const std.json.ObjectMap, key: []const u8) ?[]const u8 {
+   35 |     return switch (obj.get(key) orelse return null) {
+   36 |         .string => |s| s,
+   37 |         else => null,
+   38 |     };
+   39 | }
+   40 | 
+   41 | pub fn getInt(obj: *const std.json.ObjectMap, key: []const u8) ?i64 {
+   42 |     return switch (obj.get(key) orelse return null) {
+   43 |         .integer => |n| n,
+   44 |         else => null,
+   45 |     };
+   46 | }
+   47 | 
+   48 | pub fn getBool(obj: *const std.json.ObjectMap, key: []const u8) bool {
+   49 |     return switch (obj.get(key) orelse return false) {
+   50 |         .bool => |b| b,
+   51 |         else => false,
+   52 |     };
+   53 | }
+   54 | 
+   55 | pub fn eql(a: []const u8, b: []const u8) bool {
+   56 |     return std.mem.eql(u8, a, b);
+   57 | }
+   58 | 
+   59 | /// Append a JSON-escaped string without adding surrounding quotes.
+   60 | pub fn writeEscaped(alloc: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) void {
+   61 |     const Vec = @Vector(16, u8);
+   62 |     var i: usize = 0;
+   63 | 
+   64 |     while (i < s.len) {
+   65 |         const start = i;
+   66 |         while (i + 16 <= s.len) {
+   67 |             const chunk: Vec = s[i..][0..16].*;
+   68 |             const lo = chunk < @as(Vec, @splat(@as(u8, 0x20)));
+   69 |             const dq = chunk == @as(Vec, @splat(@as(u8, '"')));
+   70 |             const bs = chunk == @as(Vec, @splat(@as(u8, '\\')));
+   71 |             if (@reduce(.Or, lo | dq | bs)) break;
+   72 |             i += 16;
+   73 |         }
+   74 |         while (i < s.len) : (i += 1) {
+   75 |             const c = s[i];
+   76 |             if (c < 0x20 or c == '"' or c == '\\') break;
+   77 |         }
+   78 | 
+   79 |         if (i > start) out.appendSlice(alloc, s[start..i]) catch return;
+   80 |         if (i >= s.len) break;
+   81 | 
+   82 |         const c = s[i];
+   83 |         switch (c) {
+   84 |             '"' => out.appendSlice(alloc, "\\\"") catch return,
+   85 |             '\\' => out.appendSlice(alloc, "\\\\") catch return,
+   86 |             '\n' => out.appendSlice(alloc, "\\n") catch return,
+   87 |             '\r' => out.appendSlice(alloc, "\\r") catch return,
+   88 |             '\t' => out.appendSlice(alloc, "\\t") catch return,
+   89 |             else => {
+   90 |                 const hex = "0123456789abcdef";
+   91 |                 const escaped = [6]u8{ '\\', 'u', '0', '0', hex[c >> 4], hex[c & 0x0f] };
+   92 |                 out.appendSlice(alloc, &escaped) catch return;
+   93 |             },
+   94 |         }
+   95 |         i += 1;
+   96 |     }
+   97 | }
+   98 | 

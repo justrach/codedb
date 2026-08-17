@@ -1,0 +1,71 @@
+const LineSpan = struct { end: ?usize };
+
+fn rustRawLiteralAt(line: []const u8, start: usize) ?LineSpan {
+    if (start != 0 and isIdentChar(line[start - 1])) return null;
+    var i = start;
+    if (line[i] == 'b') {
+        if (i + 1 >= line.len or line[i + 1] != 'r') return null;
+        i += 2;
+    } else if (line[i] == 'r') {
+        i += 1;
+    } else return null;
+
+    var hashes: usize = 0;
+    while (i < line.len and line[i] == '#') : (i += 1) hashes += 1;
+    if (i >= line.len or line[i] != '"') return null;
+
+    i += 1;
+    while (i < line.len) : (i += 1) {
+        if (line[i] != '"' or i + 1 + hashes > line.len) continue;
+        var matched: usize = 0;
+        while (matched < hashes and line[i + 1 + matched] == '#') : (matched += 1) {}
+        if (matched == hashes) return .{ .end = i + 1 + hashes };
+    }
+    return .{ .end = null };
+}
+
+fn hasBacktickLiterals(language: explore_mod.Language) bool {
+    return switch (language) {
+        .go_lang, .javascript, .typescript, .php, .ruby, .r, .svelte, .vue, .astro => true,
+        else => false,
+    };
+}
+
+fn blockCommentAt(line: []const u8, start: usize, language: explore_mod.Language) ?LineSpan {
+    const slash_block = switch (language) {
+        .rust, .go_lang, .javascript, .typescript, .c, .cpp, .php, .hcl, .dart, .java, .kotlin, .swift, .svelte, .vue, .astro, .sql, .mlir, .tablegen, .rescript => true,
+        else => false,
+    };
+    if (slash_block and std.mem.startsWith(u8, line[start..], "/*")) {
+        return .{ .end = delimitedCommentEnd(line, start, "/*", "*/", language == .rust or language == .swift) };
+    }
+    const html_block = switch (language) {
+        .svelte, .vue, .astro => true,
+        else => false,
+    };
+    if (html_block and std.mem.startsWith(u8, line[start..], "<!--")) {
+        return .{ .end = delimitedCommentEnd(line, start, "<!--", "-->", false) };
+    }
+    return null;
+}
+
+fn delimitedCommentEnd(line: []const u8, start: usize, open: []const u8, close: []const u8, nested: bool) ?usize {
+    var depth: usize = 1;
+    var i = start + open.len;
+    while (i < line.len) {
+        if (nested and std.mem.startsWith(u8, line[i..], open)) {
+            depth += 1;
+            i += open.len;
+            continue;
+        }
+        if (std.mem.startsWith(u8, line[i..], close)) {
+            depth -= 1;
+            i += close.len;
+            if (depth == 0) return i;
+            continue;
+        }
+        i += 1;
+    }
+    return null;
+}
+
