@@ -438,7 +438,7 @@ pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
             if (truncated) {
                 var remaining: usize = 1; // the line we stopped on
                 while (lines.next()) |_| remaining += 1;
-                out.p("{s} [{d} more lines elided — run `outline {s}` then `read {s} -L FROM-TO` for the slice you need]\n", .{ "…", remaining, path, path });
+                out.p("… [{d} more lines elided — run `outline {s}` then `read {s} -L FROM-TO` for the slice you need]\n", .{ remaining, path, path });
             }
         }
     } else if (std.mem.eql(u8, cmd, "hot")) {
