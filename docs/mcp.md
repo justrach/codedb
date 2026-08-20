@@ -25,10 +25,11 @@ curl -fsSL https://codedb.codegraff.com/install.sh | bash
 ```
 
 The installer downloads the binary for your platform, drops it in `~/bin`
-(or `$CODEDB_DIR` when set), and auto-registers
-codedb as an MCP server in every client it can find — Claude Code, Codex,
-Gemini CLI, Cursor, Windsurf, and Devin. It prints the exact `codedb mcp` command it
-registered.
+(or `$CODEDB_DIR` when set), installs the packaged hook helper under
+`share/codedb/install-hooks.sh`, and auto-registers codedb as an MCP server in
+every client it can find — Claude Code, Codex, Gemini CLI, Cursor, Windsurf, and
+Devin. It prints the exact `codedb mcp` command it registered and installs the
+Claude Code and Codex hooks.
 
 ### Windows x86_64 (native)
 

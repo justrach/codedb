@@ -2,6 +2,10 @@
 .zig-cache/
 zig-out/
 
+# Nix build symlink
+/result
+/result-*
+
 # Local/dev files
 .codedb/
 

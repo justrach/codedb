@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # codedb-cli — thin CLI client for codedb HTTP daemon
 # Usage: codedb-cli [project-root] <command> [args...]
 set -euo pipefail

@@ -104,8 +104,10 @@ pub fn printUsage(out: *Out, s: sty.Style) void {
         \\    {s}update{s}                    self-update to the latest verified release
         \\    {s}nuke{s}                      uninstall codedb, clear caches, and deregister integrations
         \\    {s}codex{s}                     CodeDB-first Codex setup (install|uninstall|verify)
+        \\    {s}install-hooks{s}             install Claude Code and Codex hooks from package share data
         \\
     , .{
+        s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,

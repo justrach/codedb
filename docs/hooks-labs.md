@@ -5,8 +5,9 @@ or Claude Code can run hooks around MCP tool calls. Use hooks for local policy,
 logging, and guardrails around calls such as `codedb_search`; do not use them as
 the only security boundary.
 
-The installer registers the MCP server. Hook configuration is separate because
-hooks execute arbitrary commands with your user permissions.
+The installer registers the MCP server. `codedb install-hooks` installs the
+packaged Claude Code and Codex hook configuration; review hooks before enabling
+them because they execute arbitrary commands with your user permissions.
 
 ## Lab 1: Codex Hooks
 
