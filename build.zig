@@ -88,6 +88,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "test-snapshot", .path = "src/test_snapshot.zig", .needs_nanoregex = true },
         .{ .name = "test-mcp", .path = "src/test_mcp.zig", .needs_nanoregex = true },
         .{ .name = "test-query", .path = "src/test_query.zig", .needs_nanoregex = true },
+        .{ .name = "test-list-dir", .path = "src/test_list_dir.zig", .needs_nanoregex = false },
         .{ .name = "test-bench", .path = "src/test_bench.zig", .needs_nanoregex = true },
     };
 

@@ -1,0 +1,38 @@
+diff --git a/src/mcp.zig b/src/mcp.zig
+index 7999f81..e3a5405 100644
+--- a/src/mcp.zig
++++ b/src/mcp.zig
+@@ -24,6 +24,7 @@ const telemetry_mod = @import("telemetry.zig");
+ const git_mod = @import("git.zig");
+ const root_policy = @import("root_policy.zig");
+ const release_info = @import("release_info.zig");
++const mcp_list_dir = @import("mcp_list_dir.zig");
+ pub const DeferredScan = struct {
+     io: std.Io,
+     allocator: std.mem.Allocator,
+@@ -659,6 +660,7 @@ pub const Tool = enum {
+     codedb_query,
+     codedb_glob,
+     codedb_ls,
++    codedb_list_dir,
+     codedb_context,
+ };
+ 
+@@ -684,7 +686,8 @@ pub const tools_list =
+     \\{"name":"codedb_find","description":"Replaces find for filenames: fuzzy FILE-NAME search ONLY — typo-tolerant subsequence match against indexed file paths. NOT a content/symbol search: 'rerank' will NOT find files containing rerankSignalScore unless the filename itself contains 'rerank'. For symbol lookups use codedb_word/codedb_symbol; for content use codedb_search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy filename query (e.g. 'authmidlware' for auth_middleware.go, 'test_auth', 'main.zig'). Matched against path basenames, not file contents."},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
+     \\{"name":"codedb_query","description":"Composable pipeline — chain find, search, filter, deps, outline, read, sort, limit in ONE request, each step feeding the next. Use for multi-step workflows that would take 2+ tool calls; for a single lookup call the direct tool instead — cheaper and sharper.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}; filter op: {\"op\":\"filter\",\"glob\":\"src/**\"} or {\"op\":\"filter\",\"ext\":\".zig\"} ('pattern' aliases 'glob'; bare patterns auto-promote to '**/<pattern>')"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
+     \\{"name":"codedb_glob","description":"Replaces find for path patterns: match indexed paths against a glob: * (no /), ** (across /), ? (one char), {a,b} alternatives. Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '**/*.{yaml,yml}', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
+-    \\{"name":"codedb_ls","description":"List immediate children of a directory: dirs first (alphabetical), then files with language and line/symbol counts. Drill down level-by-level when codedb_tree is too verbose.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
++    \\{"name":"codedb_ls","description":"List immediate children of a directory: dirs first (alphabetical), then files with language and line/symbol counts. Drill down level-by-level when codedb_tree is too verbose. For a live filesystem walk (gitignore, 10k cap, unindexed trees) use codedb_list_dir.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
++    \\{"name":"codedb_list_dir","description":"Live BFS directory listing of the filesystem (not the index): honors .gitignore, 10k-character cap, collapsed subtree summaries. Use for any folder including unindexed trees; codedb_ls is indexed children of one directory.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory relative to project root. Omit for the project root."},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":[]}}
+     \\]}
+ ;
+ 
+@@ -1826,6 +1829,7 @@ fn dispatch(
+         .codedb_query => handleQuery(alloc, args, out, ctx.explorer, ctx.store),
+         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
+         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
++        .codedb_list_dir => mcp_list_dir.handle(io, alloc, getStr(args, "path") orelse ".", project_path orelse cache.default_path, out),
+         .codedb_context => handleContext(io, alloc, args, out, ctx.explorer, project_path orelse cache.default_path),
+     }
+     appendScanProgressHint(alloc, out, tool);

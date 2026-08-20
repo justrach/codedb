@@ -96,6 +96,7 @@ pub fn printUsage(out: *Out, s: sty.Style) void {
         \\    {s}deps{s}  <path>              dependency graph (--depends-on, --transitive, --max-depth N)
         \\    {s}glob{s}  <pattern>           match indexed paths by glob
         \\    {s}ls{s}  [path]                list a directory's indexed children
+        \\    {s}list_dir{s}  [path]          live BFS listing (gitignore, 10k cap; not the index)
         \\    {s}file{s}  <fuzzy-name>        fuzzy file-name search
         \\    {s}context{s}  <task...>        task-shaped orientation bundle
         \\    {s}serve{s}                     HTTP daemon on :6767
@@ -105,6 +106,7 @@ pub fn printUsage(out: *Out, s: sty.Style) void {
         \\    {s}codex{s}                     CodeDB-first Codex setup (install|uninstall|verify)
         \\
     , .{
+        s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,
