@@ -3,4 +3,5 @@
 test {
     _ = @import("list_dir.zig");
     _ = @import("gitignore.zig");
+    _ = @import("mcp_list_dir.zig");
 }
