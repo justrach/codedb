@@ -508,6 +508,28 @@ fn heapEventQueue() !*watcher.EventQueue {
     return queue;
 }
 
+test "watcher: raw linux syscall failures are detected by the -errno range" {
+    // Regression for the inotify arm crash. `std.posix.errno` is the libc
+    // accessor (fails only on rc == -1), so it classified every raw-syscall
+    // failure as .SUCCESS and let the negative rc reach @intCast: a panic in
+    // Debug/ReleaseSafe, a garbage watch descriptor in ReleaseFast. Triggered
+    // on startup by the optional /tmp/codedb-notify interop file being absent.
+    try testing.expect(!watcher.rawLinuxSyscallFailed(0));
+    try testing.expect(!watcher.rawLinuxSyscallFailed(3));
+    try testing.expect(!watcher.rawLinuxSyscallFailed(std.math.maxInt(i32)));
+
+    // -ENOENT, exactly what inotify_add_watch returns for a missing path.
+    const enoent: usize = @bitCast(@as(isize, -2));
+    try testing.expect(watcher.rawLinuxSyscallFailed(enoent));
+    // The value that used to panic must never be cast to a watch descriptor.
+    try testing.expect(std.math.cast(i32, enoent) == null);
+
+    // Error-range boundaries: -1..-4095 are errno, -4096 and below are not.
+    try testing.expect(watcher.rawLinuxSyscallFailed(@bitCast(@as(isize, -1))));
+    try testing.expect(watcher.rawLinuxSyscallFailed(@bitCast(@as(isize, -4095))));
+    try testing.expect(!watcher.rawLinuxSyscallFailed(@bitCast(@as(isize, -4096))));
+}
+
 test "watcher: queue overflow is explicit" {
     const queue = try heapEventQueue();
     defer testing.allocator.destroy(queue);
