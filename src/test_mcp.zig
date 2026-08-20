@@ -3894,6 +3894,57 @@ test "tools/list mini profile advertises six tools with full descriptions" {
     try testing.expect(found_callers);
 }
 
+test "mcp: read-only tools advertise readOnlyHint on every profile" {
+    // Clients gate MCP calls on annotations.readOnlyHint — Claude Code's plan
+    // mode refuses any tool without it and never consults the allow list, so an
+    // unannotated read-only tool prompts on every single call.
+    const read_only = [_][]const u8{
+        "codedb_tree",     "codedb_outline", "codedb_symbol",  "codedb_search",
+        "codedb_word",     "codedb_callers", "codedb_callpath", "codedb_context",
+        "codedb_hot",      "codedb_deps",    "codedb_read",    "codedb_changes",
+        "codedb_status",   "codedb_snapshot", "codedb_projects", "codedb_find",
+        "codedb_query",    "codedb_glob",    "codedb_ls",
+    };
+
+    const profiles = [_]mcp_mod.ToolsListOpts{
+        .{},
+        .{ .profile_core = true },
+        .{ .profile_slim = true },
+        .{ .profile_mini = true },
+    };
+
+    for (profiles) |opts| {
+        const resp = try mcp_mod.buildToolsListResponse(testing.allocator, opts);
+        defer testing.allocator.free(resp);
+
+        var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, resp, .{});
+        defer parsed.deinit();
+
+        for (parsed.value.object.get("tools").?.array.items) |t| {
+            const name = t.object.get("name").?.string;
+
+            var expect_read_only = false;
+            for (read_only) |ro| {
+                if (std.mem.eql(u8, name, ro)) expect_read_only = true;
+            }
+
+            const ann = t.object.get("annotations");
+            if (!expect_read_only) {
+                // codedb_index rebuilds the on-disk index and codedb_bundle can
+                // dispatch it, so neither may claim to be read-only.
+                if (ann) |a| {
+                    if (a.object.get("readOnlyHint")) |h| try testing.expect(!h.bool);
+                }
+                continue;
+            }
+
+            if (ann == null) return error.MissingAnnotations;
+            const hint = ann.?.object.get("readOnlyHint") orelse return error.MissingReadOnlyHint;
+            try testing.expect(hint.bool);
+        }
+    }
+}
+
 test "issue: codedb_callers returns results when max_results is smaller than the filtered-out prefix" {
     // Reported as "codedb_callers returns 0 call sites after a snapshot
     // fast-load". The fast-load is a red herring — searchContentUncached
