@@ -17,6 +17,7 @@ const cli_args = @import("cli_args.zig");
 const parseSearchArgs = cli_args.parseSearchArgs;
 const parseLineRange = cli_args.parseLineRange;
 const hasExtraCliArgs = cli_args.hasExtraCliArgs;
+const list_dir = @import("list_dir.zig");
 
 /// Read-only query command dispatch, extracted from mainImpl so the same
 /// rendering code can run inside the warm daemon (writing to a socket)
@@ -25,7 +26,23 @@ const hasExtraCliArgs = cli_args.hasExtraCliArgs;
 /// word, read, hot. Unknown commands return 1.
 pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, store: *Store, root: []const u8, cmd: []const u8, args: []const []const u8, cmd_args_start: usize, out: *Out, s: sty.Style) u8 {
     const use_color = s.reset.len != 0;
-    if (std.mem.eql(u8, cmd, "tree")) {
+    if (std.mem.eql(u8, cmd, "list_dir")) {
+        if (args.len > cmd_args_start + 1) {
+            out.p("{s}\xe2\x9c\x97{s} unexpected extra argument: {s}{s}{s}  (usage: codedb [root] {s}list_dir{s} [path])\n", .{
+                s.red, s.reset, s.bold, args[cmd_args_start + 1], s.reset, s.cyan, s.reset,
+            });
+            return 1;
+        }
+        const rel = if (args.len > cmd_args_start) args[cmd_args_start] else ".";
+        var arena_state = std.heap.ArenaAllocator.init(allocator);
+        defer arena_state.deinit();
+        const text = list_dir.listUnder(io, arena_state.allocator(), root, rel) catch |err| {
+            out.p("{s}{s}{s}\n", .{ s.red, list_dir.errorText(err), s.reset });
+            return 1;
+        };
+        out.p("{s}\n", .{text});
+        return 0;
+    } else if (std.mem.eql(u8, cmd, "tree")) {
         if (hasExtraCliArgs(args, cmd_args_start)) {
             out.p("{s}\xe2\x9c\x97{s} unexpected extra argument: {s}{s}{s}  (usage: codedb [root] {s}tree{s})\n", .{
                 s.red, s.reset, s.bold, args[cmd_args_start], s.reset, s.cyan, s.reset,
@@ -421,7 +438,7 @@ pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
             if (truncated) {
                 var remaining: usize = 1; // the line we stopped on
                 while (lines.next()) |_| remaining += 1;
-                out.p("… [{d} more lines elided — run `outline {s}` then `read {s} -L FROM-TO` for the slice you need]\n", .{ remaining, path, path });
+                out.p("{s} [{d} more lines elided — run `outline {s}` then `read {s} -L FROM-TO` for the slice you need]\n", .{ "…", remaining, path, path });
             }
         }
     } else if (std.mem.eql(u8, cmd, "hot")) {
