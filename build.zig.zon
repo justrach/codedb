@@ -11,6 +11,7 @@
     .paths = .{
         "src",
         "vendor/nanoregex",
+        "install/install-hooks.sh",
         "build.zig",
         "build.zig.zon",
     },

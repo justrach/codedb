@@ -47,6 +47,7 @@ pub fn build(b: *std.Build) void {
 
     const install_exe = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install_exe.step);
+    b.installFile("install/install-hooks.sh", "share/codedb/install-hooks.sh");
 
     // #618: every macOS slice signs again. The x86_64 codesign crash (#504)
     // was missing load-command headerpad — codesign's appended

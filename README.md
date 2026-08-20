@@ -76,7 +76,7 @@
 curl -fsSL https://codedb.codegraff.com/install.sh | bash
 ```
 
-Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, and **Devin** — each written directly and additively into that tool's config (only when the tool is present). The installer prints the exact `codedb mcp` command it registered plus hook setup pointers for Codex and Claude Code.
+Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, and **Devin** — each written directly and additively into that tool's config (only when the tool is present). The installer prints the exact `codedb mcp` command it registered, and installs the packaged Claude Code and Codex hooks via `share/codedb/install-hooks.sh` (rerun any time with `codedb install-hooks`).
 
 On Windows, run this command inside WSL only if you want the Linux binary inside WSL. For the native Windows binary, use PowerShell below.
 
@@ -254,6 +254,7 @@ backed by api.wiki.codes was removed; DeepWiki replaces that role.)
 | `codedb mcp [path]` | JSON-RPC/MCP server over stdio |
 | `codedb update` | Self-update to the latest release on macOS/Linux; on Windows rerun the PowerShell installer |
 | `codedb nuke` | Uninstall codedb, remove caches/snapshots, and deregister MCP integrations |
+| `codedb install-hooks` | Install Claude Code and Codex hooks from the packaged `share/codedb/install-hooks.sh` script |
 | `codedb --version` | Print version |
 
 **Options:** `--no-telemetry` (or set `CODEDB_NO_TELEMETRY` env var)
@@ -466,6 +467,17 @@ rm -f codedb.snapshot      # remove snapshot from current project only
 ## 🔨 Building from Source
 
 **Requirements:** Zig `0.17.0-dev.813+2153f8143` (the exact tested development snapshot). See the [migration guide](docs/zig-0.17-migration.md) for reproducible zigup setup.
+
+### Nix
+
+```bash
+nix build                 # release build; binary at result/bin/codedb
+nix run . -- --version    # run the packaged CLI
+nix develop               # shell with the pinned Zig 0.17 dev snapshot
+nix flake check           # build + smoke-test the package
+```
+
+### Zig
 
 ```bash
 git clone https://github.com/justrach/codedb.git
