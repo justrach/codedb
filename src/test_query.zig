@@ -1191,3 +1191,8 @@ test "audit: codedb_query deps op does not use freed dependency strings" {
     try testing.expect(std.mem.indexOf(u8, out.items, "handler.zig") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "auth_test.zig") != null);
 }
+
+test {
+    _ = @import("list_dir.zig");
+    _ = @import("gitignore.zig");
+}

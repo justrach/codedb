@@ -36,6 +36,7 @@ pub const findGitRootFrom = cli_args.findGitRootFrom;
 pub const isValidMcpFlag = cli_args.isValidMcpFlag;
 pub const resolveRoot = cli_args.resolveRoot;
 const cliIsQueryCmd = cli_args.cliIsQueryCmd;
+const list_dir = @import("list_dir.zig");
 const mcpRootIsImplicitCwd = cli_args.mcpRootIsImplicitCwd;
 const mcpRootAcceptsEnv = cli_args.mcpRootAcceptsEnv;
 const isHelpRequest = cli_args.isHelpRequest;
@@ -312,7 +313,9 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
     // and clients that don't advertise the roots capability fire the trigger
     // immediately on notifications/initialized — see handleSession.
     const mcp_deferred_root = mcpRootIsImplicitCwd(cmd, root, root_is_explicit);
-    if (!mcp_deferred_root and !root_policy.isIndexableRoot(abs_root)) {
+    // list_dir is a live walk — it does not index, so the temp-root footgun
+    // guard (meant to stop junk scans of /tmp) must not refuse it.
+    if (!mcp_deferred_root and !std.mem.eql(u8, cmd, "list_dir") and !root_policy.isIndexableRoot(abs_root)) {
         // Load-only exception: the footgun guard exists to prevent *indexing*
         // junk roots, but reading an already-built index is harmless. Bench/CI
         // harnesses pre-index /tmp clones with CODEDB_ALLOW_TEMP=1 and then
@@ -371,6 +374,26 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
             out.p("  {s}files{s}     {s}not indexed{s}  \xe2\x80\x94 run `codedb {s} index`\n", .{ s.dim, s.reset, s.bold, s.reset, root });
         }
         out.p("  {s}data{s}      {s}{s}{s}\n", .{ s.dim, s.reset, s.dim, data_dir, s.reset });
+        out.exitWithFlush(0);
+    }
+
+    // #696: live BFS listing. Same early-exit as status — no snapshot, no
+    // daemon spawn, no index. `ls` / `tree` stay on the query path below.
+    if (std.mem.eql(u8, cmd, "list_dir")) {
+        if (args.len > cmd_args_start + 1) {
+            out.p("{s}\xe2\x9c\x97{s} unexpected extra argument: {s}{s}{s}  (usage: codedb [root] {s}list_dir{s} [path])\n", .{
+                s.red, s.reset, s.bold, args[cmd_args_start + 1], s.reset, s.cyan, s.reset,
+            });
+            out.exitWithFlush(1);
+        }
+        const rel = if (args.len > cmd_args_start) args[cmd_args_start] else ".";
+        var arena_state = std.heap.ArenaAllocator.init(allocator);
+        defer arena_state.deinit();
+        const text = list_dir.listUnder(io, arena_state.allocator(), abs_root, rel) catch |err| {
+            out.p("{s}{s}{s}\n", .{ s.red, list_dir.errorText(err), s.reset });
+            out.exitWithFlush(1);
+        };
+        out.p("{s}\n", .{text});
         out.exitWithFlush(0);
     }
 

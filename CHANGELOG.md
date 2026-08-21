@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **One-shot advertised surface.** Agent `tools/list` (mini, the default)
+  now names `codedb_context`, `codedb_explain`, `codedb_callpath`,
+  `codedb_list_dir`, and `codedb_status`. Hop tools stay callable. CLI
+  `explain`/`around` compose definition+callers; `path` aliases
+  `callpath`. `codedb_list_dir` is wired into MCP (live BFS, gitignore).
+
 ## 0.2.5841 - 2026-08-17
 
 - **Live walker dirty-set + OS events** (#693, #694). Unchanged directories

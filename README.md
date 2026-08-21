@@ -187,7 +187,7 @@ codedb hot                            # recently modified files
 
 ## 🔧 MCP Tools
 
-20 tools over the Model Context Protocol (JSON-RPC 2.0 over stdio). codedb's job is to **give agents context** — fast structural search, symbols, callers, dependencies, and outlines — **not** to be your editor. codedb has no edit tool; use your client's native edit tools.
+22 tools over the Model Context Protocol (JSON-RPC 2.0 over stdio). Agents see five one-shots by default (`context`, `explain`, `callpath`, `list_dir`, `status`). codedb's job is to **give agents context** — **not** to be your editor. codedb has no edit tool; use your client's native edit tools.
 
 | Tool | Description |
 |------|-------------|
@@ -197,6 +197,8 @@ codedb hot                            # recently modified files
 | `codedb_search` | Trigram-accelerated full-text search (supports regex, scoped results) |
 | `codedb_word` | O(1) inverted index word lookup |
 | `codedb_callers` | Every call site of a symbol — word index ∩ outline scope, in one round-trip |
+| `codedb_explain` | Definition body + callers in one call (CLI aliases: `explain`, `around`) |
+| `codedb_callpath` | Shortest resolved call chain A→B (CLI alias: `path`) |
 | `codedb_context` | Task-shaped composer — pass a NL task, get keywords + symbol defs + ranked files + top snippets in one block; `format=json` adds typed provenance, and `document_hops=1..2` explicitly expands linked Markdown |
 | `codedb_hot` | Most recently modified files |
 | `codedb_deps` | Typed dependency graph: imports by default, or Markdown links with `edge_type=documents`; document traversal is capped at 2 hops / 64 files |
@@ -209,6 +211,7 @@ codedb hot                            # recently modified files
 | `codedb_find` | Fuzzy **file-name** search (typo-tolerant subsequence match against indexed paths — not a content/symbol search) |
 | `codedb_glob` | Match indexed paths against a glob pattern (`src/**/*.zig`, `*.md`, …) |
 | `codedb_ls` | List immediate children of a directory — dirs first, then files with language + counts |
+| `codedb_list_dir` | Live BFS folder listing (gitignore, 10k cap) — works without an index |
 | `codedb_query` | Composable pipeline — chain `find`, `search`, `filter`, `deps`, `outline`, `read`, `sort`, `limit` in one request |
 
 `codedb_context` accepts `max_tokens` as a conservative approximate response
@@ -220,12 +223,12 @@ MCP responses are plain text by default, without ANSI styling. Set
 `CODEDB_MCP_ANSI=1` in the MCP server environment to opt into ANSI-colored
 summary and guidance blocks for clients that render terminal colors.
 
-**Tool profile:** set `CODEDB_TOOLS_PROFILE=core` in the MCP server
-environment to advertise only the 10 everyday navigation tools (`tree`,
-`outline`, `symbol`, `search`, `read`, `callers`, `deps`, `find`, `context`,
-`status`) — a smaller `tools/list` keeps agents from reaching for rarely
-right tools. `full` (the default) advertises all 20; every tool remains
-callable either way, the profile only changes what's advertised.
+**Tool profile:** agent harnesses default to `mini` — five one-shot tools
+(`context`, `explain`, `callpath`, `list_dir`, `status`). Hop tools stay
+callable; they are not advertised. `CODEDB_TOOLS_PROFILE=core` is the older
+10-tool navigation set; `slim` is the terse hop six; `full` advertises
+everything. GUI clients that emit rich blocks still get `full` unless the
+env var is set.
 
 ### Public repos — DeepWiki (remote MCP)
 
