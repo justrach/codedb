@@ -24,6 +24,7 @@ const telemetry_mod = @import("telemetry.zig");
 const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
 const release_info = @import("release_info.zig");
+const mcp_list_dir = @import("mcp_list_dir.zig");
 pub const DeferredScan = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -646,6 +647,7 @@ pub const Tool = enum {
     codedb_word,
     codedb_callers,
     codedb_callpath,
+    codedb_explain,
     codedb_hot,
     codedb_deps,
     codedb_read,
@@ -659,6 +661,7 @@ pub const Tool = enum {
     codedb_query,
     codedb_glob,
     codedb_ls,
+    codedb_list_dir,
     codedb_context,
 };
 
@@ -670,8 +673,9 @@ pub const tools_list =
     \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
     \\{"name":"codedb_word","description":"O(1) exact-identifier occurrences via inverted index — every (file, line) one exact word appears. Use ONLY for a single exact identifier; for its definition prefer codedb_symbol, for substrings or phrases use codedb_search.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]}},
     \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
-    \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Use after codedb_callers when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]}},
-    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Replaces 3-5 sequential search/word/symbol calls — use for first-touch orientation on a new task. For narrow follow-ups stick with codedb_search/codedb_symbol.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"document_hops":{"type":"integer","description":"Explicitly expand Markdown document links from ranked files (0 default, hard-capped at 2 hops and 64 files)."},"format":{"type":"string","enum":["markdown","json"],"description":"markdown (default) preserves the compact text response. json returns schema-versioned sections, evidence provenance, reader.md validation, and machine-readable token-budget omissions."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]}},
+    \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). First move when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]}},
+    \\{"name":"codedb_explain","description":"One-shot neighborhood of a symbol: definition body plus every call site. Replaces codedb_symbol body=true then codedb_callers. First move when you know the name.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]}},
+    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Replaces 3-5 sequential search/word/symbol calls — first-touch orientation on a new task.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"document_hops":{"type":"integer","description":"Explicitly expand Markdown document links from ranked files (0 default, hard-capped at 2 hops and 64 files)."},"format":{"type":"string","enum":["markdown","json"],"description":"markdown (default) preserves the compact text response. json returns schema-versioned sections, evidence provenance, reader.md validation, and machine-readable token-budget omissions."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]}},
     \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
     \\{"name":"codedb_deps","description":"PRIMARY tool for impact/blast-radius — use this instead of grepping import lines. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set edge_type=documents for Markdown links; document traversal is capped at 2 hops and 64 nodes.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"Inbound (default) or outbound edges; for documents these mean linked-by and links-to."},"edge_type":{"type":"string","enum":["imports","documents"],"description":"Typed graph relation (default: imports)."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth (document edges are always capped at 2)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
     \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Never dump whole large files — run codedb_outline or codedb_symbol first to pick a tight range. A just-added file is indexed on miss; do not call codedb_index first. Pass if_hash to skip unchanged re-reads; compact=true for minified or long-line files.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"raw":{"type":"boolean","description":"Byte-exact output: no line-number prefixes and no hash header, so the result can feed an exact-string edit (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]}},
@@ -684,7 +688,8 @@ pub const tools_list =
     \\{"name":"codedb_find","description":"Replaces find for filenames: fuzzy FILE-NAME search ONLY — typo-tolerant subsequence match against indexed file paths. NOT a content/symbol search: 'rerank' will NOT find files containing rerankSignalScore unless the filename itself contains 'rerank'. For symbol lookups use codedb_word/codedb_symbol; for content use codedb_search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Fuzzy filename query (e.g. 'authmidlware' for auth_middleware.go, 'test_auth', 'main.zig'). Matched against path basenames, not file contents."},"max_results":{"type":"integer","description":"Maximum results to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]}},
     \\{"name":"codedb_query","description":"Composable pipeline — chain find, search, filter, deps, outline, read, sort, limit in ONE request, each step feeding the next. Use for multi-step workflows that would take 2+ tool calls; for a single lookup call the direct tool instead — cheaper and sharper.","inputSchema":{"type":"object","properties":{"pipeline":{"type":"array","items":{"type":"object"},"description":"Array of pipeline steps. Each step has 'op' (find/search/filter/deps/outline/read/sort/limit) and op-specific params. Steps execute in order, each filtering/transforming the file set from the previous step. deps op: {\"op\":\"deps\",\"direction\":\"imported_by|depends_on\",\"transitive\":true,\"max_depth\":3}; filter op: {\"op\":\"filter\",\"glob\":\"src/**\"} or {\"op\":\"filter\",\"ext\":\".zig\"} ('pattern' aliases 'glob'; bare patterns auto-promote to '**/<pattern>')"},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":["pipeline"]}},
     \\{"name":"codedb_glob","description":"Replaces find for path patterns: match indexed paths against a glob: * (no /), ** (across /), ? (one char), {a,b} alternatives. Sorted lexicographically. Use when you know the path shape; codedb_find for fuzzy names.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. 'src/**/*.zig', '**/*.{yaml,yml}', 'tests/test_*.py')"},"max_results":{"type":"integer","description":"Maximum results to return (default: 200)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["pattern"]}},
-    \\{"name":"codedb_ls","description":"List immediate children of a directory: dirs first (alphabetical), then files with language and line/symbol counts. Drill down level-by-level when codedb_tree is too verbose.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}}
+    \\{"name":"codedb_ls","description":"List immediate children of a directory: dirs first (alphabetical), then files with language and line/symbol counts. Drill down level-by-level when codedb_tree is too verbose. For a live filesystem walk (gitignore, 10k cap, unindexed trees) use codedb_list_dir.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory prefix relative to project root. Omit or pass empty string for root."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]}},
+    \\{"name":"codedb_list_dir","description":"Live BFS directory listing of the filesystem (not the index): honors .gitignore, 10k-character cap, collapsed subtree summaries. Use for any folder including unindexed trees; codedb_ls is indexed children of one directory.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Directory relative to project root. Omit for the project root."},"project":{"type":"string","description":"Optional absolute path to a different project"}},"required":[]}}
     \\]}
 ;
 
@@ -707,19 +712,16 @@ pub const ToolsListOpts = struct {
     profile_mini: bool = false,
 };
 
-/// CODEDB_TOOLS_PROFILE=mini advertises the six tools agents actually reach
-/// for, keeping the steering value of the full descriptions (slim's terse
-/// ones measured worse: agents never called the tools yet paid the surface)
-/// while compressing the wording — see mini_descriptions. Tools a
-/// native-editor client already has (read) and rarely-used extras (word,
-/// callpath, hot, tree, find, status) are unadvertised but still dispatch.
+/// CODEDB_TOOLS_PROFILE=mini (agent default) advertises the one-shot
+/// neighborhood verbs. Hop tools (search/symbol/callers/outline/read)
+/// stay dispatchable; they are not on the menu. slim keeps the older
+/// hop six for opt-in A/B.
 const mini_profile_tools = [_][]const u8{
-    "codedb_outline",
-    "codedb_symbol",
-    "codedb_search",
-    "codedb_callers",
-    "codedb_deps",
     "codedb_context",
+    "codedb_explain",
+    "codedb_callpath",
+    "codedb_list_dir",
+    "codedb_status",
 };
 
 fn isMiniProfileTool(name: []const u8) bool {
@@ -810,6 +812,9 @@ const mini_prop_descriptions = [_]PropDesc{
     .{ .name = "regex", .desc = "Treat query as a regex (default: false)" },
     .{ .name = "path_glob", .desc = "Glob filter on paths, e.g. 'src/**/*.zig'" },
     .{ .name = "task", .desc = "Task in natural language; include likely identifiers" },
+    .{ .name = "from", .desc = "Source symbol name (exact identifier)" },
+    .{ .name = "to", .desc = "Target symbol name (exact identifier)" },
+    .{ .name = "max_hops", .desc = "Max call hops (default: 12)" },
     .{ .name = "max_tokens", .desc = "Response token budget (min 256, ~2.5 bytes/token)" },
     .{ .name = "detail", .desc = "compact (default) or full sections" },
     .{ .name = "direction", .desc = "imported_by (default) or depends_on" },
@@ -823,12 +828,11 @@ const mini_prop_descriptions = [_]PropDesc{
 /// JSON is shared with the core/full profiles, so it is left untouched and
 /// these are swapped in only on the mini path (mirrors slim_descriptions).
 const mini_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
-    .{ .name = "codedb_outline", .desc = "Replaces cat/head on a whole file: symbol outline of one file — functions, types, imports with line numbers, 4-15x smaller than the source. Run before reading to pick a range; skeleton=true elides bodies." },
-    .{ .name = "codedb_symbol", .desc = "Replaces grepping for a definition: where a symbol is defined — file, line, kind. Reach for this FIRST when you know or can guess the name; takes name, prefix, pattern, fuzzy or kind. body=true adds source." },
-    .{ .name = "codedb_search", .desc = "Replaces grep across the repo: ranked full-text (or regex=true) hits as path:line plus the line. Use ONLY when you do not know the symbol name; path_glob narrows, paths_only halves tokens." },
-    .{ .name = "codedb_callers", .desc = "Replaces grepping for usages: every call site of a symbol in one call — {path, line, snippet, enclosing scope}. Excludes the definition itself." },
-    .{ .name = "codedb_deps", .desc = "Replaces grepping for imports: file-level dependency edges — direction=imported_by (default) for who imports this file, depends_on for what it imports. transitive=true walks the chain." },
-    .{ .name = "codedb_context", .desc = "Replaces a manual grep-read-repeat sweep: one task-shaped bundle of files, symbols and deps for a natural-language task. Best opening move on a new task; max_tokens caps the budget." },
+    .{ .name = "codedb_context", .desc = "Task neighborhood in one call: definitions, bodies, graph neighbors, ranked files. First move on a new task; include likely identifiers. max_tokens caps the budget." },
+    .{ .name = "codedb_explain", .desc = "Symbol neighborhood in one call: definition body plus every call site. First move when you know the name. Replaces symbol --body then callers." },
+    .{ .name = "codedb_callpath", .desc = "Shortest resolved call chain A→…→B. First move when you need how execution reaches a callee. Returns each hop as path:name@line." },
+    .{ .name = "codedb_list_dir", .desc = "Live folder listing (gitignore, 10k cap). Use instead of bash ls/find/tree; works on unindexed trees. codedb_ls is the indexed one-level listing." },
+    .{ .name = "codedb_status", .desc = "Index health: file count, sequence, scan phase. Call when results look stale or to confirm codedb.snapshot exists." },
 };
 
 fn miniDescription(name: []const u8) ?[]const u8 {
@@ -1444,7 +1448,7 @@ pub const supported_versions_json = blk: {
     break :blk s ++ "]";
 };
 
-pub const mcp_instructions = "codedb is code intelligence, not your editor. Reach for structural tools FIRST: codedb_symbol for a definition, codedb_callers for usages, codedb_outline before reading a file, codedb_context to orient on a task. Use codedb_search only when the symbol name is unknown. Make edits with your native tools.";
+pub const mcp_instructions = "codedb is code intelligence, not your editor. Prefer one-shot tools: codedb_context for a task, codedb_explain for a symbol neighborhood, codedb_callpath for A to B, codedb_list_dir for a folder, codedb_status for index health. Hop tools still dispatch if you already know them. Make edits with your native tools.";
 
 /// MCP 2026-07-28 `server/discover` — the stateless-mode probe/identity RPC.
 /// Prebuilt at comptime; declares resultType itself so assembleJsonRpcResult
@@ -1813,6 +1817,7 @@ fn dispatch(
         .codedb_word => handleWord(alloc, args, out, ctx.explorer),
         .codedb_callers => handleCallers(alloc, args, out, ctx.explorer),
         .codedb_callpath => handleCallpath(alloc, args, out, ctx.explorer),
+        .codedb_explain => handleExplain(alloc, args, out, ctx.explorer),
         .codedb_hot => handleHot(alloc, args, out, ctx.store, ctx.explorer),
         .codedb_deps => handleDeps(alloc, args, out, ctx.explorer),
         .codedb_read => handleRead(io, alloc, args, out, ctx.explorer, ctx.store),
@@ -1826,6 +1831,7 @@ fn dispatch(
         .codedb_query => handleQuery(alloc, args, out, ctx.explorer, ctx.store),
         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
+        .codedb_list_dir => mcp_list_dir.handle(io, alloc, getStr(args, "path") orelse ".", project_path orelse cache.default_path, out),
         .codedb_context => handleContext(io, alloc, args, out, ctx.explorer, project_path orelse cache.default_path),
     }
     appendScanProgressHint(alloc, out, tool);
@@ -1852,7 +1858,7 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
 
 fn toolDependsOnScannedIndex(tool: Tool) bool {
     return switch (tool) {
-        .codedb_search, .codedb_word, .codedb_callers, .codedb_callpath, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => true,
+        .codedb_search, .codedb_word, .codedb_callers, .codedb_callpath, .codedb_explain, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => true,
         else => false,
     };
 }
@@ -2651,6 +2657,37 @@ fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
         if (i + 1 < path.len) w.print("\n", .{}) catch {};
     }
     w.print("\n", .{}) catch {};
+}
+
+fn handleExplain(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
+    const name = getStr(args, "name") orelse {
+        out.appendSlice(alloc, "error: missing 'name' argument") catch {};
+        appendBundleArgKeysDiagnostic(alloc, out, args);
+        return;
+    };
+    if (name.len == 0) {
+        out.appendSlice(alloc, "error: empty name — pass a non-empty 'name' string") catch {};
+        return;
+    }
+
+    var def_args: std.json.ObjectMap = .empty;
+    defer def_args.deinit(alloc);
+    def_args.put(alloc, "name", .{ .string = name }) catch {};
+    def_args.put(alloc, "body", .{ .bool = true }) catch {};
+
+    var def_out: std.ArrayList(u8) = .empty;
+    defer def_out.deinit(alloc);
+    handleSymbol(alloc, &def_args, &def_out, explorer);
+
+    var call_out: std.ArrayList(u8) = .empty;
+    defer call_out.deinit(alloc);
+    handleCallers(alloc, args, &call_out, explorer);
+
+    const cap: usize = 24 * 1024;
+    const def_text = if (def_out.items.len > cap) def_out.items[0..cap] else def_out.items;
+    const call_text = if (call_out.items.len > cap) call_out.items[0..cap] else call_out.items;
+    const w = cio.listWriter(out, alloc);
+    w.print("## definition\n{s}\n\n## callers\n{s}", .{ def_text, call_text }) catch {};
 }
 
 fn isIdentChar(c: u8) bool {
@@ -5087,11 +5124,17 @@ pub fn runCliTool(
         }
         handleChanges(alloc, &m, out, store);
         return finishCli(out, out_start);
-    } else if (std.mem.eql(u8, cmd, "callpath")) {
+    } else if (std.mem.eql(u8, cmd, "callpath") or std.mem.eql(u8, cmd, "path")) {
         if (args.len < cmd_args_start + 2) return cliUsage(alloc, out, "callpath <from> <to>");
         m.put(alloc, "from", .{ .string = args[cmd_args_start] }) catch return 1;
         m.put(alloc, "to", .{ .string = args[cmd_args_start + 1] }) catch return 1;
         handleCallpath(alloc, &m, out, explorer);
+        return finishCli(out, out_start);
+    } else if (std.mem.eql(u8, cmd, "explain") or std.mem.eql(u8, cmd, "around")) {
+        const name = pos orelse return cliUsage(alloc, out, "explain <name>");
+        m.put(alloc, "name", .{ .string = name }) catch return 1;
+        loadProjectTrigramFromDiskIfPresent(io, explorer, root, alloc);
+        handleExplain(alloc, &m, out, explorer);
         return finishCli(out, out_start);
     } else if (std.mem.eql(u8, cmd, "deps")) {
         const da = parseDepsArgs(args, cmd_args_start) catch |e| return cliDepsUsage(alloc, out, e);

@@ -3864,7 +3864,7 @@ test "context: identifier candidates merge with plain concept words" {
     try testing.expect(has_snapshot);
 }
 
-test "tools/list mini profile advertises six tools with full descriptions" {
+test "tools/list mini profile advertises five one-shot tools" {
     const resp = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_mini = true });
     defer testing.allocator.free(resp);
 
@@ -3876,22 +3876,77 @@ test "tools/list mini profile advertises six tools with full descriptions" {
     defer parsed.deinit();
     const tools = parsed.value.object.get("tools").?.array;
 
-    try testing.expectEqual(@as(usize, 6), tools.items.len);
-    var found_callers = false;
+    try testing.expectEqual(@as(usize, 5), tools.items.len);
+    var found_explain = false;
+    var found_callpath = false;
     for (tools.items) |t| {
         const name = t.object.get("name").?.string;
-        if (std.mem.eql(u8, name, "codedb_read") or std.mem.eql(u8, name, "codedb_word"))
+        if (std.mem.eql(u8, name, "codedb_search") or std.mem.eql(u8, name, "codedb_outline") or
+            std.mem.eql(u8, name, "codedb_callers") or std.mem.eql(u8, name, "codedb_read"))
             return error.NonMiniToolAdvertised;
-        if (std.mem.eql(u8, name, "codedb_callers")) {
-            found_callers = true;
+        if (std.mem.eql(u8, name, "codedb_explain")) {
+            found_explain = true;
             const desc = t.object.get("description").?.string;
-            // Compressed, but the steering claim survives.
-            try testing.expect(std.mem.indexOf(u8, desc, "grep") != null);
             try testing.expect(std.mem.indexOf(u8, desc, "call site") != null);
             try testing.expect(desc.len <= 220);
         }
+        if (std.mem.eql(u8, name, "codedb_callpath")) found_callpath = true;
     }
-    try testing.expect(found_callers);
+    try testing.expect(found_explain);
+    try testing.expect(found_callpath);
+}
+
+test "codedb_explain composes definition body and callers" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/lib.zig", "pub fn helper() void {}\n");
+    try explorer.indexFile("src/main.zig", "const helper = @import(\"lib.zig\").helper;\npub fn main() void { helper(); }\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args_json = "{\"name\":\"helper\"}";
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_explain, &parsed.value.object, &out, &store, &explorer, &agents);
+    try testing.expect(std.mem.indexOf(u8, out.items, "## definition") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "## callers") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/lib.zig") != null);
+}
+
+test "cli explain and path aliases bridge to MCP handlers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+    var exp = Explorer.init(aa, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    try exp.indexFile("src/lib.zig", "pub fn helper() void {}\n");
+    try exp.indexFile("src/main.zig", "pub fn main() void { helper(); }\n");
+    var store = Store.init(aa);
+
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(aa);
+        const code = mcp_mod.runCliTool(io, aa, &exp, &store, ".", "around", &.{ "codedb", ".", "around", "helper" }, 3, &out);
+        try testing.expectEqual(@as(?u8, 0), code);
+        try testing.expect(std.mem.indexOf(u8, out.items, "## definition") != null);
+    }
+    {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(aa);
+        try testing.expectEqual(@as(?u8, 1), mcp_mod.runCliTool(io, aa, &exp, &store, ".", "explain", &.{ "codedb", ".", "explain" }, 3, &out));
+        try testing.expect(std.mem.indexOf(u8, out.items, "usage") != null);
+    }
+    try testing.expect(cli_args_mod.cliIsQueryCmd("explain"));
+    try testing.expect(cli_args_mod.cliIsQueryCmd("around"));
+    try testing.expect(cli_args_mod.cliIsQueryCmd("path"));
 }
 
 test "issue: codedb_callers returns results when max_results is smaller than the filtered-out prefix" {
