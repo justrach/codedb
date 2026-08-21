@@ -144,12 +144,13 @@ Both read MCP configuration from `~/.gemini/mcp.json` (Gemini) and
 
 ### Tool profile (smaller tools/list)
 
-Set `CODEDB_TOOLS_PROFILE=core` in the MCP server environment to advertise
-only the 10 everyday navigation tools (`tree`, `outline`, `symbol`, `search`,
-`read`, `callers`, `deps`, `find`, `context`, `status`). A smaller
-`tools/list` costs fewer prompt tokens per session and keeps agents from
-reaching for rarely right tools. `full` (the default) advertises all 20.
-The profile only changes what's *advertised* — every tool remains callable.
+Agent harnesses default to `CODEDB_TOOLS_PROFILE=mini`: five one-shot tools
+(`context`, `explain`, `callpath`, `list_dir`, `status`). Hop tools
+(`search` / `symbol` / `callers` / `outline` / `read`) still dispatch when
+called by name. Set `CODEDB_TOOLS_PROFILE=core` for the older 10-tool
+navigation set, `slim` for the terse hop six, or `full` to advertise every
+tool. GUI clients that emit rich blocks keep `full` unless the env var is
+set. The profile only changes what's *advertised*.
 
 ### DeepWiki (remote, registered by the installer)
 

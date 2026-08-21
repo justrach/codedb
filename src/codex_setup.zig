@@ -45,10 +45,11 @@ pub const policy_body =
     \\codedb MCP tools FIRST, before shell search or bulk file reads:
     \\
     \\- `codedb_context` to orient on a new task before reading anything else.
-    \\- `codedb_symbol` for a definition, `codedb_callers` for usages, `codedb_outline`
-    \\  for a file's structure before `codedb_read`, `codedb_deps` for relationships.
-    \\- `codedb_search` only for substrings or phrases when you do NOT know the exact
-    \\  symbol name — it is a fallback, not the default.
+    \\- `codedb_explain` for a known symbol (definition body + callers), `codedb_callpath`
+    \\  for the shortest A→B chain, `codedb_list_dir` for a folder, `codedb_status` for
+    \\  index health.
+    \\- Hop tools (`codedb_symbol` / `codedb_callers` / `codedb_search` / `codedb_outline`)
+    \\  still dispatch if you already know them — they are not the opening menu.
     \\- Make edits with your own native editor tools. codedb is the navigation layer,
     \\  not the editor.
     \\- If codedb reports no index or a stale one, run `codedb <root> index` and fall
@@ -740,20 +741,20 @@ fn runVerify(io: std.Io, out: *Out, s: sty.Style, allocator: std.mem.Allocator, 
     } else if (stale) {
         ok = false;
         out.p("  {s}\xe2\x9c\x97{s} index     stale \xe2\x80\x94 indexed at {s}{s}{s}, HEAD is {s}{s}{s}\n", .{
-            s.red,  s.reset,      s.bold, &meta_short, s.reset,
-            s.bold, &head_short,  s.reset,
+            s.red,  s.reset,     s.bold,  &meta_short, s.reset,
+            s.bold, &head_short, s.reset,
         });
         out.p("            run {s}codedb {s} index{s}\n", .{ s.cyan, root_arg, s.reset });
     } else if (head == null) {
         // "HEAD unknown" is not the same as "heads match" — printing a plain
         // pass would be indistinguishable from a staleness check that ran.
         out.p("  {s}\xe2\x9c\x93{s} index     {s}{d}{s} files at {s}{s}{s} {s}(HEAD unknown \xe2\x80\x94 staleness unchecked){s}\n", .{
-            s.green, s.reset,  s.bold, meta.file_count, s.reset,
+            s.green, s.reset,  s.bold,  meta.file_count, s.reset,
             s.dim,   abs_root, s.reset, s.dim,           s.reset,
         });
     } else {
         out.p("  {s}\xe2\x9c\x93{s} index     {s}{d}{s} files at {s}{s}{s}\n", .{
-            s.green, s.reset,  s.bold, meta.file_count, s.reset,
+            s.green, s.reset,  s.bold,  meta.file_count, s.reset,
             s.dim,   abs_root, s.reset,
         });
     }
@@ -803,14 +804,14 @@ fn printCodexUsage(out: *Out, s: sty.Style) void {
         \\  exit codes: verify returns 0 only when MCP, policy, and index all check out.
         \\
     , .{
-        s.bold,  s.reset,
-        s.dim,   s.reset,
-        s.cyan,  s.reset,
-        s.dim,   s.reset,
-        s.cyan,  s.reset,
-        s.cyan,  s.reset,
-        s.dim,   s.reset,
-        s.dim,   s.reset,
-        s.dim,   s.reset,
+        s.bold, s.reset,
+        s.dim,  s.reset,
+        s.cyan, s.reset,
+        s.dim,  s.reset,
+        s.cyan, s.reset,
+        s.cyan, s.reset,
+        s.dim,  s.reset,
+        s.dim,  s.reset,
+        s.dim,  s.reset,
     });
 }
