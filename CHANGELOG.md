@@ -2,11 +2,27 @@
 
 ## Unreleased
 
-- **One-shot advertised surface.** Agent `tools/list` (mini, the default)
-  now names `codedb_context`, `codedb_explain`, `codedb_callpath`,
-  `codedb_list_dir`, and `codedb_status`. Hop tools stay callable. CLI
-  `explain`/`around` compose definition+callers; `path` aliases
-  `callpath`. `codedb_list_dir` is wired into MCP (live BFS, gitignore).
+## 0.2.5843 - 2026-08-22
+
+- **readOnlyHint on every read-only tool** (#699). All read-only entries in
+  `tools/list` now advertise `annotations.readOnlyHint`, so plan-mode MCP
+  clients stop prompting for approval on every query. `codedb_bundle` and
+  `codedb_index` stay unhinted: bundle can dispatch the indexer, and index
+  writes the snapshot.
+- **Linux watcher start-up panic fixed** (#698). Raw `std.os.linux.*`
+  syscall returns are `-errno` values, but the inotify arm checked them with
+  the libc accessor `std.posix.errno`, which only flags `rc == -1`. A missing
+  optional watch path (e.g. `/tmp/codedb-notify`) therefore returned
+  `-ENOENT`, sailed through the check, and hit `@intCast`: panic on every
+  Linux start in Debug/ReleaseSafe, garbage watch descriptor in ReleaseFast.
+  Failure detection now uses the raw errno range (-4095..-1) with a
+  regression test. Regression came in with the 0.2.5841 vnode-watch work.
+- **`codedb list_dir`: lazy expansion + cache-dir collapsing.** The live
+  filesystem listing now expands lazily and lists agent/cache dirs
+  (`.graff`, `.harness`, `.claude`, `.codex`, `.engram`, `node_modules`,
+  `zig-out`, `.zig-cache`, venvs, tool caches) as collapsed entries without
+  descending unless they are the requested path. The 10k-char budget goes to
+  source trees instead of scratch and package caches.
 
 ## 0.2.5841 - 2026-08-17
 
