@@ -8,7 +8,7 @@ const std = @import("std");
 /// three hand-maintained copies drifting: cliIsQueryCmd, isCommand, and the
 /// runQuery dispatch chain in mainImpl). isCommand appends the non-query
 /// commands; the dispatch chain calls cliIsQueryCmd directly.
-pub const cli_query_cmds = [_][]const u8{ "tree", "outline", "find", "search", "word", "read", "hot", "status", "symbol", "callers", "callpath", "deps", "glob", "ls", "list_dir", "file", "context", "changes" };
+pub const cli_query_cmds = [_][]const u8{ "tree", "outline", "find", "search", "word", "read", "hot", "status", "symbol", "callers", "callpath", "path", "explain", "around", "deps", "glob", "ls", "list_dir", "file", "context", "changes" };
 
 /// Editors that don't expand the placeholder pass the literal token as the
 /// root. #639: normalized here (not in mainImpl) so it lands before the
