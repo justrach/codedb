@@ -1255,6 +1255,21 @@ const watch_kqueue = switch (builtin.os.tag) {
 };
 const watch_inotify = builtin.os.tag == .linux;
 
+/// True when a RAW `std.os.linux.*` syscall return encodes a failure.
+///
+/// Raw syscalls pack `-errno` into the returned usize. `std.posix.errno` is the
+/// *libc* accessor — in a libc-linked build it reports failure only for
+/// `rc == -1`, which a usize never equals, so it answered `.SUCCESS` for every
+/// raw failure. A missing `/tmp/codedb-notify` (the optional muonry interop
+/// file, which codedb never creates) therefore walked a `-ENOENT` straight into
+/// `@intCast`: a panic in Debug/ReleaseSafe, a truncated garbage watch
+/// descriptor in ReleaseFast. Mirrors std.os.linux.errno's error range without
+/// referencing the linux-only namespace, so it stays testable on every target.
+pub fn rawLinuxSyscallFailed(rc: usize) bool {
+    const signed: isize = @bitCast(rc);
+    return signed > -4096 and signed < 0;
+}
+
 fn raiseNofileLimit() void {
     if (builtin.os.tag == .windows) return;
     var lim = std.posix.getrlimit(.NOFILE) catch return;
@@ -1466,7 +1481,7 @@ const FileChangeWatch = struct {
     fn armInotify(self: *FileChangeWatch, root: []const u8, dirs: *const DirMap) void {
         if (comptime !watch_inotify) return;
         const rc = std.os.linux.inotify_init1(std.os.linux.IN.CLOEXEC);
-        if (std.posix.errno(rc) != .SUCCESS) return;
+        if (rawLinuxSyscallFailed(rc)) return;
         self.inotify_fd = @intCast(rc);
         const mask = std.os.linux.IN.MODIFY | std.os.linux.IN.CREATE | std.os.linux.IN.DELETE |
             std.os.linux.IN.MOVED_FROM | std.os.linux.IN.MOVED_TO | std.os.linux.IN.ATTRIB;
@@ -1490,7 +1505,7 @@ const FileChangeWatch = struct {
         @memcpy(zbuf[0..path.len], path);
         zbuf[path.len] = 0;
         const wd_rc = std.os.linux.inotify_add_watch(self.inotify_fd, @ptrCast(&zbuf), mask);
-        if (std.posix.errno(wd_rc) != .SUCCESS) return;
+        if (rawLinuxSyscallFailed(wd_rc)) return;
         const wd: i32 = @intCast(wd_rc);
         if (rel) |dir_rel| {
             const duped = self.alloc.dupe(u8, dir_rel) catch return;
