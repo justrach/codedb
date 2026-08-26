@@ -138,6 +138,7 @@ const SymbolLocation = explore.SymbolLocation;
 const watcher = @import("watcher.zig");
 const git_mod = @import("git.zig");
 const snapshot_mod = @import("snapshot.zig");
+const bootstrap_mod = @import("bootstrap.zig");
 
 test "word tokenizer" {
     var tok = WordTokenizer{ .buf = "pub fn main() !void {" };
@@ -1886,7 +1887,7 @@ test "integration: Tier 0.5 prefix expansion finds partial identifier" {
     try testing.expect(results.len >= 1);
 }
 
-test "issue-389: FilteredWalker yields symlinked source files" {
+test "issue-389: FilteredWalker skips file symlinks without hiding their targets" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -1914,21 +1915,212 @@ test "issue-389: FilteredWalker yields symlinked source files" {
     explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
 
-    // Both the real file and the symlinked alias must be indexed. The bug at
-    // src/watcher.zig:319 drops every entry whose kind != .file, silently
-    // skipping symlinks even when they point at in-workspace source files.
+    // The canonical source remains indexed, but the file alias is intentionally
+    // skipped. Following the alias would create a check/retarget/open race at
+    // the root and sensitive-file boundaries.
     try testing.expect(explorer.contents.contains("src/target.zig"));
-    try testing.expect(explorer.contents.contains("src/alias.zig"));
+    try testing.expect(!explorer.contents.contains("src/alias.zig"));
+}
+
+test "file symlink aliases cannot expose outside-root or sensitive targets" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+    try outside.dir.writeFile(io, .{ .sub_path = "outside.zig", .data = "pub const OUTSIDE_ALIAS_CANARY = 1;\n" });
+    var outside_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_path = outside_buf[0..try outside.dir.realPathFile(io, "outside.zig", &outside_buf)];
+
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    try project.dir.createDirPath(io, "src");
+    try project.dir.writeFile(io, .{ .sub_path = "src/target.zig", .data = "pub const SAFE_ALIAS_CANARY = 1;\n" });
+    try project.dir.writeFile(io, .{ .sub_path = ".env", .data = "pub const SENSITIVE_ALIAS_CANARY = 1;\n" });
+    var src = try project.dir.openDir(io, "src", .{ .iterate = true });
+    defer src.close(io);
+    src.symLink(io, "target.zig", "safe_alias.zig", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    try src.symLink(io, outside_path, "outside_alias.zig", .{});
+    try src.symLink(io, "../.env", "sensitive_alias.zig", .{});
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try project.dir.realPathFile(io, ".", &root_buf)];
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    // File aliases are skipped uniformly; the real safe source remains visible,
+    // while neither unsafe alias nor its sensitive canonical target is indexed.
+    try testing.expect(explorer.contents.contains("src/target.zig"));
+    try testing.expect(!explorer.contents.contains("src/safe_alias.zig"));
+    try testing.expect(!explorer.contents.contains("src/outside_alias.zig"));
+    try testing.expect(!explorer.contents.contains("src/sensitive_alias.zig"));
+    try testing.expect(!explorer.contents.contains(".env"));
+    try testing.expect(store.getLatest("src/outside_alias.zig") == null);
+    try testing.expect(store.getLatest("src/sensitive_alias.zig") == null);
+
+    for ([_][]const u8{ "OUTSIDE_ALIAS_CANARY", "SENSITIVE_ALIAS_CANARY" }) |canary| {
+        const hits = try explorer.searchContent(canary, testing.allocator, 10);
+        defer {
+            for (hits) |hit| {
+                testing.allocator.free(hit.path);
+                testing.allocator.free(hit.line_text);
+            }
+            testing.allocator.free(hits);
+        }
+        try testing.expectEqual(@as(usize, 0), hits.len);
+    }
+
+    // Exercise the incremental walker separately with aliases created after
+    // the cold scan.
+    try src.symLink(io, "target.zig", "incremental_safe.zig", .{});
+    try src.symLink(io, outside_path, "incremental_outside.zig", .{});
+    try src.symLink(io, "../.env", "incremental_sensitive.zig", .{});
+    try watcher.refreshIndex(io, &store, &explorer, root, testing.allocator);
+    try testing.expect(!explorer.contents.contains("src/incremental_safe.zig"));
+    try testing.expect(!explorer.contents.contains("src/incremental_outside.zig"));
+    try testing.expect(!explorer.contents.contains("src/incremental_sensitive.zig"));
+    try testing.expect(store.getLatest("src/incremental_outside.zig") == null);
+    try testing.expect(store.getLatest("src/incremental_sensitive.zig") == null);
+
+    // Snapshot creation can only persist the filtered live set, and a fresh
+    // process must not resurrect either alias.
+    const snapshot_path = try std.fmt.allocPrint(testing.allocator, "{s}/symlink.snapshot", .{root});
+    defer testing.allocator.free(snapshot_path);
+    try snapshot_mod.writeSnapshot(io, &explorer, root, snapshot_path, testing.allocator);
+    var restored = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer restored.deinit();
+    var restored_store = Store.init(testing.allocator);
+    defer restored_store.deinit();
+    try testing.expect(snapshot_mod.loadSnapshot(io, snapshot_path, &restored, &restored_store, testing.allocator));
+    try testing.expect(!restored.contents.contains("src/outside_alias.zig"));
+    try testing.expect(!restored.contents.contains("src/sensitive_alias.zig"));
+    try testing.expect(!restored.contents.contains("src/incremental_outside.zig"));
+    try testing.expect(!restored.contents.contains("src/incremental_sensitive.zig"));
+}
+
+test "regular file retargeted to symlink stays unreadable after content release" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    try project.dir.createDirPath(io, "src");
+    try project.dir.createDirPath(io, "data");
+    try project.dir.writeFile(io, .{ .sub_path = "src/swap.zig", .data = "pub const safe_swap_token = 1;\n" });
+    try project.dir.writeFile(io, .{ .sub_path = "src/ordinary.zig", .data = "pub const ordinarytoken = 1;\n" });
+    try project.dir.writeFile(io, .{ .sub_path = ".env", .data = "pub const sensitive_swap_token = 1;\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try project.dir.realPathFile(io, ".", &root_buf)];
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try explorer.indexFile("src/swap.zig", "pub const safe_swap_token = 1;\n");
+    try explorer.indexFile("src/ordinary.zig", "pub const ordinarytoken = 1;\n");
+
+    const snapshot_path = try std.fmt.allocPrint(testing.allocator, "{s}/before-swap.snapshot", .{root});
+    defer testing.allocator.free(snapshot_path);
+    try snapshot_mod.writeSnapshot(io, &explorer, root, snapshot_path, testing.allocator);
+
+    explorer.releaseContents();
+    try project.dir.deleteFile(io, "src/swap.zig");
+    var src = try project.dir.openDir(io, "src", .{});
+    defer src.close(io);
+    src.symLink(io, "../.env", "swap.zig", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+
+    try testing.expect((try explorer.getContent("src/swap.zig", testing.allocator)) == null);
+    const literal_hits = try explorer.searchContent("sensitive_swap_token", testing.allocator, 20);
+    defer {
+        for (literal_hits) |hit| {
+            testing.allocator.free(hit.path);
+            testing.allocator.free(hit.line_text);
+        }
+        testing.allocator.free(literal_hits);
+    }
+    try testing.expectEqual(@as(usize, 0), literal_hits.len);
+    const regex_hits = try explorer.searchContentRegex(".*", testing.allocator, 20);
+    defer {
+        for (regex_hits) |hit| {
+            testing.allocator.free(hit.path);
+            testing.allocator.free(hit.line_text);
+        }
+        testing.allocator.free(regex_hits);
+    }
+    for (regex_hits) |hit| try testing.expect(std.mem.indexOf(u8, hit.line_text, "sensitive_swap_token") == null);
+
+    const after_swap_snapshot = try std.fmt.allocPrint(testing.allocator, "{s}/after-swap.snapshot", .{root});
+    defer testing.allocator.free(after_swap_snapshot);
+    try testing.expectError(
+        error.InvalidSnapshotSource,
+        snapshot_mod.writeSnapshot(io, &explorer, root, after_swap_snapshot, testing.allocator),
+    );
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, after_swap_snapshot, .{}));
+
+    // Snapshot freshness invalidates the artifact rather than retaining bytes
+    // that a vulnerable older writer may have captured through this alias.
+    var restored = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer restored.deinit();
+    var restored_store = Store.init(testing.allocator);
+    defer restored_store.deinit();
+    try testing.expect(!snapshot_mod.loadSnapshotValidated(io, snapshot_path, root, &restored, &restored_store, testing.allocator));
+    try testing.expect((try restored.getContent("src/swap.zig", testing.allocator)) == null);
+
+    // The cache-miss word-index persistence path uses the same reader and can
+    // still persist ordinary files without admitting the alias target.
+    const data_dir = try std.fmt.allocPrint(testing.allocator, "{s}/data", .{root});
+    defer testing.allocator.free(data_dir);
+    try bootstrap_mod.persistWordIndexFromSource(io, &explorer, root, data_dir, null, testing.allocator);
+    var loaded_words = WordIndex.readFromDisk(io, data_dir, testing.allocator) orelse return error.TestExpectedEqual;
+    defer loaded_words.deinit();
+    try testing.expectEqual(@as(usize, 0), loaded_words.search("sensitive_swap_token").len);
+    try testing.expect(loaded_words.search("ordinarytoken").len > 0);
+}
+
+test "symlinked ignore files are not read as policy input" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+    try outside.dir.writeFile(io, .{ .sub_path = "ignore", .data = "src/ordinary.zig\n" });
+    var outside_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_path = outside_buf[0..try outside.dir.realPathFile(io, "ignore", &outside_buf)];
+
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    try project.dir.createDirPath(io, "src");
+    try project.dir.writeFile(io, .{ .sub_path = "src/ordinary.zig", .data = "pub const ignore_symlink_canary = 1;\n" });
+    project.dir.symLink(io, outside_path, ".gitignore", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    try project.dir.symLink(io, outside_path, ".codedbignore", .{});
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try project.dir.realPathFile(io, ".", &root_buf)];
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+    try testing.expect(explorer.contents.contains("src/ordinary.zig"));
 }
 
 test "issue-405: FilteredWalker walks directory symlinks safely (cycle + escape)" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
-    // Follow-up to #389. The current FilteredWalker.next() (src/watcher.zig:319-323)
-    // treats sym_link entries as files when statFile reports .file, but silently
-    // drops sym_link entries whose target is a directory. Real repos rely on
-    // directory symlinks (monorepo package links, vendored deps, dotfile configs),
-    // so the indexer must walk them — but only safely. This test pins three things:
+    // Directory links have a deliberately narrower policy than file links:
+    // their opened target may be walked only when its canonical directory stays
+    // inside the project and cycle detection accepts it. Real repos rely on
+    // directory symlinks (monorepo package links and vendored deps), so this test
+    // pins three things:
     //   1. A file inside a symlinked subdirectory is indexed.
     //   2. A symlink that introduces a cycle does not hang or duplicate entries.
     //   3. (Implicit) The walker terminates in bounded time on the fixture.
@@ -1969,8 +2161,7 @@ test "issue-405: FilteredWalker walks directory symlinks safely (cycle + escape)
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
 
     // 1. The in-target file must appear under the symlinked path. This is the
-    //    behaviour gap left by #389 — directory symlinks are currently ignored,
-    //    so this assertion fails on main.
+    //    separate directory-link behavior without re-enabling file aliases.
     try testing.expect(explorer.contents.contains("app/linked_pkg/inside.zig"));
 
     // 2. The real path must also be indexed exactly once.

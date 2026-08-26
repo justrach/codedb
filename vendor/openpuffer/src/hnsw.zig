@@ -145,7 +145,11 @@ pub fn Hnsw(comptime D: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            if (self.slab_map) |m| posix.munmap(m.bytes);
+            // `loadMmap` is UnsupportedPlatform on Windows (#25), therefore a
+            // Windows index can never own a POSIX mapping.
+            if (comptime builtin.os.tag != .windows) {
+                if (self.slab_map) |m| posix.munmap(m.bytes);
+            }
             self.slab_map = null;
             self.vectors_flat.deinit(self.allocator);
             self.qvecs_flat.deinit(self.allocator);
@@ -1611,6 +1615,11 @@ pub fn Hnsw(comptime D: type) type {
         /// Atomically write an HMLS slab file (`path.tmp` → fsync → rename).
         /// The live snapshot is never opened writeable; a crash leaves `path` intact.
         pub fn writeSlabs(self: *const Self, path: []const u8) !void {
+            // The slab implementation is intentionally POSIX mmap/openat only
+            // until native Windows support lands (justrach/openpuffer#25).
+            // Keep consumers cross-compilable and fail explicitly at runtime;
+            // never substitute the copy-in/heap path on Windows.
+            if (comptime builtin.os.tag == .windows) return error.UnsupportedPlatform;
             var tmp_buf: [posix.PATH_MAX]u8 = undefined;
             const tmp = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path});
             const fd = try posix.openat(posix.AT.FDCWD, tmp, .{
@@ -1809,6 +1818,9 @@ pub fn Hnsw(comptime D: type) type {
         /// mmap a raw HMLS file or a persist v2 envelope+HMLS file.
         /// MAP_PRIVATE: reads demand-page; writes COW and never dirty the file.
         pub fn loadMmap(self: *Self, path: []const u8) !void {
+            // Native Windows mmap support is tracked in justrach/openpuffer#25.
+            // Fail closed rather than silently using the high-RSS copy-in loader.
+            if (comptime builtin.os.tag == .windows) return error.UnsupportedPlatform;
             if (self.len() != 0) return error.NotEmpty;
             const original_allocator = self.allocator;
             const original_dim = self.dim;

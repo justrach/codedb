@@ -27,6 +27,8 @@ const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
 const release_info = @import("release_info.zig");
 const mcp_list_dir = @import("mcp_list_dir.zig");
+const project_file_read = @import("project_file.zig");
+const project_path_policy = @import("project_path.zig");
 pub const DeferredScan = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -3577,11 +3579,18 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         file.semantic_rank = rank;
     }
     if (semantic_requested) {
-        for (ranked.items) |file| {
-            if (!semantic_mod.isRemoteCandidatePathAllowed(file.path)) {
+        // Count excluded indexed paths before retrieval materialization. The
+        // shared Explorer read boundary now rejects sensitive cached entries,
+        // so waiting until `ranked` would under-report paths that were safely
+        // suppressed before their content could become a candidate.
+        explorer.mu.lockShared();
+        var indexed_paths = explorer.outlines.keyIterator();
+        while (indexed_paths.next()) |path| {
+            if (!semantic_mod.isRemoteCandidatePathAllowed(path.*)) {
                 retrieval.sensitive_paths_blocked += 1;
             }
         }
+        explorer.mu.unlockShared();
     }
 
     var use_exact_semantic_fallback = false;
@@ -4572,8 +4581,20 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         appendBundleArgKeysDiagnostic(alloc, out, args);
         return;
     };
+    const read_root = explorer.root_dir orelse {
+        out.appendSlice(alloc, "error: project root is not configured") catch {};
+        return;
+    };
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, ".", &root_buf)) |n| root_buf[0..n] else |_| "";
+    const root_len = read_root.realPath(io, &root_buf) catch {
+        out.appendSlice(alloc, "error: project root is not available") catch {};
+        return;
+    };
+    const root = root_buf[0..root_len];
+    if (!root_policy.isIndexableRoot(root)) {
+        out.appendSlice(alloc, "error: project root is not configured") catch {};
+        return;
+    }
     const path = projectRelPath(path_arg, root) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
@@ -4582,6 +4603,14 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
         return;
     }
+    _ = project_file_read.statNoFollow(io, read_root, path) catch {
+        out.appendSlice(alloc, "error: failed to read file: ") catch {};
+        out.appendSlice(alloc, path) catch {};
+        // Preserve the established miss ergonomics while still failing closed:
+        // suggestions are derived only from indexed paths, never from this read.
+        appendFuzzyPathSuggestions(alloc, out, explorer, path);
+        return;
+    };
 
     // Line range params
     const line_start_raw = getInt(args, "line_start");
@@ -4650,8 +4679,7 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         // server's cwd. For a project=/remote-cache explorer, cwd would serve
         // the user's own file of the same relative path under the other
         // project's label (mirrors explore.readContentForSearch).
-        const read_root = explorer.root_dir orelse std.Io.Dir.cwd();
-        break :blk read_root.readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch {
+        break :blk project_file_read.readAllocNoFollow(io, read_root, path, alloc, .limited(10 * 1024 * 1024)) catch {
             out.appendSlice(alloc, "error: failed to read file: ") catch {};
             out.appendSlice(alloc, path) catch {};
             // Issue #356-p3: fuzzy fallback so a mistyped path is recoverable
@@ -6023,6 +6051,31 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
             }
             const max_lines: usize = if (getInt(step, "lines")) |n| @intCast(@max(1, @min(n, 200))) else 50;
             for (file_set.items) |path| {
+                const query_root = explorer.root_dir orelse {
+                    w.print("error: project root is not configured\n", .{}) catch {};
+                    finishQueryWithFailure(alloc, out, step_i, "project root is not configured", step, file_set.items);
+                    return;
+                };
+                const query_io = explorer.io orelse {
+                    w.print("error: project root is not configured\n", .{}) catch {};
+                    finishQueryWithFailure(alloc, out, step_i, "project root is not configured", step, file_set.items);
+                    return;
+                };
+                if (!project_file_read.rootIsAllowed(query_io, query_root)) {
+                    w.print("error: project root is not configured\n", .{}) catch {};
+                    finishQueryWithFailure(alloc, out, step_i, "project root is not configured", step, file_set.items);
+                    return;
+                }
+                if (!project_file_read.isAllowedPath(path)) {
+                    w.print("error: read path is not an allowed project file: {s}\n", .{path}) catch {};
+                    finishQueryWithFailure(alloc, out, step_i, "read path is not allowed", step, file_set.items);
+                    return;
+                }
+                _ = project_file_read.statNoFollow(query_io, query_root, path) catch {
+                    w.print("error: read path is not an allowed project file: {s}\n", .{path}) catch {};
+                    finishQueryWithFailure(alloc, out, step_i, "read path is not allowed", step, file_set.items);
+                    return;
+                };
                 const content = explorer.getContent(path, alloc) catch continue;
                 if (content) |data| {
                     defer alloc.free(data);
@@ -6256,17 +6309,7 @@ pub fn globMatch(pattern: []const u8, path: []const u8) bool {
 }
 
 pub fn isPathSafe(path: []const u8) bool {
-    if (path.len == 0) return false;
-    if (path[0] == '/') return false;
-    // Block null bytes (path truncation attack)
-    if (std.mem.indexOfScalar(u8, path, 0) != null) return false;
-    // Block backslash separators
-    if (std.mem.indexOfScalar(u8, path, '\\') != null) return false;
-    var it = std.mem.splitScalar(u8, path, '/');
-    while (it.next()) |component| {
-        if (std.mem.eql(u8, component, "..")) return false;
-    }
-    return true;
+    return project_path_policy.isNormalizedRelative(path);
 }
 
 /// Map a read/edit `path` argument to a project-relative path that is safe to
@@ -7057,6 +7100,10 @@ test "issue-353: project cache invalidation reloads newly written snapshots" {
     var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
     snapshot_src.setRoot(io, project_path);
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/old.zig",
+        .data = "pub fn oldSymbol() void {}\n",
+    });
     try snapshot_src.indexFile("src/old.zig", "pub fn oldSymbol() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
 
@@ -7074,6 +7121,10 @@ test "issue-353: project cache invalidation reloads newly written snapshots" {
     var snapshot_next = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_next.deinit();
     snapshot_next.setRoot(io, project_path);
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/new.zig",
+        .data = "pub fn newSymbol() void {}\n",
+    });
     try snapshot_next.indexFile("src/new.zig", "pub fn newSymbol() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_next, project_path, testing.allocator);
 

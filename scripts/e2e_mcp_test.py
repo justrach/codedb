@@ -19,6 +19,8 @@ Scenarios covered:
    7. Mid-session live watch: same MCP process, in-place edit + new sibling;
       outline/search/read/symbol see the new contents without restart or
       codedb_index. Reports write-to-visible latency.
+   8. File-symlink privacy boundary: indexing plus raw MCP, CLI, HTTP, and
+      semantic-provider reads reject aliases to outside-root or sensitive data.
 Usage:
   python3 scripts/e2e_mcp_test.py [--binary /path/to/codedb] [--project /path/to/project]
 
@@ -29,8 +31,11 @@ Defaults:
 from __future__ import annotations
 
 import argparse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import http.client
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -60,7 +65,8 @@ class MCPProcess:
     """Wraps a codedb mcp subprocess; sends/receives JSON-RPC over stdio."""
 
     def __init__(self, binary: str, args: list[str], cwd: str,
-                 command: list[str] | None = None) -> None:
+                 command: list[str] | None = None,
+                 env: dict[str, str] | None = None) -> None:
         """
         command: full argv override (default: [binary, "mcp"] + args).
         Use command=[binary, root, "mcp"] for explicit-root invocation.
@@ -72,6 +78,7 @@ class MCPProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd,
+            env=env,
             text=True,
             bufsize=1,
         )
@@ -439,6 +446,19 @@ def run_scenario_3_no_roots_client(binary: str) -> list[TestResult]:
             r.fail("no response to codedb_search — server may have crashed")
         else:
             r.ok("responded (empty results expected)")
+
+        r = t("no-roots mode cannot read cwd host files")
+        direct = tool_text(p.call_tool("codedb_read", {"path": "etc/passwd", "raw": True}))
+        pipeline = tool_text(p.call_tool("codedb_query", {
+            "pipeline": [{"op": "read", "path": "etc/passwd"}],
+        }))
+        combined = direct + "\n" + pipeline
+        if "root:" in combined or "/bin/" in combined:
+            r.fail(f"host file content escaped no-roots mode: {combined[:300]!r}")
+        elif "project root is not configured" not in direct or "project root is not configured" not in pipeline:
+            r.fail(f"no-roots rejection was not controlled: direct={direct[:160]!r} pipeline={pipeline[:160]!r}")
+        else:
+            r.ok()
 
         r = t("process is still alive")
         poll = p.proc.poll()
@@ -848,6 +868,316 @@ def run_scenario_7_live_watch_mid_session(binary: str, project: str) -> list[Tes
 
     return results
 
+
+def run_scenario_8_symlink_privacy_boundary(binary: str, project: str) -> list[TestResult]:
+    """File aliases must not expose outside-root or sensitive target content."""
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S8] {name}")
+        results.append(r)
+        return r
+
+    with tempfile.TemporaryDirectory(prefix="codedb-symlink-outside-", dir=Path(project).parent) as outside_tmp, \
+         tempfile.TemporaryDirectory(prefix="codedb-symlink-project-", dir=Path(project).parent) as project_tmp:
+        outside = Path(outside_tmp)
+        root = Path(project_tmp)
+        (root / "src").mkdir()
+        (root / ".ssh").mkdir()
+        (root / "pyproject.toml").write_text("[project]\nname = 'symlink-boundary'\nversion = '0'\n")
+        (root / "src" / "target.py").write_text("SAFE_SYMLINK_CANARY = 'safe'\n")
+        (root / "src" / "swap.py").write_text("SAFE_SWAP_CANARY = 'safe-before-retarget'\n")
+        (root / ".env").write_text("SENSITIVE_SYMLINK_CANARY = 'secret'\n")
+        (root / ".ssh" / "config").write_text("SENSITIVE_DIRECTORY_ALIAS_CANARY = 'secret-dir'\n")
+        outside_source = outside / "outside.py"
+        outside_source.write_text("OUTSIDE_SYMLINK_CANARY = 'outside'\n")
+        try:
+            (root / "src" / "safe_alias.py").symlink_to("target.py")
+            (root / "src" / "sensitive_alias.py").symlink_to("../.env")
+            (root / "src" / "outside_alias.py").symlink_to(outside_source)
+            (root / "src" / "sensitive_dir_alias").symlink_to("../.ssh", target_is_directory=True)
+        except OSError as exc:
+            t("symlink fixture supported").ok(f"skipped: {exc}")
+            return results
+
+        p = MCPProcess(binary, [], cwd="/", command=[binary, str(root), "mcp", "--no-telemetry"])
+        try:
+            r = t("initial scan completes")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p):
+                r.fail("MCP server did not become ready")
+                return results
+            r.ok()
+
+            r = t("cold scan skips every file alias")
+            safe_text = tool_text(p.call_tool("codedb_search", {"query": "SAFE_SYMLINK_CANARY", "max_results": 10}))
+            outside_text = tool_text(p.call_tool("codedb_search", {"query": "OUTSIDE_SYMLINK_CANARY"}))
+            sensitive_text = tool_text(p.call_tool("codedb_search", {"query": "SENSITIVE_SYMLINK_CANARY"}))
+            if "SAFE_SYMLINK_CANARY" not in safe_text or "src/target.py" not in safe_text or "src/safe_alias.py" in safe_text:
+                r.fail(f"file-alias skip policy was not applied: {safe_text[:220]!r}")
+                return results
+            if not outside_text.startswith("0 results") or not sensitive_text.startswith("0 results"):
+                r.fail(f"unsafe alias was searchable: outside={outside_text[:160]!r} sensitive={sensitive_text[:160]!r}")
+                return results
+            r.ok()
+
+            r = t("raw MCP reads reject file aliases")
+            ordinary_read = tool_text(p.call_tool("codedb_read", {"path": "src/target.py", "raw": True}))
+            alias_reads = [
+                tool_text(p.call_tool("codedb_read", {"path": path, "raw": True}))
+                for path in ("src/safe_alias.py", "src/outside_alias.py", "src/sensitive_alias.py", "src/sensitive_dir_alias/config")
+            ]
+            leaked = "\n".join(alias_reads)
+            if "SAFE_SYMLINK_CANARY" not in ordinary_read:
+                r.fail(f"ordinary raw read failed: {ordinary_read[:220]!r}")
+                return results
+            if any(canary in leaked for canary in (
+                "SAFE_SYMLINK_CANARY", "OUTSIDE_SYMLINK_CANARY", "SENSITIVE_SYMLINK_CANARY", "SENSITIVE_DIRECTORY_ALIAS_CANARY",
+            )) or not all("error:" in body for body in alias_reads):
+                r.fail(f"raw MCP alias read was not rejected: {alias_reads!r}")
+                return results
+            r.ok()
+
+            r = t("raw MCP and query pipeline reject traversal and sensitive paths")
+            direct_denied = [
+                tool_text(p.call_tool("codedb_read", {"path": path, "raw": True}))
+                for path in (".env", "../outside.py")
+            ]
+            pipeline_denied = [
+                tool_text(p.call_tool("codedb_query", {"pipeline": [{"op": "read", "path": path}]}))
+                for path in (".env", "../outside.py", "C:\\outside.py", "src/outside_alias.py", "src/sensitive_alias.py", "src/sensitive_dir_alias/config")
+            ]
+            denied_text = "\n".join(direct_denied + pipeline_denied)
+            if any(canary in denied_text for canary in (
+                "OUTSIDE_SYMLINK_CANARY", "SENSITIVE_SYMLINK_CANARY",
+            )) or not all("error" in body.lower() for body in direct_denied + pipeline_denied):
+                r.fail(f"read policy bypassed: direct={direct_denied!r} pipeline={pipeline_denied!r}")
+                return results
+            r.ok()
+
+            r = t("absolute-path rescue is anchored to the Explorer root")
+            inside_abs = tool_text(p.call_tool("codedb_read", {"path": str(root / "src" / "target.py"), "raw": True}))
+            outside_abs = tool_text(p.call_tool("codedb_read", {"path": str(outside_source), "raw": True}))
+            if "SAFE_SYMLINK_CANARY" not in inside_abs or "OUTSIDE_SYMLINK_CANARY" in outside_abs or "error:" not in outside_abs:
+                r.fail(f"absolute rescue boundary failed: inside={inside_abs[:160]!r} outside={outside_abs[:160]!r}")
+                return results
+            r.ok()
+
+            (root / "src" / "incremental_safe.py").symlink_to("target.py")
+            (root / "src" / "incremental_sensitive.py").symlink_to("../.env")
+            (root / "src" / "incremental_outside.py").symlink_to(outside_source)
+            r = t("incremental refresh keeps the same boundary")
+            index_text = tool_text(p.call_tool("codedb_index", {"path": str(root)}))
+            safe_text = tool_text(p.call_tool("codedb_search", {"query": "SAFE_SYMLINK_CANARY", "max_results": 10}))
+            outside_text = tool_text(p.call_tool("codedb_search", {"query": "OUTSIDE_SYMLINK_CANARY"}))
+            sensitive_text = tool_text(p.call_tool("codedb_search", {"query": "SENSITIVE_SYMLINK_CANARY"}))
+            if "error:" in index_text or "SAFE_SYMLINK_CANARY" not in safe_text or "src/incremental_safe.py" in safe_text:
+                r.fail(f"incremental file-alias skip failed: index={index_text[:140]!r} search={safe_text[:180]!r}")
+                return results
+            if not outside_text.startswith("0 results") or not sensitive_text.startswith("0 results"):
+                r.fail(f"incremental unsafe alias was searchable: outside={outside_text[:160]!r} sensitive={sensitive_text[:160]!r}")
+                return results
+            r.ok()
+        finally:
+            p.close()
+
+        # Retarget a path that was a regular indexed file during the live MCP
+        # session. Subsequent cold surfaces and semantic calls must not follow
+        # the replacement alias.
+        (root / "src" / "swap.py").unlink()
+        (root / "src" / "swap.py").symlink_to("../.env")
+
+        home = outside / "home"
+        home.mkdir()
+        safe_env = {
+            **os.environ,
+            "HOME": str(home),
+            "CODEDB_NO_AUTO_UPDATE": "1",
+            "CODEDB_NO_TELEMETRY": "1",
+            "CODEDB_NO_CLI_DAEMON": "1",
+        }
+
+        r = t("CLI reads reject file aliases")
+        ordinary_cli = subprocess.run(
+            [binary, str(root), "read", "src/target.py"],
+            capture_output=True, text=True, env=safe_env, timeout=30,
+        )
+        alias_cli = [
+            subprocess.run(
+                [binary, str(root), "read", path],
+                capture_output=True, text=True, env=safe_env, timeout=30,
+            )
+            for path in ("src/outside_alias.py", "src/sensitive_alias.py", "src/sensitive_dir_alias/config", "src/swap.py", ".env", "../outside.py", "C:\\outside.py")
+        ]
+        cli_leak = "\n".join(run.stdout + run.stderr for run in alias_cli)
+        if ordinary_cli.returncode != 0 or "SAFE_SYMLINK_CANARY" not in ordinary_cli.stdout:
+            r.fail(f"ordinary CLI read failed: code={ordinary_cli.returncode} out={ordinary_cli.stdout[:160]!r} err={ordinary_cli.stderr[-160:]!r}")
+        elif any(run.returncode == 0 for run in alias_cli) or any(canary in cli_leak for canary in (
+            "OUTSIDE_SYMLINK_CANARY", "SENSITIVE_SYMLINK_CANARY",
+        )):
+            r.fail(f"CLI alias read was not rejected: {[(run.returncode, run.stdout[:100], run.stderr[-100:]) for run in alias_cli]!r}")
+        else:
+            r.ok()
+
+        # Exercise the actual TCP route, not just its shared reader. Binding a
+        # temporary socket first asks the OS for a free loopback port.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as port_socket:
+            port_socket.bind(("127.0.0.1", 0))
+            http_port = port_socket.getsockname()[1]
+        serve_env = {**safe_env, "CODEDB_PORT": str(http_port)}
+        serve_proc = subprocess.Popen(
+            [binary, str(root), "serve"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=serve_env,
+        )
+        try:
+            deadline = time.monotonic() + 20
+            while True:
+                try:
+                    health = http.client.HTTPConnection("127.0.0.1", http_port, timeout=1)
+                    health.request("GET", "/health")
+                    health_response = health.getresponse()
+                    health_response.read()
+                    health.close()
+                    if health_response.status == 200:
+                        break
+                except OSError:
+                    pass
+                if serve_proc.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError("codedb serve did not become healthy")
+                time.sleep(0.1)
+
+            def http_read(path: str) -> tuple[int, str]:
+                conn = http.client.HTTPConnection("127.0.0.1", http_port, timeout=5)
+                conn.request("GET", f"/file/read?path={path}")
+                response = conn.getresponse()
+                body = response.read().decode(errors="replace")
+                status = response.status
+                conn.close()
+                return status, body
+
+            ordinary_http = http_read("src/target.py")
+            alias_http = [http_read(path) for path in (
+                "src/outside_alias.py", "src/sensitive_alias.py", "src/sensitive_dir_alias/config", "../outside.py", "C:%5Coutside.py",
+            )]
+            direct_sensitive_http = http_read(".env")
+            r = t("HTTP reads reject file aliases and sensitive paths")
+            http_leak = "\n".join(body for _, body in alias_http)
+            if ordinary_http[0] != 200 or "SAFE_SYMLINK_CANARY" not in ordinary_http[1]:
+                r.fail(f"ordinary HTTP read failed: {ordinary_http!r}")
+            elif any(status not in (403, 404) for status, _ in alias_http) or any(canary in http_leak for canary in (
+                "OUTSIDE_SYMLINK_CANARY", "SENSITIVE_SYMLINK_CANARY",
+                "SENSITIVE_DIRECTORY_ALIAS_CANARY",
+            )):
+                r.fail(f"HTTP alias read was not rejected: {alias_http!r}")
+            elif direct_sensitive_http[0] != 403 or "SENSITIVE_SYMLINK_CANARY" in direct_sensitive_http[1]:
+                r.fail(f"HTTP sensitive-path guard failed: {direct_sensitive_http!r}")
+            else:
+                r.ok()
+        except Exception as exc:
+            r = t("HTTP reads reject file aliases and sensitive paths")
+            r.fail(str(exc))
+        finally:
+            serve_proc.terminate()
+            try:
+                serve_proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                serve_proc.kill()
+                serve_proc.communicate(timeout=5)
+
+        captured: list[bytes] = []
+        captured_lock = threading.Lock()
+
+        class EmbeddingHandler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - stdlib callback name
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length)
+                with captured_lock:
+                    captured.append(body)
+                payload = json.loads(body)
+                inputs = payload.get("input", [])
+                if isinstance(inputs, str):
+                    inputs = [inputs]
+                response = json.dumps({
+                    "model": "mock-symlink-model",
+                    "data": [
+                        {"index": i, "embedding": [1.0] + [0.0] * 63}
+                        for i in range(len(inputs))
+                    ],
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), EmbeddingHandler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        try:
+            env = {
+                **safe_env,
+                "CODEDB_EMBEDDINGS_URL": f"http://127.0.0.1:{server.server_port}/v1/embeddings",
+                "CODEDB_EMBEDDINGS_MODEL": "mock-symlink-model",
+                "CODEDB_EMBEDDINGS_TOKEN": "mock-token",
+                "CODEDB_EMBEDDINGS_DIMENSIONS": "64",
+                "CODEDB_EMBEDDINGS_TIMEOUT_MS": "5000",
+                "CODEDB_SEMANTIC_INDEX_CONCURRENCY": "1",
+            }
+            hybrid = MCPProcess(
+                binary, [], cwd="/", env=env,
+                command=[binary, str(root), "mcp", "--no-telemetry"],
+            )
+            hybrid_text = ""
+            try:
+                if do_initialize(hybrid, with_roots=False) and wait_for_scan(hybrid):
+                    hybrid_text = tool_text(hybrid.call_tool("codedb_context", {
+                        "task": "safe swap target implementation",
+                        "semantic": "hybrid",
+                        "max_tokens": 1024,
+                    }))
+            finally:
+                hybrid.close()
+            semantic_run = subprocess.run(
+                [binary, str(root), "semantic-index"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=60,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=5)
+
+        r = t("semantic endpoint receives no aliased private content")
+        request_text = b"\n".join(captured).decode(errors="replace")
+        if not hybrid_text or "error:" in hybrid_text:
+            r.fail(f"hybrid exact fallback failed: {hybrid_text[:240]!r}")
+        elif semantic_run.returncode != 0 or "semantic ANN ready" not in semantic_run.stdout:
+            r.fail(f"semantic-index failed: code={semantic_run.returncode} stdout={semantic_run.stdout[:180]!r} stderr={semantic_run.stderr[-240:]!r}")
+        elif "SAFE_SYMLINK_CANARY" not in request_text:
+            r.fail("safe indexed content never reached the mock endpoint")
+        elif any(secret in request_text for secret in (
+            "OUTSIDE_SYMLINK_CANARY",
+            "SENSITIVE_SYMLINK_CANARY",
+            "SENSITIVE_DIRECTORY_ALIAS_CANARY",
+            "safe_alias.py",
+            "outside_alias.py",
+            "sensitive_alias.py",
+            "incremental_safe.py",
+            "incremental_outside.py",
+            "incremental_sensitive.py",
+            "SAFE_SWAP_CANARY",
+            "swap.py",
+        )):
+            r.fail(f"private alias leaked to embedding request: {request_text[:600]!r}")
+        else:
+            r.ok(f"captured {len(captured)} filtered embedding request(s)")
+
+    return results
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -892,6 +1222,9 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 7: mid-session live watch (same process, no restart) ──{RESET}")
     all_results += run_scenario_7_live_watch_mid_session(binary, project)
+
+    print(f"\n{CYAN}── Scenario 8: file-symlink privacy boundary ──{RESET}")
+    all_results += run_scenario_8_symlink_privacy_boundary(binary, project)
 
     print()
     passed = 0

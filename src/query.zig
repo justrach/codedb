@@ -18,6 +18,7 @@ const parseSearchArgs = cli_args.parseSearchArgs;
 const parseLineRange = cli_args.parseLineRange;
 const hasExtraCliArgs = cli_args.hasExtraCliArgs;
 const list_dir = @import("list_dir.zig");
+const project_file = @import("project_file.zig");
 
 /// Read-only query command dispatch, extracted from mainImpl so the same
 /// rendering code can run inside the warm daemon (writing to a socket)
@@ -347,6 +348,19 @@ pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
             });
             return 1;
         }
+        var root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch {
+            out.p("{s}\xe2\x9c\x97{s} cannot open project root: {s}{s}{s}\n", .{
+                s.red, s.reset, s.bold, root, s.reset,
+            });
+            return 1;
+        };
+        defer root_dir.close(io);
+        _ = project_file.statNoFollow(io, root_dir, path) catch {
+            out.p("{s}\xe2\x9c\x97{s} file read not allowed: {s}{s}{s}\n", .{
+                s.red, s.reset, s.bold, path, s.reset,
+            });
+            return 1;
+        };
         const t0 = cio.nanoTimestamp();
         // Prefer indexed content (matches the indexed view), fall back to disk
         // reads anchored at the resolved project root — NOT cwd. Pre-fix, an
@@ -354,14 +368,7 @@ pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
         // from wherever the user happened to invoke it.
         const cached = explorer.getContent(path, allocator) catch null;
         const content_owned = if (cached) |c| c else blk: {
-            var root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch {
-                out.p("{s}\xe2\x9c\x97{s} cannot open project root: {s}{s}{s}\n", .{
-                    s.red, s.reset, s.bold, root, s.reset,
-                });
-                return 1;
-            };
-            defer root_dir.close(io);
-            break :blk root_dir.readFileAlloc(io, path, allocator, .limited(10 * 1024 * 1024)) catch {
+            break :blk project_file.readAllocNoFollow(io, root_dir, path, allocator, .limited(10 * 1024 * 1024)) catch {
                 out.p("{s}\xe2\x9c\x97{s} not indexed and disk read failed: {s}{s}{s}\n", .{
                     s.red, s.reset, s.bold, path, s.reset,
                 });

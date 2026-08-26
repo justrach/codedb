@@ -104,6 +104,9 @@ const Loaded = struct {
     index: ann.Index,
 
     fn loadGraph(self: *Loaded) !void {
+        // No copy-in fallback: native Windows mmap is tracked upstream as
+        // justrach/openpuffer#25.
+        if (comptime builtin.os.tag == .windows) return error.UnsupportedPlatform;
         if (self.index.len() != 0 or self.index.isMmapBacked()) return error.AnnRecordMappingMismatch;
         self.index.loadMmap(self.slab_path) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,

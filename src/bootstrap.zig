@@ -20,6 +20,7 @@ const sty = @import("style.zig");
 const Out = @import("out.zig").Out;
 const parseSearchArgs = @import("cli_args.zig").parseSearchArgs;
 const cliIsQueryCmd = @import("cli_args.zig").cliIsQueryCmd;
+const project_file = @import("project_file.zig");
 
 /// Cheap freshness probe: true when any indexable source file under abs_root
 /// is newer than the snapshot on disk. Agents edit files all session long —
@@ -386,7 +387,7 @@ pub fn persistWordIndexFromSource(
     word_index.skip_file_words = true;
 
     for (paths.items) |path| {
-        const content = root_dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
+        const content = project_file.readAllocNoFollow(io, root_dir, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
         errdefer allocator.free(content);
         try word_index.indexFile(path, content);
         allocator.free(content);

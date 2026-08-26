@@ -11,6 +11,59 @@ const explore = @import("explore.zig");
 const Explorer = explore.Explorer;
 const ContentCache = @import("hot_cache.zig").ContentCache;
 const git = @import("git.zig");
+const builtin = @import("builtin");
+const project_file = @import("project_file.zig");
+
+test "project file reads reject final-component symlinks without hiding regular files" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+    try outside.dir.writeFile(io, .{ .sub_path = "outside.txt", .data = "OUTSIDE_READ_CANARY\n" });
+    var outside_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_path = outside_buf[0..try outside.dir.realPathFile(io, "outside.txt", &outside_buf)];
+
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    try project.dir.createDirPath(io, "src");
+    try project.dir.createDirPath(io, "real_dir");
+    try project.dir.createDirPath(io, ".ssh");
+    try project.dir.writeFile(io, .{ .sub_path = "src/ordinary.txt", .data = "ORDINARY_READ_CANARY\n" });
+    try project.dir.writeFile(io, .{ .sub_path = "real_dir/inside.txt", .data = "IN_ROOT_DIRECTORY_ALIAS_CANARY\n" });
+    try project.dir.writeFile(io, .{ .sub_path = ".ssh/config", .data = "SENSITIVE_DIRECTORY_ALIAS_CANARY\n" });
+    try project.dir.writeFile(io, .{ .sub_path = ".env", .data = "SENSITIVE_READ_CANARY\n" });
+    var src = try project.dir.openDir(io, "src", .{});
+    defer src.close(io);
+    src.symLink(io, outside_path, "outside_alias.txt", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    try src.symLink(io, "../.env", "sensitive_alias.txt", .{});
+    try project.dir.symLink(io, "real_dir", "dir_alias", .{});
+    try project.dir.symLink(io, ".ssh", "sensitive_dir_alias", .{});
+
+    const ordinary = try project_file.readAllocNoFollow(io, project.dir, "src/ordinary.txt", testing.allocator, .limited(1024));
+    defer testing.allocator.free(ordinary);
+    try testing.expectEqualStrings("ORDINARY_READ_CANARY\n", ordinary);
+
+    const through_safe_dir = try project_file.readAllocNoFollow(io, project.dir, "dir_alias/inside.txt", testing.allocator, .limited(1024));
+    defer testing.allocator.free(through_safe_dir);
+    try testing.expectEqualStrings("IN_ROOT_DIRECTORY_ALIAS_CANARY\n", through_safe_dir);
+
+    for ([_][]const u8{ "src/outside_alias.txt", "src/sensitive_alias.txt", "sensitive_dir_alias/config", ".env", "../outside.txt", "src//ordinary.txt" }) |path| {
+        if (project_file.readAllocNoFollow(io, project.dir, path, testing.allocator, .limited(1024))) |unexpected| {
+            testing.allocator.free(unexpected);
+            return error.TestExpectedError;
+        } else |_| {}
+    }
+
+    // The policy is applied before cache lookup too: a forged/restored cache
+    // entry cannot make a direct or semantic caller recover sensitive bytes.
+    var guarded = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer guarded.deinit();
+    try guarded.indexFile(".env", "CACHED_SENSITIVE_CANARY\n");
+    try testing.expect((try guarded.getContent(".env", testing.allocator)) == null);
+}
 
 test "store: record and retrieve snapshots" {
     var store = Store.init(testing.allocator);

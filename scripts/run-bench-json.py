@@ -109,8 +109,34 @@ def benchmark_provenance(args: argparse.Namespace) -> dict | None:
     }
 
 
+def semantic_safety_commands(build_graph: str, bench_side: str | None) -> tuple[tuple[str, ...], ...]:
+    """Return head-only safety roots supported by the checked-out build graph."""
+    if bench_side == "base" or 'name = "test-semantic-index"' not in build_graph:
+        return ()
+    return (
+        ("zig", "build", "test-semantic-index"),
+        ("zig", "build", "test-explore", "-Dtest-filter=file symlink aliases"),
+    )
+
+
 def main() -> int:
     args = parse_args()
+    # The PR benchmark is the hosted Linux lane available to release branches.
+    # Run the named safety roots whenever the checked-out source graph exposes
+    # the semantic-index step. The unpaired historical-base invocation does
+    # not pass --bench-side, so source capability (not a missing flag) must be
+    # the compatibility gate; old release bases intentionally keep their own
+    # graph unchanged.
+    build_graph = pathlib.Path("build.zig").read_text(encoding="utf-8")
+    for command in semantic_safety_commands(build_graph, args.bench_side):
+        safety = subprocess.run(command, capture_output=True, text=True, check=False)
+        if safety.stdout:
+            sys.stderr.write(safety.stdout)
+        if safety.stderr:
+            sys.stderr.write(safety.stderr)
+        if safety.returncode != 0:
+            sys.stderr.write(f"\n[run-bench-json] {' '.join(command)} exited {safety.returncode}\n")
+            return safety.returncode
     proc = subprocess.run(
         ["zig", "build", "bench", "--", "--json", *args.bench_args],
         capture_output=True,

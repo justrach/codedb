@@ -34,9 +34,14 @@ const DocumentLink = explore_mod.DocumentLink;
 const DocumentLinkKind = explore_mod.DocumentLinkKind;
 const Store = @import("store.zig").Store;
 const git_mod = @import("git.zig");
+const project_file = @import("project_file.zig");
+const project_path = @import("project_path.zig");
 
 const MAGIC = [4]u8{ 'C', 'D', 'B', 0x01 };
-const FORMAT_VERSION: u16 = 3;
+// v4 snapshots guarantee that every content record was read from a validated
+// no-follow project handle. Older v3 files may contain bytes captured through
+// a safe-looking alias and are deliberately invalidated on upgrade.
+const FORMAT_VERSION: u16 = 4;
 
 pub const SectionId = enum(u32) {
     tree = 1,
@@ -68,6 +73,10 @@ pub fn writeSnapshot(
     defer allocator.free(tmp_path);
 
     var file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{});
+    errdefer {
+        file.close(io);
+        std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
+    }
 
     var sections: std.ArrayList(SectionEntry) = .empty;
     defer sections.deinit(allocator);
@@ -84,6 +93,22 @@ pub fn writeSnapshot(
 
     explorer.mu.lockShared();
     defer explorer.mu.unlockShared();
+
+    var source_root = try std.Io.Dir.cwd().openDir(io, root_path, .{});
+    defer source_root.close(io);
+    // A production explorer always owns a rooted I/O capability. Revalidate every
+    // cached record against that live capability before persisting it so a file
+    // that was swapped to a symlink after indexing cannot poison the snapshot.
+    // Synthetic unit-test explorers intentionally have no root capability and may
+    // contain in-memory-only records; cache misses below still require a validated
+    // live file in both modes.
+    if (explorer.io != null and explorer.root_dir != null) {
+        var validate_iter = explorer.outlines.keyIterator();
+        while (validate_iter.next()) |path| {
+            if (!isSafeSnapshotPath(path.*)) continue;
+            _ = project_file.statNoFollow(io, source_root, path.*) catch return error.InvalidSnapshotSource;
+        }
+    }
 
     // ── Section: META ──
     {
@@ -263,9 +288,6 @@ pub fn writeSnapshot(
     defer content_hashes.deinit(allocator);
     {
         const offset = file_writer.logicalPos();
-        var root_dir = std.Io.Dir.cwd().openDir(io, root_path, .{}) catch null;
-        defer if (root_dir) |*dir| dir.close(io);
-
         var path_iter = explorer.outlines.keyIterator();
         while (path_iter.next()) |path_ptr| {
             const path = path_ptr.*;
@@ -282,8 +304,8 @@ pub fn writeSnapshot(
                 try fw.writeAll(&cl_buf);
                 try fw.writeAll(content);
                 try content_hashes.append(allocator, std.hash.Wyhash.hash(0, content));
-            } else if (root_dir) |*dir| {
-                const disk_content = dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
+            } else {
+                const disk_content = try project_file.readAllocNoFollow(io, source_root, path, allocator, .limited(64 * 1024 * 1024));
                 errdefer allocator.free(disk_content);
 
                 var pl_buf: [2]u8 = undefined;
@@ -430,7 +452,7 @@ pub fn ensureGitIgnoresSnapshot(io: std.Io, root_path: []const u8, allocator: st
     defer info_dir.close(io);
 
     const needle = "codedb.snapshot";
-    const existing: ?[]u8 = info_dir.readFileAlloc(io, "exclude", allocator, .limited(1024 * 1024)) catch null;
+    const existing: ?[]u8 = project_file.readAllocNoFollow(io, info_dir, "exclude", allocator, .limited(1024 * 1024)) catch null;
     defer if (existing) |e| allocator.free(e);
 
     if (existing) |content| {
@@ -460,6 +482,14 @@ fn readSectionsFromFile(io: std.Io, file: std.Io.File, allocator: std.mem.Alloca
     var magic_buf: [4]u8 = undefined;
     const n = file.readPositionalAll(io, &magic_buf, 0) catch return null;
     if (n != 4 or !std.mem.eql(u8, &magic_buf, &MAGIC)) return null;
+
+    // v4 is the first format whose writer and loader both enforce repository-
+    // rooted, no-follow source reads. Older snapshots may already contain bytes
+    // captured through a benign-looking symlink, so they are not safe inputs to
+    // search or remote semantic indexing after an upgrade.
+    var version_buf: [2]u8 = undefined;
+    const vn = file.readPositionalAll(io, &version_buf, 4) catch return null;
+    if (vn != version_buf.len or std.mem.readInt(u16, &version_buf, .little) != FORMAT_VERSION) return null;
 
     // offset 4 + 44 = 48: skip version + flags + git_head
     var sc_buf: [4]u8 = undefined;
@@ -683,13 +713,12 @@ pub fn loadSnapshotValidated(
 
         // Re-index from disk if file was modified after the snapshot
         var disk_content: ?[]u8 = null;
-        if (snap_mtime > 0 and disk_root != null and canonical_root != null) blk: {
-            var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const resolved = resolveSafeSnapshotPath(io, disk_root.?, canonical_root.?, path_buf, &resolved_buf) orelse break :blk;
-            const ds = std.Io.Dir.cwd().statFile(io, resolved, .{}) catch break :blk;
+        if (disk_root) |root| blk: {
+            const ds = project_file.statNoFollow(io, root, path_buf) catch return false;
+            if (snap_mtime <= 0) break :blk;
             const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
             if (ds_mtime <= snap_mtime) break :blk;
-            disk_content = std.Io.Dir.cwd().readFileAlloc(io, resolved, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+            disk_content = project_file.readAllocNoFollow(io, root, path_buf, allocator, .limited(16 * 1024 * 1024)) catch return false;
         }
         defer if (disk_content) |dc| allocator.free(dc);
         const effective = if (disk_content) |dc| dc else content;
@@ -1014,6 +1043,7 @@ const LoadRecord = struct {
 // pure and trivially thread-safe; the insert pass reads fresh content (sequentially,
 // one file at a time) for the rare stale ones.
 const LoadFreshness = struct {
+    valid: bool = false,
     stale: bool = false,
 };
 
@@ -1021,11 +1051,10 @@ const LoadFreshness = struct {
 // open/close) and flag it stale when its mtime is newer than the snapshot. Pure
 // read-only and allocation-free, so workers run this over disjoint chunks
 // concurrently; each writes only its own slice of `out`.
-fn freshnessScan(io: std.Io, root_dir: std.Io.Dir, canonical_root: []const u8, snap_mtime: i128, recs: []const LoadRecord, out: []LoadFreshness) void {
+fn freshnessScan(io: std.Io, root_dir: std.Io.Dir, snap_mtime: i128, recs: []const LoadRecord, out: []LoadFreshness) void {
     for (recs, out) |record, *fr| {
-        var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const resolved = resolveSafeSnapshotPath(io, root_dir, canonical_root, record.path, &resolved_buf) orelse continue;
-        const ds = std.Io.Dir.cwd().statFile(io, resolved, .{}) catch continue;
+        const ds = project_file.statNoFollow(io, root_dir, record.path) catch continue;
+        fr.valid = true;
         const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
         if (ds_mtime > snap_mtime) fr.stale = true;
     }
@@ -1185,10 +1214,10 @@ fn loadSnapshotFast(
     // for the flagged files and mutates Explorer/Store single-threaded.
     const fresh_results = allocator.alloc(LoadFreshness, records.items.len) catch return false;
     defer allocator.free(fresh_results);
-    for (fresh_results) |*fr| fr.* = .{};
+    for (fresh_results) |*fr| fr.* = .{ .valid = disk_root == null };
 
     const t_fresh0: i128 = if (prof) cio.nanoTimestamp() else 0;
-    if (snap_mtime > 0 and records.items.len > 0 and disk_root != null and canonical_root != null) {
+    if (records.items.len > 0 and disk_root != null and canonical_root != null) {
         const want_workers = blk: {
             if (cio.posixGetenv("CODEDB_LOAD_WORKERS")) |raw| {
                 const parsed = std.fmt.parseInt(usize, raw, 10) catch 0;
@@ -1200,7 +1229,7 @@ fn loadSnapshotFast(
         };
         const n_workers = @max(@as(usize, 1), @min(want_workers, records.items.len));
         if (n_workers <= 1) {
-            freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, records.items, fresh_results);
+            freshnessScan(io, disk_root.?, snap_mtime, records.items, fresh_results);
         } else if (allocator.alloc(std.Thread, n_workers)) |threads| {
             defer allocator.free(threads);
             const chunk = records.items.len / n_workers;
@@ -1215,24 +1244,25 @@ fn loadSnapshotFast(
                 const recs = records.items[start..off];
                 const out = fresh_results[start..off];
                 if (spawn_failed) {
-                    freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, recs, out);
+                    freshnessScan(io, disk_root.?, snap_mtime, recs, out);
                     continue;
                 }
-                if (std.Thread.spawn(.{}, freshnessScan, .{ io, disk_root.?, canonical_root.?, snap_mtime, recs, out })) |t| {
+                if (std.Thread.spawn(.{}, freshnessScan, .{ io, disk_root.?, snap_mtime, recs, out })) |t| {
                     threads[spawned] = t;
                     spawned += 1;
                 } else |_| {
                     // Out of threads: scan this chunk (and any remaining) inline.
-                    freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, recs, out);
+                    freshnessScan(io, disk_root.?, snap_mtime, recs, out);
                     spawn_failed = true;
                 }
             }
             for (threads[0..spawned]) |t| t.join();
         } else |_| {
-            freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, records.items, fresh_results);
+            freshnessScan(io, disk_root.?, snap_mtime, records.items, fresh_results);
         }
     }
     if (prof) fresh_ns += cio.nanoTimestamp() - t_fresh0;
+    for (fresh_results) |fr| if (!fr.valid) return false;
     const rss_fresh: u64 = if (prof) loadMaxRssBytes() else 0;
     // ── Pass C: insert restored / changed / outline-only files (sequential). ──
     // #564: defer the global symbol index — Pass C's per-file rebuilds become
@@ -1250,10 +1280,7 @@ fn loadSnapshotFast(
         // peak memory is one file's content, not every changed file's at once.
         var disk_content: ?[]u8 = null;
         if (fr.stale and disk_root != null and canonical_root != null) {
-            var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (resolveSafeSnapshotPath(io, disk_root.?, canonical_root.?, path, &resolved_buf)) |resolved| {
-                disk_content = std.Io.Dir.cwd().readFileAlloc(io, resolved, allocator, .limited(16 * 1024 * 1024)) catch null;
-            }
+            disk_content = project_file.readAllocNoFollow(io, disk_root.?, path, allocator, .limited(16 * 1024 * 1024)) catch return false;
         }
         defer if (disk_content) |dc| allocator.free(dc);
 
@@ -1442,17 +1469,7 @@ fn parseJsonU64(json: []const u8, key: []const u8) ?u64 {
 /// Snapshot records are untrusted input. Only canonical project-relative paths
 /// may be persisted, indexed, or used for freshness reads.
 pub fn isSafeSnapshotPath(path: []const u8) bool {
-    if (path.len == 0 or path.len > 4096 or std.fs.path.isAbsolute(path)) return false;
-    if (std.mem.indexOfScalar(u8, path, 0) != null or
-        std.mem.indexOfScalar(u8, path, '\\') != null or
-        std.mem.indexOfScalar(u8, path, ':') != null or
-        isSensitivePath(path)) return false;
-
-    var components = std.mem.splitScalar(u8, path, '/');
-    while (components.next()) |component| {
-        if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return false;
-    }
-    return true;
+    return project_path.isReadable(path);
 }
 
 fn isWithinCanonicalRoot(root: []const u8, candidate: []const u8) bool {
@@ -1469,62 +1486,11 @@ fn resolveSafeSnapshotPath(io: std.Io, root_dir: std.Io.Dir, canonical_root: []c
     return resolved;
 }
 
-/// Returns true for secret/credential paths that must never be persisted to a
-/// snapshot or live-indexed. Single implementation of this security filter;
-/// `watcher.isSensitivePath` delegates here (parity-tested in test_snapshot.zig
-/// "issue-528: isSensitivePath parity").
-fn endsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
-    if (value.len < suffix.len) return false;
-    return std.ascii.eqlIgnoreCase(value[value.len - suffix.len ..], suffix);
-}
-
-fn hasSensitiveExtension(basename: []const u8) bool {
-    const extensions = [_][]const u8{ ".env", ".pem", ".key", ".p12", ".pfx", ".jks" };
-    for (extensions) |extension| {
-        if (endsWithIgnoreCase(basename, extension)) return true;
-    }
-    return false;
-}
-
-fn hasSensitiveDirectory(path: []const u8) bool {
-    var components = std.mem.splitScalar(u8, path, '/');
-    while (components.next()) |component| {
-        if (std.ascii.eqlIgnoreCase(component, ".ssh") or
-            std.ascii.eqlIgnoreCase(component, ".gnupg") or
-            std.ascii.eqlIgnoreCase(component, ".aws")) return true;
-    }
-    return false;
-}
-
+/// Compatibility export for callers that historically used snapshot.zig as
+/// the sensitive-path policy boundary. The implementation now lives in the
+/// shared project-path module used by every repository read surface.
 pub fn isSensitivePath(path: []const u8) bool {
-    const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| path[sep + 1 ..] else path;
-    // Fast path: most source files have extensions like .zig, .ts, .py — none start with '.'
-    // or match sensitive patterns. Skip the full check for common cases.
-    if (basename.len == 0) return false;
-    const first = std.ascii.toLower(basename[0]);
-    // Only check sensitive names if basename starts with '.', 'c', 's', 'i' or has key/cert extension
-    if (first != '.' and first != 'c' and first != 's' and first != 'i') {
-        // Still need to check extensions and directory patterns
-        if (hasSensitiveExtension(basename)) return true;
-        if (hasSensitiveDirectory(path)) return true;
-        return false;
-    }
-    // .env, .env.<token>; do NOT match .envoy, .envrc, .environment, etc.
-    if (basename.len >= 4 and std.ascii.eqlIgnoreCase(basename[0..4], ".env") and
-        (basename.len == 4 or basename[4] == '.' or basename[4] == '-' or basename[4] == '_')) return true;
-    // Exact matches
-    const sensitive_names = [_][]const u8{
-        ".dev.vars",        ".npmrc",               ".pypirc",      ".netrc",
-        "credentials.json", "service-account.json", "secrets.json", "secrets.yaml",
-        "secrets.yml",      "id_rsa",               "id_ed25519",   ".git-credentials",
-        "id_ecdsa",         "id_dsa",               "id_ecdsa_sk",  "id_ed25519_sk",
-    };
-    for (sensitive_names) |name| {
-        if (std.ascii.eqlIgnoreCase(basename, name)) return true;
-    }
-    if (hasSensitiveExtension(basename)) return true;
-    if (hasSensitiveDirectory(path)) return true;
-    return false;
+    return project_path.isSensitive(path);
 }
 fn endsWith(s: []const u8, suffix: []const u8) bool {
     if (s.len < suffix.len) return false;

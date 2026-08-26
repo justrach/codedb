@@ -13,6 +13,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const gitignore = @import("gitignore.zig");
+const project_file = @import("project_file.zig");
 
 pub const max_output_chars: usize = 10_000;
 pub const max_walk_items: usize = 20_000;
@@ -141,6 +142,9 @@ fn fill(w: *Walk, node: *Node) !void {
     const abs = if (rel.len == 0) w.root_abs else try join(w.arena, w.root_abs, rel);
     var dir = Io.Dir.cwd().openDir(w.io, abs, .{ .iterate = true, .follow_symlinks = false }) catch return;
     defer dir.close(w.io);
+    var opened_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const opened_len = dir.realPath(w.io, &opened_buf) catch return;
+    if (!std.mem.eql(u8, opened_buf[0..opened_len], abs)) return;
 
     var names: std.ArrayList(struct { name: []const u8, is_dir: bool }) = .empty;
     var it = dir.iterate();
@@ -153,8 +157,7 @@ fn fill(w: *Walk, node: *Node) !void {
         try names.append(w.arena, .{ .name = name, .is_dir = is_dir });
     }
     if (saw_ignore) {
-        const gi = try join(w.arena, abs, ".gitignore");
-        const text = Io.Dir.cwd().readFileAlloc(w.io, gi, w.arena, .limited(64 * 1024)) catch null;
+        const text = project_file.readAllocNoFollow(w.io, dir, ".gitignore", w.arena, .limited(64 * 1024)) catch null;
         if (text) |t| {
             const extra = gitignore.parse(w.arena, t, abs) catch &.{};
             w.rules.appendSlice(w.arena, extra) catch {};
@@ -213,11 +216,10 @@ fn fillSummaries(w: *Walk, node: *Node) !void {
 
 fn isSourceExt(ext: []const u8) bool {
     const src = [_][]const u8{
-        "zig", "c", "h", "cc", "cpp", "cxx", "hpp",
-        "py",  "ts", "tsx", "js",  "jsx", "mjs", "cjs",
-        "go",  "rs", "java", "kt", "swift",
-        "rb",  "php", "cs",  "sh", "bash",
-        "md",  "toml",
+        "zig", "c",  "h",    "cc", "cpp",   "cxx", "hpp",
+        "py",  "ts", "tsx",  "js", "jsx",   "mjs", "cjs",
+        "go",  "rs", "java", "kt", "swift", "rb",  "php",
+        "cs",  "sh", "bash", "md", "toml",
     };
     for (src) |s| if (std.mem.eql(u8, ext, s)) return true;
     return false;

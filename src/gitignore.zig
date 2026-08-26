@@ -7,6 +7,7 @@
 //! `.git` itself is the walker's job, not this file.
 
 const std = @import("std");
+const project_file = @import("project_file.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -183,7 +184,18 @@ fn parentOf(path: []const u8) ?[]const u8 {
 }
 
 fn loadFile(io: Io, arena: Allocator, path: []const u8, base: []const u8, out: *std.ArrayList(Rule)) void {
-    const text = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return;
+    if (!std.mem.startsWith(u8, path, base) or path.len <= base.len or path[base.len] != '/') return;
+    const rel = path[base.len + 1 ..];
+    var dir = Io.Dir.cwd().openDir(io, base, .{}) catch return;
+    defer dir.close(io);
+    // `base` comes from the canonical list root (or one of its canonical
+    // parents). Validate the opened handle against that identity so a path
+    // retarget between discovery and open cannot re-anchor resolve-beneath to
+    // an attacker-controlled directory.
+    var opened_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const opened_len = dir.realPath(io, &opened_buf) catch return;
+    if (!std.mem.eql(u8, opened_buf[0..opened_len], base)) return;
+    const text = project_file.readAllocNoFollow(io, dir, rel, arena, .limited(64 * 1024)) catch return;
     const extra = parse(arena, text, base) catch return;
     out.appendSlice(arena, extra) catch {};
 }

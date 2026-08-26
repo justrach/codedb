@@ -13,6 +13,7 @@ const SparseNgramIndex = idx.SparseNgramIndex;
 const codegraph = @import("codegraph.zig");
 const markdown_graph = @import("markdown_graph.zig");
 const git = @import("git.zig");
+const project_file = @import("project_file.zig");
 
 pub const DocumentLinkKind = markdown_graph.LinkKind;
 pub const DocumentLink = markdown_graph.Link;
@@ -2701,7 +2702,7 @@ pub const Explorer = struct {
             const io = self.io orelse return error.WordIndexIncomplete;
             const dir = self.root_dir orelse return error.WordIndexIncomplete;
             for (paths) |path| {
-                const content = try dir.readFileAlloc(io, path, self.allocator, .limited(64 * 1024 * 1024));
+                const content = try project_file.readAllocNoFollow(io, dir, path, self.allocator, .limited(64 * 1024 * 1024));
                 errdefer self.allocator.free(content);
                 try rebuilt.indexFile(path, content);
                 self.allocator.free(content);
@@ -3178,6 +3179,7 @@ pub const Explorer = struct {
         out: *std.ArrayList(u8),
         opts: ReadRenderOptions,
     ) !bool {
+        if (!project_file.isAllowedPath(path)) return false;
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
@@ -3199,13 +3201,14 @@ pub const Explorer = struct {
 
     /// Get content: zero-copy from cache, or read from disk (caller-owned).
     fn readContentForSearch(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ?ContentRef {
+        if (!project_file.isAllowedPath(path)) return null;
         if (self.contents.get(path)) |cached| {
             return .{ .data = cached, .owned = false, .allocator = allocator };
         }
         if (builtin.os.tag == .freestanding) return null;
         const io = self.io orelse return null;
-        const dir = self.root_dir orelse std.Io.Dir.cwd();
-        const data = dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch return null;
+        const dir = self.root_dir orelse return null;
+        const data = project_file.readAllocNoFollow(io, dir, path, allocator, .limited(64 * 1024 * 1024)) catch return null;
         return .{ .data = data, .owned = true, .allocator = allocator };
     }
 
