@@ -5,6 +5,18 @@ pub fn isExactOrChild(path: []const u8, prefix: []const u8) bool {
     if (!std.mem.startsWith(u8, path, prefix)) return false;
     return path.len == prefix.len or path[prefix.len] == '/';
 }
+
+/// Root requests are capabilities, not ambient paths.  Reject relative and
+/// dot-dot spellings before opening; callers may retain the canonical path
+/// reported by the resulting handle.
+pub fn isAbsoluteRootRequest(path: []const u8) bool {
+    if (!std.fs.path.isAbsolute(path)) return false;
+    var parts = std.mem.tokenizeAny(u8, path, "/\\");
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, part, "..")) return false;
+    }
+    return true;
+}
 /// Temp-root indexing is an opt-in escape hatch for CI / SWE-bench harnesses
 /// that clone throwaway checkouts under /tmp. Off by default (footgun guard,
 /// #80/#346). Enabled by CODEDB_ALLOW_TEMP=1; the `--allow-temp` CLI flag sets
@@ -100,9 +112,9 @@ fn isBareTempDir(path: []const u8) bool {
 /// checkout rather than a scratch directory. `.git` may be a regular file
 /// (worktrees, submodules), so everything is probed with statFile.
 const project_markers = [_][]const u8{
-    ".git",           "pyproject.toml", "package.json", "Cargo.toml",
-    "go.mod",         "build.zig",      "setup.py",     "pom.xml",
-    "Gemfile",        "composer.json",  "build.gradle", "CMakeLists.txt",
+    ".git",    "pyproject.toml", "package.json", "Cargo.toml",
+    "go.mod",  "build.zig",      "setup.py",     "pom.xml",
+    "Gemfile", "composer.json",  "build.gradle", "CMakeLists.txt",
 };
 
 pub fn looksLikeProject(io: std.Io, path: []const u8) bool {
@@ -116,6 +128,16 @@ pub fn looksLikeProject(io: std.Io, path: []const u8) bool {
     return false;
 }
 
+/// Capability-relative project-marker probe.  Use this after opening a root
+/// so admission describes the directory object we actually hold, rather than
+/// a pathname that may be retargeted between validation and open.
+pub fn looksLikeProjectDir(io: std.Io, dir: std.Io.Dir) bool {
+    for (project_markers) |marker| {
+        if (dir.statFile(io, marker, .{ .follow_symlinks = false })) |_| return true else |_| {}
+    }
+    return false;
+}
+
 /// Out-of-the-box bootstrap exception: a temp root that recognizably holds a
 /// project checkout may be indexed on the fly without CODEDB_ALLOW_TEMP.
 /// Rationale: agent harnesses hard-fail once on a refused call and never
@@ -125,6 +147,24 @@ pub fn looksLikeProject(io: std.Io, path: []const u8) bool {
 pub fn isBootstrapableRoot(io: std.Io, path: []const u8) bool {
     if (isIndexableRoot(path)) return false;
     return isTempRoot(path) and !isBareTempDir(path) and looksLikeProject(io, path);
+}
+
+/// Canonical admission policy for a real project capability. Normal project
+/// roots are accepted directly; recognizable temp checkouts are accepted by
+/// the bootstrap exception. Callers must still possess/resolve the root — this
+/// does not authorize a cwd fallback when no project capability exists.
+pub fn isAdmissibleRoot(io: std.Io, path: []const u8) bool {
+    return isIndexableRoot(path) or isBootstrapableRoot(io, path);
+}
+
+/// Admission for an already-opened, canonical root capability.  This is the
+/// authoritative form used by Explorer.setRoot; it has no check-then-open
+/// window and temp-project markers are read through the stable handle.
+pub fn isAdmissibleRootDir(io: std.Io, dir: std.Io.Dir, canonical_path: []const u8) bool {
+    if (isIndexableRoot(canonical_path)) return true;
+    return isTempRoot(canonical_path) and
+        !isBareTempDir(canonical_path) and
+        looksLikeProjectDir(io, dir);
 }
 
 const testing = std.testing;
@@ -164,9 +204,11 @@ test "bootstrap: project markers enable temp-root indexing, scratch stays refuse
     try dir.writeFile(tio, .{ .sub_path = "package.json", .data = "{}\n" });
     try testing.expect(looksLikeProject(tio, base));
     try testing.expect(isBootstrapableRoot(tio, base));
+    try testing.expect(isAdmissibleRoot(tio, base));
 
     // Already-allowed roots are never "bootstrapable" (no fs probe needed).
     try testing.expect(!isBootstrapableRoot(tio, "/Users/dev/project"));
+    try testing.expect(isAdmissibleRoot(tio, "/Users/dev/project"));
     // Bare temp dirs stay refused even with the marker file present inside
     // the child we just created.
     try testing.expect(!isBootstrapableRoot(tio, "/tmp"));

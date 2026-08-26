@@ -76,23 +76,24 @@ pub fn loadUserConfig(io: std.Io, alloc: std.mem.Allocator, explicit: ?[]const u
     return try Config.loadDefault(io, alloc, explicit, bin_dir);
 }
 
-fn loadSnapshotIfHeadMatches(
+fn loadSnapshotFileIfHeadMatches(
     io: std.Io,
-    snapshot_path: []const u8,
+    snapshot_file: std.Io.File,
     explorer: *Explorer,
     store: *Store,
+    expected_root: []const u8,
     current_git_head: ?[40]u8,
     allocator: std.mem.Allocator,
 ) bool {
-    const snap_head = snapshot_mod.readSnapshotGitHead(io, snapshot_path) orelse {
+    const snap_head = snapshot_mod.readSnapshotGitHeadFromFile(io, snapshot_file) orelse {
         // No git HEAD in snapshot (non-git project or legacy snapshot) — load
         // only when the current project also has no git HEAD.
         if (current_git_head != null) return false;
-        return snapshot_mod.loadSnapshot(io, snapshot_path, explorer, store, allocator);
+        return snapshot_mod.loadSnapshotValidatedFromFile(io, snapshot_file, expected_root, explorer, store, allocator);
     };
     const cur_head = current_git_head orelse return false;
     if (!std.mem.eql(u8, &snap_head, &cur_head)) return false;
-    return snapshot_mod.loadSnapshot(io, snapshot_path, explorer, store, allocator);
+    return snapshot_mod.loadSnapshotValidatedFromFile(io, snapshot_file, expected_root, explorer, store, allocator);
 }
 
 pub fn loadBestSnapshot(
@@ -104,16 +105,28 @@ pub fn loadBestSnapshot(
     current_git_head: ?[40]u8,
     allocator: std.mem.Allocator,
 ) bool {
-    const root_snapshot = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
-    defer if (root_snapshot) |p| allocator.free(p);
-    const first_snapshot = root_snapshot orelse "codedb.snapshot";
-    if (loadSnapshotIfHeadMatches(io, first_snapshot, explorer, store, current_git_head, allocator)) {
-        return true;
-    }
+    const root_dir = explorer.root_dir orelse return false;
+    const canonical_root = explorer.root_path orelse return false;
+    if (!project_file.rootMatchesPath(io, root_dir, abs_root)) return false;
 
-    const central_snapshot = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{data_dir}) catch return false;
-    defer allocator.free(central_snapshot);
-    return loadSnapshotIfHeadMatches(io, central_snapshot, explorer, store, current_git_head, allocator);
+    if (root_dir.openFile(io, "codedb.snapshot", .{
+        .allow_directory = false,
+        .follow_symlinks = false,
+        .resolve_beneath = true,
+    })) |root_snapshot| {
+        defer root_snapshot.close(io);
+        if (loadSnapshotFileIfHeadMatches(io, root_snapshot, explorer, store, canonical_root, current_git_head, allocator)) return true;
+    } else |_| {}
+
+    var central_dir = std.Io.Dir.cwd().openDir(io, data_dir, .{ .follow_symlinks = false }) catch return false;
+    defer central_dir.close(io);
+    const central_snapshot = central_dir.openFile(io, "codedb.snapshot", .{
+        .allow_directory = false,
+        .follow_symlinks = false,
+        .resolve_beneath = true,
+    }) catch return false;
+    defer central_snapshot.close(io);
+    return loadSnapshotFileIfHeadMatches(io, central_snapshot, explorer, store, canonical_root, current_git_head, allocator);
 }
 
 pub fn getDataDir(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {
@@ -379,15 +392,16 @@ pub fn persistWordIndexFromSource(
         }
     }
 
-    var root_dir = try std.Io.Dir.cwd().openDir(io, root_path, .{});
-    defer root_dir.close(io);
+    const root_dir = explorer.root_dir orelse return error.RootNotConfigured;
+    const canonical_root = explorer.root_path orelse return error.RootNotConfigured;
+    if (!project_file.rootMatchesPath(io, root_dir, root_path)) return error.InvalidProjectRoot;
 
     var word_index = WordIndex.init(allocator);
     defer word_index.deinit();
     word_index.skip_file_words = true;
 
     for (paths.items) |path| {
-        const content = project_file.readAllocNoFollow(io, root_dir, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
+        const content = project_file.readAllocNoFollowAtRoot(io, root_dir, canonical_root, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
         errdefer allocator.free(content);
         try word_index.indexFile(path, content);
         allocator.free(content);

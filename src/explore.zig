@@ -14,6 +14,7 @@ const codegraph = @import("codegraph.zig");
 const markdown_graph = @import("markdown_graph.zig");
 const git = @import("git.zig");
 const project_file = @import("project_file.zig");
+const root_policy = @import("root_policy.zig");
 
 pub const DocumentLinkKind = markdown_graph.LinkKind;
 pub const DocumentLink = markdown_graph.Link;
@@ -1806,11 +1807,62 @@ pub const Explorer = struct {
     /// pass a custom value to Explorer.init.
     pub const DEFAULT_CONTENT_CACHE_CAPACITY: u32 = 4096;
 
-    pub fn setRoot(self: *Explorer, io: std.Io, root_path: []const u8) void {
+    /// Establish the project root as one validated filesystem capability.
+    /// The final component is never followed, temp-project admission is
+    /// checked through the opened handle, and replacement is transactional:
+    /// a failed call leaves the previous root intact.
+    pub fn setRoot(self: *Explorer, io: std.Io, root_path: []const u8) !void {
+        if (!root_policy.isAbsoluteRootRequest(root_path)) return error.PathNotAllowed;
+        const new_dir = try std.Io.Dir.cwd().openDir(io, root_path, .{ .follow_symlinks = false });
+        errdefer new_dir.close(io);
+
+        var canonical_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const canonical_len = try new_dir.realPathFile(io, ".", &canonical_buf);
+        const canonical = canonical_buf[0..canonical_len];
+        if (!root_policy.isAdmissibleRootDir(io, new_dir, canonical)) return error.PathNotAllowed;
+        const new_path = try self.allocator.dupe(u8, canonical);
+
+        const old_dir = self.root_dir;
+        const old_path = self.root_path;
         self.io = io;
-        self.root_dir = std.Io.Dir.cwd().openDir(io, root_path, .{}) catch null;
-        if (self.root_path) |old| self.allocator.free(old);
-        self.root_path = self.allocator.dupe(u8, root_path) catch null;
+        self.root_dir = new_dir;
+        self.root_path = new_path;
+        if (old_dir) |dir| dir.close(io);
+        if (old_path) |path| self.allocator.free(path);
+    }
+
+    test "setRoot establishes one no-follow capability and swaps transactionally" {
+        const testing = std.testing;
+        const test_io = testing.io;
+        var first = testing.tmpDir(.{});
+        defer first.cleanup();
+        var second = testing.tmpDir(.{});
+        defer second.cleanup();
+        try first.dir.writeFile(test_io, .{ .sub_path = "build.zig", .data = "// marker\n" });
+        try second.dir.writeFile(test_io, .{ .sub_path = "build.zig", .data = "// marker\n" });
+
+        var first_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const first_len = try first.dir.realPathFile(test_io, ".", &first_buf);
+        var second_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const second_len = try second.dir.realPathFile(test_io, ".", &second_buf);
+
+        var explorer = Explorer.init(testing.allocator, 4);
+        defer explorer.deinit();
+        try explorer.setRoot(test_io, first_buf[0..first_len]);
+        const retired = explorer.root_dir.?;
+        try explorer.setRoot(test_io, second_buf[0..second_len]);
+        if (comptime builtin.os.tag != .windows) {
+            const rc = std.posix.system.fcntl(retired.handle, std.posix.F.GETFD, @as(usize, 0));
+            try testing.expectEqual(std.posix.E.BADF, std.posix.errno(rc));
+        }
+        try testing.expectEqualStrings(second_buf[0..second_len], explorer.root_path.?);
+
+        try first.dir.symLink(test_io, second_buf[0..second_len], "retarget", .{});
+        const alias = try std.fmt.allocPrint(testing.allocator, "{s}/retarget", .{first_buf[0..first_len]});
+        defer testing.allocator.free(alias);
+        if (explorer.setRoot(test_io, alias)) |_| return error.TestUnexpectedResult else |_| {}
+        try testing.expectEqualStrings(second_buf[0..second_len], explorer.root_path.?);
+        try testing.expectError(error.PathNotAllowed, explorer.setRoot(test_io, "relative/project"));
     }
 
     pub fn init(allocator: std.mem.Allocator, content_cache_capacity: u32) Explorer {

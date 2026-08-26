@@ -242,6 +242,26 @@ pub fn loadClimb(io: Io, arena: Allocator, abs_root: []const u8) ![]Rule {
     return out.items;
 }
 
+/// Load project-local ignore policy through an already-established root
+/// capability.  MCP/live callers use this form so neither root replacement
+/// nor a symlinked ignore file can redirect policy reads outside the project.
+pub fn loadProjectRoot(io: Io, arena: Allocator, root_dir: Io.Dir, canonical_root: []const u8) ![]Rule {
+    var out: std.ArrayList(Rule) = .empty;
+    if (project_file.readAllocNoFollowAtRoot(io, root_dir, canonical_root, ".gitignore", arena, .limited(64 * 1024))) |text| {
+        const rules = parse(arena, text, canonical_root) catch &.{};
+        try out.appendSlice(arena, rules);
+    } else |_| {}
+
+    var git_dir = root_dir.openDir(io, ".git", .{ .follow_symlinks = false }) catch return out.items;
+    defer git_dir.close(io);
+    var info_dir = git_dir.openDir(io, "info", .{ .follow_symlinks = false }) catch return out.items;
+    defer info_dir.close(io);
+    const text = project_file.readAllocNoFollow(io, info_dir, "exclude", arena, .limited(64 * 1024)) catch return out.items;
+    const rules = parse(arena, text, canonical_root) catch return out.items;
+    try out.appendSlice(arena, rules);
+    return out.items;
+}
+
 test "star and dir-only and negation" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

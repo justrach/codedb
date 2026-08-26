@@ -206,11 +206,14 @@ pub fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8)
         return;
     };
     defer ctx.allocator.free(data_dir);
+    ctx.explorer.setRoot(ctx.io, abs_root) catch {
+        ctx.triggered.store(false, .release);
+        return;
+    };
     const git_head = git_mod.getGitHead(abs_root, ctx.allocator) catch null;
     mcp_server.setScanState(.loading_snapshot);
     const snapshot_loaded = loadBestSnapshot(ctx.io, ctx.explorer, ctx.store, abs_root, data_dir, git_head, ctx.allocator);
     ctx.resolved_root = abs_root;
-    ctx.explorer.setRoot(ctx.io, abs_root);
     ctx.scan_done.store(snapshot_loaded, .release);
     if (!snapshot_loaded) {
         mcp_server.setScanState(.walking);

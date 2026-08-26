@@ -348,14 +348,15 @@ pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
             });
             return 1;
         }
-        var root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch {
+        const root_dir = explorer.root_dir orelse {
             out.p("{s}\xe2\x9c\x97{s} cannot open project root: {s}{s}{s}\n", .{
                 s.red, s.reset, s.bold, root, s.reset,
             });
             return 1;
         };
-        defer root_dir.close(io);
-        _ = project_file.statNoFollow(io, root_dir, path) catch {
+        const canonical_root = explorer.root_path orelse return 1;
+        if (!project_file.rootMatchesPath(io, root_dir, root)) return 1;
+        _ = project_file.statNoFollowAtRoot(io, root_dir, canonical_root, path) catch {
             out.p("{s}\xe2\x9c\x97{s} file read not allowed: {s}{s}{s}\n", .{
                 s.red, s.reset, s.bold, path, s.reset,
             });
@@ -368,7 +369,7 @@ pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
         // from wherever the user happened to invoke it.
         const cached = explorer.getContent(path, allocator) catch null;
         const content_owned = if (cached) |c| c else blk: {
-            break :blk project_file.readAllocNoFollow(io, root_dir, path, allocator, .limited(10 * 1024 * 1024)) catch {
+            break :blk project_file.readAllocNoFollowAtRoot(io, root_dir, canonical_root, path, allocator, .limited(10 * 1024 * 1024)) catch {
                 out.p("{s}\xe2\x9c\x97{s} not indexed and disk read failed: {s}{s}{s}\n", .{
                     s.red, s.reset, s.bold, path, s.reset,
                 });

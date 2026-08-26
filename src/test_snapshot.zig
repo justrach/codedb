@@ -114,7 +114,7 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
     var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    exp2.setRoot(io, dir_path);
+    try exp2.setRoot(io, dir_path);
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
 
@@ -204,7 +204,7 @@ test "issue-685: unsafe snapshot records are rejected before indexing" {
 
     var restored = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer restored.deinit();
-    restored.setRoot(io, root);
+    try restored.setRoot(io, root);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     try testing.expect(!snapshot_mod.loadSnapshot(io, snap_path, &restored, &store, testing.allocator));
@@ -553,7 +553,7 @@ test "snapshot: parallel freshness load re-indexes changed files, restores the r
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
     var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    exp2.setRoot(io, dir_path);
+    try exp2.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
@@ -627,7 +627,7 @@ test "snapshot: writer streams uncached file contents for large repos" {
     try testing.expectEqual(@as(usize, 1), hits_no_root.len);
 
     var loaded = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    loaded.setRoot(io, dir_path);
+    try loaded.setRoot(io, dir_path);
     defer loaded.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();

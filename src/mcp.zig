@@ -394,7 +394,7 @@ const ProjectCache = struct {
         default_store: *Store,
     ) !ProjectCtx {
         const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
-        if (!root_policy.isIndexableRoot(p) and !root_policy.isBootstrapableRoot(io, p))
+        if (!root_policy.isAdmissibleRoot(io, p))
             return error.PathNotAllowed;
 
         self.mu.lock();
@@ -417,29 +417,35 @@ const ProjectCache = struct {
             return error.OutOfMemory;
         };
         new_entry.explorer = Explorer.init(self.alloc, self.content_cache_capacity);
-        new_entry.explorer.setRoot(io, p);
+        new_entry.explorer.setRoot(io, p) catch |err| {
+            new_entry.explorer.deinit();
+            self.alloc.free(new_entry.path);
+            self.alloc.destroy(new_entry);
+            return err;
+        };
         new_entry.store = Store.init(self.alloc);
         new_entry.snapshot_cache = .{};
         new_entry.deps_cache = .{};
         new_entry.last_used = now;
 
-        var snap_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const snap_path = std.fmt.bufPrint(&snap_buf, "{s}/codedb.snapshot", .{p}) catch {
-            new_entry.store.deinit();
-            new_entry.explorer.deinit();
-            self.alloc.free(new_entry.path);
-            self.alloc.destroy(new_entry);
-            return error.PathTooLong;
-        };
-
-        if (!snapshot_mod.loadSnapshotValidated(io, snap_path, p, &new_entry.explorer, &new_entry.store, self.alloc)) {
+        const canonical_root = new_entry.explorer.root_path orelse p;
+        const stable_root = new_entry.explorer.root_dir orelse return error.PathNotAllowed;
+        if (!snapshot_mod.loadSnapshotValidatedFromRoot(io, stable_root, canonical_root, &new_entry.explorer, &new_entry.store, self.alloc)) {
             // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
-            const hash = std.hash.Wyhash.hash(0, p);
+            const hash = std.hash.Wyhash.hash(0, canonical_root);
             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
             const loaded_central = blk: {
                 const home = cio.homeDir() orelse break :blk false;
-                const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
-                break :blk snapshot_mod.loadSnapshotValidated(io, central, p, &new_entry.explorer, &new_entry.store, self.alloc);
+                const central_dir_path = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}", .{ home, hash }) catch break :blk false;
+                var central_dir = std.Io.Dir.cwd().openDir(io, central_dir_path, .{ .follow_symlinks = false }) catch break :blk false;
+                defer central_dir.close(io);
+                const central_file = central_dir.openFile(io, "codedb.snapshot", .{
+                    .allow_directory = false,
+                    .follow_symlinks = false,
+                    .resolve_beneath = true,
+                }) catch break :blk false;
+                defer central_file.close(io);
+                break :blk snapshot_mod.loadSnapshotValidatedFromFile(io, central_file, canonical_root, &new_entry.explorer, &new_entry.store, self.alloc);
             };
             if (!loaded_central) {
                 new_entry.store.deinit();
@@ -1529,7 +1535,7 @@ fn parseRoots(io: std.Io, s: *Session, result: *const std.json.ObjectMap) void {
         const name_raw = mcpj.getStr(&obj, "name") orelse "";
         // Strip file:// prefix for policy check
         const path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
-        if (!root_policy.isIndexableRoot(path) and !root_policy.isBootstrapableRoot(io, path)) {
+        if (!root_policy.isAdmissibleRoot(io, path)) {
             std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
             continue;
         }
@@ -1836,7 +1842,7 @@ fn dispatch(
         .codedb_query => handleQuery(alloc, args, out, ctx.explorer, ctx.store),
         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
-        .codedb_list_dir => mcp_list_dir.handle(io, alloc, getStr(args, "path") orelse ".", project_path orelse cache.default_path, out),
+        .codedb_list_dir => mcp_list_dir.handle(io, alloc, getStr(args, "path") orelse ".", ctx.explorer, out),
         .codedb_context => handleContext(io, alloc, args, out, ctx.store, ctx.explorer, project_path orelse cache.default_path),
     }
     appendScanProgressHint(alloc, out, tool);
@@ -3318,6 +3324,18 @@ fn appendStructuredContext(alloc: std.mem.Allocator, out: *std.ArrayList(u8), va
 }
 
 fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, project_root: []const u8) void {
+    const stable_root = explorer.root_dir orelse {
+        out.appendSlice(alloc, "error: project root is not configured") catch {};
+        return;
+    };
+    const rooted_project = explorer.root_path orelse {
+        out.appendSlice(alloc, "error: project root is not configured") catch {};
+        return;
+    };
+    if (!project_file_read.rootMatchesPath(io, stable_root, project_root)) {
+        out.appendSlice(alloc, "error: project root capability mismatch") catch {};
+        return;
+    }
     const task = getStr(args, "task") orelse {
         out.appendSlice(alloc, "error: missing 'task' argument") catch {};
         appendBundleArgKeysDiagnostic(alloc, out, args);
@@ -3390,7 +3408,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     var reader_declared_revision: ?[]const u8 = null;
     var reader_computed_revision: ?[]const u8 = null;
     if (reader_md_gate) {
-        var reader_state = reader_md.load(io, alloc, project_root) catch blk: {
+        var reader_state = reader_md.loadFromRoot(io, alloc, stable_root, rooted_project) catch blk: {
             reader_validation = "error";
             break :blk null;
         };
@@ -3595,7 +3613,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
 
     var use_exact_semantic_fallback = false;
     if (semantic_requested) ann_lane: {
-        const data_dir = getProjectDataDir(A, project_root) orelse {
+        const data_dir = getProjectDataDir(A, rooted_project) orelse {
             retrieval.semantic = "unavailable";
             retrieval.detail = "AnnDataDirUnavailable";
             use_exact_semantic_fallback = true;
@@ -3606,7 +3624,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             A,
             explorer,
             store,
-            project_root,
+            rooted_project,
             data_dir,
             task,
             semantic_index_mod.default_search_results,
@@ -4591,7 +4609,7 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         return;
     };
     const root = root_buf[0..root_len];
-    if (!root_policy.isIndexableRoot(root)) {
+    if (!project_file_read.rootIsAllowed(io, read_root)) {
         out.appendSlice(alloc, "error: project root is not configured") catch {};
         return;
     }
@@ -5165,7 +5183,7 @@ fn handleIndex(
         return;
     };
     const abs_path = abs_buf[0..abs_len];
-    if (!root_policy.isIndexableRoot(abs_path) and !root_policy.isBootstrapableRoot(io, abs_path)) {
+    if (!root_policy.isAdmissibleRoot(io, abs_path)) {
         out.appendSlice(alloc, "error: refusing to index temporary root: ") catch {};
         out.appendSlice(alloc, abs_path) catch {};
         return;
@@ -5225,7 +5243,10 @@ fn handleIndex(
         default_store.currentSeq() == 0 and
         getScanState() == .loading_snapshot)
     {
-        default_explorer.setRoot(io, abs_path);
+        default_explorer.setRoot(io, abs_path) catch {
+            out.appendSlice(alloc, "error: indexed snapshot but project root is not safely readable") catch {};
+            return;
+        };
         if (snapshot_mod.loadSnapshotValidated(io, snapshot_path, abs_path, default_explorer, default_store, alloc)) {
             loadProjectTrigramFromDiskIfPresent(io, default_explorer, abs_path, alloc);
             if (default_explorer.outlines.count() > 1000) {
@@ -6939,7 +6960,7 @@ test "issue-258: cached project reads use the project root after contents are re
 
     var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
+    try snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "const project = \"secondary\";\n");
 
     const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{project_path});
@@ -7000,7 +7021,7 @@ test "ProjectCache loads project from central snapshot cache" {
 
     var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
+    try snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "pub fn cachedProject() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
 
@@ -7055,13 +7076,13 @@ test "issue-353: explicit default project loads snapshot when default explorer i
 
     var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
+    try snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "pub fn issue353() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
 
     var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer default_explorer.deinit();
-    default_explorer.setRoot(io, project_path);
+    try default_explorer.setRoot(io, project_path);
     var default_store = Store.init(testing.allocator);
     defer default_store.deinit();
 
@@ -7099,7 +7120,7 @@ test "issue-353: project cache invalidation reloads newly written snapshots" {
 
     var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
+    try snapshot_src.setRoot(io, project_path);
     try tmp.dir.writeFile(io, .{
         .sub_path = "src/old.zig",
         .data = "pub fn oldSymbol() void {}\n",
@@ -7120,7 +7141,7 @@ test "issue-353: project cache invalidation reloads newly written snapshots" {
 
     var snapshot_next = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_next.deinit();
-    snapshot_next.setRoot(io, project_path);
+    try snapshot_next.setRoot(io, project_path);
     try tmp.dir.writeFile(io, .{
         .sub_path = "src/new.zig",
         .data = "pub fn newSymbol() void {}\n",

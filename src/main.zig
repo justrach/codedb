@@ -483,7 +483,7 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
     defer if (rerank_trace_path) |p| allocator.free(p);
     if (rerank_trace_path) |p| explorer.rerank_trace_path = p;
 
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     defer explorer.deinit();
 
     // Per-project frequency table for sparse n-gram boundary selection.

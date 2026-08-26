@@ -34,6 +34,12 @@ comptime {
     _ = @import("config.zig");
 }
 
+fn setTestProjectRoot(explorer: *Explorer) !void {
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try std.Io.Dir.cwd().realPathFile(io, ".", &root_buf);
+    try explorer.setRoot(io, root_buf[0..root_len]);
+}
+
 test "mcp json: line reader preserves newline and EOF framing" {
     var reader: std.Io.Reader = .fixed("first\nlast");
 
@@ -1245,7 +1251,7 @@ test "issue-bug5: codedb_read returns binary stub instead of dumping bytes" {
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, dir_path);
+    try explorer.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
@@ -1287,7 +1293,7 @@ test "issue-bug6: codedb_read errors when line_start > line_end" {
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, dir_path);
+    try explorer.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
@@ -2513,6 +2519,7 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
     // plain words instead of erroring.
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
     try explorer.indexFile("src/ranking.zig", "pub fn rankingBoost() void {}\n");
 
     var store = Store.init(testing.allocator);
@@ -2521,7 +2528,7 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -2543,6 +2550,7 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
 test "issue-688: codedb_context json exposes typed provenance and preserves markdown default" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
     try explorer.indexFile(
         "src/ranking.zig",
         "pub fn rankingBoost() void { helper(); }\npub fn helper() void {}\n",
@@ -2553,7 +2561,7 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const json_args = try std.json.parseFromSlice(
@@ -2627,6 +2635,7 @@ test "codedb_context hybrid is explicit and keeps local results when provider is
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
     try explorer.indexFile(
         "src/privacy.zig",
         "pub fn retentionPolicy() void { keepLocalBm25(); }\npub fn keepLocalBm25() void {}\n",
@@ -2643,7 +2652,7 @@ test "codedb_context hybrid is explicit and keeps local results when provider is
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
@@ -2679,6 +2688,7 @@ test "issue-688: structured no-candidate response retains reader evidence" {
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io, ".codedb");
     try tmp.dir.writeFile(io, .{ .sub_path = "source.zig", .data = "pub fn source() void {}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = "const std = @import(\"std\");\n" });
     try tmp.dir.writeFile(io, .{
         .sub_path = ".codedb/reader.md",
         .data = "---\nsource_hash: blake2b:00000000000000000000000000000000\nsource_files:\n  - source.zig\n---\nreader body\n",
@@ -2688,6 +2698,7 @@ test "issue-688: structured no-candidate response retains reader evidence" {
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    try explorer.setRoot(io, root_buf[0..root_len]);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
@@ -2721,6 +2732,7 @@ test "issue-688: structured no-candidate response retains reader evidence" {
 test "issue-685: codedb_deps exposes bounded typed document edges" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
     try explorer.indexFile("docs/c.md", "# Gamma\n[A](a.md)\n");
     try explorer.indexFile("docs/b.md", "# Beta\n[C](c.md)\n");
     try explorer.indexFile("docs/a.md", "# Alpha\n[B](b.md)\n");
@@ -2729,7 +2741,7 @@ test "issue-685: codedb_deps exposes bounded typed document edges" {
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args = try std.json.parseFromSlice(
@@ -2803,7 +2815,7 @@ test "live outline indexes a missing on-disk file instead of hinting codedb_inde
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try explorer.indexFile("keep.py", "def keep():\n    return 1\n");
 
     var store = Store.init(testing.allocator);
@@ -2836,7 +2848,7 @@ test "live read indexes a missing on-disk file so later search can find it" {
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try explorer.indexFile("keep.py", "def keep():\n    return 1\n");
 
     var store = Store.init(testing.allocator);
@@ -3158,6 +3170,7 @@ test "cli-mcp-parity: runCliTool bridges navigation commands to MCP handlers" {
 test "issue-531: codedb_context max_tokens packs sections by value under the budget" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
 
     // A defined symbol with a fat body (inlined when unbudgeted) plus several
     // mention files so the snippets section is large too.
@@ -3206,7 +3219,7 @@ test "issue-531: codedb_context max_tokens packs sections by value under the bud
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_full =
@@ -3438,7 +3451,7 @@ test "issue-632: codedb_read raw mode returns byte-exact range without line-numb
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, dir_path);
+    try explorer.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
@@ -3508,7 +3521,7 @@ test "issue-632: codedb_read raw mode coverage — full-file byte-exact, default
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, dir_path);
+    try explorer.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);

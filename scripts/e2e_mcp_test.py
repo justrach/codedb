@@ -1178,6 +1178,49 @@ def run_scenario_8_symlink_privacy_boundary(binary: str, project: str) -> list[T
 
     return results
 
+
+def run_scenario_9_bootstrap_temp_read(binary: str) -> list[TestResult]:
+    """An admitted temp checkout keeps its root capability on read paths."""
+    results: list[TestResult] = []
+
+    def t(name: str) -> TestResult:
+        r = TestResult(f"[S9] {name}")
+        results.append(r)
+        return r
+
+    with tempfile.TemporaryDirectory(prefix="codedb-bootstrap-read-") as project_tmp:
+        root = Path(project_tmp).resolve()
+        (root / "src").mkdir()
+        (root / "pyproject.toml").write_text(
+            "[project]\nname = 'codedb-bootstrap-read'\nversion = '0'\n"
+        )
+        canary = "BOOTSTRAP_TEMP_READ_CANARY = 'rooted'\n"
+        (root / "src" / "main.py").write_text(canary)
+
+        p = MCPProcess(binary, [], cwd="/", command=[binary, str(root), "mcp", "--no-telemetry"])
+        try:
+            r = t("bootstrapable temp root scans successfully")
+            if not do_initialize(p, with_roots=False) or not wait_for_scan(p):
+                r.fail("MCP server did not admit and scan the marked temp checkout")
+                return results
+            r.ok()
+
+            direct = tool_text(p.call_tool("codedb_read", {"path": "src/main.py", "raw": True}))
+            pipeline = tool_text(p.call_tool("codedb_query", {
+                "pipeline": [{"op": "read", "path": "src/main.py"}],
+            }))
+            r = t("direct and pipeline reads retain the admitted root capability")
+            if canary.strip() not in direct or canary.strip() not in pipeline:
+                r.fail(f"admitted temp read failed: direct={direct[:220]!r} pipeline={pipeline[:220]!r}")
+            elif "project root is not configured" in direct.lower() or "project root is not configured" in pipeline.lower():
+                r.fail(f"read surface re-rejected admitted root: direct={direct[:180]!r} pipeline={pipeline[:180]!r}")
+            else:
+                r.ok()
+        finally:
+            p.close()
+
+    return results
+
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -1225,6 +1268,9 @@ def main() -> int:
 
     print(f"\n{CYAN}── Scenario 8: file-symlink privacy boundary ──{RESET}")
     all_results += run_scenario_8_symlink_privacy_boundary(binary, project)
+
+    print(f"\n{CYAN}── Scenario 9: bootstrapable temp-root read parity ──{RESET}")
+    all_results += run_scenario_9_bootstrap_temp_read(binary)
 
     print()
     passed = 0

@@ -1912,7 +1912,7 @@ test "issue-389: FilteredWalker skips file symlinks without hiding their targets
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
 
     // The canonical source remains indexed, but the file alias is intentionally
@@ -1951,7 +1951,7 @@ test "file symlink aliases cannot expose outside-root or sensitive targets" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
 
     // File aliases are skipped uniformly; the real safe source remains visible,
@@ -2019,7 +2019,7 @@ test "regular file retargeted to symlink stays unreadable after content release"
     const root = root_buf[0..try project.dir.realPathFile(io, ".", &root_buf)];
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try explorer.indexFile("src/swap.zig", "pub const safe_swap_token = 1;\n");
     try explorer.indexFile("src/ordinary.zig", "pub const ordinarytoken = 1;\n");
 
@@ -2108,7 +2108,7 @@ test "symlinked ignore files are not read as policy input" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
     try testing.expect(explorer.contents.contains("src/ordinary.zig"));
 }
@@ -2157,7 +2157,7 @@ test "issue-405: FilteredWalker walks directory symlinks safely (cycle + escape)
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
 
     // 1. The in-target file must appear under the symlinked path. This is the
@@ -2210,7 +2210,7 @@ test "walker: generated tool-output dirs are not indexed" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
 
     // Real source is still indexed.
@@ -2261,7 +2261,7 @@ test "issue-692: .devenv and .jj are not indexed" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
 
     try testing.expect(explorer.contents.contains("src/app.py"));
@@ -3112,7 +3112,7 @@ test "disk-backed line ranges do not reuse offsets for changed content" {
     const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
     var ex = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer ex.deinit();
-    ex.setRoot(io, root_buf[0..root_len]);
+    try ex.setRoot(io, root_buf[0..root_len]);
 
     var first: std.ArrayList(u8) = .empty;
     defer first.deinit(testing.allocator);

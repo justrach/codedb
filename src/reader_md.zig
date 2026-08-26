@@ -58,12 +58,18 @@ fn isWithinProject(root: []const u8, candidate: []const u8) bool {
 /// if the frontmatter can't be parsed, state=stale if the hash drifted, or
 /// state=ready (with body set) if everything checks out.
 pub fn load(io: std.Io, allocator: std.mem.Allocator, project_root: []const u8) !Reader {
-    var root_dir = std.Io.Dir.cwd().openDir(io, project_root, .{}) catch {
+    var root_dir = std.Io.Dir.cwd().openDir(io, project_root, .{ .follow_symlinks = false }) catch {
         return .{ .state = .missing };
     };
     defer root_dir.close(io);
 
-    const raw = project_file.readAllocNoFollow(io, root_dir, ".codedb/reader.md", allocator, .limited(64 * 1024)) catch {
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = root_dir.realPathFile(io, ".", &root_buf) catch return .{ .state = .missing };
+    return loadFromRoot(io, allocator, root_dir, root_buf[0..root_len]);
+}
+
+pub fn loadFromRoot(io: std.Io, allocator: std.mem.Allocator, root_dir: std.Io.Dir, canonical_root: []const u8) !Reader {
+    const raw = project_file.readAllocNoFollowAtRoot(io, root_dir, canonical_root, ".codedb/reader.md", allocator, .limited(64 * 1024)) catch {
         return .{ .state = .missing };
     };
     errdefer allocator.free(raw);
@@ -159,18 +165,6 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, project_root: []const u8) 
     // Resolve each source before reading it. Lexically relative paths can still
     // escape through symlinks, so require the canonical target to remain under
     // the canonical project root and read that checked path.
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root_len = root_dir.realPathFile(io, ".", &root_buf) catch {
-        return .{
-            .state = .stale,
-            .raw = raw,
-            .declared_hash = declared_hash_opt,
-            .body = body,
-            .source_files = stored_source_files,
-        };
-    };
-    const canonical_root = root_buf[0..root_len];
-
     // Compute blake2b(16) over: for each f, f.bytes ++ 0x00 ++ file_contents ++ 0x00 0x00
     var h = std.crypto.hash.blake2.Blake2b128.init(.{});
     for (stored_source_files) |rel| {
@@ -195,7 +189,7 @@ pub fn load(io: std.Io, allocator: std.mem.Allocator, project_root: []const u8) 
                 .source_files = stored_source_files,
             };
         }
-        const data = project_file.readAllocNoFollow(io, root_dir, rel, allocator, .limited(8 * 1024 * 1024)) catch {
+        const data = project_file.readAllocNoFollowAtRoot(io, root_dir, canonical_root, rel, allocator, .limited(8 * 1024 * 1024)) catch {
             return .{
                 .state = .stale,
                 .raw = raw,

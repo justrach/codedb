@@ -2047,7 +2047,7 @@ test "audit: searchContent loses a word-indexed file >512KB evicted from the con
 
     var explorer = Explorer.init(testing.allocator, 1); // capacity 1 forces eviction
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
 
     try explorer.indexFile("big.zig", big.items);
     try explorer.indexFile("filler.zig", "fn g() void {}\n");
