@@ -16,6 +16,7 @@ const mcp_server = @import("mcp.zig");
 const telemetry = @import("telemetry.zig");
 const git_mod = @import("git.zig");
 const snapshot_mod = @import("snapshot.zig");
+const semantic_index = @import("semantic_index.zig");
 const update_mod = @import("update.zig");
 const index_mod = @import("index.zig");
 const Config = @import("config.zig").Config;
@@ -257,6 +258,55 @@ pub fn runSnapshot(ctx: *RunCtx) void {
             }
         }
     }
+}
+
+/// Explicitly build the local file-card ANN sidecar. This is never triggered
+/// by an ordinary query because indexing sends bounded, safe code-chunk cards
+/// to the configured embedding endpoint.
+pub fn runSemanticIndex(ctx: *RunCtx) void {
+    const stats = semantic_index.build(
+        ctx.io,
+        ctx.allocator,
+        ctx.explorer,
+        ctx.store,
+        ctx.abs_root,
+        ctx.data_dir,
+    ) catch |err| {
+        ctx.out.p("{s}\xe2\x9c\x97{s} semantic index failed: {s}\n", .{ ctx.s.red, ctx.s.reset, @errorName(err) });
+        ctx.out.flush();
+        std.process.exit(1);
+    };
+    var duration_buf: [64]u8 = undefined;
+    ctx.out.p(
+        "{s}\xe2\x9c\x93{s} {s}semantic ANN ready{s}  {d} chunks from {d} files  {d}D  {s}\n" ++
+            "  local sidecar: {s}/{s} ({d} bytes total; mmap slab {d} bytes; metadata {d} bytes)\n" ++
+            "  persistent vector payload: {d} bytes  remote text sent: {d} bytes\n" ++
+            "  vector space: {x}  sensitive paths blocked: {d}  parallel batches: {d}\n" ++
+            "  embedding wall: {d} ms  HNSW insertion: {d} ms  total: {s}\n",
+        .{
+            ctx.s.green,
+            ctx.s.reset,
+            ctx.s.bold,
+            ctx.s.reset,
+            stats.records,
+            stats.files_indexed,
+            stats.dimensions,
+            stats.model,
+            ctx.data_dir,
+            semantic_index.sidecar_name,
+            stats.file_bytes,
+            stats.graph_bytes,
+            stats.metadata_bytes,
+            stats.vector_payload_bytes,
+            stats.text_bytes_sent,
+            stats.vector_space_id,
+            stats.sensitive_paths_blocked,
+            stats.parallel_batches,
+            stats.embedding_wall_ns / std.time.ns_per_ms,
+            stats.insertion_ns / std.time.ns_per_ms,
+            sty.formatDuration(&duration_buf, stats.elapsed_ns),
+        },
+    );
 }
 
 pub fn runCliDaemon(ctx: *RunCtx) !void {

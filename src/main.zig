@@ -520,6 +520,8 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
         commands.runBenchEngine(&ctx);
     } else if (std.mem.eql(u8, cmd, "snapshot")) {
         commands.runSnapshot(&ctx);
+    } else if (std.mem.eql(u8, cmd, "semantic-index")) {
+        commands.runSemanticIndex(&ctx);
     } else if (std.mem.eql(u8, cmd, "cli-daemon")) {
         try commands.runCliDaemon(&ctx);
     } else if (std.mem.eql(u8, cmd, "serve")) {

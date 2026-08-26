@@ -70,6 +70,42 @@ codedb-cli [root] <command> [args...]
 | `start [root]` | Start the daemon | `codedb-cli start .` |
 | `stop` | Stop the daemon | `codedb-cli stop` |
 
+The native binary also exposes the task composer directly:
+
+```bash
+# Default: entirely local BM25/symbol/graph retrieval
+codedb /path/to/repo context "find the request authentication path"
+
+# Explicit opt-in: local retrieval first, then one transient advisory Qwen batch
+codedb /path/to/repo context --semantic "find the request authentication path"
+
+# Explicit one-time build: bounded code chunks become a local OpenPuffer ANN
+codedb /path/to/repo semantic-index
+
+# Machine-readable privacy, model, byte-count, ranks, and retention metadata
+codedb /path/to/repo context --semantic --json "find the request authentication path"
+```
+
+`--semantic` uses a fresh local OpenPuffer sidecar when one exists: the task and
+a fixed public calibration string leave the machine in one embedding request,
+then vector-space verification, mmap-backed graph search, and fusion run
+locally. Without a sidecar, it sends the task and up to 24 locally selected
+relative paths with bounded snippets for an exact rerank. It never uploads a
+repository archive or creates a server-side index. If the provider fails, the
+command returns the local result and does not run an embedding model on CPU.
+
+`semantic-index` is the only ANN build trigger. It sends bounded 832-byte code
+chunks using four concurrent 25-item requests by default (configurable from one
+to eight) and stores a small mapping plus a generation-named, validated `.hmls`
+mmap slab under codedb's local per-project data directory (0700/0600 on POSIX).
+Queries verify model/vector-space identity and repository freshness before
+mmap. Metadata heap use is capped at 64 MiB, graph validation at 128 MiB, and
+the vector slab stays demand-paged instead of being copied into RSS.
+The default hosted 0.6B/512-D
+lane is free and needs no token. Every cloud-bound path is rechecked against
+the sensitive-file denylist; `.env`, `.env.*`, `.envrc`, credentials, private keys, and unsafe
+paths cannot enter a batch even from a stale index.
+
 ## Daemon Management
 
 ```bash
@@ -90,6 +126,12 @@ codedb-cli stop                       # stop daemon
 |----------|---------|-------------|
 | `CODEDB_PORT` | `7719` | HTTP port for the daemon |
 | `CODEDB_BINARY` | `codedb` | Path to the codedb binary |
+| `CODEDB_EMBEDDINGS_URL` | `https://embeddings.wiki.codes/v1/codedb/embeddings` | Free bounded hosted lane; may be overridden with another HTTPS endpoint |
+| `CODEDB_EMBEDDINGS_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | OpenAI-compatible embedding model name |
+| `CODEDB_EMBEDDINGS_DIMENSIONS` | `512` | Requested embedding dimensions (64-4096) |
+| `CODEDB_EMBEDDINGS_TOKEN` | unset | Optional bearer token for protected/custom endpoints |
+| `CODEDB_EMBEDDINGS_TIMEOUT_MS` | `15000` | Per-request deadline in milliseconds (10-120000) |
+| `CODEDB_SEMANTIC_INDEX_CONCURRENCY` | `4` | Parallel 25-item index batches (clamped to 1-8) |
 
 ## Performance
 

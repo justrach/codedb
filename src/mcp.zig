@@ -15,6 +15,8 @@ const Store = @import("store.zig").Store;
 const explore_mod = @import("explore.zig");
 const Explorer = explore_mod.Explorer;
 const reader_md = @import("reader_md.zig");
+const semantic_mod = @import("semantic.zig");
+const semantic_index_mod = @import("semantic_index.zig");
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const snapshot_json = @import("snapshot_json.zig");
 const watcher = @import("watcher.zig");
@@ -675,7 +677,7 @@ pub const tools_list =
     \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). First move when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_explain","description":"One-shot neighborhood of a symbol: definition body plus every call site. Replaces codedb_symbol body=true then codedb_callers. First move when you know the name.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]},"annotations":{"readOnlyHint":true}},
-    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Replaces 3-5 sequential search/word/symbol calls — first-touch orientation on a new task.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"document_hops":{"type":"integer","description":"Explicitly expand Markdown document links from ranked files (0 default, hard-capped at 2 hops and 64 files)."},"format":{"type":"string","enum":["markdown","json"],"description":"markdown (default) preserves the compact text response. json returns schema-versioned sections, evidence provenance, reader.md validation, and machine-readable token-budget omissions."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]},"annotations":{"readOnlyHint":true}},
+    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Local BM25/symbol retrieval is always first and is the default. semantic=hybrid searches an explicitly built local OpenPuffer ANN sidecar using one transient remote request containing the task plus a fixed public calibration string; when the sidecar is absent or stale it can rerank up to 24 bounded local candidates instead. The hosted service stores neither the repository, request body, candidate paths, nor vectors. Failure keeps the local result and never runs a CPU model.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"document_hops":{"type":"integer","description":"Explicitly expand Markdown document links from ranked files (0 default, hard-capped at 2 hops and 64 files)."},"semantic":{"type":"string","enum":["local","hybrid"],"description":"local (default) keeps all source on-device. hybrid sends the task plus a fixed public calibration string when a compatible local ANN sidecar exists; otherwise it may send the task plus up to 24 locally selected relative paths with bounded snippets. Build the sidecar explicitly with codedb <root> semantic-index. The hosted lane is transient; custom endpoint retention is reported as unverified."},"format":{"type":"string","enum":["markdown","json"],"description":"markdown (default) preserves the compact text response. json returns schema-versioned sections, evidence provenance, reader.md validation, retrieval privacy, and machine-readable token-budget omissions."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_deps","description":"PRIMARY tool for impact/blast-radius — use this instead of grepping import lines. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set edge_type=documents for Markdown links; document traversal is capped at 2 hops and 64 nodes.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"Inbound (default) or outbound edges; for documents these mean linked-by and links-to."},"edge_type":{"type":"string","enum":["imports","documents"],"description":"Typed graph relation (default: imports)."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth (document edges are always capped at 2)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Never dump whole large files — run codedb_outline or codedb_symbol first to pick a tight range. A just-added file is indexed on miss; do not call codedb_index first. Pass if_hash to skip unchanged re-reads; compact=true for minified or long-line files.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"raw":{"type":"boolean","description":"Byte-exact output: no line-number prefixes and no hash header, so the result can feed an exact-string edit (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]},"annotations":{"readOnlyHint":true}},
@@ -817,6 +819,7 @@ const mini_prop_descriptions = [_]PropDesc{
     .{ .name = "max_hops", .desc = "Max call hops (default: 12)" },
     .{ .name = "max_tokens", .desc = "Response token budget (min 256, ~2.5 bytes/token)" },
     .{ .name = "detail", .desc = "compact (default) or full sections" },
+    .{ .name = "semantic", .desc = "local (default) or transient hybrid rerank" },
     .{ .name = "direction", .desc = "imported_by (default) or depends_on" },
     .{ .name = "transitive", .desc = "Follow the dependency chain (default: false)" },
     .{ .name = "max_depth", .desc = "Depth cap for transitive (default: unlimited)" },
@@ -828,7 +831,7 @@ const mini_prop_descriptions = [_]PropDesc{
 /// JSON is shared with the core/full profiles, so it is left untouched and
 /// these are swapped in only on the mini path (mirrors slim_descriptions).
 const mini_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
-    .{ .name = "codedb_context", .desc = "Task neighborhood in one call: definitions, bodies, graph neighbors, ranked files. First move on a new task; include likely identifiers. max_tokens caps the budget." },
+    .{ .name = "codedb_context", .desc = "Task neighborhood in one call. Local BM25 is default; semantic=hybrid explicitly opts into transient advisory embeddings. max_tokens caps output." },
     .{ .name = "codedb_explain", .desc = "Symbol neighborhood in one call: definition body plus every call site. First move when you know the name. Replaces symbol --body then callers." },
     .{ .name = "codedb_callpath", .desc = "Shortest resolved call chain A→…→B. First move when you need how execution reaches a callee. Returns each hop as path:name@line." },
     .{ .name = "codedb_list_dir", .desc = "Live folder listing (gitignore, 10k cap). Use instead of bash ls/find/tree; works on unindexed trees. codedb_ls is the indexed one-level listing." },
@@ -1832,7 +1835,7 @@ fn dispatch(
         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
         .codedb_list_dir => mcp_list_dir.handle(io, alloc, getStr(args, "path") orelse ".", project_path orelse cache.default_path, out),
-        .codedb_context => handleContext(io, alloc, args, out, ctx.explorer, project_path orelse cache.default_path),
+        .codedb_context => handleContext(io, alloc, args, out, ctx.store, ctx.explorer, project_path orelse cache.default_path),
     }
     appendScanProgressHint(alloc, out, tool);
 }
@@ -3239,12 +3242,61 @@ const ContextReaderProvenance = struct {
     computed_revision: ?[]const u8 = null,
 };
 
+const ContextRetrievalCandidate = struct {
+    path: []const u8,
+    lexical_rank: ?usize,
+    semantic_rank: ?usize,
+    semantic_score: f32,
+    source: []const u8 = "bounded_exact_rerank",
+    line_start: ?u32 = null,
+    line_end: ?u32 = null,
+};
+
+const ContextRetrievalProvenance = struct {
+    initial: []const u8 = "local_bm25_and_symbols",
+    semantic: []const u8 = "not_requested",
+    fusion: []const u8 = "none",
+    model: ?[]const u8 = null,
+    dimensions: ?u16 = null,
+    rrf_k: f32 = semantic_mod.default_rrf_k,
+    semantic_weight: f32 = semantic_mod.default_semantic_weight,
+    documents_sent: usize = 0,
+    text_bytes_sent: usize = 0,
+    ann_records: usize = 0,
+    ann_index_bytes: usize = 0,
+    ann_load_ns: u64 = 0,
+    ann_search_ns: u64 = 0,
+    ann_mmap_backed: bool = false,
+    ann_vector_space_id: ?u64 = null,
+    remote_retention: []const u8 = "not_applicable",
+    local_vector_storage: []const u8 = "none",
+    failure_policy: []const u8 = "keep_local_bm25_no_cpu_embedding_fallback",
+    sensitive_paths_blocked: usize = 0,
+    detail: ?[]const u8 = null,
+    candidates: []const ContextRetrievalCandidate = &.{},
+};
+
+fn semanticSourcePreview(explorer: *Explorer, allocator: std.mem.Allocator, path: []const u8, target_line: u32) ?[]const u8 {
+    const content = (explorer.getContent(path, allocator) catch null) orelse return null;
+    var line_number: u32 = 1;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| : (line_number +|= 1) {
+        if (line_number < target_line) continue;
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 and line_number < target_line +| 3) continue;
+        if (trimmed.len == 0) return null;
+        return trimmed[0..@min(trimmed.len, 240)];
+    }
+    return null;
+}
+
 const ContextStructuredOutput = struct {
-    schema_version: u8 = 1,
+    schema_version: u8 = 2,
     format: []const u8 = "codedb_context",
     task: []const u8,
     keywords: []const []const u8,
     reader: ContextReaderProvenance,
+    retrieval: ContextRetrievalProvenance,
     sections: []const ContextProvenanceSection,
     omissions: []const []const u8,
     budget: struct {
@@ -3263,7 +3315,7 @@ fn appendStructuredContext(alloc: std.mem.Allocator, out: *std.ArrayList(u8), va
     out.appendSlice(alloc, encoded) catch {};
 }
 
-fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
+fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, project_root: []const u8) void {
     const task = getStr(args, "task") orelse {
         out.appendSlice(alloc, "error: missing 'task' argument") catch {};
         appendBundleArgKeysDiagnostic(alloc, out, args);
@@ -3276,6 +3328,13 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
 
     const max_tokens: ?u32 = if (getInt(args, "max_tokens")) |n| @intCast(@max(256, @min(n, 1_000_000))) else null;
     const document_hops: u32 = if (getInt(args, "document_hops")) |n| @intCast(@max(0, @min(n, 2))) else 0;
+    const semantic_mode = getStr(args, "semantic") orelse "local";
+    if (!std.mem.eql(u8, semantic_mode, "local") and !std.mem.eql(u8, semantic_mode, "hybrid")) {
+        out.appendSlice(alloc, "error: semantic must be 'local' or 'hybrid'") catch {};
+        return;
+    }
+    const semantic_requested = std.mem.eql(u8, semantic_mode, "hybrid");
+    var retrieval: ContextRetrievalProvenance = .{};
     const format = getStr(args, "format") orelse "markdown";
     const structured = std.mem.eql(u8, format, "json");
     if (!structured and !std.mem.eql(u8, format, "markdown")) {
@@ -3375,6 +3434,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     extractContextFallbackWords(task, A, &candidates);
     const pf_cand = cio.nanoTimestamp();
     if (candidates.items.len == 0) {
+        if (semantic_requested) retrieval.semantic = "no_candidates";
         const message = "no candidate identifiers found in task — include symbol names (camelCase or snake_case) or \"quoted strings\" so the composer can extract keywords";
         if (structured) {
             var sections: [2]ContextProvenanceSection = undefined;
@@ -3407,6 +3467,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                     .declared_revision = reader_declared_revision,
                     .computed_revision = reader_computed_revision,
                 },
+                .retrieval = retrieval,
                 .sections = sections[0..section_count],
                 .omissions = &.{},
                 .budget = .{ .max_tokens = max_tokens, .estimated_tokens_used = (task.len + sec_reader.items.len + 3) / 4 },
@@ -3418,7 +3479,11 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         return;
     }
 
-    const PerFileHit = struct { line: u32, text: []const u8 };
+    const PerFileHit = struct {
+        line: u32,
+        text: []const u8,
+        source: enum { lexical, semantic_ann } = .lexical,
+    };
     const PerFile = struct {
         total: u32 = 0,
         bm25: f32 = 0,
@@ -3472,7 +3537,18 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     var symbol_files = std.StringHashMap(void).init(A);
     for (sym_refs.items) |sr| symbol_files.put(sr.path, {}) catch {};
 
-    const FileRank = struct { path: []const u8, hits: u32, score: f32, top: []const PerFileHit };
+    const FileRank = struct {
+        path: []const u8,
+        hits: u32,
+        score: f32,
+        top: []const PerFileHit,
+        lexical_rank: usize = 0,
+        semantic_rank: usize = 0,
+        semantic_score: f32 = 0,
+        hybrid_score: f32 = 0,
+        lexical_present: bool = true,
+        semantic_present: bool = false,
+    };
     var ranked: std.ArrayList(FileRank) = .empty;
     var iter = by_file.iterator();
     while (iter.next()) |entry| {
@@ -3496,6 +3572,249 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             return a.hits > b.hits;
         }
     }.lt);
+    for (ranked.items, 0..) |*file, rank| {
+        file.lexical_rank = rank;
+        file.semantic_rank = rank;
+    }
+    if (semantic_requested) {
+        for (ranked.items) |file| {
+            if (!semantic_mod.isRemoteCandidatePathAllowed(file.path)) {
+                retrieval.sensitive_paths_blocked += 1;
+            }
+        }
+    }
+
+    var use_exact_semantic_fallback = false;
+    if (semantic_requested) ann_lane: {
+        const data_dir = getProjectDataDir(A, project_root) orelse {
+            retrieval.semantic = "unavailable";
+            retrieval.detail = "AnnDataDirUnavailable";
+            use_exact_semantic_fallback = true;
+            break :ann_lane;
+        };
+        if (semantic_index_mod.search(
+            io,
+            A,
+            explorer,
+            store,
+            project_root,
+            data_dir,
+            task,
+            semantic_index_mod.default_search_results,
+        )) |ann_result| {
+            retrieval.semantic = "ann_applied";
+            retrieval.fusion = "top3_lexical_guard_union_rrf";
+            retrieval.semantic_weight = semantic_mod.default_ann_semantic_weight;
+            retrieval.model = ann_result.model;
+            retrieval.dimensions = ann_result.dimensions;
+            // Query + fixed public calibration string share one request. No
+            // repository path or source chunk is transmitted on the ANN lane.
+            retrieval.documents_sent = 2;
+            retrieval.text_bytes_sent = ann_result.text_bytes_sent;
+            retrieval.ann_records = ann_result.records;
+            retrieval.ann_index_bytes = ann_result.index_bytes;
+            retrieval.ann_load_ns = ann_result.load_ns;
+            retrieval.ann_search_ns = ann_result.search_ns;
+            retrieval.ann_mmap_backed = ann_result.mmap_backed;
+            retrieval.ann_vector_space_id = ann_result.vector_space_id;
+            retrieval.remote_retention = switch (ann_result.retention) {
+                .none_by_codedb_policy => "none_by_codedb_service_policy",
+                .custom_endpoint_unverified => "custom_endpoint_unverified",
+            };
+            retrieval.local_vector_storage = "openpuffer_hnsw_mmap_code_chunk_sidecar";
+
+            const lexical_count = ranked.items.len;
+            var ranked_by_path = std.StringHashMap(usize).init(A);
+            for (ranked.items, 0..) |file, index| ranked_by_path.put(file.path, index) catch {};
+            for (ann_result.hits, 0..) |hit, semantic_rank| {
+                if (ranked_by_path.get(hit.path)) |ranked_index| {
+                    const file = &ranked.items[ranked_index];
+                    file.semantic_rank = semantic_rank;
+                    file.semantic_score = 1.0 - hit.distance;
+                    file.semantic_present = true;
+                    var include_line = true;
+                    for (file.top) |site| {
+                        if (site.line >= hit.line_start and site.line <= hit.line_end) include_line = false;
+                    }
+                    if (include_line) {
+                        var merged: std.ArrayList(PerFileHit) = .empty;
+                        merged.appendSlice(A, file.top) catch {};
+                        merged.append(A, .{
+                            .line = hit.line_start,
+                            .text = semanticSourcePreview(explorer, A, hit.path, hit.line_start) orelse "semantic ANN chunk",
+                            .source = .semantic_ann,
+                        }) catch {};
+                        file.top = merged.items;
+                    }
+                    continue;
+                }
+
+                var preview: std.ArrayList(PerFileHit) = .empty;
+                preview.append(A, .{
+                    .line = hit.line_start,
+                    .text = semanticSourcePreview(explorer, A, hit.path, hit.line_start) orelse "semantic ANN chunk",
+                    .source = .semantic_ann,
+                }) catch {};
+                const new_index = ranked.items.len;
+                ranked.append(A, .{
+                    .path = hit.path,
+                    .hits = 0,
+                    .score = 0,
+                    .top = preview.items,
+                    .lexical_rank = lexical_count + semantic_rank,
+                    .semantic_rank = semantic_rank,
+                    .semantic_score = 1.0 - hit.distance,
+                    .lexical_present = false,
+                    .semantic_present = true,
+                }) catch continue;
+                ranked_by_path.put(hit.path, new_index) catch {};
+            }
+
+            for (ranked.items) |*file| {
+                file.hybrid_score = semantic_mod.annRrfScore(
+                    file.lexical_present,
+                    file.lexical_rank,
+                    file.semantic_present,
+                    file.semantic_rank,
+                );
+            }
+
+            if (A.alloc(ContextRetrievalCandidate, ann_result.hits.len) catch null) |provenance| {
+                for (provenance, ann_result.hits, 0..) |*item, hit, semantic_rank| {
+                    const ranked_index = ranked_by_path.get(hit.path);
+                    const file = if (ranked_index) |index| ranked.items[index] else null;
+                    item.* = .{
+                        .path = hit.path,
+                        .lexical_rank = if (file) |candidate| if (candidate.lexical_present) candidate.lexical_rank else null else null,
+                        .semantic_rank = semantic_rank,
+                        .semantic_score = 1.0 - hit.distance,
+                        .source = "local_openpuffer_ann",
+                        .line_start = hit.line_start,
+                        .line_end = hit.line_end,
+                    };
+                }
+                retrieval.candidates = provenance;
+            }
+            std.mem.sort(FileRank, ranked.items, {}, struct {
+                fn lt(_: void, a: FileRank, b: FileRank) bool {
+                    return semantic_mod.annRankComesBefore(
+                        a.lexical_present,
+                        a.lexical_rank,
+                        a.semantic_present,
+                        a.hybrid_score,
+                        a.path,
+                        b.lexical_present,
+                        b.lexical_rank,
+                        b.semantic_present,
+                        b.hybrid_score,
+                        b.path,
+                    );
+                }
+            }.lt);
+        } else |err| {
+            retrieval.semantic = "unavailable";
+            retrieval.detail = @errorName(err);
+            use_exact_semantic_fallback = switch (err) {
+                error.AnnIndexMissing,
+                error.InvalidAnnSidecar,
+                error.UnsupportedAnnSidecarVersion,
+                error.TruncatedAnnSidecar,
+                error.InvalidAnnRecordPath,
+                error.InvalidAnnSlabName,
+                error.AnnRecordMappingMismatch,
+                error.AnnSlabTooLarge,
+                error.AnnDimensionsMismatch,
+                error.AnnModelMismatch,
+                error.AnnVectorSpaceMismatch,
+                error.AnnVectorSpaceCalibrationMismatch,
+                error.StaleAnnGitHead,
+                error.StaleAnnManifest,
+                => true,
+                else => false,
+            };
+        }
+    }
+
+    if (semantic_requested and use_exact_semantic_fallback and ranked.items.len > 0) {
+        var semantic_candidates: std.ArrayList(semantic_mod.Candidate) = .empty;
+        var semantic_candidate_indices: std.ArrayList(usize) = .empty;
+        for (ranked.items, 0..) |file, ranked_index| {
+            if (semantic_candidates.items.len == semantic_mod.max_documents) break;
+            if (!semantic_mod.isRemoteCandidatePathAllowed(file.path)) {
+                continue;
+            }
+            var snippet: std.ArrayList(u8) = .empty;
+            const sw = cio.listWriter(&snippet, A);
+            for (file.top) |hit| {
+                sw.print("L{d}: {s}\n", .{ hit.line, hit.text }) catch {};
+            }
+            semantic_candidates.append(A, .{ .path = file.path, .text = snippet.items }) catch break;
+            semantic_candidate_indices.append(A, ranked_index) catch {
+                _ = semantic_candidates.pop();
+                break;
+            };
+        }
+        if (semantic_candidates.items.len > 0) {
+            if (semantic_mod.scoreRemote(io, A, task, semantic_candidates.items)) |remote| {
+                retrieval.semantic = "applied_exact_fallback";
+                retrieval.fusion = "lexical_authoritative_rrf";
+                retrieval.model = remote.model;
+                retrieval.dimensions = remote.dimensions;
+                retrieval.documents_sent = remote.documents_sent;
+                retrieval.text_bytes_sent = remote.text_bytes_sent;
+                retrieval.remote_retention = switch (remote.retention) {
+                    .none_by_codedb_policy => "none_by_codedb_service_policy",
+                    .custom_endpoint_unverified => "custom_endpoint_unverified",
+                };
+
+                const SemanticOrder = struct { index: usize, score: f32 };
+                const maybe_order = A.alloc(SemanticOrder, remote.documents_sent) catch null;
+                if (maybe_order) |order| {
+                    for (order, 0..) |*item, i| item.* = .{ .index = i, .score = remote.scores[i] };
+                    std.mem.sort(SemanticOrder, order, {}, struct {
+                        fn lt(_: void, a: SemanticOrder, b: SemanticOrder) bool {
+                            if (a.score != b.score) return a.score > b.score;
+                            return a.index < b.index;
+                        }
+                    }.lt);
+                    for (order, 0..) |item, semantic_rank| {
+                        const ranked_index = semantic_candidate_indices.items[item.index];
+                        ranked.items[ranked_index].semantic_rank = semantic_rank;
+                        ranked.items[ranked_index].semantic_score = item.score;
+                        ranked.items[ranked_index].semantic_present = true;
+                    }
+                    for (ranked.items) |*file| {
+                        file.hybrid_score = semantic_mod.advisoryRrfScore(file.lexical_rank, file.semantic_rank);
+                    }
+                    const provenance_candidates = A.alloc(ContextRetrievalCandidate, remote.documents_sent) catch null;
+                    if (provenance_candidates) |items| {
+                        for (items, 0..) |*item, i| {
+                            const file = ranked.items[semantic_candidate_indices.items[i]];
+                            item.* = .{
+                                .path = file.path,
+                                .lexical_rank = file.lexical_rank,
+                                .semantic_rank = file.semantic_rank,
+                                .semantic_score = file.semantic_score,
+                                .source = "bounded_exact_rerank",
+                            };
+                        }
+                        retrieval.candidates = items;
+                    }
+                    std.mem.sort(FileRank, ranked.items, {}, struct {
+                        fn lt(_: void, a: FileRank, b: FileRank) bool {
+                            if (a.hybrid_score != b.hybrid_score) return a.hybrid_score > b.hybrid_score;
+                            return a.lexical_rank < b.lexical_rank;
+                        }
+                    }.lt);
+                }
+            } else |err| {
+                retrieval.semantic = "unavailable";
+                retrieval.detail = @errorName(err);
+            }
+        } else {
+            retrieval.semantic = "no_candidates";
+        }
+    }
     const top_n = @min(ranked.items.len, CONTEXT_TOP_FILES);
     const pf_rank = cio.nanoTimestamp();
 
@@ -3503,6 +3822,37 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         const wh = cio.listWriter(&sec_head, A);
         wh.print("# Task\n{s}\n\n## Keywords used\n", .{task}) catch {};
         for (candidates.items) |k| wh.print("- {s}\n", .{k}) catch {};
+        if (semantic_requested) {
+            wh.print("\n## Retrieval privacy\n- local BM25/symbol retrieval ran first\n", .{}) catch {};
+            if (std.mem.eql(u8, retrieval.semantic, "ann_applied")) {
+                wh.print("- local OpenPuffer ANN: {s}, {d}D, vector space {x}, {d} indexed code chunks / {d} sidecar bytes\n- remote query embedding: task plus fixed public vector-space calibration / {d} text bytes; remote retention: {s}\n- local vector storage: {s}; mmap={any}; ANN load {d} ns / search {d} ns\n", .{
+                    retrieval.model orelse semantic_mod.default_model,
+                    retrieval.dimensions orelse semantic_mod.default_dimensions,
+                    retrieval.ann_vector_space_id orelse 0,
+                    retrieval.ann_records,
+                    retrieval.ann_index_bytes,
+                    retrieval.text_bytes_sent,
+                    retrieval.remote_retention,
+                    retrieval.local_vector_storage,
+                    retrieval.ann_mmap_backed,
+                    retrieval.ann_load_ns,
+                    retrieval.ann_search_ns,
+                }) catch {};
+            } else if (std.mem.startsWith(u8, retrieval.semantic, "applied")) {
+                wh.print("- bounded exact advisory rerank: {s}, {d}D, {d} relative path + snippet items / {d} text bytes\n- remote retention: {s}; local vector storage: none\n", .{
+                    retrieval.model orelse semantic_mod.default_model,
+                    retrieval.dimensions orelse semantic_mod.default_dimensions,
+                    retrieval.documents_sent,
+                    retrieval.text_bytes_sent,
+                    retrieval.remote_retention,
+                }) catch {};
+            } else {
+                wh.print("- semantic lane: {s}; kept local result; no CPU embedding fallback\n", .{retrieval.semantic}) catch {};
+            }
+            if (retrieval.sensitive_paths_blocked > 0) {
+                wh.print("- sensitive candidate paths blocked before network: {d}\n", .{retrieval.sensitive_paths_blocked}) catch {};
+            }
+        }
     }
 
     if (sym_refs.items.len > 0) {
@@ -3816,7 +4166,12 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             file_items.append(A, .{
                 .path = file.path,
                 .relation = "ranked_candidate",
-                .reason = "lexical and symbol relevance",
+                .reason = if (std.mem.eql(u8, retrieval.semantic, "ann_applied"))
+                    "local lexical/symbol relevance fused with local OpenPuffer ANN"
+                else if (std.mem.startsWith(u8, retrieval.semantic, "applied"))
+                    "local lexical/symbol relevance with advisory semantic rerank"
+                else
+                    "local lexical and symbol relevance",
             }) catch {};
             for (file.top) |hit| {
                 site_items.append(A, .{
@@ -3824,7 +4179,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                     .line_start = if (hit.line > 2) hit.line - 2 else 1,
                     .line_end = hit.line +| 2,
                     .relation = "source_snippet",
-                    .reason = "top lexical site",
+                    .reason = if (hit.source == .semantic_ann) "local OpenPuffer ANN code-chunk match" else "top lexical site",
                 }) catch {};
             }
         }
@@ -3931,6 +4286,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                 .declared_revision = reader_declared_revision,
                 .computed_revision = reader_computed_revision,
             },
+            .retrieval = retrieval,
             .sections = sections.items,
             .omissions = omissions.items,
             .budget = .{
@@ -5163,13 +5519,21 @@ pub fn runCliTool(
         defer task.deinit(alloc);
         var i = cmd_args_start;
         while (i < args.len) : (i += 1) {
-            if (i > cmd_args_start) task.append(alloc, ' ') catch {};
+            if (std.mem.eql(u8, args[i], "--semantic") or std.mem.eql(u8, args[i], "--hybrid")) {
+                m.put(alloc, "semantic", .{ .string = "hybrid" }) catch return 1;
+                continue;
+            }
+            if (std.mem.eql(u8, args[i], "--json")) {
+                m.put(alloc, "format", .{ .string = "json" }) catch return 1;
+                continue;
+            }
+            if (task.items.len > 0) task.append(alloc, ' ') catch {};
             task.appendSlice(alloc, args[i]) catch {};
         }
-        if (task.items.len == 0) return cliUsage(alloc, out, "context <task...>");
+        if (task.items.len == 0) return cliUsage(alloc, out, "context [--semantic] [--json] <task...>");
         m.put(alloc, "task", .{ .string = task.items }) catch return 1;
         loadProjectWordIndexFromDiskIfPresent(io, explorer, root, alloc);
-        handleContext(io, alloc, &m, out, explorer, root);
+        handleContext(io, alloc, &m, out, store, explorer, root);
         return finishCli(out, out_start);
     }
     return null;

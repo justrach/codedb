@@ -315,6 +315,44 @@ pub const Store = struct {
         return self.seq;
     }
 
+    /// Deterministic repository-content identity from the latest watcher/
+    /// snapshot hashes. Unlike `seq`, this survives process restarts and
+    /// detects same-size uncommitted edits without re-reading every source
+    /// file during each semantic query.
+    pub fn contentFingerprint(self: *Store, allocator: std.mem.Allocator) !u64 {
+        self.mu.lock();
+        defer self.mu.unlock();
+
+        var paths: std.ArrayList([]const u8) = .empty;
+        defer paths.deinit(allocator);
+        try paths.ensureTotalCapacity(allocator, self.files.count());
+        var iter = self.files.keyIterator();
+        while (iter.next()) |path| paths.appendAssumeCapacity(path.*);
+        std.mem.sort([]const u8, paths.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+
+        var hash = std.hash.Wyhash.init(0x4344_4253_544f_5245);
+        for (paths.items) |path| {
+            const versions = self.files.get(path) orelse continue;
+            const latest = versions.latest() orelse continue;
+            // Fingerprint the live repository state, not its edit history.
+            // Explorer shape already drops deleted files, and retaining a
+            // tombstone here would make create-then-delete permanently stale
+            // an otherwise identical semantic sidecar.
+            if (latest.op == .tombstone) continue;
+            hash.update(path);
+            hash.update(&.{0});
+            hash.update(std.mem.asBytes(&latest.hash));
+            hash.update(std.mem.asBytes(&latest.size));
+            const op: u8 = @intFromEnum(latest.op);
+            hash.update(&.{op});
+        }
+        return hash.final();
+    }
+
     pub fn listFiles(self: *Store) ![][]const u8 {
         self.mu.lock();
         defer self.mu.unlock();

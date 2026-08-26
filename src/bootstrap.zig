@@ -410,6 +410,12 @@ pub fn saveProjectInfo(io: std.Io, allocator: std.mem.Allocator, data_dir: []con
 /// cache snapshot. No-op for `mcp` (runMcp owns its own deferred/eager load).
 /// `freq_table_heap` is owned by the caller (mainImpl) — we only set it so the
 /// caller's deferred resetFrequencyTable/destroy runs for the process lifetime.
+pub fn commandForcesRescan(cmd: []const u8) bool {
+    return std.mem.eql(u8, cmd, "index") or
+        std.mem.eql(u8, cmd, "snapshot") or
+        std.mem.eql(u8, cmd, "semantic-index");
+}
+
 pub fn coldLoadOrScan(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -438,7 +444,9 @@ pub fn coldLoadOrScan(
         cio.posixGetenv("CODEDB_NO_AUTO_REFRESH") == null and
         snapshotIsStale(io, abs_root, data_dir, allocator);
 
-    const force_rescan = std.mem.eql(u8, cmd, "index") or std.mem.eql(u8, cmd, "snapshot");
+    // semantic-index embeds source bytes and persists their content identity;
+    // it must never inherit a snapshot that can lag the live worktree.
+    const force_rescan = commandForcesRescan(cmd);
     const snapshot_t0 = cio.nanoTimestamp();
     const snapshot_loaded = !force_rescan and !stale and loadBestSnapshot(io, explorer, store, abs_root, data_dir, git_head, allocator);
     const snapshot_elapsed = cio.nanoTimestamp() - snapshot_t0;

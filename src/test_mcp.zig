@@ -2570,9 +2570,13 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
 
     const structured = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_out.items, .{});
     defer structured.deinit();
-    try testing.expectEqual(@as(i64, 1), structured.value.object.get("schema_version").?.integer);
+    try testing.expectEqual(@as(i64, 2), structured.value.object.get("schema_version").?.integer);
     try testing.expectEqualStrings("codedb_context", structured.value.object.get("format").?.string);
     try testing.expect(structured.value.object.get("reader").?.object.contains("validation"));
+    const retrieval = structured.value.object.get("retrieval").?.object;
+    try testing.expectEqualStrings("local_bm25_and_symbols", retrieval.get("initial").?.string);
+    try testing.expectEqualStrings("not_requested", retrieval.get("semantic").?.string);
+    try testing.expectEqualStrings("keep_local_bm25_no_cpu_embedding_fallback", retrieval.get("failure_policy").?.string);
     try testing.expect(structured.value.object.get("omissions").? == .array);
 
     var found_parsed = false;
@@ -2614,6 +2618,60 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
     bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &default_args.value.object, &default_out, &store, &explorer, &agents);
     bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &markdown_args.value.object, &markdown_out, &store, &explorer, &agents);
     try testing.expectEqualStrings(default_out.items, markdown_out.items);
+}
+
+test "codedb_context hybrid is explicit and keeps local results when provider is unavailable" {
+    const url_guard = EnvVarGuard.save("CODEDB_EMBEDDINGS_URL");
+    defer url_guard.restore();
+    cio.posixSetenv("CODEDB_EMBEDDINGS_URL", "http://example.com/v1/embeddings");
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile(
+        "src/privacy.zig",
+        "pub fn retentionPolicy() void { keepLocalBm25(); }\npub fn keepLocalBm25() void {}\n",
+    );
+    // indexFile intentionally bypasses the watcher. This simulates a stale or
+    // hand-built index containing a secret and proves the send-time guard is
+    // independent of normal indexing exclusions.
+    try explorer.indexFile(
+        ".env.production",
+        "KEEP_LOCAL_BM25_SECRET=retentionPolicy\n",
+    );
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"trace retentionPolicy and keepLocalBm25","format":"json","semantic":"hybrid"}
+    , .{});
+    defer args.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &args.value.object, &out, &store, &explorer, &agents);
+
+    const structured = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.items, .{});
+    defer structured.deinit();
+    const retrieval = structured.value.object.get("retrieval").?.object;
+    try testing.expectEqualStrings("local_bm25_and_symbols", retrieval.get("initial").?.string);
+    try testing.expectEqualStrings("unavailable", retrieval.get("semantic").?.string);
+    try testing.expectEqualStrings("InsecureEmbeddingEndpoint", retrieval.get("detail").?.string);
+    try testing.expectEqual(@as(i64, 0), retrieval.get("documents_sent").?.integer);
+    try testing.expectEqual(@as(i64, 1), retrieval.get("sensitive_paths_blocked").?.integer);
+
+    var found_local_file = false;
+    for (structured.value.object.get("sections").?.array.items) |section_value| {
+        const section = section_value.object;
+        if (!std.mem.eql(u8, section.get("id").?.string, "most_relevant_files")) continue;
+        for (section.get("items").?.array.items) |item| {
+            if (std.mem.eql(u8, item.object.get("path").?.string, "src/privacy.zig")) found_local_file = true;
+        }
+    }
+    try testing.expect(found_local_file);
 }
 
 test "issue-688: structured no-candidate response retains reader evidence" {
@@ -2722,6 +2780,8 @@ test "issue-685: codedb_deps exposes bounded typed document edges" {
     try testing.expect(found_document_graph);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"edge_type\":{\"type\":\"string\",\"enum\":[\"imports\",\"documents\"]") != null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"document_hops\":{\"type\":\"integer\"") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"semantic\":{\"type\":\"string\",\"enum\":[\"local\",\"hybrid\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "stores neither the repository, request body, candidate paths, nor vectors") != null);
 }
 
 test "issue-690: codedb_index description says it refreshes a live daemon" {
@@ -3959,11 +4019,11 @@ test "mcp: read-only tools advertise readOnlyHint on every profile" {
     // mode refuses any tool without it and never consults the allow list, so an
     // unannotated read-only tool prompts on every single call.
     const read_only = [_][]const u8{
-        "codedb_tree",     "codedb_outline", "codedb_symbol",  "codedb_search",
-        "codedb_word",     "codedb_callers", "codedb_callpath", "codedb_context",
-        "codedb_hot",      "codedb_deps",    "codedb_read",    "codedb_changes",
+        "codedb_tree",     "codedb_outline",  "codedb_symbol",   "codedb_search",
+        "codedb_word",     "codedb_callers",  "codedb_callpath", "codedb_context",
+        "codedb_hot",      "codedb_deps",     "codedb_read",     "codedb_changes",
         "codedb_status",   "codedb_snapshot", "codedb_projects", "codedb_find",
-        "codedb_explain",  "codedb_query",   "codedb_glob",     "codedb_ls",
+        "codedb_explain",  "codedb_query",    "codedb_glob",     "codedb_ls",
         "codedb_list_dir",
     };
 

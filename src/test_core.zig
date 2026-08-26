@@ -3,6 +3,7 @@ const cio = @import("cio.zig");
 const testing = std.testing;
 const io = std.testing.io;
 const Store = @import("store.zig").Store;
+const bootstrap = @import("bootstrap.zig");
 const ChangeEntry = @import("store.zig").ChangeEntry;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Config = @import("config.zig").Config;
@@ -21,6 +22,40 @@ test "store: record and retrieve snapshots" {
     try testing.expect(seq1 == 1);
     try testing.expect(seq2 == 2);
     try testing.expect(store.currentSeq() == 2);
+}
+
+test "store: content fingerprint is deterministic and detects same-size edits" {
+    var first = Store.init(testing.allocator);
+    defer first.deinit();
+    _ = try first.recordSnapshot("src/b.zig", 12, 0xBBBB);
+    _ = try first.recordSnapshot("src/a.zig", 12, 0xAAAA);
+    const before = try first.contentFingerprint(testing.allocator);
+
+    // Insertion order and process-local sequence numbers are deliberately not
+    // part of the identity, so a freshly loaded store produces the same value.
+    var reordered = Store.init(testing.allocator);
+    defer reordered.deinit();
+    _ = try reordered.recordSnapshot("src/a.zig", 12, 0xAAAA);
+    _ = try reordered.recordSnapshot("src/b.zig", 12, 0xBBBB);
+    try testing.expectEqual(before, try reordered.contentFingerprint(testing.allocator));
+
+    // The size stays constant but the watcher hash changes, which must stale a
+    // semantic sidecar built from the old source bytes.
+    _ = try first.recordSnapshot("src/a.zig", 12, 0xCCCC);
+    try testing.expect(before != try first.contentFingerprint(testing.allocator));
+
+    // A transient file that is created and then removed must not change the
+    // identity of the final live tree.
+    _ = try reordered.recordSnapshot("src/transient.zig", 8, 0xDDDD);
+    _ = try reordered.recordDelete("src/transient.zig", 0);
+    try testing.expectEqual(before, try reordered.contentFingerprint(testing.allocator));
+}
+
+test "semantic-index always forces a live filesystem rescan" {
+    try testing.expect(bootstrap.commandForcesRescan("semantic-index"));
+    try testing.expect(bootstrap.commandForcesRescan("snapshot"));
+    try testing.expect(bootstrap.commandForcesRescan("index"));
+    try testing.expect(!bootstrap.commandForcesRescan("context"));
 }
 
 test "store: getLatest returns most recent version" {
