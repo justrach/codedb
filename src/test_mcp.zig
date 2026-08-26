@@ -361,6 +361,11 @@ test "issue-93: isSensitivePath blocks .env and credentials" {
     try testing.expect(watcher.isSensitivePath("keystore.jks"));
     try testing.expect(watcher.isSensitivePath("identity.pfx"));
     try testing.expect(watcher.isSensitivePath(".ssh/known_hosts"));
+    try testing.expect(watcher.isSensitivePath("CERT.PEM"));
+    try testing.expect(watcher.isSensitivePath("server.KeY"));
+    try testing.expect(watcher.isSensitivePath("KEYSTORE.JKS"));
+    try testing.expect(watcher.isSensitivePath("Credentials.JSON"));
+    try testing.expect(watcher.isSensitivePath(".SSH/known_hosts"));
     // Normal files should NOT be blocked
     try testing.expect(!watcher.isSensitivePath("main.zig"));
     try testing.expect(!watcher.isSensitivePath("src/server.zig"));

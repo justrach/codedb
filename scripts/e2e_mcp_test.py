@@ -612,12 +612,28 @@ def run_scenario_6_agent_route_no_index(binary: str, project: str) -> list[TestR
         root = Path(tmp)
         (root / "pyproject.toml").write_text("[project]\nname = 'agent-route'\nversion = '0'\n")
         (root / "keep.py").write_text("def keep():\n    return 'keep'\n")
+        secret_canary = "uppercase_secret_canary_706"
+        (root / "PRIVATE_KEY.PEM").write_text(secret_canary)
         p = MCPProcess(binary, [], cwd="/", command=[binary, str(root), "mcp", "--no-telemetry"])
 
         try:
             r = t("initial scan completes")
             if not do_initialize(p, with_roots=False) or not wait_for_scan(p):
                 r.fail("MCP server did not become ready")
+                return results
+            r.ok()
+
+            r = t("uppercase private-key path is blocked from MCP read")
+            read_text = tool_text(p.call_tool("codedb_read", {"path": "PRIVATE_KEY.PEM"}))
+            if "access to sensitive file blocked" not in read_text or secret_canary in read_text:
+                r.fail(f"sensitive read was not blocked: {read_text[:240]!r}")
+                return results
+            r.ok()
+
+            r = t("uppercase private-key contents are absent from search")
+            search_text = tool_text(p.call_tool("codedb_search", {"query": secret_canary}))
+            if not search_text.startswith("0 results") or "PRIVATE_KEY.PEM" in search_text:
+                r.fail(f"sensitive file entered the index: {search_text[:240]!r}")
                 return results
             r.ok()
 
