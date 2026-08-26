@@ -2950,6 +2950,16 @@ pub const Explorer = struct {
         return try cloneOutline(outline, allocator);
     }
 
+    /// Return the live indexed line count without cloning the outline. This is
+    /// used to validate untrusted semantic sidecar ranges before they become
+    /// retrieval hits.
+    pub fn outlineLineCount(self: *Explorer, path: []const u8) ?u32 {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        const outline = self.outlines.getPtr(path) orelse return null;
+        return outline.line_count;
+    }
+
     /// Render the outline for `path` directly into `out` without cloning.
     /// Returns false if the file isn't indexed. Holds the read lock for
     /// the duration of the render — fast on small outlines, marginally

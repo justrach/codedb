@@ -119,7 +119,13 @@ const RetryEmbeddingServer = struct {
     }
 };
 
-fn makeMockEmbeddingResponse(allocator: std.mem.Allocator, model: []const u8, count: usize, dimensions: usize) ![]u8 {
+fn makeMockEmbeddingResponseWithScalar(
+    allocator: std.mem.Allocator,
+    model: []const u8,
+    count: usize,
+    dimensions: usize,
+    nonzero_scalar: []const u8,
+) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     const writer = cio.listWriter(&out, allocator);
@@ -129,12 +135,16 @@ fn makeMockEmbeddingResponse(allocator: std.mem.Allocator, model: []const u8, co
         try writer.print("{{\"index\":{d},\"embedding\":[", .{row});
         for (0..dimensions) |column| {
             if (column > 0) try writer.writeByte(',');
-            try writer.writeAll(if (column == row % dimensions) "1" else "0");
+            try writer.writeAll(if (column == row % dimensions) nonzero_scalar else "0");
         }
         try writer.writeAll("]}");
     }
     try writer.writeAll("]}");
     return out.toOwnedSlice(allocator);
+}
+
+fn makeMockEmbeddingResponse(allocator: std.mem.Allocator, model: []const u8, count: usize, dimensions: usize) ![]u8 {
+    return makeMockEmbeddingResponseWithScalar(allocator, model, count, dimensions, "1");
 }
 
 fn configureMockEndpoint(server: *const std.Io.net.Server, model: []const u8, timeout_ms: u32) !void {
@@ -376,6 +386,55 @@ test "semantic: provider model mismatch fails closed" {
     thread.join();
     if (mock.failure) |err| return err;
     try testing.expectError(error.EmbeddingModelMismatch, outcome);
+}
+
+test "semantic: provider f64 values that overflow f32 fail closed" {
+    var guards = EmbeddingEnvGuards.init();
+    defer guards.deinit();
+
+    // 1e100 is finite as the JSON parser's f64, but not representable as the
+    // f32 vectors consumed by the local ANN index.
+    const response = try makeMockEmbeddingResponseWithScalar(testing.allocator, "mock-model", 1, 64, "1e100");
+    defer testing.allocator.free(response);
+    const addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try addr.listen(io, .{ .reuse_address = true, .mode = .stream, .protocol = .tcp });
+    defer server.deinit(io);
+    try configureMockEndpoint(&server, "mock-model", 2_000);
+
+    var mock = MockEmbeddingServer{ .server = &server, .response = response };
+    const thread = try std.Thread.spawn(.{}, MockEmbeddingServer.run, .{&mock});
+    const outcome = semantic.embedRemoteTexts(io, testing.allocator, &.{"code"});
+    if (outcome) |result| testing.allocator.free(result.vectors) else |_| {}
+    thread.join();
+    if (mock.failure) |err| return err;
+    try testing.expectError(error.InvalidEmbeddingNumber, outcome);
+}
+
+test "semantic: no-sidecar exact fallback rejects overflowing cosine from mock provider" {
+    var guards = EmbeddingEnvGuards.init();
+    defer guards.deinit();
+
+    // The exact fallback embeds one query and one bounded candidate. Each
+    // scalar is finite f64, while its square overflows the cosine accumulator.
+    const response = try makeMockEmbeddingResponseWithScalar(testing.allocator, "mock-model", 2, 64, "1e200");
+    defer testing.allocator.free(response);
+    const addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try addr.listen(io, .{ .reuse_address = true, .mode = .stream, .protocol = .tcp });
+    defer server.deinit(io);
+    try configureMockEndpoint(&server, "mock-model", 2_000);
+
+    var mock = MockEmbeddingServer{ .server = &server, .response = response };
+    const thread = try std.Thread.spawn(.{}, MockEmbeddingServer.run, .{&mock});
+    const outcome = semantic.scoreRemote(
+        io,
+        testing.allocator,
+        "find bounded implementation",
+        &.{.{ .path = "src/bounded.zig", .text = "L1: pub fn bounded() void {}" }},
+    );
+    if (outcome) |result| testing.allocator.free(result.scores) else |_| {}
+    thread.join();
+    if (mock.failure) |err| return err;
+    try testing.expectError(error.InvalidEmbeddingNumber, outcome);
 }
 
 test "semantic: request deadline cancels a stalled local provider" {

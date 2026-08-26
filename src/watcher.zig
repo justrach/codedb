@@ -779,7 +779,9 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
                 defer arena.deinit();
                 const parsed = try parseInitialScanEntry(io, dir, entry, arena.allocator(), arena.allocator());
                 if (parsed) |file| {
+                    const content_hash = std.hash.Wyhash.hash(0, file.content);
                     try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
+                    _ = store.refineLatestSnapshotHash(file.path, file.content.len, content_hash);
                 }
             }
         }
@@ -851,7 +853,9 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     for (workers) |*worker| {
         for (0..worker.items.len) |item_index| {
             if (worker.takeReady(io, item_index)) |file| {
+                const content_hash = std.hash.Wyhash.hash(0, file.content);
                 try explorer.commitParsedFileAdoptOutline(file.path, file.content, file.outline, true, file.skip_trigram);
+                _ = store.refineLatestSnapshotHash(file.path, file.content.len, content_hash);
             }
         }
     }

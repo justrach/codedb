@@ -109,6 +109,94 @@ test "ann: mmap loader rejects out-of-range neighbor ids" {
     try testing.expectEqual(@as(u32, 0), copy_recovered[0].id);
 }
 
+test "ann: mmap loader rejects a high-layer edge to a node without that layer" {
+    if (@import("builtin").os.tag == .windows) return;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = path_buf[0..try tmp.dir.realPathFile(io, ".", &path_buf)];
+    const path = try std.fmt.allocPrint(testing.allocator, "{s}/bad-neighbor-layer.hmls", .{dir_path});
+    defer testing.allocator.free(path);
+
+    var source = ann.Index.init(testing.allocator, 64, .{ .seed = 43 });
+    defer source.deinit();
+    for (0..128) |i| {
+        var vector: [64]f32 = @splat(0);
+        vector[i % vector.len] = 1;
+        vector[(i * 11 + 7) % vector.len] += 0.2;
+        _ = try source.insert(&vector);
+    }
+    try source.writeSlabs(path);
+
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_write });
+    defer file.close(io);
+    var header: [136]u8 = undefined;
+    try testing.expectEqual(header.len, try file.readPositionalAll(io, &header, 0));
+    const count: usize = @intCast(std.mem.readInt(u64, header[16..24], .little));
+    const m: usize = std.mem.readInt(u32, header[32..36], .little);
+    const hi_slots: usize = @intCast(std.mem.readInt(u64, header[48..56], .little));
+    const levels_offset = std.mem.readInt(u64, header[56..64], .little);
+    const hi_start_offset = std.mem.readInt(u64, header[104..112], .little);
+    const hi_degree_offset = std.mem.readInt(u64, header[112..120], .little);
+    const hi_neighbors_offset = std.mem.readInt(u64, header[120..128], .little);
+
+    const levels = try testing.allocator.alloc(u32, count);
+    defer testing.allocator.free(levels);
+    try testing.expectEqual(std.mem.sliceAsBytes(levels).len, try file.readPositionalAll(io, std.mem.sliceAsBytes(levels), levels_offset));
+    const hi_starts = try testing.allocator.alloc(u32, count);
+    defer testing.allocator.free(hi_starts);
+    try testing.expectEqual(std.mem.sliceAsBytes(hi_starts).len, try file.readPositionalAll(io, std.mem.sliceAsBytes(hi_starts), hi_start_offset));
+    const hi_degrees = try testing.allocator.alloc(u16, hi_slots);
+    defer testing.allocator.free(hi_degrees);
+    try testing.expectEqual(std.mem.sliceAsBytes(hi_degrees).len, try file.readPositionalAll(io, std.mem.sliceAsBytes(hi_degrees), hi_degree_offset));
+
+    var level_zero_id: ?u32 = null;
+    for (levels, 0..) |level, id| {
+        if (level == 0) {
+            level_zero_id = @intCast(id);
+            break;
+        }
+    }
+    try testing.expect(level_zero_id != null);
+
+    const hi_stride = m + 1;
+    var corrupt_offset: ?u64 = null;
+    for (levels, 0..) |level, id| {
+        if (level == 0) continue;
+        const start: usize = hi_starts[id];
+        for (0..level) |slot_offset| {
+            const slot = start + slot_offset;
+            if (hi_degrees[slot] == 0) continue;
+            const neighbor_index = slot * hi_stride;
+            corrupt_offset = hi_neighbors_offset + @as(u64, @intCast(neighbor_index * @sizeOf(u32)));
+            break;
+        }
+        if (corrupt_offset != null) break;
+    }
+    try testing.expect(corrupt_offset != null);
+
+    var forged_neighbor: [4]u8 = undefined;
+    std.mem.writeInt(u32, &forged_neighbor, level_zero_id.?, .little);
+    try file.writePositionalAll(io, &forged_neighbor, corrupt_offset.?);
+    try file.sync(io);
+
+    var loaded = ann.Index.init(testing.allocator, 64, .{});
+    defer loaded.deinit();
+    try testing.expectError(error.InvalidNeighborLayer, loaded.loadMmap(path));
+    try testing.expect(!loaded.isMmapBacked());
+    try testing.expectEqual(@as(usize, 0), loaded.len());
+
+    // A rejected sidecar leaves a reusable empty index instead of a partially
+    // attached mapping, and the following search proves there was no panic.
+    var recovery: [64]f32 = @splat(0);
+    recovery[3] = 1;
+    _ = try loaded.insert(&recovery);
+    const recovered = try loaded.search(&recovery, 1, testing.allocator);
+    defer testing.allocator.free(recovered);
+    try testing.expectEqual(@as(u32, 0), recovered[0].id);
+}
+
 test "ann: legacy loader bounds record and layer allocations before use" {
     var source = ann.Index.init(testing.allocator, 3, .{ .seed = 59 });
     defer source.deinit();

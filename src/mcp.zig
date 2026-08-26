@@ -3870,7 +3870,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             wsr.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
             wsl.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
             if (inline_bodies) {
-                const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line + 39) else sr.line;
+                const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line +| 39) else sr.line;
                 _ = explorer.appendLineRange(sr.path, sr.line, body_end, "       ", A, &sec_syms_rich) catch false;
             }
         }
@@ -4053,7 +4053,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             if (explorer.cachedContentLocked(f.path)) |content| {
                 for (f.top) |h| {
                     const want_start: u32 = if (h.line > 2) h.line - 2 else 1;
-                    const want_end: u32 = h.line + 2;
+                    const want_end: u32 = h.line +| 2;
                     var lines2 = [2]u32{ want_start, want_end };
                     var spans2: [2]explore_mod.Explorer.LineSpan = undefined;
                     const n = explorer.lineSpansFor(f.path, content, lines2[0..], spans2[0..]) orelse 0;
@@ -4083,7 +4083,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                 if (file_content) |content| {
                     // Find the start/end byte offsets of [line-2 .. line+2].
                     const want_start: u32 = if (h.line > 2) h.line - 2 else 1;
-                    const want_end: u32 = h.line + 2;
+                    const want_end: u32 = h.line +| 2;
                     var cur_line: u32 = 1;
                     var i: usize = 0;
                     var captured_start: ?usize = null;

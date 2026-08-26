@@ -587,10 +587,11 @@ pub fn Hnsw(comptime D: type) type {
                 const worst = if (results.count() > 0) results.peek().?.d else c.d;
                 if (c.d > worst and results.count() >= ef) break;
 
-                if (layer >= self.layerCount(c.id)) {
-                    std.debug.print("VIOLATION c.id={d} its_layers={d} layer={d} max_level={d} ep={any} ep_layers={d}\n", .{ c.id, self.layerCount(c.id), layer, self.getMaxLevel(), self.entryPoint(), if (self.entryPoint()) |e| self.layerCount(e) else 0 });
-                    @panic("hnsw invariant broken");
-                }
+                // Persisted graphs are validated before becoming visible, but
+                // keep search fallible as a final defense against an invalid
+                // concurrently supplied/in-memory graph. Untrusted sidecars
+                // must never turn an invariant violation into a process panic.
+                if (layer >= self.layerCount(c.id)) return error.InvalidNeighborLayer;
                 var nbr_buf: [64]u32 = undefined;
                 const nbrs = self.snapshotNeighbors(c.id, layer, &nbr_buf);
                 for (nbrs, 0..) |nid, ni| {
@@ -1451,8 +1452,13 @@ pub fn Hnsw(comptime D: type) type {
                     const high_degree: usize = mapped.hi_deg[slot];
                     if (high_degree > hi_stride) return error.DegreeOverflow;
                     const base = slot * hi_stride;
+                    const graph_layer: u32 = @intCast(slot_offset + 1);
                     for (mapped.hi_nbrs[base..][0..high_degree]) |neighbor| {
                         if (neighbor >= n) return error.InvalidNeighborId;
+                        // An edge at graph layer L may only point to a node
+                        // that owns L. Otherwise searchLayer will eventually
+                        // expand a layer that does not exist for that node.
+                        if (mapped.levels[neighbor] < graph_layer) return error.InvalidNeighborLayer;
                     }
                 }
             }
@@ -1495,8 +1501,10 @@ pub fn Hnsw(comptime D: type) type {
                     const high_degree: usize = self.hi_deg.items[slot];
                     if (high_degree > hi_stride) return error.DegreeOverflow;
                     const base = std.math.mul(usize, slot, hi_stride) catch return error.InvalidSlabLayout;
+                    const graph_layer: u32 = @intCast(slot_offset + 1);
                     for (self.hi_nbrs.items[base..][0..high_degree]) |neighbor| {
                         if (neighbor >= n) return error.InvalidNeighborId;
+                        if (self.levels.items[neighbor] < graph_layer) return error.InvalidNeighborLayer;
                     }
                 }
             }

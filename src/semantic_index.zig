@@ -15,6 +15,8 @@ const Store = @import("store.zig").Store;
 const ann = @import("ann.zig");
 const semantic = @import("semantic.zig");
 const git_mod = @import("git.zig");
+const snapshot_mod = @import("snapshot.zig");
+const watcher = @import("watcher.zig");
 
 pub const sidecar_name = "semantic-chunks-v3.meta";
 pub const slab_file_prefix = "semantic-chunks-v3-";
@@ -252,7 +254,12 @@ pub fn manifestFingerprint(explorer: *Explorer, allocator: std.mem.Allocator) !u
 
 fn repositoryFingerprint(explorer: *Explorer, store: *Store, allocator: std.mem.Allocator) !u64 {
     const shape = try manifestFingerprint(explorer, allocator);
-    const content = try store.contentFingerprint(allocator);
+    const paths = try cloneSortedPaths(explorer, allocator);
+    defer {
+        for (paths) |path| allocator.free(path);
+        allocator.free(paths);
+    }
+    const content = try store.contentFingerprintForPaths(paths);
     var hash = std.hash.Wyhash.init(0x4344_4252_4550_4f33);
     hash.update(std.mem.asBytes(&shape));
     hash.update(std.mem.asBytes(&content));
@@ -798,6 +805,27 @@ fn headsEqual(a: ?[40]u8, b: ?[40]u8) bool {
     return std.mem.eql(u8, &a.?, &b.?);
 }
 
+/// Validate every untrusted metadata range against the current live outline
+/// before mmaping or searching the graph. Records produced by the builder are
+/// grouped by path, so retaining the previous count avoids repeated locks on
+/// the common multi-chunk-per-file path without allocating attacker-sized
+/// validation state.
+fn validateRecordLineRanges(explorer: *Explorer, records: []const Record) !void {
+    var previous_path: []const u8 = "";
+    var previous_line_count: u32 = 0;
+    for (records) |record| {
+        if (!std.mem.eql(u8, record.path, previous_path)) {
+            previous_line_count = explorer.outlineLineCount(record.path) orelse return error.InvalidAnnRecordPath;
+            previous_path = record.path;
+        }
+        if (record.line_start == 0 or record.line_start > previous_line_count or
+            record.line_end < record.line_start or record.line_end > previous_line_count)
+        {
+            return error.InvalidAnnRecordPath;
+        }
+    }
+}
+
 pub fn search(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -820,6 +848,10 @@ pub fn search(
     const current_head = try git_mod.getGitHead(project_root, allocator);
     if (!headsEqual(current_head, loaded.git_head)) return error.StaleAnnGitHead;
     if (try repositoryFingerprint(explorer, store, allocator) != loaded.manifest) return error.StaleAnnManifest;
+    // Metadata is attacker-controlled local input. Validate the entire mapping
+    // while the index is still empty so a failure remains transactional and no
+    // forged line can reach rendering arithmetic.
+    try validateRecordLineRanges(explorer, loaded.records);
     try loaded.loadGraph();
     const load_ns = elapsedNs(load_started);
 
@@ -853,8 +885,6 @@ pub fn search(
         const record = loaded.records[result.id];
         if (!semantic.isRemoteCandidatePathAllowed(record.path)) continue;
         if (seen_paths.contains(record.path)) continue;
-        var outline = (try explorer.getOutline(record.path, allocator)) orelse continue;
-        outline.deinit();
         try seen_paths.put(record.path, {});
         try hits.append(allocator, .{
             .path = try allocator.dupe(u8, record.path),
@@ -924,6 +954,41 @@ test "semantic ANN sidecar round-trips record mapping and graph" {
     try testing.expectEqual(@as(u32, 1), results[0].id);
 }
 
+test "semantic repository fingerprint survives cold scan snapshot reload" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "src");
+    var source = try tmp.dir.createFile(io, "src/live.zig", .{});
+    try source.writeStreamingAll(io, "pub fn live() void {}\n");
+    source.close(io);
+    // Stat-only/non-indexed Store entries must not perturb a manifest of the
+    // live parsed outline set.
+    var empty = try tmp.dir.createFile(io, "empty.bin", .{});
+    empty.close(io);
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp.dir.realPathFile(io, ".", &root_buf)];
+    var first_explorer = Explorer.init(testing.allocator, 1024 * 1024);
+    defer first_explorer.deinit();
+    var first_store = Store.init(testing.allocator);
+    defer first_store.deinit();
+    try watcher.initialScan(io, &first_store, &first_explorer, root, testing.allocator, true);
+    const before = try repositoryFingerprint(&first_explorer, &first_store, testing.allocator);
+
+    const snapshot_path = try std.fmt.allocPrint(testing.allocator, "{s}/roundtrip.snapshot", .{root});
+    defer testing.allocator.free(snapshot_path);
+    try snapshot_mod.writeSnapshot(io, &first_explorer, root, snapshot_path, testing.allocator);
+
+    var restored_explorer = Explorer.init(testing.allocator, 1024 * 1024);
+    defer restored_explorer.deinit();
+    var restored_store = Store.init(testing.allocator);
+    defer restored_store.deinit();
+    try testing.expect(snapshot_mod.loadSnapshot(io, snapshot_path, &restored_explorer, &restored_store, testing.allocator));
+    try testing.expectEqual(before, try repositoryFingerprint(&restored_explorer, &restored_store, testing.allocator));
+}
+
 test "semantic ANN sidecar refuses sensitive record mappings" {
     const testing = std.testing;
     const io = testing.io;
@@ -980,6 +1045,82 @@ test "semantic ANN metadata rejects traversal and oversized record counts before
     try metadata_file.writePositionalAll(io, &forged_count, 12);
     try metadata_file.sync(io);
     try testing.expectError(error.TruncatedAnnSidecar, load(io, testing.allocator, dir_path));
+}
+
+test "semantic ANN rejects forged overflow line ranges before mmap or hits" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = path_buf[0..try tmp.dir.realPathFile(io, ".", &path_buf)];
+
+    const source_path = "src/overflow.zig";
+    const content = "pub fn bounded() void {}\n";
+    var explorer = Explorer.init(testing.allocator, 1024 * 1024);
+    defer explorer.deinit();
+    try explorer.indexFile(source_path, content);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    _ = try store.recordSnapshot(source_path, content.len, std.hash.Wyhash.hash(0, content));
+
+    const config = semantic.Config.fromEnv();
+    try config.validate();
+    const calibration = try testing.allocator.alloc(f32, config.dimensions);
+    defer testing.allocator.free(calibration);
+    @memset(calibration, 0);
+    calibration[0] = 1;
+
+    var index = ann.Index.init(testing.allocator, config.dimensions, .{});
+    defer index.deinit();
+    _ = try index.insert(calibration);
+    const slab_name = "semantic-chunks-v3-dead-beef.hmls";
+    const slab_path = try slabPath(testing.allocator, dir_path, slab_name);
+    defer testing.allocator.free(slab_path);
+    try index.writeSlabs(slab_path);
+    const manifest = try repositoryFingerprint(&explorer, &store, testing.allocator);
+    const current_head = try git_mod.getGitHead(dir_path, testing.allocator);
+    _ = try writeMetadata(
+        io,
+        testing.allocator,
+        dir_path,
+        config.model,
+        config.dimensions,
+        manifest,
+        config.vectorSpaceId(),
+        calibration,
+        current_head,
+        slab_name,
+        &.{.{ .path = source_path, .line_start = 1, .line_end = 1 }},
+    );
+
+    const metadata_path = try sidecarPath(testing.allocator, dir_path);
+    defer testing.allocator.free(metadata_path);
+    const metadata = try std.Io.Dir.cwd().readFileAlloc(io, metadata_path, testing.allocator, .limited(max_metadata_bytes));
+    defer testing.allocator.free(metadata);
+    const record_path_offset = std.mem.indexOf(u8, metadata, source_path) orelse return error.MissingFixtureRecord;
+    const line_offset = record_path_offset + source_path.len;
+    var forged_lines: [8]u8 = undefined;
+    std.mem.writeInt(u32, forged_lines[0..4], std.math.maxInt(u32), .little);
+    std.mem.writeInt(u32, forged_lines[4..8], std.math.maxInt(u32), .little);
+    var metadata_file = try std.Io.Dir.cwd().openFile(io, metadata_path, .{ .mode = .read_write });
+    try metadata_file.writePositionalAll(io, &forged_lines, line_offset);
+    try metadata_file.sync(io);
+    metadata_file.close(io);
+
+    // Loading the raw metadata succeeds because the range is structurally
+    // ordered. Live-outline validation must reject it while the graph remains
+    // unattached, so neither safe nor ReleaseFast can reach line+2 wrapping.
+    var loaded = try loadMetadata(io, testing.allocator, dir_path);
+    defer loaded.deinit();
+    try testing.expectError(error.InvalidAnnRecordPath, validateRecordLineRanges(&explorer, loaded.records));
+    try testing.expect(!loaded.index.isMmapBacked());
+    try testing.expectEqual(@as(usize, 0), loaded.index.len());
+
+    try testing.expectError(
+        error.InvalidAnnRecordPath,
+        search(io, testing.allocator, &explorer, &store, dir_path, dir_path, "find bounded implementation", 5),
+    );
 }
 
 test "semantic ANN metadata and data directory use private permissions" {

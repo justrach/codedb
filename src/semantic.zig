@@ -394,9 +394,20 @@ pub fn cosineF32(a: []const f32, b: []const f32) !f32 {
         dot += x * y;
         norm_a += x * x;
         norm_b += y * y;
+        if (!std.math.isFinite(dot) or !std.math.isFinite(norm_a) or !std.math.isFinite(norm_b)) {
+            return error.InvalidEmbeddingNumber;
+        }
     }
     if (norm_a == 0 or norm_b == 0) return error.InvalidEmbeddingVector;
-    return @floatCast(@max(-1.0, @min(1.0, dot / @sqrt(norm_a * norm_b))));
+    const norm_product = norm_a * norm_b;
+    if (!std.math.isFinite(norm_product) or norm_product <= 0) return error.InvalidEmbeddingNumber;
+    const denominator = @sqrt(norm_product);
+    if (!std.math.isFinite(denominator) or denominator == 0) return error.InvalidEmbeddingNumber;
+    const raw = dot / denominator;
+    if (!std.math.isFinite(raw)) return error.InvalidEmbeddingNumber;
+    const narrowed: f32 = @floatCast(@max(-1.0, @min(1.0, raw)));
+    if (!std.math.isFinite(narrowed)) return error.InvalidEmbeddingNumber;
+    return narrowed;
 }
 
 /// Make one batched remote request. The returned scores use `allocator` and
@@ -534,7 +545,11 @@ fn vectorsFromProviderResponse(
         for (embedding_value.array.items, 0..) |value, i| {
             const number = try numberAsF64(value);
             if (!std.math.isFinite(number)) return error.InvalidEmbeddingNumber;
-            row[i] = @floatCast(number);
+            const narrowed: f32 = @floatCast(number);
+            // JSON numbers are parsed as f64. Values such as 1e100 are finite
+            // there but overflow to infinity in the f32 index representation.
+            if (!std.math.isFinite(narrowed)) return error.InvalidEmbeddingNumber;
+            row[i] = narrowed;
         }
     }
     return vectors;
@@ -552,10 +567,23 @@ fn cosine(a: []const std.json.Value, b: []const std.json.Value) !f32 {
         dot += x * y;
         norm_a += x * x;
         norm_b += y * y;
+        // Large-but-finite JSON scalars can overflow these f64 accumulators.
+        // Reject immediately rather than allowing NaN to be clamped into a
+        // plausible (and potentially perfect) retrieval score.
+        if (!std.math.isFinite(dot) or !std.math.isFinite(norm_a) or !std.math.isFinite(norm_b)) {
+            return error.InvalidEmbeddingNumber;
+        }
     }
     if (norm_a == 0 or norm_b == 0) return error.InvalidEmbeddingVector;
-    const raw = dot / @sqrt(norm_a * norm_b);
-    return @floatCast(@max(-1.0, @min(1.0, raw)));
+    const norm_product = norm_a * norm_b;
+    if (!std.math.isFinite(norm_product) or norm_product <= 0) return error.InvalidEmbeddingNumber;
+    const denominator = @sqrt(norm_product);
+    if (!std.math.isFinite(denominator) or denominator == 0) return error.InvalidEmbeddingNumber;
+    const raw = dot / denominator;
+    if (!std.math.isFinite(raw)) return error.InvalidEmbeddingNumber;
+    const narrowed: f32 = @floatCast(@max(-1.0, @min(1.0, raw)));
+    if (!std.math.isFinite(narrowed)) return error.InvalidEmbeddingNumber;
+    return narrowed;
 }
 
 /// Parse an OpenAI-compatible embeddings response and return cosine scores for

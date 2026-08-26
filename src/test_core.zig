@@ -51,6 +51,41 @@ test "store: content fingerprint is deterministic and detects same-size edits" {
     try testing.expectEqual(before, try reordered.contentFingerprint(testing.allocator));
 }
 
+test "store: cold scan refines placeholder hash without publishing an edit" {
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordSnapshot("src/live.zig", 12, 0);
+    const sequence = store.currentSeq();
+    const placeholder = try store.contentFingerprint(testing.allocator);
+    try testing.expect(store.refineLatestSnapshotHash("src/live.zig", 12, 0xCAFE));
+    try testing.expectEqual(sequence, store.currentSeq());
+    try testing.expect(placeholder != try store.contentFingerprint(testing.allocator));
+    try testing.expectEqual(@as(u64, 0xCAFE), store.getLatest("src/live.zig").?.hash);
+
+    // Refuse to overwrite an already authoritative identity or a mismatched
+    // stat record; a concurrent watcher update therefore wins safely.
+    try testing.expect(!store.refineLatestSnapshotHash("src/live.zig", 12, 0xBEEF));
+    _ = try store.recordSnapshot("src/changed.zig", 8, 0);
+    try testing.expect(!store.refineLatestSnapshotHash("src/changed.zig", 9, 0xABCD));
+}
+
+test "store: path-scoped content identity excludes stat-only records" {
+    var with_extra = Store.init(testing.allocator);
+    defer with_extra.deinit();
+    _ = try with_extra.recordSnapshot("src/a.zig", 12, 0xAAAA);
+    _ = try with_extra.recordSnapshot("ignored.bin", 900, 0);
+
+    var parsed_only = Store.init(testing.allocator);
+    defer parsed_only.deinit();
+    _ = try parsed_only.recordSnapshot("src/a.zig", 12, 0xAAAA);
+    const paths = [_][]const u8{"src/a.zig"};
+    try testing.expectEqual(
+        try parsed_only.contentFingerprintForPaths(&paths),
+        try with_extra.contentFingerprintForPaths(&paths),
+    );
+}
+
 test "semantic-index always forces a live filesystem rescan" {
     try testing.expect(bootstrap.commandForcesRescan("semantic-index"));
     try testing.expect(bootstrap.commandForcesRescan("snapshot"));
