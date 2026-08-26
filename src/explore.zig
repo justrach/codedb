@@ -1813,7 +1813,7 @@ pub const Explorer = struct {
     /// a failed call leaves the previous root intact.
     pub fn setRoot(self: *Explorer, io: std.Io, root_path: []const u8) !void {
         if (!root_policy.isAbsoluteRootRequest(root_path)) return error.PathNotAllowed;
-        const new_dir = try std.Io.Dir.cwd().openDir(io, root_path, .{ .follow_symlinks = false });
+        const new_dir = try std.Io.Dir.cwd().openDir(io, root_path, .{ .follow_symlinks = false, .iterate = true });
         errdefer new_dir.close(io);
 
         var canonical_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1849,6 +1849,12 @@ pub const Explorer = struct {
         var explorer = Explorer.init(testing.allocator, 4);
         defer explorer.deinit();
         try explorer.setRoot(test_io, first_buf[0..first_len]);
+        var root_iter = explorer.root_dir.?.iterate();
+        var saw_marker = false;
+        while (try root_iter.next(test_io)) |entry| {
+            if (std.mem.eql(u8, entry.name, "build.zig")) saw_marker = true;
+        }
+        try testing.expect(saw_marker);
         const retired = explorer.root_dir.?;
         try explorer.setRoot(test_io, second_buf[0..second_len]);
         if (comptime builtin.os.tag != .windows) {
@@ -2753,8 +2759,9 @@ pub const Explorer = struct {
         if (source_paths) |paths| {
             const io = self.io orelse return error.WordIndexIncomplete;
             const dir = self.root_dir orelse return error.WordIndexIncomplete;
+            const canonical_root = self.root_path orelse return error.WordIndexIncomplete;
             for (paths) |path| {
-                const content = try project_file.readAllocNoFollow(io, dir, path, self.allocator, .limited(64 * 1024 * 1024));
+                const content = try project_file.readAllocNoFollowAtRoot(io, dir, canonical_root, path, self.allocator, .limited(64 * 1024 * 1024));
                 errdefer self.allocator.free(content);
                 try rebuilt.indexFile(path, content);
                 self.allocator.free(content);
@@ -3183,6 +3190,15 @@ pub const Explorer = struct {
         return try allocator.dupe(u8, ref.data);
     }
 
+    /// Whether the current project index already contains this relative path.
+    /// This is intentionally metadata-only: direct reads still validate the
+    /// live file handle before serving cached bytes.
+    pub fn hasIndexedPath(self: *Explorer, path: []const u8) bool {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        return self.outlines.contains(path);
+    }
+
     pub const LineSpan = LineOffsetCache.Span;
 
     /// Borrow the canonical cached bytes for `path`. Caller must hold `mu`
@@ -3260,7 +3276,8 @@ pub const Explorer = struct {
         if (builtin.os.tag == .freestanding) return null;
         const io = self.io orelse return null;
         const dir = self.root_dir orelse return null;
-        const data = project_file.readAllocNoFollow(io, dir, path, allocator, .limited(64 * 1024 * 1024)) catch return null;
+        const canonical_root = self.root_path orelse return null;
+        const data = project_file.readAllocNoFollowAtRoot(io, dir, canonical_root, path, allocator, .limited(64 * 1024 * 1024)) catch return null;
         return .{ .data = data, .owned = true, .allocator = allocator };
     }
 

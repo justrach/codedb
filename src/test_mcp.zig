@@ -2492,23 +2492,21 @@ test "issue-528: finishCli maps error-prefixed handler output to exit 1" {
     try testing.expectEqual(@as(u8, 0), mcp_mod.finishCli(&empty_out, 0));
 }
 
-test "issue-538: temp roots are indexable only when CODEDB_ALLOW_TEMP opts in" {
+test "issue-538: temp roots are indexable only when explicitly opted in" {
     // Default (footgun guard, #80/#346): temp roots are refused so codedb never
     // indexes a scratch dir by accident.
-    try testing.expect(!root_policy.isIndexableRoot("/tmp/cdbtest"));
-    try testing.expect(!root_policy.isIndexableRoot("/private/tmp/cdbtest"));
+    try testing.expect(!root_policy.isIndexableRootWithTempOpt("/tmp/cdbtest", false));
+    try testing.expect(!root_policy.isIndexableRootWithTempOpt("/private/tmp/cdbtest", false));
 
     // Opt-in escape hatch for SWE-bench / CI harnesses that clone throwaway
     // checkouts under /tmp (issue #538).
-    cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
-    defer cio.posixUnsetenv("CODEDB_ALLOW_TEMP");
-    try testing.expect(root_policy.isIndexableRoot("/tmp/cdbtest"));
-    try testing.expect(root_policy.isIndexableRoot("/private/tmp/cdbtest/src"));
+    try testing.expect(root_policy.isIndexableRootWithTempOpt("/tmp/cdbtest", true));
+    try testing.expect(root_policy.isIndexableRootWithTempOpt("/private/tmp/cdbtest/src", true));
 
     // The opt-in must NOT widen the guard to real system roots.
-    try testing.expect(!root_policy.isIndexableRoot("/etc"));
-    try testing.expect(!root_policy.isIndexableRoot("/usr/local/bin"));
-    try testing.expect(!root_policy.isIndexableRoot("/"));
+    try testing.expect(!root_policy.isIndexableRootWithTempOpt("/etc", true));
+    try testing.expect(!root_policy.isIndexableRootWithTempOpt("/usr/local/bin", true));
+    try testing.expect(!root_policy.isIndexableRootWithTempOpt("/", true));
 }
 
 test "issue-570: codedb_context falls back to plain words for all-lowercase tasks" {

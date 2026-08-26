@@ -300,6 +300,15 @@ def run_scenario_1_issue346_regression(binary: str, project: str) -> list[TestRe
         else:
             r.ok()
 
+        r = t("roots/list_changed cannot invalidate an active deferred scan")
+        p.send({"jsonrpc": "2.0", "method": "notifications/roots/list_changed", "params": {}})
+        if not reply_roots(p, project, timeout=5.0):
+            r.fail("server did not re-request roots after list_changed")
+        elif p.proc.poll() is not None:
+            r.fail(f"server exited during roots replacement: {p.proc.returncode}")
+        else:
+            r.ok()
+
         r = t("scan completes and files > 0")
         scan_ok = wait_for_scan(p, timeout=90.0)
         if not scan_ok:
@@ -344,6 +353,25 @@ def run_scenario_1_issue346_regression(binary: str, project: str) -> list[TestRe
         text = tool_text(resp)
         if "DeferredScan" not in text:
             r.fail(f"symbol lookup returned: {text[:200]!r}")
+        else:
+            r.ok()
+
+        r = t("deferred-root codedb_word uses the negotiated project")
+        text = tool_text(p.call_tool("codedb_word", {"word": "DeferredScan"}))
+        if "DeferredScan" not in text or "src/mcp.zig" not in text:
+            r.fail(f"word index used a stale cwd/default root: {text[:240]!r}")
+        else:
+            r.ok()
+
+        r = t("deferred-root codedb_context uses the negotiated capability")
+        text = tool_text(p.call_tool("codedb_context", {
+            "task": "explain how DeferredScan activates after the MCP roots handshake",
+            "max_tokens": 1200,
+        }))
+        if "project root" in text.lower() and "not configured" in text.lower():
+            r.fail(f"context retained the spawn cwd instead of the negotiated root: {text[:240]!r}")
+        elif "DeferredScan" not in text:
+            r.fail(f"context missed negotiated-root symbols: {text[:240]!r}")
         else:
             r.ok()
 
@@ -457,6 +485,19 @@ def run_scenario_3_no_roots_client(binary: str) -> list[TestResult]:
             r.fail(f"host file content escaped no-roots mode: {combined[:300]!r}")
         elif "project root is not configured" not in direct or "project root is not configured" not in pipeline:
             r.fail(f"no-roots rejection was not controlled: direct={direct[:160]!r} pipeline={pipeline[:160]!r}")
+        else:
+            r.ok()
+
+        r = t("no-roots mode cannot list or contextualize host cwd")
+        listing = tool_text(p.call_tool("codedb_list_dir", {}))
+        context = tool_text(p.call_tool("codedb_context", {
+            "task": "inspect host filesystem configuration and reader metadata",
+        }))
+        combined = listing + "\n" + context
+        if "project root is not configured" not in listing or "project root is not configured" not in context:
+            r.fail(f"no-roots listing/context rejection was not controlled: list={listing[:160]!r} context={context[:160]!r}")
+        elif "etc/" in combined or "reader.md (hash-verified)" in combined:
+            r.fail(f"host metadata escaped no-roots mode: {combined[:300]!r}")
         else:
             r.ok()
 
@@ -1196,6 +1237,24 @@ def run_scenario_9_bootstrap_temp_read(binary: str) -> list[TestResult]:
         )
         canary = "BOOTSTRAP_TEMP_READ_CANARY = 'rooted'\n"
         (root / "src" / "main.py").write_text(canary)
+
+        cli_env = {**os.environ, "CODEDB_NO_CLI_DAEMON": "1", "CODEDB_QUIET": "1"}
+        implicit = subprocess.run(
+            [binary, "search", "BOOTSTRAP_TEMP_READ_CANARY"],
+            cwd=root, env=cli_env, text=True, capture_output=True, timeout=30,
+        )
+        relative = subprocess.run(
+            [binary, root.name, "search", "BOOTSTRAP_TEMP_READ_CANARY"],
+            cwd=root.parent, env=cli_env, text=True, capture_output=True, timeout=30,
+        )
+        r = t("implicit cwd and relative positional roots cold-scan with the same capability")
+        if implicit.returncode != 0 or "src/main.py" not in implicit.stdout:
+            r.fail(f"implicit-root CLI failed: code={implicit.returncode} out={implicit.stdout[:220]!r} err={implicit.stderr[-220:]!r}")
+            return results
+        if relative.returncode != 0 or "src/main.py" not in relative.stdout:
+            r.fail(f"relative-root CLI failed: code={relative.returncode} out={relative.stdout[:220]!r} err={relative.stderr[-220:]!r}")
+            return results
+        r.ok()
 
         p = MCPProcess(binary, [], cwd="/", command=[binary, str(root), "mcp", "--no-telemetry"])
         try:

@@ -103,7 +103,7 @@ pub const Config = struct {
         const uri = std.Uri.parse(self.url) catch return error.InvalidEmbeddingConfig;
         if (uri.user != null or uri.password != null or uri.fragment != null) return error.InvalidEmbeddingConfig;
         var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
-        const host = (uri.getHost(&host_buf) catch return error.InvalidEmbeddingConfig).bytes;
+        const host = uriHost(uri, &host_buf) catch return error.InvalidEmbeddingConfig;
         if (host.len == 0) return error.InvalidEmbeddingConfig;
         if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) return;
         if (std.ascii.eqlIgnoreCase(uri.scheme, "http") and
@@ -117,7 +117,7 @@ pub const Config = struct {
         const uri = std.Uri.parse(self.url) catch return false;
         if (!std.ascii.eqlIgnoreCase(uri.scheme, "https") or uri.user != null or uri.password != null) return false;
         var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
-        const host = (uri.getHost(&host_buf) catch return false).bytes;
+        const host = uriHost(uri, &host_buf) catch return false;
         return std.ascii.eqlIgnoreCase(host, "embeddings.wiki.codes");
     }
 
@@ -137,6 +137,24 @@ pub const Config = struct {
         return hash.final();
     }
 };
+
+fn uriHost(uri: std.Uri, buffer: *[std.Io.net.HostName.max_len]u8) ![]const u8 {
+    const component = uri.host orelse return error.UriMissingHost;
+    const host = try component.toRaw(buffer);
+    if (host.len == 0) return error.InvalidHostName;
+
+    // HostName.fromUri deliberately accepts DNS names only on newer Zig
+    // toolchains, while URI hosts may also be bracketed IPv6 literals. Keep
+    // the authority validation strict without making loopback IPv6 unusable.
+    if (host[0] == '[') {
+        if (host.len < 3 or host[host.len - 1] != ']') return error.InvalidHostName;
+        _ = std.Io.net.Ip6Address.parse(host[1 .. host.len - 1], 0) catch
+            return error.InvalidHostName;
+    } else {
+        try std.Io.net.HostName.validate(host);
+    }
+    return host;
+}
 
 /// Final cloud-boundary guard. The watcher and snapshot loader already reject
 /// sensitive paths, but this check is deliberately repeated immediately before

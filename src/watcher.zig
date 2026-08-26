@@ -322,15 +322,34 @@ fn shouldSkipDir(name: []const u8) bool {
 fn isWithinCanonicalRoot(root: []const u8, candidate: []const u8) bool {
     if (!std.mem.startsWith(u8, candidate, root)) return false;
     if (candidate.len == root.len) return true;
-    return root.len > 0 and (std.fs.path.isSep(root[root.len - 1]) or std.fs.path.isSep(candidate[root.len]));
+    return root.len > 0 and (isPortablePathSep(root[root.len - 1]) or isPortablePathSep(candidate[root.len]));
 }
 
-fn canonicalTargetRelative(root: []const u8, target: []const u8) ?[]const u8 {
+fn isPortablePathSep(ch: u8) bool {
+    return ch == '/' or ch == '\\';
+}
+
+/// Return a slash-normalized repository-relative spelling for a canonical
+/// target. Windows realPath uses backslashes, but every sensitive-path and
+/// skip policy in codedb intentionally consumes portable forward slashes.
+fn canonicalTargetRelative(root: []const u8, target: []const u8, normalized: []u8) ?[]const u8 {
     if (!isWithinCanonicalRoot(root, target) or target.len == root.len) return null;
     var start = root.len;
-    while (start < target.len and std.fs.path.isSep(target[start])) start += 1;
+    while (start < target.len and isPortablePathSep(target[start])) start += 1;
     if (start == target.len) return null;
-    return target[start..];
+    const rel = target[start..];
+    if (rel.len > normalized.len) return null;
+    for (rel, normalized[0..rel.len]) |ch, *out| out.* = if (isPortablePathSep(ch)) '/' else ch;
+    return normalized[0..rel.len];
+}
+
+test "canonical Windows targets are normalized before sensitive policy checks" {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const rel = canonicalTargetRelative("C:\\repo", "C:\\repo\\safe\\.ssh\\config", &buf) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("safe/.ssh/config", rel);
+    try std.testing.expect(shouldSkipFile(rel));
+    try std.testing.expect(canonicalTargetRelative("C:\\repo", "C:\\repo-other\\src", &buf) == null);
 }
 
 /// Resolve every candidate under the canonical root and require both its
@@ -341,7 +360,8 @@ fn resolvedFileTargetAllowed(io: std.Io, root_dir: std.Io.Dir, canonical_root: [
     if (canonical_root.len == 0 or shouldSkip(alias_path) or shouldSkipFile(alias_path)) return false;
     var target_buf: [std.fs.max_path_bytes]u8 = undefined;
     const target_len = root_dir.realPathFile(io, alias_path, &target_buf) catch return false;
-    const target_rel = canonicalTargetRelative(canonical_root, target_buf[0..target_len]) orelse return false;
+    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_rel = canonicalTargetRelative(canonical_root, target_buf[0..target_len], &normalized_buf) orelse return false;
     return !shouldSkip(target_rel) and !shouldSkipFile(target_rel);
 }
 
@@ -349,7 +369,8 @@ fn resolvedDirectoryTargetAllowed(io: std.Io, root_dir: std.Io.Dir, canonical_ro
     if (alias_path.len == 0) return canonical_root.len > 0;
     var target_buf: [std.fs.max_path_bytes]u8 = undefined;
     const target_len = root_dir.realPathFile(io, alias_path, &target_buf) catch return false;
-    const target_rel = canonicalTargetRelative(canonical_root, target_buf[0..target_len]) orelse return false;
+    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_rel = canonicalTargetRelative(canonical_root, target_buf[0..target_len], &normalized_buf) orelse return false;
     return !shouldSkip(target_rel) and !shouldSkipFile(target_rel);
 }
 
@@ -480,7 +501,8 @@ pub const FilteredWalker = struct {
         var target_buf: [std.fs.max_path_bytes]u8 = undefined;
         const target_len = dir.realPathFile(self.io, ".", &target_buf) catch return null;
         const real_target = target_buf[0..target_len];
-        const target_rel = canonicalTargetRelative(self.real_root, real_target) orelse return null;
+        var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const target_rel = canonicalTargetRelative(self.real_root, real_target, &normalized_buf) orelse return null;
         if (shouldSkip(target_rel) or shouldSkipFile(target_rel)) return null;
         const opened_as_alias = !std.mem.eql(u8, target_rel, visible_path);
         // Ordinary directories may also be reachable through a deliberate

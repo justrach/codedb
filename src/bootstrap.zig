@@ -443,7 +443,6 @@ pub fn coldLoadOrScan(
     cmd_args_start: usize,
     abs_root: []const u8,
     data_dir: []const u8,
-    root: []const u8,
     freq_table_heap: *?*[256][256]u16,
 ) !void {
     if (std.mem.eql(u8, cmd, "mcp")) return;
@@ -554,7 +553,7 @@ pub fn coldLoadOrScan(
             break :blk sa.use_regex or std.mem.indexOfScalar(u8, sa.query, ' ') == null;
         };
         if (is_search and !heads_match) {
-            const tmp_tri = try watcher.initialScanWithTrigrams(io, store, explorer, root, allocator, std.heap.c_allocator, search_skips_outlines);
+            const tmp_tri = try watcher.initialScanWithTrigrams(io, store, explorer, abs_root, allocator, std.heap.c_allocator, search_skips_outlines);
             if (tmp_tri) |tri| {
                 tri.writeToDisk(io, data_dir, git_head) catch {};
                 tri.deinit();
@@ -564,7 +563,7 @@ pub fn coldLoadOrScan(
                 }
             }
         } else {
-            try watcher.initialScan(io, store, explorer, root, allocator, true);
+            try watcher.initialScan(io, store, explorer, abs_root, allocator, true);
         }
         const scan_elapsed = cio.nanoTimestamp() - t_scan;
         var dur_buf: [64]u8 = undefined;

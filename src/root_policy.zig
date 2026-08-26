@@ -27,6 +27,13 @@ pub fn tempIndexingAllowed() bool {
 }
 
 pub fn isIndexableRoot(path: []const u8) bool {
+    return isIndexableRootWithTempOpt(path, tempIndexingAllowed());
+}
+
+/// Pure policy entry point for tests and callers that have already resolved
+/// the explicit temp-root opt-in. Keeping environment reads outside the policy
+/// avoids process-global environment races between parallel Zig tests.
+pub fn isIndexableRootWithTempOpt(path: []const u8, allow_temp: bool) bool {
     if (path.len == 0) return false;
     if (std.mem.eql(u8, path, "/")) return false;
 
@@ -46,7 +53,7 @@ pub fn isIndexableRoot(path: []const u8) bool {
     // (footgun guard) but allowed when temp indexing is opted in (#538, #642)
     // — CI/SWE-bench harnesses clone into /tmp, and macOS TMPDIR resolves
     // under /private/var/folders.
-    if (!tempIndexingAllowed()) {
+    if (!allow_temp) {
         if (isExactOrChild(path, "/private/tmp")) return false;
         if (isExactOrChild(path, "/tmp")) return false;
         if (isExactOrChild(path, "/private/var")) return false;
@@ -232,21 +239,19 @@ test "issue-80: /tmp is denied" {
     try testing.expect(!isIndexableRoot("/tmp/foo"));
 }
 
-test "issue-642: /var is denied by default, indexable with CODEDB_ALLOW_TEMP" {
-    try testing.expect(!isIndexableRoot("/var/tmp"));
-    try testing.expect(!isIndexableRoot("/var/log"));
+test "issue-642: /var is denied by default, indexable with explicit temp opt-in" {
+    try testing.expect(!isIndexableRootWithTempOpt("/var/tmp", false));
+    try testing.expect(!isIndexableRootWithTempOpt("/var/log", false));
     // /var itself (no deeper path) is also denied
-    try testing.expect(!isIndexableRoot("/var"));
+    try testing.expect(!isIndexableRootWithTempOpt("/var", false));
     // ...but OSTree home projects under /var/home never need the opt-in (#642)
     try testing.expect(isIndexableRoot("/var/home/xavi/project"));
 
     // --allow-temp / CODEDB_ALLOW_TEMP=1 unblocks /var the same way it
     // unblocks /tmp (#538): macOS TMPDIR resolves under /private/var/folders
     // and CI workspaces live under /var/lib.
-    cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
-    defer cio.posixUnsetenv("CODEDB_ALLOW_TEMP");
-    try testing.expect(isIndexableRoot("/var/tmp"));
-    try testing.expect(isIndexableRoot("/private/var/folders/zz/scratch"));
+    try testing.expect(isIndexableRootWithTempOpt("/var/tmp", true));
+    try testing.expect(isIndexableRootWithTempOpt("/private/var/folders/zz/scratch", true));
     // The opt-in still never unblocks the bare OSTree home dir.
-    try testing.expect(!isIndexableRoot("/var/home/xavi"));
+    try testing.expect(!isIndexableRootWithTempOpt("/var/home/xavi", true));
 }

@@ -131,17 +131,34 @@ const Walk = struct {
     truncated: bool = false,
 };
 
-fn canonicalRelative(root: []const u8, target: []const u8) ?[]const u8 {
+fn isPortablePathSep(ch: u8) bool {
+    return ch == '/' or ch == '\\';
+}
+
+fn canonicalRelative(root: []const u8, target: []const u8, normalized: []u8) ?[]const u8 {
     if (!underRoot(target, root)) return null;
     var start = root.len;
-    while (start < target.len and std.fs.path.isSep(target[start])) start += 1;
-    return target[start..];
+    while (start < target.len and isPortablePathSep(target[start])) start += 1;
+    const rel = target[start..];
+    if (rel.len > normalized.len) return null;
+    for (rel, normalized[0..rel.len]) |ch, *out| out.* = if (isPortablePathSep(ch)) '/' else ch;
+    return normalized[0..rel.len];
+}
+
+test "Windows canonical paths are slash-normalized before list policy checks" {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const rel = canonicalRelative("C:\\repo", "C:\\repo\\safe\\.ssh", &buf) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("safe/.ssh", rel);
+    try std.testing.expect(!project_file.isAllowedPath(rel));
+    try std.testing.expect(!underRoot("C:\\repo-other\\src", "C:\\repo"));
 }
 
 fn openedDirectoryAllowed(w: *Walk, dir: Io.Dir) bool {
     var opened_buf: [std.fs.max_path_bytes]u8 = undefined;
     const opened_len = dir.realPath(w.io, &opened_buf) catch return false;
-    const target_rel = canonicalRelative(w.root_abs, opened_buf[0..opened_len]) orelse return false;
+    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_rel = canonicalRelative(w.root_abs, opened_buf[0..opened_len], &normalized_buf) orelse return false;
     return target_rel.len == 0 or project_file.isAllowedPath(target_rel);
 }
 
@@ -456,7 +473,8 @@ fn pathSafe(path: []const u8) bool {
 
 fn underRoot(abs: []const u8, root: []const u8) bool {
     if (!std.mem.startsWith(u8, abs, root)) return false;
-    return abs.len == root.len or abs[root.len] == '/';
+    if (abs.len == root.len) return true;
+    return root.len > 0 and (isPortablePathSep(root[root.len - 1]) or isPortablePathSep(abs[root.len]));
 }
 
 pub const ListError = error{
@@ -495,7 +513,8 @@ pub fn listUnderRoot(io: Io, arena: Allocator, root_dir: Io.Dir, project_abs: []
     const n = opened.realPath(io, &buf) catch return error.NotADir;
     const abs = buf[0..n];
     if (!underRoot(abs, project_abs)) return error.Escape;
-    const target_rel = canonicalRelative(project_abs, abs) orelse return error.Escape;
+    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_rel = canonicalRelative(project_abs, abs, &normalized_buf) orelse return error.Escape;
     if (target_rel.len != 0 and !project_file.isAllowedPath(target_rel)) return error.AccessDenied;
     var walked = walkTreeRoot(io, arena, root_dir, project_abs) catch return error.NotADir;
     const root = if (std.mem.eql(u8, path, ".")) walked.root else blk: {

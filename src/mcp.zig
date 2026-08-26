@@ -8,7 +8,7 @@ const std = @import("std");
 const testing = std.testing;
 const mcpj = @import("mcp_json.zig");
 pub const Root = struct {
-    uri: []u8,
+    path: []u8,
     name: []u8,
 };
 const Store = @import("store.zig").Store;
@@ -29,6 +29,7 @@ const release_info = @import("release_info.zig");
 const mcp_list_dir = @import("mcp_list_dir.zig");
 const project_file_read = @import("project_file.zig");
 const project_path_policy = @import("project_path.zig");
+const local_uri = @import("local_uri.zig");
 pub const DeferredScan = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -58,8 +59,7 @@ pub fn triggerDeferredScanWithFallback(
 ) bool {
     var path: []const u8 = "";
     if (indexable_roots.len > 0) {
-        const uri_raw = indexable_roots[0].uri;
-        path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+        path = indexable_roots[0].path;
     }
     if (path.len == 0 and fallback_cwd.len > 0 and root_policy.isIndexableRoot(fallback_cwd)) {
         path = fallback_cwd;
@@ -393,9 +393,15 @@ const ProjectCache = struct {
         default_exp: *Explorer,
         default_store: *Store,
     ) !ProjectCtx {
-        const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
-        if (!root_policy.isAdmissibleRoot(io, p))
-            return error.PathNotAllowed;
+        const raw_path = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
+        const parsed_path = local_uri.parseRootReference(self.alloc, raw_path) catch return error.PathNotAllowed;
+        defer self.alloc.free(parsed_path);
+
+        var candidate = Explorer.init(self.alloc, self.content_cache_capacity);
+        var candidate_live = true;
+        defer if (candidate_live) candidate.deinit();
+        try candidate.setRoot(io, parsed_path);
+        const canonical_root = candidate.root_path orelse return error.PathNotAllowed;
 
         self.mu.lock();
         defer self.mu.unlock();
@@ -403,7 +409,7 @@ const ProjectCache = struct {
         const now = cio.milliTimestamp();
         for (&self.entries) |*slot| {
             if (slot.*) |entry| {
-                if (std.mem.eql(u8, entry.path, p)) {
+                if (std.mem.eql(u8, entry.path, canonical_root)) {
                     entry.last_used = now;
                     return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store, .snapshot_cache = &entry.snapshot_cache, .deps_cache = &entry.deps_cache };
                 }
@@ -412,23 +418,17 @@ const ProjectCache = struct {
 
         // Cache miss — load from snapshot
         const new_entry = self.alloc.create(Entry) catch return error.OutOfMemory;
-        new_entry.path = self.alloc.dupe(u8, p) catch {
+        new_entry.path = self.alloc.dupe(u8, canonical_root) catch {
             self.alloc.destroy(new_entry);
             return error.OutOfMemory;
         };
-        new_entry.explorer = Explorer.init(self.alloc, self.content_cache_capacity);
-        new_entry.explorer.setRoot(io, p) catch |err| {
-            new_entry.explorer.deinit();
-            self.alloc.free(new_entry.path);
-            self.alloc.destroy(new_entry);
-            return err;
-        };
+        new_entry.explorer = candidate;
+        candidate_live = false;
         new_entry.store = Store.init(self.alloc);
         new_entry.snapshot_cache = .{};
         new_entry.deps_cache = .{};
         new_entry.last_used = now;
 
-        const canonical_root = new_entry.explorer.root_path orelse p;
         const stable_root = new_entry.explorer.root_dir orelse return error.PathNotAllowed;
         if (!snapshot_mod.loadSnapshotValidatedFromRoot(io, stable_root, canonical_root, &new_entry.explorer, &new_entry.store, self.alloc)) {
             // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
@@ -452,14 +452,14 @@ const ProjectCache = struct {
                 new_entry.explorer.deinit();
                 self.alloc.free(new_entry.path);
                 self.alloc.destroy(new_entry);
-                if (std.mem.eql(u8, p, self.default_path) and default_store.currentSeq() > 0) {
+                if (default_exp.root_path != null and std.mem.eql(u8, canonical_root, default_exp.root_path.?) and default_store.currentSeq() > 0) {
                     return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
                 }
                 return error.SnapshotLoadFailed;
             }
         }
 
-        loadProjectTrigramFromDiskIfPresent(io, &new_entry.explorer, p, self.alloc);
+        loadProjectTrigramFromDiskIfPresent(io, &new_entry.explorer, canonical_root, self.alloc);
 
         // Release raw file contents retained by the snapshot load — outlines,
         // trigram index, and word index are sufficient for all query tools.
@@ -1087,7 +1087,7 @@ const Session = struct {
 
     fn freeRoots(self: *Session) void {
         for (self.roots.items) |r| {
-            self.alloc.free(r.uri);
+            self.alloc.free(r.path);
             self.alloc.free(r.name);
         }
         self.roots.clearRetainingCapacity();
@@ -1533,19 +1533,25 @@ fn parseRoots(io: std.Io, s: *Session, result: *const std.json.ObjectMap) void {
         const obj = item.object;
         const uri_raw = mcpj.getStr(&obj, "uri") orelse continue;
         const name_raw = mcpj.getStr(&obj, "name") orelse "";
-        // Strip file:// prefix for policy check
-        const path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
-        if (!root_policy.isAdmissibleRoot(io, path)) {
+        const parsed_path = local_uri.parseLocalFileUri(s.alloc, uri_raw) catch {
             std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
             continue;
-        }
-        const uri = s.alloc.dupe(u8, uri_raw) catch continue;
-        const name = s.alloc.dupe(u8, name_raw) catch {
-            s.alloc.free(uri);
+        };
+        var probe = Explorer.init(s.alloc, 1);
+        defer probe.deinit();
+        probe.setRoot(io, parsed_path) catch {
+            s.alloc.free(parsed_path);
+            std.log.info("codedb mcp: rejected root \"{s}\" (unsafe root capability)", .{uri_raw});
             continue;
         };
-        s.roots.append(s.alloc, .{ .uri = uri, .name = name }) catch {
-            s.alloc.free(uri);
+        s.alloc.free(parsed_path);
+        const path = s.alloc.dupe(u8, probe.root_path.?) catch continue;
+        const name = s.alloc.dupe(u8, name_raw) catch {
+            s.alloc.free(path);
+            continue;
+        };
+        s.roots.append(s.alloc, .{ .path = path, .name = name }) catch {
+            s.alloc.free(path);
             s.alloc.free(name);
             continue;
         };
@@ -1816,8 +1822,9 @@ fn dispatch(
     }
 
     if (tool == .codedb_word or tool == .codedb_context or (tool == .codedb_search and shouldLoadWordIndexForSearch(args))) {
-        const effective_project = project_path orelse cache.default_path;
-        loadProjectWordIndexFromDiskIfPresent(io, ctx.explorer, effective_project, alloc);
+        if (project_path orelse ctx.explorer.root_path) |effective_project| {
+            loadProjectWordIndexFromDiskIfPresent(io, ctx.explorer, effective_project, alloc);
+        }
     }
 
     switch (tool) {
@@ -1843,7 +1850,7 @@ fn dispatch(
         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
         .codedb_list_dir => mcp_list_dir.handle(io, alloc, getStr(args, "path") orelse ".", ctx.explorer, out),
-        .codedb_context => handleContext(io, alloc, args, out, ctx.store, ctx.explorer, project_path orelse cache.default_path),
+        .codedb_context => handleContext(io, alloc, args, out, ctx.store, ctx.explorer),
     }
     appendScanProgressHint(alloc, out, tool);
 }
@@ -3323,7 +3330,7 @@ fn appendStructuredContext(alloc: std.mem.Allocator, out: *std.ArrayList(u8), va
     out.appendSlice(alloc, encoded) catch {};
 }
 
-fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer, project_root: []const u8) void {
+fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer) void {
     const stable_root = explorer.root_dir orelse {
         out.appendSlice(alloc, "error: project root is not configured") catch {};
         return;
@@ -3332,10 +3339,6 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         out.appendSlice(alloc, "error: project root is not configured") catch {};
         return;
     };
-    if (!project_file_read.rootMatchesPath(io, stable_root, project_root)) {
-        out.appendSlice(alloc, "error: project root capability mismatch") catch {};
-        return;
-    }
     const task = getStr(args, "task") orelse {
         out.appendSlice(alloc, "error: missing 'task' argument") catch {};
         appendBundleArgKeysDiagnostic(alloc, out, args);
@@ -4603,16 +4606,10 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         out.appendSlice(alloc, "error: project root is not configured") catch {};
         return;
     };
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root_len = read_root.realPath(io, &root_buf) catch {
-        out.appendSlice(alloc, "error: project root is not available") catch {};
-        return;
-    };
-    const root = root_buf[0..root_len];
-    if (!project_file_read.rootIsAllowed(io, read_root)) {
+    const root = explorer.root_path orelse {
         out.appendSlice(alloc, "error: project root is not configured") catch {};
         return;
-    }
+    };
     const path = projectRelPath(path_arg, root) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
@@ -4621,7 +4618,7 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
         return;
     }
-    _ = project_file_read.statNoFollow(io, read_root, path) catch {
+    _ = project_file_read.statNoFollowAtRoot(io, read_root, root, path) catch {
         out.appendSlice(alloc, "error: failed to read file: ") catch {};
         out.appendSlice(alloc, path) catch {};
         // Preserve the established miss ergonomics while still failing closed:
@@ -4684,7 +4681,9 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
     // Stay on the extractLines path below (do not renderCachedRead here):
     // default ranged reads still need the "N | " prefix, and raw mode
     // must stay byte-exact with no hash header.
-    _ = watcher.indexMissingFile(io, store, explorer, path);
+    if (!explorer.hasIndexedPath(path)) {
+        _ = watcher.indexMissingFile(io, store, explorer, path);
+    }
 
     const cached = explorer.getContent(path, alloc) catch {
         out.appendSlice(alloc, "error: read failed") catch {};
@@ -4697,7 +4696,7 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         // server's cwd. For a project=/remote-cache explorer, cwd would serve
         // the user's own file of the same relative path under the other
         // project's label (mirrors explore.readContentForSearch).
-        break :blk project_file_read.readAllocNoFollow(io, read_root, path, alloc, .limited(10 * 1024 * 1024)) catch {
+        break :blk project_file_read.readAllocNoFollowAtRoot(io, read_root, root, path, alloc, .limited(10 * 1024 * 1024)) catch {
             out.appendSlice(alloc, "error: failed to read file: ") catch {};
             out.appendSlice(alloc, path) catch {};
             // Issue #356-p3: fuzzy fallback so a mistyped path is recoverable
@@ -5582,7 +5581,7 @@ pub fn runCliTool(
         if (task.items.len == 0) return cliUsage(alloc, out, "context [--semantic] [--json] <task...>");
         m.put(alloc, "task", .{ .string = task.items }) catch return 1;
         loadProjectWordIndexFromDiskIfPresent(io, explorer, root, alloc);
-        handleContext(io, alloc, &m, out, store, explorer, root);
+        handleContext(io, alloc, &m, out, store, explorer);
         return finishCli(out, out_start);
     }
     return null;
