@@ -1049,11 +1049,19 @@ test "issue-528: isSensitivePath parity between snapshot.zig and watcher.zig" {
         "cert.pem",                     "keystore.jks",       "identity.pfx",
         "bundle.p12",                   "config/.env.local",  "a/b/secrets.yaml",
         "deep/nested/.ssh/known_hosts", ".gnupg/secring.gpg", "x/.aws/credentials",
+        // case variants must not bypass the canonical filter
+        ".ENV",                         ".Env.Production",    "CONFIG.ENV",
+        "CERT.PEM",                     "server.KeY",         "bundle.P12",
+        "identity.PfX",                 "keystore.JKS",       "Credentials.JSON",
+        "Service-Account.JSON",         "SECRETS.YAML",       "ID_RSA",
+        "deep/.SSH/id_ed25519",         "x/.GnUpG/private",   "config/.AWS/credentials",
         // non-secrets — both copies must allow (esp. the .env-prefix edge cases)
         ".envoy.json",                  ".environment",       ".envrc",
+        ".EnVoY.json",                  ".ENVIRONMENT",       ".EnVrC",
         ".envconfig.yaml",              "main.zig",           "src/server.zig",
         "README.md",                    "package.json",       "id_rsa.pub",
         "envvars.ts",                   "Makefile",           "Dockerfile",
+        "src/PUBLIC.PEM.txt",
     };
     for (cases) |p| {
         try testing.expectEqual(watcher.isSensitivePath(p), snapshot_mod.isSensitivePath(p));
@@ -1064,7 +1072,13 @@ test "issue-528: isSensitivePath parity between snapshot.zig and watcher.zig" {
     try testing.expect(snapshot_mod.isSensitivePath("credentials.json"));
     try testing.expect(snapshot_mod.isSensitivePath("deep/.ssh/id_rsa"));
     try testing.expect(snapshot_mod.isSensitivePath("keystore.jks")); // fast-path ext
+    try testing.expect(snapshot_mod.isSensitivePath("CERT.PEM"));
+    try testing.expect(snapshot_mod.isSensitivePath("server.KeY"));
+    try testing.expect(snapshot_mod.isSensitivePath("Credentials.JSON"));
+    try testing.expect(!snapshot_mod.isSafeSnapshotPath("keys/PRIVATE_KEY.PEM"));
+    try testing.expect(!snapshot_mod.isSafeSnapshotPath("config/.Env.Local"));
     try testing.expect(!snapshot_mod.isSensitivePath(".envoy.json")); // issue-409
+    try testing.expect(!snapshot_mod.isSensitivePath(".EnVoY.json"));
     try testing.expect(!snapshot_mod.isSensitivePath(".environment"));
     try testing.expect(!snapshot_mod.isSensitivePath("main.zig"));
 }

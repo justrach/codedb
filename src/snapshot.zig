@@ -1473,28 +1473,44 @@ fn resolveSafeSnapshotPath(io: std.Io, root_dir: std.Io.Dir, canonical_root: []c
 /// snapshot or live-indexed. Single implementation of this security filter;
 /// `watcher.isSensitivePath` delegates here (parity-tested in test_snapshot.zig
 /// "issue-528: isSensitivePath parity").
+fn endsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
+    if (value.len < suffix.len) return false;
+    return std.ascii.eqlIgnoreCase(value[value.len - suffix.len ..], suffix);
+}
+
+fn hasSensitiveExtension(basename: []const u8) bool {
+    const extensions = [_][]const u8{ ".env", ".pem", ".key", ".p12", ".pfx", ".jks" };
+    for (extensions) |extension| {
+        if (endsWithIgnoreCase(basename, extension)) return true;
+    }
+    return false;
+}
+
+fn hasSensitiveDirectory(path: []const u8) bool {
+    var components = std.mem.splitScalar(u8, path, '/');
+    while (components.next()) |component| {
+        if (std.ascii.eqlIgnoreCase(component, ".ssh") or
+            std.ascii.eqlIgnoreCase(component, ".gnupg") or
+            std.ascii.eqlIgnoreCase(component, ".aws")) return true;
+    }
+    return false;
+}
+
 pub fn isSensitivePath(path: []const u8) bool {
     const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| path[sep + 1 ..] else path;
     // Fast path: most source files have extensions like .zig, .ts, .py — none start with '.'
     // or match sensitive patterns. Skip the full check for common cases.
     if (basename.len == 0) return false;
-    const first = basename[0];
+    const first = std.ascii.toLower(basename[0]);
     // Only check sensitive names if basename starts with '.', 'c', 's', 'i' or has key/cert extension
     if (first != '.' and first != 'c' and first != 's' and first != 'i') {
         // Still need to check extensions and directory patterns
-        if (std.mem.endsWith(u8, basename, ".env") or
-            std.mem.endsWith(u8, basename, ".pem") or
-            std.mem.endsWith(u8, basename, ".key") or
-            std.mem.endsWith(u8, basename, ".p12") or
-            std.mem.endsWith(u8, basename, ".pfx") or
-            std.mem.endsWith(u8, basename, ".jks")) return true;
-        if (std.mem.indexOf(u8, path, ".ssh/") != null or
-            std.mem.indexOf(u8, path, ".gnupg/") != null or
-            std.mem.indexOf(u8, path, ".aws/") != null) return true;
+        if (hasSensitiveExtension(basename)) return true;
+        if (hasSensitiveDirectory(path)) return true;
         return false;
     }
     // .env, .env.<token>; do NOT match .envoy, .envrc, .environment, etc.
-    if (basename.len >= 4 and std.mem.eql(u8, basename[0..4], ".env") and
+    if (basename.len >= 4 and std.ascii.eqlIgnoreCase(basename[0..4], ".env") and
         (basename.len == 4 or basename[4] == '.' or basename[4] == '-' or basename[4] == '_')) return true;
     // Exact matches
     const sensitive_names = [_][]const u8{
@@ -1504,17 +1520,10 @@ pub fn isSensitivePath(path: []const u8) bool {
         "id_ecdsa",         "id_dsa",               "id_ecdsa_sk",  "id_ed25519_sk",
     };
     for (sensitive_names) |name| {
-        if (std.mem.eql(u8, basename, name)) return true;
+        if (std.ascii.eqlIgnoreCase(basename, name)) return true;
     }
-    if (std.mem.endsWith(u8, basename, ".env") or
-        std.mem.endsWith(u8, basename, ".pem") or
-        std.mem.endsWith(u8, basename, ".key") or
-        std.mem.endsWith(u8, basename, ".p12") or
-        std.mem.endsWith(u8, basename, ".pfx") or
-        std.mem.endsWith(u8, basename, ".jks")) return true;
-    if (std.mem.indexOf(u8, path, ".ssh/") != null or
-        std.mem.indexOf(u8, path, ".gnupg/") != null or
-        std.mem.indexOf(u8, path, ".aws/") != null) return true;
+    if (hasSensitiveExtension(basename)) return true;
+    if (hasSensitiveDirectory(path)) return true;
     return false;
 }
 fn endsWith(s: []const u8, suffix: []const u8) bool {
