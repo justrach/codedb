@@ -285,10 +285,16 @@ pub fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
             return;
         }
     }
-    if (ctx.shutdown.load(.acquire)) return;
+    if (ctx.shutdown.load(.acquire)) {
+        ctx.explorer.finishStartupReconcile();
+        return;
+    }
     // If we exited the loop without ever triggering a scan (give-up path),
     // resolved_root is empty — skip incrementalLoop so we don't crash.
-    if (!ctx.triggered.load(.acquire)) return;
+    if (!ctx.triggered.load(.acquire)) {
+        ctx.explorer.finishStartupReconcile();
+        return;
+    }
     watcher.incrementalLoop(ctx.io, ctx.store, ctx.explorer, ctx.queue, ctx.resolved_root, ctx.shutdown, ctx.scan_done);
 }
 

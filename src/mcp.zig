@@ -3229,6 +3229,34 @@ fn isTestPath(path: []const u8) bool {
     return false;
 }
 
+/// A persisted ANN can be newer than the snapshot selected at MCP startup.
+/// Wait only for the already-running watcher's bounded startup reconcile, then
+/// retry once. A genuinely stale sidecar returns immediately: query handling
+/// must never launch another full filesystem walk or allocate EventQueue's
+/// multi-megabyte ring, and no ANN embedding request is issued before freshness
+/// validation succeeds.
+fn searchSemanticAnnFresh(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    explorer: *Explorer,
+    store: *Store,
+    project_root: []const u8,
+    data_dir: []const u8,
+    task: []const u8,
+    k: usize,
+) !semantic_index_mod.SearchOutput {
+    return semantic_index_mod.search(io, allocator, explorer, store, project_root, data_dir, task, k) catch |err| switch (err) {
+        error.StaleAnnManifest => {
+            if (!explorer.startupReconcilePending()) return err;
+            const deadline = cio.milliTimestamp() + @as(i64, @intCast(scan_wait_timeout_ms));
+            while (explorer.startupReconcilePending() and cio.milliTimestamp() < deadline) cio.sleepMs(25);
+            if (explorer.startupReconcilePending()) return err;
+            return semantic_index_mod.search(io, allocator, explorer, store, project_root, data_dir, task, k);
+        },
+        else => return err,
+    };
+}
+
 const ContextEvidenceItem = struct {
     path: []const u8,
     source_path: ?[]const u8 = null,

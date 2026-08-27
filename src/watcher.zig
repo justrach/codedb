@@ -2112,6 +2112,9 @@ test "failed directory watch admission retries through dirty reconciliation" {
 
 /// Background thread: polls for incremental FS changes.
 pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, root: []const u8, shutdown: *std.atomic.Value(bool), scan_done: *std.atomic.Value(bool)) void {
+    explorer.expectStartupReconcile();
+    var startup_reconcile_finished = false;
+    defer if (!startup_reconcile_finished) explorer.finishStartupReconcile();
     var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const backing = gpa.allocator();
@@ -2158,6 +2161,8 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
     var watch = FileChangeWatch.init(backing);
     defer watch.deinit(io);
     armAndCloseGap(io, &watch, stable_root, store, explorer, queue, &known, &dirs, root, backing);
+    explorer.finishStartupReconcile();
+    startup_reconcile_finished = true;
 
     // Track current git HEAD to detect branch switches (#116)
     var last_git_head: ?[40]u8 = git_mod.getGitHeadDir(io, stable_root, backing) catch null;

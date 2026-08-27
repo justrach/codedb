@@ -1798,6 +1798,12 @@ pub const Explorer = struct {
     /// borrowed (value_owned=false) slices into these for restored files, so they
     /// must outlive the cache; munmap'd once here at Explorer.deinit.
     content_section_maps: std.ArrayList([]align(std.heap.page_size_min) const u8) = .empty,
+    /// A snapshot-backed MCP can serve before the watcher's initial diff has
+    /// reconciled edits made after the snapshot. ANN freshness waits for this
+    /// one bounded startup phase only; genuine stale sidecars never trigger a
+    /// second full tree walk from the query path.
+    startup_reconcile_expected: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    startup_reconcile_complete: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     /// Default file-content cache capacity. Was 16384, but on typical
     /// projects (≤2000 files) the cache only ever holds a few hundred
@@ -1806,6 +1812,30 @@ pub const Explorer = struct {
     /// for 99% of repos; large monorepos can override via config or
     /// pass a custom value to Explorer.init.
     pub const DEFAULT_CONTENT_CACHE_CAPACITY: u32 = 4096;
+
+    pub fn expectStartupReconcile(self: *Explorer) void {
+        self.startup_reconcile_complete.store(false, .release);
+        self.startup_reconcile_expected.store(true, .release);
+    }
+
+    pub fn finishStartupReconcile(self: *Explorer) void {
+        self.startup_reconcile_complete.store(true, .release);
+    }
+
+    pub fn startupReconcilePending(self: *const Explorer) bool {
+        return self.startup_reconcile_expected.load(.acquire) and
+            !self.startup_reconcile_complete.load(.acquire);
+    }
+
+    test "ANN startup freshness waits only for an expected watcher reconcile" {
+        var explorer = Explorer.init(std.testing.allocator, 1024 * 1024);
+        defer explorer.deinit();
+        try std.testing.expect(!explorer.startupReconcilePending());
+        explorer.expectStartupReconcile();
+        try std.testing.expect(explorer.startupReconcilePending());
+        explorer.finishStartupReconcile();
+        try std.testing.expect(!explorer.startupReconcilePending());
+    }
 
     /// Establish the project root as one validated filesystem capability.
     /// The final component is never followed, temp-project admission is

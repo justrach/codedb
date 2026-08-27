@@ -351,6 +351,7 @@ pub fn runCliDaemon(ctx: *RunCtx) !void {
     const queue = try allocator.create(watcher.EventQueue);
     defer allocator.destroy(queue);
     queue.* = watcher.EventQueue{};
+    explorer.expectStartupReconcile();
     const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_already_done });
     watch_thread.detach();
 
@@ -418,6 +419,7 @@ pub fn runServe(ctx: *RunCtx) !void {
     const queue = try allocator.create(watcher.EventQueue);
     defer allocator.destroy(queue);
     queue.* = watcher.EventQueue{};
+    explorer.expectStartupReconcile();
     const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_already_done });
     defer watch_thread.join();
 
@@ -511,6 +513,7 @@ pub fn runMcp(ctx: *RunCtx) !void {
         deferred.scan_done.* = std.atomic.Value(bool).init(false);
         maybe_deferred = &deferred;
         mcp_server.setScanState(.loading_snapshot);
+        explorer.expectStartupReconcile();
         watch_thread = try std.Thread.spawn(.{}, watcherDeferredLoop, .{&deferred});
     } else {
         const git_head = git_mod.getGitHead(abs_root, allocator) catch null;
@@ -527,6 +530,7 @@ pub fn runMcp(ctx: *RunCtx) !void {
             compactMcpReadyMemory(io, explorer, data_dir, git_head, allocator);
             mcp_server.setScanState(.ready);
         }
+        explorer.expectStartupReconcile();
         watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_done });
     }
 
