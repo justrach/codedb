@@ -2069,7 +2069,10 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         }
         return;
     };
-    prioritizeGenericEntrypoint(name, fuzzy, results);
+    // Explain is the opinionated one-shot neighborhood tool; keep the lower-
+    // level codedb_symbol ordering byte-for-byte stable for callers that rely
+    // on its deterministic structural index order.
+    if (getBool(args, "prefer_entrypoint")) prioritizeGenericEntrypoint(name, fuzzy, results);
     defer {
         for (results) |r| {
             alloc.free(r.path);
@@ -2771,6 +2774,7 @@ fn handleExplain(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     defer def_args.deinit(alloc);
     def_args.put(alloc, "name", .{ .string = name }) catch {};
     def_args.put(alloc, "body", .{ .bool = true }) catch {};
+    def_args.put(alloc, "prefer_entrypoint", .{ .bool = true }) catch {};
 
     var def_out: std.ArrayList(u8) = .empty;
     defer def_out.deinit(alloc);
