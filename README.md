@@ -199,7 +199,7 @@ codedb hot                            # recently modified files
 | `codedb_callers` | Every call site of a symbol — word index ∩ outline scope, in one round-trip |
 | `codedb_explain` | Definition body + callers in one call (CLI aliases: `explain`, `around`) |
 | `codedb_callpath` | Shortest resolved call chain A→B (CLI alias: `path`) |
-| `codedb_context` | Task-shaped composer — local BM25/symbol retrieval by default; pass `semantic=hybrid` to opt one call into local ANN search using a remote task embedding plus a fixed public calibration string when an explicit sidecar exists, or a bounded transient Qwen rerank otherwise. `format=json` adds typed provenance and retrieval-privacy metadata; `document_hops=1..2` expands linked Markdown |
+| `codedb_context` | Task-shaped composer — Pareto-frontier hybrid retrieval by default: local BM25/symbol retrieval first, then local ANN search using a remote task embedding plus a fixed public calibration string when an explicit sidecar exists, or a bounded transient Qwen rerank otherwise. Pass `semantic=local` for an on-device-only call. `format=json` adds typed provenance and retrieval-privacy metadata; `document_hops=1..2` expands linked Markdown |
 | `codedb_hot` | Most recently modified files |
 | `codedb_deps` | Typed dependency graph: imports by default, or Markdown links with `edge_type=documents`; document traversal is capped at 2 hops / 64 files |
 | `codedb_read` | Read file content (line ranges, `if_hash` skip-unchanged, `compact` mode) |
@@ -446,11 +446,10 @@ All threads share a `shutdown: atomic.Value(bool)` for graceful termination.
 
 codedb collects anonymous usage telemetry to improve the tool. Telemetry is **on by default** — written to `~/.codedb/telemetry.ndjson` and periodically synced to the codedb analytics endpoint. **No source code, file contents, file paths, or search queries are collected** — only aggregate tool call counts, latency, and startup stats.
 
-Repository retrieval is local by default. Ordinary `codedb_context` calls use
-the on-device BM25, trigram, symbol, and graph indexes and send no query or
-source text to an embedding service.
-
-An individual call may explicitly request `semantic=hybrid`. In that mode:
+`codedb_context` uses Pareto-frontier hybrid retrieval by default. Local BM25,
+trigram, symbol, and graph retrieval always runs first. Pass `semantic=local`
+for an entirely on-device call that sends no query or source text to an
+embedding service. In the default hybrid mode:
 
 - local BM25/symbol retrieval still runs first and remains the failure-safe
   result;
@@ -467,7 +466,7 @@ An individual call may explicitly request `semantic=hybrid`. In that mode:
 - provider/network failure keeps the local result and never invokes a CPU
   embedding fallback.
 
-The optional local ANN is built only by an explicit command:
+The local ANN is built only by an explicit command:
 
 ```bash
 codedb /path/to/repo semantic-index
@@ -509,9 +508,10 @@ another operator's storage policy.
 | `~/.codedb/telemetry.ndjson` | Aggregate tool calls and startup stats | Local telemetry log |
 | `./codedb.snapshot` | File tree, outlines, content, frequency table | Portable snapshot for instant MCP startup |
 
-**Not stored:** In the default local mode, no source code is sent anywhere. In
-explicit hybrid/index-build modes, only the bounded transient batches above
-leave the machine; the hosted service does not store them and never creates a
+**Not stored:** In explicit `semantic=local` mode, no source code is sent
+anywhere. In the default hybrid and explicit index-build modes, only the
+bounded transient batches above leave the machine; the hosted service does not
+store them and never creates a
 repository index. The optional ANN vectors and graph remain in the local codedb
 data directory. No file contents, file paths, or search queries are collected
 in telemetry. Sensitive files are auto-excluded from indexing and therefore
