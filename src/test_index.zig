@@ -3836,7 +3836,7 @@ test "watcher directory event defeats stale mtime probe for atomic rename" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     var known = watcher.FileMap.init(testing.allocator);
     defer {
         var iter = known.keyIterator();
@@ -3899,7 +3899,7 @@ test "unknown dirty child forces parent listing without admitting sensitive file
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     var known = watcher.FileMap.init(testing.allocator);
     defer {
         var iter = known.keyIterator();
@@ -3972,7 +3972,7 @@ test "inactive watcher discovers unknown child when exact directory identity cha
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     var known = watcher.FileMap.init(testing.allocator);
     defer {
         var iter = known.keyIterator();

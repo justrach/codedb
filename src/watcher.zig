@@ -1923,7 +1923,7 @@ test "file watcher remains pinned to opened root after pathname retarget" {
     const live_len = try tmp.dir.realPathFile(io, "live", &live_buf);
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, live_buf[0..live_len]);
+    try explorer.setRoot(io, live_buf[0..live_len]);
     const root_dir = explorer.root_dir orelse return error.TestUnexpectedResult;
     var known = FileMap.init(testing.allocator);
     defer {
@@ -2831,7 +2831,7 @@ test "notify drain uses exact metadata and refreshes the live fingerprint" {
     defer testing.allocator.destroy(explorer);
     explorer.* = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     const stable_root = explorer.root_dir orelse return error.TestUnexpectedResult;
     try indexFileContent(io, explorer, stable_root, "keep.py", testing.allocator, false);
     const old_stat = try stable_root.statFile(io, "keep.py", .{ .follow_symlinks = false });
