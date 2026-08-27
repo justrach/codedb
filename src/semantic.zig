@@ -10,6 +10,7 @@
 const std = @import("std");
 const cio = @import("cio.zig");
 const snapshot = @import("snapshot.zig");
+const semantic_auth = @import("semantic_auth.zig");
 
 pub const default_url = "https://embeddings.wiki.codes/v1/codedb/embeddings";
 pub const default_model = "Qwen/Qwen3-Embedding-0.6B";
@@ -240,35 +241,24 @@ const EmbeddingRequest = struct {
     encoding_format: []const u8 = "float",
 };
 
-fn fetchEmbeddingResponseOnce(
+fn fetchHttpResponseOnce(
     io: std.Io,
     allocator: std.mem.Allocator,
-    config: Config,
+    url: []const u8,
+    headers: []const std.http.Header,
     body: []const u8,
 ) ![]u8 {
     if (body.len > max_request_bytes) return error.EmbeddingRequestTooLarge;
-    var headers: [2]std.http.Header = undefined;
-    var header_count: usize = 1;
-    headers[0] = .{ .name = "content-type", .value = "application/json" };
-    var auth_value: ?[]u8 = null;
-    defer if (auth_value) |value| allocator.free(value);
-    if (config.token) |token| {
-        const value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
-        auth_value = value;
-        headers[1] = .{ .name = "authorization", .value = value };
-        header_count = 2;
-    }
-
     var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
     const response_buffer = try allocator.alloc(u8, max_response_bytes);
     defer allocator.free(response_buffer);
     var response_writer = std.Io.Writer.fixed(response_buffer);
     const fetch_result = try client.fetch(.{
-        .location = .{ .url = config.url },
+        .location = .{ .url = url },
         .method = .POST,
         .payload = body,
-        .extra_headers = headers[0..header_count],
+        .extra_headers = headers,
         .response_writer = &response_writer,
     });
     if (fetch_result.status != .ok) {
@@ -279,6 +269,54 @@ fn fetchEmbeddingResponseOnce(
         };
     }
     return try allocator.dupe(u8, response_writer.buffer[0..response_writer.end]);
+}
+
+fn fetchEmbeddingResponseOnce(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    config: Config,
+    body: []const u8,
+) ![]u8 {
+    var headers: [5]std.http.Header = undefined;
+    var header_count: usize = 1;
+    headers[0] = .{ .name = "content-type", .value = "application/json" };
+    var legacy_auth: ?[]u8 = null;
+    defer if (legacy_auth) |value| allocator.free(value);
+    var proof: ?semantic_auth.RequestProof = null;
+    defer if (proof) |*value| value.deinit();
+
+    if (config.token) |token| {
+        const value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
+        legacy_auth = value;
+        headers[1] = .{ .name = "authorization", .value = value };
+        header_count = 2;
+    } else if (config.isCodedbHosted()) {
+        var credential = try semantic_auth.loadOrCreate(io, allocator);
+        defer credential.deinit();
+        if (credential.needsEnrollment(@divFloor(cio.milliTimestamp(), 1000))) {
+            const enrollment_body = try credential.enrollmentBody(io, allocator);
+            defer allocator.free(enrollment_body);
+            const enrollment_headers = [_]std.http.Header{
+                .{ .name = "content-type", .value = "application/json" },
+            };
+            const enrollment_response = try fetchHttpResponseOnce(
+                io,
+                allocator,
+                semantic_auth.enrollment_url,
+                &enrollment_headers,
+                enrollment_body,
+            );
+            defer allocator.free(enrollment_response);
+            try credential.applyEnrollmentResponse(io, allocator, enrollment_response);
+        }
+        proof = try credential.requestProof(io, allocator, config.url, body);
+        headers[1] = .{ .name = "authorization", .value = proof.?.authorization };
+        headers[2] = .{ .name = "x-codedb-timestamp", .value = proof.?.timestamp };
+        headers[3] = .{ .name = "x-codedb-nonce", .value = proof.?.nonce };
+        headers[4] = .{ .name = "x-codedb-signature", .value = proof.?.signature };
+        header_count = 5;
+    }
+    return fetchHttpResponseOnce(io, allocator, config.url, headers[0..header_count], body);
 }
 
 fn waitForEmbeddingTimeout(io: std.Io, timeout_ms: u32) std.Io.Cancelable!void {
