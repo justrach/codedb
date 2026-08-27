@@ -3672,7 +3672,7 @@ test "issue-690: incrementalLoop startup indexes files missing from the snapshot
     defer testing.allocator.destroy(queue);
     queue.* = .{};
     const thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{
-        io, &store, &explorer, queue, root, &shutdown, &scan_done,
+        io, &store, &explorer, queue, root, &shutdown, &scan_done, 1024,
     });
 
     var found = false;

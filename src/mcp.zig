@@ -40,6 +40,7 @@ pub const DeferredScan = struct {
     shutdown: *std.atomic.Value(bool),
     telem: *telemetry_mod.Telemetry,
     queue: *watcher.EventQueue,
+    max_watched: u32,
     startup_t0: i64,
     triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     scan_thread: ?std.Thread = null,
@@ -576,7 +577,7 @@ pub const BenchContext = struct {
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
     ) void {
-        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, null, null);
+        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, null, null, true);
     }
 
     pub fn runToolCall(
@@ -728,6 +729,9 @@ pub const ToolsListOpts = struct {
     profile_core: bool = false,
     profile_slim: bool = false,
     profile_mini: bool = false,
+    /// MCP 2026-07-28 adds CacheableResult hints to list results. Legacy
+    /// handshake clients must not receive those newer-revision fields.
+    modern_results: bool = true,
 };
 
 /// CODEDB_TOOLS_PROFILE=mini (agent default) advertises the one-shot
@@ -892,7 +896,10 @@ fn isCoreProfileTool(name: []const u8) bool {
 /// allocator-owned slice the caller must free.
 pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]u8 {
     if (opts.bundle_enabled and opts.discriminated_opt_in) {
-        return buildAugmentedToolsList(alloc);
+        const augmented = try buildAugmentedToolsList(alloc);
+        if (opts.modern_results) return augmented;
+        defer alloc.free(augmented);
+        return stripModernListFields(alloc, augmented);
     }
 
     var arena = std.heap.ArenaAllocator.init(alloc);
@@ -902,6 +909,10 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
     var parsed = try std.json.parseFromSlice(std.json.Value, a, tools_list, .{});
 
     const root_obj = &parsed.value.object;
+    if (!opts.modern_results) {
+        _ = root_obj.swapRemove("ttlMs");
+        _ = root_obj.swapRemove("cacheScope");
+    }
     const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
     if (tools_val.* != .array) return error.MalformedToolsList;
 
@@ -958,6 +969,15 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
 
     const out_in_arena = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
     return try alloc.dupe(u8, out_in_arena);
+}
+
+fn stripModernListFields(alloc: std.mem.Allocator, payload: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.MalformedToolsList;
+    _ = parsed.value.object.swapRemove("ttlMs");
+    _ = parsed.value.object.swapRemove("cacheScope");
+    return std.json.Stringify.valueAlloc(alloc, parsed.value, .{});
 }
 
 pub fn buildAugmentedToolsList(alloc: std.mem.Allocator) ![]u8 {
@@ -1087,6 +1107,9 @@ const Session = struct {
     client_supports_roots: bool = false,
     client_roots_list_changed: bool = false,
     client_name: ?[]const u8 = null,
+    /// Default response revision. Stateless requests start modern; a legacy
+    /// initialize handshake changes the fallback for requests without _meta.
+    modern_results: bool = true,
     pending_roots_id: ?i64 = null,
     roots: std.ArrayList(Root) = .empty,
     deferred_scan: ?*DeferredScan = null,
@@ -1360,21 +1383,27 @@ pub fn run(
             }
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) {
+                const modern_results = requestUsesModernResults(root, session.modern_results);
                 const mini_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
+                var resp_owned = true;
                 const resp = buildToolsListResponse(alloc, .{
                     .bundle_enabled = bundle_enabled,
                     .discriminated_opt_in = discriminated_opt_in,
                     .profile_core = profile_core,
                     .profile_slim = profile_slim,
                     .profile_mini = profile_mini or mini_default,
-                }) catch tools_list;
-                defer if (resp.ptr != tools_list.ptr) alloc.free(resp);
-                writeResult(alloc, stdout, id, resp);
+                    .modern_results = modern_results,
+                }) catch blk: {
+                    resp_owned = false;
+                    break :blk if (modern_results) tools_list else "{\"tools\":[]}";
+                };
+                defer if (resp_owned) alloc.free(resp);
+                writeResultVersioned(alloc, stdout, id, resp, modern_results);
             }
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, &session.governor, session.client_name);
+            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, &session.governor, session.client_name, requestUsesModernResults(root, session.modern_results));
         } else if (mcpj.eql(method, "ping")) {
-            if (!is_notification) writeResult(alloc, stdout, id, "{}");
+            if (!is_notification) writeResultVersioned(alloc, stdout, id, "{}", requestUsesModernResults(root, session.modern_results));
         } else if (mcpj.eql(method, "server/discover")) {
             if (!is_notification) writeResult(alloc, stdout, id, discover_result);
         } else {
@@ -1419,11 +1448,12 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
         const requested = mcpj.getStr(&p.object, "protocolVersion") orelse break :proto;
         if (negotiateProtocolVersion(requested)) |v| negotiated = v;
     }
+    s.modern_results = std.mem.eql(u8, negotiated, "2026-07-28");
     const init_result = std.fmt.allocPrint(s.alloc,
         \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}},"extensions":{{}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"{s}"}}
     , .{ negotiated, release_info.semver, mcp_instructions }) catch return;
     defer s.alloc.free(init_result);
-    writeResult(s.alloc, s.stdout, id, init_result);
+    writeResultVersioned(s.alloc, s.stdout, id, init_result, s.modern_results);
 }
 /// Versions of the MCP spec this server has been verified against. Listed
 /// newest-first because clients that send a newer version than we know
@@ -1492,6 +1522,17 @@ pub fn unsupportedMetaProtocolVersion(root: *const std.json.ObjectMap) ?[]const 
         if (std.mem.eql(u8, s, v)) return null;
     }
     return v;
+}
+
+/// Choose the result schema for this request. MCP 2026 is stateless, so an
+/// explicit per-request version wins over any earlier initialize handshake.
+pub fn requestUsesModernResults(root: *const std.json.ObjectMap, fallback: bool) bool {
+    const p = root.get("params") orelse return fallback;
+    if (p != .object) return fallback;
+    const m = p.object.get("_meta") orelse return fallback;
+    if (m != .object) return fallback;
+    const version = mcpj.getStr(&m.object, "io.modelcontextprotocol/protocolVersion") orelse return fallback;
+    return std.mem.eql(u8, version, "2026-07-28");
 }
 
 fn writeUnsupportedProtocolVersionError(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, requested: []const u8) void {
@@ -1601,6 +1642,7 @@ fn handleCall(
     deferred_scan: ?*DeferredScan,
     governor: ?*ConvergenceGovernor,
     client_name: ?[]const u8,
+    modern_results: bool,
 ) void {
     const is_notification = id == null;
 
@@ -1714,7 +1756,7 @@ fn handleCall(
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(alloc);
     if (!assembleMcpContentEnvelope(alloc, summary.items, out.items, guidance.items, is_error, &result)) return;
-    writeResult(alloc, stdout, id, result.items);
+    writeResultVersioned(alloc, stdout, id, result.items, modern_results);
 }
 
 fn isDirectCallAdminKey(key: []const u8) bool {
@@ -1942,6 +1984,33 @@ fn renderOutlineOrSkeleton(
     return explorer.renderOutline(path, alloc, out, compact);
 }
 
+fn genericEntrypointPathPriority(path: []const u8) i32 {
+    if (isLowSignalArchitecturePath(path)) return -1000;
+    const base = std.fs.path.basename(path);
+    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
+    if (!std.ascii.eqlIgnoreCase(stem, "main")) return 0;
+    if (std.mem.startsWith(u8, path, "src/")) return 1000;
+    if (std.mem.indexOfScalar(u8, path, '/') == null) return 900;
+    if (pathHasSegmentIgnoreCase(path, "cmd")) return 800;
+    return 200;
+}
+
+fn prioritizeGenericEntrypoint(name: ?[]const u8, fuzzy: bool, results: []Explorer.ScoredSymbolResult) void {
+    const exact_name = name orelse return;
+    if (fuzzy or !std.ascii.eqlIgnoreCase(exact_name, "main")) return;
+    std.mem.sort(Explorer.ScoredSymbolResult, results, {}, struct {
+        fn lessThan(_: void, a: Explorer.ScoredSymbolResult, b: Explorer.ScoredSymbolResult) bool {
+            const ap = genericEntrypointPathPriority(a.path);
+            const bp = genericEntrypointPathPriority(b.path);
+            if (ap != bp) return ap > bp;
+            if (a.score != b.score) return a.score > b.score;
+            const path_order = std.mem.order(u8, a.path, b.path);
+            if (path_order != .eq) return path_order == .lt;
+            return a.symbol.line_start < b.symbol.line_start;
+        }
+    }.lessThan);
+}
+
 fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const name = getStr(args, "name");
     const prefix = getStr(args, "prefix");
@@ -2000,6 +2069,10 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         }
         return;
     };
+    // Explain is the opinionated one-shot neighborhood tool; keep the lower-
+    // level codedb_symbol ordering byte-for-byte stable for callers that rely
+    // on its deterministic structural index order.
+    if (getBool(args, "prefer_entrypoint")) prioritizeGenericEntrypoint(name, fuzzy, results);
     defer {
         for (results) |r| {
             alloc.free(r.path);
@@ -2701,6 +2774,7 @@ fn handleExplain(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     defer def_args.deinit(alloc);
     def_args.put(alloc, "name", .{ .string = name }) catch {};
     def_args.put(alloc, "body", .{ .bool = true }) catch {};
+    def_args.put(alloc, "prefer_entrypoint", .{ .bool = true }) catch {};
 
     var def_out: std.ArrayList(u8) = .empty;
     defer def_out.deinit(alloc);
@@ -3128,6 +3202,93 @@ const CONTEXT_MAX_RESULTS_PER_KW: usize = 8;
 const CONTEXT_TOP_FILES: usize = 5;
 const CONTEXT_TOP_LINES_PER_FILE: usize = 3;
 
+fn asciiContainsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or haystack.len < needle.len) return false;
+    var i: usize = 0;
+    outer: while (i + needle.len <= haystack.len) : (i += 1) {
+        for (needle, 0..) |expected, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(expected)) continue :outer;
+        }
+        return true;
+    }
+    return false;
+}
+
+fn asciiStartsWithIgnoreCase(text: []const u8, prefix: []const u8) bool {
+    return text.len >= prefix.len and std.ascii.eqlIgnoreCase(text[0..prefix.len], prefix);
+}
+
+fn pathHasSegmentIgnoreCase(path: []const u8, wanted: []const u8) bool {
+    var segments = std.mem.tokenizeAny(u8, path, "/\\");
+    while (segments.next()) |segment| {
+        if (std.ascii.eqlIgnoreCase(segment, wanted)) return true;
+    }
+    return false;
+}
+
+/// Architecture overview requests need repository-map priors, not the normal
+/// code-search prior that deliberately down-ranks Markdown. Keep this gate
+/// narrow so ordinary implementation and symbol tasks retain their tuned BM25
+/// and hybrid behavior.
+pub fn isArchitectureOverviewTask(task: []const u8) bool {
+    const architecture = asciiContainsIgnoreCase(task, "architecture") or
+        asciiContainsIgnoreCase(task, "codebase structure") or
+        asciiContainsIgnoreCase(task, "source layout");
+    if (!architecture) return false;
+    return asciiContainsIgnoreCase(task, "overview") or
+        asciiContainsIgnoreCase(task, "entrypoint") or
+        asciiContainsIgnoreCase(task, "routing") or
+        asciiContainsIgnoreCase(task, "source layout") or
+        asciiContainsIgnoreCase(task, "how the") or
+        asciiContainsIgnoreCase(task, "map");
+}
+
+fn isLowSignalArchitecturePath(path: []const u8) bool {
+    const base = std.fs.path.basename(path);
+    return pathHasSegmentIgnoreCase(path, "experiments") or
+        pathHasSegmentIgnoreCase(path, "bench") or
+        pathHasSegmentIgnoreCase(path, "benchmarks") or
+        pathHasSegmentIgnoreCase(path, "e2e") or
+        pathHasSegmentIgnoreCase(path, "test") or
+        pathHasSegmentIgnoreCase(path, "tests") or
+        pathHasSegmentIgnoreCase(path, "fixtures") or
+        pathHasSegmentIgnoreCase(path, "generated") or
+        pathHasSegmentIgnoreCase(path, ".wrangler") or
+        pathHasSegmentIgnoreCase(path, ".open-next") or
+        asciiStartsWithIgnoreCase(base, "bench-") or
+        asciiStartsWithIgnoreCase(base, "bench_") or
+        asciiStartsWithIgnoreCase(base, "e2e-") or
+        asciiStartsWithIgnoreCase(base, "e2e_") or
+        asciiStartsWithIgnoreCase(base, "test-") or
+        asciiStartsWithIgnoreCase(base, "test_");
+}
+
+/// Query-specific path prior used only for architecture-overview composition.
+/// Values are tiers, not relevance scores: retrieval order remains the
+/// tiebreak inside a tier.
+pub fn architecturePathPriority(path: []const u8) i32 {
+    if (isLowSignalArchitecturePath(path)) return -1000;
+
+    if (std.ascii.eqlIgnoreCase(path, "ARCHITECTURE.md")) return 1000;
+    if (std.ascii.eqlIgnoreCase(path, "CODEBASE.md")) return 980;
+
+    const base = std.fs.path.basename(path);
+    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
+    if (std.ascii.eqlIgnoreCase(stem, "architecture")) return 950;
+    if (std.ascii.eqlIgnoreCase(stem, "codebase")) return 930;
+
+    if (std.mem.startsWith(u8, path, "src/")) {
+        if (std.ascii.eqlIgnoreCase(stem, "main")) return 900;
+        if (std.ascii.eqlIgnoreCase(stem, "server")) return 880;
+        if (std.ascii.eqlIgnoreCase(stem, "api")) return 860;
+        if (std.ascii.eqlIgnoreCase(stem, "router") or std.ascii.eqlIgnoreCase(stem, "routes")) return 820;
+        if (std.ascii.eqlIgnoreCase(stem, "cli")) return 800;
+        return 100;
+    }
+    if (std.ascii.eqlIgnoreCase(stem, "readme") and std.mem.indexOfScalar(u8, path, '/') == null) return 700;
+    return 0;
+}
+
 pub fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
     var seen = std.StringHashMap(void).init(alloc);
     defer seen.deinit();
@@ -3421,6 +3582,7 @@ fn handleContext(
         return;
     }
     const semantic_requested = std.mem.eql(u8, semantic_mode, "hybrid");
+    const architecture_intent = isArchitectureOverviewTask(task);
     var retrieval: ContextRetrievalProvenance = .{};
     const format = getStr(args, "format") orelse "markdown";
     const structured = std.mem.eql(u8, format, "json");
@@ -3587,8 +3749,10 @@ fn handleContext(
     for (candidates.items) |kw| {
         // Symbol definitions (best-effort; ignore failures).
         if (explorer.findAllSymbols(kw, A)) |defs| {
-            const take = @min(defs.len, 3);
-            for (defs[0..take]) |d| {
+            var accepted: usize = 0;
+            for (defs) |d| {
+                if (accepted >= 3) break;
+                if (architecture_intent and isLowSignalArchitecturePath(d.path)) continue;
                 const key = std.fmt.allocPrint(A, "{s}|{s}|{d}", .{ d.path, kw, d.symbol.line_start }) catch continue;
                 if (seen_syms.contains(key)) continue;
                 seen_syms.put(key, {}) catch continue;
@@ -3599,6 +3763,7 @@ fn handleContext(
                     .line = d.symbol.line_start,
                     .line_end = d.symbol.line_end,
                 }) catch break;
+                accepted += 1;
             }
         } else |_| {}
 
@@ -3634,6 +3799,7 @@ fn handleContext(
         hybrid_score: f32 = 0,
         lexical_present: bool = true,
         semantic_present: bool = false,
+        retrieval_rank: usize = 0,
     };
     var ranked: std.ArrayList(FileRank) = .empty;
     var iter = by_file.iterator();
@@ -3910,6 +4076,61 @@ fn handleContext(
             retrieval.semantic = "no_candidates";
         }
     }
+
+    if (architecture_intent) {
+        // Canonical repository-map files are sparse by nature: an
+        // ARCHITECTURE.md can explain every subsystem without repeating all
+        // task tokens, so lexical/ANN retrieval may never nominate it. Seed
+        // only the small set of high-priority architecture/entrypoint paths,
+        // then use the current fused order as the tiebreak within each tier.
+        var known_paths = std.StringHashMap(void).init(A);
+        for (ranked.items) |file| known_paths.put(file.path, {}) catch {};
+
+        var seed_paths: std.ArrayList([]const u8) = .empty;
+        explorer.mu.lockShared();
+        var outline_paths = explorer.outlines.keyIterator();
+        while (outline_paths.next()) |path| {
+            if (architecturePathPriority(path.*) >= 700 and !known_paths.contains(path.*)) {
+                seed_paths.append(A, path.*) catch break;
+            }
+        }
+        explorer.mu.unlockShared();
+
+        std.mem.sort([]const u8, seed_paths.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                const ap = architecturePathPriority(a);
+                const bp = architecturePathPriority(b);
+                if (ap != bp) return ap > bp;
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.lessThan);
+        for (seed_paths.items) |path| {
+            var preview: std.ArrayList(PerFileHit) = .empty;
+            if (semanticSourcePreview(explorer, A, path, 1)) |text_preview| {
+                preview.append(A, .{ .line = 1, .text = text_preview }) catch {};
+            }
+            ranked.append(A, .{
+                .path = path,
+                .hits = 0,
+                .score = 0,
+                .top = preview.items,
+                .lexical_rank = ranked.items.len,
+                .semantic_rank = ranked.items.len,
+                .lexical_present = false,
+            }) catch break;
+        }
+
+        for (ranked.items, 0..) |*file, rank| file.retrieval_rank = rank;
+        std.mem.sort(FileRank, ranked.items, {}, struct {
+            fn lessThan(_: void, a: FileRank, b: FileRank) bool {
+                const ap = architecturePathPriority(a.path);
+                const bp = architecturePathPriority(b.path);
+                if (ap != bp) return ap > bp;
+                if (a.retrieval_rank != b.retrieval_rank) return a.retrieval_rank < b.retrieval_rank;
+                return std.mem.lessThan(u8, a.path, b.path);
+            }
+        }.lessThan);
+    }
     const top_n = @min(ranked.items.len, CONTEXT_TOP_FILES);
     const pf_rank = cio.nanoTimestamp();
 
@@ -4001,6 +4222,7 @@ fn handleContext(
                 var shown_for_sym: u32 = 0;
                 for (scoped) |r| {
                     if (shown_for_sym >= 2 or total_shown >= 6) break;
+                    if (architecture_intent and isLowSignalArchitecturePath(r.path)) continue;
                     if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
                     // Skip the definition site itself
                     if (r.line_num == sr.line and std.mem.eql(u8, r.path, sr.path)) continue;
@@ -6409,12 +6631,16 @@ pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
 pub const result_meta_prelude = "{\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"" ++ release_info.semver ++ "\"}}";
 
 pub fn assembleJsonRpcResult(alloc: std.mem.Allocator, id: ?std.json.Value, result: []const u8, buf: *std.ArrayList(u8)) bool {
+    return assembleJsonRpcResultVersioned(alloc, id, result, buf, true);
+}
+
+pub fn assembleJsonRpcResultVersioned(alloc: std.mem.Allocator, id: ?std.json.Value, result: []const u8, buf: *std.ArrayList(u8), modern_results: bool) bool {
     buf.ensureTotalCapacity(alloc, result.len + 64 + result_meta_prelude.len) catch {};
     buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return false;
     appendId(alloc, buf, id);
     buf.appendSlice(alloc, ",\"result\":") catch return false;
     var payload = result;
-    if (result.len >= 2 and result[0] == '{' and !std.mem.startsWith(u8, result, "{\"resultType\"")) {
+    if (modern_results and result.len >= 2 and result[0] == '{' and !std.mem.startsWith(u8, result, "{\"resultType\"")) {
         buf.appendSlice(alloc, result_meta_prelude) catch return false;
         if (std.mem.eql(u8, result, "{}")) {
             buf.appendSlice(alloc, "}") catch return false;
@@ -6443,9 +6669,13 @@ pub fn assembleJsonRpcResult(alloc: std.mem.Allocator, id: ?std.json.Value, resu
 }
 
 fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8) void {
+    writeResultVersioned(alloc, stdout, id, result, true);
+}
+
+fn writeResultVersioned(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8, modern_results: bool) void {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
-    if (!assembleJsonRpcResult(alloc, id, result, &buf)) return;
+    if (!assembleJsonRpcResultVersioned(alloc, id, result, &buf, modern_results)) return;
     stdout.writeAll(buf.items) catch {
         stdout_broken.store(true, .release);
         return;

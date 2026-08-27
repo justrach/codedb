@@ -2322,6 +2322,37 @@ test "mcp-2026-07-28: payload declaring resultType is not double-wrapped" {
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, buf.items, "\"resultType\""));
 }
 
+test "issue-705: legacy clients receive no 2026 result or cache fields" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try testing.expect(mcp_mod.assembleJsonRpcResultVersioned(testing.allocator, null, "{\"tools\":[]}", &buf, false));
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, buf.items, .{});
+    defer parsed.deinit();
+    const result = parsed.value.object.get("result").?.object;
+    try testing.expect(result.get("resultType") == null);
+    try testing.expect(result.get("_meta") == null);
+
+    const list = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_mini = true, .modern_results = false });
+    defer testing.allocator.free(list);
+    const parsed_list = try std.json.parseFromSlice(std.json.Value, testing.allocator, list, .{});
+    defer parsed_list.deinit();
+    try testing.expect(parsed_list.value.object.get("ttlMs") == null);
+    try testing.expect(parsed_list.value.object.get("cacheScope") == null);
+    try testing.expect(parsed_list.value.object.get("tools").?.array.items.len > 0);
+}
+
+test "issue-705: per-request protocol version overrides handshake fallback" {
+    const modern_req = "{\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"}}}";
+    const modern = try std.json.parseFromSlice(std.json.Value, testing.allocator, modern_req, .{});
+    defer modern.deinit();
+    try testing.expect(mcp_mod.requestUsesModernResults(&modern.value.object, false));
+
+    const legacy_req = "{\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2025-11-25\"}}}";
+    const legacy = try std.json.parseFromSlice(std.json.Value, testing.allocator, legacy_req, .{});
+    defer legacy.deinit();
+    try testing.expect(!mcp_mod.requestUsesModernResults(&legacy.value.object, true));
+}
+
 test "mcp-2026-07-28: unsupported params._meta protocol version is flagged, supported ones pass" {
     {
         const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2030-01-01\"}}}";
@@ -2543,6 +2574,80 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
     try testing.expect(std.mem.indexOf(u8, out.items, "no candidate identifiers") == null);
     // …its longest meaningful word ('ranking') must drive the composer.
     try testing.expect(std.mem.indexOf(u8, out.items, "ranking") != null);
+}
+
+test "issue-718: architecture context prefers canonical docs and entrypoints" {
+    try testing.expect(mcp_mod.isArchitectureOverviewTask("overview of the project architecture and source layout"));
+    try testing.expect(!mcp_mod.isArchitectureOverviewTask("fix architecturePathPriority"));
+    try testing.expect(mcp_mod.architecturePathPriority("ARCHITECTURE.md") > mcp_mod.architecturePathPriority("experiments/e2e-attach.sh"));
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
+
+    try explorer.indexFile("ARCHITECTURE.md", "# Architecture\nThe server, API, CLI, routing, git plumbing, merge queue, and workspace sync.\n");
+    try explorer.indexFile("CODEBASE.md", "# Source layout\nCanonical codebase map and package boundaries.\n");
+    try explorer.indexFile("src/main.zig", "pub fn main() void { startServer(); }\n");
+    try explorer.indexFile("src/server.zig", "pub fn startServer() void { routeHttp(); }\n");
+    try explorer.indexFile("src/api.zig", "pub fn routeHttp() void {}\n");
+    try explorer.indexFile("src/workspace_sync.zig", "// architecture server entrypoint HTTP routing git plumbing APIs CLI merge queue workspace sync source layout\n");
+    try explorer.indexFile("experiments/e2e-attach.sh", "CLI=\"\" # architecture server entrypoint HTTP routing git plumbing APIs CLI merge queue workspace sync source layout\n");
+    try explorer.indexFile("website/generated/frontend.js", "// architecture server entrypoint HTTP routing git plumbing APIs CLI merge queue workspace sync source layout\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{"task":"overview of project architecture: server entrypoint, HTTP routing, git plumbing APIs, CLI, merge queue, workspace sync, and source layout","semantic":"local"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    const files_start = std.mem.indexOf(u8, out.items, "## Most-relevant files") orelse return error.TestUnexpectedResult;
+    const sites_start = std.mem.indexOfPos(u8, out.items, files_start, "## Top sites") orelse out.items.len;
+    const files = out.items[files_start..sites_start];
+    for ([_][]const u8{ "ARCHITECTURE.md", "CODEBASE.md", "src/main.zig", "src/server.zig", "src/api.zig" }) |gold| {
+        try testing.expect(std.mem.indexOf(u8, files, gold) != null);
+    }
+    try testing.expect(std.mem.indexOf(u8, files, "experiments/e2e-attach.sh") == null);
+    try testing.expect(std.mem.indexOf(u8, files, "website/generated/frontend.js") == null);
+}
+
+test "issue-718: explain main puts the package entrypoint first" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
+    try explorer.indexFile("experiments/probe.py", "def main():\n    return 1\n");
+    try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args_json =
+        \\{"name":"main"}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_explain, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    const entrypoint_pos = std.mem.indexOf(u8, out.items, "src/main.zig") orelse return error.TestUnexpectedResult;
+    const experiment_pos = std.mem.indexOf(u8, out.items, "experiments/probe.py") orelse return error.TestUnexpectedResult;
+    try testing.expect(entrypoint_pos < experiment_pos);
 }
 
 test "issue-688: codedb_context json exposes typed provenance and preserves markdown default" {

@@ -8,6 +8,7 @@ const TrigramIndex = @import("index.zig").TrigramIndex;
 const WordIndex = @import("index.zig").WordIndex;
 const explore_mod = @import("explore.zig");
 const git_mod = @import("git.zig");
+const gitignore = @import("gitignore.zig");
 const project_file = @import("project_file.zig");
 const project_path = @import("project_path.zig");
 
@@ -248,6 +249,8 @@ const skip_dirs = [_][]const u8{
     ".zig-cache",
     "zig-out",
     ".next",
+    ".open-next",
+    ".wrangler",
     ".nuxt",
     ".svelte-kit",
     "dist",
@@ -389,7 +392,9 @@ pub const FilteredWalker = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     dir_prefix_len: usize = 0,
-    ignore_patterns: std.ArrayList([]const u8) = .empty,
+    codedb_rules: std.ArrayList(gitignore.Rule) = .empty,
+    git_rules: std.ArrayList(gitignore.Rule) = .empty,
+    loaded_gitignore_dirs: std.StringHashMapUnmanaged(void) = .empty,
     real_root: []const u8 = &.{},
     visited_real_paths: std.StringHashMapUnmanaged(void) = .empty,
 
@@ -410,6 +415,7 @@ pub const FilteredWalker = struct {
             .iter = root.iterate(),
             .through_symlink = false,
         });
+        errdefer self.deinit();
 
         var rr_buf: [std.fs.max_path_bytes]u8 = undefined;
         if (root.realPathFile(io, ".", &rr_buf)) |rr_len| {
@@ -419,31 +425,22 @@ pub const FilteredWalker = struct {
             try self.visited_real_paths.put(allocator, seed, {});
         } else |_| {}
 
-        // Load .codedbignore if it exists
-        if (project_file.readAllocNoFollow(io, root, ".codedbignore", allocator, .limited(64 * 1024))) |content| {
-            defer allocator.free(content);
-            var lines = std.mem.splitScalar(u8, content, '\n');
-            while (lines.next()) |line| {
-                const trimmed = std.mem.trim(u8, line, " \t\r");
-                if (trimmed.len == 0 or trimmed[0] == '#') continue;
-                const duped = try allocator.dupe(u8, trimmed);
-                try self.ignore_patterns.append(allocator, duped);
-            }
-        } else |_| {}
+        if (self.real_root.len > 0) {
+            // Explicit CodeDB policy is authoritative over Git re-includes.
+            try self.loadOwnedIgnoreFile(root, ".codedbignore", self.real_root, &self.codedb_rules);
 
-        // Also load .gitignore patterns (respect git's ignore rules)
-        if (project_file.readAllocNoFollow(io, root, ".gitignore", allocator, .limited(64 * 1024))) |content| {
-            defer allocator.free(content);
-            var lines = std.mem.splitScalar(u8, content, '\n');
-            while (lines.next()) |line| {
-                const trimmed = std.mem.trim(u8, line, " \t\r");
-                if (trimmed.len == 0 or trimmed[0] == '#') continue;
-                // Skip negation patterns (!) — too complex for simple matching
-                if (trimmed[0] == '!') continue;
-                const duped = try allocator.dupe(u8, trimmed);
-                try self.ignore_patterns.append(allocator, duped);
-            }
-        } else |_| {}
+            // Git's repository-local exclude is lower precedence than any
+            // .gitignore. Load it first, then root and nested .gitignore files.
+            if (root.openDir(io, ".git", .{ .follow_symlinks = false })) |git_dir| {
+                defer git_dir.close(io);
+                if (git_dir.openDir(io, "info", .{ .follow_symlinks = false })) |info_dir| {
+                    defer info_dir.close(io);
+                    try self.loadOwnedIgnoreFile(info_dir, "exclude", self.real_root, &self.git_rules);
+                } else |_| {}
+            } else |_| {}
+            try self.loadOwnedIgnoreFile(root, ".gitignore", self.real_root, &self.git_rules);
+            try self.rememberLoadedIgnoreDir("");
+        }
 
         return self;
     }
@@ -454,41 +451,75 @@ pub const FilteredWalker = struct {
         }
         self.stack.deinit(self.allocator);
         self.name_buffer.deinit(self.allocator);
-        for (self.ignore_patterns.items) |p| self.allocator.free(p);
-        self.ignore_patterns.deinit(self.allocator);
+        self.freeRules(&self.codedb_rules);
+        self.freeRules(&self.git_rules);
+        var lit = self.loaded_gitignore_dirs.keyIterator();
+        while (lit.next()) |key| self.allocator.free(key.*);
+        self.loaded_gitignore_dirs.deinit(self.allocator);
         var it = self.visited_real_paths.keyIterator();
         while (it.next()) |k| self.allocator.free(k.*);
         self.visited_real_paths.deinit(self.allocator);
         if (self.real_root.len > 0) self.allocator.free(self.real_root);
     }
 
-    fn isIgnored(self: *FilteredWalker, name: []const u8, full_path: []const u8) bool {
-        for (self.ignore_patterns.items) |pattern| {
-            // Root-anchored pattern (starts with /) — only match at project root
-            if (pattern.len > 1 and pattern[0] == '/') {
-                const anchored = pattern[1..];
-                const clean = if (std.mem.endsWith(u8, anchored, "/")) anchored[0 .. anchored.len - 1] else anchored;
-                if (std.mem.eql(u8, full_path, clean) or std.mem.startsWith(u8, full_path, anchored)) return true;
-                continue;
-            }
-            // Directory pattern (ends with /) — match directory names at any depth
-            if (std.mem.endsWith(u8, pattern, "/")) {
-                const dir_name = pattern[0 .. pattern.len - 1];
-                if (std.mem.eql(u8, name, dir_name)) return true;
-                continue;
-            }
-            // Glob suffix match (e.g. *.log)
-            if (pattern.len > 1 and pattern[0] == '*') {
-                if (std.mem.endsWith(u8, name, pattern[1..])) return true;
-                continue;
-            }
-            // Exact name match (matches at any depth)
-            if (std.mem.eql(u8, name, pattern)) return true;
-            // Path prefix match (must match at / boundary)
-            if (std.mem.startsWith(u8, full_path, pattern) and
-                full_path.len > pattern.len and full_path[pattern.len] == '/') return true;
+    fn freeRules(self: *FilteredWalker, rules: *std.ArrayList(gitignore.Rule)) void {
+        for (rules.items) |rule| {
+            self.allocator.free(rule.pattern);
+            self.allocator.free(rule.base);
         }
-        return false;
+        rules.deinit(self.allocator);
+    }
+
+    fn appendOwnedRules(self: *FilteredWalker, text: []const u8, base: []const u8, out: *std.ArrayList(gitignore.Rule)) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const parsed = try gitignore.parse(scratch.allocator(), text, base);
+        for (parsed) |rule| {
+            const pattern = try self.allocator.dupe(u8, rule.pattern);
+            errdefer self.allocator.free(pattern);
+            const owned_base = try self.allocator.dupe(u8, rule.base);
+            errdefer self.allocator.free(owned_base);
+            try out.append(self.allocator, .{
+                .negated = rule.negated,
+                .dir_only = rule.dir_only,
+                .anchored = rule.anchored,
+                .pattern = pattern,
+                .base = owned_base,
+            });
+        }
+    }
+
+    fn loadOwnedIgnoreFile(self: *FilteredWalker, dir: std.Io.Dir, name: []const u8, base: []const u8, out: *std.ArrayList(gitignore.Rule)) !void {
+        const content = project_file.readAllocNoFollow(self.io, dir, name, self.allocator, .limited(64 * 1024)) catch return;
+        defer self.allocator.free(content);
+        try self.appendOwnedRules(content, base, out);
+    }
+
+    fn rememberLoadedIgnoreDir(self: *FilteredWalker, rel: []const u8) !void {
+        if (self.loaded_gitignore_dirs.contains(rel)) return;
+        const owned = try self.allocator.dupe(u8, rel);
+        errdefer self.allocator.free(owned);
+        try self.loaded_gitignore_dirs.put(self.allocator, owned, {});
+    }
+
+    fn loadNestedGitignore(self: *FilteredWalker, dir: std.Io.Dir, rel: []const u8) !void {
+        if (self.real_root.len == 0 or self.loaded_gitignore_dirs.contains(rel)) return;
+        var base_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const base = std.fmt.bufPrint(&base_buf, "{s}/{s}", .{ self.real_root, rel }) catch return;
+        try self.loadOwnedIgnoreFile(dir, ".gitignore", base, &self.git_rules);
+        try self.rememberLoadedIgnoreDir(rel);
+    }
+
+    fn hasIgnoreRules(self: *const FilteredWalker) bool {
+        return self.codedb_rules.items.len > 0 or self.git_rules.items.len > 0;
+    }
+
+    fn isIgnored(self: *FilteredWalker, full_path: []const u8, is_dir: bool) bool {
+        if (self.real_root.len == 0) return false;
+        var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const abs = std.fmt.bufPrint(&abs_buf, "{s}/{s}", .{ self.real_root, full_path }) catch return false;
+        if (gitignore.ignored(self.allocator, self.codedb_rules.items, self.real_root, abs, is_dir) catch false) return true;
+        return gitignore.ignored(self.allocator, self.git_rules.items, self.real_root, abs, is_dir) catch false;
     }
 
     /// Validate the directory object that was actually opened, regardless of
@@ -536,14 +567,13 @@ pub const FilteredWalker = struct {
                     else
                         entry.name;
                     // Check .codedbignore patterns
-                    if (self.ignore_patterns.items.len > 0) {
-                        if (self.isIgnored(entry.name, visible_path)) continue;
-                    }
+                    if (self.hasIgnoreRules() and self.isIgnored(visible_path, true)) continue;
                     const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
                     const opened_as_alias = self.claimOpenedDirectory(sub, visible_path) orelse {
                         sub.close(self.io);
                         continue;
                     };
+                    try self.loadNestedGitignore(sub, visible_path);
                     errdefer sub.close(self.io);
                     const saved_len = self.name_buffer.items.len;
                     errdefer self.name_buffer.shrinkRetainingCapacity(saved_len);
@@ -565,13 +595,13 @@ pub const FilteredWalker = struct {
                 if (entry.kind != .file) {
                     if (entry.kind != .sym_link) continue;
                     if (shouldSkipDir(entry.name)) continue;
-                    if (self.ignore_patterns.items.len > 0) {
+                    if (self.hasIgnoreRules()) {
                         var check_buf: [std.fs.max_path_bytes]u8 = undefined;
                         const check_path = if (self.dir_prefix_len > 0)
                             std.fmt.bufPrint(&check_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch entry.name
                         else
                             entry.name;
-                        if (self.isIgnored(entry.name, check_path)) continue;
+                        if (self.isIgnored(check_path, true)) continue;
                     }
                     // Opening as a directory is also the file-symlink gate:
                     // regular-file targets fail with NotDir and are skipped.
@@ -590,6 +620,7 @@ pub const FilteredWalker = struct {
                         sub.close(self.io);
                         continue;
                     }
+                    try self.loadNestedGitignore(sub, visible_path);
                     errdefer sub.close(self.io);
                     const saved_len_sym = self.name_buffer.items.len;
                     errdefer self.name_buffer.shrinkRetainingCapacity(saved_len_sym);
@@ -616,7 +647,7 @@ pub const FilteredWalker = struct {
                 try self.name_buffer.appendSlice(self.allocator, entry.name);
 
                 // Check .codedbignore patterns for files
-                if (self.ignore_patterns.items.len > 0 and self.isIgnored(entry.name, self.name_buffer.items)) {
+                if (self.hasIgnoreRules() and self.isIgnored(self.name_buffer.items, false)) {
                     self.name_buffer.shrinkRetainingCapacity(self.dir_prefix_len);
                     continue;
                 }
@@ -649,6 +680,96 @@ pub const FilteredWalker = struct {
         return null;
     }
 };
+
+test "issue-704: index walker honors double-star, nested gitignore, and negation" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, ".jest-cache");
+    try tmp.dir.createDirPath(io, "child/lib");
+    try tmp.dir.createDirPath(io, "child/src");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".gitignore", .data = "**/.jest-cache/\n*.log\n!important.log\n!must-hide.zig\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".codedbignore", .data = "must-hide.zig\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "child/.gitignore", .data = "lib/\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".jest-cache/generated.js", .data = "generated" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "child/lib/generated.zig", .data = "pub const generated = true;" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "child/src/keep.zig", .data = "pub const keep = true;" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "noise.log", .data = "drop" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "important.log", .data = "keep" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "must-hide.zig", .data = "secret policy wins" });
+
+    const root = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer root.close(io);
+    var walker = try FilteredWalker.init(io, root, testing.allocator);
+    defer walker.deinit();
+    var saw_keep = false;
+    var saw_important = false;
+    while (try walker.next()) |entry| {
+        if (std.mem.eql(u8, entry.path, "child/src/keep.zig")) saw_keep = true;
+        if (std.mem.eql(u8, entry.path, "important.log")) saw_important = true;
+        try testing.expect(!std.mem.eql(u8, entry.path, ".jest-cache/generated.js"));
+        try testing.expect(!std.mem.eql(u8, entry.path, "child/lib/generated.zig"));
+        try testing.expect(!std.mem.eql(u8, entry.path, "noise.log"));
+        try testing.expect(!std.mem.eql(u8, entry.path, "must-hide.zig"));
+    }
+    try testing.expect(saw_keep);
+    try testing.expect(saw_important);
+}
+
+test "issue-704: nested gitignore content change removes cached indexed files" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "child");
+    try tmp.dir.writeFile(io, .{ .sub_path = "child/.gitignore", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "child/drop.zig", .data = "pub fn dropMe() void {}\n" });
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.setRoot(io, root_path);
+    try initialScanWithWorkerCount(io, &store, &explorer, root_path, testing.allocator, true, 1);
+
+    var known = FileMap.init(testing.allocator);
+    defer {
+        var it = known.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    try seedKnownFromExplorer(&store, &explorer, &known, testing.allocator);
+    var dirs = DirMap.init(testing.allocator);
+    defer {
+        var it = dirs.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+    var queue = EventQueue{};
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root_path, testing.allocator, arena.allocator());
+    }
+    try testing.expect(known.contains("child/drop.zig"));
+
+    // Rewriting the ignore file does not change the child directory's mtime;
+    // the cached-directory fast path must still apply the newly loaded rules.
+    try tmp.dir.writeFile(io, .{ .sub_path = "child/.gitignore", .data = "drop.zig\n" });
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root_path, testing.allocator, arena.allocator());
+    }
+    try testing.expect(!known.contains("child/drop.zig"));
+    var rendered: std.ArrayList(u8) = .empty;
+    defer rendered.deinit(testing.allocator);
+    try testing.expect(!try explorer.renderOutline("child/drop.zig", testing.allocator, &rendered, false));
+}
 
 /// Files beyond this count are indexed without trigrams and land in
 /// skip_trigram_files, which tier 3 of searchContent linearly content-scans
@@ -1371,17 +1492,11 @@ const watch_kqueue = switch (builtin.os.tag) {
 };
 const watch_inotify = builtin.os.tag == .linux;
 
-fn raiseNofileLimit() void {
-    if (builtin.os.tag == .windows) return;
-    var lim = std.posix.getrlimit(.NOFILE) catch return;
-    if (lim.cur < lim.max) {
-        lim.cur = lim.max;
-        std.posix.setrlimit(.NOFILE, lim) catch {};
-    }
-}
-
 const FileChangeWatch = struct {
     alloc: std.mem.Allocator,
+    /// Strict cap on macOS vnode descriptors. The kqueue descriptor itself is
+    /// fixed overhead; every directory/file admission is counted in `files`.
+    max_watched: u32,
     active: bool = false,
     armed_files: u32 = 0,
     armed_dirs: u32 = 0,
@@ -1394,9 +1509,10 @@ const FileChangeWatch = struct {
     ident_to_dir: std.AutoHashMap(usize, []u8),
     wd_to_dir: std.AutoHashMap(i32, []u8),
 
-    fn init(alloc: std.mem.Allocator) FileChangeWatch {
+    fn init(alloc: std.mem.Allocator, max_watched: u32) FileChangeWatch {
         return .{
             .alloc = alloc,
+            .max_watched = max_watched,
             .ident_to_path = .init(alloc),
             .ident_to_dir = .init(alloc),
             .wd_to_dir = .init(alloc),
@@ -1464,6 +1580,15 @@ const FileChangeWatch = struct {
         }
     }
 
+    fn forgetUnwatched(self: *FileChangeWatch, path: []const u8) void {
+        var i: usize = 0;
+        while (i < self.unwatched.items.len) : (i += 1) {
+            if (!std.mem.eql(u8, self.unwatched.items[i], path)) continue;
+            self.alloc.free(self.unwatched.swapRemove(i));
+            return;
+        }
+    }
+
     fn addUnwatched(self: *const FileChangeWatch, dirty: *DirtySet) void {
         for (self.unwatched.items) |path| {
             dirty.put(path, {}) catch {};
@@ -1484,8 +1609,6 @@ const FileChangeWatch = struct {
 
     fn armKqueue(self: *FileChangeWatch, root_dir: std.Io.Dir, known: *const FileMap, dirs: *const DirMap) void {
         if (comptime !watch_kqueue) return;
-        if (known.count() > 32768) return;
-        raiseNofileLimit();
         const kq = std.c.kqueue();
         if (kq < 0) return;
         self.kq = kq;
@@ -1499,23 +1622,31 @@ const FileChangeWatch = struct {
             if (rel.len == 0) continue;
             self.watchKqueueDir(root_dir.handle, rel, vnode_flags);
         }
+        // Cross-process update notification is useful but never allowed to
+        // break the same strict descriptor ceiling as repository watches.
+        if (self.files.items.len < self.max_watched) {
+            if (std.posix.openat(std.posix.AT.FDCWD, "/tmp/codedb-notify", .{ .ACCMODE = .RDONLY, .EVTONLY = true, .CLOEXEC = true }, 0)) |nfd| {
+                if (self.addVnode(nfd, std.c.NOTE.WRITE | std.c.NOTE.EXTEND)) {
+                    self.files.append(self.alloc, nfd) catch cio.closeFd(nfd);
+                } else {
+                    cio.closeFd(nfd);
+                }
+            } else |_| {}
+        }
         var it = known.iterator();
         while (it.next()) |kv| {
             const path = kv.key_ptr.*;
             self.watchKqueueFile(root_dir.handle, path, vnode_flags);
         }
-        if (std.posix.openat(std.posix.AT.FDCWD, "/tmp/codedb-notify", .{ .ACCMODE = .RDONLY, .EVTONLY = true, .CLOEXEC = true }, 0)) |nfd| {
-            if (self.addVnode(nfd, std.c.NOTE.WRITE | std.c.NOTE.EXTEND)) {
-                self.files.append(self.alloc, nfd) catch cio.closeFd(nfd);
-            } else {
-                cio.closeFd(nfd);
-            }
-        } else |_| {}
         self.active = self.ident_to_path.count() > 0 or self.ident_to_dir.count() > 0 or self.unwatched.items.len > 0 or self.unwatched_dirs.items.len > 0;
     }
 
     fn addKqueueFileWatch(self: *FileChangeWatch, root_fd: std.posix.fd_t, path: []const u8, fflags: u32) ?std.posix.fd_t {
         if (comptime !watch_kqueue) return null;
+        if (self.files.items.len >= self.max_watched) {
+            self.rememberUnwatched(path);
+            return null;
+        }
         const fd = std.posix.openat(root_fd, path, .{ .ACCMODE = .RDONLY, .EVTONLY = true, .CLOEXEC = true }, 0) catch {
             self.rememberUnwatched(path);
             return null;
@@ -1540,6 +1671,7 @@ const FileChangeWatch = struct {
             self.rememberUnwatched(path);
             return null;
         };
+        self.forgetUnwatched(path);
         return fd;
     }
 
@@ -1667,6 +1799,10 @@ const FileChangeWatch = struct {
 
     fn addKqueueDirWatch(self: *FileChangeWatch, root_fd: std.posix.fd_t, rel: []const u8, fflags: u32) ?std.posix.fd_t {
         if (comptime !watch_kqueue) return null;
+        if (self.files.items.len >= self.max_watched) {
+            self.rememberUnwatchedDir(rel);
+            return null;
+        }
         const open_rel = if (rel.len == 0) "." else rel;
         const fd = std.posix.openat(root_fd, open_rel, .{ .ACCMODE = .RDONLY, .EVTONLY = true, .CLOEXEC = true, .DIRECTORY = true }, 0) catch {
             self.rememberUnwatchedDir(rel);
@@ -1705,15 +1841,15 @@ const FileChangeWatch = struct {
     fn rearmKqueueDir(self: *FileChangeWatch, root_fd: std.posix.fd_t, rel: []const u8, fflags: u32) void {
         if (comptime !watch_kqueue) return;
         const old_fd = self.findKqueueDir(rel);
-        if (self.addKqueueDirWatch(root_fd, rel, fflags) == null) return;
         if (old_fd) |fd| self.dropKqueueDir(fd);
+        _ = self.addKqueueDirWatch(root_fd, rel, fflags);
     }
 
     fn rearmKqueueFile(self: *FileChangeWatch, root_fd: std.posix.fd_t, path: []const u8, fflags: u32) void {
         if (comptime !watch_kqueue) return;
         const old_fd = self.findKqueueFile(path);
-        if (self.addKqueueFileWatch(root_fd, path, fflags) == null) return;
         if (old_fd) |fd| self.dropKqueueFile(fd);
+        _ = self.addKqueueFileWatch(root_fd, path, fflags);
     }
 
     fn inotifyDirectoryMask() u32 {
@@ -1991,7 +2127,7 @@ test "file watcher remains pinned to opened root after pathname retarget" {
     }
     const root_key = try testing.allocator.dupe(u8, "");
     try dirs.put(root_key, .{ .mtime_ns = 0, .ctime_ns = 0, .inode = 0 });
-    var watch = FileChangeWatch.init(testing.allocator);
+    var watch = FileChangeWatch.init(testing.allocator, 1024);
     defer watch.deinit(io);
     watch.arm(io, root_dir, &known, &dirs);
     try testing.expect(watch.active);
@@ -2063,7 +2199,7 @@ test "directory watches follow repeated equal-count subtree replacements" {
         const key = try testing.allocator.dupe(u8, path);
         try dirs.put(key, .{ .mtime_ns = 0, .ctime_ns = 0, .inode = 0 });
     }
-    var watch = FileChangeWatch.init(testing.allocator);
+    var watch = FileChangeWatch.init(testing.allocator, 1024);
     defer watch.deinit(io);
     watch.arm(io, root_dir, &known, &dirs);
     try testing.expect(watch.active);
@@ -2139,7 +2275,7 @@ test "failed directory watch admission retries through dirty reconciliation" {
         const key = try testing.allocator.dupe(u8, path);
         try dirs.put(key, .{ .mtime_ns = 0, .ctime_ns = 0, .inode = 0 });
     }
-    var watch = FileChangeWatch.init(testing.allocator);
+    var watch = FileChangeWatch.init(testing.allocator, 1024);
     defer watch.deinit(io);
     watch.arm(io, root_dir, &known, &dirs);
     try testing.expect(watch.active);
@@ -2160,8 +2296,52 @@ test "failed directory watch admission retries through dirty reconciliation" {
     try testing.expect(dirty.contains("late"));
 }
 
+test "issue-709: macOS vnode descriptor admission is strictly bounded" {
+    if (comptime !watch_kqueue) return;
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var known = FileMap.init(testing.allocator);
+    defer {
+        var it = known.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    var i: usize = 0;
+    while (i < 32) : (i += 1) {
+        var path_buf: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "file-{d}.zig", .{i});
+        try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "pub const value = 1;\n" });
+        const owned = try testing.allocator.dupe(u8, path);
+        try known.put(owned, .{ .mtime = 0, .size = 0, .hash = 0, .seen = false });
+    }
+    var dirs = DirMap.init(testing.allocator);
+    defer {
+        var it = dirs.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+    try dirs.put(try testing.allocator.dupe(u8, ""), .{ .mtime_ns = 0, .ctime_ns = 0, .inode = 0 });
+    const root = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer root.close(io);
+
+    var watch = FileChangeWatch.init(testing.allocator, 4);
+    defer watch.deinit(io);
+    watch.arm(io, root, &known, &dirs);
+    try testing.expect(watch.active);
+    try testing.expect(watch.files.items.len <= 4);
+    try testing.expect(watch.unwatched.items.len > 0);
+
+    watch.max_watched = 0;
+    watch.arm(io, root, &known, &dirs);
+    try testing.expectEqual(@as(usize, 0), watch.files.items.len);
+    try testing.expectEqual(@as(usize, 32), watch.unwatched.items.len);
+    try testing.expectEqual(@as(usize, 1), watch.unwatched_dirs.items.len);
+}
+
 /// Background thread: polls for incremental FS changes.
-pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, root: []const u8, shutdown: *std.atomic.Value(bool), scan_done: *std.atomic.Value(bool)) void {
+pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, root: []const u8, shutdown: *std.atomic.Value(bool), scan_done: *std.atomic.Value(bool), max_watched: u32) void {
     explorer.expectStartupReconcile();
     var startup_reconcile_finished = false;
     defer if (!startup_reconcile_finished) explorer.finishStartupReconcile();
@@ -2208,7 +2388,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
         };
     }
 
-    var watch = FileChangeWatch.init(backing);
+    var watch = FileChangeWatch.init(backing, max_watched);
     defer watch.deinit(io);
     armAndCloseGap(io, &watch, stable_root, store, explorer, queue, &known, &dirs, root, backing);
     explorer.finishStartupReconcile();
@@ -2570,6 +2750,7 @@ fn walkRel(
         const opened_as_alias = ignore.claimOpenedDirectory(listing, prefix) orelse return;
         effective_through_symlink = effective_through_symlink or opened_as_alias;
     }
+    try ignore.loadNestedGitignore(listing, prefix);
 
     const current_dir_state = dirState(io, listing, "");
     const cached_dir_state = if (dirs) |d| d.get(prefix) else null;
@@ -2579,6 +2760,7 @@ fn walkRel(
     if (dir_unchanged) {
         if (parents.files.get(prefix)) |file_list| {
             for (file_list.items) |path| {
+                if (ignore.hasIgnoreRules() and ignore.isIgnored(path, false)) continue;
                 if (dirty) |d| {
                     if (d.get(path) == null) {
                         if (known.getPtr(path)) |st| st.seen = true;
@@ -2598,7 +2780,7 @@ fn walkRel(
             while (cit.next()) |name| {
                 if (shouldSkipDir(name.*)) continue;
                 const child = try joinRel(tmp, prefix, name.*);
-                if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(name.*, child)) continue;
+                if (ignore.hasIgnoreRules() and ignore.isIgnored(child, true)) continue;
                 const child_stat = listing.statFile(io, name.*, .{ .follow_symlinks = false }) catch continue;
                 if (child_stat.kind != .directory and child_stat.kind != .sym_link) continue;
                 const child_through_symlink = effective_through_symlink or child_stat.kind == .sym_link;
@@ -2615,7 +2797,7 @@ fn walkRel(
             if (entry.kind == .sym_link and !resolvedDirectoryTargetAllowed(io, listing, ignore.real_root, entry.name)) continue;
             if (shouldSkipDir(entry.name)) continue;
             const child = try joinRel(tmp, prefix, entry.name);
-            if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(entry.name, child)) continue;
+            if (ignore.hasIgnoreRules() and ignore.isIgnored(child, true)) continue;
             try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents, dirty, child_through_symlink);
             continue;
         }
@@ -2623,7 +2805,7 @@ fn walkRel(
         if (entry.kind != .file) continue;
 
         const rel = try joinRel(tmp, prefix, entry.name);
-        if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(entry.name, rel)) continue;
+        if (ignore.hasIgnoreRules() and ignore.isIgnored(rel, false)) continue;
         if (shouldSkipFile(rel)) continue;
         if (effective_through_symlink and !resolvedFileTargetAllowed(io, listing, ignore.real_root, entry.name)) continue;
         const stat = listing.statFile(io, entry.name, .{ .follow_symlinks = false }) catch continue;

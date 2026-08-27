@@ -1,4 +1,4 @@
-//! gitignore matching for `codedb list_dir`.
+//! Shared gitignore matching for live listings and repository indexing.
 //!
 //! Subset of git's rules: comments, `!` negation, trailing-`/` directories,
 //! leading-`/` (or mid-slash) anchored to the ignore file's directory, `*` / `?`
@@ -93,39 +93,48 @@ fn globSeg(pat: []const u8, s: []const u8) bool {
     return false;
 }
 
-fn matchSegs(pat: []const []const u8, path: []const []const u8) bool {
-    if (pat.len == 0) return path.len == 0;
-    if (std.mem.eql(u8, pat[0], "**")) {
-        if (pat.len == 1) return true;
-        var i: usize = 0;
-        while (i <= path.len) : (i += 1) {
-            if (matchSegs(pat[1..], path[i..])) return true;
+const Segment = struct {
+    value: []const u8,
+    next: usize,
+};
+
+fn nextSegment(s: []const u8, start: usize) ?Segment {
+    var begin = start;
+    while (begin < s.len and s[begin] == '/') begin += 1;
+    if (begin >= s.len) return null;
+    const end = std.mem.indexOfScalarPos(u8, s, begin, '/') orelse s.len;
+    return .{ .value = s[begin..end], .next = end };
+}
+
+/// Allocation-free segment matcher. Indexing calls this once per path, so the
+/// old split-into-ArrayList implementation accumulated scan-sized scratch
+/// allocations when its caller used a long-lived arena.
+fn matchSegs(pattern: []const u8, pattern_at: usize, path: []const u8, path_at: usize) bool {
+    const pat = nextSegment(pattern, pattern_at) orelse return nextSegment(path, path_at) == null;
+    if (std.mem.eql(u8, pat.value, "**")) {
+        if (nextSegment(pattern, pat.next) == null) return true;
+        if (matchSegs(pattern, pat.next, path, path_at)) return true;
+        var cursor = path_at;
+        while (nextSegment(path, cursor)) |segment| {
+            cursor = segment.next;
+            if (matchSegs(pattern, pat.next, path, cursor)) return true;
         }
         return false;
     }
-    if (path.len == 0) return false;
-    if (!globSeg(pat[0], path[0])) return false;
-    return matchSegs(pat[1..], path[1..]);
-}
-
-fn split(arena: Allocator, s: []const u8) ![]const []const u8 {
-    var list: std.ArrayList([]const u8) = .empty;
-    var it = std.mem.splitScalar(u8, s, '/');
-    while (it.next()) |p| {
-        if (p.len == 0) continue;
-        try list.append(arena, p);
-    }
-    return list.items;
+    const part = nextSegment(path, path_at) orelse return false;
+    if (!globSeg(pat.value, part.value)) return false;
+    return matchSegs(pattern, pat.next, path, part.next);
 }
 
 fn matchPattern(arena: Allocator, pattern: []const u8, local: []const u8, anchored: bool) !bool {
+    _ = arena;
     if (pattern.len == 0) return false;
-    const p = try split(arena, pattern);
-    const segs = try split(arena, local);
-    if (anchored) return matchSegs(p, segs);
-    var i: usize = 0;
-    while (i <= segs.len) : (i += 1) {
-        if (matchSegs(p, segs[i..])) return true;
+    if (anchored) return matchSegs(pattern, 0, local, 0);
+    if (matchSegs(pattern, 0, local, 0)) return true;
+    var cursor: usize = 0;
+    while (nextSegment(local, cursor)) |segment| {
+        cursor = segment.next;
+        if (matchSegs(pattern, 0, local, cursor)) return true;
     }
     return false;
 }
