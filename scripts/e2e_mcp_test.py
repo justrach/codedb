@@ -367,6 +367,7 @@ def run_scenario_1_issue346_regression(binary: str, project: str) -> list[TestRe
         text = tool_text(p.call_tool("codedb_context", {
             "task": "explain how DeferredScan activates after the MCP roots handshake",
             "max_tokens": 1200,
+            "semantic": "local",
         }))
         if "project root" in text.lower() and "not configured" in text.lower():
             r.fail(f"context retained the spawn cwd instead of the negotiated root: {text[:240]!r}")
@@ -492,6 +493,7 @@ def run_scenario_3_no_roots_client(binary: str) -> list[TestResult]:
         listing = tool_text(p.call_tool("codedb_list_dir", {}))
         context = tool_text(p.call_tool("codedb_context", {
             "task": "inspect host filesystem configuration and reader metadata",
+            "semantic": "local",
         }))
         combined = listing + "\n" + context
         if "project root is not configured" not in listing or "project root is not configured" not in context:

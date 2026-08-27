@@ -44,10 +44,11 @@ const cases = [_]Case{
     .{ .tool = .codedb_snapshot, .name = "codedb_snapshot", .args_json = "{}", .iterations = 20, .parity = false },
     .{ .tool = .codedb_bundle, .name = "codedb_bundle", .args_json = "{\"ops\":[{\"tool\":\"codedb_outline\",\"arguments\":{\"path\":\"src/main.zig\"}},{\"tool\":\"codedb_search\",\"arguments\":{\"query\":\"telemetry\",\"max_results\":5}},{\"tool\":\"codedb_word\",\"arguments\":{\"word\":\"Telemetry\"}}]}", .iterations = 50 },
     .{ .tool = .codedb_find, .name = "codedb_find", .args_json = "{\"query\":\"main\"}", .iterations = 100 },
-    // Context assembles ranked retrieval; its output intentionally evolves
-    // across revisions as ranking and extraction improve, so cross-revision
-    // parity cannot be required.
-    .{ .tool = .codedb_context, .name = "codedb_context", .args_json = "{\"task\":\"trace recordToolCall execution path through writePositionalAll and the SpinLock acquisition in Telemetry — what is the hot path\"}", .iterations = 50, .parity = false },
+    // Keep the microbenchmark local and deterministic: the live hybrid default
+    // has separate integration coverage and must not turn CI into a network
+    // latency benchmark. Context output intentionally evolves across revisions,
+    // so cross-revision parity cannot be required.
+    .{ .tool = .codedb_context, .name = "codedb_context", .args_json = "{\"task\":\"trace recordToolCall execution path through writePositionalAll and the SpinLock acquisition in Telemetry — what is the hot path\",\"semantic\":\"local\"}", .iterations = 50, .parity = false },
 };
 
 const corpus_files = [_][]const u8{

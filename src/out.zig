@@ -110,7 +110,7 @@ pub fn printUsage(out: *Out, s: sty.Style) void {
     });
     out.p(
         \\    {s}file{s}  <fuzzy-name>        fuzzy file-name search
-        \\    {s}context{s}  <task...>        task-shaped orientation bundle
+        \\    {s}context{s}  [--local] <task...>  hybrid task-shaped orientation bundle
         \\    {s}explain{s}  <name>           definition body + callers (alias: around)
         \\    {s}callpath{s} <from> <to>      shortest resolved call chain (alias: path)
         \\    {s}semantic-index{s}            explicitly build the local code-chunk ANN sidecar

@@ -73,26 +73,28 @@ codedb-cli [root] <command> [args...]
 The native binary also exposes the task composer directly:
 
 ```bash
-# Default: entirely local BM25/symbol/graph retrieval
+# Default: Pareto-frontier hybrid retrieval with local BM25/symbol first
 codedb /path/to/repo context "find the request authentication path"
 
-# Explicit opt-in: local retrieval first, then one transient advisory Qwen batch
-codedb /path/to/repo context --semantic "find the request authentication path"
+# Explicit opt-out: entirely local BM25/symbol/graph retrieval
+codedb /path/to/repo context --local "find the request authentication path"
 
 # Explicit one-time build: bounded code chunks become a local OpenPuffer ANN
 codedb /path/to/repo semantic-index
 
 # Machine-readable privacy, model, byte-count, ranks, and retention metadata
-codedb /path/to/repo context --semantic --json "find the request authentication path"
+codedb /path/to/repo context --json "find the request authentication path"
 ```
 
-`--semantic` uses a fresh local OpenPuffer sidecar when one exists: the task and
+Hybrid retrieval uses a fresh local OpenPuffer sidecar when one exists: the task and
 a fixed public calibration string leave the machine in one embedding request,
 then vector-space verification, mmap-backed graph search, and fusion run
 locally. Without a sidecar, it sends the task and up to 24 locally selected
 relative paths with bounded snippets for an exact rerank. It never uploads a
 repository archive or creates a server-side index. If the provider fails, the
 command returns the local result and does not run an embedding model on CPU.
+`--semantic` and `--hybrid` remain accepted compatibility aliases for the
+default; `--local` (or `--no-semantic`) is the explicit on-device-only mode.
 
 `semantic-index` is the only ANN build trigger. It sends bounded 832-byte code
 chunks using four concurrent 25-item requests by default (configurable from one
