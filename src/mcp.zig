@@ -3485,8 +3485,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     // identifier candidates keep priority under CONTEXT_MAX_CANDIDATES).
     extractContextFallbackWords(task, A, &candidates);
     const pf_cand = cio.nanoTimestamp();
-    if (candidates.items.len == 0) {
-        if (semantic_requested) retrieval.semantic = "no_candidates";
+    if (candidates.items.len == 0 and !semantic_requested) {
         const message = "no candidate identifiers found in task — include symbol names (camelCase or snake_case) or \"quoted strings\" so the composer can extract keywords";
         if (structured) {
             var sections: [2]ContextProvenanceSection = undefined;
@@ -3651,7 +3650,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             use_exact_semantic_fallback = true;
             break :ann_lane;
         };
-        if (semantic_index_mod.search(
+        if (searchSemanticAnnFresh(
             io,
             A,
             explorer,

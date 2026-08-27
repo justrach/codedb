@@ -203,15 +203,34 @@ fn appendBoundedDocument(
     candidate: Candidate,
     remaining_batch_bytes: usize,
 ) ![]const u8 {
-    const path_cap = @min(candidate.path.len, 512);
+    const item_cap = @min(max_document_bytes, remaining_batch_bytes);
+    if (item_cap <= 1) return error.BatchTextLimit;
+    const path_cap = @min(candidate.path.len, @min(@as(usize, 512), item_cap - 1));
     const fixed = path_cap + 1;
-    if (remaining_batch_bytes <= fixed) return error.BatchTextLimit;
-    const text_cap = @min(candidate.text.len, @min(max_document_bytes, remaining_batch_bytes - fixed));
+    const text_cap = @min(candidate.text.len, item_cap - fixed);
     const start = out.items.len;
     try out.appendSlice(allocator, candidate.path[0..path_cap]);
     try out.append(allocator, '\n');
     try out.appendSlice(allocator, candidate.text[0..text_cap]);
     return out.items[start..];
+}
+
+test "semantic exact-fallback item cap includes path and separator" {
+    const testing = std.testing;
+    var long_path: [700]u8 = undefined;
+    @memset(&long_path, 'p');
+    var long_text: [max_document_bytes * 2]u8 = undefined;
+    @memset(&long_text, 'x');
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    const item = try appendBoundedDocument(
+        testing.allocator,
+        &out,
+        .{ .path = &long_path, .text = &long_text },
+        max_batch_text_bytes,
+    );
+    try testing.expectEqual(max_document_bytes, item.len);
+    try testing.expectEqual(@as(usize, 512), std.mem.indexOfScalar(u8, item, '\n').?);
 }
 
 const EmbeddingRequest = struct {

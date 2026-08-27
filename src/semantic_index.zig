@@ -57,6 +57,7 @@ pub const BuildStats = struct {
     elapsed_ns: u64,
     embedding_wall_ns: u64,
     insertion_ns: u64,
+    source_validation_ns: u64,
     parallel_batches: usize,
     vector_space_id: u64,
 };
@@ -558,6 +559,14 @@ pub fn build(
         for (paths) |path| allocator.free(path);
         allocator.free(paths);
     }
+    var remote_paths: std.ArrayList([]const u8) = .empty;
+    defer remote_paths.deinit(allocator);
+    try remote_paths.ensureTotalCapacity(allocator, paths.len);
+    for (paths) |path| {
+        if (semantic.isRemoteCandidatePathAllowed(path)) remote_paths.appendAssumeCapacity(path);
+    }
+    const source_content_before = try store.semanticContentFingerprintForPaths(remote_paths.items);
+    var embedded_content = Store.semanticContentHasher();
 
     var index = ann.Index.init(allocator, config.dimensions, .{});
     defer index.deinit();
@@ -590,10 +599,16 @@ pub fn build(
             blocked += 1;
             continue;
         }
-        const content = (explorer.getContent(path, allocator) catch null) orelse continue;
+        const content = (try explorer.getContent(path, allocator)) orelse return error.RepositoryChangedDuringAnnBuild;
         defer allocator.free(content);
+        Store.updateSemanticContentFingerprint(
+            &embedded_content,
+            path,
+            std.hash.Wyhash.hash(0, content),
+            @intCast(content.len),
+        );
         if (content.len == 0) continue;
-        var outline = (explorer.getOutline(path, allocator) catch null) orelse continue;
+        var outline = (try explorer.getOutline(path, allocator)) orelse return error.RepositoryChangedDuringAnnBuild;
         defer outline.deinit();
         var cursor = ChunkCursor{ .content = content };
         var chunks_for_file: usize = 0;
@@ -624,10 +639,18 @@ pub fn build(
     if (index.len() == 0) return error.NoSafeAnnRecords;
     if (try index.slabImageSize() > max_slab_bytes) return error.AnnSlabTooLarge;
 
+    const validation_started = cio.nanoTimestamp();
+    if (embedded_content.final() != source_content_before) return error.RepositoryChangedDuringAnnBuild;
+    const source_root = explorer.root_dir orelse return error.InvalidProjectRoot;
+    if (try watcher.liveIndexedContentFingerprint(io, source_root, allocator) != source_content_before) {
+        return error.RepositoryChangedDuringAnnBuild;
+    }
+
     const manifest_after = try repositoryFingerprint(explorer, store, allocator);
     if (manifest_after != manifest_before) return error.RepositoryChangedDuringAnnBuild;
     const git_head_after = try git_mod.getGitHead(project_root, allocator);
     if (!headsEqual(git_head_before, git_head_after)) return error.RepositoryChangedDuringAnnBuild;
+    const source_validation_ns = elapsedNs(validation_started);
 
     const slab_name = try std.fmt.allocPrint(allocator, "{s}{x}-{x}-{x}{s}", .{
         slab_file_prefix,
@@ -686,6 +709,7 @@ pub fn build(
         .elapsed_ns = elapsedNs(started),
         .embedding_wall_ns = embedding_wall_ns,
         .insertion_ns = insertion_ns,
+        .source_validation_ns = source_validation_ns,
         .parallel_batches = parallel_batches,
         .vector_space_id = vector_space_id,
     };
@@ -1247,4 +1271,45 @@ test "semantic ANN rejects stale content before mmaping the graph" {
         error.StaleAnnManifest,
         search(io, testing.allocator, &explorer, &store, dir_path, dir_path, "find alpha implementation", 5),
     );
+}
+
+test "semantic build live fingerprint catches unreconciled repository edits" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "src");
+    var source = try tmp.dir.createFile(io, "src/live.zig", .{});
+    try source.writeStreamingAll(io, "pub fn before() void {}\n");
+    source.close(io);
+    var ignored = try tmp.dir.createFile(io, ".env", .{});
+    try ignored.writeStreamingAll(io, "TEST_ONLY_NOT_A_SECRET=1\n");
+    ignored.close(io);
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp.dir.realPathFile(io, ".", &root_buf)];
+    var explorer = Explorer.init(testing.allocator, 1024 * 1024);
+    defer explorer.deinit();
+    try explorer.setRoot(io, root);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try watcher.initialScan(io, &store, &explorer, root, testing.allocator, true);
+
+    const paths = try cloneSortedPaths(&explorer, testing.allocator);
+    defer {
+        for (paths) |path| testing.allocator.free(path);
+        testing.allocator.free(paths);
+    }
+    const indexed = try store.semanticContentFingerprintForPaths(paths);
+    try testing.expectEqual(indexed, try watcher.liveIndexedContentFingerprint(io, explorer.root_dir.?, testing.allocator));
+
+    var ignored_changed = try tmp.dir.createFile(io, ".env", .{ .truncate = true });
+    try ignored_changed.writeStreamingAll(io, "TEST_ONLY_NOT_A_SECRET=2\n");
+    ignored_changed.close(io);
+    try testing.expectEqual(indexed, try watcher.liveIndexedContentFingerprint(io, explorer.root_dir.?, testing.allocator));
+
+    var changed = try tmp.dir.createFile(io, "src/live.zig", .{ .truncate = true });
+    try changed.writeStreamingAll(io, "pub fn after() void {}\n");
+    changed.close(io);
+    try testing.expect(indexed != try watcher.liveIndexedContentFingerprint(io, explorer.root_dir.?, testing.allocator));
 }

@@ -282,7 +282,7 @@ pub fn runSemanticIndex(ctx: *RunCtx) void {
             "  local sidecar: {s}/{s} ({d} bytes total; mmap slab {d} bytes; metadata {d} bytes)\n" ++
             "  persistent vector payload: {d} bytes  remote text sent: {d} bytes\n" ++
             "  vector space: {x}  sensitive paths blocked: {d}  parallel batches: {d}\n" ++
-            "  embedding wall: {d} ms  HNSW insertion: {d} ms  total: {s}\n",
+            "  embedding wall: {d} ms  HNSW insertion: {d} ms  source revalidation: {d} ms  total: {s}\n",
         .{
             ctx.s.green,
             ctx.s.reset,
@@ -304,6 +304,7 @@ pub fn runSemanticIndex(ctx: *RunCtx) void {
             stats.parallel_batches,
             stats.embedding_wall_ns / std.time.ns_per_ms,
             stats.insertion_ns / std.time.ns_per_ms,
+            stats.source_validation_ns / std.time.ns_per_ms,
             sty.formatDuration(&duration_buf, stats.elapsed_ns),
         },
     );
