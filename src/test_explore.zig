@@ -2201,6 +2201,10 @@ test "walker: generated tool-output dirs are not indexed" {
     try tmp_dir.dir.writeFile(io, .{ .sub_path = ".graff/state.json", .data = "{\"packTrigram\":1}\n" });
     try tmp_dir.dir.createDirPath(io, ".harness");
     try tmp_dir.dir.writeFile(io, .{ .sub_path = ".harness/trace.jsonl", .data = "{\"packTrigram\":1}\n" });
+    try tmp_dir.dir.createDirPath(io, ".wrangler/tmp/bundle");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = ".wrangler/tmp/bundle/index.js", .data = "const packTrigram = true;\n" });
+    try tmp_dir.dir.createDirPath(io, ".open-next/server-functions");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = ".open-next/server-functions/index.js", .data = "const packTrigram = true;\n" });
 
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
     const root_len = try tmp_dir.dir.realPathFile(io, ".", &root_buf);
@@ -2220,6 +2224,8 @@ test "walker: generated tool-output dirs are not indexed" {
     try testing.expect(!explorer.contents.contains("graphify-out/cache/ast/v0.9.32/deadbeef.json"));
     try testing.expect(!explorer.contents.contains(".graff/state.json"));
     try testing.expect(!explorer.contents.contains(".harness/trace.jsonl"));
+    try testing.expect(!explorer.contents.contains(".wrangler/tmp/bundle/index.js"));
+    try testing.expect(!explorer.contents.contains(".open-next/server-functions/index.js"));
 
     var it = explorer.contents.iterator();
     while (it.next()) |kv| {
@@ -2227,6 +2233,8 @@ test "walker: generated tool-output dirs are not indexed" {
         try testing.expect(std.mem.indexOf(u8, p, "graphify-out") == null);
         try testing.expect(std.mem.indexOf(u8, p, ".graff") == null);
         try testing.expect(std.mem.indexOf(u8, p, ".harness") == null);
+        try testing.expect(std.mem.indexOf(u8, p, ".wrangler") == null);
+        try testing.expect(std.mem.indexOf(u8, p, ".open-next") == null);
     }
 
     // ...and the generated blobs contribute nothing to the word index, so a
@@ -2922,6 +2930,29 @@ test "issue-656: call graph is stale and dangling after a file edit" {
     const after = try explorer_inst.findCallPath("alpha", "beta", testing.allocator, 4);
     defer if (after) |steps| testing.allocator.free(steps);
     try testing.expect(after != null);
+}
+
+test "issue-718: call paths do not cross languages through name collisions" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+
+    try explorer_inst.indexFile("src/http.zig",
+        \\pub fn handle() void {
+        \\    route();
+        \\}
+        \\pub fn parseRequest() void {}
+    );
+    try explorer_inst.indexFile("experiments/router.py",
+        \\def route():
+        \\    parseRequest()
+    );
+
+    // Name-only resolution used to invent:
+    //   Zig handle -> Python route -> Zig parseRequest.
+    // There is no same-language `route`, so the honest answer is no path.
+    const path = try explorer_inst.findCallPath("handle", "parseRequest", testing.allocator, 4);
+    defer if (path) |steps| testing.allocator.free(steps);
+    try testing.expect(path == null);
 }
 
 test "render caches preserve output and invalidate on mutation" {
