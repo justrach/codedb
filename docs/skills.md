@@ -106,6 +106,7 @@ that project. Full keys + defaults:
 # .codedbrc
 max_cached   = 16384   # in-memory ContentCache size (files); v0.2.5815+
 max_versions = 100     # versions kept per file in the change log
+max_watched  = 1024    # macOS vnode-FD ceiling; overflow paths are polled
 rerank_trace = false   # write per-search rerank-trace.jsonl (debug)
 ```
 

@@ -40,6 +40,7 @@ pub const DeferredScan = struct {
     shutdown: *std.atomic.Value(bool),
     telem: *telemetry_mod.Telemetry,
     queue: *watcher.EventQueue,
+    max_watched: u32,
     startup_t0: i64,
     triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     scan_thread: ?std.Thread = null,
@@ -576,7 +577,7 @@ pub const BenchContext = struct {
         agents: *AgentRegistry,
         telem: *telemetry_mod.Telemetry,
     ) void {
-        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, null, null);
+        handleCall(io, alloc, root, stdout, id, store, explorer, agents, &self.cache, telem, null, null, null, true);
     }
 
     pub fn runToolCall(
@@ -728,6 +729,9 @@ pub const ToolsListOpts = struct {
     profile_core: bool = false,
     profile_slim: bool = false,
     profile_mini: bool = false,
+    /// MCP 2026-07-28 adds CacheableResult hints to list results. Legacy
+    /// handshake clients must not receive those newer-revision fields.
+    modern_results: bool = true,
 };
 
 /// CODEDB_TOOLS_PROFILE=mini (agent default) advertises the one-shot
@@ -892,7 +896,10 @@ fn isCoreProfileTool(name: []const u8) bool {
 /// allocator-owned slice the caller must free.
 pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]u8 {
     if (opts.bundle_enabled and opts.discriminated_opt_in) {
-        return buildAugmentedToolsList(alloc);
+        const augmented = try buildAugmentedToolsList(alloc);
+        if (opts.modern_results) return augmented;
+        defer alloc.free(augmented);
+        return stripModernListFields(alloc, augmented);
     }
 
     var arena = std.heap.ArenaAllocator.init(alloc);
@@ -902,6 +909,10 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
     var parsed = try std.json.parseFromSlice(std.json.Value, a, tools_list, .{});
 
     const root_obj = &parsed.value.object;
+    if (!opts.modern_results) {
+        _ = root_obj.swapRemove("ttlMs");
+        _ = root_obj.swapRemove("cacheScope");
+    }
     const tools_val = root_obj.getPtr("tools") orelse return error.MalformedToolsList;
     if (tools_val.* != .array) return error.MalformedToolsList;
 
@@ -958,6 +969,15 @@ pub fn buildToolsListResponse(alloc: std.mem.Allocator, opts: ToolsListOpts) ![]
 
     const out_in_arena = try std.json.Stringify.valueAlloc(a, parsed.value, .{});
     return try alloc.dupe(u8, out_in_arena);
+}
+
+fn stripModernListFields(alloc: std.mem.Allocator, payload: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.MalformedToolsList;
+    _ = parsed.value.object.swapRemove("ttlMs");
+    _ = parsed.value.object.swapRemove("cacheScope");
+    return std.json.Stringify.valueAlloc(alloc, parsed.value, .{});
 }
 
 pub fn buildAugmentedToolsList(alloc: std.mem.Allocator) ![]u8 {
@@ -1087,6 +1107,9 @@ const Session = struct {
     client_supports_roots: bool = false,
     client_roots_list_changed: bool = false,
     client_name: ?[]const u8 = null,
+    /// Default response revision. Stateless requests start modern; a legacy
+    /// initialize handshake changes the fallback for requests without _meta.
+    modern_results: bool = true,
     pending_roots_id: ?i64 = null,
     roots: std.ArrayList(Root) = .empty,
     deferred_scan: ?*DeferredScan = null,
@@ -1360,21 +1383,27 @@ pub fn run(
             }
         } else if (mcpj.eql(method, "tools/list")) {
             if (!is_notification) {
+                const modern_results = requestUsesModernResults(root, session.modern_results);
                 const mini_default = !profile_explicit and !mcpEmitRichBlocks(session.client_name);
+                var resp_owned = true;
                 const resp = buildToolsListResponse(alloc, .{
                     .bundle_enabled = bundle_enabled,
                     .discriminated_opt_in = discriminated_opt_in,
                     .profile_core = profile_core,
                     .profile_slim = profile_slim,
                     .profile_mini = profile_mini or mini_default,
-                }) catch tools_list;
-                defer if (resp.ptr != tools_list.ptr) alloc.free(resp);
-                writeResult(alloc, stdout, id, resp);
+                    .modern_results = modern_results,
+                }) catch blk: {
+                    resp_owned = false;
+                    break :blk if (modern_results) tools_list else "{\"tools\":[]}";
+                };
+                defer if (resp_owned) alloc.free(resp);
+                writeResultVersioned(alloc, stdout, id, resp, modern_results);
             }
         } else if (mcpj.eql(method, "tools/call")) {
-            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, &session.governor, session.client_name);
+            handleCall(io, alloc, root, stdout, id, store, explorer, agents, &cache, telem, session.deferred_scan, &session.governor, session.client_name, requestUsesModernResults(root, session.modern_results));
         } else if (mcpj.eql(method, "ping")) {
-            if (!is_notification) writeResult(alloc, stdout, id, "{}");
+            if (!is_notification) writeResultVersioned(alloc, stdout, id, "{}", requestUsesModernResults(root, session.modern_results));
         } else if (mcpj.eql(method, "server/discover")) {
             if (!is_notification) writeResult(alloc, stdout, id, discover_result);
         } else {
@@ -1419,11 +1448,12 @@ fn handleInitialize(s: *Session, root: *const std.json.ObjectMap, id: ?std.json.
         const requested = mcpj.getStr(&p.object, "protocolVersion") orelse break :proto;
         if (negotiateProtocolVersion(requested)) |v| negotiated = v;
     }
+    s.modern_results = std.mem.eql(u8, negotiated, "2026-07-28");
     const init_result = std.fmt.allocPrint(s.alloc,
         \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{"listChanged":false}},"extensions":{{}}}},"serverInfo":{{"name":"codedb","version":"{s}"}},"instructions":"{s}"}}
     , .{ negotiated, release_info.semver, mcp_instructions }) catch return;
     defer s.alloc.free(init_result);
-    writeResult(s.alloc, s.stdout, id, init_result);
+    writeResultVersioned(s.alloc, s.stdout, id, init_result, s.modern_results);
 }
 /// Versions of the MCP spec this server has been verified against. Listed
 /// newest-first because clients that send a newer version than we know
@@ -1492,6 +1522,17 @@ pub fn unsupportedMetaProtocolVersion(root: *const std.json.ObjectMap) ?[]const 
         if (std.mem.eql(u8, s, v)) return null;
     }
     return v;
+}
+
+/// Choose the result schema for this request. MCP 2026 is stateless, so an
+/// explicit per-request version wins over any earlier initialize handshake.
+pub fn requestUsesModernResults(root: *const std.json.ObjectMap, fallback: bool) bool {
+    const p = root.get("params") orelse return fallback;
+    if (p != .object) return fallback;
+    const m = p.object.get("_meta") orelse return fallback;
+    if (m != .object) return fallback;
+    const version = mcpj.getStr(&m.object, "io.modelcontextprotocol/protocolVersion") orelse return fallback;
+    return std.mem.eql(u8, version, "2026-07-28");
 }
 
 fn writeUnsupportedProtocolVersionError(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, requested: []const u8) void {
@@ -1601,6 +1642,7 @@ fn handleCall(
     deferred_scan: ?*DeferredScan,
     governor: ?*ConvergenceGovernor,
     client_name: ?[]const u8,
+    modern_results: bool,
 ) void {
     const is_notification = id == null;
 
@@ -1714,7 +1756,7 @@ fn handleCall(
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(alloc);
     if (!assembleMcpContentEnvelope(alloc, summary.items, out.items, guidance.items, is_error, &result)) return;
-    writeResult(alloc, stdout, id, result.items);
+    writeResultVersioned(alloc, stdout, id, result.items, modern_results);
 }
 
 fn isDirectCallAdminKey(key: []const u8) bool {
@@ -6409,12 +6451,16 @@ pub fn projectRelPath(path: []const u8, root: []const u8) ?[]const u8 {
 pub const result_meta_prelude = "{\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"" ++ release_info.semver ++ "\"}}";
 
 pub fn assembleJsonRpcResult(alloc: std.mem.Allocator, id: ?std.json.Value, result: []const u8, buf: *std.ArrayList(u8)) bool {
+    return assembleJsonRpcResultVersioned(alloc, id, result, buf, true);
+}
+
+pub fn assembleJsonRpcResultVersioned(alloc: std.mem.Allocator, id: ?std.json.Value, result: []const u8, buf: *std.ArrayList(u8), modern_results: bool) bool {
     buf.ensureTotalCapacity(alloc, result.len + 64 + result_meta_prelude.len) catch {};
     buf.appendSlice(alloc, "{\"jsonrpc\":\"2.0\",\"id\":") catch return false;
     appendId(alloc, buf, id);
     buf.appendSlice(alloc, ",\"result\":") catch return false;
     var payload = result;
-    if (result.len >= 2 and result[0] == '{' and !std.mem.startsWith(u8, result, "{\"resultType\"")) {
+    if (modern_results and result.len >= 2 and result[0] == '{' and !std.mem.startsWith(u8, result, "{\"resultType\"")) {
         buf.appendSlice(alloc, result_meta_prelude) catch return false;
         if (std.mem.eql(u8, result, "{}")) {
             buf.appendSlice(alloc, "}") catch return false;
@@ -6443,9 +6489,13 @@ pub fn assembleJsonRpcResult(alloc: std.mem.Allocator, id: ?std.json.Value, resu
 }
 
 fn writeResult(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8) void {
+    writeResultVersioned(alloc, stdout, id, result, true);
+}
+
+fn writeResultVersioned(alloc: std.mem.Allocator, stdout: cio.File, id: ?std.json.Value, result: []const u8, modern_results: bool) void {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
-    if (!assembleJsonRpcResult(alloc, id, result, &buf)) return;
+    if (!assembleJsonRpcResultVersioned(alloc, id, result, &buf, modern_results)) return;
     stdout.writeAll(buf.items) catch {
         stdout_broken.store(true, .release);
         return;

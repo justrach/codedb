@@ -2322,6 +2322,37 @@ test "mcp-2026-07-28: payload declaring resultType is not double-wrapped" {
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, buf.items, "\"resultType\""));
 }
 
+test "issue-705: legacy clients receive no 2026 result or cache fields" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try testing.expect(mcp_mod.assembleJsonRpcResultVersioned(testing.allocator, null, "{\"tools\":[]}", &buf, false));
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, buf.items, .{});
+    defer parsed.deinit();
+    const result = parsed.value.object.get("result").?.object;
+    try testing.expect(result.get("resultType") == null);
+    try testing.expect(result.get("_meta") == null);
+
+    const list = try mcp_mod.buildToolsListResponse(testing.allocator, .{ .profile_mini = true, .modern_results = false });
+    defer testing.allocator.free(list);
+    const parsed_list = try std.json.parseFromSlice(std.json.Value, testing.allocator, list, .{});
+    defer parsed_list.deinit();
+    try testing.expect(parsed_list.value.object.get("ttlMs") == null);
+    try testing.expect(parsed_list.value.object.get("cacheScope") == null);
+    try testing.expect(parsed_list.value.object.get("tools").?.array.items.len > 0);
+}
+
+test "issue-705: per-request protocol version overrides handshake fallback" {
+    const modern_req = "{\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"}}}";
+    const modern = try std.json.parseFromSlice(std.json.Value, testing.allocator, modern_req, .{});
+    defer modern.deinit();
+    try testing.expect(mcp_mod.requestUsesModernResults(&modern.value.object, false));
+
+    const legacy_req = "{\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2025-11-25\"}}}";
+    const legacy = try std.json.parseFromSlice(std.json.Value, testing.allocator, legacy_req, .{});
+    defer legacy.deinit();
+    try testing.expect(!mcp_mod.requestUsesModernResults(&legacy.value.object, true));
+}
+
 test "mcp-2026-07-28: unsupported params._meta protocol version is flagged, supported ones pass" {
     {
         const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2030-01-01\"}}}";

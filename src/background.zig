@@ -295,7 +295,7 @@ pub fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
         ctx.explorer.finishStartupReconcile();
         return;
     }
-    watcher.incrementalLoop(ctx.io, ctx.store, ctx.explorer, ctx.queue, ctx.resolved_root, ctx.shutdown, ctx.scan_done);
+    watcher.incrementalLoop(ctx.io, ctx.store, ctx.explorer, ctx.queue, ctx.resolved_root, ctx.shutdown, ctx.scan_done, ctx.max_watched);
 }
 
 pub fn idleWatchdog(shutdown: *std.atomic.Value(bool)) void {

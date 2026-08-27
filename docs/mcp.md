@@ -219,6 +219,7 @@ comments. Unknown keys are ignored.
 # .codedbrc
 max_cached   = 16384   # in-memory ContentCache size (files); default 16384
 max_versions = 100     # versions kept per file in the change log; default 100
+max_watched  = 1024    # macOS vnode-FD ceiling; 0 = polling only
 rerank_trace = false   # write per-search rerank-trace.jsonl (debug only)
 ```
 
