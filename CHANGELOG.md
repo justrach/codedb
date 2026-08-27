@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.2.5846 - 2026-08-28
+
+- **Bounded, correct filesystem watching** (#704, #709). macOS vnode watches
+  now obey `max_watched` (default 1024; `0` selects polling-only), prioritize
+  directories, and poll overflow paths without losing updates. Cold and
+  incremental walks now honor full nested gitignore semantics, including
+  `**`, negation, and `.git/info/exclude`, while `.codedbignore` remains
+  authoritative. A process-level macOS FD-slope gate prevents recurrence.
+- **MCP 2026 revision conformance** (#705). Pre-handshake `server/discover`
+  works with cache metadata, per-request revision selection overrides the
+  handshake fallback, and legacy clients no longer receive 2026-only result
+  envelope fields.
+- **Architecture-aware hybrid context** (#718). Overview tasks seed and rank
+  canonical architecture/codebase docs and source entrypoints after ANN
+  fusion, while experiments, e2e scripts, generated output, tests, and
+  benchmarks are demoted. Wrangler/OpenNext caches are excluded from the
+  corpus, `codedb_explain main` prefers the package entrypoint, and call paths
+  can no longer jump across unrelated languages through name collisions.
+
 ## 0.2.5845 - 2026-08-28
 
 - **Pareto-frontier hybrid retrieval is now the default.** `codedb_context`
