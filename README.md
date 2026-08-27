@@ -486,9 +486,15 @@ demand-paged rather than being copied into the query process.
 It never scans or uploads `.env`, `.env.*`, `.envrc`, credentials, private keys, or other paths on
 the sensitive-file denylist. Ordinary indexing does not build this sidecar.
 
-The default hosted 0.6B/512-D lane is free to call and requires no API token.
-Its public route cannot select the protected 4B model and enforces the same
-item/body limits at the edge. The general multi-model API remains authenticated.
+The default hosted 0.6B/512-D lane is free to call and requires no API token or
+manual setup. On first use, CodeDB creates a local Ed25519 installation key,
+enrolls its public key, and receives a short-lived server-signed certificate.
+Every request proves possession of the installation key; renewal is automatic.
+The private seed stays in a global `~/.codedb/credentials.json` file written
+atomically with mode `0600` on POSIX and is never part of an embedding request.
+The public route cannot select the protected 4B model and enforces enrollment,
+installation, and aggregate network limits. The general multi-model API remains
+authenticated.
 
 `format=json` exposes this boundary in the `retrieval` object, including the
 model, dimensions, bounded byte/document counts, retention policy, and failure
@@ -499,6 +505,7 @@ another operator's storage policy.
 | Location | Contents | Purpose |
 |----------|----------|---------|
 | `~/.codedb/projects/<hash>/` | Trigram index, frequency table, data log; optional `semantic-chunks-v3.meta` plus `.hmls` slab | Persistent local indexes |
+| `~/.codedb/credentials.json` | Private Ed25519 seed and public installation certificate (0600 on POSIX) | Automatic hosted-lane authentication |
 | `~/.codedb/telemetry.ndjson` | Aggregate tool calls and startup stats | Local telemetry log |
 | `./codedb.snapshot` | File tree, outlines, content, frequency table | Portable snapshot for instant MCP startup |
 
