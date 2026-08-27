@@ -419,7 +419,10 @@ pub fn writeSnapshot(
     try fw.writeAll(&ver_buf);
     try fw.writeAll(&[2]u8{ 0, 0 }); // flags
 
-    const git_head = git_mod.getGitHead(stable_root_path, allocator) catch null;
+    const git_head = if (explorer.root_dir) |root_dir|
+        git_mod.getGitHeadDir(io, root_dir, allocator) catch null
+    else
+        git_mod.getGitHead(stable_root_path, allocator) catch null;
     if (git_head) |head| {
         try fw.writeAll(&head);
     } else {

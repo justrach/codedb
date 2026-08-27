@@ -30,6 +30,7 @@ const mcp_list_dir = @import("mcp_list_dir.zig");
 const project_file_read = @import("project_file.zig");
 const project_path_policy = @import("project_path.zig");
 const local_uri = @import("local_uri.zig");
+const bootstrap_mod = @import("bootstrap.zig");
 pub const DeferredScan = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -5174,60 +5175,59 @@ fn handleIndex(
         return;
     };
 
-    // Resolve to absolute path
-    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_len = std.Io.Dir.cwd().realPathFile(io, path, &abs_buf) catch {
-        out.appendSlice(alloc, "error: cannot resolve path: ") catch {};
+    // Build through one pinned Explorer capability. The old implementation
+    // resolved + check-opened this path, closed the handle, then spawned a
+    // child that reopened the mutable pathname. A rename/symlink swap in that
+    // window could make the child index a different tree than admission saw.
+    var build_store = Store.init(alloc);
+    defer build_store.deinit();
+    var build_explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer build_explorer.deinit();
+    build_explorer.setRoot(io, path) catch {
+        out.appendSlice(alloc, "error: project root is not a safely indexable directory: ") catch {};
         out.appendSlice(alloc, path) catch {};
         return;
     };
-    const abs_path = abs_buf[0..abs_len];
-    if (!root_policy.isAdmissibleRoot(io, abs_path)) {
-        out.appendSlice(alloc, "error: refusing to index temporary root: ") catch {};
-        out.appendSlice(alloc, abs_path) catch {};
-        return;
-    }
-
-    // Verify it's a directory
-    var check_dir = std.Io.Dir.cwd().openDir(io, abs_path, .{}) catch {
-        out.appendSlice(alloc, "error: not a directory: ") catch {};
-        out.appendSlice(alloc, abs_path) catch {};
+    const abs_path = alloc.dupe(u8, build_explorer.root_path.?) catch {
+        out.appendSlice(alloc, "error: alloc failed") catch {};
         return;
     };
-    check_dir.close(io);
-
-    // Get the codedb binary path (argv[0] equivalent — use /proc/self or just "codedb")
-    // We spawn `codedb <path> snapshot` to create the snapshot
-    const exe_path = std.process.executablePathAlloc(io, alloc) catch {
-        out.appendSlice(alloc, "error: cannot find codedb binary") catch {};
+    defer alloc.free(abs_path);
+    const data_dir = bootstrap_mod.getDataDir(io, alloc, abs_path) catch {
+        out.appendSlice(alloc, "error: cannot create project data directory") catch {};
         return;
     };
-    defer alloc.free(exe_path);
-
+    defer alloc.free(data_dir);
     const snapshot_path = std.fmt.allocPrint(alloc, "{s}/codedb.snapshot", .{abs_path}) catch {
         out.appendSlice(alloc, "error: alloc failed") catch {};
         return;
     };
     defer alloc.free(snapshot_path);
 
-    const result = cio.runCapture(.{
-        .allocator = alloc,
-        .argv = &.{ exe_path, abs_path, "snapshot", snapshot_path, "--no-live-refresh" },
-        .max_output_bytes = 64 * 1024,
-    }) catch {
-        out.appendSlice(alloc, "error: failed to run indexer") catch {};
-        return;
+    const build_result: ?anyerror = blk: {
+        bootstrap_mod.saveProjectInfo(io, alloc, data_dir, abs_path) catch |err| break :blk err;
+        watcher.initialScan(io, &build_store, &build_explorer, abs_path, alloc, true) catch |err| break :blk err;
+        const git_head = git_mod.getGitHeadDir(io, build_explorer.root_dir.?, alloc) catch null;
+        if (build_explorer.outlines.count() > 0) {
+            bootstrap_mod.persistWordIndexFromSource(io, &build_explorer, abs_path, data_dir, git_head, alloc) catch |err| break :blk err;
+        }
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        const tri_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
+        const trigram = watcher.buildTrigramsFromCache(&build_explorer.contents, alloc, std.heap.c_allocator, tri_workers) catch |err| break :blk err;
+        defer {
+            trigram.deinit();
+            std.heap.c_allocator.destroy(trigram);
+        }
+        trigram.writeToDisk(io, data_dir, git_head) catch |err| break :blk err;
+        build_explorer.buildCallCentrality(alloc);
+        snapshot_mod.writeSnapshotDual(io, &build_explorer, abs_path, snapshot_path, alloc) catch |err| break :blk err;
+        break :blk null;
     };
-    defer alloc.free(result.stdout);
-    defer alloc.free(result.stderr);
-
-    if (result.term.Exited != 0) {
+    if (build_result) |err| {
         out.appendSlice(alloc, "error: indexing failed for ") catch {};
         out.appendSlice(alloc, abs_path) catch {};
-        if (result.stderr.len > 0) {
-            out.appendSlice(alloc, " — ") catch {};
-            out.appendSlice(alloc, result.stderr[0..@min(result.stderr.len, 300)]) catch {};
-        }
+        out.appendSlice(alloc, " — ") catch {};
+        out.appendSlice(alloc, @errorName(err)) catch {};
         return;
     }
 
@@ -5263,32 +5263,8 @@ fn handleIndex(
 
     out.appendSlice(alloc, "indexed: ") catch {};
     out.appendSlice(alloc, abs_path) catch {};
-    if (result.stdout.len > 0) {
-        out.appendSlice(alloc, "\n") catch {};
-        // Strip ANSI escape sequences
-        var i: usize = 0;
-        while (i < result.stdout.len) {
-            if (result.stdout[i] == 0x1b) {
-                i += 1;
-                if (i < result.stdout.len and result.stdout[i] == '[') {
-                    // CSI sequence: skip until final byte (0x40-0x7E per ECMA-48)
-                    i += 1;
-                    while (i < result.stdout.len) {
-                        const ch = result.stdout[i];
-                        i += 1;
-                        if (ch >= 0x40 and ch <= 0x7E) break;
-                    }
-                } else if (i < result.stdout.len) {
-                    // Fe sequence (ESC + one byte) — skip
-                    i += 1;
-                }
-                // Lone ESC at end — already skipped by i += 1 above
-            } else {
-                out.append(alloc, result.stdout[i]) catch {};
-                i += 1;
-            }
-        }
-    }
+    const writer = cio.listWriter(out, alloc);
+    writer.print("\n{d} files", .{build_explorer.outlines.count()}) catch {};
 }
 
 // True when `q` is a single compound identifier — camelCase/PascalCase (an
