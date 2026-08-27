@@ -3,6 +3,7 @@
 E2E MCP test harness for codedb.
 
 Scenarios covered:
+  0. issue-705 regression: server/discover responds before initialize.
   1. issue-346 regression: spawn from cwd=/, complete MCP handshake via roots, wait
      for scan to finish, verify core tools return real data from the project.
   2. Normal mode: spawn with explicit --root <path>, verify scan runs immediately
@@ -270,6 +271,39 @@ class TestResult:
         self.passed = False
         self.message = msg
         return self
+
+
+def run_scenario_0_issue705_pre_handshake_discover(binary: str) -> list[TestResult]:
+    """MCP 2026-07-28 discovery is stateless and must work pre-handshake."""
+    results: list[TestResult] = []
+    r = TestResult("[S0] server/discover responds before initialize")
+    results.append(r)
+    with tempfile.TemporaryDirectory(prefix="codedb-discover-") as project_tmp:
+        root = Path(project_tmp).resolve()
+        (root / "pyproject.toml").write_text("[project]\nname='discover-fixture'\nversion='0'\n")
+        (root / "main.py").write_text("def main():\n    return 0\n")
+        p = MCPProcess(binary, [], cwd="/", command=[binary, str(root), "mcp", "--no-telemetry"])
+        try:
+            p.send({
+                "jsonrpc": "2.0",
+                "id": 705,
+                "method": "server/discover",
+                "params": {},
+            })
+            response = p.recv(timeout=3.0)
+            result = response.get("result", {}) if response else {}
+            versions = result.get("supportedVersions", [])
+            if response is None:
+                r.fail("timed out after 3s")
+            elif response.get("id") != 705 or result.get("resultType") != "complete":
+                r.fail(f"malformed discovery result: {response!r}")
+            elif "2026-07-28" not in versions:
+                r.fail(f"2026-07-28 missing from supportedVersions: {versions!r}")
+            else:
+                r.ok(f"responded pre-handshake with {len(versions)} version(s)")
+        finally:
+            p.close()
+    return results
 
 
 def run_scenario_1_issue346_regression(binary: str, project: str) -> list[TestResult]:
@@ -1306,7 +1340,10 @@ def main() -> int:
 
     all_results: list[TestResult] = []
 
-    print(f"{CYAN}── Scenario 1: issue-346 regression (spawn from /, roots handshake) ──{RESET}")
+    print(f"{CYAN}── Scenario 0: issue-705 pre-handshake discovery ──{RESET}")
+    all_results += run_scenario_0_issue705_pre_handshake_discover(binary)
+
+    print(f"\n{CYAN}── Scenario 1: issue-346 regression (spawn from /, roots handshake) ──{RESET}")
     all_results += run_scenario_1_issue346_regression(binary, project)
 
     print(f"\n{CYAN}── Scenario 2: normal mode (explicit --root) ──{RESET}")

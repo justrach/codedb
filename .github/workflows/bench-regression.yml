@@ -15,6 +15,45 @@ env:
   PAIRED_5829_SHA: 24e89c70d4f9cdaf5542a78d83d1890a42b4a046
 
 jobs:
+  macos-resource-regression:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pinned Zig toolchain
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64)
+              zig_arch=aarch64
+              zig_sha=36673d2513afa4a96c86780648ba504beedd7f0451389091cf9d53e38d5b4840
+              ;;
+            x86_64)
+              zig_arch=x86_64
+              zig_sha=3938c46ae4bca3c13f423b09503e3ef00bb4b7ef12b8bc1e5122ede366057a5b
+              ;;
+            *)
+              echo "unsupported macOS architecture: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          archive="zig-${zig_arch}-macos-${ZIG_VERSION}.tar.xz"
+          directory="zig-${zig_arch}-macos-${ZIG_VERSION}"
+          curl --fail --show-error --location --retry 3 \
+            "https://ziglang.org/builds/${archive}" -o zig-macos.tar.xz || \
+          curl --fail --show-error --location --retry 3 \
+            "https://pkg.machengine.org/zig/${archive}" -o zig-macos.tar.xz
+          echo "${zig_sha}  zig-macos.tar.xz" | shasum -a 256 --check
+          tar -xf zig-macos.tar.xz
+          test "$("$PWD/${directory}/zig" version)" = "$ZIG_VERSION"
+          echo "$PWD/${directory}" >> "$GITHUB_PATH"
+
+      - name: Run macOS watcher unit and process gates
+        run: |
+          zig build test-index -Dtest-filter=issue-709
+          zig build -Doptimize=ReleaseFast
+          python3 scripts/fd_regression_test.py --binary zig-out/bin/codedb
+
   bench:
     runs-on: ubuntu-latest
     steps:

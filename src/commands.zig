@@ -353,7 +353,7 @@ pub fn runCliDaemon(ctx: *RunCtx) !void {
     defer allocator.destroy(queue);
     queue.* = watcher.EventQueue{};
     explorer.expectStartupReconcile();
-    const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_already_done });
+    const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_already_done, ctx.cfg.max_watched });
     watch_thread.detach();
 
     std.log.info("cli-daemon: {d} files indexed, idle_timeout={d}ms", .{ store.currentSeq(), idle_ms });
@@ -421,7 +421,7 @@ pub fn runServe(ctx: *RunCtx) !void {
     defer allocator.destroy(queue);
     queue.* = watcher.EventQueue{};
     explorer.expectStartupReconcile();
-    const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_already_done });
+    const watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_already_done, ctx.cfg.max_watched });
     defer watch_thread.join();
 
     const reap_thread = try std.Thread.spawn(.{}, reapLoop, .{ &agents, &shutdown });
@@ -507,6 +507,7 @@ pub fn runMcp(ctx: *RunCtx) !void {
             .shutdown = &shutdown,
             .telem = &telem,
             .queue = queue,
+            .max_watched = cfg.max_watched,
             .startup_t0 = startup_t0,
             .fallback_cwd = abs_root,
             .triggerFn = triggerScanFromRoots,
@@ -532,7 +533,7 @@ pub fn runMcp(ctx: *RunCtx) !void {
             mcp_server.setScanState(.ready);
         }
         explorer.expectStartupReconcile();
-        watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_done });
+        watch_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ io, store, explorer, queue, root, &shutdown, &scan_done, cfg.max_watched });
     }
 
     const idle_thread = try std.Thread.spawn(.{}, idleWatchdog, .{&shutdown});

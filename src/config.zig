@@ -11,12 +11,15 @@ const std = @import("std");
 /// are ignored. Unknown keys are silently ignored so upgrades don't break
 /// older configs.
 ///
-/// Addresses #101 (max_versions) and #102 (max_cached).
+/// Addresses #101 (max_versions), #102 (max_cached), and #709 (max_watched).
 pub const Config = struct {
     /// Cap per-file version history in the Store. Default 100.
     max_versions: usize = 100,
     /// Cap on files kept in the Explorer's in-memory content cache. Default 16384.
     max_cached: u32 = 16384,
+    /// macOS only: maximum vnode descriptors held by the live watcher.
+    /// Overflow paths remain correct through bounded-interval polling.
+    max_watched: u32 = 1024,
     /// When true, append one JSON line per searchContent invocation to
     /// <data_dir>/rerank-traces.jsonl. v0 logger for offline rerank-tuning
     /// experiments. Off by default — opt in via .codedbrc.
@@ -41,6 +44,8 @@ pub const Config = struct {
             } else if (std.mem.eql(u8, key, "max_cached")) {
                 cfg.max_cached = std.fmt.parseInt(u32, val, 10) catch return error.InvalidMaxCached;
                 if (cfg.max_cached == 0) return error.InvalidMaxCached;
+            } else if (std.mem.eql(u8, key, "max_watched")) {
+                cfg.max_watched = std.fmt.parseInt(u32, val, 10) catch return error.InvalidMaxWatched;
             } else if (std.mem.eql(u8, key, "rerank_trace")) {
                 cfg.rerank_trace = parseBool(val) catch return error.InvalidRerankTrace;
             }
@@ -111,12 +116,14 @@ test "config: defaults" {
     const cfg = Config.default;
     try testing.expectEqual(@as(usize, 100), cfg.max_versions);
     try testing.expectEqual(@as(u32, 16384), cfg.max_cached);
+    try testing.expectEqual(@as(u32, 1024), cfg.max_watched);
 }
 
 test "config: parse single key" {
     const cfg = try Config.parse("max_versions = 42\n");
     try testing.expectEqual(@as(usize, 42), cfg.max_versions);
     try testing.expectEqual(@as(u32, 16384), cfg.max_cached);
+    try testing.expectEqual(@as(u32, 1024), cfg.max_watched);
 }
 
 test "config: parse both keys with comments and whitespace" {
@@ -125,11 +132,13 @@ test "config: parse both keys with comments and whitespace" {
         \\
         \\max_versions = 200
         \\  max_cached   =   2048
+        \\  max_watched  =   256
         \\# trailing comment
         \\
     );
     try testing.expectEqual(@as(usize, 200), cfg.max_versions);
     try testing.expectEqual(@as(u32, 2048), cfg.max_cached);
+    try testing.expectEqual(@as(u32, 256), cfg.max_watched);
 }
 
 test "config: unknown keys are ignored" {
@@ -141,6 +150,8 @@ test "config: malformed value rejected" {
     try testing.expectError(error.InvalidMaxVersions, Config.parse("max_versions = not_a_number\n"));
     try testing.expectError(error.InvalidMaxVersions, Config.parse("max_versions = 0\n"));
     try testing.expectError(error.InvalidMaxCached, Config.parse("max_cached = 0\n"));
+    try testing.expectError(error.InvalidMaxWatched, Config.parse("max_watched = nope\n"));
+    try testing.expectEqual(@as(u32, 0), (try Config.parse("max_watched = 0\n")).max_watched);
 }
 
 test "config: rerank_trace defaults off and parses true/false" {
