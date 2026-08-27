@@ -2530,7 +2530,7 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
     defer bench_ctx.deinit();
 
     const args_json =
-        \\{"task":"fix search ranking"}
+        \\{"task":"fix search ranking","semantic":"local"}
     ;
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_json, .{});
     defer parsed.deinit();
@@ -2565,7 +2565,7 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
     const json_args = try std.json.parseFromSlice(
         std.json.Value,
         testing.allocator,
-        \\{"task":"trace rankingBoost helper provenance and token omissions","format":"json","max_tokens":256}
+        \\{"task":"trace rankingBoost helper provenance and token omissions","format":"json","max_tokens":256,"semantic":"local"}
     ,
         .{},
     );
@@ -2604,7 +2604,7 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
     const default_args = try std.json.parseFromSlice(
         std.json.Value,
         testing.allocator,
-        \\{"task":"trace rankingBoost helper provenance and token omissions"}
+        \\{"task":"trace rankingBoost helper provenance and token omissions","semantic":"local"}
     ,
         .{},
     );
@@ -2612,7 +2612,7 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
     const markdown_args = try std.json.parseFromSlice(
         std.json.Value,
         testing.allocator,
-        \\{"task":"trace rankingBoost helper provenance and token omissions","format":"markdown"}
+        \\{"task":"trace rankingBoost helper provenance and token omissions","format":"markdown","semantic":"local"}
     ,
         .{},
     );
@@ -2626,7 +2626,7 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
     try testing.expectEqualStrings(default_out.items, markdown_out.items);
 }
 
-test "codedb_context hybrid is explicit and keeps local results when provider is unavailable" {
+test "codedb_context hybrid is default, local is explicit, and provider failure keeps local results" {
     const url_guard = EnvVarGuard.save("CODEDB_EMBEDDINGS_URL");
     defer url_guard.restore();
     cio.posixSetenv("CODEDB_EMBEDDINGS_URL", "http://example.com/v1/embeddings");
@@ -2654,7 +2654,7 @@ test "codedb_context hybrid is explicit and keeps local results when provider is
     defer bench_ctx.deinit();
 
     const args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
-        \\{"task":"trace retentionPolicy and keepLocalBm25","format":"json","semantic":"hybrid"}
+        \\{"task":"trace retentionPolicy and keepLocalBm25","format":"json"}
     , .{});
     defer args.deinit();
     var out: std.ArrayList(u8) = .empty;
@@ -2679,6 +2679,45 @@ test "codedb_context hybrid is explicit and keeps local results when provider is
         }
     }
     try testing.expect(found_local_file);
+
+    const local_args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"trace retentionPolicy and keepLocalBm25","format":"json","semantic":"local"}
+    , .{});
+    defer local_args.deinit();
+    var local_out: std.ArrayList(u8) = .empty;
+    defer local_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &local_args.value.object, &local_out, &store, &explorer, &agents);
+    const local = try std.json.parseFromSlice(std.json.Value, testing.allocator, local_out.items, .{});
+    defer local.deinit();
+    const local_retrieval = local.value.object.get("retrieval").?.object;
+    try testing.expectEqualStrings("not_requested", local_retrieval.get("semantic").?.string);
+    try testing.expectEqual(@as(i64, 0), local_retrieval.get("documents_sent").?.integer);
+
+    const cli_default_argv = [_][]const u8{
+        "codedb", explorer.root_path.?, "context", "--json", "trace", "retentionPolicy",
+    };
+    var cli_default_out: std.ArrayList(u8) = .empty;
+    defer cli_default_out.deinit(testing.allocator);
+    try testing.expectEqual(
+        @as(?u8, 0),
+        mcp_mod.runCliTool(io, testing.allocator, &explorer, &store, explorer.root_path.?, "context", &cli_default_argv, 3, &cli_default_out),
+    );
+    const cli_default = try std.json.parseFromSlice(std.json.Value, testing.allocator, cli_default_out.items, .{});
+    defer cli_default.deinit();
+    try testing.expectEqualStrings("unavailable", cli_default.value.object.get("retrieval").?.object.get("semantic").?.string);
+
+    const cli_local_argv = [_][]const u8{
+        "codedb", explorer.root_path.?, "context", "--local", "--json", "trace", "retentionPolicy",
+    };
+    var cli_local_out: std.ArrayList(u8) = .empty;
+    defer cli_local_out.deinit(testing.allocator);
+    try testing.expectEqual(
+        @as(?u8, 0),
+        mcp_mod.runCliTool(io, testing.allocator, &explorer, &store, explorer.root_path.?, "context", &cli_local_argv, 3, &cli_local_out),
+    );
+    const cli_local = try std.json.parseFromSlice(std.json.Value, testing.allocator, cli_local_out.items, .{});
+    defer cli_local.deinit();
+    try testing.expectEqualStrings("not_requested", cli_local.value.object.get("retrieval").?.object.get("semantic").?.string);
 }
 
 test "issue-688: structured no-candidate response retains reader evidence" {
@@ -2705,7 +2744,7 @@ test "issue-688: structured no-candidate response retains reader evidence" {
     var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, root_buf[0..root_len], Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
-    const args = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"task\":\"!!!\",\"format\":\"json\"}", .{});
+    const args = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"task\":\"!!!\",\"format\":\"json\",\"semantic\":\"local\"}", .{});
     defer args.deinit();
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
@@ -2763,7 +2802,7 @@ test "issue-685: codedb_deps exposes bounded typed document edges" {
     const context_args = try std.json.parseFromSlice(
         std.json.Value,
         testing.allocator,
-        \\{"task":"trace Alpha documentation graph","format":"json","document_hops":2}
+        \\{"task":"trace Alpha documentation graph","format":"json","document_hops":2,"semantic":"local"}
     ,
         .{},
     );
@@ -2791,6 +2830,8 @@ test "issue-685: codedb_deps exposes bounded typed document edges" {
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"edge_type\":{\"type\":\"string\",\"enum\":[\"imports\",\"documents\"]") != null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"document_hops\":{\"type\":\"integer\"") != null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"semantic\":{\"type\":\"string\",\"enum\":[\"local\",\"hybrid\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "hybrid (default)") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "local is the explicit on-device-only opt-out") != null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "stores neither the repository, request body, candidate paths, nor vectors") != null);
 }
 
@@ -3221,7 +3262,7 @@ test "issue-531: codedb_context max_tokens packs sections by value under the bud
     defer bench_ctx.deinit();
 
     const args_full =
-        \\{"task":"investigate widgetFrobnicate"}
+        \\{"task":"investigate widgetFrobnicate","semantic":"local"}
     ;
     const parsed_full = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_full, .{});
     defer parsed_full.deinit();
@@ -3230,7 +3271,7 @@ test "issue-531: codedb_context max_tokens packs sections by value under the bud
     bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed_full.value.object, &out_full, &store, &explorer, &agents);
 
     const args_budget =
-        \\{"task":"investigate widgetFrobnicate","max_tokens":256}
+        \\{"task":"investigate widgetFrobnicate","max_tokens":256,"semantic":"local"}
     ;
     const parsed_budget = try std.json.parseFromSlice(std.json.Value, testing.allocator, args_budget, .{});
     defer parsed_budget.deinit();
