@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.2.5845 - 2026-08-28
+
+- **Pareto-frontier hybrid retrieval is now the default.** `codedb_context`
+  and CLI `context` automatically use the authenticated Qwen/OpenPuffer path:
+  local BM25/symbol retrieval first, a fresh paired ANN sidecar when available,
+  and the bounded exact reranker otherwise. `semantic=local`, `--local`, and
+  `--no-semantic` are explicit on-device-only opt-outs. Provider failure still
+  keeps the local result, sensitive paths remain blocked at serialization, and
+  CodeDB never falls back to a CPU embedding model.
+
+## 0.2.5844 - 2026-08-28
+
 - **Zero-touch, device-bound hosted embeddings.** CodeDB now creates a local
   Ed25519 installation key on first hosted semantic use, enrolls its public key,
   verifies the edge's pinned server-signed certificate, and signs the method,
