@@ -3,6 +3,15 @@ const cio = @import("cio.zig");
 
 const disabled_hooks_config = "core.hooksPath=/codedb-hooks-disabled-do-not-exist";
 
+fn parseGitHead(stdout: []const u8) ?[40]u8 {
+    const trimmed = std.mem.trim(u8, stdout, &std.ascii.whitespace);
+    if (trimmed.len != 40) return null;
+    for (trimmed) |c| if (!std.ascii.isHex(c)) return null;
+    var out: [40]u8 = undefined;
+    @memcpy(&out, trimmed[0..40]);
+    return out;
+}
+
 /// Run `git rev-parse HEAD` in `root` and return the 40-char hex SHA.
 /// Returns null if `root` is not a git repo, git is unavailable, or HEAD
 /// has no commit yet (fresh repo).
@@ -21,15 +30,22 @@ pub fn getGitHead(root: []const u8, allocator: std.mem.Allocator) !?[40]u8 {
         else => return null,
     }
 
-    const trimmed = std.mem.trim(u8, result.stdout, &std.ascii.whitespace);
-    if (trimmed.len != 40) return null;
-    for (trimmed) |c| {
-        if (!std.ascii.isHex(c)) return null;
-    }
+    return parseGitHead(result.stdout);
+}
 
-    var out: [40]u8 = undefined;
-    @memcpy(&out, trimmed[0..40]);
-    return out;
+/// Resolve HEAD through an already-open project capability, so a rename and
+/// pathname replacement cannot retarget the background branch probe.
+pub fn getGitHeadDir(io: std.Io, root_dir: std.Io.Dir, allocator: std.mem.Allocator) !?[40]u8 {
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "-c", "core.fsmonitor=false", "-c", disabled_hooks_config, "rev-parse", "HEAD" },
+        .cwd = .{ .dir = root_dir },
+        .stdout_limit = .limited(256),
+        .stderr_limit = .limited(256),
+    }) catch return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (!result.term.success()) return null;
+    return parseGitHead(result.stdout);
 }
 
 pub const CoChangePartner = struct {
