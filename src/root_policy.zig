@@ -6,10 +6,21 @@ pub fn isExactOrChild(path: []const u8, prefix: []const u8) bool {
     return path.len == prefix.len or path[prefix.len] == '/';
 }
 
+/// Reject Windows network roots and a whole drive before any open/stat call.
+/// This is deliberately syntax-only so tests and protocol admission behave
+/// identically when cross-compiled from a non-Windows host.
+pub fn isForbiddenWindowsRootSyntax(path: []const u8) bool {
+    if (std.mem.startsWith(u8, path, "\\\\") or std.mem.startsWith(u8, path, "//")) return true;
+    if (path.len < 2 or !std.ascii.isAlphabetic(path[0]) or path[1] != ':') return false;
+    if (path.len == 2) return true; // drive-relative `C:`
+    return path.len == 3 and (path[2] == '/' or path[2] == '\\'); // whole drive `C:\\`
+}
+
 /// Root requests are capabilities, not ambient paths.  Reject relative and
 /// dot-dot spellings before opening; callers may retain the canonical path
 /// reported by the resulting handle.
 pub fn isAbsoluteRootRequest(path: []const u8) bool {
+    if (isForbiddenWindowsRootSyntax(path)) return false;
     if (!std.fs.path.isAbsolute(path)) return false;
     var parts = std.mem.tokenizeAny(u8, path, "/\\");
     while (parts.next()) |part| {
@@ -36,6 +47,7 @@ pub fn isIndexableRoot(path: []const u8) bool {
 pub fn isIndexableRootWithTempOpt(path: []const u8, allow_temp: bool) bool {
     if (path.len == 0) return false;
     if (std.mem.eql(u8, path, "/")) return false;
+    if (isForbiddenWindowsRootSyntax(path)) return false;
 
     // OSTree distros (Fedora Silverblue/CoreOS/Nobara) bind-mount /home onto
     // /var/home, so /var/home/<user>/<project> is a real project path, not a
@@ -180,6 +192,20 @@ test "issue-80: normal paths are allowed" {
     try testing.expect(isIndexableRoot("/Users/dev/project"));
     try testing.expect(isIndexableRoot("/home/user/code"));
     try testing.expect(isIndexableRoot("/home/user/code/subdir"));
+}
+
+test "Windows UNC and whole-drive roots are rejected before filesystem access" {
+    try testing.expect(isForbiddenWindowsRootSyntax("\\\\server\\share\\repo"));
+    try testing.expect(isForbiddenWindowsRootSyntax("//server/share/repo"));
+    try testing.expect(isForbiddenWindowsRootSyntax("C:"));
+    try testing.expect(isForbiddenWindowsRootSyntax("C:\\"));
+    try testing.expect(isForbiddenWindowsRootSyntax("d:/"));
+    try testing.expect(!isForbiddenWindowsRootSyntax("C:\\repo"));
+    try testing.expect(!isForbiddenWindowsRootSyntax("d:/repo"));
+    try testing.expect(!isAbsoluteRootRequest("\\\\server\\share\\repo"));
+    try testing.expect(!isAbsoluteRootRequest("C:\\"));
+    try testing.expect(!isIndexableRootWithTempOpt("\\\\server\\share\\repo", true));
+    try testing.expect(!isIndexableRootWithTempOpt("C:\\", true));
 }
 
 test "isTempRoot classification" {

@@ -67,19 +67,11 @@ pub fn parseLocalFileUriForOs(
     const authority = if (slash) |at| remainder[0..at] else remainder;
     const encoded_path = if (slash) |at| remainder[at..] else "";
 
-    if (os_tag != .windows and authority.len != 0) return error.UnsupportedAuthority;
-    if (os_tag == .windows and authority.len != 0) {
-        if (encoded_path.len < 2) return error.RelativePath;
-        const decoded = try decode(allocator, encoded_path);
-        defer allocator.free(decoded);
-        if (hasTraversal(decoded)) return error.Traversal;
-        var native = std.ArrayList(u8).empty;
-        errdefer native.deinit(allocator);
-        try native.appendSlice(allocator, "\\\\");
-        try native.appendSlice(allocator, authority);
-        for (decoded) |ch| try native.append(allocator, if (ch == '/') '\\' else ch);
-        return native.toOwnedSlice(allocator);
-    }
+    // MCP roots are local filesystem capabilities. A non-empty file URI
+    // authority is a UNC/network root on Windows and can trigger SMB access
+    // merely by opening it. Reject it during protocol parsing, before Explorer
+    // or the root policy performs any filesystem operation.
+    if (authority.len != 0) return error.UnsupportedAuthority;
 
     const decoded = try decode(allocator, encoded_path);
     errdefer allocator.free(decoded);
@@ -122,13 +114,11 @@ test "local file URI parser decodes spaces and rejects unsafe forms" {
     try std.testing.expectError(error.InvalidEncoding, parseLocalFileUriForOs(a, "file:///bad%2", .macos));
 }
 
-test "Windows drive and UNC file URIs convert without POSIX assumptions" {
+test "Windows drive file URIs convert while UNC authorities fail closed" {
     const a = std.testing.allocator;
     const drive = try parseLocalFileUriForOs(a, "file:///C:/My%20Repo", .windows);
     defer a.free(drive);
     try std.testing.expectEqualStrings("C:\\My Repo", drive);
-    const unc = try parseLocalFileUriForOs(a, "file://server/share/repo", .windows);
-    defer a.free(unc);
-    try std.testing.expectEqualStrings("\\\\server\\share\\repo", unc);
-    try std.testing.expectError(error.RelativePath, parseLocalFileUriForOs(a, "file://relative", .windows));
+    try std.testing.expectError(error.UnsupportedAuthority, parseLocalFileUriForOs(a, "file://server/share/repo", .windows));
+    try std.testing.expectError(error.UnsupportedAuthority, parseLocalFileUriForOs(a, "file://relative", .windows));
 }
