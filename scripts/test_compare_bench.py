@@ -30,6 +30,25 @@ class CompareBenchTests(unittest.TestCase):
         self.assertIn("50,000 ns absolute delta", report)
         self.assertIn("| `codedb_read` | 50580 | 61979 | +22.54% | +11399 | NOISE |", report)
 
+    def test_mismatched_corpus_is_diagnostic_not_a_latency_gate(self) -> None:
+        gated, reason = compare_bench.corpus_gate({"corpus_hash": 1}, {"corpus_hash": 2})
+        self.assertFalse(gated)
+        self.assertIn("corpus hash differs", reason or "")
+        report = compare_bench.render_markdown(
+            [("codedb_context", 300_000, 500_000, 66.67, 200_000)],
+            10.0,
+            50_000,
+            gated=gated,
+            diagnostic_reason=reason,
+        )
+        self.assertIn("Corpus parity: **MISMATCH**", report)
+        self.assertIn("| DIAGNOSTIC |", report)
+
+    def test_matching_corpus_remains_gated(self) -> None:
+        gated, reason = compare_bench.corpus_gate({"corpus_hash": 7}, {"corpus_hash": 7})
+        self.assertTrue(gated)
+        self.assertIsNone(reason)
+
 
 if __name__ == "__main__":
     unittest.main()

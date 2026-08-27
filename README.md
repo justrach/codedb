@@ -199,7 +199,7 @@ codedb hot                            # recently modified files
 | `codedb_callers` | Every call site of a symbol — word index ∩ outline scope, in one round-trip |
 | `codedb_explain` | Definition body + callers in one call (CLI aliases: `explain`, `around`) |
 | `codedb_callpath` | Shortest resolved call chain A→B (CLI alias: `path`) |
-| `codedb_context` | Task-shaped composer — pass a NL task, get keywords + symbol defs + ranked files + top snippets in one block; `format=json` adds typed provenance, and `document_hops=1..2` explicitly expands linked Markdown |
+| `codedb_context` | Task-shaped composer — local BM25/symbol retrieval by default; pass `semantic=hybrid` to opt one call into local ANN search using a remote task embedding plus a fixed public calibration string when an explicit sidecar exists, or a bounded transient Qwen rerank otherwise. `format=json` adds typed provenance and retrieval-privacy metadata; `document_hops=1..2` expands linked Markdown |
 | `codedb_hot` | Most recently modified files |
 | `codedb_deps` | Typed dependency graph: imports by default, or Markdown links with `edge_type=documents`; document traversal is capped at 2 hops / 64 files |
 | `codedb_read` | Read file content (line ranges, `if_hash` skip-unchanged, `compact` mode) |
@@ -446,13 +446,85 @@ All threads share a `shutdown: atomic.Value(bool)` for graceful termination.
 
 codedb collects anonymous usage telemetry to improve the tool. Telemetry is **on by default** — written to `~/.codedb/telemetry.ndjson` and periodically synced to the codedb analytics endpoint. **No source code, file contents, file paths, or search queries are collected** — only aggregate tool call counts, latency, and startup stats.
 
+Repository retrieval is local by default. Ordinary `codedb_context` calls use
+the on-device BM25, trigram, symbol, and graph indexes and send no query or
+source text to an embedding service.
+
+An individual call may explicitly request `semantic=hybrid`. In that mode:
+
+- local BM25/symbol retrieval still runs first and remains the failure-safe
+  result;
+- when a fresh local OpenPuffer sidecar exists, codedb sends the task plus a
+  fixed public calibration string in one embedding request, verifies that the
+  provider still represents the same vector space, and searches the stored
+  code chunks locally through a validated mmap-backed graph;
+- without a sidecar, codedb sends the task plus at most 24 locally selected
+  relative paths and bounded snippets, capped at 2 KiB per path+snippet item /
+  8 KiB candidate text total, in one exact-rerank Qwen batch;
+- the hosted codedb embedding service performs transient inference and does
+  not retain request bodies, candidate paths, source snippets, or vectors;
+- no repository archive or server-side repository/vector index is created;
+- provider/network failure keeps the local result and never invokes a CPU
+  embedding fallback.
+
+The optional local ANN is built only by an explicit command:
+
+```bash
+codedb /path/to/repo semantic-index
+```
+
+It splits already-indexable files into bounded 832-byte source chunks, uses
+four concurrent 25-item requests by default (explicitly configurable from one
+to eight), and writes a
+small `semantic-chunks-v3.meta` mapping plus a generation-named `.hmls` mmap
+slab only in codedb's per-project local data directory. The directory and
+files use private permissions (0700/0600 on POSIX).
+On lookup, codedb checks model/vector-space identity, Git/content freshness,
+and the bounded metadata before opening the slab. Metadata heap use is capped
+at 64 MiB and graph-validation reads at 128 MiB; vector slabs remain
+demand-paged rather than being copied into the query process.
+It never scans or uploads `.env`, `.env.*`, `.envrc`, credentials, private keys, or other paths on
+the sensitive-file denylist. Ordinary indexing does not build this sidecar.
+
+The default hosted 0.6B/512-D lane is free to call and requires no API token.
+Its public route cannot select the protected 4B model and enforces the same
+item/body limits at the edge. The general multi-model API remains authenticated.
+
+`format=json` exposes this boundary in the `retrieval` object, including the
+model, dimensions, bounded byte/document counts, retention policy, and failure
+policy. If `CODEDB_EMBEDDINGS_URL` points to a custom provider, codedb labels
+its retention as `custom_endpoint_unverified` because the client cannot prove
+another operator's storage policy.
+
 | Location | Contents | Purpose |
 |----------|----------|---------|
-| `~/.codedb/projects/<hash>/` | Trigram index, frequency table, data log | Persistent index cache |
+| `~/.codedb/projects/<hash>/` | Trigram index, frequency table, data log; optional `semantic-chunks-v3.meta` plus `.hmls` slab | Persistent local indexes |
 | `~/.codedb/telemetry.ndjson` | Aggregate tool calls and startup stats | Local telemetry log |
 | `./codedb.snapshot` | File tree, outlines, content, frequency table | Portable snapshot for instant MCP startup |
 
-**Not stored:** No source code is sent anywhere. No file contents, file paths, or search queries are collected in telemetry. Sensitive files auto-excluded (`.env*`, `credentials.json`, `secrets.*`, `.pem`, `.key`, SSH keys, AWS configs).
+**Not stored:** In the default local mode, no source code is sent anywhere. In
+explicit hybrid/index-build modes, only the bounded transient batches above
+leave the machine; the hosted service does not store them and never creates a
+repository index. The optional ANN vectors and graph remain in the local codedb
+data directory. No file contents, file paths, or search queries are collected
+in telemetry. Sensitive files are auto-excluded from indexing and therefore
+cannot become hybrid candidates (`.env`, `.env.*`, `.envrc`,
+`credentials.json`, `secrets.*`, `.pem`, `.key`, SSH keys, AWS configs).
+The hybrid request builder repeats the canonical safe-path check immediately
+before serialization, so those paths remain blocked even if a stale or
+hand-built in-memory index contains one. Structured provenance reports only
+the aggregate `sensitive_paths_blocked` count, never the rejected path.
+
+Optional hybrid-provider overrides:
+
+```bash
+CODEDB_EMBEDDINGS_URL=https://embeddings.wiki.codes/v1/codedb/embeddings
+CODEDB_EMBEDDINGS_MODEL=Qwen/Qwen3-Embedding-0.6B
+CODEDB_EMBEDDINGS_DIMENSIONS=512
+CODEDB_EMBEDDINGS_TOKEN='optional bearer token for a protected/custom endpoint'
+CODEDB_EMBEDDINGS_TIMEOUT_MS=15000
+CODEDB_SEMANTIC_INDEX_CONCURRENCY=4
+```
 
 To disable telemetry: set `CODEDB_NO_TELEMETRY=1` or pass `--no-telemetry`.
 

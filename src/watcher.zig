@@ -8,6 +8,8 @@ const TrigramIndex = @import("index.zig").TrigramIndex;
 const WordIndex = @import("index.zig").WordIndex;
 const explore_mod = @import("explore.zig");
 const git_mod = @import("git.zig");
+const project_file = @import("project_file.zig");
+const project_path = @import("project_path.zig");
 
 fn nsToMs(ns: i128) f64 {
     return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
@@ -76,13 +78,21 @@ pub const EventQueue = struct {
 
 const FileState = struct {
     mtime: i64, // milliseconds since epoch — cheap stat check
+    mtime_ns: i128 = 0, // exact in-process discriminator for rapid rewrites
+    ctime_ns: i128 = 0, // catches same-size writes that preserve mtime
+    inode: std.posix.ino_t = 0, // catches rename-over-save replacement
     size: u64, // cheap change discriminator before hashing
     hash: u64, // wyhash of content — confirms actual change
     seen: bool, // set during current poll cycle for deletion detection
 };
 
 pub const FileMap = std.StringHashMap(FileState);
-pub const DirMap = std.StringHashMap(i64);
+pub const DirState = struct {
+    mtime_ns: i128,
+    ctime_ns: i128,
+    inode: std.posix.ino_t,
+};
+pub const DirMap = std.StringHashMap(DirState);
 pub const DirtySet = std.StringHashMap(void);
 pub var debug_unchanged_full_scans: usize = 0;
 pub var debug_unchanged_file_stats: usize = 0;
@@ -91,24 +101,27 @@ fn parentRel(path: []const u8) []const u8 {
     return if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| path[0..i] else "";
 }
 
-
 fn joinRel(tmp: std.mem.Allocator, prefix: []const u8, name: []const u8) ![]const u8 {
     if (prefix.len == 0) return name;
     return std.fmt.allocPrint(tmp, "{s}/{s}", .{ prefix, name });
 }
 
-fn dirMtimeMs(io: std.Io, dir: std.Io.Dir, rel: []const u8) ?i64 {
+fn dirState(io: std.Io, dir: std.Io.Dir, rel: []const u8) ?DirState {
     const st = dir.statFile(io, if (rel.len == 0) "." else rel, .{}) catch return null;
-    return @intCast(@divTrunc(st.mtime.nanoseconds, std.time.ns_per_ms));
+    return .{
+        .mtime_ns = st.mtime.nanoseconds,
+        .ctime_ns = st.ctime.nanoseconds,
+        .inode = st.inode,
+    };
 }
 
-fn rememberDirMtime(dirs: *DirMap, persistent: std.mem.Allocator, rel: []const u8, mtime: i64) void {
+fn rememberDirState(dirs: *DirMap, persistent: std.mem.Allocator, rel: []const u8, state: DirState) void {
     if (dirs.getPtr(rel)) |slot| {
-        slot.* = mtime;
+        slot.* = state;
         return;
     }
     const key = persistent.dupe(u8, rel) catch return;
-    dirs.put(key, mtime) catch persistent.free(key);
+    dirs.put(key, state) catch persistent.free(key);
 }
 
 const InitialScanEntry = struct {
@@ -216,7 +229,7 @@ fn readIndexableFile(
             std.log.warn("codedb: not indexing {s} ({d} bytes > {d} cap) — reachable only via codedb_read", .{ path, size, max_indexed_file_bytes });
         return null;
     }
-    const content = try dir.readFileAlloc(io, path, alloc, .limited(max_indexed_file_bytes));
+    const content = try project_file.readAllocNoFollow(io, dir, path, alloc, .limited(max_indexed_file_bytes));
     // Skip binary content (null byte within the first 512 bytes).
     const check_len = @min(content.len, 512);
     if (std.mem.indexOfScalar(u8, content[0..check_len], 0) != null) {
@@ -225,6 +238,7 @@ fn readIndexableFile(
     }
     return content;
 }
+
 const skip_dirs = [_][]const u8{
     ".git",
     ".jj",
@@ -305,6 +319,61 @@ fn shouldSkipDir(name: []const u8) bool {
     return false;
 }
 
+fn isWithinCanonicalRoot(root: []const u8, candidate: []const u8) bool {
+    if (!std.mem.startsWith(u8, candidate, root)) return false;
+    if (candidate.len == root.len) return true;
+    return root.len > 0 and (isPortablePathSep(root[root.len - 1]) or isPortablePathSep(candidate[root.len]));
+}
+
+fn isPortablePathSep(ch: u8) bool {
+    return ch == '/' or ch == '\\';
+}
+
+/// Return a slash-normalized repository-relative spelling for a canonical
+/// target. Windows realPath uses backslashes, but every sensitive-path and
+/// skip policy in codedb intentionally consumes portable forward slashes.
+fn canonicalTargetRelative(root: []const u8, target: []const u8, normalized: []u8) ?[]const u8 {
+    if (!isWithinCanonicalRoot(root, target) or target.len == root.len) return null;
+    var start = root.len;
+    while (start < target.len and isPortablePathSep(target[start])) start += 1;
+    if (start == target.len) return null;
+    const rel = target[start..];
+    if (rel.len > normalized.len) return null;
+    for (rel, normalized[0..rel.len]) |ch, *out| out.* = if (isPortablePathSep(ch)) '/' else ch;
+    return normalized[0..rel.len];
+}
+
+test "canonical Windows targets are normalized before sensitive policy checks" {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const rel = canonicalTargetRelative("C:\\repo", "C:\\repo\\safe\\.ssh\\config", &buf) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("safe/.ssh/config", rel);
+    try std.testing.expect(shouldSkipFile(rel));
+    try std.testing.expect(canonicalTargetRelative("C:\\repo", "C:\\repo-other\\src", &buf) == null);
+}
+
+/// Resolve every candidate under the canonical root and require both its
+/// visible path and canonical repo-relative target to satisfy the indexing
+/// filters. File symlinks themselves are skipped; this additionally protects
+/// regular files reached through an allowed directory symlink.
+fn resolvedFileTargetAllowed(io: std.Io, root_dir: std.Io.Dir, canonical_root: []const u8, alias_path: []const u8) bool {
+    if (canonical_root.len == 0 or shouldSkip(alias_path) or shouldSkipFile(alias_path)) return false;
+    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_len = root_dir.realPathFile(io, alias_path, &target_buf) catch return false;
+    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_rel = canonicalTargetRelative(canonical_root, target_buf[0..target_len], &normalized_buf) orelse return false;
+    return !shouldSkip(target_rel) and !shouldSkipFile(target_rel);
+}
+
+fn resolvedDirectoryTargetAllowed(io: std.Io, root_dir: std.Io.Dir, canonical_root: []const u8, alias_path: []const u8) bool {
+    if (alias_path.len == 0) return canonical_root.len > 0;
+    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_len = root_dir.realPathFile(io, alias_path, &target_buf) catch return false;
+    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_rel = canonicalTargetRelative(canonical_root, target_buf[0..target_len], &normalized_buf) orelse return false;
+    return !shouldSkip(target_rel) and !shouldSkipFile(target_rel);
+}
+
 /// Recursive directory walker that prunes skip_dirs before descending.
 /// Unlike std.Io.Dir.walk(), this never enters .git, node_modules, etc.,
 /// avoiding the CPU cost of traversing potentially huge directory trees.
@@ -312,6 +381,7 @@ pub const FilteredWalker = struct {
     const StackItem = struct {
         dir_handle: std.Io.Dir,
         iter: std.Io.Dir.Iterator,
+        through_symlink: bool,
     };
 
     stack: std.ArrayList(StackItem),
@@ -325,6 +395,7 @@ pub const FilteredWalker = struct {
 
     pub const Entry = struct {
         path: []const u8, // relative path — valid until next call to next()
+        size: u64,
     };
 
     pub fn init(io: std.Io, root: std.Io.Dir, allocator: std.mem.Allocator) !FilteredWalker {
@@ -337,6 +408,7 @@ pub const FilteredWalker = struct {
         try self.stack.append(allocator, .{
             .dir_handle = root,
             .iter = root.iterate(),
+            .through_symlink = false,
         });
 
         var rr_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -348,7 +420,7 @@ pub const FilteredWalker = struct {
         } else |_| {}
 
         // Load .codedbignore if it exists
-        if (root.readFileAlloc(io, ".codedbignore", allocator, .limited(64 * 1024))) |content| {
+        if (project_file.readAllocNoFollow(io, root, ".codedbignore", allocator, .limited(64 * 1024))) |content| {
             defer allocator.free(content);
             var lines = std.mem.splitScalar(u8, content, '\n');
             while (lines.next()) |line| {
@@ -360,7 +432,7 @@ pub const FilteredWalker = struct {
         } else |_| {}
 
         // Also load .gitignore patterns (respect git's ignore rules)
-        if (root.readFileAlloc(io, ".gitignore", allocator, .limited(64 * 1024))) |content| {
+        if (project_file.readAllocNoFollow(io, root, ".gitignore", allocator, .limited(64 * 1024))) |content| {
             defer allocator.free(content);
             var lines = std.mem.splitScalar(u8, content, '\n');
             while (lines.next()) |line| {
@@ -419,6 +491,36 @@ pub const FilteredWalker = struct {
         return false;
     }
 
+    /// Validate the directory object that was actually opened, regardless of
+    /// the iterator's pre-open kind. Returns whether its canonical target
+    /// differs from the visible path. Claiming every handle closes the race
+    /// where a `.directory` entry is replaced by an outside symlink between
+    /// iteration and open, and also supplies cycle prevention for all aliases.
+    fn claimOpenedDirectory(self: *FilteredWalker, dir: std.Io.Dir, visible_path: []const u8) ?bool {
+        if (self.real_root.len == 0) return null;
+        var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const target_len = dir.realPathFile(self.io, ".", &target_buf) catch return null;
+        const real_target = target_buf[0..target_len];
+        var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const target_rel = canonicalTargetRelative(self.real_root, real_target, &normalized_buf) orelse return null;
+        if (shouldSkip(target_rel) or shouldSkipFile(target_rel)) return null;
+        const opened_as_alias = !std.mem.eql(u8, target_rel, visible_path);
+        // Ordinary directories may also be reachable through a deliberate
+        // in-root alias.  Only alias edges participate in cycle suppression;
+        // recording every ordinary directory would make whichever spelling is
+        // visited first hide the other one.  The root itself is pre-claimed,
+        // so an alias back to it is still rejected.
+        if (!opened_as_alias) return false;
+        const gop = self.visited_real_paths.getOrPut(self.allocator, real_target) catch return null;
+        if (gop.found_existing) return null;
+        const dup = self.allocator.dupe(u8, real_target) catch {
+            _ = self.visited_real_paths.remove(real_target);
+            return null;
+        };
+        gop.key_ptr.* = dup;
+        return true;
+    }
+
     pub fn next(self: *FilteredWalker) !?Entry {
         // Trim any filename appended by the previous yield
         self.name_buffer.shrinkRetainingCapacity(self.dir_prefix_len);
@@ -428,17 +530,20 @@ pub const FilteredWalker = struct {
             if (try top.iter.next(self.io)) |entry| {
                 if (entry.kind == .directory) {
                     if (shouldSkipDir(entry.name)) continue;
+                    var visible_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    const visible_path = if (self.dir_prefix_len > 0)
+                        std.fmt.bufPrint(&visible_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch continue
+                    else
+                        entry.name;
                     // Check .codedbignore patterns
                     if (self.ignore_patterns.items.len > 0) {
-                        // Build full path for prefix matching
-                        var check_buf: [std.fs.max_path_bytes]u8 = undefined;
-                        const check_path = if (self.dir_prefix_len > 0)
-                            std.fmt.bufPrint(&check_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch entry.name
-                        else
-                            entry.name;
-                        if (self.isIgnored(entry.name, check_path)) continue;
+                        if (self.isIgnored(entry.name, visible_path)) continue;
                     }
                     const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
+                    const opened_as_alias = self.claimOpenedDirectory(sub, visible_path) orelse {
+                        sub.close(self.io);
+                        continue;
+                    };
                     errdefer sub.close(self.io);
                     const saved_len = self.name_buffer.items.len;
                     errdefer self.name_buffer.shrinkRetainingCapacity(saved_len);
@@ -452,52 +557,58 @@ pub const FilteredWalker = struct {
                     try self.stack.append(self.allocator, .{
                         .dir_handle = sub,
                         .iter = sub.iterate(),
+                        .through_symlink = top.through_symlink or opened_as_alias,
                     });
                     continue;
                 }
 
                 if (entry.kind != .file) {
                     if (entry.kind != .sym_link) continue;
-                    const target_stat = top.dir_handle.statFile(self.io, entry.name, .{}) catch continue;
-                    if (target_stat.kind == .directory) {
-                        if (shouldSkipDir(entry.name)) continue;
-                        if (self.ignore_patterns.items.len > 0) {
-                            var check_buf: [std.fs.max_path_bytes]u8 = undefined;
-                            const check_path = if (self.dir_prefix_len > 0)
-                                std.fmt.bufPrint(&check_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch entry.name
-                            else
-                                entry.name;
-                            if (self.isIgnored(entry.name, check_path)) continue;
-                        }
-                        var rt_buf: [std.fs.max_path_bytes]u8 = undefined;
-                        const rt_len = top.dir_handle.realPathFile(self.io, entry.name, &rt_buf) catch continue;
-                        const real_target = rt_buf[0..rt_len];
-                        if (self.real_root.len == 0) continue;
-                        if (!std.mem.startsWith(u8, real_target, self.real_root)) continue;
-                        if (real_target.len != self.real_root.len and real_target[self.real_root.len] != '/') continue;
-                        const gop = self.visited_real_paths.getOrPut(self.allocator, real_target) catch continue;
-                        if (gop.found_existing) continue;
-                        const dup = self.allocator.dupe(u8, real_target) catch {
-                            _ = self.visited_real_paths.remove(real_target);
+                    if (shouldSkipDir(entry.name)) continue;
+                    if (self.ignore_patterns.items.len > 0) {
+                        var check_buf: [std.fs.max_path_bytes]u8 = undefined;
+                        const check_path = if (self.dir_prefix_len > 0)
+                            std.fmt.bufPrint(&check_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch entry.name
+                        else
+                            entry.name;
+                        if (self.isIgnored(entry.name, check_path)) continue;
+                    }
+                    // Opening as a directory is also the file-symlink gate:
+                    // regular-file targets fail with NotDir and are skipped.
+                    // Validate the already-open directory handle so retargeting
+                    // the link cannot change the object that will be walked.
+                    const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
+                    var visible_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    const visible_path = if (self.dir_prefix_len > 0)
+                        std.fmt.bufPrint(&visible_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch {
+                            sub.close(self.io);
                             continue;
-                        };
-                        gop.key_ptr.* = dup;
-                        const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
-                        errdefer sub.close(self.io);
-                        const saved_len_sym = self.name_buffer.items.len;
-                        errdefer self.name_buffer.shrinkRetainingCapacity(saved_len_sym);
-                        if (self.name_buffer.items.len > 0)
-                            try self.name_buffer.append(self.allocator, '/');
-                        try self.name_buffer.appendSlice(self.allocator, entry.name);
-                        self.dir_prefix_len = self.name_buffer.items.len;
-                        try self.stack.append(self.allocator, .{
-                            .dir_handle = sub,
-                            .iter = sub.iterate(),
-                        });
+                        }
+                    else
+                        entry.name;
+                    if (self.claimOpenedDirectory(sub, visible_path) == null) {
+                        sub.close(self.io);
                         continue;
                     }
-                    if (target_stat.kind != .file) continue;
+                    errdefer sub.close(self.io);
+                    const saved_len_sym = self.name_buffer.items.len;
+                    errdefer self.name_buffer.shrinkRetainingCapacity(saved_len_sym);
+                    if (self.name_buffer.items.len > 0)
+                        try self.name_buffer.append(self.allocator, '/');
+                    try self.name_buffer.appendSlice(self.allocator, entry.name);
+                    self.dir_prefix_len = self.name_buffer.items.len;
+                    try self.stack.append(self.allocator, .{
+                        .dir_handle = sub,
+                        .iter = sub.iterate(),
+                        .through_symlink = true,
+                    });
+                    continue;
                 }
+
+                // This also checks ordinary files reached through an allowed
+                // directory symlink, so a safe directory alias cannot expose a
+                // sensitive canonical target nested below it.
+                if (top.through_symlink and !resolvedFileTargetAllowed(self.io, top.dir_handle, self.real_root, entry.name)) continue;
 
                 // Build full relative path by appending filename
                 if (self.dir_prefix_len > 0)
@@ -510,7 +621,15 @@ pub const FilteredWalker = struct {
                     continue;
                 }
 
-                return .{ .path = self.name_buffer.items };
+                const stable_stat = top.dir_handle.statFile(self.io, entry.name, .{ .follow_symlinks = false }) catch {
+                    self.name_buffer.shrinkRetainingCapacity(self.dir_prefix_len);
+                    continue;
+                };
+                if (stable_stat.kind != .file) {
+                    self.name_buffer.shrinkRetainingCapacity(self.dir_prefix_len);
+                    continue;
+                }
+                return .{ .path = self.name_buffer.items, .size = stable_stat.size };
             } else {
                 // Directory exhausted — pop and restore parent prefix
                 if (self.stack.items.len > 1) {
@@ -542,18 +661,6 @@ pub fn trigramFileCap() usize {
     return std.fmt.parseInt(usize, raw, 10) catch 15_000;
 }
 
-// Paths are collected serially first, then stat calls fan out across disjoint
-// chunks. Workers only publish size/stat_succeeded into their own entries; the
-// caller records snapshots serially in discovery order after every join. That
-// keeps sequence assignment deterministic and avoids shared worker error state.
-fn statScanForInitial(io: std.Io, dir: std.Io.Dir, recs: []InitialScanEntry) void {
-    for (recs) |*record| {
-        const ds = dir.statFile(io, record.path, .{}) catch continue;
-        record.size = ds.size;
-        record.stat_succeeded = true;
-    }
-}
-
 fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocator: std.mem.Allocator, skip_trigram: bool) !std.ArrayList(InitialScanEntry) {
     var walker = try FilteredWalker.init(io, dir, allocator);
     defer walker.deinit();
@@ -565,68 +672,20 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
     }
 
     const max_trigram_files = trigramFileCap();
-    // Paths collected serially first (via FilteredWalker, pure walk no stats).
+    // The walker stats each file relative to the stable opened parent handle.
+    // Deferring these stats by path would reopen the directory namespace after
+    // traversal and let a directory-retarget race inject outside sizes into the
+    // Store before content validation.
     while (try walker.next()) |entry| {
         try entries.append(allocator, .{
             .path = try allocator.dupe(u8, entry.path),
-            .size = 0,
-            .stat_succeeded = false,
+            .size = entry.size,
+            .stat_succeeded = true,
             .skip_trigram = false, // set after parallel stat fan
         });
     }
-    // Stats fan out across disjoint slices; per-stat errors are swallowed. After
-    // joining, snapshots are recorded serially so sequence order remains stable
-    // and record errors propagate without cross-thread error sharing.
-    if (entries.items.len > 0) {
-        const want_workers = blk: {
-            if (cio.posixGetenv("CODEDB_LOAD_WORKERS")) |raw| {
-                const parsed = std.fmt.parseInt(usize, raw, 10) catch 0;
-                if (parsed > 0) break :blk parsed;
-            }
-            if (entries.items.len < 256) break :blk 1;
-            const cpu_count = std.Thread.getCpuCount() catch 1;
-            break :blk @min(@as(usize, @intCast(cpu_count)), 4);
-        };
-        const n_workers = @max(@as(usize, 1), @min(want_workers, entries.items.len));
-        stat_fan: {
-            if (n_workers <= 1) {
-                statScanForInitial(io, dir, entries.items);
-                break :stat_fan;
-            }
-            const threads = allocator.alloc(std.Thread, n_workers) catch {
-                statScanForInitial(io, dir, entries.items);
-                break :stat_fan;
-            };
-            defer allocator.free(threads);
-
-            const chunk = entries.items.len / n_workers;
-            const rem = entries.items.len % n_workers;
-            var off: usize = 0;
-            var spawned: usize = 0;
-            var spawn_failed = false;
-            for (0..n_workers) |i| {
-                const extra: usize = if (i < rem) 1 else 0;
-                const start = off;
-                off += chunk + extra;
-                const recs = entries.items[start..off];
-                if (spawn_failed) {
-                    statScanForInitial(io, dir, recs);
-                    continue;
-                }
-                if (std.Thread.spawn(.{}, statScanForInitial, .{ io, dir, recs })) |t| {
-                    threads[spawned] = t;
-                    spawned += 1;
-                } else |_| {
-                    statScanForInitial(io, dir, recs);
-                    spawn_failed = true;
-                }
-            }
-            for (threads[0..spawned]) |t| t.join();
-        }
-        for (entries.items) |entry| {
-            if (!entry.stat_succeeded) continue;
-            _ = try store.recordSnapshot(entry.path, entry.size, 0);
-        }
+    for (entries.items) |entry| {
+        _ = try store.recordSnapshot(entry.path, entry.size, 0);
     }
     // Set skip_trigram using serial count (preserves original cap semantics on discovery order).
     var file_count: usize = 0;
@@ -696,13 +755,7 @@ fn parseInitialScanWorkerEntry(
     };
 }
 
-fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry, word_shard: ?*WordIndex, trigram_shard: ?*TrigramIndex) void {
-    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch {
-        for (0..entries.len) |index| results.publish(io, index, null);
-        return;
-    };
-    defer dir.close(io);
-
+fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, dir: std.Io.Dir, entries: []const InitialScanEntry, word_shard: ?*WordIndex, trigram_shard: ?*TrigramIndex) void {
     // Read content directly into the persistent result arena, while allocating
     // transient parser state in a per-file scratch arena that is reset between
     // files. The final outline uses packed libc-owned storage so the main thread
@@ -743,8 +796,15 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
         explorer.word_index.skip_file_words = false;
         explorer.mu.unlock();
     };
-    const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
-    defer dir.close(io);
+    var owned_dir: ?std.Io.Dir = null;
+    const dir = if (explorer.root_dir) |stable| blk: {
+        if (!project_file.rootMatchesPath(io, stable, root)) return error.ProjectRootChanged;
+        break :blk stable;
+    } else blk: {
+        owned_dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+        break :blk owned_dir.?;
+    };
+    defer if (owned_dir) |owned| owned.close(io);
 
     var entries = try collectInitialScanEntries(io, store, dir, allocator, skip_trigram);
     const profile_collect_done: i128 = if (profile) cio.nanoTimestamp() else 0;
@@ -768,7 +828,9 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
                 defer arena.deinit();
                 const parsed = try parseInitialScanEntry(io, dir, entry, arena.allocator(), arena.allocator());
                 if (parsed) |file| {
+                    const content_hash = std.hash.Wyhash.hash(0, file.content);
                     try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
+                    _ = store.refineLatestSnapshotHash(file.path, file.content.len, content_hash);
                 }
             }
         }
@@ -830,7 +892,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
             sh[i].skip_file_words = true;
             shard_ptr = &sh[i];
         }
-        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, shard_ptr, null });
+        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, dir, chunk, shard_ptr, null });
         spawned += 1;
     }
     const profile_spawn_done: i128 = if (profile) cio.nanoTimestamp() else 0;
@@ -840,7 +902,9 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     for (workers) |*worker| {
         for (0..worker.items.len) |item_index| {
             if (worker.takeReady(io, item_index)) |file| {
+                const content_hash = std.hash.Wyhash.hash(0, file.content);
                 try explorer.commitParsedFileAdoptOutline(file.path, file.content, file.outline, true, file.skip_trigram);
+                _ = store.refineLatestSnapshotHash(file.path, file.content.len, content_hash);
             }
         }
     }
@@ -926,13 +990,7 @@ fn extractTrigramMasks(
 // Build a private trigram shard from a chunk of InitialScanEntry items — reads
 // each file, extracts trigrams, and inserts postings directly, all on the worker.
 // Used by the skip_outlines fast path in initialScanWithTrigrams.
-fn readAndBuildTrigramShardWorker(io: std.Io, shard: *TrigramIndex, root: []const u8, entries: []const InitialScanEntry, build_error: *?anyerror) void {
-    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch |err| {
-        build_error.* = err;
-        return;
-    };
-    defer dir.close(io);
-
+fn readAndBuildTrigramShardWorker(io: std.Io, shard: *TrigramIndex, dir: std.Io.Dir, entries: []const InitialScanEntry, build_error: *?anyerror) void {
     const index_m = @import("index.zig");
     var local = std.AutoHashMap(index_m.Trigram, index_m.PostingMask).init(std.heap.c_allocator);
     defer local.deinit();
@@ -1098,8 +1156,15 @@ pub fn initialScanWithTrigrams(
     trigram_alloc: std.mem.Allocator,
     skip_outlines: bool,
 ) !?*TrigramIndex {
-    const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
-    defer dir.close(io);
+    var owned_dir: ?std.Io.Dir = null;
+    const dir = if (explorer.root_dir) |stable| blk: {
+        if (!project_file.rootMatchesPath(io, stable, root)) return error.ProjectRootChanged;
+        break :blk stable;
+    } else blk: {
+        owned_dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+        break :blk owned_dir.?;
+    };
+    defer if (owned_dir) |owned| owned.close(io);
 
     var entries = try collectInitialScanEntries(io, store, dir, allocator, true);
     defer {
@@ -1169,7 +1234,7 @@ pub fn initialScanWithTrigrams(
             offset += count;
             shard.index.ensureTotalCapacity(32768) catch {};
             shard.path_to_id.ensureTotalCapacity(@intCast(count)) catch {};
-            threads[i] = try std.Thread.spawn(.{}, readAndBuildTrigramShardWorker, .{ io, shard, root, chunk, &build_errors[i] });
+            threads[i] = try std.Thread.spawn(.{}, readAndBuildTrigramShardWorker, .{ io, shard, dir, chunk, &build_errors[i] });
             spawned += 1;
         }
         for (threads[0..spawned]) |thread| thread.join();
@@ -1201,7 +1266,7 @@ pub fn initialScanWithTrigrams(
             const chunk = entries.items[offset .. offset + count];
             offset += count;
             try worker.prepare(count);
-            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, null, &shards[i] });
+            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, dir, chunk, null, &shards[i] });
             spawned += 1;
         }
         // Commit outlines serially while workers may still be parsing. Trigram
@@ -1240,10 +1305,61 @@ pub fn initialScan(io: std.Io, store: *Store, explorer: *Explorer, root: []const
     try initialScanWithWorkerCount(io, store, explorer, root, allocator, skip_trigram, worker_count);
 }
 
+/// Re-read the complete indexable repository through the already-open root
+/// capability and return a deterministic content-only fingerprint. The
+/// semantic-index builder uses this immediately before publication so edits,
+/// additions, and deletions that happened during remote embedding cannot
+/// produce a sidecar for a mixed repository generation. Sensitive, ignored,
+/// binary, oversized, and symlink-escaped files follow the exact scan policy.
+pub fn liveIndexedContentFingerprint(
+    io: std.Io,
+    root: std.Io.Dir,
+    allocator: std.mem.Allocator,
+) !u64 {
+    const Identity = struct {
+        path: []u8,
+        content_hash: u64,
+        size: u64,
+    };
+
+    var walker = try FilteredWalker.init(io, root, allocator);
+    defer walker.deinit();
+    var identities: std.ArrayList(Identity) = .empty;
+    defer {
+        for (identities.items) |identity| allocator.free(identity.path);
+        identities.deinit(allocator);
+    }
+
+    while (try walker.next()) |entry| {
+        if (shouldSkipFile(entry.path)) continue;
+        const content = (try readIndexableFile(io, root, entry.path, allocator, entry.size, false)) orelse continue;
+        defer allocator.free(content);
+        const owned_path = try allocator.dupe(u8, entry.path);
+        errdefer allocator.free(owned_path);
+        try identities.append(allocator, .{
+            .path = owned_path,
+            .content_hash = std.hash.Wyhash.hash(0, content),
+            .size = @intCast(content.len),
+        });
+    }
+    std.mem.sort(Identity, identities.items, {}, struct {
+        fn lessThan(_: void, a: Identity, b: Identity) bool {
+            return std.mem.order(u8, a.path, b.path) == .lt;
+        }
+    }.lessThan);
+
+    var hash = Store.semanticContentHasher();
+    for (identities.items) |identity| {
+        Store.updateSemanticContentFingerprint(&hash, identity.path, identity.content_hash, identity.size);
+    }
+    return hash.final();
+}
+
 /// Fast index: parse symbols/outline only, skip expensive word+trigram indexes.
 fn indexFileOutline(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator) !void {
     if (shouldSkipFile(path)) return;
-    const stat = try dir.statFile(io, path, .{});
+    const stat = try dir.statFile(io, path, .{ .follow_symlinks = false });
+    if (stat.kind != .file) return;
     const content = (try readIndexableFile(io, dir, path, allocator, stat.size, false)) orelse return;
     defer allocator.free(content);
     try explorer.indexFileOutlineOnly(path, content);
@@ -1268,17 +1384,21 @@ const FileChangeWatch = struct {
     alloc: std.mem.Allocator,
     active: bool = false,
     armed_files: u32 = 0,
+    armed_dirs: u32 = 0,
     kq: i32 = -1,
     inotify_fd: i32 = -1,
     files: std.ArrayList(std.posix.fd_t) = .empty,
     unwatched: std.ArrayList([]u8) = .empty,
+    unwatched_dirs: std.ArrayList([]u8) = .empty,
     ident_to_path: std.AutoHashMap(usize, []u8),
+    ident_to_dir: std.AutoHashMap(usize, []u8),
     wd_to_dir: std.AutoHashMap(i32, []u8),
 
     fn init(alloc: std.mem.Allocator) FileChangeWatch {
         return .{
             .alloc = alloc,
             .ident_to_path = .init(alloc),
+            .ident_to_dir = .init(alloc),
             .wd_to_dir = .init(alloc),
         };
     }
@@ -1286,9 +1406,11 @@ const FileChangeWatch = struct {
     fn deinit(self: *FileChangeWatch, io: std.Io) void {
         self.reset(io);
         self.ident_to_path.deinit();
+        self.ident_to_dir.deinit();
         self.wd_to_dir.deinit();
         self.files.deinit(self.alloc);
         self.unwatched.deinit(self.alloc);
+        self.unwatched_dirs.deinit(self.alloc);
     }
 
     fn reset(self: *FileChangeWatch, io: std.Io) void {
@@ -1296,6 +1418,9 @@ const FileChangeWatch = struct {
         var pit = self.ident_to_path.iterator();
         while (pit.next()) |kv| self.alloc.free(kv.value_ptr.*);
         self.ident_to_path.clearRetainingCapacity();
+        var pdit = self.ident_to_dir.iterator();
+        while (pdit.next()) |kv| self.alloc.free(kv.value_ptr.*);
+        self.ident_to_dir.clearRetainingCapacity();
         var dit = self.wd_to_dir.iterator();
         while (dit.next()) |kv| self.alloc.free(kv.value_ptr.*);
         self.wd_to_dir.clearRetainingCapacity();
@@ -1305,6 +1430,8 @@ const FileChangeWatch = struct {
         self.files.clearRetainingCapacity();
         for (self.unwatched.items) |p| self.alloc.free(p);
         self.unwatched.clearRetainingCapacity();
+        for (self.unwatched_dirs.items) |p| self.alloc.free(p);
+        self.unwatched_dirs.clearRetainingCapacity();
         if (self.kq >= 0) {
             cio.closeFd(self.kq);
             self.kq = -1;
@@ -1317,47 +1444,65 @@ const FileChangeWatch = struct {
     }
 
     fn rememberUnwatched(self: *FileChangeWatch, path: []const u8) void {
+        for (self.unwatched.items) |existing| if (std.mem.eql(u8, existing, path)) return;
         const duped = self.alloc.dupe(u8, path) catch return;
         self.unwatched.append(self.alloc, duped) catch self.alloc.free(duped);
+    }
+
+    fn rememberUnwatchedDir(self: *FileChangeWatch, path: []const u8) void {
+        for (self.unwatched_dirs.items) |existing| if (std.mem.eql(u8, existing, path)) return;
+        const duped = self.alloc.dupe(u8, path) catch return;
+        self.unwatched_dirs.append(self.alloc, duped) catch self.alloc.free(duped);
+    }
+
+    fn forgetUnwatchedDir(self: *FileChangeWatch, path: []const u8) void {
+        var i: usize = 0;
+        while (i < self.unwatched_dirs.items.len) : (i += 1) {
+            if (!std.mem.eql(u8, self.unwatched_dirs.items[i], path)) continue;
+            self.alloc.free(self.unwatched_dirs.swapRemove(i));
+            return;
+        }
     }
 
     fn addUnwatched(self: *const FileChangeWatch, dirty: *DirtySet) void {
         for (self.unwatched.items) |path| {
             dirty.put(path, {}) catch {};
         }
+        for (self.unwatched_dirs.items) |path| dirty.put(path, {}) catch {};
     }
 
-    fn arm(self: *FileChangeWatch, io: std.Io, root: []const u8, known: *const FileMap, dirs: *const DirMap) void {
+    fn arm(self: *FileChangeWatch, io: std.Io, root_dir: std.Io.Dir, known: *const FileMap, dirs: *const DirMap) void {
         self.reset(io);
         self.armed_files = @intCast(known.count());
+        self.armed_dirs = @intCast(dirs.count());
         if (comptime watch_kqueue) {
-            self.armKqueue(io, root, known, dirs);
+            self.armKqueue(root_dir, known, dirs);
         } else if (comptime watch_inotify) {
-            self.armInotify(root, dirs);
+            self.armInotify(io, root_dir, dirs);
         }
     }
 
-    fn armKqueue(self: *FileChangeWatch, io: std.Io, root: []const u8, known: *const FileMap, dirs: *const DirMap) void {
+    fn armKqueue(self: *FileChangeWatch, root_dir: std.Io.Dir, known: *const FileMap, dirs: *const DirMap) void {
         if (comptime !watch_kqueue) return;
         if (known.count() > 32768) return;
         raiseNofileLimit();
         const kq = std.c.kqueue();
         if (kq < 0) return;
         self.kq = kq;
-        const root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return;
-        defer root_dir.close(io);
         const vnode_flags = std.c.NOTE.WRITE | std.c.NOTE.DELETE | std.c.NOTE.RENAME | std.c.NOTE.EXTEND;
-        var it = known.iterator();
-        while (it.next()) |kv| {
-            const path = kv.key_ptr.*;
-            self.watchKqueueFile(root_dir.handle, path, vnode_flags);
-        }
-        self.watchKqueueDir(root_dir.handle, ".", vnode_flags);
+        // Directories cover the scan-to-arm gap and provide replacement
+        // identity before the more numerous per-file watches are installed.
+        self.watchKqueueDir(root_dir.handle, "", vnode_flags);
         var dit = dirs.iterator();
         while (dit.next()) |kv| {
             const rel = kv.key_ptr.*;
             if (rel.len == 0) continue;
             self.watchKqueueDir(root_dir.handle, rel, vnode_flags);
+        }
+        var it = known.iterator();
+        while (it.next()) |kv| {
+            const path = kv.key_ptr.*;
+            self.watchKqueueFile(root_dir.handle, path, vnode_flags);
         }
         if (std.posix.openat(std.posix.AT.FDCWD, "/tmp/codedb-notify", .{ .ACCMODE = .RDONLY, .EVTONLY = true, .CLOEXEC = true }, 0)) |nfd| {
             if (self.addVnode(nfd, std.c.NOTE.WRITE | std.c.NOTE.EXTEND)) {
@@ -1366,52 +1511,72 @@ const FileChangeWatch = struct {
                 cio.closeFd(nfd);
             }
         } else |_| {}
-        self.active = self.ident_to_path.count() > 0 or self.unwatched.items.len > 0;
+        self.active = self.ident_to_path.count() > 0 or self.ident_to_dir.count() > 0 or self.unwatched.items.len > 0 or self.unwatched_dirs.items.len > 0;
     }
 
-    fn watchKqueueFile(self: *FileChangeWatch, root_fd: std.posix.fd_t, path: []const u8, fflags: u32) void {
-        if (comptime !watch_kqueue) return;
+    fn addKqueueFileWatch(self: *FileChangeWatch, root_fd: std.posix.fd_t, path: []const u8, fflags: u32) ?std.posix.fd_t {
+        if (comptime !watch_kqueue) return null;
         const fd = std.posix.openat(root_fd, path, .{ .ACCMODE = .RDONLY, .EVTONLY = true, .CLOEXEC = true }, 0) catch {
             self.rememberUnwatched(path);
-            return;
+            return null;
         };
         if (!self.addVnode(fd, fflags)) {
             cio.closeFd(fd);
             self.rememberUnwatched(path);
-            return;
+            return null;
         }
         const duped = self.alloc.dupe(u8, path) catch {
             cio.closeFd(fd);
-            return;
+            return null;
         };
         self.ident_to_path.put(@intCast(fd), duped) catch {
             self.alloc.free(duped);
             cio.closeFd(fd);
-            return;
+            return null;
         };
-        self.files.append(self.alloc, fd) catch cio.closeFd(fd);
+        self.files.append(self.alloc, fd) catch {
+            if (self.ident_to_path.fetchRemove(@intCast(fd))) |entry| self.alloc.free(entry.value);
+            cio.closeFd(fd);
+            self.rememberUnwatched(path);
+            return null;
+        };
+        return fd;
     }
 
-    fn hasWatch(self: *const FileChangeWatch, path: []const u8) bool {
+    fn watchKqueueFile(self: *FileChangeWatch, root_fd: std.posix.fd_t, path: []const u8, fflags: u32) void {
+        _ = self.addKqueueFileWatch(root_fd, path, fflags);
+    }
+
+    fn findKqueueFile(self: *const FileChangeWatch, path: []const u8) ?std.posix.fd_t {
         var it = self.ident_to_path.iterator();
         while (it.next()) |kv| {
-            if (std.mem.eql(u8, kv.value_ptr.*, path)) return true;
+            if (std.mem.eql(u8, kv.value_ptr.*, path)) return @intCast(kv.key_ptr.*);
         }
-        return false;
+        return null;
     }
 
-    fn dropWatchedPath(self: *FileChangeWatch, path: []const u8) void {
+    fn dropKqueueFile(self: *FileChangeWatch, fd: std.posix.fd_t) void {
         if (comptime !watch_kqueue) return;
-        var found: ?std.posix.fd_t = null;
-        var it = self.ident_to_path.iterator();
-        while (it.next()) |kv| {
-            if (std.mem.eql(u8, kv.value_ptr.*, path)) {
-                found = @intCast(kv.key_ptr.*);
-                break;
-            }
-        }
-        const fd = found orelse return;
         if (self.ident_to_path.fetchRemove(@intCast(fd))) |kv| self.alloc.free(kv.value);
+        self.dropKqueueFd(fd);
+    }
+
+    fn findKqueueDir(self: *const FileChangeWatch, path: []const u8) ?std.posix.fd_t {
+        var it = self.ident_to_dir.iterator();
+        while (it.next()) |kv| {
+            if (std.mem.eql(u8, kv.value_ptr.*, path)) return @intCast(kv.key_ptr.*);
+        }
+        return null;
+    }
+
+    fn dropKqueueDir(self: *FileChangeWatch, fd: std.posix.fd_t) void {
+        if (comptime !watch_kqueue) return;
+        if (self.ident_to_dir.fetchRemove(@intCast(fd))) |kv| self.alloc.free(kv.value);
+        self.dropKqueueFd(fd);
+    }
+
+    fn dropKqueueFd(self: *FileChangeWatch, fd: std.posix.fd_t) void {
+        if (comptime !watch_kqueue) return;
         var i: usize = 0;
         while (i < self.files.items.len) {
             if (self.files.items[i] == fd) {
@@ -1423,22 +1588,69 @@ const FileChangeWatch = struct {
         cio.closeFd(fd);
     }
 
-    fn rearmDirty(self: *FileChangeWatch, io: std.Io, root: []const u8, dirty: *const DirtySet) void {
-        if (comptime !watch_kqueue) return;
+    fn hasWatchedDir(self: *const FileChangeWatch, path: []const u8) bool {
+        if (comptime watch_kqueue) return self.findKqueueDir(path) != null;
+        if (comptime watch_inotify) return self.findInotifyDir(path) != null;
+        return false;
+    }
+
+    fn pathWithinNonRootDir(path: []const u8, dir: []const u8) bool {
+        return dir.len > 0 and path.len > dir.len and path[dir.len] == '/' and std.mem.startsWith(u8, path, dir);
+    }
+
+    fn affectedByDirtyDirectory(self: *const FileChangeWatch, dirty: *const DirtySet, path: []const u8) bool {
+        var it = dirty.keyIterator();
+        while (it.next()) |dirty_path| {
+            if (!self.hasWatchedDir(dirty_path.*)) continue;
+            if (std.mem.eql(u8, path, dirty_path.*) or pathWithinNonRootDir(path, dirty_path.*)) return true;
+        }
+        return false;
+    }
+
+    fn rememberRearmPath(paths: *std.StringHashMap(void), path: []const u8) void {
+        if (paths.contains(path)) return;
+        const copy = paths.allocator.dupe(u8, path) catch return;
+        paths.put(copy, {}) catch {};
+    }
+
+    fn rearmDirty(self: *FileChangeWatch, io: std.Io, root_dir: std.Io.Dir, dirty: *const DirtySet) void {
+        if (comptime !watch_kqueue and !watch_inotify) return;
         if (dirty.count() == 0) return;
-        const root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return;
-        defer root_dir.close(io);
-        const vnode_flags = std.c.NOTE.WRITE | std.c.NOTE.DELETE | std.c.NOTE.RENAME | std.c.NOTE.EXTEND;
-        var dit = dirty.keyIterator();
-        while (dit.next()) |path_ptr| {
-            const path = path_ptr.*;
-            var owned: [std.fs.max_path_bytes]u8 = undefined;
-            if (path.len > owned.len) continue;
-            @memcpy(owned[0..path.len], path);
-            const rel = owned[0..path.len];
-            if (!self.hasWatch(rel)) continue;
-            self.dropWatchedPath(rel);
-            self.watchKqueueFile(root_dir.handle, rel, vnode_flags);
+
+        var dirs_to_rearm = std.StringHashMap(void).init(dirty.allocator);
+        defer dirs_to_rearm.deinit();
+        if (comptime watch_kqueue) {
+            var it = self.ident_to_dir.iterator();
+            while (it.next()) |entry| {
+                if (self.affectedByDirtyDirectory(dirty, entry.value_ptr.*)) rememberRearmPath(&dirs_to_rearm, entry.value_ptr.*);
+            }
+        } else if (comptime watch_inotify) {
+            var it = self.wd_to_dir.iterator();
+            while (it.next()) |entry| {
+                if (self.affectedByDirtyDirectory(dirty, entry.value_ptr.*)) rememberRearmPath(&dirs_to_rearm, entry.value_ptr.*);
+            }
+        }
+        for (self.unwatched_dirs.items) |path| {
+            if (dirty.contains(path)) rememberRearmPath(&dirs_to_rearm, path);
+        }
+
+        if (comptime watch_kqueue) {
+            var files_to_rearm = std.StringHashMap(void).init(dirty.allocator);
+            defer files_to_rearm.deinit();
+            var files = self.ident_to_path.iterator();
+            while (files.next()) |entry| {
+                const path = entry.value_ptr.*;
+                if (dirty.contains(path) or self.affectedByDirtyDirectory(dirty, path)) rememberRearmPath(&files_to_rearm, path);
+            }
+            const flags = std.c.NOTE.WRITE | std.c.NOTE.DELETE | std.c.NOTE.RENAME | std.c.NOTE.EXTEND;
+            var dirs_it = dirs_to_rearm.keyIterator();
+            while (dirs_it.next()) |path| self.rearmKqueueDir(root_dir.handle, path.*, flags);
+            var files_it = files_to_rearm.keyIterator();
+            while (files_it.next()) |path| self.rearmKqueueFile(root_dir.handle, path.*, flags);
+        } else if (comptime watch_inotify) {
+            const mask = inotifyDirectoryMask();
+            var dirs_it = dirs_to_rearm.keyIterator();
+            while (dirs_it.next()) |path| self.rearmInotifyDir(io, root_dir, path.*, mask);
         }
     }
 
@@ -1453,49 +1665,165 @@ const FileChangeWatch = struct {
         return rc >= 0;
     }
 
-    fn watchKqueueDir(self: *FileChangeWatch, root_fd: std.posix.fd_t, rel: []const u8, fflags: u32) void {
-        if (comptime !watch_kqueue) return;
-        const fd = std.posix.openat(root_fd, rel, .{ .ACCMODE = .RDONLY, .EVTONLY = true, .CLOEXEC = true, .DIRECTORY = true }, 0) catch return;
+    fn addKqueueDirWatch(self: *FileChangeWatch, root_fd: std.posix.fd_t, rel: []const u8, fflags: u32) ?std.posix.fd_t {
+        if (comptime !watch_kqueue) return null;
+        const open_rel = if (rel.len == 0) "." else rel;
+        const fd = std.posix.openat(root_fd, open_rel, .{ .ACCMODE = .RDONLY, .EVTONLY = true, .CLOEXEC = true, .DIRECTORY = true }, 0) catch {
+            self.rememberUnwatchedDir(rel);
+            return null;
+        };
         if (!self.addVnode(fd, fflags)) {
             cio.closeFd(fd);
-            return;
+            self.rememberUnwatchedDir(rel);
+            return null;
         }
-        self.files.append(self.alloc, fd) catch cio.closeFd(fd);
+        const duped = self.alloc.dupe(u8, rel) catch {
+            cio.closeFd(fd);
+            self.rememberUnwatchedDir(rel);
+            return null;
+        };
+        self.ident_to_dir.put(@intCast(fd), duped) catch {
+            self.alloc.free(duped);
+            cio.closeFd(fd);
+            self.rememberUnwatchedDir(rel);
+            return null;
+        };
+        self.files.append(self.alloc, fd) catch {
+            if (self.ident_to_dir.fetchRemove(@intCast(fd))) |entry| self.alloc.free(entry.value);
+            cio.closeFd(fd);
+            self.rememberUnwatchedDir(rel);
+            return null;
+        };
+        self.forgetUnwatchedDir(rel);
+        return fd;
     }
 
-    fn armInotify(self: *FileChangeWatch, root: []const u8, dirs: *const DirMap) void {
+    fn watchKqueueDir(self: *FileChangeWatch, root_fd: std.posix.fd_t, rel: []const u8, fflags: u32) void {
+        _ = self.addKqueueDirWatch(root_fd, rel, fflags);
+    }
+
+    fn rearmKqueueDir(self: *FileChangeWatch, root_fd: std.posix.fd_t, rel: []const u8, fflags: u32) void {
+        if (comptime !watch_kqueue) return;
+        const old_fd = self.findKqueueDir(rel);
+        if (self.addKqueueDirWatch(root_fd, rel, fflags) == null) return;
+        if (old_fd) |fd| self.dropKqueueDir(fd);
+    }
+
+    fn rearmKqueueFile(self: *FileChangeWatch, root_fd: std.posix.fd_t, path: []const u8, fflags: u32) void {
+        if (comptime !watch_kqueue) return;
+        const old_fd = self.findKqueueFile(path);
+        if (self.addKqueueFileWatch(root_fd, path, fflags) == null) return;
+        if (old_fd) |fd| self.dropKqueueFile(fd);
+    }
+
+    fn inotifyDirectoryMask() u32 {
+        return std.os.linux.IN.MODIFY | std.os.linux.IN.CREATE | std.os.linux.IN.DELETE |
+            std.os.linux.IN.MOVED_FROM | std.os.linux.IN.MOVED_TO | std.os.linux.IN.ATTRIB |
+            std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF;
+    }
+
+    fn armInotify(self: *FileChangeWatch, io: std.Io, root_dir: std.Io.Dir, dirs: *const DirMap) void {
         if (comptime !watch_inotify) return;
         const rc = std.os.linux.inotify_init1(std.os.linux.IN.CLOEXEC);
-        if (std.posix.errno(rc) != .SUCCESS) return;
+        if (std.os.linux.errno(rc) != .SUCCESS) return;
         self.inotify_fd = @intCast(rc);
-        const mask = std.os.linux.IN.MODIFY | std.os.linux.IN.CREATE | std.os.linux.IN.DELETE |
-            std.os.linux.IN.MOVED_FROM | std.os.linux.IN.MOVED_TO | std.os.linux.IN.ATTRIB;
-        self.addInotifyWatch(root, "", mask);
+        const mask = inotifyDirectoryMask();
+        self.addInotifyWatchDir(root_dir, "", mask);
         var dit = dirs.iterator();
         while (dit.next()) |kv| {
             const rel = kv.key_ptr.*;
             if (rel.len == 0) continue;
-            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const full = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ root, rel }) catch continue;
-            self.addInotifyWatch(full, rel, mask);
+            const child = root_dir.openDir(io, rel, .{ .follow_symlinks = false }) catch {
+                self.rememberUnwatchedDir(rel);
+                continue;
+            };
+            self.addInotifyWatchDir(child, rel, mask);
+            child.close(io);
         }
-        self.addInotifyWatch("/tmp/codedb-notify", null, std.os.linux.IN.MODIFY | std.os.linux.IN.CLOSE_WRITE);
-        self.active = self.wd_to_dir.count() > 0;
+        _ = self.addInotifyWatch("/tmp/codedb-notify", null, std.os.linux.IN.MODIFY | std.os.linux.IN.CLOSE_WRITE);
+        self.active = self.wd_to_dir.count() > 0 or self.unwatched_dirs.items.len > 0;
     }
 
-    fn addInotifyWatch(self: *FileChangeWatch, path: []const u8, rel: ?[]const u8, mask: u32) void {
-        if (comptime !watch_inotify) return;
+    fn addInotifyWatchDir(self: *FileChangeWatch, dir: std.Io.Dir, rel: []const u8, mask: u32) void {
+        var path_buf: [64]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/proc/self/fd/{d}", .{dir.handle}) catch return;
+        if (self.addInotifyWatch(path, rel, mask)) self.forgetUnwatchedDir(rel) else self.rememberUnwatchedDir(rel);
+    }
+
+    fn addInotifyWatch(self: *FileChangeWatch, path: []const u8, rel: ?[]const u8, mask: u32) bool {
+        if (comptime !watch_inotify) return false;
+        const wd = self.rawAddInotifyWatch(path, mask) orelse return false;
+        if (rel) |dir_rel| {
+            if (!self.rememberInotifyWatch(wd, dir_rel)) {
+                self.removeInotifyWatch(wd);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn rawAddInotifyWatch(self: *FileChangeWatch, path: []const u8, mask: u32) ?i32 {
+        if (comptime !watch_inotify) return null;
         var zbuf: [std.fs.max_path_bytes]u8 = undefined;
-        if (path.len >= zbuf.len) return;
+        if (path.len >= zbuf.len) return null;
         @memcpy(zbuf[0..path.len], path);
         zbuf[path.len] = 0;
         const wd_rc = std.os.linux.inotify_add_watch(self.inotify_fd, @ptrCast(&zbuf), mask);
-        if (std.posix.errno(wd_rc) != .SUCCESS) return;
-        const wd: i32 = @intCast(wd_rc);
-        if (rel) |dir_rel| {
-            const duped = self.alloc.dupe(u8, dir_rel) catch return;
-            self.wd_to_dir.put(wd, duped) catch self.alloc.free(duped);
+        if (std.os.linux.errno(wd_rc) != .SUCCESS) return null;
+        return @intCast(wd_rc);
+    }
+
+    fn rememberInotifyWatch(self: *FileChangeWatch, wd: i32, rel: []const u8) bool {
+        if (comptime !watch_inotify) return false;
+        const duped = self.alloc.dupe(u8, rel) catch return false;
+        const slot = self.wd_to_dir.getOrPut(wd) catch {
+            self.alloc.free(duped);
+            return false;
+        };
+        if (slot.found_existing) self.alloc.free(slot.value_ptr.*);
+        slot.value_ptr.* = duped;
+        return true;
+    }
+
+    fn findInotifyDir(self: *const FileChangeWatch, rel: []const u8) ?i32 {
+        var it = self.wd_to_dir.iterator();
+        while (it.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.*, rel)) return entry.key_ptr.*;
         }
+        return null;
+    }
+
+    fn removeInotifyWatch(self: *FileChangeWatch, wd: i32) void {
+        if (comptime !watch_inotify) return;
+        if (self.wd_to_dir.fetchRemove(wd)) |entry| self.alloc.free(entry.value);
+        _ = std.os.linux.inotify_rm_watch(self.inotify_fd, wd);
+    }
+
+    fn rearmInotifyDir(self: *FileChangeWatch, io: std.Io, root_dir: std.Io.Dir, rel: []const u8, mask: u32) void {
+        if (comptime !watch_inotify) return;
+        const old_wd = self.findInotifyDir(rel);
+        const dir = if (rel.len == 0) root_dir else root_dir.openDir(io, rel, .{ .follow_symlinks = false }) catch {
+            self.rememberUnwatchedDir(rel);
+            return;
+        };
+        defer if (rel.len != 0) dir.close(io);
+        var path_buf: [64]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "/proc/self/fd/{d}", .{dir.handle}) catch return;
+        const new_wd = self.rawAddInotifyWatch(path, mask) orelse {
+            self.rememberUnwatchedDir(rel);
+            return;
+        };
+        if (old_wd != null and new_wd == old_wd.?) {
+            self.forgetUnwatchedDir(rel);
+            return;
+        }
+        if (!self.rememberInotifyWatch(new_wd, rel)) {
+            _ = std.os.linux.inotify_rm_watch(self.inotify_fd, new_wd);
+            self.rememberUnwatchedDir(rel);
+            return;
+        }
+        if (old_wd) |wd| self.removeInotifyWatch(wd);
+        self.forgetUnwatchedDir(rel);
     }
 
     fn poll(self: *FileChangeWatch, dirty: *DirtySet, timeout_ms: i32) void {
@@ -1528,7 +1856,28 @@ const FileChangeWatch = struct {
         var i: usize = 0;
         while (i < @as(usize, @intCast(n))) : (i += 1) {
             if (self.ident_to_path.get(events[i].ident)) |path| {
-                dirty.put(path, {}) catch {};
+                const copy = dirty.allocator.dupe(u8, path) catch continue;
+                dirty.put(copy, {}) catch {};
+            }
+            if (self.ident_to_dir.get(events[i].ident)) |path| {
+                const copy = dirty.allocator.dupe(u8, path) catch continue;
+                dirty.put(copy, {}) catch {};
+            }
+        }
+    }
+
+    fn markAllWatchedDirsDirty(self: *const FileChangeWatch, dirty: *DirtySet) void {
+        if (comptime watch_kqueue) {
+            var it = self.ident_to_dir.iterator();
+            while (it.next()) |entry| {
+                const copy = dirty.allocator.dupe(u8, entry.value_ptr.*) catch continue;
+                dirty.put(copy, {}) catch {};
+            }
+        } else if (comptime watch_inotify) {
+            var it = self.wd_to_dir.iterator();
+            while (it.next()) |entry| {
+                const copy = dirty.allocator.dupe(u8, entry.value_ptr.*) catch continue;
+                dirty.put(copy, {}) catch {};
             }
         }
     }
@@ -1553,7 +1902,19 @@ const FileChangeWatch = struct {
             const ev: *const std.os.linux.inotify_event = @ptrCast(@alignCast(buf[offset..].ptr));
             const ev_size = @sizeOf(std.os.linux.inotify_event) + ev.len;
             if (offset + ev_size > n) break;
+            if (ev.mask & std.os.linux.IN.Q_OVERFLOW != 0) {
+                self.markAllWatchedDirsDirty(dirty);
+                offset += ev_size;
+                continue;
+            }
             if (self.wd_to_dir.get(ev.wd)) |dir_rel| {
+                if (ev.mask & (std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF | std.os.linux.IN.IGNORED) != 0) {
+                    const copy = dirty.allocator.dupe(u8, dir_rel) catch {
+                        offset += ev_size;
+                        continue;
+                    };
+                    dirty.put(copy, {}) catch {};
+                }
                 if (ev.getName()) |name| {
                     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
                     const rel = if (dir_rel.len == 0) name else std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_rel, name }) catch {
@@ -1572,8 +1933,238 @@ const FileChangeWatch = struct {
     }
 };
 
+fn armAndCloseGap(
+    io: std.Io,
+    watch: *FileChangeWatch,
+    root_dir: std.Io.Dir,
+    store: *Store,
+    explorer: *Explorer,
+    queue: *EventQueue,
+    known: *FileMap,
+    dirs: *DirMap,
+    root: []const u8,
+    persistent: std.mem.Allocator,
+) void {
+    var pass: usize = 0;
+    while (pass < 2) : (pass += 1) {
+        watch.arm(io, root_dir, known, dirs);
+        var arena = std.heap.ArenaAllocator.init(persistent);
+        defer arena.deinit();
+        incrementalDiffInner(io, store, explorer, queue, known, dirs, root, persistent, arena.allocator()) catch |err| {
+            std.log.err("watcher: post-arm reconcile failed: {}", .{err});
+            return;
+        };
+        if (known.count() == watch.armed_files and dirs.count() == watch.armed_dirs) return;
+    }
+    watch.arm(io, root_dir, known, dirs);
+}
+
+test "file watcher remains pinned to opened root after pathname retarget" {
+    if (!(comptime watch_kqueue or watch_inotify)) return;
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "live");
+    try tmp.dir.createDirPath(io, "decoy");
+    try tmp.dir.writeFile(io, .{ .sub_path = "live/keep.py", .data = "def original():\n    return 1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "decoy/keep.py", .data = "def decoy():\n    return 1\n" });
+    var live_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const live_len = try tmp.dir.realPathFile(io, "live", &live_buf);
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.setRoot(io, live_buf[0..live_len]);
+    const root_dir = explorer.root_dir orelse return error.TestUnexpectedResult;
+    var known = FileMap.init(testing.allocator);
+    defer {
+        var it = known.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    const known_key = try testing.allocator.dupe(u8, "keep.py");
+    try known.put(known_key, .{ .mtime = 0, .size = 0, .hash = 0, .seen = false });
+    var dirs = DirMap.init(testing.allocator);
+    defer {
+        var it = dirs.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+    const root_key = try testing.allocator.dupe(u8, "");
+    try dirs.put(root_key, .{ .mtime_ns = 0, .ctime_ns = 0, .inode = 0 });
+    var watch = FileChangeWatch.init(testing.allocator);
+    defer watch.deinit(io);
+    watch.arm(io, root_dir, &known, &dirs);
+    try testing.expect(watch.active);
+    try tmp.dir.rename("live", tmp.dir, "moved", io);
+    try tmp.dir.rename("decoy", tmp.dir, "live", io);
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var dirty = DirtySet.init(arena.allocator());
+        defer dirty.deinit();
+        watch.poll(&dirty, 100);
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "live/keep.py", .data = "def decoy_changed():\n    return 2\n" });
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var dirty = DirtySet.init(arena.allocator());
+        defer dirty.deinit();
+        watch.poll(&dirty, 100);
+        try testing.expectEqual(@as(u32, 0), dirty.count());
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "moved/keep.py", .data = "def original_changed():\n    return 3\n" });
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var dirty = DirtySet.init(arena.allocator());
+        defer dirty.deinit();
+        watch.poll(&dirty, 1000);
+        try testing.expect(dirty.contains("keep.py") or dirty.contains(""));
+    }
+}
+
+test "directory watches follow repeated equal-count subtree replacements" {
+    if (!(comptime watch_kqueue or watch_inotify)) return;
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "project/src/nested");
+    try tmp.dir.writeFile(io, .{ .sub_path = "project/src/nested/keep.py", .data = "VALUE = 'initial'\n" });
+    var stage_generation: usize = 0;
+    while (stage_generation < 30) : (stage_generation += 1) {
+        var stage_dir_buf: [48]u8 = undefined;
+        const stage_dir = try std.fmt.bufPrint(&stage_dir_buf, "stage-{d}/nested", .{stage_generation});
+        try tmp.dir.createDirPath(io, stage_dir);
+        var stage_file_buf: [64]u8 = undefined;
+        const stage_file = try std.fmt.bufPrint(&stage_file_buf, "stage-{d}/nested/keep.py", .{stage_generation});
+        var stage_content_buf: [64]u8 = undefined;
+        const stage_content = try std.fmt.bufPrint(&stage_content_buf, "VALUE = 'stage-{d}'\n", .{stage_generation});
+        try tmp.dir.writeFile(io, .{ .sub_path = stage_file, .data = stage_content });
+    }
+    const root_dir = try tmp.dir.openDir(io, "project", .{ .iterate = true, .follow_symlinks = false });
+    defer root_dir.close(io);
+    var known = FileMap.init(testing.allocator);
+    defer {
+        var it = known.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    const known_key = try testing.allocator.dupe(u8, "src/nested/keep.py");
+    try known.put(known_key, .{ .mtime = 0, .size = 0, .hash = 0, .seen = false });
+    var dirs = DirMap.init(testing.allocator);
+    defer {
+        var it = dirs.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+    for ([_][]const u8{ "", "src", "src/nested" }) |path| {
+        const key = try testing.allocator.dupe(u8, path);
+        try dirs.put(key, .{ .mtime_ns = 0, .ctime_ns = 0, .inode = 0 });
+    }
+    var watch = FileChangeWatch.init(testing.allocator);
+    defer watch.deinit(io);
+    watch.arm(io, root_dir, &known, &dirs);
+    try testing.expect(watch.active);
+    const Poll = struct {
+        fn untilAny(w: *FileChangeWatch, dirty: *DirtySet, first: []const u8, second: []const u8) !void {
+            var attempt: usize = 0;
+            while (attempt < 20) : (attempt += 1) {
+                w.poll(dirty, 100);
+                if (dirty.contains(first) or dirty.contains(second)) return;
+            }
+            return error.TestExpectedEqual;
+        }
+    };
+    var generation: usize = 0;
+    while (generation < 30) : (generation += 1) {
+        var stage_buf: [32]u8 = undefined;
+        const stage = try std.fmt.bufPrint(&stage_buf, "stage-{d}", .{generation});
+        var retired_buf: [32]u8 = undefined;
+        const retired = try std.fmt.bufPrint(&retired_buf, "retired-{d}", .{generation});
+        try tmp.dir.rename("project/src", tmp.dir, retired, io);
+        try tmp.dir.rename(stage, tmp.dir, "project/src", io);
+        {
+            var arena = std.heap.ArenaAllocator.init(testing.allocator);
+            defer arena.deinit();
+            var dirty = DirtySet.init(arena.allocator());
+            defer dirty.deinit();
+            try Poll.untilAny(&watch, &dirty, "src", "src");
+            watch.rearmDirty(io, root_dir, &dirty);
+        }
+        var content_buf: [64]u8 = undefined;
+        const content = try std.fmt.bufPrint(&content_buf, "VALUE = 'edited-{d}'\n", .{generation});
+        try root_dir.writeFile(io, .{ .sub_path = "src/nested/keep.py", .data = content });
+        {
+            var arena = std.heap.ArenaAllocator.init(testing.allocator);
+            defer arena.deinit();
+            var dirty = DirtySet.init(arena.allocator());
+            defer dirty.deinit();
+            try Poll.untilAny(&watch, &dirty, "src/nested/keep.py", "src/nested");
+            watch.rearmDirty(io, root_dir, &dirty);
+        }
+    }
+    var save: usize = 0;
+    while (save < 100) : (save += 1) {
+        var content_buf: [64]u8 = undefined;
+        const content = try std.fmt.bufPrint(&content_buf, "VALUE = 'save-{d}'\n", .{save});
+        try root_dir.writeFile(io, .{ .sub_path = "src/nested/keep.py", .data = content });
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var dirty = DirtySet.init(arena.allocator());
+        defer dirty.deinit();
+        try Poll.untilAny(&watch, &dirty, "src/nested/keep.py", "src/nested");
+        watch.rearmDirty(io, root_dir, &dirty);
+    }
+}
+
+test "failed directory watch admission retries through dirty reconciliation" {
+    if (!(comptime watch_kqueue or watch_inotify)) return;
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_dir = try tmp.dir.openDir(io, ".", .{ .iterate = true });
+    defer root_dir.close(io);
+    var known = FileMap.init(testing.allocator);
+    defer known.deinit();
+    var dirs = DirMap.init(testing.allocator);
+    defer {
+        var it = dirs.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+    for ([_][]const u8{ "", "late" }) |path| {
+        const key = try testing.allocator.dupe(u8, path);
+        try dirs.put(key, .{ .mtime_ns = 0, .ctime_ns = 0, .inode = 0 });
+    }
+    var watch = FileChangeWatch.init(testing.allocator);
+    defer watch.deinit(io);
+    watch.arm(io, root_dir, &known, &dirs);
+    try testing.expect(watch.active);
+    try testing.expectEqual(@as(usize, 1), watch.unwatched_dirs.items.len);
+    try testing.expect(!watch.hasWatchedDir("late"));
+    try tmp.dir.createDirPath(io, "late");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var dirty = DirtySet.init(arena.allocator());
+    defer dirty.deinit();
+    watch.addUnwatched(&dirty);
+    try testing.expect(dirty.contains("late"));
+    watch.rearmDirty(io, root_dir, &dirty);
+    try testing.expect(watch.hasWatchedDir("late"));
+    try testing.expectEqual(@as(usize, 0), watch.unwatched_dirs.items.len);
+    watch.markAllWatchedDirsDirty(&dirty);
+    try testing.expect(dirty.contains(""));
+    try testing.expect(dirty.contains("late"));
+}
+
 /// Background thread: polls for incremental FS changes.
 pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, root: []const u8, shutdown: *std.atomic.Value(bool), scan_done: *std.atomic.Value(bool)) void {
+    explorer.expectStartupReconcile();
+    var startup_reconcile_finished = false;
+    defer if (!startup_reconcile_finished) explorer.finishStartupReconcile();
     var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const backing = gpa.allocator();
@@ -1585,6 +2176,7 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
         if (shutdown.load(.acquire)) return;
         cio.sleepMs(100);
     }
+    const stable_root = explorer.root_dir orelse return;
 
     var known = FileMap.init(backing);
     defer {
@@ -1618,16 +2210,16 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
 
     var watch = FileChangeWatch.init(backing);
     defer watch.deinit(io);
-    watch.arm(io, root, &known, &dirs);
+    armAndCloseGap(io, &watch, stable_root, store, explorer, queue, &known, &dirs, root, backing);
+    explorer.finishStartupReconcile();
+    startup_reconcile_finished = true;
 
     // Track current git HEAD to detect branch switches (#116)
-    var last_git_head: ?[40]u8 = git_mod.getGitHead(root, backing) catch null;
+    var last_git_head: ?[40]u8 = git_mod.getGitHeadDir(io, stable_root, backing) catch null;
 
     // Cache .git/HEAD mtime so we only fork git rev-parse when the file changes (#254)
     var git_head_mtime: i128 = blk: {
-        const root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch break :blk -1;
-        defer root_dir.close(io);
-        const st = root_dir.statFile(io, ".git/HEAD", .{}) catch break :blk -1;
+        const st = stable_root.statFile(io, ".git/HEAD", .{}) catch break :blk -1;
         break :blk @intCast(st.mtime.nanoseconds);
     };
 
@@ -1642,20 +2234,18 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
             cio.sleepMs(2 * std.time.ns_per_s / 1_000_000);
         }
 
-        drainNotifyFile(io, store, explorer, queue, &known, root, backing);
+        drainNotifyFile(io, store, explorer, queue, &known, backing);
 
         // Check if git HEAD changed — stat .git/HEAD mtime first to skip fork+exec (#254)
         var current_head: ?[40]u8 = last_git_head;
         const head_changed = blk: {
             {
-                const root_dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch break :blk false;
-                defer root_dir.close(io);
-                const st = root_dir.statFile(io, ".git/HEAD", .{}) catch break :blk false;
+                const st = stable_root.statFile(io, ".git/HEAD", .{}) catch break :blk false;
                 const st_mtime: i128 = @intCast(st.mtime.nanoseconds);
                 if (st_mtime == git_head_mtime) break :blk false;
                 git_head_mtime = st_mtime;
             }
-            current_head = git_mod.getGitHead(root, backing) catch null;
+            current_head = git_mod.getGitHeadDir(io, stable_root, backing) catch null;
             if (last_git_head == null and current_head == null) break :blk false;
             if (last_git_head == null or current_head == null) break :blk true;
             break :blk !std.mem.eql(u8, &last_git_head.?, &current_head.?);
@@ -1688,23 +2278,22 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
             var rescan_arena = std.heap.ArenaAllocator.init(backing);
             defer rescan_arena.deinit();
             const tmp = rescan_arena.allocator();
-            const dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch continue;
-            defer dir.close(io);
+            const dir = stable_root;
             var walker = FilteredWalker.init(io, dir, tmp) catch continue;
             defer walker.deinit();
             const max_trigram_files = trigramFileCap();
             var file_count: usize = 0;
             while (walker.next() catch null) |entry| {
-                const stat = dir.statFile(io, entry.path, .{}) catch continue;
-                _ = store.recordSnapshot(entry.path, stat.size, 0) catch {};
+                _ = store.recordSnapshot(entry.path, entry.size, 0) catch {};
                 file_count += 1;
                 const effective_skip = file_count > max_trigram_files;
                 indexFileContent(io, explorer, dir, entry.path, backing, effective_skip) catch {};
+                const stat = project_file.statNoFollow(io, dir, entry.path) catch continue;
                 const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
                 const duped = backing.dupe(u8, entry.path) catch continue;
-                known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = false }) catch backing.free(duped);
+                known.put(duped, .{ .mtime = mtime, .size = entry.size, .hash = 0, .seen = false }) catch backing.free(duped);
             }
-            watch.arm(io, root, &known, &dirs);
+            armAndCloseGap(io, &watch, stable_root, store, explorer, queue, &known, &dirs, root, backing);
             continue;
         }
 
@@ -1717,17 +2306,17 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
             incrementalDiffDirty(io, store, explorer, queue, &known, &dirs, root, backing, cycle_arena.allocator(), &dirty) catch |err| {
                 std.log.err("watcher: diff failed: {}", .{err});
             };
-            if (known.count() != watch.armed_files) {
-                watch.arm(io, root, &known, &dirs);
+            if (known.count() != watch.armed_files or dirs.count() != watch.armed_dirs) {
+                armAndCloseGap(io, &watch, stable_root, store, explorer, queue, &known, &dirs, root, backing);
             } else if (had_events) {
-                watch.rearmDirty(io, root, &dirty);
+                watch.rearmDirty(io, stable_root, &dirty);
             }
         } else {
             incrementalDiffInner(io, store, explorer, queue, &known, &dirs, root, backing, cycle_arena.allocator()) catch |err| {
                 std.log.err("watcher: diff failed: {}", .{err});
             };
-            if (known.count() != watch.armed_files) {
-                watch.arm(io, root, &known, &dirs);
+            if (known.count() != watch.armed_files or dirs.count() != watch.armed_dirs) {
+                armAndCloseGap(io, &watch, stable_root, store, explorer, queue, &known, &dirs, root, backing);
             }
         }
     }
@@ -1762,7 +2351,7 @@ fn hashAndIndexFile(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []co
     if (size > max_indexed_file_bytes) return 0;
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
-    const content = dir.readFileAlloc(io, path, content_arena.allocator(), .limited(max_indexed_file_bytes)) catch return std.math.maxInt(u64);
+    const content = project_file.readAllocNoFollow(io, dir, path, content_arena.allocator(), .limited(max_indexed_file_bytes)) catch return std.math.maxInt(u64);
     const hash = std.hash.Wyhash.hash(0, content);
     indexContentBuffer(explorer, path, content, false) catch {};
     return hash;
@@ -1803,8 +2392,8 @@ pub fn incrementalDiffDirty(
     tmp: std.mem.Allocator,
     dirty: ?*const DirtySet,
 ) !void {
-    const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
-    defer dir.close(io);
+    _ = root;
+    const dir = explorer.root_dir orelse return error.ProjectRootUnavailable;
 
     // Mark all known files unseen for this cycle.
     var known_iter = known.iterator();
@@ -1815,7 +2404,7 @@ pub fn incrementalDiffDirty(
     var ignore = try FilteredWalker.init(io, dir, tmp);
     defer ignore.deinit();
     const parents = try buildParentIndex(known, tmp);
-    try walkRel(io, store, explorer, queue, known, dirs, &ignore, dir, "", persistent, tmp, &parents, dirty);
+    try walkRel(io, store, explorer, queue, known, dirs, &ignore, dir, "", persistent, tmp, &parents, dirty, false);
 
     // Detect deleted files
     var to_remove: std.ArrayList([]const u8) = .empty;
@@ -1845,15 +2434,25 @@ fn applyKnownFile(
     queue: *EventQueue,
     known: *FileMap,
     dir: std.Io.Dir,
-    path: []const u8,
+    logical_path: []const u8,
+    read_path: []const u8,
     stat: std.Io.Dir.Stat,
+    force_read: bool,
 ) !void {
-    const known_entry = known.getEntry(path) orelse return;
+    const known_entry = known.getEntry(logical_path) orelse return;
     const old = known_entry.value_ptr;
     old.seen = true;
     const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
-    if (old.mtime == mtime and old.size == stat.size) {
-        store.noteMtime(path, mtime);
+    const exact_metadata_matches = old.mtime_ns != 0 and old.mtime_ns == stat.mtime.nanoseconds and old.ctime_ns == stat.ctime.nanoseconds and old.inode == stat.inode and old.size == stat.size;
+    if (!force_read and exact_metadata_matches) {
+        store.noteMtime(logical_path, mtime);
+        return;
+    }
+    if (!force_read and old.mtime_ns == 0 and old.mtime == mtime and old.size == stat.size) {
+        old.mtime_ns = stat.mtime.nanoseconds;
+        old.ctime_ns = stat.ctime.nanoseconds;
+        old.inode = stat.inode;
+        store.noteMtime(logical_path, mtime);
         return;
     }
 
@@ -1862,8 +2461,8 @@ fn applyKnownFile(
     var content: ?[]const u8 = null;
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
-    if (!shouldSkipFile(path) and stat.size <= max_indexed_file_bytes) {
-        if (dir.readFileAlloc(io, path, content_arena.allocator(), .limited(max_indexed_file_bytes))) |buf| {
+    if (!shouldSkipFile(logical_path) and stat.size <= max_indexed_file_bytes) {
+        if (project_file.readAllocNoFollow(io, dir, read_path, content_arena.allocator(), .limited(max_indexed_file_bytes))) |buf| {
             content = buf;
             hash = std.hash.Wyhash.hash(0, buf);
         } else |_| {
@@ -1873,16 +2472,22 @@ fn applyKnownFile(
 
     if (old.size == stat.size and hash != 0 and old.hash != 0 and hash == old.hash) {
         old.mtime = mtime;
+        old.mtime_ns = stat.mtime.nanoseconds;
+        old.ctime_ns = stat.ctime.nanoseconds;
+        old.inode = stat.inode;
         old.size = stat.size;
-        store.noteMtime(path, mtime);
+        store.noteMtime(logical_path, mtime);
         return;
     }
 
-    const seq = try store.recordSnapshot(path, stat.size, hash);
+    const seq = try store.recordSnapshot(logical_path, stat.size, hash);
     old.mtime = mtime;
+    old.mtime_ns = stat.mtime.nanoseconds;
+    old.ctime_ns = stat.ctime.nanoseconds;
+    old.inode = stat.inode;
     old.size = stat.size;
     old.hash = hash;
-    store.noteMtime(path, mtime);
+    store.noteMtime(logical_path, mtime);
     if (FsEvent.init(stable_path, .modified, seq)) |ev| pushEventOrWait(queue, ev);
     if (content) |buf| indexContentBuffer(explorer, stable_path, buf, false) catch {};
 }
@@ -1920,6 +2525,22 @@ fn buildParentIndex(known: *const FileMap, tmp: std.mem.Allocator) !ParentIndex 
     return .{ .files = files, .child_dirs = child_dirs };
 }
 
+fn dirtyForcesDirectoryScan(dirty: ?*const DirtySet, known: *const FileMap, prefix: []const u8) bool {
+    const set = dirty orelse return false;
+    if (set.get(prefix) != null) return true;
+    var it = set.keyIterator();
+    while (it.next()) |path| {
+        if (path.len == 0 or known.get(path.*) != null) continue;
+        if (std.mem.eql(u8, parentRel(path.*), prefix)) return true;
+    }
+    return false;
+}
+
+fn dirtyForcesFileRead(dirty: ?*const DirtySet, prefix: []const u8, path: []const u8) bool {
+    const set = dirty orelse return false;
+    return set.get(prefix) != null or set.get(path) != null;
+}
+
 fn walkRel(
     io: std.Io,
     store: *Store,
@@ -1934,10 +2555,26 @@ fn walkRel(
     tmp: std.mem.Allocator,
     parents: *const ParentIndex,
     dirty: ?*const DirtySet,
+    through_symlink: bool,
 ) !void {
-    const current_mtime = dirMtimeMs(io, dir, prefix);
-    const cached_mtime = if (dirs) |d| d.get(prefix) else null;
-    const dir_unchanged = current_mtime != null and cached_mtime != null and current_mtime.? == cached_mtime.?;
+    // Open once, then validate the actual handle before observing its mtime,
+    // identity, names, or sizes. Iterator kind and a pre-open realpath are
+    // both racy; the full identity tuple also catches atomic directory swaps.
+    const listing = if (prefix.len == 0)
+        dir
+    else
+        dir.openDir(io, prefix, .{ .iterate = true }) catch return;
+    defer if (prefix.len != 0) listing.close(io);
+    var effective_through_symlink = through_symlink;
+    if (prefix.len != 0) {
+        const opened_as_alias = ignore.claimOpenedDirectory(listing, prefix) orelse return;
+        effective_through_symlink = effective_through_symlink or opened_as_alias;
+    }
+
+    const current_dir_state = dirState(io, listing, "");
+    const cached_dir_state = if (dirs) |d| d.get(prefix) else null;
+    const force_scan = dirtyForcesDirectoryScan(dirty, known, prefix);
+    const dir_unchanged = !force_scan and current_dir_state != null and cached_dir_state != null and std.meta.eql(current_dir_state.?, cached_dir_state.?);
 
     if (dir_unchanged) {
         if (parents.files.get(prefix)) |file_list| {
@@ -1949,8 +2586,11 @@ fn walkRel(
                     }
                 }
                 debug_unchanged_file_stats += 1;
-                const stat = dir.statFile(io, path, .{}) catch continue;
-                try applyKnownFile(io, store, explorer, queue, known, dir, path, stat);
+                const local_name = std.fs.path.basename(path);
+                if (effective_through_symlink and !resolvedFileTargetAllowed(io, listing, ignore.real_root, local_name)) continue;
+                const stat = listing.statFile(io, local_name, .{ .follow_symlinks = false }) catch continue;
+                if (stat.kind != .file) continue;
+                try applyKnownFile(io, store, explorer, queue, known, listing, path, local_name, stat, dirtyForcesFileRead(dirty, prefix, path));
             }
         }
         if (parents.child_dirs.get(prefix)) |children| {
@@ -1959,41 +2599,37 @@ fn walkRel(
                 if (shouldSkipDir(name.*)) continue;
                 const child = try joinRel(tmp, prefix, name.*);
                 if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(name.*, child)) continue;
-                try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents, dirty);
+                const child_stat = listing.statFile(io, name.*, .{ .follow_symlinks = false }) catch continue;
+                if (child_stat.kind != .directory and child_stat.kind != .sym_link) continue;
+                const child_through_symlink = effective_through_symlink or child_stat.kind == .sym_link;
+                try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents, dirty, child_through_symlink);
             }
         }
         return;
     }
 
-    const listing = if (prefix.len == 0)
-        dir
-    else
-        dir.openDir(io, prefix, .{ .iterate = true }) catch return;
-    defer if (prefix.len != 0) listing.close(io);
     var it = listing.iterate();
     while (try it.next(io)) |entry| {
-        if (entry.kind == .directory or (entry.kind == .sym_link and blk: {
-            const st = listing.statFile(io, entry.name, .{}) catch break :blk false;
-            break :blk st.kind == .directory;
-        })) {
+        if (entry.kind == .directory or entry.kind == .sym_link) {
+            const child_through_symlink = effective_through_symlink or entry.kind == .sym_link;
+            if (entry.kind == .sym_link and !resolvedDirectoryTargetAllowed(io, listing, ignore.real_root, entry.name)) continue;
             if (shouldSkipDir(entry.name)) continue;
             const child = try joinRel(tmp, prefix, entry.name);
             if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(entry.name, child)) continue;
-            try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents, dirty);
+            try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents, dirty, child_through_symlink);
             continue;
         }
 
-        if (entry.kind != .file) {
-            if (entry.kind != .sym_link) continue;
-            const st = listing.statFile(io, entry.name, .{}) catch continue;
-            if (st.kind != .file) continue;
-        }
+        if (entry.kind != .file) continue;
 
         const rel = try joinRel(tmp, prefix, entry.name);
         if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(entry.name, rel)) continue;
-        const stat = dir.statFile(io, rel, .{}) catch continue;
+        if (shouldSkipFile(rel)) continue;
+        if (effective_through_symlink and !resolvedFileTargetAllowed(io, listing, ignore.real_root, entry.name)) continue;
+        const stat = listing.statFile(io, entry.name, .{ .follow_symlinks = false }) catch continue;
+        if (stat.kind != .file) continue;
         if (known.getEntry(rel)) |known_entry| {
-            try applyKnownFile(io, store, explorer, queue, known, dir, known_entry.key_ptr.*, stat);
+            try applyKnownFile(io, store, explorer, queue, known, listing, known_entry.key_ptr.*, entry.name, stat, dirtyForcesFileRead(dirty, prefix, rel));
         } else {
             const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
             const duped = try persistent.dupe(u8, rel);
@@ -2002,12 +2638,12 @@ fn walkRel(
             try known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = true });
             store.noteMtime(duped, mtime);
             if (FsEvent.init(duped, .created, seq)) |ev| pushEventOrWait(queue, ev);
-            indexFileContent(io, explorer, dir, duped, tmp, false) catch {};
+            indexFileContentAt(io, explorer, listing, entry.name, duped, tmp, false) catch {};
         }
     }
 
     if (dirs) |dir_map| {
-        if (current_mtime) |mt| rememberDirMtime(dir_map, persistent, prefix, mt);
+        if (current_dir_state) |state| rememberDirState(dir_map, persistent, prefix, state);
     }
 }
 
@@ -2050,7 +2686,11 @@ pub fn indexMissingFile(io: std.Io, store: ?*Store, explorer: *Explorer, path: [
     }
     if (shouldSkipFile(path)) return false;
     const root_dir = explorer.root_dir orelse return false;
-    const stat = root_dir.statFile(io, path, .{}) catch return false;
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = root_dir.realPathFile(io, ".", &root_buf) catch return false;
+    if (!resolvedFileTargetAllowed(io, root_dir, root_buf[0..root_len], path)) return false;
+    const stat = root_dir.statFile(io, path, .{ .follow_symlinks = false }) catch return false;
+    if (stat.kind != .file) return false;
     if (stat.size > max_indexed_file_bytes) return false;
     indexFileContent(io, explorer, root_dir, path, explorer.allocator, false) catch return false;
     const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
@@ -2104,19 +2744,32 @@ fn shouldSkipFile(path: []const u8) bool {
 /// Delegates to snapshot.zig so live indexing and snapshots apply the same
 /// exclusion rules from a single implementation.
 pub fn isSensitivePath(path: []const u8) bool {
-    return @import("snapshot.zig").isSensitivePath(path);
+    return project_path.isSensitive(path);
 }
 
 fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
+    return indexFileContentAt(io, explorer, dir, path, path, allocator, skip_trigram);
+}
+
+fn indexFileContentAt(
+    io: std.Io,
+    explorer: *Explorer,
+    dir: std.Io.Dir,
+    read_path: []const u8,
+    logical_path: []const u8,
+    allocator: std.mem.Allocator,
+    skip_trigram: bool,
+) !void {
     _ = allocator;
-    if (shouldSkipFile(path)) return;
-    const stat = try dir.statFile(io, path, .{});
+    if (shouldSkipFile(logical_path)) return;
+    const stat = try dir.statFile(io, read_path, .{ .follow_symlinks = false });
+    if (stat.kind != .file) return;
     // Use page_allocator arena for content — pages returned to OS immediately
     // via munmap on deinit, eliminating GPA page retention from content churn.
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
-    const content = (try readIndexableFile(io, dir, path, content_arena.allocator(), stat.size, false)) orelse return;
-    try indexContentBuffer(explorer, path, content, skip_trigram);
+    const content = (try readIndexableFile(io, dir, read_path, content_arena.allocator(), stat.size, false)) orelse return;
+    try indexContentBuffer(explorer, logical_path, content, skip_trigram);
 }
 
 // ── muonry interop ───────────────────────────────────────────────────────────
@@ -2125,10 +2778,22 @@ fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []co
 // We drain this file on every poll cycle and re-index the listed files
 // immediately, eliminating the 2s polling delay for muonry-sourced edits.
 
-fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, root: []const u8, alloc: std.mem.Allocator) void {
-    // Atomically read + truncate
-    const notify_path = "/tmp/codedb-notify";
-    const file = std.Io.Dir.cwd().openFile(io, notify_path, .{ .mode = .read_write }) catch return;
+fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, alloc: std.mem.Allocator) void {
+    drainNotifyFileFrom(io, store, explorer, queue, known, alloc, std.Io.Dir.cwd(), "/tmp/codedb-notify");
+}
+
+fn drainNotifyFileFrom(
+    io: std.Io,
+    store: *Store,
+    explorer: *Explorer,
+    queue: *EventQueue,
+    known: *FileMap,
+    alloc: std.mem.Allocator,
+    notify_dir: std.Io.Dir,
+    notify_path: []const u8,
+) void {
+    // Atomically read + truncate.
+    const file = notify_dir.openFile(io, notify_path, .{ .mode = .read_write }) catch return;
     defer file.close(io);
 
     const file_len = file.length(io) catch return;
@@ -2145,8 +2810,10 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
     file.setLength(io, 0) catch return;
 
     // Re-index each notified path
-    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch return;
-    defer dir.close(io);
+    const dir = explorer.root_dir orelse return;
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = dir.realPathFile(io, ".", &root_buf) catch return;
+    const root = root_buf[0..root_len];
 
     var lines = std.mem.splitScalar(u8, data_slice, '\n');
     while (lines.next()) |line| {
@@ -2154,16 +2821,19 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
         if (path.len == 0) continue;
 
         // Make path relative to root if it's absolute
-        const rel = if (std.mem.startsWith(u8, path, root))
-            std.mem.trimStart(u8, path[root.len..], "/")
-        else
-            path;
+        const rel = if (std.fs.path.isAbsolute(path)) blk: {
+            if (!isWithinCanonicalRoot(root, path) or path.len == root.len) continue;
+            break :blk std.mem.trimStart(u8, path[root.len..], "/");
+        } else path;
+        if (shouldSkipFile(rel)) continue;
+        if (!resolvedFileTargetAllowed(io, dir, root, rel)) continue;
 
         // Skip re-indexing if file hasn't changed since last known state (#228)
-        const stat = dir.statFile(io, rel, .{}) catch continue;
+        const stat = dir.statFile(io, rel, .{ .follow_symlinks = false }) catch continue;
+        if (stat.kind != .file) continue;
         const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
         if (known.getPtr(rel)) |existing| {
-            if (existing.mtime == mtime and existing.size == stat.size) continue;
+            if (existing.mtime_ns != 0 and existing.mtime_ns == stat.mtime.nanoseconds and existing.ctime_ns == stat.ctime.nanoseconds and existing.inode == stat.inode and existing.size == stat.size) continue;
         }
 
         // Read once: index + hash from the same buffer (previously two separate
@@ -2174,8 +2844,12 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
         // Update known-file state so incrementalDiff doesn't double-process
         if (known.getPtr(rel)) |existing| {
             existing.mtime = mtime;
+            existing.mtime_ns = stat.mtime.nanoseconds;
+            existing.ctime_ns = stat.ctime.nanoseconds;
+            existing.inode = stat.inode;
             existing.size = stat.size;
             existing.hash = hash;
+            existing.seen = true;
         }
         store.noteMtime(rel, mtime);
 
@@ -2184,6 +2858,81 @@ fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *Event
             _ = queue.push(ev);
         }
     }
+}
+
+test "notify drain uses exact metadata and refreshes the live fingerprint" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const old_content = "OLD_VALUE = 111\n";
+    const new_content = "NEW_VALUE = 222\n";
+    try testing.expectEqual(old_content.len, new_content.len);
+    try tmp.dir.writeFile(io, .{ .sub_path = "keep.py", .data = old_content });
+    try tmp.dir.writeFile(io, .{ .sub_path = "notify", .data = "" });
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+    const store = try testing.allocator.create(Store);
+    defer testing.allocator.destroy(store);
+    store.* = Store.init(testing.allocator);
+    defer store.deinit();
+    const explorer = try testing.allocator.create(Explorer);
+    defer testing.allocator.destroy(explorer);
+    explorer.* = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.setRoot(io, root);
+    const stable_root = explorer.root_dir orelse return error.TestUnexpectedResult;
+    try indexFileContent(io, explorer, stable_root, "keep.py", testing.allocator, false);
+    const old_stat = try stable_root.statFile(io, "keep.py", .{ .follow_symlinks = false });
+    var known = FileMap.init(testing.allocator);
+    defer {
+        var it = known.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    const key = try testing.allocator.dupe(u8, "keep.py");
+    try known.put(key, .{
+        .mtime = @intCast(@divTrunc(old_stat.mtime.nanoseconds, std.time.ns_per_ms)),
+        .mtime_ns = old_stat.mtime.nanoseconds,
+        .ctime_ns = old_stat.ctime.nanoseconds,
+        .inode = old_stat.inode,
+        .size = old_stat.size,
+        .hash = std.hash.Wyhash.hash(0, old_content),
+        .seen = true,
+    });
+    try tmp.dir.writeFile(io, .{ .sub_path = "keep.py", .data = new_content });
+    const new_stat = try stable_root.statFile(io, "keep.py", .{ .follow_symlinks = false });
+    (known.getPtr("keep.py") orelse return error.TestUnexpectedResult).mtime =
+        @intCast(@divTrunc(new_stat.mtime.nanoseconds, std.time.ns_per_ms));
+    try tmp.dir.writeFile(io, .{ .sub_path = "notify", .data = "keep.py\n" });
+    const queue = try testing.allocator.create(EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = .{};
+    drainNotifyFileFrom(io, store, explorer, queue, &known, testing.allocator, tmp.dir, "notify");
+    const refreshed = known.getPtr("keep.py") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(new_stat.mtime.nanoseconds, refreshed.mtime_ns);
+    try testing.expectEqual(new_stat.ctime.nanoseconds, refreshed.ctime_ns);
+    try testing.expectEqual(new_stat.inode, refreshed.inode);
+    try testing.expectEqual(std.hash.Wyhash.hash(0, new_content), refreshed.hash);
+    const new_hits = try explorer.searchContent("NEW_VALUE", testing.allocator, 10);
+    defer {
+        for (new_hits) |hit| {
+            testing.allocator.free(hit.line_text);
+            testing.allocator.free(hit.path);
+        }
+        testing.allocator.free(new_hits);
+    }
+    try testing.expectEqual(@as(usize, 1), new_hits.len);
+    const old_hits = try explorer.searchContent("OLD_VALUE", testing.allocator, 10);
+    defer {
+        for (old_hits) |hit| {
+            testing.allocator.free(hit.line_text);
+            testing.allocator.free(hit.path);
+        }
+        testing.allocator.free(old_hits);
+    }
+    try testing.expectEqual(@as(usize, 0), old_hits.len);
 }
 
 test "issue-685: watcher diff updates document edges for modify add and delete" {
@@ -2204,7 +2953,7 @@ test "issue-685: watcher diff updates document edges for modify add and delete" 
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
     try testing.expectEqual(@as(usize, 1), explorer.document_graph.getForwardDeps("docs/a.md").?.len);
 
@@ -2234,10 +2983,12 @@ test "issue-685: watcher diff updates document edges for modify add and delete" 
     try tmp.dir.writeFile(io, .{ .sub_path = "docs/c.md", .data = "# C\n" });
     try tmp.dir.deleteFile(io, "docs/b.md");
 
-    var queue = EventQueue{};
+    const queue = try testing.allocator.create(EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = .{};
     var cycle_arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer cycle_arena.deinit();
-    try incrementalDiff(io, &store, &explorer, &queue, &known, root, testing.allocator, cycle_arena.allocator());
+    try incrementalDiff(io, &store, &explorer, queue, &known, root, testing.allocator, cycle_arena.allocator());
 
     try testing.expect(!explorer.outlines.contains("docs/b.md"));
     try testing.expect(explorer.outlines.contains("docs/c.md"));
@@ -2264,7 +3015,7 @@ test "dir-mtime prune still stats known files and notices new siblings" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
 
     var known = FileMap.init(testing.allocator);
     defer {
@@ -2279,11 +3030,13 @@ test "dir-mtime prune still stats known files and notices new siblings" {
         dirs.deinit();
     }
 
-    var queue = EventQueue{};
+    const queue = try testing.allocator.create(EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = .{};
     {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
-        try incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+        try incrementalDiffInner(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator());
     }
     try testing.expect(explorer.outlines.contains("src/a.py"));
     try testing.expect(explorer.outlines.contains("src/b.py"));
@@ -2292,7 +3045,7 @@ test "dir-mtime prune still stats known files and notices new siblings" {
     {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
-        try incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+        try incrementalDiffInner(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator());
     }
     try testing.expectEqual(first_seq, store.currentSeq());
 
@@ -2301,7 +3054,7 @@ test "dir-mtime prune still stats known files and notices new siblings" {
     {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
-        try incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+        try incrementalDiffInner(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator());
     }
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
@@ -2313,7 +3066,7 @@ test "dir-mtime prune still stats known files and notices new siblings" {
     {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
-        try incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root, testing.allocator, arena.allocator());
+        try incrementalDiffInner(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator());
     }
     try testing.expect(explorer.outlines.contains("src/c.py"));
 }

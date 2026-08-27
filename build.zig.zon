@@ -7,10 +7,16 @@
         .nanoregex = .{
             .path = "vendor/nanoregex",
         },
+        // Pure-Zig in-process HNSW engine only. The package root is src/lib.zig;
+        // HTTP/S3/cloud clients are not imported by codedb.
+        .openpuffer = .{
+            .path = "vendor/openpuffer",
+        },
     },
     .paths = .{
         "src",
         "vendor/nanoregex",
+        "vendor/openpuffer",
         "build.zig",
         "build.zig.zon",
     },

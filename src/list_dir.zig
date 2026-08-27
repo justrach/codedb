@@ -13,6 +13,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const gitignore = @import("gitignore.zig");
+const project_file = @import("project_file.zig");
 
 pub const max_output_chars: usize = 10_000;
 pub const max_walk_items: usize = 20_000;
@@ -123,11 +124,43 @@ fn isCollapseDir(name: []const u8) bool {
 const Walk = struct {
     io: Io,
     arena: Allocator,
+    root_dir: Io.Dir,
     root_abs: []const u8,
     rules: std.ArrayList(gitignore.Rule),
     items: usize = 0,
     truncated: bool = false,
 };
+
+fn isPortablePathSep(ch: u8) bool {
+    return ch == '/' or ch == '\\';
+}
+
+fn canonicalRelative(root: []const u8, target: []const u8, normalized: []u8) ?[]const u8 {
+    if (!underRoot(target, root)) return null;
+    var start = root.len;
+    while (start < target.len and isPortablePathSep(target[start])) start += 1;
+    const rel = target[start..];
+    if (rel.len > normalized.len) return null;
+    for (rel, normalized[0..rel.len]) |ch, *out| out.* = if (isPortablePathSep(ch)) '/' else ch;
+    return normalized[0..rel.len];
+}
+
+test "Windows canonical paths are slash-normalized before list policy checks" {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const rel = canonicalRelative("C:\\repo", "C:\\repo\\safe\\.ssh", &buf) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("safe/.ssh", rel);
+    try std.testing.expect(!project_file.isAllowedPath(rel));
+    try std.testing.expect(!underRoot("C:\\repo-other\\src", "C:\\repo"));
+}
+
+fn openedDirectoryAllowed(w: *Walk, dir: Io.Dir) bool {
+    var opened_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const opened_len = dir.realPath(w.io, &opened_buf) catch return false;
+    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_rel = canonicalRelative(w.root_abs, opened_buf[0..opened_len], &normalized_buf) orelse return false;
+    return target_rel.len == 0 or project_file.isAllowedPath(target_rel);
+}
 
 fn skip(w: *Walk, abs: []const u8, is_dir: bool) !bool {
     if (isGitComponent(std.fs.path.basename(abs))) return true;
@@ -139,22 +172,38 @@ fn fill(w: *Walk, node: *Node) !void {
     node.filled = true;
     const rel = node.rel;
     const abs = if (rel.len == 0) w.root_abs else try join(w.arena, w.root_abs, rel);
-    var dir = Io.Dir.cwd().openDir(w.io, abs, .{ .iterate = true, .follow_symlinks = false }) catch return;
-    defer dir.close(w.io);
+    var owned_dir: ?Io.Dir = null;
+    const dir = if (rel.len == 0) w.root_dir else blk: {
+        const opened = w.root_dir.openDir(w.io, rel, .{ .iterate = true }) catch return;
+        owned_dir = opened;
+        break :blk opened;
+    };
+    defer if (owned_dir) |opened| opened.close(w.io);
+    if (!openedDirectoryAllowed(w, dir)) return;
 
     var names: std.ArrayList(struct { name: []const u8, is_dir: bool }) = .empty;
     var it = dir.iterate();
     var saw_ignore = false;
     while (it.next(w.io) catch null) |ent| {
-        if (ent.kind == .sym_link) continue;
         const name = try w.arena.dupe(u8, ent.name);
+        const child_rel = if (rel.len == 0) name else try join(w.arena, rel, name);
+        if (!project_file.isAllowedPath(child_rel)) continue;
         if (std.mem.eql(u8, name, ".gitignore") and rel.len > 0) saw_ignore = true;
-        const is_dir = ent.kind == .directory;
+        var is_dir = false;
+        if (ent.kind == .directory or ent.kind == .sym_link) {
+            const child_dir = dir.openDir(w.io, name, .{ .iterate = true }) catch continue;
+            defer child_dir.close(w.io);
+            if (!openedDirectoryAllowed(w, child_dir)) continue;
+            is_dir = true;
+        } else if (ent.kind == .file) {
+            const st = dir.statFile(w.io, name, .{ .follow_symlinks = false }) catch continue;
+            if (st.kind != .file) continue;
+        } else continue;
         try names.append(w.arena, .{ .name = name, .is_dir = is_dir });
     }
     if (saw_ignore) {
-        const gi = try join(w.arena, abs, ".gitignore");
-        const text = Io.Dir.cwd().readFileAlloc(w.io, gi, w.arena, .limited(64 * 1024)) catch null;
+        const ignore_rel = try join(w.arena, rel, ".gitignore");
+        const text = project_file.readAllocNoFollowAtRoot(w.io, w.root_dir, w.root_abs, ignore_rel, w.arena, .limited(64 * 1024)) catch null;
         if (text) |t| {
             const extra = gitignore.parse(w.arena, t, abs) catch &.{};
             w.rules.appendSlice(w.arena, extra) catch {};
@@ -213,11 +262,10 @@ fn fillSummaries(w: *Walk, node: *Node) !void {
 
 fn isSourceExt(ext: []const u8) bool {
     const src = [_][]const u8{
-        "zig", "c", "h", "cc", "cpp", "cxx", "hpp",
-        "py",  "ts", "tsx", "js",  "jsx", "mjs", "cjs",
-        "go",  "rs", "java", "kt", "swift",
-        "rb",  "php", "cs",  "sh", "bash",
-        "md",  "toml",
+        "zig", "c",  "h",    "cc", "cpp",   "cxx", "hpp",
+        "py",  "ts", "tsx",  "js", "jsx",   "mjs", "cjs",
+        "go",  "rs", "java", "kt", "swift", "rb",  "php",
+        "cs",  "sh", "bash", "md", "toml",
     };
     for (src) |s| if (std.mem.eql(u8, ext, s)) return true;
     return false;
@@ -375,11 +423,12 @@ fn budgetExpand(w: *Walk, root: *Node, max_chars: usize) ![]const u8 {
     return std.fmt.allocPrint(arena, "{s}{s}", .{ try renderKids(arena, root), cut });
 }
 
-fn walkTree(io: Io, arena: Allocator, abs: []const u8) !struct { root: *Node, w: Walk } {
-    const climbed = try gitignore.loadClimb(io, arena, abs);
+fn walkTreeRoot(io: Io, arena: Allocator, root_dir: Io.Dir, abs: []const u8) !struct { root: *Node, w: Walk } {
+    const climbed = try gitignore.loadProjectRoot(io, arena, root_dir, abs);
     var w: Walk = .{
         .io = io,
         .arena = arena,
+        .root_dir = root_dir,
         .root_abs = abs,
         .rules = .empty,
     };
@@ -401,7 +450,9 @@ fn stripDot(path: []const u8) []const u8 {
 
 /// Render a listing for an already-resolved absolute directory.
 pub fn listAbs(io: Io, arena: Allocator, abs: []const u8, display: []const u8) ![]const u8 {
-    var walked = try walkTree(io, arena, abs);
+    var root_dir = try Io.Dir.cwd().openDir(io, abs, .{ .iterate = true, .follow_symlinks = false });
+    defer root_dir.close(io);
+    var walked = try walkTreeRoot(io, arena, root_dir, abs);
     const body = try budgetExpand(&walked.w, walked.root, max_output_chars);
     const trimmed = std.mem.trimEnd(u8, body, "\n");
     if (trimmed.len == 0) return std.fmt.allocPrint(arena, "- {s}/", .{display});
@@ -422,7 +473,8 @@ fn pathSafe(path: []const u8) bool {
 
 fn underRoot(abs: []const u8, root: []const u8) bool {
     if (!std.mem.startsWith(u8, abs, root)) return false;
-    return abs.len == root.len or abs[root.len] == '/';
+    if (abs.len == root.len) return true;
+    return root.len > 0 and (isPortablePathSep(root[root.len - 1]) or isPortablePathSep(abs[root.len]));
 }
 
 pub const ListError = error{
@@ -436,29 +488,46 @@ pub const ListError = error{
 /// List `rel` under `project_abs`. `rel` of `.` / empty is the project root.
 /// Caller owns the returned slice (`arena`).
 pub fn listUnder(io: Io, arena: Allocator, project_abs: []const u8, rel: []const u8) ListError![]const u8 {
+    var root_dir = Io.Dir.cwd().openDir(io, project_abs, .{ .iterate = true, .follow_symlinks = false }) catch return error.NotFound;
+    defer root_dir.close(io);
+    return listUnderRoot(io, arena, root_dir, project_abs, rel);
+}
+
+pub fn listUnderRoot(io: Io, arena: Allocator, root_dir: Io.Dir, project_abs: []const u8, rel: []const u8) ListError![]const u8 {
     const path = stripDot(rel);
     if (!std.mem.eql(u8, path, ".") and !pathSafe(path)) return error.Escape;
+    if (!std.mem.eql(u8, path, ".") and !project_file.isAllowedPath(path)) return error.AccessDenied;
 
-    const resolved = if (std.mem.eql(u8, path, "."))
-        project_abs
-    else
-        std.fmt.allocPrint(arena, "{s}/{s}", .{ project_abs, path }) catch return error.NotFound;
+    if (!std.mem.eql(u8, path, ".")) {
+        const requested_stat = root_dir.statFile(io, path, .{ .follow_symlinks = false }) catch |err| switch (err) {
+            error.FileNotFound => return error.NotFound,
+            error.AccessDenied => return error.AccessDenied,
+            else => return error.NotADir,
+        };
+        if (requested_stat.kind == .file) return error.IsAFile;
+    }
 
-    const st = Io.Dir.cwd().statFile(io, resolved, .{}) catch |err| switch (err) {
-        error.FileNotFound => return error.NotFound,
-        error.AccessDenied => return error.AccessDenied,
-        else => return error.NotADir,
-    };
-    if (st.kind == .file) return error.IsAFile;
-    if (st.kind != .directory) return error.NotADir;
-
-    var opened = Io.Dir.cwd().openDir(io, resolved, .{}) catch return error.NotADir;
-    defer opened.close(io);
+    const opened = if (std.mem.eql(u8, path, ".")) root_dir else root_dir.openDir(io, path, .{ .iterate = true }) catch return error.NotADir;
+    defer if (!std.mem.eql(u8, path, ".")) opened.close(io);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = opened.realPath(io, &buf) catch return error.NotADir;
     const abs = buf[0..n];
     if (!underRoot(abs, project_abs)) return error.Escape;
-    return listAbs(io, arena, abs, path) catch return error.NotADir;
+    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_rel = canonicalRelative(project_abs, abs, &normalized_buf) orelse return error.Escape;
+    if (target_rel.len != 0 and !project_file.isAllowedPath(target_rel)) return error.AccessDenied;
+    var walked = walkTreeRoot(io, arena, root_dir, project_abs) catch return error.NotADir;
+    const root = if (std.mem.eql(u8, path, ".")) walked.root else blk: {
+        const node = newNode(arena, std.fs.path.basename(path), path, true, 0, null) catch return error.NotFound;
+        fill(&walked.w, node) catch return error.NotADir;
+        fillSummaries(&walked.w, node) catch return error.NotADir;
+        sortKids(node);
+        break :blk node;
+    };
+    const body = budgetExpand(&walked.w, root, max_output_chars) catch return error.NotADir;
+    const trimmed = std.mem.trimEnd(u8, body, "\n");
+    if (trimmed.len == 0) return std.fmt.allocPrint(arena, "- {s}/", .{path}) catch return error.NotFound;
+    return std.fmt.allocPrint(arena, "- {s}/\n{s}", .{ path, trimmed }) catch return error.NotFound;
 }
 
 pub fn errorText(err: ListError) []const u8 {
@@ -546,6 +615,41 @@ test "listUnder refuses a file and an escaped path" {
     try std.testing.expect(std.mem.indexOf(u8, listing, "only.txt") != null);
     const nested = try listUnder(io, a, abs, "sub");
     try std.testing.expectEqualStrings("- sub/", nested);
+}
+
+test "listUnderRoot filters sensitive names and sensitive directory aliases" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "safe.txt", .data = "ok" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".env", .data = "SECRET=x" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "private_key.pem", .data = "key" });
+    try tmp.dir.createDirPath(io, ".ssh");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".ssh/config", .data = "secret" });
+    try tmp.dir.createDirPath(io, "src");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/main.zig", .data = "pub fn main() void {}" });
+    tmp.dir.symLink(io, ".ssh", "aliasdir", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    try tmp.dir.symLink(io, "src", "safealias", .{});
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const listing = try listUnderRoot(io, arena_state.allocator(), tmp.dir, root, ".");
+    try std.testing.expect(std.mem.indexOf(u8, listing, "safe.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listing, "safealias/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listing, ".env") == null);
+    try std.testing.expect(std.mem.indexOf(u8, listing, "private_key.pem") == null);
+    try std.testing.expect(std.mem.indexOf(u8, listing, ".ssh") == null);
+    try std.testing.expect(std.mem.indexOf(u8, listing, "aliasdir") == null);
+    try std.testing.expectError(error.AccessDenied, listUnderRoot(io, arena_state.allocator(), tmp.dir, root, ".ssh"));
+    try std.testing.expectError(error.AccessDenied, listUnderRoot(io, arena_state.allocator(), tmp.dir, root, "aliasdir"));
+    const safe_alias = try listUnderRoot(io, arena_state.allocator(), tmp.dir, root, "safealias");
+    try std.testing.expect(std.mem.indexOf(u8, safe_alias, "main.zig") != null);
 }
 
 test "empty directory is a header only" {

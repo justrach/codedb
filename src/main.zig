@@ -483,7 +483,7 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
     defer if (rerank_trace_path) |p| allocator.free(p);
     if (rerank_trace_path) |p| explorer.rerank_trace_path = p;
 
-    explorer.setRoot(io, root);
+    if (!mcp_deferred_root) try explorer.setRoot(io, abs_root);
     defer explorer.deinit();
 
     // Per-project frequency table for sparse n-gram boundary selection.
@@ -495,7 +495,7 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
         allocator.destroy(ft);
     };
 
-    try bootstrap.coldLoadOrScan(io, allocator, &store, &explorer, &out, s, cmd, args, cmd_args_start, abs_root, data_dir, root, &freq_table_heap);
+    try bootstrap.coldLoadOrScan(io, allocator, &store, &explorer, &out, s, cmd, args, cmd_args_start, abs_root, data_dir, &freq_table_heap);
     var ctx = commands.RunCtx{
         .io = io,
         .allocator = allocator,
@@ -520,6 +520,8 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
         commands.runBenchEngine(&ctx);
     } else if (std.mem.eql(u8, cmd, "snapshot")) {
         commands.runSnapshot(&ctx);
+    } else if (std.mem.eql(u8, cmd, "semantic-index")) {
+        commands.runSemanticIndex(&ctx);
     } else if (std.mem.eql(u8, cmd, "cli-daemon")) {
         try commands.runCliDaemon(&ctx);
     } else if (std.mem.eql(u8, cmd, "serve")) {

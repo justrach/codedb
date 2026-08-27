@@ -3,6 +3,7 @@ const cio = @import("cio.zig");
 const testing = std.testing;
 const io = std.testing.io;
 const Store = @import("store.zig").Store;
+const bootstrap = @import("bootstrap.zig");
 const ChangeEntry = @import("store.zig").ChangeEntry;
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const Config = @import("config.zig").Config;
@@ -10,6 +11,59 @@ const explore = @import("explore.zig");
 const Explorer = explore.Explorer;
 const ContentCache = @import("hot_cache.zig").ContentCache;
 const git = @import("git.zig");
+const builtin = @import("builtin");
+const project_file = @import("project_file.zig");
+
+test "project file reads reject final-component symlinks without hiding regular files" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var outside = testing.tmpDir(.{});
+    defer outside.cleanup();
+    try outside.dir.writeFile(io, .{ .sub_path = "outside.txt", .data = "OUTSIDE_READ_CANARY\n" });
+    var outside_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const outside_path = outside_buf[0..try outside.dir.realPathFile(io, "outside.txt", &outside_buf)];
+
+    var project = testing.tmpDir(.{});
+    defer project.cleanup();
+    try project.dir.createDirPath(io, "src");
+    try project.dir.createDirPath(io, "real_dir");
+    try project.dir.createDirPath(io, ".ssh");
+    try project.dir.writeFile(io, .{ .sub_path = "src/ordinary.txt", .data = "ORDINARY_READ_CANARY\n" });
+    try project.dir.writeFile(io, .{ .sub_path = "real_dir/inside.txt", .data = "IN_ROOT_DIRECTORY_ALIAS_CANARY\n" });
+    try project.dir.writeFile(io, .{ .sub_path = ".ssh/config", .data = "SENSITIVE_DIRECTORY_ALIAS_CANARY\n" });
+    try project.dir.writeFile(io, .{ .sub_path = ".env", .data = "SENSITIVE_READ_CANARY\n" });
+    var src = try project.dir.openDir(io, "src", .{});
+    defer src.close(io);
+    src.symLink(io, outside_path, "outside_alias.txt", .{}) catch |err| switch (err) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    try src.symLink(io, "../.env", "sensitive_alias.txt", .{});
+    try project.dir.symLink(io, "real_dir", "dir_alias", .{});
+    try project.dir.symLink(io, ".ssh", "sensitive_dir_alias", .{});
+
+    const ordinary = try project_file.readAllocNoFollow(io, project.dir, "src/ordinary.txt", testing.allocator, .limited(1024));
+    defer testing.allocator.free(ordinary);
+    try testing.expectEqualStrings("ORDINARY_READ_CANARY\n", ordinary);
+
+    const through_safe_dir = try project_file.readAllocNoFollow(io, project.dir, "dir_alias/inside.txt", testing.allocator, .limited(1024));
+    defer testing.allocator.free(through_safe_dir);
+    try testing.expectEqualStrings("IN_ROOT_DIRECTORY_ALIAS_CANARY\n", through_safe_dir);
+
+    for ([_][]const u8{ "src/outside_alias.txt", "src/sensitive_alias.txt", "sensitive_dir_alias/config", ".env", "../outside.txt", "src//ordinary.txt" }) |path| {
+        if (project_file.readAllocNoFollow(io, project.dir, path, testing.allocator, .limited(1024))) |unexpected| {
+            testing.allocator.free(unexpected);
+            return error.TestExpectedError;
+        } else |_| {}
+    }
+
+    // The policy is applied before cache lookup too: a forged/restored cache
+    // entry cannot make a direct or semantic caller recover sensitive bytes.
+    var guarded = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer guarded.deinit();
+    try guarded.indexFile(".env", "CACHED_SENSITIVE_CANARY\n");
+    try testing.expect((try guarded.getContent(".env", testing.allocator)) == null);
+}
 
 test "store: record and retrieve snapshots" {
     var store = Store.init(testing.allocator);
@@ -21,6 +75,75 @@ test "store: record and retrieve snapshots" {
     try testing.expect(seq1 == 1);
     try testing.expect(seq2 == 2);
     try testing.expect(store.currentSeq() == 2);
+}
+
+test "store: content fingerprint is deterministic and detects same-size edits" {
+    var first = Store.init(testing.allocator);
+    defer first.deinit();
+    _ = try first.recordSnapshot("src/b.zig", 12, 0xBBBB);
+    _ = try first.recordSnapshot("src/a.zig", 12, 0xAAAA);
+    const before = try first.contentFingerprint(testing.allocator);
+
+    // Insertion order and process-local sequence numbers are deliberately not
+    // part of the identity, so a freshly loaded store produces the same value.
+    var reordered = Store.init(testing.allocator);
+    defer reordered.deinit();
+    _ = try reordered.recordSnapshot("src/a.zig", 12, 0xAAAA);
+    _ = try reordered.recordSnapshot("src/b.zig", 12, 0xBBBB);
+    try testing.expectEqual(before, try reordered.contentFingerprint(testing.allocator));
+
+    // The size stays constant but the watcher hash changes, which must stale a
+    // semantic sidecar built from the old source bytes.
+    _ = try first.recordSnapshot("src/a.zig", 12, 0xCCCC);
+    try testing.expect(before != try first.contentFingerprint(testing.allocator));
+
+    // A transient file that is created and then removed must not change the
+    // identity of the final live tree.
+    _ = try reordered.recordSnapshot("src/transient.zig", 8, 0xDDDD);
+    _ = try reordered.recordDelete("src/transient.zig", 0);
+    try testing.expectEqual(before, try reordered.contentFingerprint(testing.allocator));
+}
+
+test "store: cold scan refines placeholder hash without publishing an edit" {
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+
+    _ = try store.recordSnapshot("src/live.zig", 12, 0);
+    const sequence = store.currentSeq();
+    const placeholder = try store.contentFingerprint(testing.allocator);
+    try testing.expect(store.refineLatestSnapshotHash("src/live.zig", 12, 0xCAFE));
+    try testing.expectEqual(sequence, store.currentSeq());
+    try testing.expect(placeholder != try store.contentFingerprint(testing.allocator));
+    try testing.expectEqual(@as(u64, 0xCAFE), store.getLatest("src/live.zig").?.hash);
+
+    // Refuse to overwrite an already authoritative identity or a mismatched
+    // stat record; a concurrent watcher update therefore wins safely.
+    try testing.expect(!store.refineLatestSnapshotHash("src/live.zig", 12, 0xBEEF));
+    _ = try store.recordSnapshot("src/changed.zig", 8, 0);
+    try testing.expect(!store.refineLatestSnapshotHash("src/changed.zig", 9, 0xABCD));
+}
+
+test "store: path-scoped content identity excludes stat-only records" {
+    var with_extra = Store.init(testing.allocator);
+    defer with_extra.deinit();
+    _ = try with_extra.recordSnapshot("src/a.zig", 12, 0xAAAA);
+    _ = try with_extra.recordSnapshot("ignored.bin", 900, 0);
+
+    var parsed_only = Store.init(testing.allocator);
+    defer parsed_only.deinit();
+    _ = try parsed_only.recordSnapshot("src/a.zig", 12, 0xAAAA);
+    const paths = [_][]const u8{"src/a.zig"};
+    try testing.expectEqual(
+        try parsed_only.contentFingerprintForPaths(&paths),
+        try with_extra.contentFingerprintForPaths(&paths),
+    );
+}
+
+test "semantic-index always forces a live filesystem rescan" {
+    try testing.expect(bootstrap.commandForcesRescan("semantic-index"));
+    try testing.expect(bootstrap.commandForcesRescan("snapshot"));
+    try testing.expect(bootstrap.commandForcesRescan("index"));
+    try testing.expect(!bootstrap.commandForcesRescan("context"));
 }
 
 test "store: getLatest returns most recent version" {

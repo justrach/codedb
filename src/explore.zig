@@ -13,6 +13,8 @@ const SparseNgramIndex = idx.SparseNgramIndex;
 const codegraph = @import("codegraph.zig");
 const markdown_graph = @import("markdown_graph.zig");
 const git = @import("git.zig");
+const project_file = @import("project_file.zig");
+const root_policy = @import("root_policy.zig");
 
 pub const DocumentLinkKind = markdown_graph.LinkKind;
 pub const DocumentLink = markdown_graph.Link;
@@ -1796,6 +1798,12 @@ pub const Explorer = struct {
     /// borrowed (value_owned=false) slices into these for restored files, so they
     /// must outlive the cache; munmap'd once here at Explorer.deinit.
     content_section_maps: std.ArrayList([]align(std.heap.page_size_min) const u8) = .empty,
+    /// A snapshot-backed MCP can serve before the watcher's initial diff has
+    /// reconciled edits made after the snapshot. ANN freshness waits for this
+    /// one bounded startup phase only; genuine stale sidecars never trigger a
+    /// second full tree walk from the query path.
+    startup_reconcile_expected: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    startup_reconcile_complete: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     /// Default file-content cache capacity. Was 16384, but on typical
     /// projects (≤2000 files) the cache only ever holds a few hundred
@@ -1805,11 +1813,92 @@ pub const Explorer = struct {
     /// pass a custom value to Explorer.init.
     pub const DEFAULT_CONTENT_CACHE_CAPACITY: u32 = 4096;
 
-    pub fn setRoot(self: *Explorer, io: std.Io, root_path: []const u8) void {
+    pub fn expectStartupReconcile(self: *Explorer) void {
+        self.startup_reconcile_complete.store(false, .release);
+        self.startup_reconcile_expected.store(true, .release);
+    }
+
+    pub fn finishStartupReconcile(self: *Explorer) void {
+        self.startup_reconcile_complete.store(true, .release);
+    }
+
+    pub fn startupReconcilePending(self: *const Explorer) bool {
+        return self.startup_reconcile_expected.load(.acquire) and
+            !self.startup_reconcile_complete.load(.acquire);
+    }
+
+    test "ANN startup freshness waits only for an expected watcher reconcile" {
+        var explorer = Explorer.init(std.testing.allocator, 1024 * 1024);
+        defer explorer.deinit();
+        try std.testing.expect(!explorer.startupReconcilePending());
+        explorer.expectStartupReconcile();
+        try std.testing.expect(explorer.startupReconcilePending());
+        explorer.finishStartupReconcile();
+        try std.testing.expect(!explorer.startupReconcilePending());
+    }
+
+    /// Establish the project root as one validated filesystem capability.
+    /// The final component is never followed, temp-project admission is
+    /// checked through the opened handle, and replacement is transactional:
+    /// a failed call leaves the previous root intact.
+    pub fn setRoot(self: *Explorer, io: std.Io, root_path: []const u8) !void {
+        if (!root_policy.isAbsoluteRootRequest(root_path)) return error.PathNotAllowed;
+        const new_dir = try std.Io.Dir.cwd().openDir(io, root_path, .{ .follow_symlinks = false, .iterate = true });
+        errdefer new_dir.close(io);
+
+        var canonical_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const canonical_len = try new_dir.realPathFile(io, ".", &canonical_buf);
+        const canonical = canonical_buf[0..canonical_len];
+        if (!root_policy.isAdmissibleRootDir(io, new_dir, canonical)) return error.PathNotAllowed;
+        const new_path = try self.allocator.dupe(u8, canonical);
+
+        const old_dir = self.root_dir;
+        const old_path = self.root_path;
         self.io = io;
-        self.root_dir = std.Io.Dir.cwd().openDir(io, root_path, .{}) catch null;
-        if (self.root_path) |old| self.allocator.free(old);
-        self.root_path = self.allocator.dupe(u8, root_path) catch null;
+        self.root_dir = new_dir;
+        self.root_path = new_path;
+        if (old_dir) |dir| dir.close(io);
+        if (old_path) |path| self.allocator.free(path);
+    }
+
+    test "setRoot establishes one no-follow capability and swaps transactionally" {
+        const testing = std.testing;
+        const test_io = testing.io;
+        var first = testing.tmpDir(.{});
+        defer first.cleanup();
+        var second = testing.tmpDir(.{});
+        defer second.cleanup();
+        try first.dir.writeFile(test_io, .{ .sub_path = "build.zig", .data = "// marker\n" });
+        try second.dir.writeFile(test_io, .{ .sub_path = "build.zig", .data = "// marker\n" });
+
+        var first_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const first_len = try first.dir.realPathFile(test_io, ".", &first_buf);
+        var second_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const second_len = try second.dir.realPathFile(test_io, ".", &second_buf);
+
+        var explorer = Explorer.init(testing.allocator, 4);
+        defer explorer.deinit();
+        try explorer.setRoot(test_io, first_buf[0..first_len]);
+        var root_iter = explorer.root_dir.?.iterate();
+        var saw_marker = false;
+        while (try root_iter.next(test_io)) |entry| {
+            if (std.mem.eql(u8, entry.name, "build.zig")) saw_marker = true;
+        }
+        try testing.expect(saw_marker);
+        const retired = explorer.root_dir.?;
+        try explorer.setRoot(test_io, second_buf[0..second_len]);
+        if (comptime builtin.os.tag != .windows) {
+            const rc = std.posix.system.fcntl(retired.handle, std.posix.F.GETFD, @as(usize, 0));
+            try testing.expectEqual(std.posix.E.BADF, std.posix.errno(rc));
+        }
+        try testing.expectEqualStrings(second_buf[0..second_len], explorer.root_path.?);
+
+        try first.dir.symLink(test_io, second_buf[0..second_len], "retarget", .{});
+        const alias = try std.fmt.allocPrint(testing.allocator, "{s}/retarget", .{first_buf[0..first_len]});
+        defer testing.allocator.free(alias);
+        if (explorer.setRoot(test_io, alias)) |_| return error.TestUnexpectedResult else |_| {}
+        try testing.expectEqualStrings(second_buf[0..second_len], explorer.root_path.?);
+        try testing.expectError(error.PathNotAllowed, explorer.setRoot(test_io, "relative/project"));
     }
 
     pub fn init(allocator: std.mem.Allocator, content_cache_capacity: u32) Explorer {
@@ -2700,8 +2789,9 @@ pub const Explorer = struct {
         if (source_paths) |paths| {
             const io = self.io orelse return error.WordIndexIncomplete;
             const dir = self.root_dir orelse return error.WordIndexIncomplete;
+            const canonical_root = self.root_path orelse return error.WordIndexIncomplete;
             for (paths) |path| {
-                const content = try dir.readFileAlloc(io, path, self.allocator, .limited(64 * 1024 * 1024));
+                const content = try project_file.readAllocNoFollowAtRoot(io, dir, canonical_root, path, self.allocator, .limited(64 * 1024 * 1024));
                 errdefer self.allocator.free(content);
                 try rebuilt.indexFile(path, content);
                 self.allocator.free(content);
@@ -2950,6 +3040,16 @@ pub const Explorer = struct {
         return try cloneOutline(outline, allocator);
     }
 
+    /// Return the live indexed line count without cloning the outline. This is
+    /// used to validate untrusted semantic sidecar ranges before they become
+    /// retrieval hits.
+    pub fn outlineLineCount(self: *Explorer, path: []const u8) ?u32 {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        const outline = self.outlines.getPtr(path) orelse return null;
+        return outline.line_count;
+    }
+
     /// Render the outline for `path` directly into `out` without cloning.
     /// Returns false if the file isn't indexed. Holds the read lock for
     /// the duration of the render — fast on small outlines, marginally
@@ -3120,6 +3220,15 @@ pub const Explorer = struct {
         return try allocator.dupe(u8, ref.data);
     }
 
+    /// Whether the current project index already contains this relative path.
+    /// This is intentionally metadata-only: direct reads still validate the
+    /// live file handle before serving cached bytes.
+    pub fn hasIndexedPath(self: *Explorer, path: []const u8) bool {
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+        return self.outlines.contains(path);
+    }
+
     pub const LineSpan = LineOffsetCache.Span;
 
     /// Borrow the canonical cached bytes for `path`. Caller must hold `mu`
@@ -3168,6 +3277,7 @@ pub const Explorer = struct {
         out: *std.ArrayList(u8),
         opts: ReadRenderOptions,
     ) !bool {
+        if (!project_file.isAllowedPath(path)) return false;
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
@@ -3189,13 +3299,15 @@ pub const Explorer = struct {
 
     /// Get content: zero-copy from cache, or read from disk (caller-owned).
     fn readContentForSearch(self: *Explorer, path: []const u8, allocator: std.mem.Allocator) ?ContentRef {
+        if (!project_file.isAllowedPath(path)) return null;
         if (self.contents.get(path)) |cached| {
             return .{ .data = cached, .owned = false, .allocator = allocator };
         }
         if (builtin.os.tag == .freestanding) return null;
         const io = self.io orelse return null;
-        const dir = self.root_dir orelse std.Io.Dir.cwd();
-        const data = dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch return null;
+        const dir = self.root_dir orelse return null;
+        const canonical_root = self.root_path orelse return null;
+        const data = project_file.readAllocNoFollowAtRoot(io, dir, canonical_root, path, allocator, .limited(64 * 1024 * 1024)) catch return null;
         return .{ .data = data, .owned = true, .allocator = allocator };
     }
 

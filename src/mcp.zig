@@ -8,13 +8,15 @@ const std = @import("std");
 const testing = std.testing;
 const mcpj = @import("mcp_json.zig");
 pub const Root = struct {
-    uri: []u8,
+    path: []u8,
     name: []u8,
 };
 const Store = @import("store.zig").Store;
 const explore_mod = @import("explore.zig");
 const Explorer = explore_mod.Explorer;
 const reader_md = @import("reader_md.zig");
+const semantic_mod = @import("semantic.zig");
+const semantic_index_mod = @import("semantic_index.zig");
 const AgentRegistry = @import("agent.zig").AgentRegistry;
 const snapshot_json = @import("snapshot_json.zig");
 const watcher = @import("watcher.zig");
@@ -25,6 +27,10 @@ const git_mod = @import("git.zig");
 const root_policy = @import("root_policy.zig");
 const release_info = @import("release_info.zig");
 const mcp_list_dir = @import("mcp_list_dir.zig");
+const project_file_read = @import("project_file.zig");
+const project_path_policy = @import("project_path.zig");
+const local_uri = @import("local_uri.zig");
+const bootstrap_mod = @import("bootstrap.zig");
 pub const DeferredScan = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -54,8 +60,7 @@ pub fn triggerDeferredScanWithFallback(
 ) bool {
     var path: []const u8 = "";
     if (indexable_roots.len > 0) {
-        const uri_raw = indexable_roots[0].uri;
-        path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
+        path = indexable_roots[0].path;
     }
     if (path.len == 0 and fallback_cwd.len > 0 and root_policy.isIndexableRoot(fallback_cwd)) {
         path = fallback_cwd;
@@ -204,6 +209,7 @@ const ProjectCtx = struct {
     store: *Store,
     snapshot_cache: *SnapshotCache,
     deps_cache: *DepsCache,
+    semantic_cache: *semantic_index_mod.SearchCache,
 };
 
 fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
@@ -308,6 +314,7 @@ const ProjectCache = struct {
         store: Store,
         snapshot_cache: SnapshotCache,
         deps_cache: DepsCache,
+        semantic_cache: semantic_index_mod.SearchCache,
         last_used: i64,
     };
 
@@ -317,6 +324,7 @@ const ProjectCache = struct {
     default_path: []const u8,
     default_snapshot_cache: SnapshotCache,
     default_deps_cache: DepsCache,
+    default_semantic_cache: semantic_index_mod.SearchCache,
     content_cache_capacity: u32,
 
     fn init(alloc_: std.mem.Allocator, default_path_: []const u8, content_cache_capacity_: u32) ProjectCache {
@@ -327,6 +335,7 @@ const ProjectCache = struct {
             .default_path = default_path_,
             .default_snapshot_cache = .{},
             .default_deps_cache = .{},
+            .default_semantic_cache = semantic_index_mod.SearchCache.init(alloc_),
             .content_cache_capacity = content_cache_capacity_,
         };
     }
@@ -334,6 +343,7 @@ const ProjectCache = struct {
     fn deinit(self: *ProjectCache) void {
         self.default_snapshot_cache.deinit(self.alloc);
         self.default_deps_cache.deinit(self.alloc);
+        self.default_semantic_cache.deinit();
         for (&self.entries) |*slot| {
             if (slot.*) |entry| {
                 self.destroyEntry(entry);
@@ -345,6 +355,7 @@ const ProjectCache = struct {
     fn destroyEntry(self: *ProjectCache, entry: *Entry) void {
         entry.snapshot_cache.deinit(self.alloc);
         entry.deps_cache.deinit(self.alloc);
+        entry.semantic_cache.deinit();
         entry.explorer.deinit();
         entry.store.deinit();
         self.alloc.free(entry.path);
@@ -389,9 +400,15 @@ const ProjectCache = struct {
         default_exp: *Explorer,
         default_store: *Store,
     ) !ProjectCtx {
-        const p = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
-        if (!root_policy.isIndexableRoot(p) and !root_policy.isBootstrapableRoot(io, p))
-            return error.PathNotAllowed;
+        const raw_path = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache, .semantic_cache = &self.default_semantic_cache };
+        const parsed_path = local_uri.parseRootReference(self.alloc, raw_path) catch return error.PathNotAllowed;
+        defer self.alloc.free(parsed_path);
+
+        var candidate = Explorer.init(self.alloc, self.content_cache_capacity);
+        var candidate_live = true;
+        defer if (candidate_live) candidate.deinit();
+        try candidate.setRoot(io, parsed_path);
+        const canonical_root = candidate.root_path orelse return error.PathNotAllowed;
 
         self.mu.lock();
         defer self.mu.unlock();
@@ -399,57 +416,58 @@ const ProjectCache = struct {
         const now = cio.milliTimestamp();
         for (&self.entries) |*slot| {
             if (slot.*) |entry| {
-                if (std.mem.eql(u8, entry.path, p)) {
+                if (std.mem.eql(u8, entry.path, canonical_root)) {
                     entry.last_used = now;
-                    return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store, .snapshot_cache = &entry.snapshot_cache, .deps_cache = &entry.deps_cache };
+                    return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store, .snapshot_cache = &entry.snapshot_cache, .deps_cache = &entry.deps_cache, .semantic_cache = &entry.semantic_cache };
                 }
             }
         }
 
         // Cache miss — load from snapshot
         const new_entry = self.alloc.create(Entry) catch return error.OutOfMemory;
-        new_entry.path = self.alloc.dupe(u8, p) catch {
+        new_entry.path = self.alloc.dupe(u8, canonical_root) catch {
             self.alloc.destroy(new_entry);
             return error.OutOfMemory;
         };
-        new_entry.explorer = Explorer.init(self.alloc, self.content_cache_capacity);
-        new_entry.explorer.setRoot(io, p);
+        new_entry.explorer = candidate;
+        candidate_live = false;
         new_entry.store = Store.init(self.alloc);
         new_entry.snapshot_cache = .{};
         new_entry.deps_cache = .{};
+        new_entry.semantic_cache = semantic_index_mod.SearchCache.init(self.alloc);
         new_entry.last_used = now;
 
-        var snap_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const snap_path = std.fmt.bufPrint(&snap_buf, "{s}/codedb.snapshot", .{p}) catch {
-            new_entry.store.deinit();
-            new_entry.explorer.deinit();
-            self.alloc.free(new_entry.path);
-            self.alloc.destroy(new_entry);
-            return error.PathTooLong;
-        };
-
-        if (!snapshot_mod.loadSnapshotValidated(io, snap_path, p, &new_entry.explorer, &new_entry.store, self.alloc)) {
+        const stable_root = new_entry.explorer.root_dir orelse return error.PathNotAllowed;
+        if (!snapshot_mod.loadSnapshotValidatedFromRoot(io, stable_root, canonical_root, &new_entry.explorer, &new_entry.store, self.alloc)) {
             // Fallback: try central store at ~/.codedb/projects/{hash}/codedb.snapshot
-            const hash = std.hash.Wyhash.hash(0, p);
+            const hash = std.hash.Wyhash.hash(0, canonical_root);
             var central_buf: [std.fs.max_path_bytes]u8 = undefined;
             const loaded_central = blk: {
                 const home = cio.homeDir() orelse break :blk false;
-                const central = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch break :blk false;
-                break :blk snapshot_mod.loadSnapshotValidated(io, central, p, &new_entry.explorer, &new_entry.store, self.alloc);
+                const central_dir_path = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}", .{ home, hash }) catch break :blk false;
+                var central_dir = std.Io.Dir.cwd().openDir(io, central_dir_path, .{ .follow_symlinks = false }) catch break :blk false;
+                defer central_dir.close(io);
+                const central_file = central_dir.openFile(io, "codedb.snapshot", .{
+                    .allow_directory = false,
+                    .follow_symlinks = false,
+                    .resolve_beneath = true,
+                }) catch break :blk false;
+                defer central_file.close(io);
+                break :blk snapshot_mod.loadSnapshotValidatedFromFile(io, central_file, canonical_root, &new_entry.explorer, &new_entry.store, self.alloc);
             };
             if (!loaded_central) {
                 new_entry.store.deinit();
                 new_entry.explorer.deinit();
                 self.alloc.free(new_entry.path);
                 self.alloc.destroy(new_entry);
-                if (std.mem.eql(u8, p, self.default_path) and default_store.currentSeq() > 0) {
-                    return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
+                if (default_exp.root_path != null and std.mem.eql(u8, canonical_root, default_exp.root_path.?) and default_store.currentSeq() > 0) {
+                    return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache, .semantic_cache = &self.default_semantic_cache };
                 }
                 return error.SnapshotLoadFailed;
             }
         }
 
-        loadProjectTrigramFromDiskIfPresent(io, &new_entry.explorer, p, self.alloc);
+        loadProjectTrigramFromDiskIfPresent(io, &new_entry.explorer, canonical_root, self.alloc);
 
         // Release raw file contents retained by the snapshot load — outlines,
         // trigram index, and word index are sufficient for all query tools.
@@ -484,7 +502,7 @@ const ProjectCache = struct {
         }
 
         self.entries[target_slot] = new_entry;
-        return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store, .snapshot_cache = &new_entry.snapshot_cache, .deps_cache = &new_entry.deps_cache };
+        return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store, .snapshot_cache = &new_entry.snapshot_cache, .deps_cache = &new_entry.deps_cache, .semantic_cache = &new_entry.semantic_cache };
     }
 };
 
@@ -675,7 +693,7 @@ pub const tools_list =
     \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). First move when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_explain","description":"One-shot neighborhood of a symbol: definition body plus every call site. Replaces codedb_symbol body=true then codedb_callers. First move when you know the name.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]},"annotations":{"readOnlyHint":true}},
-    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Replaces 3-5 sequential search/word/symbol calls — first-touch orientation on a new task.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"document_hops":{"type":"integer","description":"Explicitly expand Markdown document links from ranked files (0 default, hard-capped at 2 hops and 64 files)."},"format":{"type":"string","enum":["markdown","json"],"description":"markdown (default) preserves the compact text response. json returns schema-versioned sections, evidence provenance, reader.md validation, and machine-readable token-budget omissions."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]},"annotations":{"readOnlyHint":true}},
+    \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Local BM25/symbol retrieval is always first and is the default. semantic=hybrid searches an explicitly built local OpenPuffer ANN sidecar using one transient remote request containing the task plus a fixed public calibration string; when the sidecar is absent or stale it can rerank up to 24 bounded local candidates instead. The hosted service stores neither the repository, request body, candidate paths, nor vectors. Failure keeps the local result and never runs a CPU model.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"document_hops":{"type":"integer","description":"Explicitly expand Markdown document links from ranked files (0 default, hard-capped at 2 hops and 64 files)."},"semantic":{"type":"string","enum":["local","hybrid"],"description":"local (default) keeps all source on-device. hybrid sends the task plus a fixed public calibration string when a compatible local ANN sidecar exists; otherwise it may send the task plus up to 24 locally selected relative paths with bounded snippets. Build the sidecar explicitly with codedb <root> semantic-index. The hosted lane is transient; custom endpoint retention is reported as unverified."},"format":{"type":"string","enum":["markdown","json"],"description":"markdown (default) preserves the compact text response. json returns schema-versioned sections, evidence provenance, reader.md validation, retrieval privacy, and machine-readable token-budget omissions."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_deps","description":"PRIMARY tool for impact/blast-radius — use this instead of grepping import lines. Dependency graph: who imports a file (default) or what a file imports (direction=depends_on). Set edge_type=documents for Markdown links; document traversal is capped at 2 hops and 64 nodes.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path to check dependencies for"},"direction":{"type":"string","enum":["imported_by","depends_on"],"description":"Inbound (default) or outbound edges; for documents these mean linked-by and links-to."},"edge_type":{"type":"string","enum":["imports","documents"],"description":"Typed graph relation (default: imports)."},"transitive":{"type":"boolean","description":"Follow dependency chain transitively (default: false)"},"max_depth":{"type":"integer","description":"Max traversal depth (document edges are always capped at 2)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_read","description":"Read file contents, optionally a line range. Never dump whole large files — run codedb_outline or codedb_symbol first to pick a tight range. A just-added file is indexed on miss; do not call codedb_index first. Pass if_hash to skip unchanged re-reads; compact=true for minified or long-line files.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"File path relative to project root"},"line_start":{"type":"integer","description":"Start line (1-indexed, inclusive). Omit for full file."},"line_end":{"type":"integer","description":"End line (1-indexed, inclusive). Omit to read to EOF."},"if_hash":{"type":"string","description":"Previous content hash. If unchanged, returns short 'unchanged:HASH' response."},"compact":{"type":"boolean","description":"Skip comment and blank lines (default: false)"},"raw":{"type":"boolean","description":"Byte-exact output: no line-number prefixes and no hash header, so the result can feed an exact-string edit (default: false)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["path"]},"annotations":{"readOnlyHint":true}},
@@ -817,6 +835,7 @@ const mini_prop_descriptions = [_]PropDesc{
     .{ .name = "max_hops", .desc = "Max call hops (default: 12)" },
     .{ .name = "max_tokens", .desc = "Response token budget (min 256, ~2.5 bytes/token)" },
     .{ .name = "detail", .desc = "compact (default) or full sections" },
+    .{ .name = "semantic", .desc = "local (default) or transient hybrid rerank" },
     .{ .name = "direction", .desc = "imported_by (default) or depends_on" },
     .{ .name = "transitive", .desc = "Follow the dependency chain (default: false)" },
     .{ .name = "max_depth", .desc = "Depth cap for transitive (default: unlimited)" },
@@ -828,7 +847,7 @@ const mini_prop_descriptions = [_]PropDesc{
 /// JSON is shared with the core/full profiles, so it is left untouched and
 /// these are swapped in only on the mini path (mirrors slim_descriptions).
 const mini_descriptions = [_]struct { name: []const u8, desc: []const u8 }{
-    .{ .name = "codedb_context", .desc = "Task neighborhood in one call: definitions, bodies, graph neighbors, ranked files. First move on a new task; include likely identifiers. max_tokens caps the budget." },
+    .{ .name = "codedb_context", .desc = "Task neighborhood in one call. Local BM25 is default; semantic=hybrid explicitly opts into transient advisory embeddings. max_tokens caps output." },
     .{ .name = "codedb_explain", .desc = "Symbol neighborhood in one call: definition body plus every call site. First move when you know the name. Replaces symbol --body then callers." },
     .{ .name = "codedb_callpath", .desc = "Shortest resolved call chain A→…→B. First move when you need how execution reaches a callee. Returns each hop as path:name@line." },
     .{ .name = "codedb_list_dir", .desc = "Live folder listing (gitignore, 10k cap). Use instead of bash ls/find/tree; works on unindexed trees. codedb_ls is the indexed one-level listing." },
@@ -1076,7 +1095,7 @@ const Session = struct {
 
     fn freeRoots(self: *Session) void {
         for (self.roots.items) |r| {
-            self.alloc.free(r.uri);
+            self.alloc.free(r.path);
             self.alloc.free(r.name);
         }
         self.roots.clearRetainingCapacity();
@@ -1522,19 +1541,25 @@ fn parseRoots(io: std.Io, s: *Session, result: *const std.json.ObjectMap) void {
         const obj = item.object;
         const uri_raw = mcpj.getStr(&obj, "uri") orelse continue;
         const name_raw = mcpj.getStr(&obj, "name") orelse "";
-        // Strip file:// prefix for policy check
-        const path = if (std.mem.startsWith(u8, uri_raw, "file://")) uri_raw[7..] else uri_raw;
-        if (!root_policy.isIndexableRoot(path) and !root_policy.isBootstrapableRoot(io, path)) {
+        const parsed_path = local_uri.parseLocalFileUri(s.alloc, uri_raw) catch {
             std.log.info("codedb mcp: rejected root \"{s}\" (denied by policy)", .{uri_raw});
             continue;
-        }
-        const uri = s.alloc.dupe(u8, uri_raw) catch continue;
-        const name = s.alloc.dupe(u8, name_raw) catch {
-            s.alloc.free(uri);
+        };
+        var probe = Explorer.init(s.alloc, 1);
+        defer probe.deinit();
+        probe.setRoot(io, parsed_path) catch {
+            s.alloc.free(parsed_path);
+            std.log.info("codedb mcp: rejected root \"{s}\" (unsafe root capability)", .{uri_raw});
             continue;
         };
-        s.roots.append(s.alloc, .{ .uri = uri, .name = name }) catch {
-            s.alloc.free(uri);
+        s.alloc.free(parsed_path);
+        const path = s.alloc.dupe(u8, probe.root_path.?) catch continue;
+        const name = s.alloc.dupe(u8, name_raw) catch {
+            s.alloc.free(path);
+            continue;
+        };
+        s.roots.append(s.alloc, .{ .path = path, .name = name }) catch {
+            s.alloc.free(path);
             s.alloc.free(name);
             continue;
         };
@@ -1768,6 +1793,7 @@ fn dispatch(
             .store = default_store,
             .snapshot_cache = &cache.default_snapshot_cache,
             .deps_cache = &cache.default_deps_cache,
+            .semantic_cache = &cache.default_semantic_cache,
         };
 
     if (project_path == null and tool == .codedb_deps and args.count() == 1) {
@@ -1805,8 +1831,9 @@ fn dispatch(
     }
 
     if (tool == .codedb_word or tool == .codedb_context or (tool == .codedb_search and shouldLoadWordIndexForSearch(args))) {
-        const effective_project = project_path orelse cache.default_path;
-        loadProjectWordIndexFromDiskIfPresent(io, ctx.explorer, effective_project, alloc);
+        if (project_path orelse ctx.explorer.root_path) |effective_project| {
+            loadProjectWordIndexFromDiskIfPresent(io, ctx.explorer, effective_project, alloc);
+        }
     }
 
     switch (tool) {
@@ -1831,8 +1858,8 @@ fn dispatch(
         .codedb_query => handleQuery(alloc, args, out, ctx.explorer, ctx.store),
         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
-        .codedb_list_dir => mcp_list_dir.handle(io, alloc, getStr(args, "path") orelse ".", project_path orelse cache.default_path, out),
-        .codedb_context => handleContext(io, alloc, args, out, ctx.explorer, project_path orelse cache.default_path),
+        .codedb_list_dir => mcp_list_dir.handle(io, alloc, getStr(args, "path") orelse ".", ctx.explorer, out),
+        .codedb_context => handleContext(io, alloc, args, out, ctx.store, ctx.explorer, ctx.semantic_cache),
     }
     appendScanProgressHint(alloc, out, tool);
 }
@@ -1858,7 +1885,7 @@ fn appendScanProgressHint(alloc: std.mem.Allocator, out: *std.ArrayList(u8), too
 
 fn toolDependsOnScannedIndex(tool: Tool) bool {
     return switch (tool) {
-        .codedb_search, .codedb_word, .codedb_callers, .codedb_callpath, .codedb_explain, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps => true,
+        .codedb_search, .codedb_word, .codedb_callers, .codedb_callpath, .codedb_explain, .codedb_outline, .codedb_symbol, .codedb_find, .codedb_glob, .codedb_tree, .codedb_ls, .codedb_deps, .codedb_context => true,
         else => false,
     };
 }
@@ -3210,6 +3237,52 @@ fn isTestPath(path: []const u8) bool {
     return false;
 }
 
+/// A persisted ANN can be newer than the snapshot selected at MCP startup.
+/// Wait only for the already-running watcher's bounded startup reconcile, then
+/// retry once. A genuinely stale sidecar returns immediately: query handling
+/// must never launch another full filesystem walk or allocate EventQueue's
+/// multi-megabyte ring, and no ANN embedding request is issued before freshness
+/// validation succeeds.
+fn searchSemanticAnnOnce(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    cache: ?*semantic_index_mod.SearchCache,
+    explorer: *Explorer,
+    store: *Store,
+    project_root: []const u8,
+    data_dir: []const u8,
+    task: []const u8,
+    k: usize,
+) !semantic_index_mod.SearchOutput {
+    if (cache) |semantic_cache| {
+        return semantic_index_mod.searchCached(io, allocator, semantic_cache, explorer, store, project_root, data_dir, task, k);
+    }
+    return semantic_index_mod.search(io, allocator, explorer, store, project_root, data_dir, task, k);
+}
+
+fn searchSemanticAnnFresh(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    cache: ?*semantic_index_mod.SearchCache,
+    explorer: *Explorer,
+    store: *Store,
+    project_root: []const u8,
+    data_dir: []const u8,
+    task: []const u8,
+    k: usize,
+) !semantic_index_mod.SearchOutput {
+    return searchSemanticAnnOnce(io, allocator, cache, explorer, store, project_root, data_dir, task, k) catch |err| switch (err) {
+        error.StaleAnnManifest => {
+            if (!explorer.startupReconcilePending()) return err;
+            const deadline = cio.milliTimestamp() + @as(i64, @intCast(scan_wait_timeout_ms));
+            while (explorer.startupReconcilePending() and cio.milliTimestamp() < deadline) cio.sleepMs(25);
+            if (explorer.startupReconcilePending()) return err;
+            return searchSemanticAnnOnce(io, allocator, cache, explorer, store, project_root, data_dir, task, k);
+        },
+        else => return err,
+    };
+}
+
 const ContextEvidenceItem = struct {
     path: []const u8,
     source_path: ?[]const u8 = null,
@@ -3239,12 +3312,62 @@ const ContextReaderProvenance = struct {
     computed_revision: ?[]const u8 = null,
 };
 
+const ContextRetrievalCandidate = struct {
+    path: []const u8,
+    lexical_rank: ?usize,
+    semantic_rank: ?usize,
+    semantic_score: f32,
+    source: []const u8 = "bounded_exact_rerank",
+    line_start: ?u32 = null,
+    line_end: ?u32 = null,
+};
+
+const ContextRetrievalProvenance = struct {
+    initial: []const u8 = "local_bm25_and_symbols",
+    semantic: []const u8 = "not_requested",
+    fusion: []const u8 = "none",
+    model: ?[]const u8 = null,
+    dimensions: ?u16 = null,
+    rrf_k: f32 = semantic_mod.default_rrf_k,
+    semantic_weight: f32 = semantic_mod.default_semantic_weight,
+    documents_sent: usize = 0,
+    text_bytes_sent: usize = 0,
+    ann_records: usize = 0,
+    ann_index_bytes: usize = 0,
+    ann_load_ns: u64 = 0,
+    ann_search_ns: u64 = 0,
+    ann_mmap_backed: bool = false,
+    ann_cache_hit: bool = false,
+    ann_vector_space_id: ?u64 = null,
+    remote_retention: []const u8 = "not_applicable",
+    local_vector_storage: []const u8 = "none",
+    failure_policy: []const u8 = "keep_local_bm25_no_cpu_embedding_fallback",
+    sensitive_paths_blocked: usize = 0,
+    detail: ?[]const u8 = null,
+    candidates: []const ContextRetrievalCandidate = &.{},
+};
+
+fn semanticSourcePreview(explorer: *Explorer, allocator: std.mem.Allocator, path: []const u8, target_line: u32) ?[]const u8 {
+    const content = (explorer.getContent(path, allocator) catch null) orelse return null;
+    var line_number: u32 = 1;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| : (line_number +|= 1) {
+        if (line_number < target_line) continue;
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 and line_number < target_line +| 3) continue;
+        if (trimmed.len == 0) return null;
+        return trimmed[0..@min(trimmed.len, 240)];
+    }
+    return null;
+}
+
 const ContextStructuredOutput = struct {
-    schema_version: u8 = 1,
+    schema_version: u8 = 2,
     format: []const u8 = "codedb_context",
     task: []const u8,
     keywords: []const []const u8,
     reader: ContextReaderProvenance,
+    retrieval: ContextRetrievalProvenance,
     sections: []const ContextProvenanceSection,
     omissions: []const []const u8,
     budget: struct {
@@ -3263,7 +3386,23 @@ fn appendStructuredContext(alloc: std.mem.Allocator, out: *std.ArrayList(u8), va
     out.appendSlice(alloc, encoded) catch {};
 }
 
-fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer, project_root: []const u8) void {
+fn handleContext(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+    store: *Store,
+    explorer: *Explorer,
+    semantic_cache: ?*semantic_index_mod.SearchCache,
+) void {
+    const stable_root = explorer.root_dir orelse {
+        out.appendSlice(alloc, "error: project root is not configured") catch {};
+        return;
+    };
+    const rooted_project = explorer.root_path orelse {
+        out.appendSlice(alloc, "error: project root is not configured") catch {};
+        return;
+    };
     const task = getStr(args, "task") orelse {
         out.appendSlice(alloc, "error: missing 'task' argument") catch {};
         appendBundleArgKeysDiagnostic(alloc, out, args);
@@ -3276,6 +3415,13 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
 
     const max_tokens: ?u32 = if (getInt(args, "max_tokens")) |n| @intCast(@max(256, @min(n, 1_000_000))) else null;
     const document_hops: u32 = if (getInt(args, "document_hops")) |n| @intCast(@max(0, @min(n, 2))) else 0;
+    const semantic_mode = getStr(args, "semantic") orelse "local";
+    if (!std.mem.eql(u8, semantic_mode, "local") and !std.mem.eql(u8, semantic_mode, "hybrid")) {
+        out.appendSlice(alloc, "error: semantic must be 'local' or 'hybrid'") catch {};
+        return;
+    }
+    const semantic_requested = std.mem.eql(u8, semantic_mode, "hybrid");
+    var retrieval: ContextRetrievalProvenance = .{};
     const format = getStr(args, "format") orelse "markdown";
     const structured = std.mem.eql(u8, format, "json");
     if (!structured and !std.mem.eql(u8, format, "markdown")) {
@@ -3329,7 +3475,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     var reader_declared_revision: ?[]const u8 = null;
     var reader_computed_revision: ?[]const u8 = null;
     if (reader_md_gate) {
-        var reader_state = reader_md.load(io, alloc, project_root) catch blk: {
+        var reader_state = reader_md.loadFromRoot(io, alloc, stable_root, rooted_project) catch blk: {
             reader_validation = "error";
             break :blk null;
         };
@@ -3374,7 +3520,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     // identifier candidates keep priority under CONTEXT_MAX_CANDIDATES).
     extractContextFallbackWords(task, A, &candidates);
     const pf_cand = cio.nanoTimestamp();
-    if (candidates.items.len == 0) {
+    if (candidates.items.len == 0 and !semantic_requested) {
         const message = "no candidate identifiers found in task — include symbol names (camelCase or snake_case) or \"quoted strings\" so the composer can extract keywords";
         if (structured) {
             var sections: [2]ContextProvenanceSection = undefined;
@@ -3407,6 +3553,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                     .declared_revision = reader_declared_revision,
                     .computed_revision = reader_computed_revision,
                 },
+                .retrieval = retrieval,
                 .sections = sections[0..section_count],
                 .omissions = &.{},
                 .budget = .{ .max_tokens = max_tokens, .estimated_tokens_used = (task.len + sec_reader.items.len + 3) / 4 },
@@ -3418,7 +3565,11 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         return;
     }
 
-    const PerFileHit = struct { line: u32, text: []const u8 };
+    const PerFileHit = struct {
+        line: u32,
+        text: []const u8,
+        source: enum { lexical, semantic_ann } = .lexical,
+    };
     const PerFile = struct {
         total: u32 = 0,
         bm25: f32 = 0,
@@ -3472,7 +3623,18 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
     var symbol_files = std.StringHashMap(void).init(A);
     for (sym_refs.items) |sr| symbol_files.put(sr.path, {}) catch {};
 
-    const FileRank = struct { path: []const u8, hits: u32, score: f32, top: []const PerFileHit };
+    const FileRank = struct {
+        path: []const u8,
+        hits: u32,
+        score: f32,
+        top: []const PerFileHit,
+        lexical_rank: usize = 0,
+        semantic_rank: usize = 0,
+        semantic_score: f32 = 0,
+        hybrid_score: f32 = 0,
+        lexical_present: bool = true,
+        semantic_present: bool = false,
+    };
     var ranked: std.ArrayList(FileRank) = .empty;
     var iter = by_file.iterator();
     while (iter.next()) |entry| {
@@ -3496,6 +3658,258 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             return a.hits > b.hits;
         }
     }.lt);
+    for (ranked.items, 0..) |*file, rank| {
+        file.lexical_rank = rank;
+        file.semantic_rank = rank;
+    }
+    if (semantic_requested) {
+        // Count excluded indexed paths before retrieval materialization. The
+        // shared Explorer read boundary now rejects sensitive cached entries,
+        // so waiting until `ranked` would under-report paths that were safely
+        // suppressed before their content could become a candidate.
+        explorer.mu.lockShared();
+        var indexed_paths = explorer.outlines.keyIterator();
+        while (indexed_paths.next()) |path| {
+            if (!semantic_mod.isRemoteCandidatePathAllowed(path.*)) {
+                retrieval.sensitive_paths_blocked += 1;
+            }
+        }
+        explorer.mu.unlockShared();
+    }
+
+    var use_exact_semantic_fallback = false;
+    if (semantic_requested) ann_lane: {
+        const data_dir = getProjectDataDir(A, rooted_project) orelse {
+            retrieval.semantic = "unavailable";
+            retrieval.detail = "AnnDataDirUnavailable";
+            use_exact_semantic_fallback = true;
+            break :ann_lane;
+        };
+        if (searchSemanticAnnFresh(
+            io,
+            A,
+            semantic_cache,
+            explorer,
+            store,
+            rooted_project,
+            data_dir,
+            task,
+            semantic_index_mod.default_search_results,
+        )) |ann_result| {
+            retrieval.semantic = "ann_applied";
+            retrieval.fusion = "top3_lexical_guard_union_rrf";
+            retrieval.semantic_weight = semantic_mod.default_ann_semantic_weight;
+            retrieval.model = ann_result.model;
+            retrieval.dimensions = ann_result.dimensions;
+            // Query + fixed public calibration string share one request. No
+            // repository path or source chunk is transmitted on the ANN lane.
+            retrieval.documents_sent = 2;
+            retrieval.text_bytes_sent = ann_result.text_bytes_sent;
+            retrieval.ann_records = ann_result.records;
+            retrieval.ann_index_bytes = ann_result.index_bytes;
+            retrieval.ann_load_ns = ann_result.load_ns;
+            retrieval.ann_search_ns = ann_result.search_ns;
+            retrieval.ann_mmap_backed = ann_result.mmap_backed;
+            retrieval.ann_cache_hit = ann_result.cache_hit;
+            retrieval.ann_vector_space_id = ann_result.vector_space_id;
+            retrieval.remote_retention = switch (ann_result.retention) {
+                .none_by_codedb_policy => "none_by_codedb_service_policy",
+                .custom_endpoint_unverified => "custom_endpoint_unverified",
+            };
+            retrieval.local_vector_storage = "openpuffer_hnsw_mmap_code_chunk_sidecar";
+
+            const lexical_count = ranked.items.len;
+            var ranked_by_path = std.StringHashMap(usize).init(A);
+            for (ranked.items, 0..) |file, index| ranked_by_path.put(file.path, index) catch {};
+            for (ann_result.hits, 0..) |hit, semantic_rank| {
+                if (ranked_by_path.get(hit.path)) |ranked_index| {
+                    const file = &ranked.items[ranked_index];
+                    file.semantic_rank = semantic_rank;
+                    file.semantic_score = 1.0 - hit.distance;
+                    file.semantic_present = true;
+                    var include_line = true;
+                    for (file.top) |site| {
+                        if (site.line >= hit.line_start and site.line <= hit.line_end) include_line = false;
+                    }
+                    if (include_line) {
+                        var merged: std.ArrayList(PerFileHit) = .empty;
+                        merged.appendSlice(A, file.top) catch {};
+                        merged.append(A, .{
+                            .line = hit.line_start,
+                            .text = semanticSourcePreview(explorer, A, hit.path, hit.line_start) orelse "semantic ANN chunk",
+                            .source = .semantic_ann,
+                        }) catch {};
+                        file.top = merged.items;
+                    }
+                    continue;
+                }
+
+                var preview: std.ArrayList(PerFileHit) = .empty;
+                preview.append(A, .{
+                    .line = hit.line_start,
+                    .text = semanticSourcePreview(explorer, A, hit.path, hit.line_start) orelse "semantic ANN chunk",
+                    .source = .semantic_ann,
+                }) catch {};
+                const new_index = ranked.items.len;
+                ranked.append(A, .{
+                    .path = hit.path,
+                    .hits = 0,
+                    .score = 0,
+                    .top = preview.items,
+                    .lexical_rank = lexical_count + semantic_rank,
+                    .semantic_rank = semantic_rank,
+                    .semantic_score = 1.0 - hit.distance,
+                    .lexical_present = false,
+                    .semantic_present = true,
+                }) catch continue;
+                ranked_by_path.put(hit.path, new_index) catch {};
+            }
+
+            for (ranked.items) |*file| {
+                file.hybrid_score = semantic_mod.annRrfScore(
+                    file.lexical_present,
+                    file.lexical_rank,
+                    file.semantic_present,
+                    file.semantic_rank,
+                );
+            }
+
+            if (A.alloc(ContextRetrievalCandidate, ann_result.hits.len) catch null) |provenance| {
+                for (provenance, ann_result.hits, 0..) |*item, hit, semantic_rank| {
+                    const ranked_index = ranked_by_path.get(hit.path);
+                    const file = if (ranked_index) |index| ranked.items[index] else null;
+                    item.* = .{
+                        .path = hit.path,
+                        .lexical_rank = if (file) |candidate| if (candidate.lexical_present) candidate.lexical_rank else null else null,
+                        .semantic_rank = semantic_rank,
+                        .semantic_score = 1.0 - hit.distance,
+                        .source = "local_openpuffer_ann",
+                        .line_start = hit.line_start,
+                        .line_end = hit.line_end,
+                    };
+                }
+                retrieval.candidates = provenance;
+            }
+            std.mem.sort(FileRank, ranked.items, {}, struct {
+                fn lt(_: void, a: FileRank, b: FileRank) bool {
+                    return semantic_mod.annRankComesBefore(
+                        a.lexical_present,
+                        a.lexical_rank,
+                        a.semantic_present,
+                        a.hybrid_score,
+                        a.path,
+                        b.lexical_present,
+                        b.lexical_rank,
+                        b.semantic_present,
+                        b.hybrid_score,
+                        b.path,
+                    );
+                }
+            }.lt);
+        } else |err| {
+            retrieval.semantic = "unavailable";
+            retrieval.detail = @errorName(err);
+            use_exact_semantic_fallback = switch (err) {
+                error.AnnIndexMissing,
+                error.InvalidAnnSidecar,
+                error.UnsupportedAnnSidecarVersion,
+                error.TruncatedAnnSidecar,
+                error.InvalidAnnRecordPath,
+                error.InvalidAnnSlabName,
+                error.AnnRecordMappingMismatch,
+                error.AnnSlabTooLarge,
+                error.AnnDimensionsMismatch,
+                error.AnnModelMismatch,
+                error.AnnVectorSpaceMismatch,
+                error.AnnVectorSpaceCalibrationMismatch,
+                error.StaleAnnGitHead,
+                error.StaleAnnManifest,
+                => true,
+                else => false,
+            };
+        }
+    }
+
+    if (semantic_requested and use_exact_semantic_fallback and ranked.items.len > 0) {
+        var semantic_candidates: std.ArrayList(semantic_mod.Candidate) = .empty;
+        var semantic_candidate_indices: std.ArrayList(usize) = .empty;
+        for (ranked.items, 0..) |file, ranked_index| {
+            if (semantic_candidates.items.len == semantic_mod.max_documents) break;
+            if (!semantic_mod.isRemoteCandidatePathAllowed(file.path)) {
+                continue;
+            }
+            var snippet: std.ArrayList(u8) = .empty;
+            const sw = cio.listWriter(&snippet, A);
+            for (file.top) |hit| {
+                sw.print("L{d}: {s}\n", .{ hit.line, hit.text }) catch {};
+            }
+            semantic_candidates.append(A, .{ .path = file.path, .text = snippet.items }) catch break;
+            semantic_candidate_indices.append(A, ranked_index) catch {
+                _ = semantic_candidates.pop();
+                break;
+            };
+        }
+        if (semantic_candidates.items.len > 0) {
+            if (semantic_mod.scoreRemote(io, A, task, semantic_candidates.items)) |remote| {
+                retrieval.semantic = "applied_exact_fallback";
+                retrieval.fusion = "lexical_authoritative_rrf";
+                retrieval.model = remote.model;
+                retrieval.dimensions = remote.dimensions;
+                retrieval.documents_sent = remote.documents_sent;
+                retrieval.text_bytes_sent = remote.text_bytes_sent;
+                retrieval.remote_retention = switch (remote.retention) {
+                    .none_by_codedb_policy => "none_by_codedb_service_policy",
+                    .custom_endpoint_unverified => "custom_endpoint_unverified",
+                };
+
+                const SemanticOrder = struct { index: usize, score: f32 };
+                const maybe_order = A.alloc(SemanticOrder, remote.documents_sent) catch null;
+                if (maybe_order) |order| {
+                    for (order, 0..) |*item, i| item.* = .{ .index = i, .score = remote.scores[i] };
+                    std.mem.sort(SemanticOrder, order, {}, struct {
+                        fn lt(_: void, a: SemanticOrder, b: SemanticOrder) bool {
+                            if (a.score != b.score) return a.score > b.score;
+                            return a.index < b.index;
+                        }
+                    }.lt);
+                    for (order, 0..) |item, semantic_rank| {
+                        const ranked_index = semantic_candidate_indices.items[item.index];
+                        ranked.items[ranked_index].semantic_rank = semantic_rank;
+                        ranked.items[ranked_index].semantic_score = item.score;
+                        ranked.items[ranked_index].semantic_present = true;
+                    }
+                    for (ranked.items) |*file| {
+                        file.hybrid_score = semantic_mod.advisoryRrfScore(file.lexical_rank, file.semantic_rank);
+                    }
+                    const provenance_candidates = A.alloc(ContextRetrievalCandidate, remote.documents_sent) catch null;
+                    if (provenance_candidates) |items| {
+                        for (items, 0..) |*item, i| {
+                            const file = ranked.items[semantic_candidate_indices.items[i]];
+                            item.* = .{
+                                .path = file.path,
+                                .lexical_rank = file.lexical_rank,
+                                .semantic_rank = file.semantic_rank,
+                                .semantic_score = file.semantic_score,
+                                .source = "bounded_exact_rerank",
+                            };
+                        }
+                        retrieval.candidates = items;
+                    }
+                    std.mem.sort(FileRank, ranked.items, {}, struct {
+                        fn lt(_: void, a: FileRank, b: FileRank) bool {
+                            if (a.hybrid_score != b.hybrid_score) return a.hybrid_score > b.hybrid_score;
+                            return a.lexical_rank < b.lexical_rank;
+                        }
+                    }.lt);
+                }
+            } else |err| {
+                retrieval.semantic = "unavailable";
+                retrieval.detail = @errorName(err);
+            }
+        } else {
+            retrieval.semantic = "no_candidates";
+        }
+    }
     const top_n = @min(ranked.items.len, CONTEXT_TOP_FILES);
     const pf_rank = cio.nanoTimestamp();
 
@@ -3503,6 +3917,38 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         const wh = cio.listWriter(&sec_head, A);
         wh.print("# Task\n{s}\n\n## Keywords used\n", .{task}) catch {};
         for (candidates.items) |k| wh.print("- {s}\n", .{k}) catch {};
+        if (semantic_requested) {
+            wh.print("\n## Retrieval privacy\n- local BM25/symbol retrieval ran first\n", .{}) catch {};
+            if (std.mem.eql(u8, retrieval.semantic, "ann_applied")) {
+                wh.print("- local OpenPuffer ANN: {s}, {d}D, vector space {x}, {d} indexed code chunks / {d} sidecar bytes\n- remote query embedding: task plus fixed public vector-space calibration / {d} text bytes; remote retention: {s}\n- local vector storage: {s}; mmap={any}; cache_hit={any}; ANN load {d} ns / search {d} ns\n", .{
+                    retrieval.model orelse semantic_mod.default_model,
+                    retrieval.dimensions orelse semantic_mod.default_dimensions,
+                    retrieval.ann_vector_space_id orelse 0,
+                    retrieval.ann_records,
+                    retrieval.ann_index_bytes,
+                    retrieval.text_bytes_sent,
+                    retrieval.remote_retention,
+                    retrieval.local_vector_storage,
+                    retrieval.ann_mmap_backed,
+                    retrieval.ann_cache_hit,
+                    retrieval.ann_load_ns,
+                    retrieval.ann_search_ns,
+                }) catch {};
+            } else if (std.mem.startsWith(u8, retrieval.semantic, "applied")) {
+                wh.print("- bounded exact advisory rerank: {s}, {d}D, {d} relative path + snippet items / {d} text bytes\n- remote retention: {s}; local vector storage: none\n", .{
+                    retrieval.model orelse semantic_mod.default_model,
+                    retrieval.dimensions orelse semantic_mod.default_dimensions,
+                    retrieval.documents_sent,
+                    retrieval.text_bytes_sent,
+                    retrieval.remote_retention,
+                }) catch {};
+            } else {
+                wh.print("- semantic lane: {s}; kept local result; no CPU embedding fallback\n", .{retrieval.semantic}) catch {};
+            }
+            if (retrieval.sensitive_paths_blocked > 0) {
+                wh.print("- sensitive candidate paths blocked before network: {d}\n", .{retrieval.sensitive_paths_blocked}) catch {};
+            }
+        }
     }
 
     if (sym_refs.items.len > 0) {
@@ -3520,7 +3966,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             wsr.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
             wsl.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
             if (inline_bodies) {
-                const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line + 39) else sr.line;
+                const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line +| 39) else sr.line;
                 _ = explorer.appendLineRange(sr.path, sr.line, body_end, "       ", A, &sec_syms_rich) catch false;
             }
         }
@@ -3703,7 +4149,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             if (explorer.cachedContentLocked(f.path)) |content| {
                 for (f.top) |h| {
                     const want_start: u32 = if (h.line > 2) h.line - 2 else 1;
-                    const want_end: u32 = h.line + 2;
+                    const want_end: u32 = h.line +| 2;
                     var lines2 = [2]u32{ want_start, want_end };
                     var spans2: [2]explore_mod.Explorer.LineSpan = undefined;
                     const n = explorer.lineSpansFor(f.path, content, lines2[0..], spans2[0..]) orelse 0;
@@ -3733,7 +4179,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                 if (file_content) |content| {
                     // Find the start/end byte offsets of [line-2 .. line+2].
                     const want_start: u32 = if (h.line > 2) h.line - 2 else 1;
-                    const want_end: u32 = h.line + 2;
+                    const want_end: u32 = h.line +| 2;
                     var cur_line: u32 = 1;
                     var i: usize = 0;
                     var captured_start: ?usize = null;
@@ -3816,7 +4262,12 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             file_items.append(A, .{
                 .path = file.path,
                 .relation = "ranked_candidate",
-                .reason = "lexical and symbol relevance",
+                .reason = if (std.mem.eql(u8, retrieval.semantic, "ann_applied"))
+                    "local lexical/symbol relevance fused with local OpenPuffer ANN"
+                else if (std.mem.startsWith(u8, retrieval.semantic, "applied"))
+                    "local lexical/symbol relevance with advisory semantic rerank"
+                else
+                    "local lexical and symbol relevance",
             }) catch {};
             for (file.top) |hit| {
                 site_items.append(A, .{
@@ -3824,7 +4275,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                     .line_start = if (hit.line > 2) hit.line - 2 else 1,
                     .line_end = hit.line +| 2,
                     .relation = "source_snippet",
-                    .reason = "top lexical site",
+                    .reason = if (hit.source == .semantic_ann) "local OpenPuffer ANN code-chunk match" else "top lexical site",
                 }) catch {};
             }
         }
@@ -3931,6 +4382,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                 .declared_revision = reader_declared_revision,
                 .computed_revision = reader_computed_revision,
             },
+            .retrieval = retrieval,
             .sections = sections.items,
             .omissions = omissions.items,
             .budget = .{
@@ -4216,8 +4668,14 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         appendBundleArgKeysDiagnostic(alloc, out, args);
         return;
     };
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const root: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, ".", &root_buf)) |n| root_buf[0..n] else |_| "";
+    const read_root = explorer.root_dir orelse {
+        out.appendSlice(alloc, "error: project root is not configured") catch {};
+        return;
+    };
+    const root = explorer.root_path orelse {
+        out.appendSlice(alloc, "error: project root is not configured") catch {};
+        return;
+    };
     const path = projectRelPath(path_arg, root) orelse {
         out.appendSlice(alloc, "error: path traversal not allowed") catch {};
         return;
@@ -4226,6 +4684,14 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         out.appendSlice(alloc, "error: access to sensitive file blocked") catch {};
         return;
     }
+    _ = project_file_read.statNoFollowAtRoot(io, read_root, root, path) catch {
+        out.appendSlice(alloc, "error: failed to read file: ") catch {};
+        out.appendSlice(alloc, path) catch {};
+        // Preserve the established miss ergonomics while still failing closed:
+        // suggestions are derived only from indexed paths, never from this read.
+        appendFuzzyPathSuggestions(alloc, out, explorer, path);
+        return;
+    };
 
     // Line range params
     const line_start_raw = getInt(args, "line_start");
@@ -4281,7 +4747,9 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
     // Stay on the extractLines path below (do not renderCachedRead here):
     // default ranged reads still need the "N | " prefix, and raw mode
     // must stay byte-exact with no hash header.
-    _ = watcher.indexMissingFile(io, store, explorer, path);
+    if (!explorer.hasIndexedPath(path)) {
+        _ = watcher.indexMissingFile(io, store, explorer, path);
+    }
 
     const cached = explorer.getContent(path, alloc) catch {
         out.appendSlice(alloc, "error: read failed") catch {};
@@ -4294,8 +4762,7 @@ fn handleRead(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Object
         // server's cwd. For a project=/remote-cache explorer, cwd would serve
         // the user's own file of the same relative path under the other
         // project's label (mirrors explore.readContentForSearch).
-        const read_root = explorer.root_dir orelse std.Io.Dir.cwd();
-        break :blk read_root.readFileAlloc(io, path, alloc, .limited(10 * 1024 * 1024)) catch {
+        break :blk project_file_read.readAllocNoFollowAtRoot(io, read_root, root, path, alloc, .limited(10 * 1024 * 1024)) catch {
             out.appendSlice(alloc, "error: failed to read file: ") catch {};
             out.appendSlice(alloc, path) catch {};
             // Issue #356-p3: fuzzy fallback so a mistyped path is recoverable
@@ -4773,60 +5240,59 @@ fn handleIndex(
         return;
     };
 
-    // Resolve to absolute path
-    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_len = std.Io.Dir.cwd().realPathFile(io, path, &abs_buf) catch {
-        out.appendSlice(alloc, "error: cannot resolve path: ") catch {};
+    // Build through one pinned Explorer capability. The old implementation
+    // resolved + check-opened this path, closed the handle, then spawned a
+    // child that reopened the mutable pathname. A rename/symlink swap in that
+    // window could make the child index a different tree than admission saw.
+    var build_store = Store.init(alloc);
+    defer build_store.deinit();
+    var build_explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer build_explorer.deinit();
+    build_explorer.setRoot(io, path) catch {
+        out.appendSlice(alloc, "error: project root is not a safely indexable directory: ") catch {};
         out.appendSlice(alloc, path) catch {};
         return;
     };
-    const abs_path = abs_buf[0..abs_len];
-    if (!root_policy.isIndexableRoot(abs_path) and !root_policy.isBootstrapableRoot(io, abs_path)) {
-        out.appendSlice(alloc, "error: refusing to index temporary root: ") catch {};
-        out.appendSlice(alloc, abs_path) catch {};
-        return;
-    }
-
-    // Verify it's a directory
-    var check_dir = std.Io.Dir.cwd().openDir(io, abs_path, .{}) catch {
-        out.appendSlice(alloc, "error: not a directory: ") catch {};
-        out.appendSlice(alloc, abs_path) catch {};
+    const abs_path = alloc.dupe(u8, build_explorer.root_path.?) catch {
+        out.appendSlice(alloc, "error: alloc failed") catch {};
         return;
     };
-    check_dir.close(io);
-
-    // Get the codedb binary path (argv[0] equivalent — use /proc/self or just "codedb")
-    // We spawn `codedb <path> snapshot` to create the snapshot
-    const exe_path = std.process.executablePathAlloc(io, alloc) catch {
-        out.appendSlice(alloc, "error: cannot find codedb binary") catch {};
+    defer alloc.free(abs_path);
+    const data_dir = bootstrap_mod.getDataDir(io, alloc, abs_path) catch {
+        out.appendSlice(alloc, "error: cannot create project data directory") catch {};
         return;
     };
-    defer alloc.free(exe_path);
-
+    defer alloc.free(data_dir);
     const snapshot_path = std.fmt.allocPrint(alloc, "{s}/codedb.snapshot", .{abs_path}) catch {
         out.appendSlice(alloc, "error: alloc failed") catch {};
         return;
     };
     defer alloc.free(snapshot_path);
 
-    const result = cio.runCapture(.{
-        .allocator = alloc,
-        .argv = &.{ exe_path, abs_path, "snapshot", snapshot_path, "--no-live-refresh" },
-        .max_output_bytes = 64 * 1024,
-    }) catch {
-        out.appendSlice(alloc, "error: failed to run indexer") catch {};
-        return;
+    const build_result: ?anyerror = blk: {
+        bootstrap_mod.saveProjectInfo(io, alloc, data_dir, abs_path) catch |err| break :blk err;
+        watcher.initialScan(io, &build_store, &build_explorer, abs_path, alloc, true) catch |err| break :blk err;
+        const git_head = git_mod.getGitHeadDir(io, build_explorer.root_dir.?, alloc) catch null;
+        if (build_explorer.outlines.count() > 0) {
+            bootstrap_mod.persistWordIndexFromSource(io, &build_explorer, abs_path, data_dir, git_head, alloc) catch |err| break :blk err;
+        }
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        const tri_workers: usize = @min(@as(usize, @intCast(cpu_count)), 8);
+        const trigram = watcher.buildTrigramsFromCache(&build_explorer.contents, alloc, std.heap.c_allocator, tri_workers) catch |err| break :blk err;
+        defer {
+            trigram.deinit();
+            std.heap.c_allocator.destroy(trigram);
+        }
+        trigram.writeToDisk(io, data_dir, git_head) catch |err| break :blk err;
+        build_explorer.buildCallCentrality(alloc);
+        snapshot_mod.writeSnapshotDual(io, &build_explorer, abs_path, snapshot_path, alloc) catch |err| break :blk err;
+        break :blk null;
     };
-    defer alloc.free(result.stdout);
-    defer alloc.free(result.stderr);
-
-    if (result.term.Exited != 0) {
+    if (build_result) |err| {
         out.appendSlice(alloc, "error: indexing failed for ") catch {};
         out.appendSlice(alloc, abs_path) catch {};
-        if (result.stderr.len > 0) {
-            out.appendSlice(alloc, " — ") catch {};
-            out.appendSlice(alloc, result.stderr[0..@min(result.stderr.len, 300)]) catch {};
-        }
+        out.appendSlice(alloc, " — ") catch {};
+        out.appendSlice(alloc, @errorName(err)) catch {};
         return;
     }
 
@@ -4841,7 +5307,10 @@ fn handleIndex(
         default_store.currentSeq() == 0 and
         getScanState() == .loading_snapshot)
     {
-        default_explorer.setRoot(io, abs_path);
+        default_explorer.setRoot(io, abs_path) catch {
+            out.appendSlice(alloc, "error: indexed snapshot but project root is not safely readable") catch {};
+            return;
+        };
         if (snapshot_mod.loadSnapshotValidated(io, snapshot_path, abs_path, default_explorer, default_store, alloc)) {
             loadProjectTrigramFromDiskIfPresent(io, default_explorer, abs_path, alloc);
             if (default_explorer.outlines.count() > 1000) {
@@ -4859,32 +5328,8 @@ fn handleIndex(
 
     out.appendSlice(alloc, "indexed: ") catch {};
     out.appendSlice(alloc, abs_path) catch {};
-    if (result.stdout.len > 0) {
-        out.appendSlice(alloc, "\n") catch {};
-        // Strip ANSI escape sequences
-        var i: usize = 0;
-        while (i < result.stdout.len) {
-            if (result.stdout[i] == 0x1b) {
-                i += 1;
-                if (i < result.stdout.len and result.stdout[i] == '[') {
-                    // CSI sequence: skip until final byte (0x40-0x7E per ECMA-48)
-                    i += 1;
-                    while (i < result.stdout.len) {
-                        const ch = result.stdout[i];
-                        i += 1;
-                        if (ch >= 0x40 and ch <= 0x7E) break;
-                    }
-                } else if (i < result.stdout.len) {
-                    // Fe sequence (ESC + one byte) — skip
-                    i += 1;
-                }
-                // Lone ESC at end — already skipped by i += 1 above
-            } else {
-                out.append(alloc, result.stdout[i]) catch {};
-                i += 1;
-            }
-        }
-    }
+    const writer = cio.listWriter(out, alloc);
+    writer.print("\n{d} files", .{build_explorer.outlines.count()}) catch {};
 }
 
 // True when `q` is a single compound identifier — camelCase/PascalCase (an
@@ -5163,13 +5608,21 @@ pub fn runCliTool(
         defer task.deinit(alloc);
         var i = cmd_args_start;
         while (i < args.len) : (i += 1) {
-            if (i > cmd_args_start) task.append(alloc, ' ') catch {};
+            if (std.mem.eql(u8, args[i], "--semantic") or std.mem.eql(u8, args[i], "--hybrid")) {
+                m.put(alloc, "semantic", .{ .string = "hybrid" }) catch return 1;
+                continue;
+            }
+            if (std.mem.eql(u8, args[i], "--json")) {
+                m.put(alloc, "format", .{ .string = "json" }) catch return 1;
+                continue;
+            }
+            if (task.items.len > 0) task.append(alloc, ' ') catch {};
             task.appendSlice(alloc, args[i]) catch {};
         }
-        if (task.items.len == 0) return cliUsage(alloc, out, "context <task...>");
+        if (task.items.len == 0) return cliUsage(alloc, out, "context [--semantic] [--json] <task...>");
         m.put(alloc, "task", .{ .string = task.items }) catch return 1;
         loadProjectWordIndexFromDiskIfPresent(io, explorer, root, alloc);
-        handleContext(io, alloc, &m, out, explorer, root);
+        handleContext(io, alloc, &m, out, store, explorer, null);
         return finishCli(out, out_start);
     }
     return null;
@@ -5659,6 +6112,31 @@ fn handleQuery(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *
             }
             const max_lines: usize = if (getInt(step, "lines")) |n| @intCast(@max(1, @min(n, 200))) else 50;
             for (file_set.items) |path| {
+                const query_root = explorer.root_dir orelse {
+                    w.print("error: project root is not configured\n", .{}) catch {};
+                    finishQueryWithFailure(alloc, out, step_i, "project root is not configured", step, file_set.items);
+                    return;
+                };
+                const query_io = explorer.io orelse {
+                    w.print("error: project root is not configured\n", .{}) catch {};
+                    finishQueryWithFailure(alloc, out, step_i, "project root is not configured", step, file_set.items);
+                    return;
+                };
+                if (!project_file_read.rootIsAllowed(query_io, query_root)) {
+                    w.print("error: project root is not configured\n", .{}) catch {};
+                    finishQueryWithFailure(alloc, out, step_i, "project root is not configured", step, file_set.items);
+                    return;
+                }
+                if (!project_file_read.isAllowedPath(path)) {
+                    w.print("error: read path is not an allowed project file: {s}\n", .{path}) catch {};
+                    finishQueryWithFailure(alloc, out, step_i, "read path is not allowed", step, file_set.items);
+                    return;
+                }
+                _ = project_file_read.statNoFollow(query_io, query_root, path) catch {
+                    w.print("error: read path is not an allowed project file: {s}\n", .{path}) catch {};
+                    finishQueryWithFailure(alloc, out, step_i, "read path is not allowed", step, file_set.items);
+                    return;
+                };
                 const content = explorer.getContent(path, alloc) catch continue;
                 if (content) |data| {
                     defer alloc.free(data);
@@ -5892,17 +6370,7 @@ pub fn globMatch(pattern: []const u8, path: []const u8) bool {
 }
 
 pub fn isPathSafe(path: []const u8) bool {
-    if (path.len == 0) return false;
-    if (path[0] == '/') return false;
-    // Block null bytes (path truncation attack)
-    if (std.mem.indexOfScalar(u8, path, 0) != null) return false;
-    // Block backslash separators
-    if (std.mem.indexOfScalar(u8, path, '\\') != null) return false;
-    var it = std.mem.splitScalar(u8, path, '/');
-    while (it.next()) |component| {
-        if (std.mem.eql(u8, component, "..")) return false;
-    }
-    return true;
+    return project_path_policy.isNormalizedRelative(path);
 }
 
 /// Map a read/edit `path` argument to a project-relative path that is safe to
@@ -6532,7 +7000,7 @@ test "issue-258: cached project reads use the project root after contents are re
 
     var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
+    try snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "const project = \"secondary\";\n");
 
     const snap_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb.snapshot", .{project_path});
@@ -6593,7 +7061,7 @@ test "ProjectCache loads project from central snapshot cache" {
 
     var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
+    try snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "pub fn cachedProject() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
 
@@ -6648,13 +7116,13 @@ test "issue-353: explicit default project loads snapshot when default explorer i
 
     var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
+    try snapshot_src.setRoot(io, project_path);
     try snapshot_src.indexFile("src/main.zig", "pub fn issue353() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
 
     var default_explorer = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer default_explorer.deinit();
-    default_explorer.setRoot(io, project_path);
+    try default_explorer.setRoot(io, project_path);
     var default_store = Store.init(testing.allocator);
     defer default_store.deinit();
 
@@ -6692,7 +7160,11 @@ test "issue-353: project cache invalidation reloads newly written snapshots" {
 
     var snapshot_src = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_src.deinit();
-    snapshot_src.setRoot(io, project_path);
+    try snapshot_src.setRoot(io, project_path);
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/old.zig",
+        .data = "pub fn oldSymbol() void {}\n",
+    });
     try snapshot_src.indexFile("src/old.zig", "pub fn oldSymbol() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_src, project_path, testing.allocator);
 
@@ -6709,7 +7181,11 @@ test "issue-353: project cache invalidation reloads newly written snapshots" {
 
     var snapshot_next = Explorer.init(testing.allocator, explore_mod.Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer snapshot_next.deinit();
-    snapshot_next.setRoot(io, project_path);
+    try snapshot_next.setRoot(io, project_path);
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/new.zig",
+        .data = "pub fn newSymbol() void {}\n",
+    });
     try snapshot_next.indexFile("src/new.zig", "pub fn newSymbol() void {}\n");
     try snapshot_mod.writeProjectCacheSnapshot(io, &snapshot_next, project_path, testing.allocator);
 

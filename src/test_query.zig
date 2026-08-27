@@ -1074,7 +1074,7 @@ test "issue-356-p3: codedb_read appends fuzzy suggestions when path is unreadabl
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(tmp_io, project_path);
+    try explorer.setRoot(tmp_io, project_path);
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
     try explorer.indexFile("src/lib.zig", "pub fn helper() void {}\n");
 
@@ -1102,6 +1102,50 @@ test "issue-356-p3: codedb_read appends fuzzy suggestions when path is unreadabl
     try testing.expect(std.mem.indexOf(u8, out.items, "failed to read file") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "did you mean") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "src/main.zig") != null);
+}
+
+test "codedb_read returns configured-root content and denies an unrooted explorer" {
+    const tmp_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(tmp_io, "src");
+    const canary = "pub const CONFIGURED_ROOT_READ_CANARY = true;\n";
+    try tmp.dir.writeFile(tmp_io, .{ .sub_path = "src/main.zig", .data = canary });
+    var project_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_path_len = try tmp.dir.realPathFile(tmp_io, ".", &project_path_buf);
+    const project_path = project_path_buf[0..project_path_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, project_path, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"path":"src/main.zig","line_start":1,"line_end":20}
+    , .{});
+    defer parsed.deinit();
+
+    var rooted = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer rooted.deinit();
+    try rooted.setRoot(tmp_io, project_path);
+    try rooted.indexFile("src/main.zig", canary);
+    var rooted_out: std.ArrayList(u8) = .empty;
+    defer rooted_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(tmp_io, testing.allocator, .codedb_read, &parsed.value.object, &rooted_out, &store, &rooted, &agents);
+    try testing.expect(std.mem.indexOf(u8, rooted_out.items, "CONFIGURED_ROOT_READ_CANARY") != null);
+    try testing.expect(!std.mem.startsWith(u8, rooted_out.items, "error:"));
+
+    var unrooted = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer unrooted.deinit();
+    try unrooted.indexFile("src/main.zig", canary);
+    var unrooted_out: std.ArrayList(u8) = .empty;
+    defer unrooted_out.deinit(testing.allocator);
+    bench_ctx.runDispatch(tmp_io, testing.allocator, .codedb_read, &parsed.value.object, &unrooted_out, &store, &unrooted, &agents);
+    try testing.expectEqualStrings("error: project root is not configured", unrooted_out.items);
+    try testing.expect(std.mem.indexOf(u8, unrooted_out.items, "CONFIGURED_ROOT_READ_CANARY") == null);
 }
 
 test "issue-558: codedb_query filter must filter (or error) — never silently pass every file" {
