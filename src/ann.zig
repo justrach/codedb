@@ -20,9 +20,13 @@ pub const Options = openpuffer.Options;
 
 pub const Index = struct {
     inner: openpuffer.Hnsw(void),
+    dimensions: u16,
 
     pub fn init(allocator: std.mem.Allocator, dimensions: u16, options: Options) Index {
-        return .{ .inner = openpuffer.Hnsw(void).init(allocator, dimensions, options) };
+        return .{
+            .inner = openpuffer.Hnsw(void).init(allocator, dimensions, options),
+            .dimensions = dimensions,
+        };
     }
 
     pub fn deinit(self: *Index) void {
@@ -35,6 +39,29 @@ pub const Index = struct {
 
     pub fn insert(self: *Index, vector: []const f32) !u32 {
         return self.inner.insert(vector);
+    }
+
+    /// Insert an OpenAI-compatible row-major embedding matrix. This is the
+    /// explicit CodeDB/OpenPuffer contract: exactly `count * dimensions`
+    /// values, the same dimensions the index was initialized with, and stable
+    /// consecutive HNSW ids in response order.
+    pub fn insertEmbeddingBatch(
+        self: *Index,
+        vectors: []const f32,
+        count: usize,
+        dimensions: u16,
+    ) !u32 {
+        if (count == 0) return error.InvalidEmbeddingBatch;
+        if (dimensions != self.dimensions) return error.DimensionMismatch;
+        const expected = std.math.mul(usize, count, dimensions) catch return error.InvalidEmbeddingBatchShape;
+        if (vectors.len != expected) return error.InvalidEmbeddingBatchShape;
+        const first_id = std.math.cast(u32, self.len()) orelse return error.IndexTooLarge;
+        for (0..count) |row_index| {
+            const start = row_index * @as(usize, dimensions);
+            const id = try self.inner.insert(vectors[start..][0..dimensions]);
+            if (id != first_id + row_index) return error.NonConsecutiveEmbeddingIds;
+        }
+        return first_id;
     }
 
     pub fn search(

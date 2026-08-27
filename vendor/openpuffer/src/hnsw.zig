@@ -674,25 +674,22 @@ pub fn Hnsw(comptime D: type) type {
             var stack: [2048]f32 = undefined;
             var heap_tmp: ?[]f32 = null;
             defer if (heap_tmp) |h| self.allocator.free(h);
-            const copy: []f32 = if (self.opts.store_f32) self.vector(id) else if (self.dim <= stack.len)
+            const normalized: []f32 = if (self.dim <= stack.len)
                 stack[0..self.dim]
             else blk: {
                 heap_tmp = try self.allocator.alloc(f32, self.dim);
                 break :blk heap_tmp.?;
             };
+            @memcpy(normalized, vector_in);
+            try vecmath.normalizeChecked(normalized);
+            var amax: f32 = 0;
+            for (normalized) |x| amax = @max(amax, @abs(x));
+            const scale = amax / 127.0;
             const g = @atomicLoad(u32, &self.vec_gen.items[id], .monotonic);
             @atomicStore(u32, &self.vec_gen.items[id], g +% 1, .release);
-            @memcpy(copy, vector_in);
-            vecmath.normalize(copy);
-            var amax: f32 = 0;
-            for (copy) |x| amax = @max(amax, @abs(x));
-            const scale = amax / 127.0;
+            if (self.opts.store_f32) @memcpy(self.vector(id), normalized);
             const q8 = self.qvec(id);
-            if (scale == 0) {
-                @memset(q8, 0);
-            } else {
-                for (copy, 0..) |x, di| q8[di] = @intFromFloat(std.math.clamp(@round(x / scale), -127.0, 127.0));
-            }
+            for (normalized, 0..) |x, di| q8[di] = @intFromFloat(std.math.clamp(@round(x / scale), -127.0, 127.0));
             self.setQscaleOf(id, scale);
             @atomicStore(u32, &self.vec_gen.items[id], g +% 2, .release);
         }
@@ -721,17 +718,13 @@ pub fn Hnsw(comptime D: type) type {
             const copy = try alloc.alloc(f32, self.dim);
             errdefer alloc.free(copy);
             @memcpy(copy, vector_in);
-            vecmath.normalize(copy);
+            try vecmath.normalizeChecked(copy);
             var amax: f32 = 0;
             for (copy) |x| amax = @max(amax, @abs(x));
             const scale = amax / 127.0;
             const q8 = try alloc.alloc(i8, self.dim);
             errdefer alloc.free(q8);
-            if (scale == 0) {
-                @memset(q8, 0);
-            } else {
-                for (copy, 0..) |x, di| q8[di] = @intFromFloat(std.math.clamp(@round(x / scale), -127.0, 127.0));
-            }
+            for (copy, 0..) |x, di| q8[di] = @intFromFloat(std.math.clamp(@round(x / scale), -127.0, 127.0));
             return .{ .copy = copy, .q8 = q8, .scale = scale };
         }
 
@@ -940,12 +933,12 @@ pub fn Hnsw(comptime D: type) type {
             defer if (heap_nq) |h| alloc.free(h);
             const nq: []const f32 = if (query.len <= norm_buf.len) blk: {
                 @memcpy(norm_buf[0..query.len], query);
-                vecmath.normalize(norm_buf[0..query.len]);
+                try vecmath.normalizeChecked(norm_buf[0..query.len]);
                 break :blk norm_buf[0..query.len];
             } else blk: {
                 heap_nq = try alloc.alloc(f32, query.len);
                 @memcpy(heap_nq.?, query);
-                vecmath.normalize(heap_nq.?);
+                try vecmath.normalizeChecked(heap_nq.?);
                 break :blk heap_nq.?;
             };
 
@@ -1440,6 +1433,8 @@ pub fn Hnsw(comptime D: type) type {
             const l0_stride = self.l0Stride();
             const hi_stride = self.hiStride();
             for (0..n) |id| {
+                const qscale = mapped.qscales[id];
+                if (!std.math.isFinite(qscale) or qscale < 0) return error.InvalidVectorValue;
                 const level = mapped.levels[id];
                 if (level > max_level or level > 64) return error.InvalidSlabLayout;
                 observed_max_level = @max(observed_max_level, level);
@@ -1489,6 +1484,8 @@ pub fn Hnsw(comptime D: type) type {
             const max_level = self.getMaxLevel();
             var observed_max_level: u32 = 0;
             for (0..n) |id| {
+                const qscale = self.qscales.items[id];
+                if (!std.math.isFinite(qscale) or qscale < 0) return error.InvalidVectorValue;
                 const level = self.levels.items[id];
                 if (level > max_level or level > 64) return error.InvalidSlabLayout;
                 observed_max_level = @max(observed_max_level, level);
@@ -2044,6 +2041,41 @@ test "hnsw finds planted neighbor" {
 
     const results = try index.search(&v, 1, 64, alloc);
     try std.testing.expectEqual(target, results[0].id);
+}
+
+test "hnsw rejects invalid vectors without mutating the index" {
+    const testing = std.testing;
+    var index = Hnsw(void).init(testing.allocator, 4, .{ .seed = 101 });
+    defer index.deinit();
+    const valid = [_]f32{ 1, 0, 0, 0 };
+    _ = try index.insert(&valid);
+
+    const zero = [_]f32{ 0, 0, 0, 0 };
+    const nan = [_]f32{ std.math.nan(f32), 0, 0, 0 };
+    const infinity = [_]f32{ std.math.inf(f32), 0, 0, 0 };
+    try testing.expectError(error.ZeroNormVector, index.insert(&zero));
+    try testing.expectError(error.InvalidVectorValue, index.insert(&nan));
+    try testing.expectError(error.InvalidVectorValue, index.insert(&infinity));
+    try testing.expectEqual(@as(usize, 1), index.len());
+
+    try testing.expectError(error.ZeroNormVector, index.update(0, &zero));
+    try testing.expectError(error.InvalidVectorValue, index.update(0, &nan));
+    try testing.expectError(error.InvalidVectorValue, index.update(0, &infinity));
+    try testing.expectApproxEqAbs(@as(f32, 1), index.vectorConst(0)[0], 1e-6);
+
+    try testing.expectError(error.ZeroNormVector, index.searchAdvanced(&zero, 1, 16, 2, testing.allocator));
+    try testing.expectError(error.InvalidVectorValue, index.searchAdvanced(&nan, 1, 16, 2, testing.allocator));
+    try testing.expectError(error.InvalidVectorValue, index.searchAdvanced(&infinity, 1, 16, 2, testing.allocator));
+}
+
+test "hnsw validates vectors in int8-only mode" {
+    const testing = std.testing;
+    var index = Hnsw(void).init(testing.allocator, 4, .{ .seed = 103, .store_f32 = false });
+    defer index.deinit();
+    _ = try index.insert(&[_]f32{ 1, 0, 0, 0 });
+    const nan = [_]f32{ 0, std.math.nan(f32), 0, 0 };
+    try testing.expectError(error.InvalidVectorValue, index.update(0, &nan));
+    try testing.expectError(error.InvalidVectorValue, index.search(&nan, 1, 16, testing.allocator));
 }
 
 test "layer-0 connectivity and recall on clustered data" {

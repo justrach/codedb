@@ -433,13 +433,12 @@ fn flushWave(
         if (embedded.dimensions != config.dimensions or !std.mem.eql(u8, embedded.model, config.model)) {
             return error.EmbeddingConfigChangedDuringBuild;
         }
+        if (embedded.count != worker.inputs.len) return error.InvalidEmbeddingBatchShape;
         text_bytes = try std.math.add(usize, text_bytes, embedded.text_bytes_sent);
         const record_start = batch_index * semantic.max_index_documents;
+        const first_id = try index.insertEmbeddingBatch(embedded.vectors, embedded.count, embedded.dimensions);
+        if (first_id != indexed_records.items.len) return error.AnnRecordMappingMismatch;
         for (0..embedded.count) |row_index| {
-            const vector_start = row_index * @as(usize, embedded.dimensions);
-            const row = embedded.vectors[vector_start..][0..embedded.dimensions];
-            const id = try index.insert(row);
-            if (id != indexed_records.items.len) return error.AnnRecordMappingMismatch;
             try indexed_records.append(allocator, pending_records.items[record_start + row_index]);
         }
     }
@@ -916,7 +915,7 @@ pub fn search(
     };
 }
 
-test "semantic ANN sidecar round-trips record mapping and graph" {
+test "semantic ANN sidecar accepts the CodeDB Qwen 512D mapping out of the box" {
     const testing = std.testing;
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
@@ -924,10 +923,10 @@ test "semantic ANN sidecar round-trips record mapping and graph" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = path_buf[0..try tmp.dir.realPathFile(io, ".", &path_buf)];
 
-    var source = ann.Index.init(testing.allocator, 64, .{ .seed = 19 });
+    var source = ann.Index.init(testing.allocator, ann.default_dimensions, .{ .seed = 19 });
     defer source.deinit();
-    var a: [64]f32 = @splat(0);
-    var b: [64]f32 = @splat(0);
+    var a: [ann.default_dimensions]f32 = @splat(0);
+    var b: [ann.default_dimensions]f32 = @splat(0);
     a[0] = 1;
     b[1] = 1;
     _ = try source.insert(&a);
@@ -936,9 +935,9 @@ test "semantic ANN sidecar round-trips record mapping and graph" {
     const slab_path = try slabPath(testing.allocator, dir_path, slab_name);
     defer testing.allocator.free(slab_path);
     try source.writeSlabs(slab_path);
-    var calibration: [64]f32 = @splat(0);
+    var calibration: [ann.default_dimensions]f32 = @splat(0);
     calibration[3] = 1;
-    _ = try writeMetadata(io, testing.allocator, dir_path, "test-model", 64, 1234, 5678, &calibration, null, slab_name, &.{
+    _ = try writeMetadata(io, testing.allocator, dir_path, semantic.default_model, ann.default_dimensions, 1234, 5678, &calibration, null, slab_name, &.{
         .{ .path = "src/a.zig", .line_start = 1, .line_end = 2 },
         .{ .path = "src/b.zig", .line_start = 8, .line_end = 12 },
     });
@@ -951,6 +950,8 @@ test "semantic ANN sidecar round-trips record mapping and graph" {
     try testing.expectEqual(@as(u32, 8), restored.records[1].line_start);
     try testing.expectEqual(@as(u64, 1234), restored.manifest);
     try testing.expectEqual(@as(u64, 5678), restored.vector_space_id);
+    try testing.expectEqual(ann.default_dimensions, restored.dimensions);
+    try testing.expectEqualStrings(semantic.default_model, restored.model);
     try testing.expectEqualSlices(f32, &calibration, restored.calibration);
     const results = try restored.index.search(&b, 1, testing.allocator);
     defer testing.allocator.free(results);

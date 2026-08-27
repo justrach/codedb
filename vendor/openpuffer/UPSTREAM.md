@@ -10,6 +10,10 @@ package files and MIT license.
   real-repository/synthetic recall gate merged in upstream
   [PR #24](https://github.com/justrach/openpuffer/pull/24) at
   `df5d3671d3783f8874620561a719195656e22936`.
+- Finite/non-zero vector ingress validation is backported from upstream
+  [PR #30](https://github.com/justrach/openpuffer/pull/30), merged at
+  `5596b785faf0c4fcf3a77f999a1d6883789ae454`. The accompanying server-only
+  Zig 0.17 fix is intentionally absent because codedb vendors no server code.
 - Included from upstream: `src/lib.zig`, `src/hnsw.zig`, `src/vector.zig`,
   `build.zig.zon`, `LICENSE`, `README.md`
 - Local adapter: `build.zig` exposes only upstream's `src/lib.zig` module and

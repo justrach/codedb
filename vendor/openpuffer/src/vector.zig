@@ -31,6 +31,34 @@ pub fn normalize(v: []f32) void {
     for (v) |*x| x.* /= n;
 }
 
+/// Normalize a caller-provided vector while enforcing the HNSW cosine-space
+/// contract. Keeping this check next to the vector math prevents NaN/Inf from
+/// reaching quantization and rejects an all-zero vector whose cosine direction
+/// is undefined.
+pub fn normalizeChecked(v: []f32) !void {
+    if (v.len == 0) return error.InvalidVectorDimensions;
+    const lane = 16;
+    var squared: @Vector(lane, f32) = @splat(0);
+    const finite_limit: @Vector(lane, f32) = @splat(std.math.floatMax(f32));
+    var i: usize = 0;
+    while (i + lane <= v.len) : (i += lane) {
+        const values: @Vector(lane, f32) = v[i..][0..lane].*;
+        if (!@reduce(.And, @abs(values) <= finite_limit)) return error.InvalidVectorValue;
+        squared += values * values;
+    }
+    var norm_squared: f32 = @reduce(.Add, squared);
+    while (i < v.len) : (i += 1) {
+        const value = v[i];
+        if (!std.math.isFinite(value)) return error.InvalidVectorValue;
+        norm_squared += value * value;
+    }
+    if (!std.math.isFinite(norm_squared)) return error.InvalidVectorValue;
+    if (norm_squared == 0) return error.ZeroNormVector;
+    const inverse_norm = 1.0 / @sqrt(norm_squared);
+    if (!std.math.isFinite(inverse_norm)) return error.InvalidVectorValue;
+    for (v) |*value| value.* *= inverse_norm;
+}
+
 /// Vectorized int8 dot product for quantized distance evaluation.
 /// 64 i8 lanes = 512 bits, matching AVX-512 register width. Integer
 /// products are still widened to i32 (max |product| = 16129).
@@ -56,4 +84,18 @@ test "cosine basics" {
     const c = [_]f32{ 0, 1, 0 };
     try std.testing.expectApproxEqAbs(@as(f32, 0), cosineDistance(&a, &b), 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 1), cosineDistance(&a, &c), 1e-6);
+}
+
+test "checked normalization rejects invalid cosine vectors" {
+    var valid = [_]f32{ 3, 4 };
+    try normalizeChecked(&valid);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.6), valid[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), valid[1], 1e-6);
+
+    var zero = [_]f32{ 0, 0 };
+    try std.testing.expectError(error.ZeroNormVector, normalizeChecked(&zero));
+    var nan = [_]f32{ 1, std.math.nan(f32) };
+    try std.testing.expectError(error.InvalidVectorValue, normalizeChecked(&nan));
+    var infinity = [_]f32{ 1, std.math.inf(f32) };
+    try std.testing.expectError(error.InvalidVectorValue, normalizeChecked(&infinity));
 }

@@ -22,6 +22,86 @@ test "ann: OpenPuffer wrapper finds the exact nearest vector" {
     try testing.expect(results[0].distance < results[1].distance);
 }
 
+test "ann: CodeDB 512D row-major embeddings keep stable ids through mmap" {
+    if (@import("builtin").os.tag == .windows) return;
+    const dimensions: u16 = 512;
+    const count: usize = 3;
+    var vectors: [count * dimensions]f32 = @splat(0);
+    vectors[0 * dimensions + 3] = 1;
+    vectors[1 * dimensions + 17] = 1;
+    vectors[2 * dimensions + 29] = 1;
+    vectors[2 * dimensions + 31] = 0.25;
+
+    var source = ann.Index.init(testing.allocator, dimensions, .{ .seed = 107 });
+    defer source.deinit();
+    try testing.expectEqual(@as(u32, 0), try source.insertEmbeddingBatch(&vectors, count, dimensions));
+    try testing.expectEqual(count, source.len());
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = path_buf[0..try tmp.dir.realPathFile(testing.io, ".", &path_buf)];
+    const path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb-512d.hmls", .{dir_path});
+    defer testing.allocator.free(path);
+    try source.writeSlabs(path);
+
+    var wrong_dimensions = ann.Index.init(testing.allocator, dimensions - 1, .{});
+    defer wrong_dimensions.deinit();
+    try testing.expectError(error.DimensionMismatch, wrong_dimensions.loadMmap(path));
+
+    const slab_bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, testing.allocator, .limited(1024 * 1024));
+    defer testing.allocator.free(slab_bytes);
+    const truncated_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb-512d-truncated.hmls", .{dir_path});
+    defer testing.allocator.free(truncated_path);
+    var truncated = try std.Io.Dir.cwd().createFile(testing.io, truncated_path, .{});
+    try truncated.writeStreamingAll(testing.io, slab_bytes[0 .. slab_bytes.len - 1]);
+    truncated.close(testing.io);
+    var truncated_index = ann.Index.init(testing.allocator, dimensions, .{});
+    defer truncated_index.deinit();
+    try testing.expectError(error.Truncated, truncated_index.loadMmap(truncated_path));
+
+    const qscale_offset: usize = @intCast(std.mem.readInt(u64, slab_bytes[64..72], .little));
+    std.mem.writeInt(u32, slab_bytes[qscale_offset..][0..4], @bitCast(std.math.nan(f32)), .little);
+    const nan_path = try std.fmt.allocPrint(testing.allocator, "{s}/codedb-512d-nan-scale.hmls", .{dir_path});
+    defer testing.allocator.free(nan_path);
+    var nan_file = try std.Io.Dir.cwd().createFile(testing.io, nan_path, .{});
+    try nan_file.writeStreamingAll(testing.io, slab_bytes);
+    nan_file.close(testing.io);
+    var nan_index = ann.Index.init(testing.allocator, dimensions, .{});
+    defer nan_index.deinit();
+    try testing.expectError(error.InvalidVectorValue, nan_index.loadMmap(nan_path));
+
+    var loaded = ann.Index.init(testing.allocator, dimensions, .{});
+    defer loaded.deinit();
+    try loaded.loadMmap(path);
+    try testing.expect(loaded.isMmapBacked());
+    try testing.expectEqual(count, loaded.len());
+    const query = vectors[2 * dimensions ..][0..dimensions];
+    const results = try loaded.search(query, 2, testing.allocator);
+    defer testing.allocator.free(results);
+    try testing.expectEqual(@as(u32, 2), results[0].id);
+}
+
+test "ann: CodeDB embedding batch rejects malformed shape and invalid rows" {
+    const dimensions: u16 = 512;
+    var index = ann.Index.init(testing.allocator, dimensions, .{ .seed = 109 });
+    defer index.deinit();
+    var row: [dimensions]f32 = @splat(0);
+    row[0] = 1;
+
+    try testing.expectError(error.InvalidEmbeddingBatch, index.insertEmbeddingBatch(&row, 0, dimensions));
+    try testing.expectError(error.DimensionMismatch, index.insertEmbeddingBatch(&row, 1, dimensions - 1));
+    try testing.expectError(error.InvalidEmbeddingBatchShape, index.insertEmbeddingBatch(row[0 .. row.len - 1], 1, dimensions));
+    try testing.expectError(error.InvalidEmbeddingBatchShape, index.insertEmbeddingBatch(&row, 2, dimensions));
+    row[7] = std.math.nan(f32);
+    try testing.expectError(error.InvalidVectorValue, index.insertEmbeddingBatch(&row, 1, dimensions));
+    row[7] = std.math.inf(f32);
+    try testing.expectError(error.InvalidVectorValue, index.insertEmbeddingBatch(&row, 1, dimensions));
+    @memset(&row, 0);
+    try testing.expectError(error.ZeroNormVector, index.insertEmbeddingBatch(&row, 1, dimensions));
+    try testing.expectEqual(@as(usize, 0), index.len());
+}
+
 test "ann: serialized index round-trips without changing the best result" {
     var source = ann.Index.init(testing.allocator, 3, .{ .seed = 11 });
     defer source.deinit();
