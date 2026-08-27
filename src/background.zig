@@ -201,20 +201,36 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     }
 }
 pub fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8) void {
-    const data_dir = getDataDir(ctx.io, ctx.allocator, abs_root) catch {
+    ctx.explorer.setRoot(ctx.io, abs_root) catch {
         ctx.triggered.store(false, .release);
         return;
     };
-    defer ctx.allocator.free(data_dir);
-    const git_head = git_mod.getGitHead(abs_root, ctx.allocator) catch null;
+    // From here onward all asynchronous work borrows the Explorer-owned
+    // canonical path, never Session.roots storage (which a list_changed
+    // notification is allowed to replace immediately).
+    const canonical_root = ctx.explorer.root_path orelse {
+        ctx.triggered.store(false, .release);
+        return;
+    };
+    const data_dir = getDataDir(ctx.io, ctx.allocator, canonical_root) catch {
+        ctx.triggered.store(false, .release);
+        return;
+    };
+    var data_dir_transferred = false;
+    defer if (!data_dir_transferred) ctx.allocator.free(data_dir);
+
+    const git_head = git_mod.getGitHead(canonical_root, ctx.allocator) catch null;
     mcp_server.setScanState(.loading_snapshot);
-    const snapshot_loaded = loadBestSnapshot(ctx.io, ctx.explorer, ctx.store, abs_root, data_dir, git_head, ctx.allocator);
-    ctx.resolved_root = abs_root;
-    ctx.explorer.setRoot(ctx.io, abs_root);
+    const snapshot_loaded = loadBestSnapshot(ctx.io, ctx.explorer, ctx.store, canonical_root, data_dir, git_head, ctx.allocator);
+    ctx.resolved_root = canonical_root;
     ctx.scan_done.store(snapshot_loaded, .release);
     if (!snapshot_loaded) {
         mcp_server.setScanState(.walking);
-        const scan_thread = std.Thread.spawn(.{}, scanBg, .{ ctx.io, ctx.store, ctx.explorer, abs_root, ctx.allocator, ctx.scan_done, ctx.shutdown, data_dir, abs_root, ctx.telem, ctx.startup_t0 }) catch return;
+        const scan_thread = std.Thread.spawn(.{}, deferredScanBg, .{ ctx.io, ctx.store, ctx.explorer, canonical_root, ctx.allocator, ctx.scan_done, ctx.shutdown, data_dir, ctx.telem, ctx.startup_t0 }) catch {
+            ctx.triggered.store(false, .release);
+            return;
+        };
+        data_dir_transferred = true;
         ctx.scan_thread = scan_thread;
     } else {
         const startup_time_ms: u64 = @intCast(@max(cio.milliTimestamp() - ctx.startup_t0, 0));
@@ -223,6 +239,22 @@ pub fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8)
         compactMcpReadyMemory(ctx.io, ctx.explorer, data_dir, git_head, ctx.allocator);
         mcp_server.setScanState(.ready);
     }
+}
+
+fn deferredScanBg(
+    io: std.Io,
+    store: *Store,
+    explorer: *Explorer,
+    canonical_root: []const u8,
+    allocator: std.mem.Allocator,
+    scan_done: *std.atomic.Value(bool),
+    shutdown: *std.atomic.Value(bool),
+    owned_data_dir: []u8,
+    telem: *telemetry.Telemetry,
+    startup_t0: i64,
+) void {
+    defer allocator.free(owned_data_dir);
+    scanBg(io, store, explorer, canonical_root, allocator, scan_done, shutdown, owned_data_dir, canonical_root, telem, startup_t0);
 }
 
 pub fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
@@ -253,10 +285,16 @@ pub fn watcherDeferredLoop(ctx: *mcp_server.DeferredScan) void {
             return;
         }
     }
-    if (ctx.shutdown.load(.acquire)) return;
+    if (ctx.shutdown.load(.acquire)) {
+        ctx.explorer.finishStartupReconcile();
+        return;
+    }
     // If we exited the loop without ever triggering a scan (give-up path),
     // resolved_root is empty — skip incrementalLoop so we don't crash.
-    if (!ctx.triggered.load(.acquire)) return;
+    if (!ctx.triggered.load(.acquire)) {
+        ctx.explorer.finishStartupReconcile();
+        return;
+    }
     watcher.incrementalLoop(ctx.io, ctx.store, ctx.explorer, ctx.queue, ctx.resolved_root, ctx.shutdown, ctx.scan_done);
 }
 

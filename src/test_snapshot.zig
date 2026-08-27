@@ -114,7 +114,7 @@ test "issue-44: snapshot stale after working tree changes cause stale query resu
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
     var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    exp2.setRoot(io, dir_path);
+    try exp2.setRoot(io, dir_path);
     var store2 = Store.init(testing.allocator);
     defer store2.deinit();
 
@@ -204,7 +204,7 @@ test "issue-685: unsafe snapshot records are rejected before indexing" {
 
     var restored = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer restored.deinit();
-    restored.setRoot(io, root);
+    try restored.setRoot(io, root);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     try testing.expect(!snapshot_mod.loadSnapshot(io, snap_path, &restored, &store, testing.allocator));
@@ -242,23 +242,23 @@ test "issue-685: snapshot round trip preserves typed document links and graph" {
     try testing.expectEqual(@as(usize, 1), deps.len);
     try testing.expectEqualStrings("issue-685-fixture/b.md", deps[0]);
 
-    // A pre-document-graph snapshot remains usable: only its old outline-state
-    // fast path is rejected, forcing a safe reparse of the retained CONTENT.
+    // Security boundary: v3 and older writers could follow file aliases and
+    // persist outside-root or sensitive bytes under a safe-looking path. The
+    // whole legacy snapshot must be rejected, not merely its outline fast path.
     {
         const file = try std.Io.Dir.cwd().openFile(io, snap_path, .{ .mode = .read_write });
         defer file.close(io);
         var version_buf: [2]u8 = undefined;
-        std.mem.writeInt(u16, &version_buf, 2, .little);
+        std.mem.writeInt(u16, &version_buf, 3, .little);
         try file.writePositionalAll(io, &version_buf, 4);
     }
     var legacy = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer legacy.deinit();
     var legacy_store = Store.init(testing.allocator);
     defer legacy_store.deinit();
-    try testing.expect(snapshot_mod.loadSnapshot(io, snap_path, &legacy, &legacy_store, testing.allocator));
-    const legacy_deps = legacy.document_graph.getForwardDeps("issue-685-fixture/a.md") orelse return error.TestUnexpectedResult;
-    try testing.expectEqual(@as(usize, 1), legacy_deps.len);
-    try testing.expectEqualStrings("issue-685-fixture/b.md", legacy_deps[0]);
+    try testing.expect(!snapshot_mod.loadSnapshot(io, snap_path, &legacy, &legacy_store, testing.allocator));
+    try testing.expectEqual(@as(usize, 0), legacy.outlines.count());
+    try testing.expect((try legacy.getContent("issue-685-fixture/a.md", testing.allocator)) == null);
 }
 
 // Restored FileOutlines borrow their import/symbol/document-link strings as slices into a
@@ -553,7 +553,7 @@ test "snapshot: parallel freshness load re-indexes changed files, restores the r
     var arena2 = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena2.deinit();
     var exp2 = Explorer.init(arena2.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    exp2.setRoot(io, dir_path);
+    try exp2.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
     defer store.deinit();
 
@@ -627,7 +627,7 @@ test "snapshot: writer streams uncached file contents for large repos" {
     try testing.expectEqual(@as(usize, 1), hits_no_root.len);
 
     var loaded = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
-    loaded.setRoot(io, dir_path);
+    try loaded.setRoot(io, dir_path);
     defer loaded.deinit();
     var store = Store.init(testing.allocator);
     defer store.deinit();

@@ -1,0 +1,17 @@
+.{
+    .name = .openpuffer,
+    .fingerprint = 0xbec19ff826bee6bd,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.17.0-dev.813+2153f8143",
+    .dependencies = .{},
+    .paths = .{
+        "src/lib.zig",
+        "src/hnsw.zig",
+        "src/vector.zig",
+        "build.zig",
+        "build.zig.zon",
+        "LICENSE",
+        "README.md",
+        "UPSTREAM.md",
+    },
+}

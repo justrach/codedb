@@ -5,6 +5,29 @@ pub fn isExactOrChild(path: []const u8, prefix: []const u8) bool {
     if (!std.mem.startsWith(u8, path, prefix)) return false;
     return path.len == prefix.len or path[prefix.len] == '/';
 }
+
+/// Reject Windows network roots and a whole drive before any open/stat call.
+/// This is deliberately syntax-only so tests and protocol admission behave
+/// identically when cross-compiled from a non-Windows host.
+pub fn isForbiddenWindowsRootSyntax(path: []const u8) bool {
+    if (std.mem.startsWith(u8, path, "\\\\") or std.mem.startsWith(u8, path, "//")) return true;
+    if (path.len < 2 or !std.ascii.isAlphabetic(path[0]) or path[1] != ':') return false;
+    if (path.len == 2) return true; // drive-relative `C:`
+    return path.len == 3 and (path[2] == '/' or path[2] == '\\'); // whole drive `C:\\`
+}
+
+/// Root requests are capabilities, not ambient paths.  Reject relative and
+/// dot-dot spellings before opening; callers may retain the canonical path
+/// reported by the resulting handle.
+pub fn isAbsoluteRootRequest(path: []const u8) bool {
+    if (isForbiddenWindowsRootSyntax(path)) return false;
+    if (!std.fs.path.isAbsolute(path)) return false;
+    var parts = std.mem.tokenizeAny(u8, path, "/\\");
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, part, "..")) return false;
+    }
+    return true;
+}
 /// Temp-root indexing is an opt-in escape hatch for CI / SWE-bench harnesses
 /// that clone throwaway checkouts under /tmp. Off by default (footgun guard,
 /// #80/#346). Enabled by CODEDB_ALLOW_TEMP=1; the `--allow-temp` CLI flag sets
@@ -15,8 +38,16 @@ pub fn tempIndexingAllowed() bool {
 }
 
 pub fn isIndexableRoot(path: []const u8) bool {
+    return isIndexableRootWithTempOpt(path, tempIndexingAllowed());
+}
+
+/// Pure policy entry point for tests and callers that have already resolved
+/// the explicit temp-root opt-in. Keeping environment reads outside the policy
+/// avoids process-global environment races between parallel Zig tests.
+pub fn isIndexableRootWithTempOpt(path: []const u8, allow_temp: bool) bool {
     if (path.len == 0) return false;
     if (std.mem.eql(u8, path, "/")) return false;
+    if (isForbiddenWindowsRootSyntax(path)) return false;
 
     // OSTree distros (Fedora Silverblue/CoreOS/Nobara) bind-mount /home onto
     // /var/home, so /var/home/<user>/<project> is a real project path, not a
@@ -34,7 +65,7 @@ pub fn isIndexableRoot(path: []const u8) bool {
     // (footgun guard) but allowed when temp indexing is opted in (#538, #642)
     // — CI/SWE-bench harnesses clone into /tmp, and macOS TMPDIR resolves
     // under /private/var/folders.
-    if (!tempIndexingAllowed()) {
+    if (!allow_temp) {
         if (isExactOrChild(path, "/private/tmp")) return false;
         if (isExactOrChild(path, "/tmp")) return false;
         if (isExactOrChild(path, "/private/var")) return false;
@@ -100,9 +131,9 @@ fn isBareTempDir(path: []const u8) bool {
 /// checkout rather than a scratch directory. `.git` may be a regular file
 /// (worktrees, submodules), so everything is probed with statFile.
 const project_markers = [_][]const u8{
-    ".git",           "pyproject.toml", "package.json", "Cargo.toml",
-    "go.mod",         "build.zig",      "setup.py",     "pom.xml",
-    "Gemfile",        "composer.json",  "build.gradle", "CMakeLists.txt",
+    ".git",    "pyproject.toml", "package.json", "Cargo.toml",
+    "go.mod",  "build.zig",      "setup.py",     "pom.xml",
+    "Gemfile", "composer.json",  "build.gradle", "CMakeLists.txt",
 };
 
 pub fn looksLikeProject(io: std.Io, path: []const u8) bool {
@@ -112,6 +143,16 @@ pub fn looksLikeProject(io: std.Io, path: []const u8) bool {
         if (std.Io.Dir.cwd().statFile(io, p, .{})) |_| {
             return true;
         } else |_| {}
+    }
+    return false;
+}
+
+/// Capability-relative project-marker probe.  Use this after opening a root
+/// so admission describes the directory object we actually hold, rather than
+/// a pathname that may be retargeted between validation and open.
+pub fn looksLikeProjectDir(io: std.Io, dir: std.Io.Dir) bool {
+    for (project_markers) |marker| {
+        if (dir.statFile(io, marker, .{ .follow_symlinks = false })) |_| return true else |_| {}
     }
     return false;
 }
@@ -127,12 +168,44 @@ pub fn isBootstrapableRoot(io: std.Io, path: []const u8) bool {
     return isTempRoot(path) and !isBareTempDir(path) and looksLikeProject(io, path);
 }
 
+/// Canonical admission policy for a real project capability. Normal project
+/// roots are accepted directly; recognizable temp checkouts are accepted by
+/// the bootstrap exception. Callers must still possess/resolve the root — this
+/// does not authorize a cwd fallback when no project capability exists.
+pub fn isAdmissibleRoot(io: std.Io, path: []const u8) bool {
+    return isIndexableRoot(path) or isBootstrapableRoot(io, path);
+}
+
+/// Admission for an already-opened, canonical root capability.  This is the
+/// authoritative form used by Explorer.setRoot; it has no check-then-open
+/// window and temp-project markers are read through the stable handle.
+pub fn isAdmissibleRootDir(io: std.Io, dir: std.Io.Dir, canonical_path: []const u8) bool {
+    if (isIndexableRoot(canonical_path)) return true;
+    return isTempRoot(canonical_path) and
+        !isBareTempDir(canonical_path) and
+        looksLikeProjectDir(io, dir);
+}
+
 const testing = std.testing;
 
 test "issue-80: normal paths are allowed" {
     try testing.expect(isIndexableRoot("/Users/dev/project"));
     try testing.expect(isIndexableRoot("/home/user/code"));
     try testing.expect(isIndexableRoot("/home/user/code/subdir"));
+}
+
+test "Windows UNC and whole-drive roots are rejected before filesystem access" {
+    try testing.expect(isForbiddenWindowsRootSyntax("\\\\server\\share\\repo"));
+    try testing.expect(isForbiddenWindowsRootSyntax("//server/share/repo"));
+    try testing.expect(isForbiddenWindowsRootSyntax("C:"));
+    try testing.expect(isForbiddenWindowsRootSyntax("C:\\"));
+    try testing.expect(isForbiddenWindowsRootSyntax("d:/"));
+    try testing.expect(!isForbiddenWindowsRootSyntax("C:\\repo"));
+    try testing.expect(!isForbiddenWindowsRootSyntax("d:/repo"));
+    try testing.expect(!isAbsoluteRootRequest("\\\\server\\share\\repo"));
+    try testing.expect(!isAbsoluteRootRequest("C:\\"));
+    try testing.expect(!isIndexableRootWithTempOpt("\\\\server\\share\\repo", true));
+    try testing.expect(!isIndexableRootWithTempOpt("C:\\", true));
 }
 
 test "isTempRoot classification" {
@@ -164,9 +237,11 @@ test "bootstrap: project markers enable temp-root indexing, scratch stays refuse
     try dir.writeFile(tio, .{ .sub_path = "package.json", .data = "{}\n" });
     try testing.expect(looksLikeProject(tio, base));
     try testing.expect(isBootstrapableRoot(tio, base));
+    try testing.expect(isAdmissibleRoot(tio, base));
 
     // Already-allowed roots are never "bootstrapable" (no fs probe needed).
     try testing.expect(!isBootstrapableRoot(tio, "/Users/dev/project"));
+    try testing.expect(isAdmissibleRoot(tio, "/Users/dev/project"));
     // Bare temp dirs stay refused even with the marker file present inside
     // the child we just created.
     try testing.expect(!isBootstrapableRoot(tio, "/tmp"));
@@ -190,21 +265,19 @@ test "issue-80: /tmp is denied" {
     try testing.expect(!isIndexableRoot("/tmp/foo"));
 }
 
-test "issue-642: /var is denied by default, indexable with CODEDB_ALLOW_TEMP" {
-    try testing.expect(!isIndexableRoot("/var/tmp"));
-    try testing.expect(!isIndexableRoot("/var/log"));
+test "issue-642: /var is denied by default, indexable with explicit temp opt-in" {
+    try testing.expect(!isIndexableRootWithTempOpt("/var/tmp", false));
+    try testing.expect(!isIndexableRootWithTempOpt("/var/log", false));
     // /var itself (no deeper path) is also denied
-    try testing.expect(!isIndexableRoot("/var"));
+    try testing.expect(!isIndexableRootWithTempOpt("/var", false));
     // ...but OSTree home projects under /var/home never need the opt-in (#642)
     try testing.expect(isIndexableRoot("/var/home/xavi/project"));
 
     // --allow-temp / CODEDB_ALLOW_TEMP=1 unblocks /var the same way it
     // unblocks /tmp (#538): macOS TMPDIR resolves under /private/var/folders
     // and CI workspaces live under /var/lib.
-    cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
-    defer cio.posixUnsetenv("CODEDB_ALLOW_TEMP");
-    try testing.expect(isIndexableRoot("/var/tmp"));
-    try testing.expect(isIndexableRoot("/private/var/folders/zz/scratch"));
+    try testing.expect(isIndexableRootWithTempOpt("/var/tmp", true));
+    try testing.expect(isIndexableRootWithTempOpt("/private/var/folders/zz/scratch", true));
     // The opt-in still never unblocks the bare OSTree home dir.
-    try testing.expect(!isIndexableRoot("/var/home/xavi"));
+    try testing.expect(!isIndexableRootWithTempOpt("/var/home/xavi", true));
 }

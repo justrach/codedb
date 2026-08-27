@@ -8,6 +8,8 @@ const TrigramIndex = @import("index.zig").TrigramIndex;
 const WordIndex = @import("index.zig").WordIndex;
 const explore_mod = @import("explore.zig");
 const git_mod = @import("git.zig");
+const project_file = @import("project_file.zig");
+const project_path = @import("project_path.zig");
 
 fn nsToMs(ns: i128) f64 {
     return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
@@ -227,7 +229,7 @@ fn readIndexableFile(
             std.log.warn("codedb: not indexing {s} ({d} bytes > {d} cap) — reachable only via codedb_read", .{ path, size, max_indexed_file_bytes });
         return null;
     }
-    const content = try dir.readFileAlloc(io, path, alloc, .limited(max_indexed_file_bytes));
+    const content = try project_file.readAllocNoFollow(io, dir, path, alloc, .limited(max_indexed_file_bytes));
     // Skip binary content (null byte within the first 512 bytes).
     const check_len = @min(content.len, 512);
     if (std.mem.indexOfScalar(u8, content[0..check_len], 0) != null) {
@@ -236,6 +238,7 @@ fn readIndexableFile(
     }
     return content;
 }
+
 const skip_dirs = [_][]const u8{
     ".git",
     ".jj",
@@ -316,6 +319,61 @@ fn shouldSkipDir(name: []const u8) bool {
     return false;
 }
 
+fn isWithinCanonicalRoot(root: []const u8, candidate: []const u8) bool {
+    if (!std.mem.startsWith(u8, candidate, root)) return false;
+    if (candidate.len == root.len) return true;
+    return root.len > 0 and (isPortablePathSep(root[root.len - 1]) or isPortablePathSep(candidate[root.len]));
+}
+
+fn isPortablePathSep(ch: u8) bool {
+    return ch == '/' or ch == '\\';
+}
+
+/// Return a slash-normalized repository-relative spelling for a canonical
+/// target. Windows realPath uses backslashes, but every sensitive-path and
+/// skip policy in codedb intentionally consumes portable forward slashes.
+fn canonicalTargetRelative(root: []const u8, target: []const u8, normalized: []u8) ?[]const u8 {
+    if (!isWithinCanonicalRoot(root, target) or target.len == root.len) return null;
+    var start = root.len;
+    while (start < target.len and isPortablePathSep(target[start])) start += 1;
+    if (start == target.len) return null;
+    const rel = target[start..];
+    if (rel.len > normalized.len) return null;
+    for (rel, normalized[0..rel.len]) |ch, *out| out.* = if (isPortablePathSep(ch)) '/' else ch;
+    return normalized[0..rel.len];
+}
+
+test "canonical Windows targets are normalized before sensitive policy checks" {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const rel = canonicalTargetRelative("C:\\repo", "C:\\repo\\safe\\.ssh\\config", &buf) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("safe/.ssh/config", rel);
+    try std.testing.expect(shouldSkipFile(rel));
+    try std.testing.expect(canonicalTargetRelative("C:\\repo", "C:\\repo-other\\src", &buf) == null);
+}
+
+/// Resolve every candidate under the canonical root and require both its
+/// visible path and canonical repo-relative target to satisfy the indexing
+/// filters. File symlinks themselves are skipped; this additionally protects
+/// regular files reached through an allowed directory symlink.
+fn resolvedFileTargetAllowed(io: std.Io, root_dir: std.Io.Dir, canonical_root: []const u8, alias_path: []const u8) bool {
+    if (canonical_root.len == 0 or shouldSkip(alias_path) or shouldSkipFile(alias_path)) return false;
+    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_len = root_dir.realPathFile(io, alias_path, &target_buf) catch return false;
+    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_rel = canonicalTargetRelative(canonical_root, target_buf[0..target_len], &normalized_buf) orelse return false;
+    return !shouldSkip(target_rel) and !shouldSkipFile(target_rel);
+}
+
+fn resolvedDirectoryTargetAllowed(io: std.Io, root_dir: std.Io.Dir, canonical_root: []const u8, alias_path: []const u8) bool {
+    if (alias_path.len == 0) return canonical_root.len > 0;
+    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_len = root_dir.realPathFile(io, alias_path, &target_buf) catch return false;
+    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_rel = canonicalTargetRelative(canonical_root, target_buf[0..target_len], &normalized_buf) orelse return false;
+    return !shouldSkip(target_rel) and !shouldSkipFile(target_rel);
+}
+
 /// Recursive directory walker that prunes skip_dirs before descending.
 /// Unlike std.Io.Dir.walk(), this never enters .git, node_modules, etc.,
 /// avoiding the CPU cost of traversing potentially huge directory trees.
@@ -323,6 +381,7 @@ pub const FilteredWalker = struct {
     const StackItem = struct {
         dir_handle: std.Io.Dir,
         iter: std.Io.Dir.Iterator,
+        through_symlink: bool,
     };
 
     stack: std.ArrayList(StackItem),
@@ -336,6 +395,7 @@ pub const FilteredWalker = struct {
 
     pub const Entry = struct {
         path: []const u8, // relative path — valid until next call to next()
+        size: u64,
     };
 
     pub fn init(io: std.Io, root: std.Io.Dir, allocator: std.mem.Allocator) !FilteredWalker {
@@ -348,6 +408,7 @@ pub const FilteredWalker = struct {
         try self.stack.append(allocator, .{
             .dir_handle = root,
             .iter = root.iterate(),
+            .through_symlink = false,
         });
 
         var rr_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -359,7 +420,7 @@ pub const FilteredWalker = struct {
         } else |_| {}
 
         // Load .codedbignore if it exists
-        if (root.readFileAlloc(io, ".codedbignore", allocator, .limited(64 * 1024))) |content| {
+        if (project_file.readAllocNoFollow(io, root, ".codedbignore", allocator, .limited(64 * 1024))) |content| {
             defer allocator.free(content);
             var lines = std.mem.splitScalar(u8, content, '\n');
             while (lines.next()) |line| {
@@ -371,7 +432,7 @@ pub const FilteredWalker = struct {
         } else |_| {}
 
         // Also load .gitignore patterns (respect git's ignore rules)
-        if (root.readFileAlloc(io, ".gitignore", allocator, .limited(64 * 1024))) |content| {
+        if (project_file.readAllocNoFollow(io, root, ".gitignore", allocator, .limited(64 * 1024))) |content| {
             defer allocator.free(content);
             var lines = std.mem.splitScalar(u8, content, '\n');
             while (lines.next()) |line| {
@@ -430,6 +491,36 @@ pub const FilteredWalker = struct {
         return false;
     }
 
+    /// Validate the directory object that was actually opened, regardless of
+    /// the iterator's pre-open kind. Returns whether its canonical target
+    /// differs from the visible path. Claiming every handle closes the race
+    /// where a `.directory` entry is replaced by an outside symlink between
+    /// iteration and open, and also supplies cycle prevention for all aliases.
+    fn claimOpenedDirectory(self: *FilteredWalker, dir: std.Io.Dir, visible_path: []const u8) ?bool {
+        if (self.real_root.len == 0) return null;
+        var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const target_len = dir.realPathFile(self.io, ".", &target_buf) catch return null;
+        const real_target = target_buf[0..target_len];
+        var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const target_rel = canonicalTargetRelative(self.real_root, real_target, &normalized_buf) orelse return null;
+        if (shouldSkip(target_rel) or shouldSkipFile(target_rel)) return null;
+        const opened_as_alias = !std.mem.eql(u8, target_rel, visible_path);
+        // Ordinary directories may also be reachable through a deliberate
+        // in-root alias.  Only alias edges participate in cycle suppression;
+        // recording every ordinary directory would make whichever spelling is
+        // visited first hide the other one.  The root itself is pre-claimed,
+        // so an alias back to it is still rejected.
+        if (!opened_as_alias) return false;
+        const gop = self.visited_real_paths.getOrPut(self.allocator, real_target) catch return null;
+        if (gop.found_existing) return null;
+        const dup = self.allocator.dupe(u8, real_target) catch {
+            _ = self.visited_real_paths.remove(real_target);
+            return null;
+        };
+        gop.key_ptr.* = dup;
+        return true;
+    }
+
     pub fn next(self: *FilteredWalker) !?Entry {
         // Trim any filename appended by the previous yield
         self.name_buffer.shrinkRetainingCapacity(self.dir_prefix_len);
@@ -439,17 +530,20 @@ pub const FilteredWalker = struct {
             if (try top.iter.next(self.io)) |entry| {
                 if (entry.kind == .directory) {
                     if (shouldSkipDir(entry.name)) continue;
+                    var visible_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    const visible_path = if (self.dir_prefix_len > 0)
+                        std.fmt.bufPrint(&visible_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch continue
+                    else
+                        entry.name;
                     // Check .codedbignore patterns
                     if (self.ignore_patterns.items.len > 0) {
-                        // Build full path for prefix matching
-                        var check_buf: [std.fs.max_path_bytes]u8 = undefined;
-                        const check_path = if (self.dir_prefix_len > 0)
-                            std.fmt.bufPrint(&check_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch entry.name
-                        else
-                            entry.name;
-                        if (self.isIgnored(entry.name, check_path)) continue;
+                        if (self.isIgnored(entry.name, visible_path)) continue;
                     }
                     const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
+                    const opened_as_alias = self.claimOpenedDirectory(sub, visible_path) orelse {
+                        sub.close(self.io);
+                        continue;
+                    };
                     errdefer sub.close(self.io);
                     const saved_len = self.name_buffer.items.len;
                     errdefer self.name_buffer.shrinkRetainingCapacity(saved_len);
@@ -463,52 +557,58 @@ pub const FilteredWalker = struct {
                     try self.stack.append(self.allocator, .{
                         .dir_handle = sub,
                         .iter = sub.iterate(),
+                        .through_symlink = top.through_symlink or opened_as_alias,
                     });
                     continue;
                 }
 
                 if (entry.kind != .file) {
                     if (entry.kind != .sym_link) continue;
-                    const target_stat = top.dir_handle.statFile(self.io, entry.name, .{}) catch continue;
-                    if (target_stat.kind == .directory) {
-                        if (shouldSkipDir(entry.name)) continue;
-                        if (self.ignore_patterns.items.len > 0) {
-                            var check_buf: [std.fs.max_path_bytes]u8 = undefined;
-                            const check_path = if (self.dir_prefix_len > 0)
-                                std.fmt.bufPrint(&check_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch entry.name
-                            else
-                                entry.name;
-                            if (self.isIgnored(entry.name, check_path)) continue;
-                        }
-                        var rt_buf: [std.fs.max_path_bytes]u8 = undefined;
-                        const rt_len = top.dir_handle.realPathFile(self.io, entry.name, &rt_buf) catch continue;
-                        const real_target = rt_buf[0..rt_len];
-                        if (self.real_root.len == 0) continue;
-                        if (!std.mem.startsWith(u8, real_target, self.real_root)) continue;
-                        if (real_target.len != self.real_root.len and real_target[self.real_root.len] != '/') continue;
-                        const gop = self.visited_real_paths.getOrPut(self.allocator, real_target) catch continue;
-                        if (gop.found_existing) continue;
-                        const dup = self.allocator.dupe(u8, real_target) catch {
-                            _ = self.visited_real_paths.remove(real_target);
+                    if (shouldSkipDir(entry.name)) continue;
+                    if (self.ignore_patterns.items.len > 0) {
+                        var check_buf: [std.fs.max_path_bytes]u8 = undefined;
+                        const check_path = if (self.dir_prefix_len > 0)
+                            std.fmt.bufPrint(&check_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch entry.name
+                        else
+                            entry.name;
+                        if (self.isIgnored(entry.name, check_path)) continue;
+                    }
+                    // Opening as a directory is also the file-symlink gate:
+                    // regular-file targets fail with NotDir and are skipped.
+                    // Validate the already-open directory handle so retargeting
+                    // the link cannot change the object that will be walked.
+                    const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
+                    var visible_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    const visible_path = if (self.dir_prefix_len > 0)
+                        std.fmt.bufPrint(&visible_buf, "{s}/{s}", .{ self.name_buffer.items[0..self.dir_prefix_len], entry.name }) catch {
+                            sub.close(self.io);
                             continue;
-                        };
-                        gop.key_ptr.* = dup;
-                        const sub = top.dir_handle.openDir(self.io, entry.name, .{ .iterate = true }) catch continue;
-                        errdefer sub.close(self.io);
-                        const saved_len_sym = self.name_buffer.items.len;
-                        errdefer self.name_buffer.shrinkRetainingCapacity(saved_len_sym);
-                        if (self.name_buffer.items.len > 0)
-                            try self.name_buffer.append(self.allocator, '/');
-                        try self.name_buffer.appendSlice(self.allocator, entry.name);
-                        self.dir_prefix_len = self.name_buffer.items.len;
-                        try self.stack.append(self.allocator, .{
-                            .dir_handle = sub,
-                            .iter = sub.iterate(),
-                        });
+                        }
+                    else
+                        entry.name;
+                    if (self.claimOpenedDirectory(sub, visible_path) == null) {
+                        sub.close(self.io);
                         continue;
                     }
-                    if (target_stat.kind != .file) continue;
+                    errdefer sub.close(self.io);
+                    const saved_len_sym = self.name_buffer.items.len;
+                    errdefer self.name_buffer.shrinkRetainingCapacity(saved_len_sym);
+                    if (self.name_buffer.items.len > 0)
+                        try self.name_buffer.append(self.allocator, '/');
+                    try self.name_buffer.appendSlice(self.allocator, entry.name);
+                    self.dir_prefix_len = self.name_buffer.items.len;
+                    try self.stack.append(self.allocator, .{
+                        .dir_handle = sub,
+                        .iter = sub.iterate(),
+                        .through_symlink = true,
+                    });
+                    continue;
                 }
+
+                // This also checks ordinary files reached through an allowed
+                // directory symlink, so a safe directory alias cannot expose a
+                // sensitive canonical target nested below it.
+                if (top.through_symlink and !resolvedFileTargetAllowed(self.io, top.dir_handle, self.real_root, entry.name)) continue;
 
                 // Build full relative path by appending filename
                 if (self.dir_prefix_len > 0)
@@ -521,7 +621,15 @@ pub const FilteredWalker = struct {
                     continue;
                 }
 
-                return .{ .path = self.name_buffer.items };
+                const stable_stat = top.dir_handle.statFile(self.io, entry.name, .{ .follow_symlinks = false }) catch {
+                    self.name_buffer.shrinkRetainingCapacity(self.dir_prefix_len);
+                    continue;
+                };
+                if (stable_stat.kind != .file) {
+                    self.name_buffer.shrinkRetainingCapacity(self.dir_prefix_len);
+                    continue;
+                }
+                return .{ .path = self.name_buffer.items, .size = stable_stat.size };
             } else {
                 // Directory exhausted — pop and restore parent prefix
                 if (self.stack.items.len > 1) {
@@ -553,18 +661,6 @@ pub fn trigramFileCap() usize {
     return std.fmt.parseInt(usize, raw, 10) catch 15_000;
 }
 
-// Paths are collected serially first, then stat calls fan out across disjoint
-// chunks. Workers only publish size/stat_succeeded into their own entries; the
-// caller records snapshots serially in discovery order after every join. That
-// keeps sequence assignment deterministic and avoids shared worker error state.
-fn statScanForInitial(io: std.Io, dir: std.Io.Dir, recs: []InitialScanEntry) void {
-    for (recs) |*record| {
-        const ds = dir.statFile(io, record.path, .{}) catch continue;
-        record.size = ds.size;
-        record.stat_succeeded = true;
-    }
-}
-
 fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocator: std.mem.Allocator, skip_trigram: bool) !std.ArrayList(InitialScanEntry) {
     var walker = try FilteredWalker.init(io, dir, allocator);
     defer walker.deinit();
@@ -576,68 +672,20 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
     }
 
     const max_trigram_files = trigramFileCap();
-    // Paths collected serially first (via FilteredWalker, pure walk no stats).
+    // The walker stats each file relative to the stable opened parent handle.
+    // Deferring these stats by path would reopen the directory namespace after
+    // traversal and let a directory-retarget race inject outside sizes into the
+    // Store before content validation.
     while (try walker.next()) |entry| {
         try entries.append(allocator, .{
             .path = try allocator.dupe(u8, entry.path),
-            .size = 0,
-            .stat_succeeded = false,
+            .size = entry.size,
+            .stat_succeeded = true,
             .skip_trigram = false, // set after parallel stat fan
         });
     }
-    // Stats fan out across disjoint slices; per-stat errors are swallowed. After
-    // joining, snapshots are recorded serially so sequence order remains stable
-    // and record errors propagate without cross-thread error sharing.
-    if (entries.items.len > 0) {
-        const want_workers = blk: {
-            if (cio.posixGetenv("CODEDB_LOAD_WORKERS")) |raw| {
-                const parsed = std.fmt.parseInt(usize, raw, 10) catch 0;
-                if (parsed > 0) break :blk parsed;
-            }
-            if (entries.items.len < 256) break :blk 1;
-            const cpu_count = std.Thread.getCpuCount() catch 1;
-            break :blk @min(@as(usize, @intCast(cpu_count)), 4);
-        };
-        const n_workers = @max(@as(usize, 1), @min(want_workers, entries.items.len));
-        stat_fan: {
-            if (n_workers <= 1) {
-                statScanForInitial(io, dir, entries.items);
-                break :stat_fan;
-            }
-            const threads = allocator.alloc(std.Thread, n_workers) catch {
-                statScanForInitial(io, dir, entries.items);
-                break :stat_fan;
-            };
-            defer allocator.free(threads);
-
-            const chunk = entries.items.len / n_workers;
-            const rem = entries.items.len % n_workers;
-            var off: usize = 0;
-            var spawned: usize = 0;
-            var spawn_failed = false;
-            for (0..n_workers) |i| {
-                const extra: usize = if (i < rem) 1 else 0;
-                const start = off;
-                off += chunk + extra;
-                const recs = entries.items[start..off];
-                if (spawn_failed) {
-                    statScanForInitial(io, dir, recs);
-                    continue;
-                }
-                if (std.Thread.spawn(.{}, statScanForInitial, .{ io, dir, recs })) |t| {
-                    threads[spawned] = t;
-                    spawned += 1;
-                } else |_| {
-                    statScanForInitial(io, dir, recs);
-                    spawn_failed = true;
-                }
-            }
-            for (threads[0..spawned]) |t| t.join();
-        }
-        for (entries.items) |entry| {
-            if (!entry.stat_succeeded) continue;
-            _ = try store.recordSnapshot(entry.path, entry.size, 0);
-        }
+    for (entries.items) |entry| {
+        _ = try store.recordSnapshot(entry.path, entry.size, 0);
     }
     // Set skip_trigram using serial count (preserves original cap semantics on discovery order).
     var file_count: usize = 0;
@@ -707,13 +755,7 @@ fn parseInitialScanWorkerEntry(
     };
 }
 
-fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, root: []const u8, entries: []const InitialScanEntry, word_shard: ?*WordIndex, trigram_shard: ?*TrigramIndex) void {
-    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch {
-        for (0..entries.len) |index| results.publish(io, index, null);
-        return;
-    };
-    defer dir.close(io);
-
+fn initialScanWorker(io: std.Io, results: *WorkerParsedResults, dir: std.Io.Dir, entries: []const InitialScanEntry, word_shard: ?*WordIndex, trigram_shard: ?*TrigramIndex) void {
     // Read content directly into the persistent result arena, while allocating
     // transient parser state in a per-file scratch arena that is reset between
     // files. The final outline uses packed libc-owned storage so the main thread
@@ -754,8 +796,15 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
         explorer.word_index.skip_file_words = false;
         explorer.mu.unlock();
     };
-    const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
-    defer dir.close(io);
+    var owned_dir: ?std.Io.Dir = null;
+    const dir = if (explorer.root_dir) |stable| blk: {
+        if (!project_file.rootMatchesPath(io, stable, root)) return error.ProjectRootChanged;
+        break :blk stable;
+    } else blk: {
+        owned_dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+        break :blk owned_dir.?;
+    };
+    defer if (owned_dir) |owned| owned.close(io);
 
     var entries = try collectInitialScanEntries(io, store, dir, allocator, skip_trigram);
     const profile_collect_done: i128 = if (profile) cio.nanoTimestamp() else 0;
@@ -779,7 +828,9 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
                 defer arena.deinit();
                 const parsed = try parseInitialScanEntry(io, dir, entry, arena.allocator(), arena.allocator());
                 if (parsed) |file| {
+                    const content_hash = std.hash.Wyhash.hash(0, file.content);
                     try explorer.commitParsedFileOwnedOutline(file.path, file.content, file.outline, true, file.skip_trigram);
+                    _ = store.refineLatestSnapshotHash(file.path, file.content.len, content_hash);
                 }
             }
         }
@@ -841,7 +892,7 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
             sh[i].skip_file_words = true;
             shard_ptr = &sh[i];
         }
-        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, shard_ptr, null });
+        threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, dir, chunk, shard_ptr, null });
         spawned += 1;
     }
     const profile_spawn_done: i128 = if (profile) cio.nanoTimestamp() else 0;
@@ -851,7 +902,9 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
     for (workers) |*worker| {
         for (0..worker.items.len) |item_index| {
             if (worker.takeReady(io, item_index)) |file| {
+                const content_hash = std.hash.Wyhash.hash(0, file.content);
                 try explorer.commitParsedFileAdoptOutline(file.path, file.content, file.outline, true, file.skip_trigram);
+                _ = store.refineLatestSnapshotHash(file.path, file.content.len, content_hash);
             }
         }
     }
@@ -937,13 +990,7 @@ fn extractTrigramMasks(
 // Build a private trigram shard from a chunk of InitialScanEntry items — reads
 // each file, extracts trigrams, and inserts postings directly, all on the worker.
 // Used by the skip_outlines fast path in initialScanWithTrigrams.
-fn readAndBuildTrigramShardWorker(io: std.Io, shard: *TrigramIndex, root: []const u8, entries: []const InitialScanEntry, build_error: *?anyerror) void {
-    const dir = std.Io.Dir.cwd().openDir(io, root, .{}) catch |err| {
-        build_error.* = err;
-        return;
-    };
-    defer dir.close(io);
-
+fn readAndBuildTrigramShardWorker(io: std.Io, shard: *TrigramIndex, dir: std.Io.Dir, entries: []const InitialScanEntry, build_error: *?anyerror) void {
     const index_m = @import("index.zig");
     var local = std.AutoHashMap(index_m.Trigram, index_m.PostingMask).init(std.heap.c_allocator);
     defer local.deinit();
@@ -1109,8 +1156,15 @@ pub fn initialScanWithTrigrams(
     trigram_alloc: std.mem.Allocator,
     skip_outlines: bool,
 ) !?*TrigramIndex {
-    const dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
-    defer dir.close(io);
+    var owned_dir: ?std.Io.Dir = null;
+    const dir = if (explorer.root_dir) |stable| blk: {
+        if (!project_file.rootMatchesPath(io, stable, root)) return error.ProjectRootChanged;
+        break :blk stable;
+    } else blk: {
+        owned_dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+        break :blk owned_dir.?;
+    };
+    defer if (owned_dir) |owned| owned.close(io);
 
     var entries = try collectInitialScanEntries(io, store, dir, allocator, true);
     defer {
@@ -1180,7 +1234,7 @@ pub fn initialScanWithTrigrams(
             offset += count;
             shard.index.ensureTotalCapacity(32768) catch {};
             shard.path_to_id.ensureTotalCapacity(@intCast(count)) catch {};
-            threads[i] = try std.Thread.spawn(.{}, readAndBuildTrigramShardWorker, .{ io, shard, root, chunk, &build_errors[i] });
+            threads[i] = try std.Thread.spawn(.{}, readAndBuildTrigramShardWorker, .{ io, shard, dir, chunk, &build_errors[i] });
             spawned += 1;
         }
         for (threads[0..spawned]) |thread| thread.join();
@@ -1212,7 +1266,7 @@ pub fn initialScanWithTrigrams(
             const chunk = entries.items[offset .. offset + count];
             offset += count;
             try worker.prepare(count);
-            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, root, chunk, null, &shards[i] });
+            threads[i] = try std.Thread.spawn(.{}, initialScanWorker, .{ io, worker, dir, chunk, null, &shards[i] });
             spawned += 1;
         }
         // Commit outlines serially while workers may still be parsing. Trigram
@@ -1254,7 +1308,8 @@ pub fn initialScan(io: std.Io, store: *Store, explorer: *Explorer, root: []const
 /// Fast index: parse symbols/outline only, skip expensive word+trigram indexes.
 fn indexFileOutline(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator) !void {
     if (shouldSkipFile(path)) return;
-    const stat = try dir.statFile(io, path, .{});
+    const stat = try dir.statFile(io, path, .{ .follow_symlinks = false });
+    if (stat.kind != .file) return;
     const content = (try readIndexableFile(io, dir, path, allocator, stat.size, false)) orelse return;
     defer allocator.free(content);
     try explorer.indexFileOutlineOnly(path, content);
@@ -1868,7 +1923,7 @@ test "file watcher remains pinned to opened root after pathname retarget" {
     const live_len = try tmp.dir.realPathFile(io, "live", &live_buf);
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, live_buf[0..live_len]);
+    try explorer.setRoot(io, live_buf[0..live_len]);
     const root_dir = explorer.root_dir orelse return error.TestUnexpectedResult;
     var known = FileMap.init(testing.allocator);
     defer {
@@ -2057,6 +2112,9 @@ test "failed directory watch admission retries through dirty reconciliation" {
 
 /// Background thread: polls for incremental FS changes.
 pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, root: []const u8, shutdown: *std.atomic.Value(bool), scan_done: *std.atomic.Value(bool)) void {
+    explorer.expectStartupReconcile();
+    var startup_reconcile_finished = false;
+    defer if (!startup_reconcile_finished) explorer.finishStartupReconcile();
     var gpa = std.heap.DebugAllocator(.{}).init;
     defer _ = gpa.deinit();
     const backing = gpa.allocator();
@@ -2103,6 +2161,8 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
     var watch = FileChangeWatch.init(backing);
     defer watch.deinit(io);
     armAndCloseGap(io, &watch, stable_root, store, explorer, queue, &known, &dirs, root, backing);
+    explorer.finishStartupReconcile();
+    startup_reconcile_finished = true;
 
     // Track current git HEAD to detect branch switches (#116)
     var last_git_head: ?[40]u8 = git_mod.getGitHeadDir(io, stable_root, backing) catch null;
@@ -2168,21 +2228,20 @@ pub fn incrementalLoop(io: std.Io, store: *Store, explorer: *Explorer, queue: *E
             var rescan_arena = std.heap.ArenaAllocator.init(backing);
             defer rescan_arena.deinit();
             const tmp = rescan_arena.allocator();
-            const dir = stable_root.openDir(io, ".", .{ .iterate = true, .follow_symlinks = false }) catch continue;
-            defer dir.close(io);
+            const dir = stable_root;
             var walker = FilteredWalker.init(io, dir, tmp) catch continue;
             defer walker.deinit();
             const max_trigram_files = trigramFileCap();
             var file_count: usize = 0;
             while (walker.next() catch null) |entry| {
-                const stat = dir.statFile(io, entry.path, .{}) catch continue;
-                _ = store.recordSnapshot(entry.path, stat.size, 0) catch {};
+                _ = store.recordSnapshot(entry.path, entry.size, 0) catch {};
                 file_count += 1;
                 const effective_skip = file_count > max_trigram_files;
                 indexFileContent(io, explorer, dir, entry.path, backing, effective_skip) catch {};
+                const stat = project_file.statNoFollow(io, dir, entry.path) catch continue;
                 const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
                 const duped = backing.dupe(u8, entry.path) catch continue;
-                known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = false }) catch backing.free(duped);
+                known.put(duped, .{ .mtime = mtime, .size = entry.size, .hash = 0, .seen = false }) catch backing.free(duped);
             }
             armAndCloseGap(io, &watch, stable_root, store, explorer, queue, &known, &dirs, root, backing);
             continue;
@@ -2242,7 +2301,7 @@ fn hashAndIndexFile(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []co
     if (size > max_indexed_file_bytes) return 0;
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
-    const content = dir.readFileAlloc(io, path, content_arena.allocator(), .limited(max_indexed_file_bytes)) catch return std.math.maxInt(u64);
+    const content = project_file.readAllocNoFollow(io, dir, path, content_arena.allocator(), .limited(max_indexed_file_bytes)) catch return std.math.maxInt(u64);
     const hash = std.hash.Wyhash.hash(0, content);
     indexContentBuffer(explorer, path, content, false) catch {};
     return hash;
@@ -2284,9 +2343,7 @@ pub fn incrementalDiffDirty(
     dirty: ?*const DirtySet,
 ) !void {
     _ = root;
-    const root_dir = explorer.root_dir orelse return error.ProjectRootUnavailable;
-    const dir = try root_dir.openDir(io, ".", .{ .iterate = true, .follow_symlinks = false });
-    defer dir.close(io);
+    const dir = explorer.root_dir orelse return error.ProjectRootUnavailable;
 
     // Mark all known files unseen for this cycle.
     var known_iter = known.iterator();
@@ -2297,7 +2354,7 @@ pub fn incrementalDiffDirty(
     var ignore = try FilteredWalker.init(io, dir, tmp);
     defer ignore.deinit();
     const parents = try buildParentIndex(known, tmp);
-    try walkRel(io, store, explorer, queue, known, dirs, &ignore, dir, "", persistent, tmp, &parents, dirty);
+    try walkRel(io, store, explorer, queue, known, dirs, &ignore, dir, "", persistent, tmp, &parents, dirty, false);
 
     // Detect deleted files
     var to_remove: std.ArrayList([]const u8) = .empty;
@@ -2327,24 +2384,25 @@ fn applyKnownFile(
     queue: *EventQueue,
     known: *FileMap,
     dir: std.Io.Dir,
-    path: []const u8,
+    logical_path: []const u8,
+    read_path: []const u8,
     stat: std.Io.Dir.Stat,
     force_read: bool,
 ) !void {
-    const known_entry = known.getEntry(path) orelse return;
+    const known_entry = known.getEntry(logical_path) orelse return;
     const old = known_entry.value_ptr;
     old.seen = true;
     const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
     const exact_metadata_matches = old.mtime_ns != 0 and old.mtime_ns == stat.mtime.nanoseconds and old.ctime_ns == stat.ctime.nanoseconds and old.inode == stat.inode and old.size == stat.size;
     if (!force_read and exact_metadata_matches) {
-        store.noteMtime(path, mtime);
+        store.noteMtime(logical_path, mtime);
         return;
     }
     if (!force_read and old.mtime_ns == 0 and old.mtime == mtime and old.size == stat.size) {
         old.mtime_ns = stat.mtime.nanoseconds;
         old.ctime_ns = stat.ctime.nanoseconds;
         old.inode = stat.inode;
-        store.noteMtime(path, mtime);
+        store.noteMtime(logical_path, mtime);
         return;
     }
 
@@ -2353,8 +2411,8 @@ fn applyKnownFile(
     var content: ?[]const u8 = null;
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
-    if (!shouldSkipFile(path) and stat.size <= max_indexed_file_bytes) {
-        if (dir.readFileAlloc(io, path, content_arena.allocator(), .limited(max_indexed_file_bytes))) |buf| {
+    if (!shouldSkipFile(logical_path) and stat.size <= max_indexed_file_bytes) {
+        if (project_file.readAllocNoFollow(io, dir, read_path, content_arena.allocator(), .limited(max_indexed_file_bytes))) |buf| {
             content = buf;
             hash = std.hash.Wyhash.hash(0, buf);
         } else |_| {
@@ -2368,18 +2426,18 @@ fn applyKnownFile(
         old.ctime_ns = stat.ctime.nanoseconds;
         old.inode = stat.inode;
         old.size = stat.size;
-        store.noteMtime(path, mtime);
+        store.noteMtime(logical_path, mtime);
         return;
     }
 
-    const seq = try store.recordSnapshot(path, stat.size, hash);
+    const seq = try store.recordSnapshot(logical_path, stat.size, hash);
     old.mtime = mtime;
     old.mtime_ns = stat.mtime.nanoseconds;
     old.ctime_ns = stat.ctime.nanoseconds;
     old.inode = stat.inode;
     old.size = stat.size;
     old.hash = hash;
-    store.noteMtime(path, mtime);
+    store.noteMtime(logical_path, mtime);
     if (FsEvent.init(stable_path, .modified, seq)) |ev| pushEventOrWait(queue, ev);
     if (content) |buf| indexContentBuffer(explorer, stable_path, buf, false) catch {};
 }
@@ -2447,8 +2505,23 @@ fn walkRel(
     tmp: std.mem.Allocator,
     parents: *const ParentIndex,
     dirty: ?*const DirtySet,
+    through_symlink: bool,
 ) !void {
-    const current_dir_state = dirState(io, dir, prefix);
+    // Open once, then validate the actual handle before observing its mtime,
+    // identity, names, or sizes. Iterator kind and a pre-open realpath are
+    // both racy; the full identity tuple also catches atomic directory swaps.
+    const listing = if (prefix.len == 0)
+        dir
+    else
+        dir.openDir(io, prefix, .{ .iterate = true }) catch return;
+    defer if (prefix.len != 0) listing.close(io);
+    var effective_through_symlink = through_symlink;
+    if (prefix.len != 0) {
+        const opened_as_alias = ignore.claimOpenedDirectory(listing, prefix) orelse return;
+        effective_through_symlink = effective_through_symlink or opened_as_alias;
+    }
+
+    const current_dir_state = dirState(io, listing, "");
     const cached_dir_state = if (dirs) |d| d.get(prefix) else null;
     const force_scan = dirtyForcesDirectoryScan(dirty, known, prefix);
     const dir_unchanged = !force_scan and current_dir_state != null and cached_dir_state != null and std.meta.eql(current_dir_state.?, cached_dir_state.?);
@@ -2463,8 +2536,11 @@ fn walkRel(
                     }
                 }
                 debug_unchanged_file_stats += 1;
-                const stat = dir.statFile(io, path, .{}) catch continue;
-                try applyKnownFile(io, store, explorer, queue, known, dir, path, stat, dirtyForcesFileRead(dirty, prefix, path));
+                const local_name = std.fs.path.basename(path);
+                if (effective_through_symlink and !resolvedFileTargetAllowed(io, listing, ignore.real_root, local_name)) continue;
+                const stat = listing.statFile(io, local_name, .{ .follow_symlinks = false }) catch continue;
+                if (stat.kind != .file) continue;
+                try applyKnownFile(io, store, explorer, queue, known, listing, path, local_name, stat, dirtyForcesFileRead(dirty, prefix, path));
             }
         }
         if (parents.child_dirs.get(prefix)) |children| {
@@ -2473,42 +2549,37 @@ fn walkRel(
                 if (shouldSkipDir(name.*)) continue;
                 const child = try joinRel(tmp, prefix, name.*);
                 if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(name.*, child)) continue;
-                try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents, dirty);
+                const child_stat = listing.statFile(io, name.*, .{ .follow_symlinks = false }) catch continue;
+                if (child_stat.kind != .directory and child_stat.kind != .sym_link) continue;
+                const child_through_symlink = effective_through_symlink or child_stat.kind == .sym_link;
+                try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents, dirty, child_through_symlink);
             }
         }
         return;
     }
 
-    const listing = if (prefix.len == 0)
-        dir
-    else
-        dir.openDir(io, prefix, .{ .iterate = true }) catch return;
-    defer if (prefix.len != 0) listing.close(io);
     var it = listing.iterate();
     while (try it.next(io)) |entry| {
-        if (entry.kind == .directory or (entry.kind == .sym_link and blk: {
-            const st = listing.statFile(io, entry.name, .{}) catch break :blk false;
-            break :blk st.kind == .directory;
-        })) {
+        if (entry.kind == .directory or entry.kind == .sym_link) {
+            const child_through_symlink = effective_through_symlink or entry.kind == .sym_link;
+            if (entry.kind == .sym_link and !resolvedDirectoryTargetAllowed(io, listing, ignore.real_root, entry.name)) continue;
             if (shouldSkipDir(entry.name)) continue;
             const child = try joinRel(tmp, prefix, entry.name);
             if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(entry.name, child)) continue;
-            try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents, dirty);
+            try walkRel(io, store, explorer, queue, known, dirs, ignore, dir, child, persistent, tmp, parents, dirty, child_through_symlink);
             continue;
         }
 
-        if (entry.kind != .file) {
-            if (entry.kind != .sym_link) continue;
-            const st = listing.statFile(io, entry.name, .{}) catch continue;
-            if (st.kind != .file) continue;
-        }
+        if (entry.kind != .file) continue;
 
         const rel = try joinRel(tmp, prefix, entry.name);
         if (ignore.ignore_patterns.items.len > 0 and ignore.isIgnored(entry.name, rel)) continue;
         if (shouldSkipFile(rel)) continue;
-        const stat = dir.statFile(io, rel, .{}) catch continue;
+        if (effective_through_symlink and !resolvedFileTargetAllowed(io, listing, ignore.real_root, entry.name)) continue;
+        const stat = listing.statFile(io, entry.name, .{ .follow_symlinks = false }) catch continue;
+        if (stat.kind != .file) continue;
         if (known.getEntry(rel)) |known_entry| {
-            try applyKnownFile(io, store, explorer, queue, known, dir, known_entry.key_ptr.*, stat, dirtyForcesFileRead(dirty, prefix, rel));
+            try applyKnownFile(io, store, explorer, queue, known, listing, known_entry.key_ptr.*, entry.name, stat, dirtyForcesFileRead(dirty, prefix, rel));
         } else {
             const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
             const duped = try persistent.dupe(u8, rel);
@@ -2517,7 +2588,7 @@ fn walkRel(
             try known.put(duped, .{ .mtime = mtime, .size = stat.size, .hash = 0, .seen = true });
             store.noteMtime(duped, mtime);
             if (FsEvent.init(duped, .created, seq)) |ev| pushEventOrWait(queue, ev);
-            indexFileContent(io, explorer, dir, duped, tmp, false) catch {};
+            indexFileContentAt(io, explorer, listing, entry.name, duped, tmp, false) catch {};
         }
     }
 
@@ -2565,7 +2636,11 @@ pub fn indexMissingFile(io: std.Io, store: ?*Store, explorer: *Explorer, path: [
     }
     if (shouldSkipFile(path)) return false;
     const root_dir = explorer.root_dir orelse return false;
-    const stat = root_dir.statFile(io, path, .{}) catch return false;
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = root_dir.realPathFile(io, ".", &root_buf) catch return false;
+    if (!resolvedFileTargetAllowed(io, root_dir, root_buf[0..root_len], path)) return false;
+    const stat = root_dir.statFile(io, path, .{ .follow_symlinks = false }) catch return false;
+    if (stat.kind != .file) return false;
     if (stat.size > max_indexed_file_bytes) return false;
     indexFileContent(io, explorer, root_dir, path, explorer.allocator, false) catch return false;
     const mtime: i64 = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
@@ -2619,19 +2694,32 @@ fn shouldSkipFile(path: []const u8) bool {
 /// Delegates to snapshot.zig so live indexing and snapshots apply the same
 /// exclusion rules from a single implementation.
 pub fn isSensitivePath(path: []const u8) bool {
-    return @import("snapshot.zig").isSensitivePath(path);
+    return project_path.isSensitive(path);
 }
 
 fn indexFileContent(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator, skip_trigram: bool) !void {
+    return indexFileContentAt(io, explorer, dir, path, path, allocator, skip_trigram);
+}
+
+fn indexFileContentAt(
+    io: std.Io,
+    explorer: *Explorer,
+    dir: std.Io.Dir,
+    read_path: []const u8,
+    logical_path: []const u8,
+    allocator: std.mem.Allocator,
+    skip_trigram: bool,
+) !void {
     _ = allocator;
-    if (shouldSkipFile(path)) return;
-    const stat = try dir.statFile(io, path, .{});
+    if (shouldSkipFile(logical_path)) return;
+    const stat = try dir.statFile(io, read_path, .{ .follow_symlinks = false });
+    if (stat.kind != .file) return;
     // Use page_allocator arena for content — pages returned to OS immediately
     // via munmap on deinit, eliminating GPA page retention from content churn.
     var content_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer content_arena.deinit();
-    const content = (try readIndexableFile(io, dir, path, content_arena.allocator(), stat.size, false)) orelse return;
-    try indexContentBuffer(explorer, path, content, skip_trigram);
+    const content = (try readIndexableFile(io, dir, read_path, content_arena.allocator(), stat.size, false)) orelse return;
+    try indexContentBuffer(explorer, logical_path, content, skip_trigram);
 }
 
 // ── muonry interop ───────────────────────────────────────────────────────────
@@ -2684,10 +2772,11 @@ fn drainNotifyFileFrom(
 
         // Make path relative to root if it's absolute
         const rel = if (std.fs.path.isAbsolute(path)) blk: {
-            if (!std.mem.startsWith(u8, path, root) or path.len <= root.len or path[root.len] != '/') continue;
+            if (!isWithinCanonicalRoot(root, path) or path.len == root.len) continue;
             break :blk std.mem.trimStart(u8, path[root.len..], "/");
         } else path;
         if (shouldSkipFile(rel)) continue;
+        if (!resolvedFileTargetAllowed(io, dir, root, rel)) continue;
 
         // Skip re-indexing if file hasn't changed since last known state (#228)
         const stat = dir.statFile(io, rel, .{ .follow_symlinks = false }) catch continue;
@@ -2742,7 +2831,7 @@ test "notify drain uses exact metadata and refreshes the live fingerprint" {
     defer testing.allocator.destroy(explorer);
     explorer.* = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     const stable_root = explorer.root_dir orelse return error.TestUnexpectedResult;
     try indexFileContent(io, explorer, stable_root, "keep.py", testing.allocator, false);
     const old_stat = try stable_root.statFile(io, "keep.py", .{ .follow_symlinks = false });
@@ -2814,7 +2903,7 @@ test "issue-685: watcher diff updates document edges for modify add and delete" 
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
     try testing.expectEqual(@as(usize, 1), explorer.document_graph.getForwardDeps("docs/a.md").?.len);
 
@@ -2876,7 +2965,7 @@ test "dir-mtime prune still stats known files and notices new siblings" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
 
     var known = FileMap.init(testing.allocator);
     defer {

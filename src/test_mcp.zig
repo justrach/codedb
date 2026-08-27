@@ -34,6 +34,12 @@ comptime {
     _ = @import("config.zig");
 }
 
+fn setTestProjectRoot(explorer: *Explorer) !void {
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try std.Io.Dir.cwd().realPathFile(io, ".", &root_buf);
+    try explorer.setRoot(io, root_buf[0..root_len]);
+}
+
 test "mcp json: line reader preserves newline and EOF framing" {
     var reader: std.Io.Reader = .fixed("first\nlast");
 
@@ -1245,7 +1251,7 @@ test "issue-bug5: codedb_read returns binary stub instead of dumping bytes" {
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, dir_path);
+    try explorer.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
@@ -1287,7 +1293,7 @@ test "issue-bug6: codedb_read errors when line_start > line_end" {
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, dir_path);
+    try explorer.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
@@ -2486,23 +2492,21 @@ test "issue-528: finishCli maps error-prefixed handler output to exit 1" {
     try testing.expectEqual(@as(u8, 0), mcp_mod.finishCli(&empty_out, 0));
 }
 
-test "issue-538: temp roots are indexable only when CODEDB_ALLOW_TEMP opts in" {
+test "issue-538: temp roots are indexable only when explicitly opted in" {
     // Default (footgun guard, #80/#346): temp roots are refused so codedb never
     // indexes a scratch dir by accident.
-    try testing.expect(!root_policy.isIndexableRoot("/tmp/cdbtest"));
-    try testing.expect(!root_policy.isIndexableRoot("/private/tmp/cdbtest"));
+    try testing.expect(!root_policy.isIndexableRootWithTempOpt("/tmp/cdbtest", false));
+    try testing.expect(!root_policy.isIndexableRootWithTempOpt("/private/tmp/cdbtest", false));
 
     // Opt-in escape hatch for SWE-bench / CI harnesses that clone throwaway
     // checkouts under /tmp (issue #538).
-    cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
-    defer cio.posixUnsetenv("CODEDB_ALLOW_TEMP");
-    try testing.expect(root_policy.isIndexableRoot("/tmp/cdbtest"));
-    try testing.expect(root_policy.isIndexableRoot("/private/tmp/cdbtest/src"));
+    try testing.expect(root_policy.isIndexableRootWithTempOpt("/tmp/cdbtest", true));
+    try testing.expect(root_policy.isIndexableRootWithTempOpt("/private/tmp/cdbtest/src", true));
 
     // The opt-in must NOT widen the guard to real system roots.
-    try testing.expect(!root_policy.isIndexableRoot("/etc"));
-    try testing.expect(!root_policy.isIndexableRoot("/usr/local/bin"));
-    try testing.expect(!root_policy.isIndexableRoot("/"));
+    try testing.expect(!root_policy.isIndexableRootWithTempOpt("/etc", true));
+    try testing.expect(!root_policy.isIndexableRootWithTempOpt("/usr/local/bin", true));
+    try testing.expect(!root_policy.isIndexableRootWithTempOpt("/", true));
 }
 
 test "issue-570: codedb_context falls back to plain words for all-lowercase tasks" {
@@ -2513,6 +2517,7 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
     // plain words instead of erroring.
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
     try explorer.indexFile("src/ranking.zig", "pub fn rankingBoost() void {}\n");
 
     var store = Store.init(testing.allocator);
@@ -2521,7 +2526,7 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_json =
@@ -2543,6 +2548,7 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
 test "issue-688: codedb_context json exposes typed provenance and preserves markdown default" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
     try explorer.indexFile(
         "src/ranking.zig",
         "pub fn rankingBoost() void { helper(); }\npub fn helper() void {}\n",
@@ -2553,7 +2559,7 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const json_args = try std.json.parseFromSlice(
@@ -2570,9 +2576,13 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
 
     const structured = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_out.items, .{});
     defer structured.deinit();
-    try testing.expectEqual(@as(i64, 1), structured.value.object.get("schema_version").?.integer);
+    try testing.expectEqual(@as(i64, 2), structured.value.object.get("schema_version").?.integer);
     try testing.expectEqualStrings("codedb_context", structured.value.object.get("format").?.string);
     try testing.expect(structured.value.object.get("reader").?.object.contains("validation"));
+    const retrieval = structured.value.object.get("retrieval").?.object;
+    try testing.expectEqualStrings("local_bm25_and_symbols", retrieval.get("initial").?.string);
+    try testing.expectEqualStrings("not_requested", retrieval.get("semantic").?.string);
+    try testing.expectEqualStrings("keep_local_bm25_no_cpu_embedding_fallback", retrieval.get("failure_policy").?.string);
     try testing.expect(structured.value.object.get("omissions").? == .array);
 
     var found_parsed = false;
@@ -2616,11 +2626,67 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
     try testing.expectEqualStrings(default_out.items, markdown_out.items);
 }
 
+test "codedb_context hybrid is explicit and keeps local results when provider is unavailable" {
+    const url_guard = EnvVarGuard.save("CODEDB_EMBEDDINGS_URL");
+    defer url_guard.restore();
+    cio.posixSetenv("CODEDB_EMBEDDINGS_URL", "http://example.com/v1/embeddings");
+
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
+    try explorer.indexFile(
+        "src/privacy.zig",
+        "pub fn retentionPolicy() void { keepLocalBm25(); }\npub fn keepLocalBm25() void {}\n",
+    );
+    // indexFile intentionally bypasses the watcher. This simulates a stale or
+    // hand-built index containing a secret and proves the send-time guard is
+    // independent of normal indexing exclusions.
+    try explorer.indexFile(
+        ".env.production",
+        "KEEP_LOCAL_BM25_SECRET=retentionPolicy\n",
+    );
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const args = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"task":"trace retentionPolicy and keepLocalBm25","format":"json","semantic":"hybrid"}
+    , .{});
+    defer args.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &args.value.object, &out, &store, &explorer, &agents);
+
+    const structured = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.items, .{});
+    defer structured.deinit();
+    const retrieval = structured.value.object.get("retrieval").?.object;
+    try testing.expectEqualStrings("local_bm25_and_symbols", retrieval.get("initial").?.string);
+    try testing.expectEqualStrings("unavailable", retrieval.get("semantic").?.string);
+    try testing.expectEqualStrings("InsecureEmbeddingEndpoint", retrieval.get("detail").?.string);
+    try testing.expectEqual(@as(i64, 0), retrieval.get("documents_sent").?.integer);
+    try testing.expectEqual(@as(i64, 1), retrieval.get("sensitive_paths_blocked").?.integer);
+
+    var found_local_file = false;
+    for (structured.value.object.get("sections").?.array.items) |section_value| {
+        const section = section_value.object;
+        if (!std.mem.eql(u8, section.get("id").?.string, "most_relevant_files")) continue;
+        for (section.get("items").?.array.items) |item| {
+            if (std.mem.eql(u8, item.object.get("path").?.string, "src/privacy.zig")) found_local_file = true;
+        }
+    }
+    try testing.expect(found_local_file);
+}
+
 test "issue-688: structured no-candidate response retains reader evidence" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDirPath(io, ".codedb");
     try tmp.dir.writeFile(io, .{ .sub_path = "source.zig", .data = "pub fn source() void {}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = "const std = @import(\"std\");\n" });
     try tmp.dir.writeFile(io, .{
         .sub_path = ".codedb/reader.md",
         .data = "---\nsource_hash: blake2b:00000000000000000000000000000000\nsource_files:\n  - source.zig\n---\nreader body\n",
@@ -2630,6 +2696,7 @@ test "issue-688: structured no-candidate response retains reader evidence" {
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    try explorer.setRoot(io, root_buf[0..root_len]);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
@@ -2663,6 +2730,7 @@ test "issue-688: structured no-candidate response retains reader evidence" {
 test "issue-685: codedb_deps exposes bounded typed document edges" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
     try explorer.indexFile("docs/c.md", "# Gamma\n[A](a.md)\n");
     try explorer.indexFile("docs/b.md", "# Beta\n[C](c.md)\n");
     try explorer.indexFile("docs/a.md", "# Alpha\n[B](b.md)\n");
@@ -2671,7 +2739,7 @@ test "issue-685: codedb_deps exposes bounded typed document edges" {
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
     defer agents.deinit();
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args = try std.json.parseFromSlice(
@@ -2722,6 +2790,8 @@ test "issue-685: codedb_deps exposes bounded typed document edges" {
     try testing.expect(found_document_graph);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"edge_type\":{\"type\":\"string\",\"enum\":[\"imports\",\"documents\"]") != null);
     try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"document_hops\":{\"type\":\"integer\"") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "\"semantic\":{\"type\":\"string\",\"enum\":[\"local\",\"hybrid\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, mcp_mod.tools_list, "stores neither the repository, request body, candidate paths, nor vectors") != null);
 }
 
 test "issue-690: codedb_index description says it refreshes a live daemon" {
@@ -2743,7 +2813,7 @@ test "live outline indexes a missing on-disk file instead of hinting codedb_inde
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try explorer.indexFile("keep.py", "def keep():\n    return 1\n");
 
     var store = Store.init(testing.allocator);
@@ -2776,7 +2846,7 @@ test "live read indexes a missing on-disk file so later search can find it" {
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try explorer.indexFile("keep.py", "def keep():\n    return 1\n");
 
     var store = Store.init(testing.allocator);
@@ -3098,6 +3168,7 @@ test "cli-mcp-parity: runCliTool bridges navigation commands to MCP handlers" {
 test "issue-531: codedb_context max_tokens packs sections by value under the budget" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
 
     // A defined symbol with a fat body (inlined when unbudgeted) plus several
     // mention files so the snippets section is large too.
@@ -3146,7 +3217,7 @@ test "issue-531: codedb_context max_tokens packs sections by value under the bud
     defer agents.deinit();
     _ = try agents.register("__filesystem__");
 
-    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer bench_ctx.deinit();
 
     const args_full =
@@ -3378,7 +3449,7 @@ test "issue-632: codedb_read raw mode returns byte-exact range without line-numb
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, dir_path);
+    try explorer.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
@@ -3448,7 +3519,7 @@ test "issue-632: codedb_read raw mode coverage — full-file byte-exact, default
 
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, dir_path);
+    try explorer.setRoot(io, dir_path);
     var store = Store.init(testing.allocator);
     defer store.deinit();
     var agents = AgentRegistry.init(testing.allocator);
@@ -3959,11 +4030,11 @@ test "mcp: read-only tools advertise readOnlyHint on every profile" {
     // mode refuses any tool without it and never consults the allow list, so an
     // unannotated read-only tool prompts on every single call.
     const read_only = [_][]const u8{
-        "codedb_tree",     "codedb_outline", "codedb_symbol",  "codedb_search",
-        "codedb_word",     "codedb_callers", "codedb_callpath", "codedb_context",
-        "codedb_hot",      "codedb_deps",    "codedb_read",    "codedb_changes",
+        "codedb_tree",     "codedb_outline",  "codedb_symbol",   "codedb_search",
+        "codedb_word",     "codedb_callers",  "codedb_callpath", "codedb_context",
+        "codedb_hot",      "codedb_deps",     "codedb_read",     "codedb_changes",
         "codedb_status",   "codedb_snapshot", "codedb_projects", "codedb_find",
-        "codedb_explain",  "codedb_query",   "codedb_glob",     "codedb_ls",
+        "codedb_explain",  "codedb_query",    "codedb_glob",     "codedb_ls",
         "codedb_list_dir",
     };
 

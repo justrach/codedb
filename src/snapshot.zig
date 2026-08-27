@@ -23,6 +23,7 @@
 //     OUTLINE_STATE (7): binary per-file outline/import metadata for fast warm restore
 
 const std = @import("std");
+const builtin = @import("builtin");
 const cio = @import("cio.zig");
 const explore_mod = @import("explore.zig");
 const Explorer = explore_mod.Explorer;
@@ -34,9 +35,19 @@ const DocumentLink = explore_mod.DocumentLink;
 const DocumentLinkKind = explore_mod.DocumentLinkKind;
 const Store = @import("store.zig").Store;
 const git_mod = @import("git.zig");
+const project_file = @import("project_file.zig");
+const project_path = @import("project_path.zig");
 
 const MAGIC = [4]u8{ 'C', 'D', 'B', 0x01 };
-const FORMAT_VERSION: u16 = 3;
+// v4 snapshots guarantee that every content record was read from a validated
+// no-follow project handle. Older v3 files may contain bytes captured through
+// a safe-looking alias and are deliberately invalidated on upgrade.
+const FORMAT_VERSION: u16 = 4;
+
+fn privateFilePermissions() std.Io.File.Permissions {
+    if (comptime builtin.os.tag == .windows) return .default_file;
+    return .fromMode(0o600);
+}
 
 pub const SectionId = enum(u32) {
     tree = 1,
@@ -63,11 +74,48 @@ pub fn writeSnapshot(
     output_path: []const u8,
     allocator: std.mem.Allocator,
 ) !void {
-    const rand_suffix = cio.randU64();
-    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ output_path, rand_suffix });
-    defer allocator.free(tmp_path);
+    const stable_root_path = explorer.root_path orelse root_path;
+    var owned_source_root: ?std.Io.Dir = null;
+    const source_root = if (explorer.root_dir) |dir| blk: {
+        if (!project_file.rootMatchesPath(io, dir, root_path)) return error.InvalidSnapshotSource;
+        break :blk dir;
+    } else blk: {
+        // Synthetic tests may build an in-memory Explorer without a root
+        // capability (and macOS spells /tmp through a directory symlink).
+        // Production explorers are always rooted by setRoot above.
+        const dir = try std.Io.Dir.cwd().openDir(io, root_path, .{});
+        owned_source_root = dir;
+        break :blk dir;
+    };
+    defer if (owned_source_root) |dir| dir.close(io);
 
-    var file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{});
+    const sep = std.mem.lastIndexOfScalar(u8, output_path, '/');
+    const output_parent_path = if (sep) |s| if (s == 0) "/" else output_path[0..s] else ".";
+    const output_name = if (sep) |s| output_path[s + 1 ..] else output_path;
+    if (output_name.len == 0) return error.BadPathName;
+    const root_snapshot = isRootSnapshot(output_path, root_path);
+    var owned_output_dir: ?std.Io.Dir = null;
+    const output_dir = if (root_snapshot) blk: {
+        break :blk explorer.root_dir orelse return error.InvalidSnapshotSource;
+    } else blk: {
+        const dir = try std.Io.Dir.cwd().openDir(io, output_parent_path, .{ .follow_symlinks = false });
+        owned_output_dir = dir;
+        break :blk dir;
+    };
+    defer if (owned_output_dir) |dir| dir.close(io);
+
+    const rand_suffix = cio.randU64();
+    const tmp_name = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ output_name, rand_suffix });
+    defer allocator.free(tmp_name);
+
+    var file = try output_dir.createFile(io, tmp_name, .{
+        .exclusive = true,
+        .permissions = privateFilePermissions(),
+        .resolve_beneath = true,
+    });
+    var file_open = true;
+    defer if (file_open) file.close(io);
+    errdefer output_dir.deleteFile(io, tmp_name) catch {};
 
     var sections: std.ArrayList(SectionEntry) = .empty;
     defer sections.deinit(allocator);
@@ -102,7 +150,7 @@ pub fn writeSnapshot(
             if (isSafeSnapshotPath(k.*)) file_count_meta += 1;
         }
 
-        const root_hash = std.hash.Wyhash.hash(0, root_path);
+        const root_hash = std.hash.Wyhash.hash(0, stable_root_path);
         try writer.print(
             \\{{"file_count":{d},"total_bytes":{d},"indexed_at":{d},"format_version":{d},"root_hash":{d}}}
         , .{
@@ -263,9 +311,6 @@ pub fn writeSnapshot(
     defer content_hashes.deinit(allocator);
     {
         const offset = file_writer.logicalPos();
-        var root_dir = std.Io.Dir.cwd().openDir(io, root_path, .{}) catch null;
-        defer if (root_dir) |*dir| dir.close(io);
-
         var path_iter = explorer.outlines.keyIterator();
         while (path_iter.next()) |path_ptr| {
             const path = path_ptr.*;
@@ -273,6 +318,9 @@ pub fn writeSnapshot(
             if (!isSafeSnapshotPath(path)) continue;
             const cached_content = explorer.contents.get(path);
             if (cached_content) |content| {
+                if (explorer.root_dir != null) {
+                    _ = project_file.statNoFollowAtRoot(io, source_root, stable_root_path, path) catch return error.InvalidSnapshotSource;
+                }
                 var pl_buf: [2]u8 = undefined;
                 std.mem.writeInt(u16, &pl_buf, @intCast(path.len), .little);
                 try fw.writeAll(&pl_buf);
@@ -282,8 +330,11 @@ pub fn writeSnapshot(
                 try fw.writeAll(&cl_buf);
                 try fw.writeAll(content);
                 try content_hashes.append(allocator, std.hash.Wyhash.hash(0, content));
-            } else if (root_dir) |*dir| {
-                const disk_content = dir.readFileAlloc(io, path, allocator, .limited(64 * 1024 * 1024)) catch continue;
+            } else {
+                const disk_content = if (explorer.root_dir != null)
+                    project_file.readAllocNoFollowAtRoot(io, source_root, stable_root_path, path, allocator, .limited(64 * 1024 * 1024)) catch return error.InvalidSnapshotSource
+                else
+                    project_file.readAllocNoFollow(io, source_root, path, allocator, .limited(64 * 1024 * 1024)) catch return error.InvalidSnapshotSource;
                 errdefer allocator.free(disk_content);
 
                 var pl_buf: [2]u8 = undefined;
@@ -371,7 +422,10 @@ pub fn writeSnapshot(
     try fw.writeAll(&ver_buf);
     try fw.writeAll(&[2]u8{ 0, 0 }); // flags
 
-    const git_head = git_mod.getGitHead(root_path, allocator) catch null;
+    const git_head = if (explorer.root_dir) |root_dir|
+        git_mod.getGitHeadDir(io, root_dir, allocator) catch null
+    else
+        git_mod.getGitHead(stable_root_path, allocator) catch null;
     if (git_head) |head| {
         try fw.writeAll(&head);
     } else {
@@ -395,18 +449,19 @@ pub fn writeSnapshot(
     }
 
     try fw.flush();
+    try file.sync(io);
     file.close(io);
-    file = undefined;
-    std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), output_path, io) catch |err| {
+    file_open = false;
+    output_dir.rename(tmp_name, output_dir, output_name, io) catch |err| {
         // If rename fails (e.g. output_path is a directory), clean up tmp
-        std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
+        output_dir.deleteFile(io, tmp_name) catch {};
         return err;
     };
 
     // #625: the snapshot lives inside the project tree — make sure git ignores
     // it so it never pollutes `git status` or gets committed by accident.
-    if (isRootSnapshot(output_path, root_path)) {
-        ensureGitIgnoresSnapshot(io, root_path, allocator);
+    if (root_snapshot) {
+        ensureGitIgnoresSnapshotAtRoot(io, source_root, allocator);
     }
 }
 
@@ -424,13 +479,19 @@ pub fn isRootSnapshot(output_path: []const u8, root_path: []const u8) bool {
 /// worktree where `.git` is a file, permissions, or any I/O error is silently
 /// skipped. Indexing must never fail because of this. Idempotent.
 pub fn ensureGitIgnoresSnapshot(io: std.Io, root_path: []const u8, allocator: std.mem.Allocator) void {
-    var info_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const info_path = std.fmt.bufPrint(&info_buf, "{s}/.git/info", .{root_path}) catch return;
-    var info_dir = std.Io.Dir.cwd().openDir(io, info_path, .{}) catch return;
+    var root_dir = std.Io.Dir.cwd().openDir(io, root_path, .{ .follow_symlinks = false }) catch return;
+    defer root_dir.close(io);
+    ensureGitIgnoresSnapshotAtRoot(io, root_dir, allocator);
+}
+
+fn ensureGitIgnoresSnapshotAtRoot(io: std.Io, root_dir: std.Io.Dir, allocator: std.mem.Allocator) void {
+    var git_dir = root_dir.openDir(io, ".git", .{ .follow_symlinks = false }) catch return;
+    defer git_dir.close(io);
+    var info_dir = git_dir.openDir(io, "info", .{ .follow_symlinks = false }) catch return;
     defer info_dir.close(io);
 
     const needle = "codedb.snapshot";
-    const existing: ?[]u8 = info_dir.readFileAlloc(io, "exclude", allocator, .limited(1024 * 1024)) catch null;
+    const existing: ?[]u8 = project_file.readAllocNoFollow(io, info_dir, "exclude", allocator, .limited(1024 * 1024)) catch null;
     defer if (existing) |e| allocator.free(e);
 
     if (existing) |content| {
@@ -460,6 +521,14 @@ fn readSectionsFromFile(io: std.Io, file: std.Io.File, allocator: std.mem.Alloca
     var magic_buf: [4]u8 = undefined;
     const n = file.readPositionalAll(io, &magic_buf, 0) catch return null;
     if (n != 4 or !std.mem.eql(u8, &magic_buf, &MAGIC)) return null;
+
+    // v4 is the first format whose writer and loader both enforce repository-
+    // rooted, no-follow source reads. Older snapshots may already contain bytes
+    // captured through a benign-looking symlink, so they are not safe inputs to
+    // search or remote semantic indexing after an upgrade.
+    var version_buf: [2]u8 = undefined;
+    const vn = file.readPositionalAll(io, &version_buf, 4) catch return null;
+    if (vn != version_buf.len or std.mem.readInt(u16, &version_buf, .little) != FORMAT_VERSION) return null;
 
     // offset 4 + 44 = 48: skip version + flags + git_head
     var sc_buf: [4]u8 = undefined;
@@ -499,6 +568,10 @@ pub fn readSectionBytes(io: std.Io, path: []const u8, section_id: SectionId, all
     const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
     defer file.close(io);
 
+    return readSectionBytesFromFile(io, file, section_id, allocator);
+}
+
+fn readSectionBytesFromFile(io: std.Io, file: std.Io.File, section_id: SectionId, allocator: std.mem.Allocator) !?[]u8 {
     var sections = try readSectionsFromFile(io, file, allocator) orelse return null;
     defer sections.deinit();
 
@@ -525,6 +598,10 @@ pub fn readSnapshotGitHead(io: std.Io, path: []const u8) ?[40]u8 {
     const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
     defer file.close(io);
 
+    return readSnapshotGitHeadFromFile(io, file);
+}
+
+pub fn readSnapshotGitHeadFromFile(io: std.Io, file: std.Io.File) ?[40]u8 {
     var magic_buf: [4]u8 = undefined;
     const mn = file.readPositionalAll(io, &magic_buf, 0) catch return null;
     if (mn != 4) return null;
@@ -572,6 +649,35 @@ pub fn loadSnapshotValidated(
     const file = std.Io.Dir.cwd().openFile(io, snapshot_path, .{}) catch return false;
     defer file.close(io);
 
+    return loadSnapshotValidatedFromFile(io, file, expected_root, explorer, store, allocator);
+}
+
+pub fn loadSnapshotValidatedFromRoot(
+    io: std.Io,
+    root_dir: std.Io.Dir,
+    expected_root: []const u8,
+    explorer: *Explorer,
+    store: *Store,
+    allocator: std.mem.Allocator,
+) bool {
+    const file = root_dir.openFile(io, "codedb.snapshot", .{
+        .allow_directory = false,
+        .follow_symlinks = false,
+        .resolve_beneath = true,
+    }) catch return false;
+    defer file.close(io);
+    return loadSnapshotValidatedFromFile(io, file, expected_root, explorer, store, allocator);
+}
+
+pub fn loadSnapshotValidatedFromFile(
+    io: std.Io,
+    file: std.Io.File,
+    expected_root: ?[]const u8,
+    explorer: *Explorer,
+    store: *Store,
+    allocator: std.mem.Allocator,
+) bool {
+
     // Read section table (validates magic internally) — reuse already-open file (#253)
     var sections = (readSectionsFromFile(io, file, allocator) catch return false) orelse return false;
     defer sections.deinit();
@@ -596,7 +702,8 @@ pub fn loadSnapshotValidated(
 
     // Validate repo identity if requested (issue-41)
     if (expected_root) |root| {
-        const expected_hash = std.hash.Wyhash.hash(0, root);
+        const identity_root = explorer.root_path orelse root;
+        const expected_hash = std.hash.Wyhash.hash(0, identity_root);
         if (meta_root_hash) |stored_hash| {
             if (stored_hash != expected_hash) return false;
         } else {
@@ -611,17 +718,22 @@ pub fn loadSnapshotValidated(
     // snapshot-provided path is used for disk I/O.
     var disk_root: ?std.Io.Dir = null;
     var close_disk_root = false;
-    if (expected_root) |root| {
-        disk_root = std.Io.Dir.cwd().openDir(io, root, .{}) catch return false;
-        close_disk_root = true;
-    } else if (explorer.root_dir) |dir| {
+    if (explorer.root_dir) |dir| {
+        if (expected_root) |root| {
+            if (!project_file.rootMatchesPath(io, dir, root)) return false;
+        }
         disk_root = dir;
+    } else if (expected_root) |root| {
+        disk_root = std.Io.Dir.cwd().openDir(io, root, .{ .follow_symlinks = false }) catch return false;
+        close_disk_root = true;
     }
     defer if (close_disk_root) if (disk_root) |*dir| dir.close(io);
 
     var canonical_root_buf: [std.fs.max_path_bytes]u8 = undefined;
     var canonical_root: ?[]const u8 = null;
-    if (disk_root) |dir| root_blk: {
+    if (explorer.root_path) |path| {
+        canonical_root = path;
+    } else if (disk_root) |dir| root_blk: {
         const len = dir.realPathFile(io, ".", &canonical_root_buf) catch {
             if (expected_root != null) return false;
             disk_root = null;
@@ -631,7 +743,7 @@ pub fn loadSnapshotValidated(
     }
 
     if (sections.get(@intFromEnum(SectionId.outline_state)) != null) {
-        return loadSnapshotFast(io, snapshot_path, expected_file_count, disk_root, canonical_root, explorer, store, allocator) catch false;
+        return loadSnapshotFast(io, file, expected_file_count, disk_root, canonical_root, explorer, store, allocator) catch false;
     }
 
     // Load CONTENT section — this is the core data
@@ -683,13 +795,12 @@ pub fn loadSnapshotValidated(
 
         // Re-index from disk if file was modified after the snapshot
         var disk_content: ?[]u8 = null;
-        if (snap_mtime > 0 and disk_root != null and canonical_root != null) blk: {
-            var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const resolved = resolveSafeSnapshotPath(io, disk_root.?, canonical_root.?, path_buf, &resolved_buf) orelse break :blk;
-            const ds = std.Io.Dir.cwd().statFile(io, resolved, .{}) catch break :blk;
+        if (disk_root) |root| blk: {
+            const ds = project_file.statNoFollow(io, root, path_buf) catch return false;
+            if (snap_mtime <= 0) break :blk;
             const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
             if (ds_mtime <= snap_mtime) break :blk;
-            disk_content = std.Io.Dir.cwd().readFileAlloc(io, resolved, allocator, .limited(16 * 1024 * 1024)) catch break :blk;
+            disk_content = project_file.readAllocNoFollow(io, root, path_buf, allocator, .limited(16 * 1024 * 1024)) catch return false;
         }
         defer if (disk_content) |dc| allocator.free(dc);
         const effective = if (disk_content) |dc| dc else content;
@@ -790,15 +901,13 @@ fn readSectionStringBorrowed(buf: []const u8, cursor: *usize, max_len: usize) ![
 /// allocator), NOT `allocator` (the per-load allocator): it is retained by the
 /// Explorer and must share its lifetime/allocator. Everything else (the map,
 /// keys/paths) uses `allocator` exactly as before.
-fn loadOutlineStateMap(io: std.Io, snapshot_path: []const u8, allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, expected: ?u32, backing_out: *?[]const u8) !std.StringHashMap(FileOutline) {
+fn loadOutlineStateMap(io: std.Io, snapshot_file: std.Io.File, allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, expected: ?u32, backing_out: *?[]const u8) !std.StringHashMap(FileOutline) {
     backing_out.* = null;
-    const bytes = (try readSectionBytes(io, snapshot_path, .outline_state, backing_allocator)) orelse return error.InvalidData;
+    const bytes = (try readSectionBytesFromFile(io, snapshot_file, .outline_state, backing_allocator)) orelse return error.InvalidData;
     // Kept alive on success (handed to backing_out); freed here on any error.
     var release_bytes = true;
     defer if (release_bytes) backing_allocator.free(bytes);
 
-    const snapshot_file = try std.Io.Dir.cwd().openFile(io, snapshot_path, .{});
-    defer snapshot_file.close(io);
     var version_buf: [2]u8 = undefined;
     if (try snapshot_file.readPositionalAll(io, &version_buf, 4) != version_buf.len) return error.InvalidData;
     const format_version = std.mem.readInt(u16, &version_buf, .little);
@@ -1014,6 +1123,7 @@ const LoadRecord = struct {
 // pure and trivially thread-safe; the insert pass reads fresh content (sequentially,
 // one file at a time) for the rare stale ones.
 const LoadFreshness = struct {
+    valid: bool = false,
     stale: bool = false,
 };
 
@@ -1021,11 +1131,10 @@ const LoadFreshness = struct {
 // open/close) and flag it stale when its mtime is newer than the snapshot. Pure
 // read-only and allocation-free, so workers run this over disjoint chunks
 // concurrently; each writes only its own slice of `out`.
-fn freshnessScan(io: std.Io, root_dir: std.Io.Dir, canonical_root: []const u8, snap_mtime: i128, recs: []const LoadRecord, out: []LoadFreshness) void {
+fn freshnessScan(io: std.Io, root_dir: std.Io.Dir, snap_mtime: i128, recs: []const LoadRecord, out: []LoadFreshness) void {
     for (recs, out) |record, *fr| {
-        var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const resolved = resolveSafeSnapshotPath(io, root_dir, canonical_root, record.path, &resolved_buf) orelse continue;
-        const ds = std.Io.Dir.cwd().statFile(io, resolved, .{}) catch continue;
+        const ds = project_file.statNoFollow(io, root_dir, record.path) catch continue;
+        fr.valid = true;
         const ds_mtime: i128 = @intCast(ds.mtime.nanoseconds);
         if (ds_mtime > snap_mtime) fr.stale = true;
     }
@@ -1033,7 +1142,7 @@ fn freshnessScan(io: std.Io, root_dir: std.Io.Dir, canonical_root: []const u8, s
 
 fn loadSnapshotFast(
     io: std.Io,
-    snapshot_path: []const u8,
+    snapshot_file: std.Io.File,
     expected_file_count: ?u32,
     disk_root: ?std.Io.Dir,
     canonical_root: ?[]const u8,
@@ -1057,7 +1166,7 @@ fn loadSnapshotFast(
     // the Explorer (outline_section_bufs) and freed via explorer.allocator, so it
     // must be allocated from the same allocator (matters when the per-load
     // allocator differs from the Explorer's, e.g. arena-backed Explorers).
-    var outline_states = loadOutlineStateMap(io, snapshot_path, allocator, explorer.allocator, expected_file_count, &section_backing) catch std.StringHashMap(FileOutline).init(allocator);
+    var outline_states = loadOutlineStateMap(io, snapshot_file, allocator, explorer.allocator, expected_file_count, &section_backing) catch std.StringHashMap(FileOutline).init(allocator);
     defer deinitOutlineStateMap(&outline_states, allocator);
 
     // Restored outlines borrow their import/symbol strings as slices into this
@@ -1081,12 +1190,11 @@ fn loadSnapshotFast(
 
     const rss_outline: u64 = if (prof) loadMaxRssBytes() else 0;
     const t_outline: i128 = if (prof) cio.nanoTimestamp() else 0;
-    var sections = (try readSections(io, snapshot_path, allocator)) orelse return false;
+    var sections = (try readSectionsFromFile(io, snapshot_file, allocator)) orelse return false;
     defer sections.deinit();
 
     const content_entry = sections.get(@intFromEnum(SectionId.content)) orelse return false;
-    const content_file = std.Io.Dir.cwd().openFile(io, snapshot_path, .{}) catch return false;
-    defer content_file.close(io);
+    const content_file = snapshot_file;
 
     const file_stat = content_file.stat(io) catch return false;
     if (content_entry.offset + content_entry.length > file_stat.size) return false;
@@ -1098,7 +1206,7 @@ fn loadSnapshotFast(
     // Precomputed per-record content hashes (CONTENT_HASHES section), in content
     // order. Lets the restored branch record Store baselines without re-hashing
     // (which would also fault in all content pages). Absent => recompute.
-    const content_hashes_buf: ?[]u8 = readSectionBytes(io, snapshot_path, .content_hashes, allocator) catch null;
+    const content_hashes_buf: ?[]u8 = readSectionBytesFromFile(io, snapshot_file, .content_hashes, allocator) catch null;
     defer if (content_hashes_buf) |b| allocator.free(b);
 
     // Read the content section as one block, then parse records from memory.
@@ -1185,10 +1293,10 @@ fn loadSnapshotFast(
     // for the flagged files and mutates Explorer/Store single-threaded.
     const fresh_results = allocator.alloc(LoadFreshness, records.items.len) catch return false;
     defer allocator.free(fresh_results);
-    for (fresh_results) |*fr| fr.* = .{};
+    for (fresh_results) |*fr| fr.* = .{ .valid = disk_root == null };
 
     const t_fresh0: i128 = if (prof) cio.nanoTimestamp() else 0;
-    if (snap_mtime > 0 and records.items.len > 0 and disk_root != null and canonical_root != null) {
+    if (records.items.len > 0 and disk_root != null and canonical_root != null) {
         const want_workers = blk: {
             if (cio.posixGetenv("CODEDB_LOAD_WORKERS")) |raw| {
                 const parsed = std.fmt.parseInt(usize, raw, 10) catch 0;
@@ -1200,7 +1308,7 @@ fn loadSnapshotFast(
         };
         const n_workers = @max(@as(usize, 1), @min(want_workers, records.items.len));
         if (n_workers <= 1) {
-            freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, records.items, fresh_results);
+            freshnessScan(io, disk_root.?, snap_mtime, records.items, fresh_results);
         } else if (allocator.alloc(std.Thread, n_workers)) |threads| {
             defer allocator.free(threads);
             const chunk = records.items.len / n_workers;
@@ -1215,24 +1323,25 @@ fn loadSnapshotFast(
                 const recs = records.items[start..off];
                 const out = fresh_results[start..off];
                 if (spawn_failed) {
-                    freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, recs, out);
+                    freshnessScan(io, disk_root.?, snap_mtime, recs, out);
                     continue;
                 }
-                if (std.Thread.spawn(.{}, freshnessScan, .{ io, disk_root.?, canonical_root.?, snap_mtime, recs, out })) |t| {
+                if (std.Thread.spawn(.{}, freshnessScan, .{ io, disk_root.?, snap_mtime, recs, out })) |t| {
                     threads[spawned] = t;
                     spawned += 1;
                 } else |_| {
                     // Out of threads: scan this chunk (and any remaining) inline.
-                    freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, recs, out);
+                    freshnessScan(io, disk_root.?, snap_mtime, recs, out);
                     spawn_failed = true;
                 }
             }
             for (threads[0..spawned]) |t| t.join();
         } else |_| {
-            freshnessScan(io, disk_root.?, canonical_root.?, snap_mtime, records.items, fresh_results);
+            freshnessScan(io, disk_root.?, snap_mtime, records.items, fresh_results);
         }
     }
     if (prof) fresh_ns += cio.nanoTimestamp() - t_fresh0;
+    for (fresh_results) |fr| if (!fr.valid) return false;
     const rss_fresh: u64 = if (prof) loadMaxRssBytes() else 0;
     // ── Pass C: insert restored / changed / outline-only files (sequential). ──
     // #564: defer the global symbol index — Pass C's per-file rebuilds become
@@ -1250,10 +1359,7 @@ fn loadSnapshotFast(
         // peak memory is one file's content, not every changed file's at once.
         var disk_content: ?[]u8 = null;
         if (fr.stale and disk_root != null and canonical_root != null) {
-            var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (resolveSafeSnapshotPath(io, disk_root.?, canonical_root.?, path, &resolved_buf)) |resolved| {
-                disk_content = std.Io.Dir.cwd().readFileAlloc(io, resolved, allocator, .limited(16 * 1024 * 1024)) catch null;
-            }
+            disk_content = project_file.readAllocNoFollow(io, disk_root.?, path, allocator, .limited(16 * 1024 * 1024)) catch return false;
         }
         defer if (disk_content) |dc| allocator.free(dc);
 
@@ -1305,10 +1411,8 @@ fn loadSnapshotFast(
         if (freq_entry.length == 256 * 256 * 2) {
             const index_mod = @import("index.zig");
             const ft = allocator.create([256][256]u16) catch return file_count > 0;
-            const freq_file = std.Io.Dir.cwd().openFile(io, snapshot_path, .{}) catch return file_count > 0;
-            defer freq_file.close(io);
             var bulk_buf: [256 * 256 * 2]u8 = undefined;
-            const nr = freq_file.readPositionalAll(io, &bulk_buf, freq_entry.offset) catch {
+            const nr = snapshot_file.readPositionalAll(io, &bulk_buf, freq_entry.offset) catch {
                 allocator.destroy(ft);
                 return file_count > 0;
             };
@@ -1330,7 +1434,7 @@ fn loadSnapshotFast(
     // search skips the lazy rebuild (ensureCallCentrality's null-check returns
     // early once this is set). Best-effort: any failure just leaves it unbuilt.
     if (sections.get(@intFromEnum(SectionId.call_centrality))) |cc_entry| {
-        restoreCallCentrality(io, snapshot_path, cc_entry, explorer, allocator) catch {};
+        restoreCallCentrality(io, snapshot_file, cc_entry, explorer, allocator) catch {};
     }
 
     if (prof) {
@@ -1372,7 +1476,7 @@ fn loadSnapshotFast(
 /// outlines (changed/removed since the snapshot) are simply skipped.
 fn restoreCallCentrality(
     io: std.Io,
-    snapshot_path: []const u8,
+    snapshot_file: std.Io.File,
     entry: SectionEntry,
     explorer: *Explorer,
     allocator: std.mem.Allocator,
@@ -1380,9 +1484,7 @@ fn restoreCallCentrality(
     if (entry.length < 4 or entry.length > 256 * 1024 * 1024) return;
     const bytes = try allocator.alloc(u8, entry.length);
     defer allocator.free(bytes);
-    const f = try std.Io.Dir.cwd().openFile(io, snapshot_path, .{});
-    defer f.close(io);
-    if ((try f.readPositionalAll(io, bytes, entry.offset)) != entry.length) return;
+    if ((try snapshot_file.readPositionalAll(io, bytes, entry.offset)) != entry.length) return;
 
     var cursor: usize = 0;
     if (cursor + 4 > bytes.len) return;
@@ -1442,17 +1544,7 @@ fn parseJsonU64(json: []const u8, key: []const u8) ?u64 {
 /// Snapshot records are untrusted input. Only canonical project-relative paths
 /// may be persisted, indexed, or used for freshness reads.
 pub fn isSafeSnapshotPath(path: []const u8) bool {
-    if (path.len == 0 or path.len > 4096 or std.fs.path.isAbsolute(path)) return false;
-    if (std.mem.indexOfScalar(u8, path, 0) != null or
-        std.mem.indexOfScalar(u8, path, '\\') != null or
-        std.mem.indexOfScalar(u8, path, ':') != null or
-        isSensitivePath(path)) return false;
-
-    var components = std.mem.splitScalar(u8, path, '/');
-    while (components.next()) |component| {
-        if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return false;
-    }
-    return true;
+    return project_path.isReadable(path);
 }
 
 fn isWithinCanonicalRoot(root: []const u8, candidate: []const u8) bool {
@@ -1469,62 +1561,11 @@ fn resolveSafeSnapshotPath(io: std.Io, root_dir: std.Io.Dir, canonical_root: []c
     return resolved;
 }
 
-/// Returns true for secret/credential paths that must never be persisted to a
-/// snapshot or live-indexed. Single implementation of this security filter;
-/// `watcher.isSensitivePath` delegates here (parity-tested in test_snapshot.zig
-/// "issue-528: isSensitivePath parity").
-fn endsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
-    if (value.len < suffix.len) return false;
-    return std.ascii.eqlIgnoreCase(value[value.len - suffix.len ..], suffix);
-}
-
-fn hasSensitiveExtension(basename: []const u8) bool {
-    const extensions = [_][]const u8{ ".env", ".pem", ".key", ".p12", ".pfx", ".jks" };
-    for (extensions) |extension| {
-        if (endsWithIgnoreCase(basename, extension)) return true;
-    }
-    return false;
-}
-
-fn hasSensitiveDirectory(path: []const u8) bool {
-    var components = std.mem.splitScalar(u8, path, '/');
-    while (components.next()) |component| {
-        if (std.ascii.eqlIgnoreCase(component, ".ssh") or
-            std.ascii.eqlIgnoreCase(component, ".gnupg") or
-            std.ascii.eqlIgnoreCase(component, ".aws")) return true;
-    }
-    return false;
-}
-
+/// Compatibility export for callers that historically used snapshot.zig as
+/// the sensitive-path policy boundary. The implementation now lives in the
+/// shared project-path module used by every repository read surface.
 pub fn isSensitivePath(path: []const u8) bool {
-    const basename = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| path[sep + 1 ..] else path;
-    // Fast path: most source files have extensions like .zig, .ts, .py — none start with '.'
-    // or match sensitive patterns. Skip the full check for common cases.
-    if (basename.len == 0) return false;
-    const first = std.ascii.toLower(basename[0]);
-    // Only check sensitive names if basename starts with '.', 'c', 's', 'i' or has key/cert extension
-    if (first != '.' and first != 'c' and first != 's' and first != 'i') {
-        // Still need to check extensions and directory patterns
-        if (hasSensitiveExtension(basename)) return true;
-        if (hasSensitiveDirectory(path)) return true;
-        return false;
-    }
-    // .env, .env.<token>; do NOT match .envoy, .envrc, .environment, etc.
-    if (basename.len >= 4 and std.ascii.eqlIgnoreCase(basename[0..4], ".env") and
-        (basename.len == 4 or basename[4] == '.' or basename[4] == '-' or basename[4] == '_')) return true;
-    // Exact matches
-    const sensitive_names = [_][]const u8{
-        ".dev.vars",        ".npmrc",               ".pypirc",      ".netrc",
-        "credentials.json", "service-account.json", "secrets.json", "secrets.yaml",
-        "secrets.yml",      "id_rsa",               "id_ed25519",   ".git-credentials",
-        "id_ecdsa",         "id_dsa",               "id_ecdsa_sk",  "id_ed25519_sk",
-    };
-    for (sensitive_names) |name| {
-        if (std.ascii.eqlIgnoreCase(basename, name)) return true;
-    }
-    if (hasSensitiveExtension(basename)) return true;
-    if (hasSensitiveDirectory(path)) return true;
-    return false;
+    return project_path.isSensitive(path);
 }
 fn endsWith(s: []const u8, suffix: []const u8) bool {
     if (s.len < suffix.len) return false;
@@ -1578,31 +1619,131 @@ pub fn writeSnapshotDual(
     // keep the secondary crash-safe. Sharing one indexed_at/git_head between
     // the two copies is more correct than the old double-serialize, which
     // could capture different values.
-    copyToProjectCache(io, root_path, output_path, allocator) catch {};
+    try copyToProjectCache(io, explorer, root_path, output_path, allocator);
 }
 
-fn copyToProjectCache(io: std.Io, root_path: []const u8, primary_path: []const u8, allocator: std.mem.Allocator) !void {
-    const hash = std.hash.Wyhash.hash(0, root_path);
-    const home_raw = cio.homeDir() orelse return;
-    const home = allocator.dupe(u8, home_raw) catch return;
-    defer allocator.free(home);
-    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch return;
-    defer allocator.free(dir_path);
-    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
-
-    const proj_txt = std.fmt.allocPrint(allocator, "{s}/project.txt", .{dir_path}) catch return;
-    defer allocator.free(proj_txt);
-    var f = try std.Io.Dir.cwd().createFile(io, proj_txt, .{ .truncate = true });
-    f.writeStreamingAll(io, root_path) catch {};
-    f.close(io);
-
-    const tmp = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot.{x}.tmp", .{ dir_path, cio.randU64() }) catch return;
+fn writePrivateFileAtomic(io: std.Io, dir: std.Io.Dir, name: []const u8, data: []const u8, allocator: std.mem.Allocator) !void {
+    const tmp = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ name, cio.randU64() });
     defer allocator.free(tmp);
-    const secondary = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{dir_path}) catch return;
-    defer allocator.free(secondary);
-    errdefer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
-    try std.Io.Dir.copyFile(std.Io.Dir.cwd(), primary_path, std.Io.Dir.cwd(), tmp, io, .{});
-    try std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), secondary, io);
+    errdefer dir.deleteFile(io, tmp) catch {};
+
+    var file = try dir.createFile(io, tmp, .{
+        .exclusive = true,
+        .permissions = privateFilePermissions(),
+        .resolve_beneath = true,
+    });
+    var file_open = true;
+    defer if (file_open) file.close(io);
+    try file.writeStreamingAll(io, data);
+    try file.sync(io);
+    file.close(io);
+    file_open = false;
+    try dir.rename(tmp, dir, name, io);
+}
+
+fn copyOpenFileAtomic(io: std.Io, source: std.Io.File, dest_dir: std.Io.Dir, dest_name: []const u8, allocator: std.mem.Allocator) !void {
+    const tmp = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ dest_name, cio.randU64() });
+    defer allocator.free(tmp);
+    errdefer dest_dir.deleteFile(io, tmp) catch {};
+
+    var dest = try dest_dir.createFile(io, tmp, .{
+        .exclusive = true,
+        .permissions = privateFilePermissions(),
+        .resolve_beneath = true,
+    });
+    var dest_open = true;
+    defer if (dest_open) dest.close(io);
+
+    var offset: u64 = 0;
+    var buffer: [64 * 1024]u8 = undefined;
+    while (true) {
+        const count = try source.readPositionalAll(io, &buffer, offset);
+        if (count == 0) break;
+        try dest.writeStreamingAll(io, buffer[0..count]);
+        offset += count;
+        if (count < buffer.len) break;
+    }
+    try dest.sync(io);
+    dest.close(io);
+    dest_open = false;
+    try dest_dir.rename(tmp, dest_dir, dest_name, io);
+}
+
+fn openRegularFileNoFollow(io: std.Io, dir: std.Io.Dir, name: []const u8) !std.Io.File {
+    const source = try dir.openFile(io, name, .{
+        .allow_directory = false,
+        .follow_symlinks = false,
+        .resolve_beneath = true,
+    });
+    errdefer source.close(io);
+    const source_stat = try source.stat(io);
+    if (source_stat.kind != .file) return error.InvalidSnapshotSource;
+    return source;
+}
+
+test "snapshot cache source does not follow symlinks" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const testing = std.testing;
+    const test_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(test_io, .{ .sub_path = "snapshot", .data = "snapshot bytes" });
+    try tmp.dir.symLink(test_io, "snapshot", "snapshot-link", .{});
+
+    if (openRegularFileNoFollow(test_io, tmp.dir, "snapshot-link")) |file| {
+        file.close(test_io);
+        return error.TestExpectedError;
+    } else |_| {}
+}
+
+test "snapshot cache copy stays pinned to the opened source inode" {
+    const testing = std.testing;
+    const test_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(test_io, .{ .sub_path = "snapshot", .data = "first generation" });
+
+    const source = try openRegularFileNoFollow(test_io, tmp.dir, "snapshot");
+    defer source.close(test_io);
+    try tmp.dir.rename("snapshot", tmp.dir, "snapshot.old", test_io);
+    try tmp.dir.writeFile(test_io, .{ .sub_path = "snapshot", .data = "replacement generation" });
+
+    try copyOpenFileAtomic(test_io, source, tmp.dir, "copied", testing.allocator);
+    const copied = try tmp.dir.readFileAlloc(test_io, "copied", testing.allocator, .limited(1024));
+    defer testing.allocator.free(copied);
+    try testing.expectEqualStrings("first generation", copied);
+}
+
+fn copyToProjectCache(io: std.Io, explorer: *Explorer, root_path: []const u8, primary_path: []const u8, allocator: std.mem.Allocator) !void {
+    const canonical_root = explorer.root_path orelse root_path;
+    const hash = std.hash.Wyhash.hash(0, canonical_root);
+    const home_raw = cio.homeDir() orelse return error.HomeDirectoryUnavailable;
+    const home = try allocator.dupe(u8, home_raw);
+    defer allocator.free(home);
+    const dir_path = try std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash });
+    defer allocator.free(dir_path);
+    try std.Io.Dir.cwd().createDirPath(io, dir_path);
+    var central_dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{ .follow_symlinks = false });
+    defer central_dir.close(io);
+
+    try writePrivateFileAtomic(io, central_dir, "project.txt", canonical_root, allocator);
+
+    const sep = std.mem.lastIndexOfScalar(u8, primary_path, '/');
+    const source_parent = if (sep) |s| if (s == 0) "/" else primary_path[0..s] else ".";
+    const source_name = if (sep) |s| primary_path[s + 1 ..] else primary_path;
+    var owned_source_dir: ?std.Io.Dir = null;
+    const source_dir = if (isRootSnapshot(primary_path, root_path)) blk: {
+        break :blk explorer.root_dir orelse return error.InvalidSnapshotSource;
+    } else blk: {
+        const dir = try std.Io.Dir.cwd().openDir(io, source_parent, .{ .follow_symlinks = false });
+        owned_source_dir = dir;
+        break :blk dir;
+    };
+    defer if (owned_source_dir) |dir| dir.close(io);
+
+    const source = try openRegularFileNoFollow(io, source_dir, source_name);
+    defer source.close(io);
+    try copyOpenFileAtomic(io, source, central_dir, "codedb.snapshot", allocator);
 }
 
 pub fn writeProjectCacheSnapshot(
@@ -1612,21 +1753,18 @@ pub fn writeProjectCacheSnapshot(
     allocator: std.mem.Allocator,
 ) !void {
     const hash = std.hash.Wyhash.hash(0, root_path);
-    const home_raw = cio.homeDir() orelse return;
-    const home = allocator.dupe(u8, home_raw) catch return;
+    const home_raw = cio.homeDir() orelse return error.HomeDirectoryUnavailable;
+    const home = try allocator.dupe(u8, home_raw);
     defer allocator.free(home);
-    const secondary = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch return;
+    const secondary = try std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash });
     defer allocator.free(secondary);
 
-    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch return;
+    const dir_path = try std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash });
     defer allocator.free(dir_path);
-    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
-
-    const proj_txt = std.fmt.allocPrint(allocator, "{s}/project.txt", .{dir_path}) catch return;
-    defer allocator.free(proj_txt);
-    var f = try std.Io.Dir.cwd().createFile(io, proj_txt, .{ .truncate = true });
-    f.writeStreamingAll(io, root_path) catch {};
-    f.close(io);
+    try std.Io.Dir.cwd().createDirPath(io, dir_path);
+    var central_dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{ .follow_symlinks = false });
+    defer central_dir.close(io);
+    try writePrivateFileAtomic(io, central_dir, "project.txt", root_path, allocator);
 
     try writeSnapshot(io, explorer, root_path, secondary, allocator);
 }

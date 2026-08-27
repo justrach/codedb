@@ -45,6 +45,15 @@ pub fn build(b: *std.Build) void {
     const nanoregex_dep = b.dependency("nanoregex", .{});
     exe.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
 
+    // ── OpenPuffer local ANN dependency ──
+    // Only the pure-Zig library root is linked. Server, S3, Gemini, and
+    // turbopuffer client modules remain outside codedb's graph.
+    const openpuffer_dep = b.dependency("openpuffer", .{ .target = target, .optimize = optimize });
+    const openpuffer_mod = openpuffer_dep.module("openpuffer");
+    exe.root_module.addImport("openpuffer", openpuffer_mod);
+    codedb_mod.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    codedb_mod.addImport("openpuffer", openpuffer_mod);
+
     const install_exe = b.addInstallArtifact(exe, .{});
     b.getInstallStep().dependOn(&install_exe.step);
 
@@ -89,6 +98,13 @@ pub fn build(b: *std.Build) void {
         .{ .name = "test-mcp", .path = "src/test_mcp.zig", .needs_nanoregex = true },
         .{ .name = "test-query", .path = "src/test_query.zig", .needs_nanoregex = true },
         .{ .name = "test-list-dir", .path = "src/test_list_dir.zig", .needs_nanoregex = false },
+        .{ .name = "test-semantic", .path = "src/test_semantic.zig", .needs_nanoregex = false },
+        // Keep semantic_index.zig as an explicit root. Zig does not discover
+        // test declarations transitively just because test_ann.zig imports it,
+        // so omitting this entry can make `zig build test` pass without ever
+        // executing the sidecar durability and malformed-input regressions.
+        .{ .name = "test-semantic-index", .path = "src/semantic_index.zig", .needs_nanoregex = true },
+        .{ .name = "test-ann", .path = "src/test_ann.zig", .needs_nanoregex = false },
         .{ .name = "test-bench", .path = "src/test_bench.zig", .needs_nanoregex = true },
     };
 
@@ -102,6 +118,7 @@ pub fn build(b: *std.Build) void {
             }),
         });
         if (tf.needs_nanoregex) t.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+        t.root_module.addImport("openpuffer", openpuffer_mod);
         if (test_filter) |f| {
             const filters = b.allocator.alloc([]const u8, 1) catch @panic("oom");
             filters[0] = f;
@@ -123,6 +140,8 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    lib_tests.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    lib_tests.root_module.addImport("openpuffer", openpuffer_mod);
     test_step.dependOn(&b.addRunArtifact(lib_tests).step);
 
     // ── Adversarial tests ──
@@ -135,6 +154,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     adversarial_tests.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    adversarial_tests.root_module.addImport("openpuffer", openpuffer_mod);
     test_step.dependOn(&b.addRunArtifact(adversarial_tests).step);
 
     // ── Benchmarks ──
@@ -149,6 +169,7 @@ pub fn build(b: *std.Build) void {
     });
     const bench_run = b.addRunArtifact(bench);
     bench.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    bench.root_module.addImport("openpuffer", openpuffer_mod);
     bench_run.addPassthruArgs();
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&bench_run.step);
@@ -164,6 +185,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     bench_edge.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    bench_edge.root_module.addImport("openpuffer", openpuffer_mod);
     const bench_edge_run = b.addRunArtifact(bench_edge);
     bench_edge_run.addPassthruArgs();
     const bench_edge_step = b.step("bench-edge", "Run edge-case benchmarks (synthetic pathological corpus)");
@@ -180,13 +202,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
     benchmark.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));
+    benchmark.root_module.addImport("openpuffer", openpuffer_mod);
     const benchmark_run = b.addRunArtifact(benchmark);
     benchmark_run.addPassthruArgs();
     const benchmark_step = b.step("benchmark", "Run repo benchmark (use -- --root /path/to/repo)");
     benchmark_step.dependOn(&benchmark_run.step);
-
-    // Make module available so dependents don't need to wire it up manually
-    _ = codedb_mod;
 
     // ── WASM build (for Cloudflare Workers) ──
     const wasm = b.addExecutable(.{

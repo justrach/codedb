@@ -53,7 +53,9 @@ jobs:
           echo "$PWD/${head_dir}" >> "$GITHUB_PATH"
 
       - name: Benchmark head
-        run: python3 scripts/run-bench-json.py bench-head.json
+        run: |
+          python3 scripts/test_run_bench_json.py
+          python3 scripts/run-bench-json.py bench-head.json
 
       - name: Benchmark base with its declared compiler
         id: base_bench

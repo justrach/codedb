@@ -117,6 +117,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var explorer = Explorer.init(allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
+    // The frozen corpus lives under the OS temp root. It contains project
+    // markers and is accepted by the same bootstrap policy as a real temp
+    // checkout, but read surfaces still require this explicit capability.
+    try explorer.setRoot(io, tmp_root);
 
     var agents = AgentRegistry.init(allocator);
     defer agents.deinit();
@@ -182,7 +186,6 @@ fn runCase(
     var response_hash: u64 = 0;
 
     for (0..case.iterations) |_| {
-
         const r = bench_ctx.runToolCall(io, allocator, case.name, case.tool, args, store, explorer, agents, telem);
         total_ns +|= r.dispatch_ns;
         response_bytes = r.response_bytes;
@@ -244,7 +247,6 @@ fn writeBenchTarget(io: std.Io, tmp_root: []const u8) !void {
     defer file.close(io);
     try file.writeStreamingAll(io, "pub const bench_value = 1;\n");
 }
-
 
 fn summarizeCorpus(explorer: *Explorer) struct { files: usize, bytes: u64 } {
     explorer.mu.lockShared();

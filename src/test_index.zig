@@ -612,7 +612,7 @@ test "watcher: parallel initial scan matches sequential results" {
     defer store_seq.deinit();
     var explorer_seq = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_seq.deinit();
-    explorer_seq.setRoot(io, root);
+    try explorer_seq.setRoot(io, root);
     cio.posixSetenv("CODEDB_LOAD_WORKERS", "1");
     try watcher.initialScanWithWorkerCount(io, &store_seq, &explorer_seq, root, testing.allocator, false, 1);
 
@@ -620,7 +620,7 @@ test "watcher: parallel initial scan matches sequential results" {
     defer store_par.deinit();
     var explorer_par = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_par.deinit();
-    explorer_par.setRoot(io, root);
+    try explorer_par.setRoot(io, root);
     cio.posixSetenv("CODEDB_LOAD_WORKERS", "4");
     try watcher.initialScanWithWorkerCount(io, &store_par, &explorer_par, root, testing.allocator, false, 4);
 
@@ -786,7 +786,7 @@ test "watcher: parallel word-index shards match sequential (skip_file_words)" {
     var explorer_seq = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_seq.deinit();
     explorer_seq.word_index.skip_file_words = true;
-    explorer_seq.setRoot(io, root);
+    try explorer_seq.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store_seq, &explorer_seq, root, testing.allocator, false, 1);
 
     var store_par = Store.init(testing.allocator);
@@ -794,7 +794,7 @@ test "watcher: parallel word-index shards match sequential (skip_file_words)" {
     var explorer_par = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_par.deinit();
     explorer_par.word_index.skip_file_words = true;
-    explorer_par.setRoot(io, root);
+    try explorer_par.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store_par, &explorer_par, root, testing.allocator, false, 4);
 
     // Word-index structural parity.
@@ -3515,7 +3515,7 @@ test "issue-635: files between 512KB and 1MB are silently dropped from the index
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
 
     // control: the small file is indexed and searchable
@@ -3542,7 +3542,7 @@ test "issue-690: refreshIndex skips unchanged files but re-indexes changed ones"
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, true, 1);
 
     // First refresh records real content hashes for entries the initial scan
@@ -3576,7 +3576,7 @@ test "issue-690: refreshIndex adds new files and drops deleted ones" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, true, 1);
 
     try tmp.dir.writeFile(io, .{ .sub_path = "added.py", .data = "def added():\n    return 1\n" });
@@ -3610,7 +3610,7 @@ test "refreshIndex second pass skips unread files once mtimes are cached" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, true, 1);
 
     try watcher.refreshIndex(io, &store, &explorer, root, testing.allocator);
@@ -3634,7 +3634,7 @@ test "indexMissingFile indexes a new file without a full refresh" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try explorer.indexFile("keep.py", "def keep():\n    return 1\n");
 
     try testing.expect(watcher.indexMissingFile(io, &store, &explorer, "added.py"));
@@ -3658,7 +3658,7 @@ test "issue-690: incrementalLoop startup indexes files missing from the snapshot
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, true, 1);
 
     // File exists on disk before the daemon starts, but is absent from the
@@ -3722,7 +3722,7 @@ test "issue-693: unchanged-dir prune must not rescan the whole known map" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
 
     var known = watcher.FileMap.init(testing.allocator);
     defer {
@@ -3773,7 +3773,7 @@ test "issue-694: dirty-set skips stats on unchanged dirs but reindexes dirty fil
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
 
     var known = watcher.FileMap.init(testing.allocator);
     defer {
@@ -3836,7 +3836,7 @@ test "watcher directory event defeats stale mtime probe for atomic rename" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     var known = watcher.FileMap.init(testing.allocator);
     defer {
         var iter = known.keyIterator();
@@ -3899,7 +3899,7 @@ test "unknown dirty child forces parent listing without admitting sensitive file
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     var known = watcher.FileMap.init(testing.allocator);
     defer {
         var iter = known.keyIterator();
@@ -3972,7 +3972,7 @@ test "inactive watcher discovers unknown child when exact directory identity cha
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
     var known = watcher.FileMap.init(testing.allocator);
     defer {
         var iter = known.keyIterator();
@@ -4046,7 +4046,7 @@ test "experiment-694: quiet dirty cycle is cheaper than stat-all" {
     defer store.deinit();
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
-    explorer.setRoot(io, root);
+    try explorer.setRoot(io, root);
 
     var known = watcher.FileMap.init(testing.allocator);
     defer {

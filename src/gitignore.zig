@@ -7,6 +7,7 @@
 //! `.git` itself is the walker's job, not this file.
 
 const std = @import("std");
+const project_file = @import("project_file.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -183,7 +184,18 @@ fn parentOf(path: []const u8) ?[]const u8 {
 }
 
 fn loadFile(io: Io, arena: Allocator, path: []const u8, base: []const u8, out: *std.ArrayList(Rule)) void {
-    const text = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return;
+    if (!std.mem.startsWith(u8, path, base) or path.len <= base.len or path[base.len] != '/') return;
+    const rel = path[base.len + 1 ..];
+    var dir = Io.Dir.cwd().openDir(io, base, .{}) catch return;
+    defer dir.close(io);
+    // `base` comes from the canonical list root (or one of its canonical
+    // parents). Validate the opened handle against that identity so a path
+    // retarget between discovery and open cannot re-anchor resolve-beneath to
+    // an attacker-controlled directory.
+    var opened_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const opened_len = dir.realPath(io, &opened_buf) catch return;
+    if (!std.mem.eql(u8, opened_buf[0..opened_len], base)) return;
+    const text = project_file.readAllocNoFollow(io, dir, rel, arena, .limited(64 * 1024)) catch return;
     const extra = parse(arena, text, base) catch return;
     out.appendSlice(arena, extra) catch {};
 }
@@ -227,6 +239,26 @@ pub fn loadClimb(io: Io, arena: Allocator, abs_root: []const u8) ![]Rule {
         const gi = std.fmt.bufPrint(&buf, "{s}/.gitignore", .{abs_root}) catch return out.items;
         loadFile(io, arena, gi, abs_root, &out);
     }
+    return out.items;
+}
+
+/// Load project-local ignore policy through an already-established root
+/// capability.  MCP/live callers use this form so neither root replacement
+/// nor a symlinked ignore file can redirect policy reads outside the project.
+pub fn loadProjectRoot(io: Io, arena: Allocator, root_dir: Io.Dir, canonical_root: []const u8) ![]Rule {
+    var out: std.ArrayList(Rule) = .empty;
+    if (project_file.readAllocNoFollowAtRoot(io, root_dir, canonical_root, ".gitignore", arena, .limited(64 * 1024))) |text| {
+        const rules = parse(arena, text, canonical_root) catch &.{};
+        try out.appendSlice(arena, rules);
+    } else |_| {}
+
+    var git_dir = root_dir.openDir(io, ".git", .{ .follow_symlinks = false }) catch return out.items;
+    defer git_dir.close(io);
+    var info_dir = git_dir.openDir(io, "info", .{ .follow_symlinks = false }) catch return out.items;
+    defer info_dir.close(io);
+    const text = project_file.readAllocNoFollow(io, info_dir, "exclude", arena, .limited(64 * 1024)) catch return out.items;
+    const rules = parse(arena, text, canonical_root) catch return out.items;
+    try out.appendSlice(arena, rules);
     return out.items;
 }
 
