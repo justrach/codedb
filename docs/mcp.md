@@ -277,9 +277,15 @@ quarantine it. Apple Silicon release binaries from v0.2.5811+ are signed
 with a Developer ID and notarized via Apple — verify with:
 
 ```bash
-spctl -a -vv -t install /usr/local/bin/codedb
-# expected: accepted, source=Notarized Developer ID
+codesign -vvvv -R='notarized' --check-notarization /usr/local/bin/codedb
+# expected: valid on disk; explicit requirement satisfied
 ```
+
+`codedb` is a bare Mach-O command-line executable, so Apple's verification
+procedure for “other code” uses `codesign --check-notarization`; `spctl -t
+install` is for installer packages and can incorrectly report this artifact as
+unnotarized. Bare Mach-O files cannot carry a stapled ticket, so this check uses
+Apple's online ticket lookup.
 
 From 0.2.5833 the Intel `codedb-darwin-x86_64` slice is codesigned and
 notarized again. Earlier releases shipped it unsigned: the pinned Zig

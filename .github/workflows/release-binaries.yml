@@ -52,6 +52,11 @@ jobs:
       APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       CODEDB_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+      # Base64-encoded App Store Connect API key plus its key/issuer IDs.
+      # macOS jobs fail closed when any release credential is missing.
+      APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+      APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+      APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -80,8 +85,26 @@ jobs:
           test "$("$PWD/${zig_dir}/zig" version)" = "$ZIG_VERSION"
           echo "$PWD/${zig_dir}" >> "$GITHUB_PATH"
 
+      - name: Require macOS release credentials
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in \
+            APPLE_CERTIFICATE_P12 \
+            APPLE_CERTIFICATE_PASSWORD \
+            CODEDB_CODESIGN_IDENTITY \
+            APPLE_NOTARY_KEY_P8 \
+            APPLE_NOTARY_KEY_ID \
+            APPLE_NOTARY_ISSUER_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "missing required macOS release secret: ${name}" >&2
+              exit 1
+            fi
+          done
+
       - name: Import Apple signing certificate
-        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE_P12 != ''
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
@@ -108,10 +131,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ runner.os }}" == "macOS" ]] &&
-             [[ "${{ matrix.zig_target }}" != "x86_64-macos" ]] &&
-             [[ -n "${CODEDB_CODESIGN_IDENTITY:-}" ]] &&
-             grep -q 'codesign-identity' build.zig; then
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
             zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} -Dcodesign-identity="$CODEDB_CODESIGN_IDENTITY"
           else
             zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
@@ -120,6 +140,40 @@ jobs:
           [[ -f "$binary" ]] || binary=zig-out/bin/codedb.exe
           test -f "$binary"
           cp "$binary" "${{ matrix.asset_name }}"
+
+      - name: Verify and notarize macOS artifact
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="${{ matrix.asset_name }}"
+          codesign --verify --deep --strict --verbose=4 "$asset"
+          codesign -dvv "$asset" 2>&1 | grep -Fq 'Authority=Developer ID Application:'
+          codesign -dvv "$asset" 2>&1 | grep -Eq 'flags=0x[0-9a-fA-F]*10000\(runtime\)'
+
+          notary_key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          archive="$RUNNER_TEMP/${asset}.zip"
+          trap 'rm -f "$notary_key" "$archive"' EXIT
+          printf '%s' "$APPLE_NOTARY_KEY_P8" | base64 --decode > "$notary_key"
+          chmod 600 "$notary_key"
+          ditto -c -k --keepParent "$asset" "$archive"
+          xcrun notarytool submit "$archive" \
+            --key "$notary_key" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait
+
+          # Bare Mach-O executables cannot carry a stapled ticket. Wait for
+          # Apple's online ticket lookup to recognize the exact code hash.
+          for attempt in {1..30}; do
+            if codesign -vvvv -R='notarized' --check-notarization "$asset"; then
+              exit 0
+            fi
+            echo "notarization ticket is not visible yet (attempt ${attempt}/30)"
+            sleep 10
+          done
+          echo "Apple accepted the submission but its ticket never became visible" >&2
+          exit 1
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
