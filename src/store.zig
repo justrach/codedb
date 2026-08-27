@@ -392,6 +392,41 @@ pub const Store = struct {
         return hash.final();
     }
 
+    /// Content-only identity used to compare the indexed Store with a fresh
+    /// capability-relative filesystem walk. Unlike the persisted semantic
+    /// manifest above, this intentionally excludes the process-local Version
+    /// operation: identical repository bytes must compare equal whether they
+    /// came from a cold snapshot, a watcher refresh, or a restored snapshot.
+    pub fn semanticContentFingerprintForPaths(self: *Store, sorted_paths: anytype) !u64 {
+        self.mu.lock();
+        defer self.mu.unlock();
+
+        var hash = semanticContentHasher();
+        for (sorted_paths) |path| {
+            const versions = self.files.get(path) orelse return error.MissingContentIdentity;
+            const latest = versions.latest() orelse return error.MissingContentIdentity;
+            if (latest.op == .tombstone or latest.hash == 0) return error.MissingContentIdentity;
+            updateSemanticContentFingerprint(&hash, path, latest.hash, latest.size);
+        }
+        return hash.final();
+    }
+
+    pub fn semanticContentHasher() std.hash.Wyhash {
+        return std.hash.Wyhash.init(0x4344_4253_454d_3031);
+    }
+
+    pub fn updateSemanticContentFingerprint(
+        hash: *std.hash.Wyhash,
+        path: []const u8,
+        content_hash: u64,
+        size: u64,
+    ) void {
+        hash.update(path);
+        hash.update(&.{0});
+        hash.update(std.mem.asBytes(&content_hash));
+        hash.update(std.mem.asBytes(&size));
+    }
+
     pub fn listFiles(self: *Store) ![][]const u8 {
         self.mu.lock();
         defer self.mu.unlock();

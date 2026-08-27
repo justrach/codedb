@@ -66,6 +66,27 @@ const SectionEntry = struct {
     length: u64,
 };
 
+const OutputPathStyle = enum { posix, windows };
+
+fn splitOutputPath(path: []const u8, style: OutputPathStyle) struct { parent: []const u8, name: []const u8 } {
+    const parent = switch (style) {
+        .posix => std.fs.path.dirnamePosix(path),
+        .windows => std.fs.path.dirnameWindows(path),
+    } orelse ".";
+    const name = switch (style) {
+        .posix => std.fs.path.basenamePosix(path),
+        .windows => std.fs.path.basenameWindows(path),
+    };
+    return .{ .parent = parent, .name = name };
+}
+
+fn nativeOutputPathStyle() OutputPathStyle {
+    return switch (builtin.os.tag) {
+        .windows, .uefi => .windows,
+        else => .posix,
+    };
+}
+
 /// Write a portable `.codedb` snapshot file.
 pub fn writeSnapshot(
     io: std.Io,
@@ -89,9 +110,9 @@ pub fn writeSnapshot(
     };
     defer if (owned_source_root) |dir| dir.close(io);
 
-    const sep = std.mem.lastIndexOfScalar(u8, output_path, '/');
-    const output_parent_path = if (sep) |s| if (s == 0) "/" else output_path[0..s] else ".";
-    const output_name = if (sep) |s| output_path[s + 1 ..] else output_path;
+    const output_parts = splitOutputPath(output_path, nativeOutputPathStyle());
+    const output_parent_path = output_parts.parent;
+    const output_name = output_parts.name;
     if (output_name.len == 0) return error.BadPathName;
     const root_snapshot = isRootSnapshot(output_path, root_path);
     var owned_output_dir: ?std.Io.Dir = null;
@@ -463,6 +484,16 @@ pub fn writeSnapshot(
     if (root_snapshot) {
         ensureGitIgnoresSnapshotAtRoot(io, source_root, allocator);
     }
+}
+
+test "snapshot output path split handles POSIX and Windows absolute paths" {
+    const testing = std.testing;
+    const posix = splitOutputPath("/var/cache/codedb.snapshot", .posix);
+    try testing.expectEqualStrings("/var/cache", posix.parent);
+    try testing.expectEqualStrings("codedb.snapshot", posix.name);
+    const windows = splitOutputPath("C:\\cache\\codedb.snapshot", .windows);
+    try testing.expectEqualStrings("C:\\cache", windows.parent);
+    try testing.expectEqualStrings("codedb.snapshot", windows.name);
 }
 
 /// True when `output_path` is the in-tree project-root snapshot

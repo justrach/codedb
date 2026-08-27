@@ -1305,6 +1305,56 @@ pub fn initialScan(io: std.Io, store: *Store, explorer: *Explorer, root: []const
     try initialScanWithWorkerCount(io, store, explorer, root, allocator, skip_trigram, worker_count);
 }
 
+/// Re-read the complete indexable repository through the already-open root
+/// capability and return a deterministic content-only fingerprint. The
+/// semantic-index builder uses this immediately before publication so edits,
+/// additions, and deletions that happened during remote embedding cannot
+/// produce a sidecar for a mixed repository generation. Sensitive, ignored,
+/// binary, oversized, and symlink-escaped files follow the exact scan policy.
+pub fn liveIndexedContentFingerprint(
+    io: std.Io,
+    root: std.Io.Dir,
+    allocator: std.mem.Allocator,
+) !u64 {
+    const Identity = struct {
+        path: []u8,
+        content_hash: u64,
+        size: u64,
+    };
+
+    var walker = try FilteredWalker.init(io, root, allocator);
+    defer walker.deinit();
+    var identities: std.ArrayList(Identity) = .empty;
+    defer {
+        for (identities.items) |identity| allocator.free(identity.path);
+        identities.deinit(allocator);
+    }
+
+    while (try walker.next()) |entry| {
+        if (shouldSkipFile(entry.path)) continue;
+        const content = (try readIndexableFile(io, root, entry.path, allocator, entry.size, false)) orelse continue;
+        defer allocator.free(content);
+        const owned_path = try allocator.dupe(u8, entry.path);
+        errdefer allocator.free(owned_path);
+        try identities.append(allocator, .{
+            .path = owned_path,
+            .content_hash = std.hash.Wyhash.hash(0, content),
+            .size = @intCast(content.len),
+        });
+    }
+    std.mem.sort(Identity, identities.items, {}, struct {
+        fn lessThan(_: void, a: Identity, b: Identity) bool {
+            return std.mem.order(u8, a.path, b.path) == .lt;
+        }
+    }.lessThan);
+
+    var hash = Store.semanticContentHasher();
+    for (identities.items) |identity| {
+        Store.updateSemanticContentFingerprint(&hash, identity.path, identity.content_hash, identity.size);
+    }
+    return hash.final();
+}
+
 /// Fast index: parse symbols/outline only, skip expensive word+trigram indexes.
 fn indexFileOutline(io: std.Io, explorer: *Explorer, dir: std.Io.Dir, path: []const u8, allocator: std.mem.Allocator) !void {
     if (shouldSkipFile(path)) return;
