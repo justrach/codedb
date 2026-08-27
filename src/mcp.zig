@@ -1984,6 +1984,33 @@ fn renderOutlineOrSkeleton(
     return explorer.renderOutline(path, alloc, out, compact);
 }
 
+fn genericEntrypointPathPriority(path: []const u8) i32 {
+    if (isLowSignalArchitecturePath(path)) return -1000;
+    const base = std.fs.path.basename(path);
+    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
+    if (!std.ascii.eqlIgnoreCase(stem, "main")) return 0;
+    if (std.mem.startsWith(u8, path, "src/")) return 1000;
+    if (std.mem.indexOfScalar(u8, path, '/') == null) return 900;
+    if (pathHasSegmentIgnoreCase(path, "cmd")) return 800;
+    return 200;
+}
+
+fn prioritizeGenericEntrypoint(name: ?[]const u8, fuzzy: bool, results: []Explorer.ScoredSymbolResult) void {
+    const exact_name = name orelse return;
+    if (fuzzy or !std.ascii.eqlIgnoreCase(exact_name, "main")) return;
+    std.mem.sort(Explorer.ScoredSymbolResult, results, {}, struct {
+        fn lessThan(_: void, a: Explorer.ScoredSymbolResult, b: Explorer.ScoredSymbolResult) bool {
+            const ap = genericEntrypointPathPriority(a.path);
+            const bp = genericEntrypointPathPriority(b.path);
+            if (ap != bp) return ap > bp;
+            if (a.score != b.score) return a.score > b.score;
+            const path_order = std.mem.order(u8, a.path, b.path);
+            if (path_order != .eq) return path_order == .lt;
+            return a.symbol.line_start < b.symbol.line_start;
+        }
+    }.lessThan);
+}
+
 fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const name = getStr(args, "name");
     const prefix = getStr(args, "prefix");
@@ -2042,6 +2069,7 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         }
         return;
     };
+    prioritizeGenericEntrypoint(name, fuzzy, results);
     defer {
         for (results) |r| {
             alloc.free(r.path);
@@ -3170,6 +3198,93 @@ const CONTEXT_MAX_RESULTS_PER_KW: usize = 8;
 const CONTEXT_TOP_FILES: usize = 5;
 const CONTEXT_TOP_LINES_PER_FILE: usize = 3;
 
+fn asciiContainsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or haystack.len < needle.len) return false;
+    var i: usize = 0;
+    outer: while (i + needle.len <= haystack.len) : (i += 1) {
+        for (needle, 0..) |expected, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(expected)) continue :outer;
+        }
+        return true;
+    }
+    return false;
+}
+
+fn asciiStartsWithIgnoreCase(text: []const u8, prefix: []const u8) bool {
+    return text.len >= prefix.len and std.ascii.eqlIgnoreCase(text[0..prefix.len], prefix);
+}
+
+fn pathHasSegmentIgnoreCase(path: []const u8, wanted: []const u8) bool {
+    var segments = std.mem.tokenizeAny(u8, path, "/\\");
+    while (segments.next()) |segment| {
+        if (std.ascii.eqlIgnoreCase(segment, wanted)) return true;
+    }
+    return false;
+}
+
+/// Architecture overview requests need repository-map priors, not the normal
+/// code-search prior that deliberately down-ranks Markdown. Keep this gate
+/// narrow so ordinary implementation and symbol tasks retain their tuned BM25
+/// and hybrid behavior.
+pub fn isArchitectureOverviewTask(task: []const u8) bool {
+    const architecture = asciiContainsIgnoreCase(task, "architecture") or
+        asciiContainsIgnoreCase(task, "codebase structure") or
+        asciiContainsIgnoreCase(task, "source layout");
+    if (!architecture) return false;
+    return asciiContainsIgnoreCase(task, "overview") or
+        asciiContainsIgnoreCase(task, "entrypoint") or
+        asciiContainsIgnoreCase(task, "routing") or
+        asciiContainsIgnoreCase(task, "source layout") or
+        asciiContainsIgnoreCase(task, "how the") or
+        asciiContainsIgnoreCase(task, "map");
+}
+
+fn isLowSignalArchitecturePath(path: []const u8) bool {
+    const base = std.fs.path.basename(path);
+    return pathHasSegmentIgnoreCase(path, "experiments") or
+        pathHasSegmentIgnoreCase(path, "bench") or
+        pathHasSegmentIgnoreCase(path, "benchmarks") or
+        pathHasSegmentIgnoreCase(path, "e2e") or
+        pathHasSegmentIgnoreCase(path, "test") or
+        pathHasSegmentIgnoreCase(path, "tests") or
+        pathHasSegmentIgnoreCase(path, "fixtures") or
+        pathHasSegmentIgnoreCase(path, "generated") or
+        pathHasSegmentIgnoreCase(path, ".wrangler") or
+        pathHasSegmentIgnoreCase(path, ".open-next") or
+        asciiStartsWithIgnoreCase(base, "bench-") or
+        asciiStartsWithIgnoreCase(base, "bench_") or
+        asciiStartsWithIgnoreCase(base, "e2e-") or
+        asciiStartsWithIgnoreCase(base, "e2e_") or
+        asciiStartsWithIgnoreCase(base, "test-") or
+        asciiStartsWithIgnoreCase(base, "test_");
+}
+
+/// Query-specific path prior used only for architecture-overview composition.
+/// Values are tiers, not relevance scores: retrieval order remains the
+/// tiebreak inside a tier.
+pub fn architecturePathPriority(path: []const u8) i32 {
+    if (isLowSignalArchitecturePath(path)) return -1000;
+
+    if (std.ascii.eqlIgnoreCase(path, "ARCHITECTURE.md")) return 1000;
+    if (std.ascii.eqlIgnoreCase(path, "CODEBASE.md")) return 980;
+
+    const base = std.fs.path.basename(path);
+    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
+    if (std.ascii.eqlIgnoreCase(stem, "architecture")) return 950;
+    if (std.ascii.eqlIgnoreCase(stem, "codebase")) return 930;
+
+    if (std.mem.startsWith(u8, path, "src/")) {
+        if (std.ascii.eqlIgnoreCase(stem, "main")) return 900;
+        if (std.ascii.eqlIgnoreCase(stem, "server")) return 880;
+        if (std.ascii.eqlIgnoreCase(stem, "api")) return 860;
+        if (std.ascii.eqlIgnoreCase(stem, "router") or std.ascii.eqlIgnoreCase(stem, "routes")) return 820;
+        if (std.ascii.eqlIgnoreCase(stem, "cli")) return 800;
+        return 100;
+    }
+    if (std.ascii.eqlIgnoreCase(stem, "readme") and std.mem.indexOfScalar(u8, path, '/') == null) return 700;
+    return 0;
+}
+
 pub fn extractContextCandidates(task: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList([]const u8)) void {
     var seen = std.StringHashMap(void).init(alloc);
     defer seen.deinit();
@@ -3463,6 +3578,7 @@ fn handleContext(
         return;
     }
     const semantic_requested = std.mem.eql(u8, semantic_mode, "hybrid");
+    const architecture_intent = isArchitectureOverviewTask(task);
     var retrieval: ContextRetrievalProvenance = .{};
     const format = getStr(args, "format") orelse "markdown";
     const structured = std.mem.eql(u8, format, "json");
@@ -3629,8 +3745,10 @@ fn handleContext(
     for (candidates.items) |kw| {
         // Symbol definitions (best-effort; ignore failures).
         if (explorer.findAllSymbols(kw, A)) |defs| {
-            const take = @min(defs.len, 3);
-            for (defs[0..take]) |d| {
+            var accepted: usize = 0;
+            for (defs) |d| {
+                if (accepted >= 3) break;
+                if (architecture_intent and isLowSignalArchitecturePath(d.path)) continue;
                 const key = std.fmt.allocPrint(A, "{s}|{s}|{d}", .{ d.path, kw, d.symbol.line_start }) catch continue;
                 if (seen_syms.contains(key)) continue;
                 seen_syms.put(key, {}) catch continue;
@@ -3641,6 +3759,7 @@ fn handleContext(
                     .line = d.symbol.line_start,
                     .line_end = d.symbol.line_end,
                 }) catch break;
+                accepted += 1;
             }
         } else |_| {}
 
@@ -3676,6 +3795,7 @@ fn handleContext(
         hybrid_score: f32 = 0,
         lexical_present: bool = true,
         semantic_present: bool = false,
+        retrieval_rank: usize = 0,
     };
     var ranked: std.ArrayList(FileRank) = .empty;
     var iter = by_file.iterator();
@@ -3952,6 +4072,61 @@ fn handleContext(
             retrieval.semantic = "no_candidates";
         }
     }
+
+    if (architecture_intent) {
+        // Canonical repository-map files are sparse by nature: an
+        // ARCHITECTURE.md can explain every subsystem without repeating all
+        // task tokens, so lexical/ANN retrieval may never nominate it. Seed
+        // only the small set of high-priority architecture/entrypoint paths,
+        // then use the current fused order as the tiebreak within each tier.
+        var known_paths = std.StringHashMap(void).init(A);
+        for (ranked.items) |file| known_paths.put(file.path, {}) catch {};
+
+        var seed_paths: std.ArrayList([]const u8) = .empty;
+        explorer.mu.lockShared();
+        var outline_paths = explorer.outlines.keyIterator();
+        while (outline_paths.next()) |path| {
+            if (architecturePathPriority(path.*) >= 700 and !known_paths.contains(path.*)) {
+                seed_paths.append(A, path.*) catch break;
+            }
+        }
+        explorer.mu.unlockShared();
+
+        std.mem.sort([]const u8, seed_paths.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                const ap = architecturePathPriority(a);
+                const bp = architecturePathPriority(b);
+                if (ap != bp) return ap > bp;
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.lessThan);
+        for (seed_paths.items) |path| {
+            var preview: std.ArrayList(PerFileHit) = .empty;
+            if (semanticSourcePreview(explorer, A, path, 1)) |text_preview| {
+                preview.append(A, .{ .line = 1, .text = text_preview }) catch {};
+            }
+            ranked.append(A, .{
+                .path = path,
+                .hits = 0,
+                .score = 0,
+                .top = preview.items,
+                .lexical_rank = ranked.items.len,
+                .semantic_rank = ranked.items.len,
+                .lexical_present = false,
+            }) catch break;
+        }
+
+        for (ranked.items, 0..) |*file, rank| file.retrieval_rank = rank;
+        std.mem.sort(FileRank, ranked.items, {}, struct {
+            fn lessThan(_: void, a: FileRank, b: FileRank) bool {
+                const ap = architecturePathPriority(a.path);
+                const bp = architecturePathPriority(b.path);
+                if (ap != bp) return ap > bp;
+                if (a.retrieval_rank != b.retrieval_rank) return a.retrieval_rank < b.retrieval_rank;
+                return std.mem.lessThan(u8, a.path, b.path);
+            }
+        }.lessThan);
+    }
     const top_n = @min(ranked.items.len, CONTEXT_TOP_FILES);
     const pf_rank = cio.nanoTimestamp();
 
@@ -4043,6 +4218,7 @@ fn handleContext(
                 var shown_for_sym: u32 = 0;
                 for (scoped) |r| {
                     if (shown_for_sym >= 2 or total_shown >= 6) break;
+                    if (architecture_intent and isLowSignalArchitecturePath(r.path)) continue;
                     if (!langHasCallSites(explore_mod.detectLanguage(r.path))) continue;
                     // Skip the definition site itself
                     if (r.line_num == sr.line and std.mem.eql(u8, r.path, sr.path)) continue;

@@ -249,6 +249,8 @@ const skip_dirs = [_][]const u8{
     ".zig-cache",
     "zig-out",
     ".next",
+    ".open-next",
+    ".wrangler",
     ".nuxt",
     ".svelte-kit",
     "dist",

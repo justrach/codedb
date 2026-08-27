@@ -257,6 +257,18 @@ pub fn detectLanguage(path: []const u8) Language {
     return .unknown;
 }
 
+/// Resolution boundary for the approximate call graph. Closely interoperable
+/// source families share a group; unrelated languages never resolve one
+/// another's same-named functions.
+fn callGraphLanguageGroup(language: Language) u8 {
+    return switch (language) {
+        .c, .cpp => 1,
+        .javascript, .typescript, .svelte, .vue, .astro => 2,
+        .java, .kotlin => 3,
+        else => 16 + @as(u8, @intFromEnum(language)),
+    };
+}
+
 /// Returns true for languages whose content is primarily prose / data /
 /// markup rather than executable code. Used to deprioritise these files in
 /// content search so a CHANGELOG.md or design doc cannot starve a canonical
@@ -5674,6 +5686,7 @@ pub const Explorer = struct {
         var node_path: std.ArrayList([]const u8) = .empty;
         var node_name: std.ArrayList([]const u8) = .empty;
         var node_line: std.ArrayList(u32) = .empty;
+        var node_language_group: std.ArrayList(u8) = .empty;
         var funcs: std.ArrayList(codegraph.FuncInput) = .empty;
         var name_to_ids = std.StringHashMap(std.ArrayList(codegraph.NodeId)).init(a);
 
@@ -5700,6 +5713,7 @@ pub const Explorer = struct {
                 node_path.append(a, path) catch return;
                 node_name.append(a, sym.name) catch return;
                 node_line.append(a, sym.line_start) catch return;
+                node_language_group.append(a, callGraphLanguageGroup(detectLanguage(path))) catch return;
                 funcs.append(a, .{ .id = id, .body = content[start..end] }) catch return;
                 const gop = name_to_ids.getOrPut(sym.name) catch return;
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
@@ -5713,7 +5727,7 @@ pub const Explorer = struct {
         var n2i = name_to_ids.iterator();
         while (n2i.next()) |e| resolve.put(e.key_ptr.*, e.value_ptr.items) catch return;
 
-        var edges_tmp = codegraph.buildEdges(a, funcs.items, &resolve, false) catch return;
+        var edges_tmp = codegraph.buildEdgesWithinGroups(a, funcs.items, &resolve, node_language_group.items, false) catch return;
         defer edges_tmp.deinit(a);
 
         const edges_owned = self.allocator.alloc(codegraph.Edge, edges_tmp.items.len) catch return;

@@ -115,6 +115,21 @@ pub fn buildEdges(
     resolve: *const std.StringHashMap([]const NodeId),
     allow_self: bool,
 ) !std.ArrayList(Edge) {
+    return buildEdgesWithinGroups(allocator, funcs, resolve, null, allow_self);
+}
+
+/// Like buildEdges, but only resolves a call to definitions in the caller's
+/// language family. `groups` is indexed by NodeId. This prevents a generic
+/// name such as `route` or `run` from creating a synthetic Zig -> Python edge
+/// while still allowing deliberately compatible families (for example
+/// JavaScript/TypeScript) to share definitions.
+pub fn buildEdgesWithinGroups(
+    allocator: std.mem.Allocator,
+    funcs: []const FuncInput,
+    resolve: *const std.StringHashMap([]const NodeId),
+    groups: ?[]const u8,
+    allow_self: bool,
+) !std.ArrayList(Edge) {
     var edges: std.ArrayList(Edge) = .empty;
     errdefer edges.deinit(allocator);
     for (funcs) |f| {
@@ -123,8 +138,20 @@ pub fn buildEdges(
         for (callees) |name| {
             const cands = resolve.get(name) orelse continue;
             if (cands.len == 0) continue;
-            const w: f32 = 1.0 / @as(f32, @floatFromInt(cands.len));
+            const scoped_count: usize = if (groups) |node_groups| blk: {
+                if (f.id >= node_groups.len) break :blk 0;
+                var count: usize = 0;
+                for (cands) |to| {
+                    if (to < node_groups.len and node_groups[to] == node_groups[f.id]) count += 1;
+                }
+                break :blk count;
+            } else cands.len;
+            if (scoped_count == 0) continue;
+            const w: f32 = 1.0 / @as(f32, @floatFromInt(scoped_count));
             for (cands) |to| {
+                if (groups) |node_groups| {
+                    if (to >= node_groups.len or f.id >= node_groups.len or node_groups[to] != node_groups[f.id]) continue;
+                }
                 if (!allow_self and to == f.id) continue;
                 try edges.append(allocator, .{ .from = f.id, .to = to, .weight = w });
             }
