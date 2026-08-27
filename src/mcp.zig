@@ -209,6 +209,7 @@ const ProjectCtx = struct {
     store: *Store,
     snapshot_cache: *SnapshotCache,
     deps_cache: *DepsCache,
+    semantic_cache: *semantic_index_mod.SearchCache,
 };
 
 fn getProjectDataDir(allocator: std.mem.Allocator, project_path: []const u8) ?[]u8 {
@@ -313,6 +314,7 @@ const ProjectCache = struct {
         store: Store,
         snapshot_cache: SnapshotCache,
         deps_cache: DepsCache,
+        semantic_cache: semantic_index_mod.SearchCache,
         last_used: i64,
     };
 
@@ -322,6 +324,7 @@ const ProjectCache = struct {
     default_path: []const u8,
     default_snapshot_cache: SnapshotCache,
     default_deps_cache: DepsCache,
+    default_semantic_cache: semantic_index_mod.SearchCache,
     content_cache_capacity: u32,
 
     fn init(alloc_: std.mem.Allocator, default_path_: []const u8, content_cache_capacity_: u32) ProjectCache {
@@ -332,6 +335,7 @@ const ProjectCache = struct {
             .default_path = default_path_,
             .default_snapshot_cache = .{},
             .default_deps_cache = .{},
+            .default_semantic_cache = semantic_index_mod.SearchCache.init(alloc_),
             .content_cache_capacity = content_cache_capacity_,
         };
     }
@@ -339,6 +343,7 @@ const ProjectCache = struct {
     fn deinit(self: *ProjectCache) void {
         self.default_snapshot_cache.deinit(self.alloc);
         self.default_deps_cache.deinit(self.alloc);
+        self.default_semantic_cache.deinit();
         for (&self.entries) |*slot| {
             if (slot.*) |entry| {
                 self.destroyEntry(entry);
@@ -350,6 +355,7 @@ const ProjectCache = struct {
     fn destroyEntry(self: *ProjectCache, entry: *Entry) void {
         entry.snapshot_cache.deinit(self.alloc);
         entry.deps_cache.deinit(self.alloc);
+        entry.semantic_cache.deinit();
         entry.explorer.deinit();
         entry.store.deinit();
         self.alloc.free(entry.path);
@@ -394,7 +400,7 @@ const ProjectCache = struct {
         default_exp: *Explorer,
         default_store: *Store,
     ) !ProjectCtx {
-        const raw_path = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
+        const raw_path = path orelse return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache, .semantic_cache = &self.default_semantic_cache };
         const parsed_path = local_uri.parseRootReference(self.alloc, raw_path) catch return error.PathNotAllowed;
         defer self.alloc.free(parsed_path);
 
@@ -412,7 +418,7 @@ const ProjectCache = struct {
             if (slot.*) |entry| {
                 if (std.mem.eql(u8, entry.path, canonical_root)) {
                     entry.last_used = now;
-                    return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store, .snapshot_cache = &entry.snapshot_cache, .deps_cache = &entry.deps_cache };
+                    return ProjectCtx{ .explorer = &entry.explorer, .store = &entry.store, .snapshot_cache = &entry.snapshot_cache, .deps_cache = &entry.deps_cache, .semantic_cache = &entry.semantic_cache };
                 }
             }
         }
@@ -428,6 +434,7 @@ const ProjectCache = struct {
         new_entry.store = Store.init(self.alloc);
         new_entry.snapshot_cache = .{};
         new_entry.deps_cache = .{};
+        new_entry.semantic_cache = semantic_index_mod.SearchCache.init(self.alloc);
         new_entry.last_used = now;
 
         const stable_root = new_entry.explorer.root_dir orelse return error.PathNotAllowed;
@@ -454,7 +461,7 @@ const ProjectCache = struct {
                 self.alloc.free(new_entry.path);
                 self.alloc.destroy(new_entry);
                 if (default_exp.root_path != null and std.mem.eql(u8, canonical_root, default_exp.root_path.?) and default_store.currentSeq() > 0) {
-                    return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache };
+                    return ProjectCtx{ .explorer = default_exp, .store = default_store, .snapshot_cache = &self.default_snapshot_cache, .deps_cache = &self.default_deps_cache, .semantic_cache = &self.default_semantic_cache };
                 }
                 return error.SnapshotLoadFailed;
             }
@@ -495,7 +502,7 @@ const ProjectCache = struct {
         }
 
         self.entries[target_slot] = new_entry;
-        return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store, .snapshot_cache = &new_entry.snapshot_cache, .deps_cache = &new_entry.deps_cache };
+        return ProjectCtx{ .explorer = &new_entry.explorer, .store = &new_entry.store, .snapshot_cache = &new_entry.snapshot_cache, .deps_cache = &new_entry.deps_cache, .semantic_cache = &new_entry.semantic_cache };
     }
 };
 
@@ -1786,6 +1793,7 @@ fn dispatch(
             .store = default_store,
             .snapshot_cache = &cache.default_snapshot_cache,
             .deps_cache = &cache.default_deps_cache,
+            .semantic_cache = &cache.default_semantic_cache,
         };
 
     if (project_path == null and tool == .codedb_deps and args.count() == 1) {
@@ -1851,7 +1859,7 @@ fn dispatch(
         .codedb_glob => handleGlob(alloc, args, out, ctx.explorer),
         .codedb_ls => handleLs(alloc, args, out, ctx.explorer),
         .codedb_list_dir => mcp_list_dir.handle(io, alloc, getStr(args, "path") orelse ".", ctx.explorer, out),
-        .codedb_context => handleContext(io, alloc, args, out, ctx.store, ctx.explorer),
+        .codedb_context => handleContext(io, alloc, args, out, ctx.store, ctx.explorer, ctx.semantic_cache),
     }
     appendScanProgressHint(alloc, out, tool);
 }
@@ -3235,9 +3243,10 @@ fn isTestPath(path: []const u8) bool {
 /// must never launch another full filesystem walk or allocate EventQueue's
 /// multi-megabyte ring, and no ANN embedding request is issued before freshness
 /// validation succeeds.
-fn searchSemanticAnnFresh(
+fn searchSemanticAnnOnce(
     io: std.Io,
     allocator: std.mem.Allocator,
+    cache: ?*semantic_index_mod.SearchCache,
     explorer: *Explorer,
     store: *Store,
     project_root: []const u8,
@@ -3245,13 +3254,30 @@ fn searchSemanticAnnFresh(
     task: []const u8,
     k: usize,
 ) !semantic_index_mod.SearchOutput {
-    return semantic_index_mod.search(io, allocator, explorer, store, project_root, data_dir, task, k) catch |err| switch (err) {
+    if (cache) |semantic_cache| {
+        return semantic_index_mod.searchCached(io, allocator, semantic_cache, explorer, store, project_root, data_dir, task, k);
+    }
+    return semantic_index_mod.search(io, allocator, explorer, store, project_root, data_dir, task, k);
+}
+
+fn searchSemanticAnnFresh(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    cache: ?*semantic_index_mod.SearchCache,
+    explorer: *Explorer,
+    store: *Store,
+    project_root: []const u8,
+    data_dir: []const u8,
+    task: []const u8,
+    k: usize,
+) !semantic_index_mod.SearchOutput {
+    return searchSemanticAnnOnce(io, allocator, cache, explorer, store, project_root, data_dir, task, k) catch |err| switch (err) {
         error.StaleAnnManifest => {
             if (!explorer.startupReconcilePending()) return err;
             const deadline = cio.milliTimestamp() + @as(i64, @intCast(scan_wait_timeout_ms));
             while (explorer.startupReconcilePending() and cio.milliTimestamp() < deadline) cio.sleepMs(25);
             if (explorer.startupReconcilePending()) return err;
-            return semantic_index_mod.search(io, allocator, explorer, store, project_root, data_dir, task, k);
+            return searchSemanticAnnOnce(io, allocator, cache, explorer, store, project_root, data_dir, task, k);
         },
         else => return err,
     };
@@ -3311,6 +3337,7 @@ const ContextRetrievalProvenance = struct {
     ann_load_ns: u64 = 0,
     ann_search_ns: u64 = 0,
     ann_mmap_backed: bool = false,
+    ann_cache_hit: bool = false,
     ann_vector_space_id: ?u64 = null,
     remote_retention: []const u8 = "not_applicable",
     local_vector_storage: []const u8 = "none",
@@ -3359,7 +3386,15 @@ fn appendStructuredContext(alloc: std.mem.Allocator, out: *std.ArrayList(u8), va
     out.appendSlice(alloc, encoded) catch {};
 }
 
-fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), store: *Store, explorer: *Explorer) void {
+fn handleContext(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    args: *const std.json.ObjectMap,
+    out: *std.ArrayList(u8),
+    store: *Store,
+    explorer: *Explorer,
+    semantic_cache: ?*semantic_index_mod.SearchCache,
+) void {
     const stable_root = explorer.root_dir orelse {
         out.appendSlice(alloc, "error: project root is not configured") catch {};
         return;
@@ -3653,6 +3688,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         if (searchSemanticAnnFresh(
             io,
             A,
+            semantic_cache,
             explorer,
             store,
             rooted_project,
@@ -3674,6 +3710,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
             retrieval.ann_load_ns = ann_result.load_ns;
             retrieval.ann_search_ns = ann_result.search_ns;
             retrieval.ann_mmap_backed = ann_result.mmap_backed;
+            retrieval.ann_cache_hit = ann_result.cache_hit;
             retrieval.ann_vector_space_id = ann_result.vector_space_id;
             retrieval.remote_retention = switch (ann_result.retention) {
                 .none_by_codedb_policy => "none_by_codedb_service_policy",
@@ -3883,7 +3920,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
         if (semantic_requested) {
             wh.print("\n## Retrieval privacy\n- local BM25/symbol retrieval ran first\n", .{}) catch {};
             if (std.mem.eql(u8, retrieval.semantic, "ann_applied")) {
-                wh.print("- local OpenPuffer ANN: {s}, {d}D, vector space {x}, {d} indexed code chunks / {d} sidecar bytes\n- remote query embedding: task plus fixed public vector-space calibration / {d} text bytes; remote retention: {s}\n- local vector storage: {s}; mmap={any}; ANN load {d} ns / search {d} ns\n", .{
+                wh.print("- local OpenPuffer ANN: {s}, {d}D, vector space {x}, {d} indexed code chunks / {d} sidecar bytes\n- remote query embedding: task plus fixed public vector-space calibration / {d} text bytes; remote retention: {s}\n- local vector storage: {s}; mmap={any}; cache_hit={any}; ANN load {d} ns / search {d} ns\n", .{
                     retrieval.model orelse semantic_mod.default_model,
                     retrieval.dimensions orelse semantic_mod.default_dimensions,
                     retrieval.ann_vector_space_id orelse 0,
@@ -3893,6 +3930,7 @@ fn handleContext(io: std.Io, alloc: std.mem.Allocator, args: *const std.json.Obj
                     retrieval.remote_retention,
                     retrieval.local_vector_storage,
                     retrieval.ann_mmap_backed,
+                    retrieval.ann_cache_hit,
                     retrieval.ann_load_ns,
                     retrieval.ann_search_ns,
                 }) catch {};
@@ -5584,7 +5622,7 @@ pub fn runCliTool(
         if (task.items.len == 0) return cliUsage(alloc, out, "context [--semantic] [--json] <task...>");
         m.put(alloc, "task", .{ .string = task.items }) catch return 1;
         loadProjectWordIndexFromDiskIfPresent(io, explorer, root, alloc);
-        handleContext(io, alloc, &m, out, store, explorer);
+        handleContext(io, alloc, &m, out, store, explorer, null);
         return finishCli(out, out_start);
     }
     return null;

@@ -81,6 +81,7 @@ pub const SearchOutput = struct {
     embed_ns: u64,
     search_ns: u64,
     mmap_backed: bool,
+    cache_hit: bool,
     vector_space_id: u64,
 };
 
@@ -123,6 +124,46 @@ const Loaded = struct {
         self.allocator.free(self.records);
         self.allocator.free(self.storage);
         self.* = undefined;
+    }
+};
+
+const FileIdentity = struct {
+    inode: std.Io.File.INode,
+    size: u64,
+    mtime_ns: i96,
+    ctime_ns: i96,
+
+    fn eql(a: FileIdentity, b: FileIdentity) bool {
+        return a.inode == b.inode and a.size == b.size and a.mtime_ns == b.mtime_ns and a.ctime_ns == b.ctime_ns;
+    }
+};
+
+const CachedLoaded = struct {
+    loaded: Loaded,
+    metadata_identity: FileIdentity,
+    slab_identity: FileIdentity,
+    store_seq: u64,
+};
+
+/// One validated immutable semantic sidecar generation per project. Warm
+/// searches take the shared lock, so concurrent users can embed and search in
+/// parallel. Replacement is transactional under the exclusive lock: a stale,
+/// malformed, or concurrently replaced sidecar never evicts the last valid
+/// generation and is never queried.
+pub const SearchCache = struct {
+    mu: cio.RwLock = .{},
+    allocator: std.mem.Allocator,
+    cached: ?CachedLoaded = null,
+
+    pub fn init(allocator: std.mem.Allocator) SearchCache {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *SearchCache) void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (self.cached) |*cached| cached.loaded.deinit();
+        self.cached = null;
     }
 };
 
@@ -180,6 +221,19 @@ fn fileSize(io: std.Io, path: []const u8) !usize {
     defer file.close(io);
     const stat = try file.stat(io);
     return std.math.cast(usize, stat.size) orelse error.AnnSlabTooLarge;
+}
+
+fn fileIdentity(io: std.Io, path: []const u8) !FileIdentity {
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{ .follow_symlinks = false });
+    defer file.close(io);
+    const stat = try file.stat(io);
+    if (stat.kind != .file) return error.InvalidAnnSidecar;
+    return .{
+        .inode = stat.inode,
+        .size = stat.size,
+        .mtime_ns = stat.mtime.nanoseconds,
+        .ctime_ns = stat.ctime.nanoseconds,
+    };
 }
 
 fn currentSlabName(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8) !?[]u8 {
@@ -852,35 +906,21 @@ fn validateRecordLineRanges(explorer: *Explorer, records: []const Record) !void 
     }
 }
 
-pub fn search(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    explorer: *Explorer,
-    store: *Store,
-    project_root: []const u8,
-    data_dir: []const u8,
-    task: []const u8,
-    k: usize,
-) !SearchOutput {
-    const config = semantic.Config.fromEnv();
-    try config.validate();
-    const load_started = cio.nanoTimestamp();
-    var loaded = try loadMetadata(io, allocator, data_dir);
-    defer loaded.deinit();
-
+fn validateLoadedConfig(config: *const semantic.Config, loaded: *const Loaded) !void {
     if (config.dimensions != loaded.dimensions) return error.AnnDimensionsMismatch;
     if (!std.mem.eql(u8, config.model, loaded.model)) return error.AnnModelMismatch;
     if (config.vectorSpaceId() != loaded.vector_space_id) return error.AnnVectorSpaceMismatch;
-    const current_head = try git_mod.getGitHead(project_root, allocator);
-    if (!headsEqual(current_head, loaded.git_head)) return error.StaleAnnGitHead;
-    if (try repositoryFingerprint(explorer, store, allocator) != loaded.manifest) return error.StaleAnnManifest;
-    // Metadata is attacker-controlled local input. Validate the entire mapping
-    // while the index is still empty so a failure remains transactional and no
-    // forged line can reach rendering arithmetic.
-    try validateRecordLineRanges(explorer, loaded.records);
-    try loaded.loadGraph();
-    const load_ns = elapsedNs(load_started);
+}
 
+fn searchLoaded(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    loaded: *Loaded,
+    task: []const u8,
+    k: usize,
+    load_ns: u64,
+    cache_hit: bool,
+) !SearchOutput {
     const embed_started = cio.nanoTimestamp();
     const query = try semantic.embedQueryAndCalibrationRemote(io, allocator, task);
     defer allocator.free(query.vectors);
@@ -935,8 +975,153 @@ pub fn search(
         .embed_ns = embed_ns,
         .search_ns = search_ns,
         .mmap_backed = loaded.index.isMmapBacked(),
+        .cache_hit = cache_hit,
         .vector_space_id = loaded.vector_space_id,
     };
+}
+
+fn cachedGenerationCurrent(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    cached: *const CachedLoaded,
+    config: *const semantic.Config,
+    store: *Store,
+    data_dir: []const u8,
+) !bool {
+    const metadata_path = try sidecarPath(allocator, data_dir);
+    defer allocator.free(metadata_path);
+    const metadata_identity = fileIdentity(io, metadata_path) catch return false;
+    if (!metadata_identity.eql(cached.metadata_identity)) return false;
+    const slab_identity = fileIdentity(io, cached.loaded.slab_path) catch return false;
+    if (!slab_identity.eql(cached.slab_identity)) return false;
+    try validateLoadedConfig(config, &cached.loaded);
+    // The cold/reload path validates Git HEAD, the exact repository content
+    // fingerprint, and every record range together. Warm reuse is then keyed
+    // by Store sequence: a checkout that changes indexed content advances the
+    // watcher sequence, while a commit-only HEAD update with identical content
+    // cannot invalidate the chunk mapping. This avoids a fork+exec on every
+    // query without weakening content freshness.
+    return store.currentSeq() == cached.store_seq;
+}
+
+fn loadValidatedGeneration(
+    io: std.Io,
+    persistent: std.mem.Allocator,
+    temporary: std.mem.Allocator,
+    config: *const semantic.Config,
+    explorer: *Explorer,
+    store: *Store,
+    project_root: []const u8,
+    data_dir: []const u8,
+) !CachedLoaded {
+    const metadata_path = try sidecarPath(temporary, data_dir);
+    defer temporary.free(metadata_path);
+    const metadata_before = try fileIdentity(io, metadata_path);
+
+    var loaded = try loadMetadata(io, persistent, data_dir);
+    errdefer loaded.deinit();
+    try validateLoadedConfig(config, &loaded);
+    const head_before = try git_mod.getGitHead(project_root, temporary);
+    if (!headsEqual(head_before, loaded.git_head)) return error.StaleAnnGitHead;
+    const seq_before = store.currentSeq();
+    if (try repositoryFingerprint(explorer, store, temporary) != loaded.manifest) return error.StaleAnnManifest;
+    try validateRecordLineRanges(explorer, loaded.records);
+    if (store.currentSeq() != seq_before) return error.StaleAnnManifest;
+
+    const slab_before = try fileIdentity(io, loaded.slab_path);
+    try loaded.loadGraph();
+    const metadata_after = try fileIdentity(io, metadata_path);
+    const slab_after = try fileIdentity(io, loaded.slab_path);
+    if (!metadata_before.eql(metadata_after) or !slab_before.eql(slab_after)) return error.AnnSidecarChangedDuringLoad;
+    const head_after = try git_mod.getGitHead(project_root, temporary);
+    if (!headsEqual(head_before, head_after)) return error.StaleAnnGitHead;
+    const seq_after = store.currentSeq();
+    if (seq_after != seq_before) return error.StaleAnnManifest;
+
+    return .{
+        .loaded = loaded,
+        .metadata_identity = metadata_after,
+        .slab_identity = slab_after,
+        .store_seq = seq_after,
+    };
+}
+
+/// Reuse a fully validated mmap generation for warm MCP queries. The fast
+/// path still checks both sidecar file identities, repository sequence, model,
+/// dimensions, and vector-space identity before any remote query embedding is
+/// issued. Git HEAD, content fingerprint, and record ranges are revalidated
+/// transactionally whenever that warm identity changes.
+pub fn searchCached(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    cache: *SearchCache,
+    explorer: *Explorer,
+    store: *Store,
+    project_root: []const u8,
+    data_dir: []const u8,
+    task: []const u8,
+    k: usize,
+) !SearchOutput {
+    const config = semantic.Config.fromEnv();
+    try config.validate();
+    const load_started = cio.nanoTimestamp();
+
+    cache.mu.lockShared();
+    if (cache.cached) |*cached| {
+        const current = cachedGenerationCurrent(io, allocator, cached, &config, store, data_dir) catch |err| {
+            cache.mu.unlockShared();
+            return err;
+        };
+        if (current) {
+            defer cache.mu.unlockShared();
+            return searchLoaded(io, allocator, &cached.loaded, task, k, elapsedNs(load_started), true);
+        }
+    }
+    cache.mu.unlockShared();
+
+    cache.mu.lock();
+    defer cache.mu.unlock();
+    // Another concurrent cold request may have installed the generation while
+    // this request waited for the exclusive lock.
+    if (cache.cached) |*cached| {
+        if (try cachedGenerationCurrent(io, allocator, cached, &config, store, data_dir)) {
+            return searchLoaded(io, allocator, &cached.loaded, task, k, elapsedNs(load_started), true);
+        }
+    }
+
+    const replacement = try loadValidatedGeneration(io, cache.allocator, allocator, &config, explorer, store, project_root, data_dir);
+    if (cache.cached) |*old| old.loaded.deinit();
+    cache.cached = replacement;
+    return searchLoaded(io, allocator, &cache.cached.?.loaded, task, k, elapsedNs(load_started), false);
+}
+
+pub fn search(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    explorer: *Explorer,
+    store: *Store,
+    project_root: []const u8,
+    data_dir: []const u8,
+    task: []const u8,
+    k: usize,
+) !SearchOutput {
+    const config = semantic.Config.fromEnv();
+    try config.validate();
+    const load_started = cio.nanoTimestamp();
+    var loaded = try loadMetadata(io, allocator, data_dir);
+    defer loaded.deinit();
+
+    try validateLoadedConfig(&config, &loaded);
+    const current_head = try git_mod.getGitHead(project_root, allocator);
+    if (!headsEqual(current_head, loaded.git_head)) return error.StaleAnnGitHead;
+    if (try repositoryFingerprint(explorer, store, allocator) != loaded.manifest) return error.StaleAnnManifest;
+    // Metadata is attacker-controlled local input. Validate the entire mapping
+    // while the index is still empty so a failure remains transactional and no
+    // forged line can reach rendering arithmetic.
+    try validateRecordLineRanges(explorer, loaded.records);
+    try loaded.loadGraph();
+    const load_ns = elapsedNs(load_started);
+    return searchLoaded(io, allocator, &loaded, task, k, load_ns, false);
 }
 
 test "semantic ANN sidecar accepts the CodeDB Qwen 512D mapping out of the box" {
@@ -1271,6 +1456,94 @@ test "semantic ANN rejects stale content before mmaping the graph" {
         error.StaleAnnManifest,
         search(io, testing.allocator, &explorer, &store, dir_path, dir_path, "find alpha implementation", 5),
     );
+}
+
+test "semantic ANN warm generation invalidates on repository sequence and sidecar identity" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "src");
+    var source_file = try tmp.dir.createFile(io, "src/a.zig", .{});
+    const content = "pub fn alpha() void {}\n";
+    try source_file.writeStreamingAll(io, content);
+    source_file.close(io);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = path_buf[0..try tmp.dir.realPathFile(io, ".", &path_buf)];
+    var explorer = Explorer.init(testing.allocator, 1024 * 1024);
+    defer explorer.deinit();
+    try explorer.setRoot(io, dir_path);
+    try explorer.indexFile("src/a.zig", content);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    _ = try store.recordSnapshot("src/a.zig", content.len, std.hash.Wyhash.hash(0, content));
+
+    const config = semantic.Config.fromEnv();
+    try config.validate();
+    const calibration = try testing.allocator.alloc(f32, config.dimensions);
+    defer testing.allocator.free(calibration);
+    @memset(calibration, 0);
+    calibration[0] = 1;
+    var source = ann.Index.init(testing.allocator, config.dimensions, .{ .seed = 41 });
+    defer source.deinit();
+    _ = try source.insert(calibration);
+    const slab_name = "semantic-chunks-v3-ca-ce.hmls";
+    const slab_path = try slabPath(testing.allocator, dir_path, slab_name);
+    defer testing.allocator.free(slab_path);
+    try source.writeSlabs(slab_path);
+    const manifest = try repositoryFingerprint(&explorer, &store, testing.allocator);
+    const current_head = try git_mod.getGitHead(dir_path, testing.allocator);
+    _ = try writeMetadata(
+        io,
+        testing.allocator,
+        dir_path,
+        config.model,
+        config.dimensions,
+        manifest,
+        config.vectorSpaceId(),
+        calibration,
+        current_head,
+        slab_name,
+        &.{.{ .path = "src/a.zig", .line_start = 1, .line_end = 1 }},
+    );
+
+    const cached = try loadValidatedGeneration(
+        io,
+        testing.allocator,
+        testing.allocator,
+        &config,
+        &explorer,
+        &store,
+        dir_path,
+        dir_path,
+    );
+    var cache = SearchCache.init(testing.allocator);
+    defer cache.deinit();
+    cache.cached = cached;
+    try testing.expect(try cachedGenerationCurrent(io, testing.allocator, &cache.cached.?, &config, &store, dir_path));
+
+    // Even a content-equivalent Store update must force full freshness
+    // revalidation before this generation can be reused.
+    _ = try store.recordSnapshot("src/a.zig", content.len, std.hash.Wyhash.hash(0, content));
+    try testing.expect(!try cachedGenerationCurrent(io, testing.allocator, &cache.cached.?, &config, &store, dir_path));
+
+    cache.cached.?.store_seq = store.currentSeq();
+    const metadata_path = try sidecarPath(testing.allocator, dir_path);
+    defer testing.allocator.free(metadata_path);
+    var metadata_file = try std.Io.Dir.cwd().openFile(io, metadata_path, .{ .mode = .read_write });
+    defer metadata_file.close(io);
+    try metadata_file.writePositionalAll(io, "X", 0);
+    try metadata_file.sync(io);
+    try testing.expect(!try cachedGenerationCurrent(io, testing.allocator, &cache.cached.?, &config, &store, dir_path));
+    try testing.expectError(
+        error.InvalidAnnSidecar,
+        searchCached(io, testing.allocator, &cache, &explorer, &store, dir_path, dir_path, "find alpha", 1),
+    );
+    // Failed replacement is transactional: the previously validated mapping
+    // remains owned and can be retired safely on cache destruction.
+    try testing.expect(cache.cached != null);
+    try testing.expect(cache.cached.?.loaded.index.isMmapBacked());
 }
 
 test "semantic build live fingerprint catches unreconciled repository edits" {
