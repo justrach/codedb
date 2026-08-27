@@ -108,11 +108,14 @@ pub fn writeSnapshot(
     const tmp_name = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ output_name, rand_suffix });
     defer allocator.free(tmp_name);
 
-    var file = try output_dir.createFile(io, tmp_name, .{ .permissions = privateFilePermissions() });
-    errdefer {
-        file.close(io);
-        output_dir.deleteFile(io, tmp_name) catch {};
-    }
+    var file = try output_dir.createFile(io, tmp_name, .{
+        .exclusive = true,
+        .permissions = privateFilePermissions(),
+        .resolve_beneath = true,
+    });
+    var file_open = true;
+    defer if (file_open) file.close(io);
+    errdefer output_dir.deleteFile(io, tmp_name) catch {};
 
     var sections: std.ArrayList(SectionEntry) = .empty;
     defer sections.deinit(allocator);
@@ -448,7 +451,7 @@ pub fn writeSnapshot(
     try fw.flush();
     try file.sync(io);
     file.close(io);
-    file = undefined;
+    file_open = false;
     output_dir.rename(tmp_name, output_dir, output_name, io) catch |err| {
         // If rename fails (e.g. output_path is a directory), clean up tmp
         output_dir.deleteFile(io, tmp_name) catch {};
@@ -1616,25 +1619,114 @@ pub fn writeSnapshotDual(
     // keep the secondary crash-safe. Sharing one indexed_at/git_head between
     // the two copies is more correct than the old double-serialize, which
     // could capture different values.
-    copyToProjectCache(io, explorer, root_path, output_path, allocator) catch {};
+    try copyToProjectCache(io, explorer, root_path, output_path, allocator);
+}
+
+fn writePrivateFileAtomic(io: std.Io, dir: std.Io.Dir, name: []const u8, data: []const u8, allocator: std.mem.Allocator) !void {
+    const tmp = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ name, cio.randU64() });
+    defer allocator.free(tmp);
+    errdefer dir.deleteFile(io, tmp) catch {};
+
+    var file = try dir.createFile(io, tmp, .{
+        .exclusive = true,
+        .permissions = privateFilePermissions(),
+        .resolve_beneath = true,
+    });
+    var file_open = true;
+    defer if (file_open) file.close(io);
+    try file.writeStreamingAll(io, data);
+    try file.sync(io);
+    file.close(io);
+    file_open = false;
+    try dir.rename(tmp, dir, name, io);
+}
+
+fn copyOpenFileAtomic(io: std.Io, source: std.Io.File, dest_dir: std.Io.Dir, dest_name: []const u8, allocator: std.mem.Allocator) !void {
+    const tmp = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ dest_name, cio.randU64() });
+    defer allocator.free(tmp);
+    errdefer dest_dir.deleteFile(io, tmp) catch {};
+
+    var dest = try dest_dir.createFile(io, tmp, .{
+        .exclusive = true,
+        .permissions = privateFilePermissions(),
+        .resolve_beneath = true,
+    });
+    var dest_open = true;
+    defer if (dest_open) dest.close(io);
+
+    var offset: u64 = 0;
+    var buffer: [64 * 1024]u8 = undefined;
+    while (true) {
+        const count = try source.readPositionalAll(io, &buffer, offset);
+        if (count == 0) break;
+        try dest.writeStreamingAll(io, buffer[0..count]);
+        offset += count;
+        if (count < buffer.len) break;
+    }
+    try dest.sync(io);
+    dest.close(io);
+    dest_open = false;
+    try dest_dir.rename(tmp, dest_dir, dest_name, io);
+}
+
+fn openRegularFileNoFollow(io: std.Io, dir: std.Io.Dir, name: []const u8) !std.Io.File {
+    const source = try dir.openFile(io, name, .{
+        .allow_directory = false,
+        .follow_symlinks = false,
+        .resolve_beneath = true,
+    });
+    errdefer source.close(io);
+    const source_stat = try source.stat(io);
+    if (source_stat.kind != .file) return error.InvalidSnapshotSource;
+    return source;
+}
+
+test "snapshot cache source does not follow symlinks" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const testing = std.testing;
+    const test_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(test_io, .{ .sub_path = "snapshot", .data = "snapshot bytes" });
+    try tmp.dir.symLink(test_io, "snapshot", "snapshot-link", .{});
+
+    if (openRegularFileNoFollow(test_io, tmp.dir, "snapshot-link")) |file| {
+        file.close(test_io);
+        return error.TestExpectedError;
+    } else |_| {}
+}
+
+test "snapshot cache copy stays pinned to the opened source inode" {
+    const testing = std.testing;
+    const test_io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(test_io, .{ .sub_path = "snapshot", .data = "first generation" });
+
+    const source = try openRegularFileNoFollow(test_io, tmp.dir, "snapshot");
+    defer source.close(test_io);
+    try tmp.dir.rename("snapshot", tmp.dir, "snapshot.old", test_io);
+    try tmp.dir.writeFile(test_io, .{ .sub_path = "snapshot", .data = "replacement generation" });
+
+    try copyOpenFileAtomic(test_io, source, tmp.dir, "copied", testing.allocator);
+    const copied = try tmp.dir.readFileAlloc(test_io, "copied", testing.allocator, .limited(1024));
+    defer testing.allocator.free(copied);
+    try testing.expectEqualStrings("first generation", copied);
 }
 
 fn copyToProjectCache(io: std.Io, explorer: *Explorer, root_path: []const u8, primary_path: []const u8, allocator: std.mem.Allocator) !void {
     const canonical_root = explorer.root_path orelse root_path;
     const hash = std.hash.Wyhash.hash(0, canonical_root);
-    const home_raw = cio.homeDir() orelse return;
-    const home = allocator.dupe(u8, home_raw) catch return;
+    const home_raw = cio.homeDir() orelse return error.HomeDirectoryUnavailable;
+    const home = try allocator.dupe(u8, home_raw);
     defer allocator.free(home);
-    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch return;
+    const dir_path = try std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash });
     defer allocator.free(dir_path);
-    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, dir_path);
     var central_dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{ .follow_symlinks = false });
     defer central_dir.close(io);
 
-    var f = try central_dir.createFile(io, "project.txt", .{ .truncate = true, .permissions = privateFilePermissions() });
-    f.writeStreamingAll(io, canonical_root) catch {};
-    f.sync(io) catch {};
-    f.close(io);
+    try writePrivateFileAtomic(io, central_dir, "project.txt", canonical_root, allocator);
 
     const sep = std.mem.lastIndexOfScalar(u8, primary_path, '/');
     const source_parent = if (sep) |s| if (s == 0) "/" else primary_path[0..s] else ".";
@@ -1649,14 +1741,9 @@ fn copyToProjectCache(io: std.Io, explorer: *Explorer, root_path: []const u8, pr
     };
     defer if (owned_source_dir) |dir| dir.close(io);
 
-    const tmp = try std.fmt.allocPrint(allocator, "codedb.snapshot.{x}.tmp", .{cio.randU64()});
-    defer allocator.free(tmp);
-    errdefer central_dir.deleteFile(io, tmp) catch {};
-    try std.Io.Dir.copyFile(source_dir, source_name, central_dir, tmp, io, .{});
-    const copied = try central_dir.openFile(io, tmp, .{ .mode = .read_write, .follow_symlinks = false });
-    copied.sync(io) catch {};
-    copied.close(io);
-    try central_dir.rename(tmp, central_dir, "codedb.snapshot", io);
+    const source = try openRegularFileNoFollow(io, source_dir, source_name);
+    defer source.close(io);
+    try copyOpenFileAtomic(io, source, central_dir, "codedb.snapshot", allocator);
 }
 
 pub fn writeProjectCacheSnapshot(
@@ -1666,21 +1753,18 @@ pub fn writeProjectCacheSnapshot(
     allocator: std.mem.Allocator,
 ) !void {
     const hash = std.hash.Wyhash.hash(0, root_path);
-    const home_raw = cio.homeDir() orelse return;
-    const home = allocator.dupe(u8, home_raw) catch return;
+    const home_raw = cio.homeDir() orelse return error.HomeDirectoryUnavailable;
+    const home = try allocator.dupe(u8, home_raw);
     defer allocator.free(home);
-    const secondary = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash }) catch return;
+    const secondary = try std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}/codedb.snapshot", .{ home, hash });
     defer allocator.free(secondary);
 
-    const dir_path = std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash }) catch return;
+    const dir_path = try std.fmt.allocPrint(allocator, "{s}/.codedb/projects/{x}", .{ home, hash });
     defer allocator.free(dir_path);
-    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
-
-    const proj_txt = std.fmt.allocPrint(allocator, "{s}/project.txt", .{dir_path}) catch return;
-    defer allocator.free(proj_txt);
-    var f = try std.Io.Dir.cwd().createFile(io, proj_txt, .{ .truncate = true });
-    f.writeStreamingAll(io, root_path) catch {};
-    f.close(io);
+    try std.Io.Dir.cwd().createDirPath(io, dir_path);
+    var central_dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{ .follow_symlinks = false });
+    defer central_dir.close(io);
+    try writePrivateFileAtomic(io, central_dir, "project.txt", root_path, allocator);
 
     try writeSnapshot(io, explorer, root_path, secondary, allocator);
 }
