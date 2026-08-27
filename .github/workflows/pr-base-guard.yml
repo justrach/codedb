@@ -6,7 +6,9 @@ permissions:
   pull-requests: write
 jobs:
   guard:
-    if: github.event.pull_request.base.ref == 'main'
+    # Feature work lands on the active release branch, but the release branch
+    # itself must be allowed to merge back to main.
+    if: github.event.pull_request.base.ref == 'main' && !startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v9
