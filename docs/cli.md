@@ -101,8 +101,10 @@ mmap slab under codedb's local per-project data directory (0700/0600 on POSIX).
 Queries verify model/vector-space identity and repository freshness before
 mmap. Metadata heap use is capped at 64 MiB, graph validation at 128 MiB, and
 the vector slab stays demand-paged instead of being copied into RSS.
-The default hosted 0.6B/512-D
-lane is free and needs no token. Every cloud-bound path is rechecked against
+The default hosted 0.6B/512-D lane is free and needs no token or setup. CodeDB
+automatically creates a local Ed25519 installation key, enrolls its public key,
+renews the server-signed certificate, and signs every request. The private seed
+stays in `~/.codedb/credentials.json` (0600 on POSIX). Every cloud-bound path is rechecked against
 the sensitive-file denylist; `.env`, `.env.*`, `.envrc`, credentials, private keys, and unsafe
 paths cannot enter a batch even from a stale index.
 
@@ -129,7 +131,7 @@ codedb-cli stop                       # stop daemon
 | `CODEDB_EMBEDDINGS_URL` | `https://embeddings.wiki.codes/v1/codedb/embeddings` | Free bounded hosted lane; may be overridden with another HTTPS endpoint |
 | `CODEDB_EMBEDDINGS_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | OpenAI-compatible embedding model name |
 | `CODEDB_EMBEDDINGS_DIMENSIONS` | `512` | Requested embedding dimensions (64-4096) |
-| `CODEDB_EMBEDDINGS_TOKEN` | unset | Optional bearer token for protected/custom endpoints |
+| `CODEDB_EMBEDDINGS_TOKEN` | unset | Optional legacy bearer token for protected/custom endpoints; the hosted lane enrolls automatically |
 | `CODEDB_EMBEDDINGS_TIMEOUT_MS` | `15000` | Per-request deadline in milliseconds (10-120000) |
 | `CODEDB_SEMANTIC_INDEX_CONCURRENCY` | `4` | Parallel 25-item index batches (clamped to 1-8) |
 

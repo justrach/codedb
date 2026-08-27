@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Zero-touch, device-bound hosted embeddings.** CodeDB now creates a local
+  Ed25519 installation key on first hosted semantic use, enrolls its public key,
+  verifies the edge's pinned server-signed certificate, and signs the method,
+  path, body digest, timestamp, and nonce of every request. Credentials renew
+  automatically and are written atomically to `~/.codedb/credentials.json`
+  with mode `0600` on POSIX. Explicit bearer tokens remain available for custom
+  endpoints and the hosted lane still fails safely to local retrieval.
+
 ## 0.2.5843 - 2026-08-22
 
 - **readOnlyHint on every read-only tool** (#699). All read-only entries in
