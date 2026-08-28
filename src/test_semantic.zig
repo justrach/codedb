@@ -202,6 +202,70 @@ test "semantic: parses raw vectors in response index order" {
     try testing.expectEqualSlices(f32, &.{ 1, 0, 0, 1 }, vectors);
 }
 
+test "semantic: decodes negotiated little-endian base64 float16 vectors" {
+    const vectors = try semantic.vectorsFromResponse(
+        testing.allocator,
+        \\{"encoding_format":"base64-f16","data":[
+        \\  {"index":1,"embedding":"ADgAwA=="},
+        \\  {"index":0,"embedding":"ADwAAA=="}
+        \\]}
+    ,
+        2,
+        2,
+    );
+    defer testing.allocator.free(vectors);
+    try testing.expectEqualSlices(f32, &.{ 1, 0, 0.5, -2 }, vectors);
+}
+
+test "semantic: float16 and JSON transports preserve retrieval ordering" {
+    const legacy =
+        \\{"data":[
+        \\  {"index":0,"embedding":[1,0]},
+        \\  {"index":1,"embedding":[0.75,0.25]},
+        \\  {"index":2,"embedding":[0,1]}
+        \\]}
+    ;
+    const compact =
+        \\{"encoding_format":"base64-f16","data":[
+        \\  {"index":2,"embedding":"AAAAPA=="},
+        \\  {"index":0,"embedding":"ADwAAA=="},
+        \\  {"index":1,"embedding":"ADoANA=="}
+        \\]}
+    ;
+    const legacy_scores = try semantic.scoresFromResponse(testing.allocator, legacy, 2, 2);
+    defer testing.allocator.free(legacy_scores);
+    const compact_scores = try semantic.scoresFromResponse(testing.allocator, compact, 2, 2);
+    defer testing.allocator.free(compact_scores);
+    try testing.expect(legacy_scores[0] > legacy_scores[1]);
+    try testing.expect(compact_scores[0] > compact_scores[1]);
+    try testing.expectApproxEqAbs(legacy_scores[0], compact_scores[0], 0.001);
+    try testing.expectApproxEqAbs(legacy_scores[1], compact_scores[1], 0.001);
+}
+
+test "semantic: compact decoder rejects malformed length and non-finite values" {
+    try testing.expectError(error.InvalidEmbeddingDimensions, semantic.vectorsFromResponse(
+        testing.allocator,
+        \\{"encoding_format":"base64-f16","data":[{"index":0,"embedding":"AAA="}]}
+    ,
+        1,
+        2,
+    ));
+    try testing.expectError(error.InvalidEmbeddingNumber, semantic.vectorsFromResponse(
+        testing.allocator,
+        \\{"encoding_format":"base64-f16","data":[{"index":0,"embedding":"AH4="}]}
+    ,
+        1,
+        1,
+    ));
+    try testing.expectError(error.InvalidEmbeddingResponse, semantic.vectorsFromResponse(
+        testing.allocator,
+        \\{"encoding_format":"float","data":[{"index":0,"embedding":"ADw="}]}
+    ,
+        1,
+        1,
+    ));
+}
+
 test "semantic: advisory fusion keeps lexical channel dominant" {
     const best_lexical_worst_semantic = semantic.advisoryRrfScore(0, 23);
     const second_lexical_best_semantic = semantic.advisoryRrfScore(1, 0);
@@ -366,6 +430,7 @@ test "semantic: endpoint override batches 25 inputs with auth and validates prov
     defer parsed.deinit();
     try testing.expectEqualStrings("mock-model", parsed.value.object.get("model").?.string);
     try testing.expectEqual(@as(usize, 25), parsed.value.object.get("input").?.array.items.len);
+    try testing.expectEqualStrings("float", parsed.value.object.get("encoding_format").?.string);
 }
 
 test "semantic: provider model mismatch fails closed" {
