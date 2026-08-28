@@ -3862,7 +3862,14 @@ fn handleContext(
     };
     var by_file = std.StringHashMap(PerFile).init(A);
 
-    const SymRef = struct { kw: []const u8, kind: []const u8, path: []const u8, line: u32, line_end: u32 };
+    const SymRef = struct {
+        kw: []const u8,
+        kind: []const u8,
+        path: []const u8,
+        line: u32,
+        line_end: u32,
+        focused: bool = false,
+    };
     var sym_refs: std.ArrayList(SymRef) = .empty;
     var seen_syms = std.StringHashMap(void).init(A);
     var caller_evidence: std.ArrayList(ContextEvidenceItem) = .empty;
@@ -3870,11 +3877,17 @@ fn handleContext(
     var callee_evidence: std.ArrayList(ContextEvidenceItem) = .empty;
 
     for (candidates.items) |kw| {
-        // Symbol definitions (best-effort; ignore failures).
-        if (explorer.findAllSymbols(kw, A)) |defs| {
-            var accepted: usize = 0;
+        // Symbol definitions (best-effort; ignore failures). Context is a
+        // navigation surface, so select before the per-keyword cap using the
+        // same production-path priority as codedb_explain/codedb_find. That
+        // policy also suppresses import/comment rows whenever a real
+        // definition of this exact name exists.
+        if (explorer.searchSymbols(.{
+            .name = kw,
+            .max_results = 3,
+            .rank_policy = .navigation,
+        }, A)) |defs| {
             for (defs) |d| {
-                if (accepted >= 3) break;
                 if (architecture_intent and isLowSignalArchitecturePath(d.path)) continue;
                 const key = std.fmt.allocPrint(A, "{s}|{s}|{d}", .{ d.path, kw, d.symbol.line_start }) catch continue;
                 if (seen_syms.contains(key)) continue;
@@ -3886,7 +3899,6 @@ fn handleContext(
                     .line = d.symbol.line_start,
                     .line_end = d.symbol.line_end,
                 }) catch break;
-                accepted += 1;
             }
         } else |_| {}
 
@@ -3903,6 +3915,47 @@ fn handleContext(
         }
     }
     const pf_kwloop = cio.nanoTimestamp();
+
+    // Focus at most three real definitions across the whole task. Previously
+    // four exact matches disabled every body/caller/callee expansion, so a few
+    // generic words could erase the one useful definition. Imports/comments
+    // are fallback focus only when the task found no real definition at all.
+    var focused_count: usize = 0;
+    for (sym_refs.items) |*sr| {
+        if (focused_count >= 3) break;
+        if (std.mem.eql(u8, sr.kind, "import") or std.mem.eql(u8, sr.kind, "comment_block")) continue;
+        sr.focused = true;
+        focused_count += 1;
+    }
+    if (focused_count == 0) {
+        for (sym_refs.items) |*sr| {
+            if (focused_count >= 3) break;
+            sr.focused = true;
+            focused_count += 1;
+        }
+    }
+
+    // Definition lines are stronger sites than arbitrary early lexical hits.
+    // Seed each focused definition into its file's bounded preview window so
+    // an MCP header comment or a patch repeating the task words cannot consume
+    // all three slots ahead of the actual dispatch body.
+    for (sym_refs.items) |sr| {
+        if (!sr.focused) continue;
+        const gop = by_file.getOrPut(sr.path) catch continue;
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        var already_seeded = false;
+        for (gop.value_ptr.top.items) |hit| {
+            if (hit.line == sr.line) {
+                already_seeded = true;
+                break;
+            }
+        }
+        if (already_seeded) continue;
+        if (gop.value_ptr.top.items.len >= CONTEXT_TOP_LINES_PER_FILE) {
+            _ = gop.value_ptr.top.pop();
+        }
+        gop.value_ptr.top.insert(A, 0, .{ .line = sr.line, .text = sr.kw }) catch {};
+    }
 
     // Rank files by a composite score: raw hits, +bonus when the file
     // contains a symbol definition for any keyword (definition beats usage),
@@ -4296,16 +4349,13 @@ fn handleContext(
         const wsl = cio.listWriter(&sec_syms_lean, A);
         wsr.print("\n## Symbol definitions\n", .{}) catch {};
         wsl.print("\n## Symbol definitions\n", .{}) catch {};
-        // Enhancement (closes T1 flask variance gap): when there are ≤3
-        // symbol definitions, inline each symbol's FULL body (capped at 40
-        // lines) so the agent doesn't need a follow-up `codedb_read`. For wider
-        // result sets this would bloat the response, so cap at 3. The lean
-        // variant (def lines only) is the budget fallback.
-        const inline_bodies = sym_refs.items.len <= 3;
+        // Inline the three focused definitions selected above (each capped at
+        // 40 lines) even when the task also found lower-priority collisions.
+        // The lean variant (declaration lines only) remains the budget fallback.
         for (sym_refs.items) |sr| {
             wsr.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
             wsl.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
-            if (inline_bodies) {
+            if (sr.focused) {
                 const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line +| 39) else sr.line;
                 _ = explorer.appendLineRange(sr.path, sr.line, body_end, "       ", A, &sec_syms_rich) catch false;
             }
@@ -4319,7 +4369,7 @@ fn handleContext(
         // follow-ups. Examples this targets directly:
         //   T1 flask: before_request → preprocess_request in app.py
         //   T2 regex: Builder::build → meta::Regex::new in regex.rs
-        if (inline_bodies) {
+        if (focused_count > 0) {
             const wc = cio.listWriter(&sec_callers, A);
             const wt = cio.listWriter(&sec_tests, A);
             var any_callers = false;
@@ -4334,6 +4384,7 @@ fn handleContext(
             // searches = 180 µs of redundant work on the bench task.
             var searched_kw = std.StringHashMap(void).init(A);
             for (sym_refs.items) |sr| {
+                if (!sr.focused) continue;
                 if (total_shown >= 6) break;
                 if (searched_kw.contains(sr.kw)) continue;
                 searched_kw.put(sr.kw, {}) catch {};
@@ -4411,11 +4462,12 @@ fn handleContext(
         // defined. This is the dependency side of the neighborhood — pairs with
         // the Callers section above so the agent sees both who calls a symbol and
         // what it calls, without a follow-up codedb_outline/read on the callees.
-        if (inline_bodies) {
+        if (focused_count > 0) {
             const wcal = cio.listWriter(&sec_calls, A);
             var any_callees = false;
             var done_sym = std.StringHashMap(void).init(A);
             for (sym_refs.items) |sr| {
+                if (!sr.focused) continue;
                 const sym_key = std.fmt.allocPrint(A, "{s}:{d}", .{ sr.path, sr.line }) catch continue;
                 if (done_sym.contains(sym_key)) continue;
                 done_sym.put(sym_key, {}) catch {};

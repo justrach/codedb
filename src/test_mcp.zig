@@ -2577,6 +2577,92 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
     try testing.expect(std.mem.indexOf(u8, out.items, "ranking") != null);
 }
 
+test "issue-725: codedb_context focuses production definitions and seeds their sites" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
+
+    // The first candidate (MCP) deliberately fills src/mcp.zig's three lexical
+    // preview slots before the later `dispatch` keyword is searched. The exact
+    // task also finds more than three symbol rows, which used to disable every
+    // focused body.
+    try explorer.indexFile("src/mcp.zig",
+        \\// MCP tool registry overview
+        \\// filler
+        \\// MCP project routing notes
+        \\// filler
+        \\// MCP calls and validation notes
+        \\// filler
+        \\// filler
+        \\// filler
+        \\pub fn dispatch() void {
+        \\    const canonical_project_validation = true;
+        \\    _ = canonical_project_validation;
+        \\}
+    );
+    try explorer.indexFile("website/src/dispatch.zig",
+        \\pub fn dispatch() void {
+        \\    const website_dispatch_decoy = true;
+        \\    _ = website_dispatch_decoy;
+        \\}
+    );
+    try explorer.indexFile("src/semantic.zig",
+        \\pub fn validate() void {
+        \\    const provider_validation = true;
+        \\    _ = provider_validation;
+        \\}
+    );
+    try explorer.indexFile("bench/validate.py", "def validate():\n    return 'bench'\n");
+    try explorer.indexFile("experiments/validate.py", "def validate():\n    return 'experiment'\n");
+    try explorer.indexFile("src/test_mcp.zig",
+        \\const dispatch = @import("dispatch_fixture.zig");
+        \\test "one" { const MCP = @import("mcp.zig"); _ = MCP; }
+        \\test "two" { const MCP = @import("mcp.zig"); _ = MCP; }
+        \\test "three" { const MCP = @import("mcp.zig"); _ = MCP; }
+        \\_ = dispatch;
+    );
+    try explorer.indexFile(
+        "patches/696-mcp-list-dir.patch",
+        "PATCH_DECOY MCP dispatch validate project calls MCP dispatch validate project calls\n",
+    );
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"task":"how does MCP tool dispatch validate project paths and route calls?","semantic":"local"}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    const defs_start = std.mem.indexOf(u8, out.items, "## Symbol definitions") orelse return error.TestUnexpectedResult;
+    const files_start = std.mem.indexOfPos(u8, out.items, defs_start, "## Most-relevant files") orelse return error.TestUnexpectedResult;
+    const definitions = out.items[defs_start..files_start];
+    try testing.expect(std.mem.indexOf(u8, definitions, "canonical_project_validation") != null);
+    try testing.expect(std.mem.indexOf(u8, definitions, "dispatch (import)") == null);
+
+    const sites_start = std.mem.indexOfPos(u8, out.items, files_start, "## Top sites") orelse return error.TestUnexpectedResult;
+    const sites = out.items[sites_start..];
+    const canonical_pos = std.mem.indexOf(u8, sites, "canonical_project_validation") orelse return error.TestUnexpectedResult;
+    if (std.mem.indexOf(u8, sites, "website_dispatch_decoy")) |decoy_pos| {
+        try testing.expect(canonical_pos < decoy_pos);
+    }
+    if (std.mem.indexOf(u8, sites, "PATCH_DECOY")) |patch_pos| {
+        try testing.expect(canonical_pos < patch_pos);
+    }
+}
+
 test "issue-718: architecture context prefers canonical docs and entrypoints" {
     try testing.expect(mcp_mod.isArchitectureOverviewTask("overview of the project architecture and source layout"));
     try testing.expect(!mcp_mod.isArchitectureOverviewTask("fix architecturePathPriority"));
