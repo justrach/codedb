@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-## 0.2.5847 - 2026-08-28
-
 - **Managed semantic implementation stays behind the interface.** Context
   Markdown, structured retrieval provenance, ANN-build output, and current
   documentation no longer expose the hosted provider's model identity. Safety
