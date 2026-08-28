@@ -1401,6 +1401,14 @@ test "semantic ANN replacement removes only the previously referenced slab" {
 }
 
 test "semantic ANN wave uses the public 25-item batch boundary" {
+    // This is the hosted-lane Pareto point measured against the production
+    // TurboAPI/TEI queue. Raising the default to the supported maximum of 8
+    // regressed the 256-chunk end-to-end run from 6.1s to 16.7s. Keep the
+    // override for custom endpoints, but make an accidental default drift a
+    // release-gating test failure.
+    try std.testing.expectEqual(@as(usize, 4), default_parallel_batches);
+    try std.testing.expectEqual(@as(usize, 25), semantic.max_index_documents);
+    try std.testing.expectEqual(@as(usize, 100), default_parallel_batches * semantic.max_index_documents);
     try std.testing.expectEqual(@as(usize, 1), embeddingBatchCount(semantic.max_index_documents));
     try std.testing.expectEqual(@as(usize, 2), embeddingBatchCount(semantic.max_index_documents + 1));
     try std.testing.expectEqual(
