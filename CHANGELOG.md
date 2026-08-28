@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.5847 - 2026-08-28
+
 - **Managed semantic implementation stays behind the interface.** Context
   Markdown, structured retrieval provenance, ANN-build output, and current
   documentation no longer expose the hosted provider's model identity. Safety
@@ -10,6 +12,19 @@
 - **Explicit reindex command.** `codedb [root] reindex` is now the documented
   spelling for a forced filesystem scan, complete local-index rebuild, and live
   daemon refresh. The older `index` spelling remains compatible.
+- **Deterministic symbol navigation and exact call graphs** (#725). Common-name
+  lookup ranks production entrypoints before experiments and generated files,
+  reports honest ambiguity instead of silently taking the first hit, and accepts
+  path scopes for precise callpaths. Zig imports, nested public re-exports,
+  same-file helpers, thread callbacks, Swift bodies, and function-value callback
+  sites now resolve without repository-wide same-name guessing.
+- **Durable reindex and daemon handoff.** A completed reindex atomically updates
+  the authoritative project-cache snapshot and best-effort root mirror. Newly
+  installed clients detect and replace stale CLI daemons on macOS, Linux, and
+  Windows instead of continuing to serve the previous retrieval behavior.
+- **Updated OpenPuffer ANN backend.** The vendored backend includes upstream
+  work through PR #31 plus CodeDB's malformed-sidecar validation, full-width
+  recall, and bounded RSS accounting.
 
 ## 0.2.5846 - 2026-08-28
 
