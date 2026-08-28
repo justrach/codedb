@@ -52,6 +52,8 @@ Memory knobs (same as the binary):
   is int8-only and `vector()` / `vectorConst()` are empty.
 - `index.writeSlabs(path)` then `loaded.loadMmap(path)` demand-pages a snapshot
   (`MAP_PRIVATE` + heap append). `isMmapBacked()` is true after load.
+- mmap persistence is currently POSIX-only; on Windows, `writeSlabs` and
+  `loadMmap` return `error.UnsupportedPlatform` with no silent fallback.
 
 Public surface: `Hnsw`, `Options`, `SearchResult`, and vector helpers
 (`dot`, `cosineDistance`, `l2Norm`, `normalize`, `dotI8`).
