@@ -182,12 +182,21 @@ fn functionValueOnly(raw: []const u8) ?ParsedCallee {
 /// Return the bare or module-qualified function value passed as the second
 /// argument to one exact Zig form: `std.Thread.spawn(config, callback, args)`.
 /// This intentionally does not infer arbitrary expressions or dynamic callbacks.
-fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) ?ParsedCallee {
+const SpawnCallbackParse = struct {
+    callback: ?ParsedCallee = null,
+    /// Last byte inspected. The outer scanner advances here so a malformed
+    /// spawn prefix cannot make every following `(` rescan the same suffix.
+    end: usize,
+};
+
+fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) SpawnCallbackParse {
     var paren_depth: usize = 0;
     var brace_depth: usize = 0;
     var bracket_depth: usize = 0;
     var arg_index: usize = 0;
+    var arg_start = open_paren + 1;
     var second_start: ?usize = null;
+    var second_end: ?usize = null;
     var i = open_paren + 1;
     while (i < body.len) : (i += 1) {
         const c = body[i];
@@ -199,15 +208,18 @@ fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) ?ParsedCallee {
         if (c == '/' and i + 1 < body.len and body[i + 1] == '*') {
             i += 2;
             while (i + 1 < body.len and !(body[i] == '*' and body[i + 1] == '/')) i += 1;
+            if (i + 1 >= body.len) return .{ .end = body.len };
             i += 1;
             continue;
         }
         if (c == '"' or c == '\'') {
+            const quote = c;
             i += 1;
-            while (i < body.len and body[i] != c) {
+            while (i < body.len and body[i] != quote) {
                 if (body[i] == '\\') i += 1;
                 i += 1;
             }
+            if (i >= body.len) return .{ .end = body.len };
             continue;
         }
         switch (c) {
@@ -216,30 +228,40 @@ fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) ?ParsedCallee {
                 if (paren_depth > 0) {
                     paren_depth -= 1;
                 } else {
-                    if (arg_index == 1) return functionValueOnly(body[second_start.?..i]);
-                    return null;
+                    if (brace_depth != 0 or bracket_depth != 0 or arg_index != 2) return .{ .end = i };
+                    if (std.mem.trim(u8, body[arg_start..i], " \t\r\n").len == 0) return .{ .end = i };
+                    const start = second_start orelse return .{ .end = i };
+                    const end = second_end orelse return .{ .end = i };
+                    return .{ .callback = functionValueOnly(body[start..end]), .end = i };
                 }
             },
             '{' => brace_depth += 1,
-            '}' => if (brace_depth > 0) {
+            '}' => {
+                if (brace_depth == 0) return .{ .end = i };
                 brace_depth -= 1;
             },
             '[' => bracket_depth += 1,
-            ']' => if (bracket_depth > 0) {
+            ']' => {
+                if (bracket_depth == 0) return .{ .end = i };
                 bracket_depth -= 1;
             },
             ',' => if (paren_depth == 0 and brace_depth == 0 and bracket_depth == 0) {
+                if (std.mem.trim(u8, body[arg_start..i], " \t\r\n").len == 0) return .{ .end = i };
                 if (arg_index == 0) {
                     second_start = i + 1;
                     arg_index = 1;
                 } else if (arg_index == 1) {
-                    return functionValueOnly(body[second_start.?..i]);
+                    second_end = i;
+                    arg_index = 2;
+                } else {
+                    return .{ .end = i };
                 }
+                arg_start = i + 1;
             },
             else => {},
         }
     }
-    return null;
+    return .{ .end = body.len };
 }
 
 pub fn extractZigThreadSpawnCallbacks(allocator: std.mem.Allocator, body: []const u8) ![]Callee {
@@ -275,7 +297,9 @@ pub fn extractZigThreadSpawnCallbacks(allocator: std.mem.Allocator, body: []cons
         if (!std.mem.eql(u8, parsed.callee.name, "spawn")) continue;
         const qualifier = parsed.callee.qualifier orelse continue;
         if (!std.mem.eql(u8, qualifier, "std.Thread")) continue;
-        const callback = zigThreadSpawnCallback(body, i) orelse continue;
+        const parsed_callback = zigThreadSpawnCallback(body, i);
+        i = parsed_callback.end;
+        const callback = parsed_callback.callback orelse continue;
         const g = try seen.getOrPut(callback.key);
         if (!g.found_existing) try out.append(allocator, callback.callee);
     }

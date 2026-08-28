@@ -16,9 +16,9 @@ package files and MIT license.
   Zig 0.17 fix is intentionally absent because codedb vendors no server code.
 - POSIX HMLS persistence and macOS mmap coverage are synced through upstream
   [PR #31](https://github.com/justrach/openpuffer/pull/31), merged at
-  `b76cbfdafbad152a460dc956ed7482140ddacc6c`. The 1536D-only traversal prefix
-  remains disabled for codedb's 512D profile, as enforced by the upstream
-  dimension guard and recall regression.
+  `b76cbfdafbad152a460dc956ed7482140ddacc6c`. Upstream's model-specific 1536D
+  traversal prefix is disabled in this vendor because codedb accepts arbitrary
+  providers at that width; every configured dimension is traversed in full.
 - Included from upstream: `src/lib.zig`, `src/hnsw.zig`, `src/vector.zig`, `src/rss.zig`,
   `build.zig.zon`, `LICENSE`, `README.md`
 - Local adapter: `build.zig` exposes only upstream's `src/lib.zig` module and

@@ -157,6 +157,27 @@ test "issue-725: Zig Thread.spawn callback resolves only within its file" {
     try testing.expectEqual(@as(codegraph.NodeId, 1), edges.items[0].to);
 }
 
+test "issue-725: Zig Thread.spawn callback rejects malformed calls" {
+    const malformed =
+        \\std.Thread.spawn(.{}, onlyTwo)
+        \\std.Thread.spawn(.{}, truncated,
+        \\std.Thread.spawn(.{}, fourArgs, .{}, extra)
+        \\std.Thread.spawn(.{}, mismatched, .{])
+        \\std.Thread.spawn(.{}, expression + value, .{})
+        \\std.Thread.spawn(.{}, "unterminated, .{})
+    ;
+    const callbacks = try codegraph.extractZigThreadSpawnCallbacks(testing.allocator, malformed);
+    defer testing.allocator.free(callbacks);
+    try testing.expectEqual(@as(usize, 0), callbacks.len);
+
+    var stress: std.ArrayList(u8) = .empty;
+    defer stress.deinit(testing.allocator);
+    for (0..256) |_| try stress.appendSlice(testing.allocator, "std.Thread.spawn(");
+    const stress_callbacks = try codegraph.extractZigThreadSpawnCallbacks(testing.allocator, stress.items);
+    defer testing.allocator.free(stress_callbacks);
+    try testing.expectEqual(@as(usize, 0), stress_callbacks.len);
+}
+
 test "issue-725: Zig Thread.spawn callback resolves an imported function value" {
     const imports = [_]codegraph.ImportBinding{
         .{ .alias = "watcher", .target_path = "src/watcher.zig" },

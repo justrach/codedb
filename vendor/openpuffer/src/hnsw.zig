@@ -534,11 +534,12 @@ pub fn Hnsw(comptime D: type) type {
             }
         };
 
-        /// The E037 shortcut was measured only for the fixed 1536-d engine
-        /// profile. Other dimensions must keep their full traversal vector;
-        /// applying it to codedb's 512-d profile reduced recall@24 to 0.7549.
+        /// CodeDB accepts arbitrary embedding providers, so dimension alone
+        /// cannot identify the 1536D distribution used to validate upstream's
+        /// E037 prefix shortcut. Traverse every configured dimension here;
+        /// reranking cannot recover a true neighbor excluded during traversal.
         fn searchPrefix(self: *const Self) usize {
-            return if (self.dim == 1536) 1408 else self.dim;
+            return self.dim;
         }
 
         fn markVisited(visited: *std.DynamicBitSetUnmanaged, alloc: std.mem.Allocator, id: u32) !void {
@@ -2037,7 +2038,7 @@ pub fn Hnsw(comptime D: type) type {
     };
 }
 
-test "search prefix is restricted to its measured 1536-d profile" {
+test "codedb vendor traverses the full width for every embedding provider" {
     const Index = Hnsw(void);
     var codedb = Index.init(std.testing.allocator, 512, .{});
     defer codedb.deinit();
@@ -2048,7 +2049,7 @@ test "search prefix is restricted to its measured 1536-d profile" {
 
     try std.testing.expectEqual(@as(usize, 512), codedb.searchPrefix());
     try std.testing.expectEqual(@as(usize, 768), embedding.searchPrefix());
-    try std.testing.expectEqual(@as(usize, 1408), engine.searchPrefix());
+    try std.testing.expectEqual(@as(usize, 1536), engine.searchPrefix());
 }
 
 test "hnsw finds planted neighbor" {
