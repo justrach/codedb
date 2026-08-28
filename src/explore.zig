@@ -2279,7 +2279,8 @@ pub const Explorer = struct {
             outline.language == .javascript or outline.language == .rust or
             outline.language == .go_lang or outline.language == .php or
             outline.language == .dart or outline.language == .java or
-            outline.language == .kotlin or outline.language == .svelte or
+            outline.language == .kotlin or outline.language == .swift or
+            outline.language == .svelte or
             outline.language == .vue or outline.language == .astro or
             outline.language == .css or outline.language == .scss or
             outline.language == .protobuf or outline.language == .mlir or
@@ -7244,7 +7245,49 @@ pub const Explorer = struct {
             try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
         } else if (extractIdentAfterKeyword(line, "func ")) |name| {
             try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+        } else if (swiftSpecialMethodName(line)) |name| {
+            try appendOutlineSymbol(a, outline, name, .method, line_num, line);
         }
+    }
+
+    /// Swift initializers are declarations, but unlike ordinary methods their
+    /// identifier is the language keyword itself. Keep them in the outline as
+    /// methods so constructor lookups and call-graph bodies behave like other
+    /// member functions. The prefix guard rejects expression uses such as
+    /// `super.init()` and `value = Type.init`.
+    fn swiftSpecialMethodName(line: []const u8) ?[]const u8 {
+        const names = [_][]const u8{ "deinit", "init" };
+        for (names) |name| {
+            var search_from: usize = 0;
+            while (std.mem.indexOfPos(u8, line, search_from, name)) |pos| {
+                search_from = pos + name.len;
+                if (pos > 0 and isIdentChar(line[pos - 1])) continue;
+                const after_name = pos + name.len;
+                if (after_name < line.len and isIdentChar(line[after_name])) continue;
+                if (!isSwiftDeclarationPrefix(line[0..pos])) continue;
+
+                var cursor = after_name;
+                if (std.mem.eql(u8, name, "init") and cursor < line.len and
+                    (line[cursor] == '?' or line[cursor] == '!')) cursor += 1;
+                while (cursor < line.len and (line[cursor] == ' ' or line[cursor] == '\t')) cursor += 1;
+                if (std.mem.eql(u8, name, "init")) {
+                    if (cursor < line.len and line[cursor] == '(') return name;
+                } else if (cursor >= line.len or line[cursor] == '{') {
+                    return name;
+                }
+            }
+        }
+        return null;
+    }
+
+    fn isSwiftDeclarationPrefix(prefix: []const u8) bool {
+        for (prefix) |ch| {
+            // Modifiers and attributes are fine; punctuation that starts an
+            // expression is not. This deliberately remains permissive for
+            // future Swift modifiers.
+            if (ch == '.' or ch == '=' or ch == '(' or ch == ')' or ch == ';') return false;
+        }
+        return true;
     }
 
     fn parseComponentLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {

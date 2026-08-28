@@ -2680,7 +2680,9 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
         // A whole-word match that only lands inside a literal or comment is a
         // mention, not an invocation — a `("name", "file")` table row, a
         // `test "…name…" {` declaration, or `init(); // then name() …`. (#682)
-        if (!hasWholeWordMatchInCode(r.line_text, name, lang)) continue;
+        // A whole-word mention is not enough: declarations, local variables,
+        // and Swift parameter labels are all code, yet none invokes the name.
+        if (!hasCallSiteInCode(r.line_text, name, lang)) continue;
         kept.append(alloc, r_idx) catch {};
     }
 
@@ -2777,17 +2779,18 @@ fn isIdentChar(c: u8) bool {
         c == '_';
 }
 
-/// Returns true when `needle` occurs as a whole-word identifier in code rather
-/// than in a string, raw/template literal, or comment. This is deliberately a
-/// line-local lexical scan: it handles complete spans on the current line and
-/// conservatively treats an unclosed block/raw span as consuming the remainder.
-fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explore_mod.Language) bool {
-    return hasWholeWordMatchInCodeDepth(line, needle, language, 0);
+/// Returns true when an identifier occurs as a syntactic invocation rather than
+/// a declaration, variable, parameter label, literal, or comment. This is
+/// deliberately a line-local lexical scan: it handles complete spans on the
+/// current line and conservatively treats an unclosed block/raw span as
+/// consuming the remainder.
+fn hasCallSiteInCode(line: []const u8, needle: []const u8, language: explore_mod.Language) bool {
+    return hasCallSiteInCodeDepth(line, needle, language, 0);
 }
 
 const max_template_nesting = 16;
 
-fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: explore_mod.Language, template_depth: usize) bool {
+fn hasCallSiteInCodeDepth(line: []const u8, needle: []const u8, language: explore_mod.Language, template_depth: usize) bool {
     if (needle.len == 0 or line.len < needle.len) return false;
     const markers = lineCommentMarkers(language);
     var i: usize = 0;
@@ -2810,7 +2813,7 @@ fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: 
         if (line[i] == '`' and hasBacktickLiterals(language)) {
             if (language == .r) {
                 if (stringLiteralEnd(line, i)) |end| {
-                    if (std.mem.eql(u8, line[i + 1 .. end], needle)) return true;
+                    if (std.mem.eql(u8, line[i + 1 .. end], needle) and isCallSyntaxAfter(line, i, end + 1, language)) return true;
                     i = end + 1;
                     continue;
                 }
@@ -2857,11 +2860,42 @@ fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: 
             const before_ok = i == 0 or !isIdentChar(line[i - 1]);
             const after = i + needle.len;
             const after_ok = after >= line.len or !isIdentChar(line[after]);
-            if (before_ok and after_ok) return true;
+            if (before_ok and after_ok and isCallSyntaxAfter(line, i, after, language)) return true;
         }
         i += 1;
     }
     return false;
+}
+
+fn isCallSyntaxAfter(line: []const u8, start: usize, after_name: usize, language: explore_mod.Language) bool {
+    var cursor = after_name;
+    while (cursor < line.len and (line[cursor] == ' ' or line[cursor] == '\t')) cursor += 1;
+    if (cursor < line.len and line[cursor] == '(') return true;
+
+    if (language == .swift) {
+        // work?(), work!(), and withAnimation { ... } are valid Swift calls.
+        // A parameter label (since start:) and local let start do not match.
+        if (cursor < line.len and (line[cursor] == '?' or line[cursor] == '!')) {
+            cursor += 1;
+            while (cursor < line.len and (line[cursor] == ' ' or line[cursor] == '\t')) cursor += 1;
+            if (cursor < line.len and line[cursor] == '(') return true;
+        }
+        if (cursor < line.len and line[cursor] == '{') return true;
+    }
+
+    return language == .shell and isShellCommandInvocation(line, start, after_name);
+}
+
+fn isShellCommandInvocation(line: []const u8, start: usize, after_name: usize) bool {
+    // Shell functions may be called without parentheses, but only at command
+    // position: start of line or immediately after a shell command separator.
+    // This excludes echo helper, assignments, and ordinary word uses.
+    var before = start;
+    while (before > 0 and (line[before - 1] == ' ' or line[before - 1] == '\t')) before -= 1;
+    if (before > 0 and std.mem.indexOfScalar(u8, ";|&(", line[before - 1]) == null) return false;
+    if (after_name >= line.len) return true;
+    return line[after_name] == ' ' or line[after_name] == '\t' or
+        std.mem.indexOfScalar(u8, ";|&", line[after_name]) != null;
 }
 
 fn lineCommentMarkers(language: explore_mod.Language) []const []const u8 {
@@ -2947,7 +2981,7 @@ fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, langua
             const expression_start = i + 2;
             const expression_end = templateExpressionEnd(line, expression_start, language);
             const end = expression_end orelse line.len;
-            if (hasWholeWordMatchInCodeDepth(line[expression_start..end], needle, language, template_depth + 1)) {
+            if (hasCallSiteInCodeDepth(line[expression_start..end], needle, language, template_depth + 1)) {
                 return .{ .end = expression_end, .matched = true };
             }
             if (expression_end) |close| {

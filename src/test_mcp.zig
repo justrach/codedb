@@ -4529,7 +4529,7 @@ test "issue-682: codedb_callers keeps a call after a string containing the comme
     defer out.deinit(testing.allocator);
 
     try renderCallersFixture(arena.allocator(), &.{
-        .{ "url.zig", "pub fn callerA() void {\n    fetch(\"https://x\", renderX);\n}\n" },
+        .{ "url.zig", "pub fn callerA() void {\n    fetch(\"https://x\", renderX());\n}\n" },
     }, "renderX", &out);
 
     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
@@ -4643,9 +4643,39 @@ test "issue: codedb_callers keeps a symbol used outside a string on a line that 
     defer out.deinit(testing.allocator);
 
     try renderCallersFixture(arena.allocator(), &.{
-        .{ "mixed.zig", "pub fn callerA() void {\n    foo(\"msg\", renderX);\n}\n" },
+        .{ "mixed.zig", "pub fn callerA() void {\n    foo(\"msg\", renderX());\n}\n" },
     }, "renderX", &out);
 
     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "mixed.zig:2") != null);
+}
+
+test "OpenWispr: callers excludes Swift declarations, locals, and parameter labels" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "definition.swift", "func start() {}\n" },
+        .{
+            "calls.swift",
+            \\func caller(since start: Date) {
+            \\    let start = Date()
+            \\    let snapshot = start
+            \\    start()
+            \\    start?()
+            \\    start {
+            \\    }
+            \\}
+        },
+    }, "start", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "3 call sites for 'start'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:1") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:2") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:3") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:4") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:5") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:6") != null);
 }

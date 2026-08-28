@@ -3091,6 +3091,33 @@ test "issue-656: call graph is stale and dangling after a file edit" {
     try testing.expect(after != null);
 }
 
+test "Swift multiline bodies and initializers participate in call paths" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+
+    try explorer_inst.indexFile("Sources/App/Flow.swift",
+        \\final class Flow {
+        \\    init(
+        \\        enabled: Bool
+        \\    ) {
+        \\        if enabled {
+        \\            configure()
+        \\        }
+        \\    }
+        \\
+        \\    func configure() {
+        \\    }
+        \\}
+    );
+
+    const path = (try explorer_inst.findCallPath("init", "configure", testing.allocator, 2)) orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(path);
+    try testing.expectEqual(@as(usize, 2), path.len);
+    try testing.expectEqualStrings("init", path[0].name);
+    try testing.expectEqualStrings("configure", path[1].name);
+}
+
 test "issue-718: call paths do not cross languages through name collisions" {
     var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_inst.deinit();
