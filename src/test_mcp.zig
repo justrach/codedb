@@ -24,6 +24,7 @@ const TrigramIndex = @import("index.zig").TrigramIndex;
 const SparseNgramIndex = @import("index.zig").SparseNgramIndex;
 const cli_args_mod = @import("cli_args.zig");
 const out_mod = @import("out.zig");
+const sty = @import("style.zig");
 const query_mod = @import("query.zig");
 const cli_proxy_mod = @import("cli_proxy.zig");
 const bootstrap_mod = @import("bootstrap.zig");
@@ -3640,6 +3641,26 @@ test "issue-633: `index` is a recognized command (not a usage/unknown error)" {
     const p2 = main_mod.parsePositional(&[_][]const u8{ "codedb", "/proj", "index" });
     try testing.expectEqualStrings("index", p2.cmd);
     try testing.expectEqualStrings("/proj", p2.root);
+}
+
+test "reindex is public, parses with or without a root, and appears in help" {
+    const implicit = main_mod.parsePositional(&[_][]const u8{ "codedb", "reindex" });
+    try testing.expect(!implicit.usage_exit);
+    try testing.expectEqualStrings("reindex", implicit.cmd);
+    try testing.expectEqualStrings(".", implicit.root);
+
+    const explicit = main_mod.parsePositional(&[_][]const u8{ "codedb", "/proj", "reindex" });
+    try testing.expect(!explicit.usage_exit);
+    try testing.expectEqualStrings("reindex", explicit.cmd);
+    try testing.expectEqualStrings("/proj", explicit.root);
+
+    var sink: std.ArrayList(u8) = .empty;
+    defer sink.deinit(testing.allocator);
+    var out = out_mod.Out{ .file = cio.File.stdout(), .alloc = testing.allocator, .sink = &sink };
+    out_mod.printUsage(&out, sty.off);
+    out.flush();
+    try testing.expect(std.mem.indexOf(u8, sink.items, "reindex") != null);
+    try testing.expect(std.mem.indexOf(u8, sink.items, "force a fresh filesystem scan") != null);
 }
 
 test "issue-632: codedb_read raw mode coverage — full-file byte-exact, default unchanged" {

@@ -252,6 +252,7 @@ backed by api.wiki.codes was removed; DeepWiki replaces that role.)
 | `codedb word <identifier>` | Exact word lookup via inverted index |
 | `codedb read <path>` | Read file contents (supports `-L FROM-TO`, `--compact`) |
 | `codedb hot` | Recently modified files |
+| `codedb reindex` | Force a fresh filesystem scan, rebuild all local indexes, and refresh the live daemon |
 | `codedb snapshot` | Write codedb.snapshot to project root |
 | `codedb serve` | HTTP daemon on :7719 |
 | `codedb mcp [path]` | JSON-RPC/MCP server over stdio |

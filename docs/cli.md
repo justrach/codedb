@@ -73,6 +73,9 @@ codedb-cli [root] <command> [args...]
 The native binary also exposes the task composer directly:
 
 ```bash
+# Force a fresh filesystem scan and rebuild the local indexes
+codedb /path/to/repo reindex
+
 # Default: Pareto-frontier hybrid retrieval with local BM25/symbol first
 codedb /path/to/repo context "find the request authentication path"
 

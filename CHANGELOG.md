@@ -9,6 +9,9 @@
   documentation no longer expose the hosted provider's model identity. Safety
   and performance provenance remains available: bounded document/byte counts,
   vector dimensions, retention, local storage, ANN timing, and failure policy.
+- **Explicit reindex command.** `codedb [root] reindex` is now the documented
+  spelling for a forced filesystem scan, complete local-index rebuild, and live
+  daemon refresh. The older `index` spelling remains compatible.
 
 ## 0.2.5846 - 2026-08-28
 

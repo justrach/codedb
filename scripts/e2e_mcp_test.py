@@ -624,19 +624,19 @@ def run_scenario_5_issue690_live_index_refresh(binary: str, project: str) -> lis
 
             (root / "cli_added.py").write_text("def cli_added():\n    return 'cli_added'\n")
 
-            r = t("CLI index rebuilds the project")
+            r = t("CLI reindex rebuilds the project")
             index_run = subprocess.run(
-                [binary, str(root), "index"],
+                [binary, str(root), "reindex"],
                 capture_output=True,
                 text=True,
                 env={**os.environ, "CODEDB_NO_AUTO_UPDATE": "1", "CODEDB_NO_TELEMETRY": "1"},
             )
-            if index_run.returncode != 0 or "index ready" not in index_run.stdout:
-                r.fail(f"index result: code={index_run.returncode} stdout={index_run.stdout[:160]!r}")
+            if index_run.returncode != 0 or "reindex ready" not in index_run.stdout:
+                r.fail(f"reindex result: code={index_run.returncode} stdout={index_run.stdout[:160]!r}")
                 return results
             r.ok()
 
-            r = t("live MCP sees the file after CLI index")
+            r = t("live MCP sees the file after CLI reindex")
             try:
                 outline_text = tool_text(p.call_tool("codedb_outline", {"path": "cli_added.py"}))
             except BrokenPipeError:
