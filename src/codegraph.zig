@@ -190,9 +190,8 @@ const SpawnCallbackParse = struct {
 };
 
 fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) SpawnCallbackParse {
-    var paren_depth: usize = 0;
-    var brace_depth: usize = 0;
-    var bracket_depth: usize = 0;
+    var closer_stack: [64]u8 = undefined;
+    var closer_len: usize = 0;
     var arg_index: usize = 0;
     var arg_start = open_paren + 1;
     var second_start: ?usize = null;
@@ -223,29 +222,33 @@ fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) SpawnCallbackPars
             continue;
         }
         switch (c) {
-            '(' => paren_depth += 1,
+            '(', '{', '[' => {
+                if (closer_len == closer_stack.len) return .{ .end = i };
+                closer_stack[closer_len] = switch (c) {
+                    '(' => ')',
+                    '{' => '}',
+                    '[' => ']',
+                    else => unreachable,
+                };
+                closer_len += 1;
+            },
             ')' => {
-                if (paren_depth > 0) {
-                    paren_depth -= 1;
+                if (closer_len > 0) {
+                    if (closer_stack[closer_len - 1] != ')') return .{ .end = i };
+                    closer_len -= 1;
                 } else {
-                    if (brace_depth != 0 or bracket_depth != 0 or arg_index != 2) return .{ .end = i };
+                    if (arg_index != 2) return .{ .end = i };
                     if (std.mem.trim(u8, body[arg_start..i], " \t\r\n").len == 0) return .{ .end = i };
                     const start = second_start orelse return .{ .end = i };
                     const end = second_end orelse return .{ .end = i };
                     return .{ .callback = functionValueOnly(body[start..end]), .end = i };
                 }
             },
-            '{' => brace_depth += 1,
-            '}' => {
-                if (brace_depth == 0) return .{ .end = i };
-                brace_depth -= 1;
+            '}', ']' => {
+                if (closer_len == 0 or closer_stack[closer_len - 1] != c) return .{ .end = i };
+                closer_len -= 1;
             },
-            '[' => bracket_depth += 1,
-            ']' => {
-                if (bracket_depth == 0) return .{ .end = i };
-                bracket_depth -= 1;
-            },
-            ',' => if (paren_depth == 0 and brace_depth == 0 and bracket_depth == 0) {
+            ',' => if (closer_len == 0) {
                 if (std.mem.trim(u8, body[arg_start..i], " \t\r\n").len == 0) return .{ .end = i };
                 if (arg_index == 0) {
                     second_start = i + 1;

@@ -163,6 +163,7 @@ test "issue-725: Zig Thread.spawn callback rejects malformed calls" {
         \\std.Thread.spawn(.{}, truncated,
         \\std.Thread.spawn(.{}, fourArgs, .{}, extra)
         \\std.Thread.spawn(.{}, mismatched, .{])
+        \\std.Thread.spawn(([)], crossed, .{})
         \\std.Thread.spawn(.{}, expression + value, .{})
         \\std.Thread.spawn(.{}, "unterminated, .{})
     ;
