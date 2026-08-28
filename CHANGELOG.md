@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.2.5848 - 2026-08-28
+
+- **Production-measured semantic indexing concurrency is release-locked.**
+  Managed indexing continues to send at most 25 chunks per request with four
+  concurrent batches (100 chunks per wave). A release-gating regression test
+  now prevents the default from drifting to the supported eight-batch ceiling:
+  on the 256-chunk hosted-lane hill climb, four completed in 6.1 seconds while
+  eight regressed to 16.7 seconds from queue and network contention. Custom
+  endpoints can still opt into a different value with
+  `CODEDB_SEMANTIC_INDEX_CONCURRENCY`.
+
 ## 0.2.5847 - 2026-08-28
 
 - **Managed semantic implementation stays behind the interface.** Context
