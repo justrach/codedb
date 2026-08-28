@@ -736,9 +736,17 @@ pub fn cliDaemonListen(io: std.Io, allocator: std.mem.Allocator, explorer: *Expl
                 }
             }
             last_activity_ms.store(cio.milliTimestamp(), .release);
-            _ = cliServeConn(io, allocator, explorer, store, abs_root, pipe);
+            const yield_requested = cliServeConn(io, allocator, explorer, store, abs_root, pipe);
             _ = DisconnectNamedPipe(pipe);
             win.CloseHandle(pipe);
+            if (yield_requested) {
+                // Match the POSIX listener: both the explicit handover sentinel
+                // and a client-version mismatch retire this daemon completely.
+                // The shutdown flag releases the metadata monitor; the outer
+                // defers close the replacement pipe and remove owned metadata.
+                shutdown.store(true, .release);
+                return;
+            }
         }
         return;
     }
