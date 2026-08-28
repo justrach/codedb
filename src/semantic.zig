@@ -241,6 +241,45 @@ const EmbeddingRequest = struct {
     encoding_format: []const u8 = "float",
 };
 
+const compact_encoding = "base64-f16";
+
+fn embeddingEncoding(config: Config) []const u8 {
+    // Keep custom OpenAI-compatible endpoints on the ubiquitous JSON-float
+    // contract. Only the CodeDB-operated endpoint negotiates the compact wire
+    // representation whose exact binary layout we control.
+    return if (config.isCodedbHosted()) compact_encoding else "float";
+}
+
+fn fetchEmbeddingInputs(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    config: Config,
+    inputs: []const []const u8,
+) ![]u8 {
+    const encoding_format = embeddingEncoding(config);
+    const body = try std.json.Stringify.valueAlloc(allocator, EmbeddingRequest{
+        .model = config.model,
+        .input = inputs,
+        .dimensions = config.dimensions,
+        .encoding_format = encoding_format,
+    }, .{});
+    defer allocator.free(body);
+    return fetchEmbeddingResponse(io, allocator, config, body) catch |err| {
+        // A pre-negotiation CodeDB edge rejects the new request field with a
+        // 4xx. Retry once with the legacy contract and a fresh signed proof.
+        // Custom providers never enter this path.
+        if (!config.isCodedbHosted() or err != error.EmbeddingProviderRejected) return err;
+        const legacy_body = try std.json.Stringify.valueAlloc(allocator, EmbeddingRequest{
+            .model = config.model,
+            .input = inputs,
+            .dimensions = config.dimensions,
+            .encoding_format = "float",
+        }, .{});
+        defer allocator.free(legacy_body);
+        return fetchEmbeddingResponse(io, allocator, config, legacy_body);
+    };
+}
+
 fn fetchHttpResponseOnce(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -383,13 +422,7 @@ pub fn embedRemoteTexts(
     }
     if (text_bytes > max_index_batch_text_bytes) return error.EmbeddingRequestTooLarge;
 
-    const body = try std.json.Stringify.valueAlloc(allocator, EmbeddingRequest{
-        .model = config.model,
-        .input = inputs,
-        .dimensions = config.dimensions,
-    }, .{});
-    defer allocator.free(body);
-    const response = try fetchEmbeddingResponse(io, allocator, config, body);
+    const response = try fetchEmbeddingInputs(io, allocator, config, inputs);
     defer allocator.free(response);
     const vectors = try vectorsFromProviderResponse(allocator, response, inputs.len, config.dimensions, config.model);
     return .{
@@ -534,15 +567,7 @@ pub fn scoreRemote(
         inputs[i + 1] = text_storage.items[offset.start .. offset.start + offset.len];
     }
 
-    const body = try std.json.Stringify.valueAlloc(allocator, EmbeddingRequest{
-        .model = config.model,
-        .input = inputs,
-        .dimensions = config.dimensions,
-    }, .{});
-    defer allocator.free(body);
-    if (body.len > max_request_bytes) return error.EmbeddingRequestTooLarge;
-
-    const response = try fetchEmbeddingResponse(io, allocator, config, body);
+    const response = try fetchEmbeddingInputs(io, allocator, config, inputs);
     defer allocator.free(response);
 
     const scores = try scoresFromProviderResponse(
@@ -587,6 +612,56 @@ fn validateProviderModel(root: std.json.Value, expected_model: ?[]const u8) !voi
     if (model != .string or !std.mem.eql(u8, model.string, expected)) return error.EmbeddingModelMismatch;
 }
 
+const ResponseEncoding = enum { float, base64_f16 };
+
+fn responseEncoding(root: std.json.Value) !?ResponseEncoding {
+    if (root != .object) return error.InvalidEmbeddingResponse;
+    const value = root.object.get("encoding_format") orelse return null;
+    if (value != .string) return error.InvalidEmbeddingResponse;
+    if (std.mem.eql(u8, value.string, "float")) return .float;
+    if (std.mem.eql(u8, value.string, compact_encoding)) return .base64_f16;
+    return error.InvalidEmbeddingResponse;
+}
+
+fn decodeEmbeddingValue(
+    row: []f32,
+    embedding_value: std.json.Value,
+    declared_encoding: ?ResponseEncoding,
+) !void {
+    switch (embedding_value) {
+        .array => |array| {
+            if (declared_encoding == .base64_f16) return error.InvalidEmbeddingResponse;
+            if (array.items.len != row.len) return error.InvalidEmbeddingDimensions;
+            for (array.items, 0..) |value, i| {
+                const number = try numberAsF64(value);
+                if (!std.math.isFinite(number)) return error.InvalidEmbeddingNumber;
+                const narrowed: f32 = @floatCast(number);
+                if (!std.math.isFinite(narrowed)) return error.InvalidEmbeddingNumber;
+                row[i] = narrowed;
+            }
+        },
+        .string => |encoded| {
+            if (declared_encoding == .float) return error.InvalidEmbeddingResponse;
+            const byte_len = std.math.mul(usize, row.len, 2) catch return error.InvalidEmbeddingDimensions;
+            if (byte_len > 4096 * 2) return error.InvalidEmbeddingDimensions;
+            const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch
+                return error.InvalidEmbeddingResponse;
+            if (decoded_len != byte_len) return error.InvalidEmbeddingDimensions;
+            var decoded_storage: [4096 * 2]u8 = undefined;
+            const decoded = decoded_storage[0..byte_len];
+            std.base64.standard.Decoder.decode(decoded, encoded) catch return error.InvalidEmbeddingResponse;
+            for (row, 0..) |*value, i| {
+                const bits = std.mem.readInt(u16, decoded[i * 2 ..][0..2], .little);
+                const half: f16 = @bitCast(bits);
+                const narrowed: f32 = @floatCast(half);
+                if (!std.math.isFinite(narrowed)) return error.InvalidEmbeddingNumber;
+                value.* = narrowed;
+            }
+        },
+        else => return error.InvalidEmbeddingResponse,
+    }
+}
+
 fn vectorsFromProviderResponse(
     allocator: std.mem.Allocator,
     json_text: []const u8,
@@ -598,6 +673,7 @@ fn vectorsFromProviderResponse(
     defer parsed.deinit();
     try validateProviderModel(parsed.value, expected_model);
     if (parsed.value != .object) return error.InvalidEmbeddingResponse;
+    const declared_encoding = try responseEncoding(parsed.value);
     const data_value = parsed.value.object.get("data") orelse return error.InvalidEmbeddingResponse;
     if (data_value != .array or data_value.array.items.len != count) return error.InvalidEmbeddingResponse;
 
@@ -615,50 +691,10 @@ fn vectorsFromProviderResponse(
         if (index >= count or seen[index]) return error.InvalidEmbeddingResponse;
         seen[index] = true;
         const embedding_value = item_value.object.get("embedding") orelse return error.InvalidEmbeddingResponse;
-        if (embedding_value != .array or embedding_value.array.items.len != dimensions) return error.InvalidEmbeddingDimensions;
         const row = vectors[index * dimensions ..][0..dimensions];
-        for (embedding_value.array.items, 0..) |value, i| {
-            const number = try numberAsF64(value);
-            if (!std.math.isFinite(number)) return error.InvalidEmbeddingNumber;
-            const narrowed: f32 = @floatCast(number);
-            // JSON numbers are parsed as f64. Values such as 1e100 are finite
-            // there but overflow to infinity in the f32 index representation.
-            if (!std.math.isFinite(narrowed)) return error.InvalidEmbeddingNumber;
-            row[i] = narrowed;
-        }
+        try decodeEmbeddingValue(row, embedding_value, declared_encoding);
     }
     return vectors;
-}
-
-fn cosine(a: []const std.json.Value, b: []const std.json.Value) !f32 {
-    if (a.len == 0 or a.len != b.len) return error.InvalidEmbeddingDimensions;
-    var dot: f64 = 0;
-    var norm_a: f64 = 0;
-    var norm_b: f64 = 0;
-    for (a, b) |av, bv| {
-        const x = try numberAsF64(av);
-        const y = try numberAsF64(bv);
-        if (!std.math.isFinite(x) or !std.math.isFinite(y)) return error.InvalidEmbeddingNumber;
-        dot += x * y;
-        norm_a += x * x;
-        norm_b += y * y;
-        // Large-but-finite JSON scalars can overflow these f64 accumulators.
-        // Reject immediately rather than allowing NaN to be clamped into a
-        // plausible (and potentially perfect) retrieval score.
-        if (!std.math.isFinite(dot) or !std.math.isFinite(norm_a) or !std.math.isFinite(norm_b)) {
-            return error.InvalidEmbeddingNumber;
-        }
-    }
-    if (norm_a == 0 or norm_b == 0) return error.InvalidEmbeddingVector;
-    const norm_product = norm_a * norm_b;
-    if (!std.math.isFinite(norm_product) or norm_product <= 0) return error.InvalidEmbeddingNumber;
-    const denominator = @sqrt(norm_product);
-    if (!std.math.isFinite(denominator) or denominator == 0) return error.InvalidEmbeddingNumber;
-    const raw = dot / denominator;
-    if (!std.math.isFinite(raw)) return error.InvalidEmbeddingNumber;
-    const narrowed: f32 = @floatCast(@max(-1.0, @min(1.0, raw)));
-    if (!std.math.isFinite(narrowed)) return error.InvalidEmbeddingNumber;
-    return narrowed;
 }
 
 /// Parse an OpenAI-compatible embeddings response and return cosine scores for
@@ -679,31 +715,20 @@ fn scoresFromProviderResponse(
     dimensions: u16,
     expected_model: ?[]const u8,
 ) ![]f32 {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_text, .{});
-    defer parsed.deinit();
-    try validateProviderModel(parsed.value, expected_model);
-    if (parsed.value != .object) return error.InvalidEmbeddingResponse;
-    const data_value = parsed.value.object.get("data") orelse return error.InvalidEmbeddingResponse;
-    if (data_value != .array or data_value.array.items.len != document_count + 1) return error.InvalidEmbeddingResponse;
-
-    const vectors = try allocator.alloc(?[]const std.json.Value, document_count + 1);
+    const vectors = try vectorsFromProviderResponse(
+        allocator,
+        json_text,
+        document_count + 1,
+        dimensions,
+        expected_model,
+    );
     defer allocator.free(vectors);
-    @memset(vectors, null);
-    for (data_value.array.items) |item_value| {
-        if (item_value != .object) return error.InvalidEmbeddingResponse;
-        const index_value = item_value.object.get("index") orelse return error.InvalidEmbeddingResponse;
-        if (index_value != .integer or index_value.integer < 0) return error.InvalidEmbeddingResponse;
-        const index: usize = @intCast(index_value.integer);
-        if (index >= vectors.len or vectors[index] != null) return error.InvalidEmbeddingResponse;
-        const embedding_value = item_value.object.get("embedding") orelse return error.InvalidEmbeddingResponse;
-        if (embedding_value != .array or embedding_value.array.items.len != dimensions) return error.InvalidEmbeddingDimensions;
-        vectors[index] = embedding_value.array.items;
-    }
-    const query = vectors[0] orelse return error.InvalidEmbeddingResponse;
+    const query = vectors[0..dimensions];
     const scores = try allocator.alloc(f32, document_count);
     errdefer allocator.free(scores);
     for (scores, 0..) |*score, i| {
-        score.* = try cosine(query, vectors[i + 1] orelse return error.InvalidEmbeddingResponse);
+        const start = (i + 1) * dimensions;
+        score.* = try cosineF32(query, vectors[start..][0..dimensions]);
     }
     return scores;
 }
