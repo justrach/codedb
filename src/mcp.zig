@@ -3487,7 +3487,6 @@ const ContextRetrievalProvenance = struct {
     initial: []const u8 = "local_bm25_and_symbols",
     semantic: []const u8 = "not_requested",
     fusion: []const u8 = "none",
-    model: ?[]const u8 = null,
     dimensions: ?u16 = null,
     rrf_k: f32 = semantic_mod.default_rrf_k,
     semantic_weight: f32 = semantic_mod.default_semantic_weight,
@@ -3865,7 +3864,6 @@ fn handleContext(
             retrieval.semantic = "ann_applied";
             retrieval.fusion = "top3_lexical_guard_union_rrf";
             retrieval.semantic_weight = semantic_mod.default_ann_semantic_weight;
-            retrieval.model = ann_result.model;
             retrieval.dimensions = ann_result.dimensions;
             // Query + fixed public calibration string share one request. No
             // repository path or source chunk is transmitted on the ANN lane.
@@ -4019,7 +4017,6 @@ fn handleContext(
             if (semantic_mod.scoreRemote(io, A, task, semantic_candidates.items)) |remote| {
                 retrieval.semantic = "applied_exact_fallback";
                 retrieval.fusion = "lexical_authoritative_rrf";
-                retrieval.model = remote.model;
                 retrieval.dimensions = remote.dimensions;
                 retrieval.documents_sent = remote.documents_sent;
                 retrieval.text_bytes_sent = remote.text_bytes_sent;
@@ -4141,8 +4138,7 @@ fn handleContext(
         if (semantic_requested) {
             wh.print("\n## Retrieval privacy\n- local BM25/symbol retrieval ran first\n", .{}) catch {};
             if (std.mem.eql(u8, retrieval.semantic, "ann_applied")) {
-                wh.print("- local OpenPuffer ANN: {s}, {d}D, vector space {x}, {d} indexed code chunks / {d} sidecar bytes\n- remote query embedding: task plus fixed public vector-space calibration / {d} text bytes; remote retention: {s}\n- local vector storage: {s}; mmap={any}; cache_hit={any}; ANN load {d} ns / search {d} ns\n", .{
-                    retrieval.model orelse semantic_mod.default_model,
+                wh.print("- local OpenPuffer ANN: {d}D, vector space {x}, {d} indexed code chunks / {d} sidecar bytes\n- remote query embedding: task plus fixed public vector-space calibration / {d} text bytes; remote retention: {s}\n- local vector storage: {s}; mmap={any}; cache_hit={any}; ANN load {d} ns / search {d} ns\n", .{
                     retrieval.dimensions orelse semantic_mod.default_dimensions,
                     retrieval.ann_vector_space_id orelse 0,
                     retrieval.ann_records,
@@ -4156,8 +4152,7 @@ fn handleContext(
                     retrieval.ann_search_ns,
                 }) catch {};
             } else if (std.mem.startsWith(u8, retrieval.semantic, "applied")) {
-                wh.print("- bounded exact advisory rerank: {s}, {d}D, {d} relative path + snippet items / {d} text bytes\n- remote retention: {s}; local vector storage: none\n", .{
-                    retrieval.model orelse semantic_mod.default_model,
+                wh.print("- bounded exact advisory rerank: {d}D, {d} relative path + snippet items / {d} text bytes\n- remote retention: {s}; local vector storage: none\n", .{
                     retrieval.dimensions orelse semantic_mod.default_dimensions,
                     retrieval.documents_sent,
                     retrieval.text_bytes_sent,

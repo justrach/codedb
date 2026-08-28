@@ -425,8 +425,12 @@ pub fn saveProjectInfo(io: std.Io, allocator: std.mem.Allocator, data_dir: []con
 /// cache snapshot. No-op for `mcp` (runMcp owns its own deferred/eager load).
 /// `freq_table_heap` is owned by the caller (mainImpl) — we only set it so the
 /// caller's deferred resetFrequencyTable/destroy runs for the process lifetime.
+pub fn commandRebuildsIndex(cmd: []const u8) bool {
+    return std.mem.eql(u8, cmd, "index") or std.mem.eql(u8, cmd, "reindex");
+}
+
 pub fn commandForcesRescan(cmd: []const u8) bool {
-    return std.mem.eql(u8, cmd, "index") or
+    return commandRebuildsIndex(cmd) or
         std.mem.eql(u8, cmd, "snapshot") or
         std.mem.eql(u8, cmd, "semantic-index");
 }
@@ -466,10 +470,10 @@ pub fn coldLoadOrScan(
     const snapshot_elapsed = cio.nanoTimestamp() - snapshot_t0;
 
     // The word index powers codedb_word and BM25 ranked search. It must be
-    // built + persisted for `index` (so a later `mcp` can load it) and for
+    // built + persisted for `index`/`reindex` (so a later `mcp` can load it) and for
     // `mcp` itself (so ranked/NL search works in the running server).
     const needs_word_index = std.mem.eql(u8, cmd, "word") or std.mem.eql(u8, cmd, "bench-engine") or
-        std.mem.eql(u8, cmd, "index") or std.mem.eql(u8, cmd, "mcp");
+        commandRebuildsIndex(cmd) or std.mem.eql(u8, cmd, "mcp");
     if (snapshot_loaded) {
         if (std.mem.eql(u8, cmd, "search") or std.mem.eql(u8, cmd, "bench-engine") or std.mem.eql(u8, cmd, "cli-daemon")) {
             // The cli-daemon serves proxied `search`/`callers`; warm the

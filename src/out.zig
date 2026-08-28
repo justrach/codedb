@@ -113,6 +113,7 @@ pub fn printUsage(out: *Out, s: sty.Style) void {
         \\    {s}context{s}  [--local] <task...>  hybrid task-shaped orientation bundle
         \\    {s}explain{s}  <name>           definition body + callers (alias: around)
         \\    {s}callpath{s} <from> <to>      shortest resolved call chain (alias: path)
+        \\    {s}reindex{s}                   force a fresh filesystem scan and rebuild all indexes
         \\    {s}semantic-index{s}            explicitly build the local code-chunk ANN sidecar
         \\    {s}serve{s}                     HTTP daemon on :6767
         \\    {s}mcp{s}                       JSON-RPC/MCP server over stdio
@@ -121,6 +122,7 @@ pub fn printUsage(out: *Out, s: sty.Style) void {
         \\    {s}codex{s}                     CodeDB-first Codex setup (install|uninstall|verify)
         \\
     , .{
+        s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,
         s.cyan, s.reset,

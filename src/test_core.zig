@@ -143,6 +143,9 @@ test "semantic-index always forces a live filesystem rescan" {
     try testing.expect(bootstrap.commandForcesRescan("semantic-index"));
     try testing.expect(bootstrap.commandForcesRescan("snapshot"));
     try testing.expect(bootstrap.commandForcesRescan("index"));
+    try testing.expect(bootstrap.commandForcesRescan("reindex"));
+    try testing.expect(bootstrap.commandRebuildsIndex("index"));
+    try testing.expect(bootstrap.commandRebuildsIndex("reindex"));
     try testing.expect(!bootstrap.commandForcesRescan("context"));
 }
 

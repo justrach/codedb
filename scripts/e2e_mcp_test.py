@@ -624,19 +624,19 @@ def run_scenario_5_issue690_live_index_refresh(binary: str, project: str) -> lis
 
             (root / "cli_added.py").write_text("def cli_added():\n    return 'cli_added'\n")
 
-            r = t("CLI index rebuilds the project")
+            r = t("CLI reindex rebuilds the project")
             index_run = subprocess.run(
-                [binary, str(root), "index"],
+                [binary, str(root), "reindex"],
                 capture_output=True,
                 text=True,
                 env={**os.environ, "CODEDB_NO_AUTO_UPDATE": "1", "CODEDB_NO_TELEMETRY": "1"},
             )
-            if index_run.returncode != 0 or "index ready" not in index_run.stdout:
-                r.fail(f"index result: code={index_run.returncode} stdout={index_run.stdout[:160]!r}")
+            if index_run.returncode != 0 or "reindex ready" not in index_run.stdout:
+                r.fail(f"reindex result: code={index_run.returncode} stdout={index_run.stdout[:160]!r}")
                 return results
             r.ok()
 
-            r = t("live MCP sees the file after CLI index")
+            r = t("live MCP sees the file after CLI reindex")
             try:
                 outline_text = tool_text(p.call_tool("codedb_outline", {"path": "cli_added.py"}))
             except BrokenPipeError:
@@ -1234,6 +1234,8 @@ def run_scenario_8_symlink_privacy_boundary(binary: str, project: str) -> list[T
             r.fail(f"hybrid exact fallback failed: {hybrid_text[:240]!r}")
         elif semantic_run.returncode != 0 or "semantic ANN ready" not in semantic_run.stdout:
             r.fail(f"semantic-index failed: code={semantic_run.returncode} stdout={semantic_run.stdout[:180]!r} stderr={semantic_run.stderr[-240:]!r}")
+        elif "mock-symlink-model" in hybrid_text or "mock-symlink-model" in semantic_run.stdout:
+            r.fail("provider model identity leaked into user-visible output")
         elif "SAFE_SYMLINK_CANARY" not in request_text:
             r.fail("safe indexed content never reached the mock endpoint")
         elif any(secret in request_text for secret in (

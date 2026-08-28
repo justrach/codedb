@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Managed semantic implementation stays behind the interface.** Context
+  Markdown, structured retrieval provenance, ANN-build output, and current
+  documentation no longer expose the hosted provider's model identity. Safety
+  and performance provenance remains available: bounded document/byte counts,
+  vector dimensions, retention, local storage, ANN timing, and failure policy.
+- **Explicit reindex command.** `codedb [root] reindex` is now the documented
+  spelling for a forced filesystem scan, complete local-index rebuild, and live
+  daemon refresh. The older `index` spelling remains compatible.
+
 ## 0.2.5846 - 2026-08-28
 
 - **Bounded, correct filesystem watching** (#704, #709). macOS vnode watches
@@ -24,7 +33,7 @@
 ## 0.2.5845 - 2026-08-28
 
 - **Pareto-frontier hybrid retrieval is now the default.** `codedb_context`
-  and CLI `context` automatically use the authenticated Qwen/OpenPuffer path:
+  and CLI `context` automatically use the authenticated managed/OpenPuffer path:
   local BM25/symbol retrieval first, a fresh paired ANN sidecar when available,
   and the bounded exact reranker otherwise. `semantic=local`, `--local`, and
   `--no-semantic` are explicit on-device-only opt-outs. Provider failure still
