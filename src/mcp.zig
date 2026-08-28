@@ -651,7 +651,10 @@ pub const BenchContext = struct {
         return .{
             .dispatch_ns = @intCast(elapsed),
             .response_bytes = rpc_result.items.len,
-            .response_hash = std.hash.Wyhash.hash(0, parity_rpc_result.items),
+            // Hash the normalized MCP content envelope, not the outer JSON-RPC
+            // metadata: release PRs change serverInfo.version without changing
+            // any tool output. The summary, content, and guidance remain gated.
+            .response_hash = std.hash.Wyhash.hash(0, parity_result.items),
         };
     }
 };
