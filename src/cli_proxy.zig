@@ -8,6 +8,7 @@ const Explorer = @import("explore.zig").Explorer;
 const Out = @import("out.zig").Out;
 const runQuery = @import("query.zig").runQuery;
 const watcher = @import("watcher.zig");
+const release_info = @import("release_info.zig");
 const cli_args = @import("cli_args.zig");
 const parsePositional = cli_args.parsePositional;
 const cliIsQueryCmd = cli_args.cliIsQueryCmd;
@@ -29,7 +30,8 @@ const cliIsQueryCmd = cli_args.cliIsQueryCmd;
 //
 // Wire protocol (little-endian, length-framed):
 //   request  (client→daemon): [u8 color][u32 blob_len][blob]
-//       blob = argv[1..] NUL-joined, e.g. "/proj\0find\0foo"
+//       legacy blob = argv[1..] NUL-joined, e.g. "/proj\0find\0foo"
+//       current blob = version marker, semver, then argv fields (all NUL-joined)
 //   response (daemon→client): [u8 exit_code][u32 out_len][out_bytes]
 const cli_blob_max: u32 = 64 * 1024;
 const cli_response_max: u32 = 16 * 1024 * 1024;
@@ -134,6 +136,50 @@ const cli_bind_retry_ms: u64 = 1000;
 /// always starts with a project root path (see cliTryProxy).
 pub const cli_yield_sentinel = "\x01codedb-cli-yield-v1\x01";
 pub const cli_refresh_sentinel = "\x01codedb-cli-refresh-v1\x01";
+const cli_version_marker = "\x01codedb-cli-version-v1\x01";
+const cli_versioned_response_flag: u8 = 0x80;
+const cli_version_mismatch_code: u8 = 0x7f;
+
+const CliVersionEnvelope = struct {
+    argv_blob: []const u8,
+    versioned: bool = false,
+    compatible: bool = true,
+};
+
+fn unwrapCliVersionEnvelope(blob: []const u8) CliVersionEnvelope {
+    if (!std.mem.startsWith(u8, blob, cli_version_marker) or
+        blob.len <= cli_version_marker.len or blob[cli_version_marker.len] != 0)
+    {
+        return .{ .argv_blob = blob };
+    }
+    const version_start = cli_version_marker.len + 1;
+    const version_end = std.mem.indexOfScalarPos(u8, blob, version_start, 0) orelse
+        return .{ .argv_blob = "", .versioned = true, .compatible = false };
+    return .{
+        .argv_blob = blob[version_end + 1 ..],
+        .versioned = true,
+        .compatible = std.mem.eql(u8, blob[version_start..version_end], release_info.semver),
+    };
+}
+
+test "CLI proxy version envelope preserves legacy requests and rejects stale daemons" {
+    const legacy = "/project\x00find\x00main";
+    const parsed_legacy = unwrapCliVersionEnvelope(legacy);
+    try std.testing.expect(!parsed_legacy.versioned);
+    try std.testing.expect(parsed_legacy.compatible);
+    try std.testing.expectEqualStrings(legacy, parsed_legacy.argv_blob);
+
+    const current = cli_version_marker ++ "\x00" ++ release_info.semver ++ "\x00/project\x00find\x00main";
+    const parsed_current = unwrapCliVersionEnvelope(current);
+    try std.testing.expect(parsed_current.versioned);
+    try std.testing.expect(parsed_current.compatible);
+    try std.testing.expectEqualStrings(legacy, parsed_current.argv_blob);
+
+    const stale = cli_version_marker ++ "\x000.0.0\x00/project\x00find\x00main";
+    const parsed_stale = unwrapCliVersionEnvelope(stale);
+    try std.testing.expect(parsed_stale.versioned);
+    try std.testing.expect(!parsed_stale.compatible);
+}
 
 /// Settle delay after sending a yield request before the very next bind
 /// attempt: gives the owner a moment to process the sentinel, unbind, and
@@ -792,6 +838,23 @@ fn cliServeConn(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
         return false;
     }
 
+    // New clients identify their binary version before argv. Legacy clients
+    // remain valid, while a version mismatch makes this daemon relinquish the
+    // socket so an updated binary cannot keep proxying to stale query logic.
+    const envelope = unwrapCliVersionEnvelope(blob);
+    const argv_blob = envelope.argv_blob;
+    const versioned = envelope.versioned;
+    if (versioned) {
+        if (!envelope.compatible) {
+            cliRespond(conn, cli_versioned_response_flag | cli_version_mismatch_code, "");
+            return true;
+        }
+        if (argv_blob.len == 0) {
+            cliRespond(conn, cli_versioned_response_flag | 1, "");
+            return false;
+        }
+    }
+
     // Rebuild argv = ["codedb"] ++ split(blob, '\0'), skipping empty fields.
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(allocator);
@@ -799,7 +862,7 @@ fn cliServeConn(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
         cliRespond(conn, 1, "");
         return false;
     };
-    var it = std.mem.splitScalar(u8, blob, 0);
+    var it = std.mem.splitScalar(u8, argv_blob, 0);
     while (it.next()) |field| {
         if (field.len == 0) continue;
         argv.append(allocator, field) catch {
@@ -810,7 +873,7 @@ fn cliServeConn(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
 
     const parsed = parsePositional(argv.items);
     if (parsed.usage_exit or !cliIsQueryCmd(parsed.cmd)) {
-        cliRespond(conn, 1, "");
+        cliRespond(conn, (if (versioned) cli_versioned_response_flag else 0) | 1, "");
         return false;
     }
 
@@ -821,7 +884,7 @@ fn cliServeConn(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
     const code = runQuery(io, allocator, explorer, store, abs_root, parsed.cmd, argv.items, parsed.cmd_args_start, &out, s);
     out.flush();
 
-    cliRespond(conn, code, sink.items);
+    cliRespond(conn, (if (versioned) cli_versioned_response_flag else 0) | code, sink.items);
     return false;
 }
 
@@ -843,14 +906,20 @@ fn cliRespond(conn: CliConn, code: u8, out_bytes: []const u8) void {
 pub fn cliTryProxy(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8, data_dir: ?[]const u8, args: []const []const u8, color: bool) ?u8 {
     if (args.len < 2) return null;
 
-    const conn = cliConnect(io, allocator, abs_root, data_dir) orelse return null;
-    defer cliCloseConn(conn);
+    var maybe_conn: ?CliConn = cliConnect(io, allocator, abs_root, data_dir) orelse return null;
+    defer if (maybe_conn) |conn| cliCloseConn(conn);
+    const conn = maybe_conn.?;
 
-    // Build the NUL-joined blob from args[1..].
+    // Build a versioned, NUL-joined blob. A current daemon acknowledges the
+    // envelope in the response code; an old daemon cannot, so its output is
+    // discarded and the command safely falls back to the current process.
     var blob: std.ArrayList(u8) = .empty;
     defer blob.deinit(allocator);
-    for (args[1..], 0..) |a, i| {
-        if (i != 0) blob.append(allocator, 0) catch return null;
+    blob.appendSlice(allocator, cli_version_marker) catch return null;
+    blob.append(allocator, 0) catch return null;
+    blob.appendSlice(allocator, release_info.semver) catch return null;
+    for (args[1..]) |a| {
+        blob.append(allocator, 0) catch return null;
         blob.appendSlice(allocator, a) catch return null;
     }
     if (blob.items.len == 0 or blob.items.len > cli_blob_max) return null;
@@ -865,17 +934,43 @@ pub fn cliTryProxy(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u
     // Response header: [u8 code][u32 out_len]
     var resp_hdr: [5]u8 = undefined;
     if (!cliReadFull(conn, &resp_hdr)) return null;
-    const code = resp_hdr[0];
+    const wire_code = resp_hdr[0];
     const out_len = std.mem.readInt(u32, resp_hdr[1..5], .little);
     if (!cliResponseLenAllowed(out_len)) return null;
 
-    if (out_len > 0) {
+    const out_bytes = if (out_len > 0) blk: {
         const out_bytes = allocator.alloc(u8, out_len) catch return null;
-        defer allocator.free(out_bytes);
         if (!cliReadFull(conn, out_bytes)) return null;
-        cio.File.stdout().writeAll(out_bytes) catch {};
+        break :blk out_bytes;
+    } else null;
+    defer if (out_bytes) |bytes| allocator.free(bytes);
+
+    if (wire_code & cli_versioned_response_flag == 0) {
+        // An older daemon served the version envelope as if it were argv. Close
+        // this connection before asking it to yield: listeners are sequential.
+        cliCloseConn(conn);
+        maybe_conn = null;
+        cliRequestYield(io, allocator, abs_root, data_dir);
+        cio.sleepMs(cli_yield_settle_ms);
+        return null;
     }
+    const code = wire_code & ~cli_versioned_response_flag;
+    if (code == cli_version_mismatch_code) {
+        cio.sleepMs(cli_yield_settle_ms);
+        return null;
+    }
+    if (out_bytes) |bytes| cio.File.stdout().writeAll(bytes) catch {};
     return code;
+}
+
+fn cliRequestYield(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8, data_dir: ?[]const u8) void {
+    const conn = cliConnect(io, allocator, abs_root, data_dir) orelse return;
+    defer cliCloseConn(conn);
+    var hdr: [5]u8 = undefined;
+    hdr[0] = 0;
+    std.mem.writeInt(u32, hdr[1..5], @intCast(cli_yield_sentinel.len), .little);
+    if (!cliWriteFull(conn, &hdr)) return;
+    _ = cliWriteFull(conn, cli_yield_sentinel);
 }
 
 pub fn cliNotifyRefresh(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8, data_dir: ?[]const u8) ?bool {
