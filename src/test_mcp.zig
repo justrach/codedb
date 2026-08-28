@@ -3729,6 +3729,73 @@ test "reindex is public, parses with or without a root, and appears in help" {
     try testing.expect(std.mem.indexOf(u8, sink.items, "force a fresh filesystem scan") != null);
 }
 
+test "reindex refreshes root snapshot so no-daemon queries do not rescan" {
+    try buildCliForHelpTests();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "project/src");
+    try tmp.dir.createDirPath(io, ".home");
+    try tmp.dir.writeFile(io, .{ .sub_path = "project/src/main.zig", .data = "pub fn oldSymbol() void {}\n" });
+
+    var project_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_len = try tmp.dir.realPathFile(io, "project", &project_buf);
+    const project_root = project_buf[0..project_len];
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home_len = try tmp.dir.realPathFile(io, ".home", &home_buf);
+    const test_home = home_buf[0..home_len];
+
+    const g_allow = EnvVarGuard.save("CODEDB_ALLOW_TEMP");
+    defer g_allow.restore();
+    const g_home = EnvVarGuard.save("HOME");
+    defer g_home.restore();
+    const g_profile = EnvVarGuard.save("USERPROFILE");
+    defer g_profile.restore();
+    const g_daemon = EnvVarGuard.save("CODEDB_NO_CLI_DAEMON");
+    defer g_daemon.restore();
+    const g_telemetry = EnvVarGuard.save("CODEDB_NO_TELEMETRY");
+    defer g_telemetry.restore();
+    cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
+    cio.posixSetenv("HOME", test_home);
+    cio.posixSetenv("USERPROFILE", test_home);
+    cio.posixSetenv("CODEDB_NO_CLI_DAEMON", "1");
+    cio.posixSetenv("CODEDB_NO_TELEMETRY", "1");
+
+    const old_snapshot = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ builtCodedbExe(), project_root, "snapshot" },
+        .max_output_bytes = 128 * 1024,
+    });
+    defer testing.allocator.free(old_snapshot.stdout);
+    defer testing.allocator.free(old_snapshot.stderr);
+    try testing.expectEqual(@as(u8, 0), old_snapshot.term.Exited);
+
+    // Leave an out-of-date in-repo snapshot behind. Before this fix reindex
+    // refreshed only the central cache copy, while freshness checks preferred
+    // this stale root copy and forced the next no-daemon lookup to scan again.
+    try tmp.dir.writeFile(io, .{ .sub_path = "project/src/main.zig", .data = "pub fn freshSymbol() void {}\n" });
+    const reindexed = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ builtCodedbExe(), project_root, "reindex" },
+        .max_output_bytes = 128 * 1024,
+    });
+    defer testing.allocator.free(reindexed.stdout);
+    defer testing.allocator.free(reindexed.stderr);
+    try testing.expectEqual(@as(u8, 0), reindexed.term.Exited);
+
+    const warm = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ builtCodedbExe(), project_root, "symbol", "freshSymbol" },
+        .max_output_bytes = 128 * 1024,
+    });
+    defer testing.allocator.free(warm.stdout);
+    defer testing.allocator.free(warm.stderr);
+    try testing.expectEqual(@as(u8, 0), warm.term.Exited);
+    try testing.expect(std.mem.indexOf(u8, warm.stdout, "loaded snapshot") != null);
+    try testing.expect(std.mem.indexOf(u8, warm.stdout, "indexed") == null);
+    try testing.expect(std.mem.indexOf(u8, warm.stdout, "freshSymbol") != null);
+}
+
 test "issue-632: codedb_read raw mode coverage — full-file byte-exact, default unchanged" {
     // Broader coverage for #632: (a) raw full-file read is byte-exact (no hash
     // header, no line-number prefix, no full-file hint); (b) the default ranged

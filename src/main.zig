@@ -6,6 +6,7 @@ const Explorer = @import("explore.zig").Explorer;
 const sty = @import("style.zig");
 const index_mod = @import("index.zig");
 const root_policy = @import("root_policy.zig");
+const snapshot_mod = @import("snapshot.zig");
 const nuke_mod = @import("nuke.zig");
 const update_mod = @import("update.zig");
 const codex_mod = @import("codex_setup.zig");
@@ -531,7 +532,23 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
     } else if (bootstrap.commandRebuildsIndex(cmd)) {
         // `reindex` is the public spelling; `index` remains a compatibility
         // alias. coldLoadOrScan above already
-        // scanned + persisted the on-disk index for this cmd; confirm and exit
+        // scanned + persisted the on-disk index for this cmd. Publish the same
+        // validated, atomically-written snapshot at the project root as well:
+        // snapshot freshness deliberately checks the in-repo copy first, so a
+        // stale old root snapshot would otherwise force every no-daemon query
+        // to rescan despite the fresh project-cache snapshot.
+        const snapshot_path = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch {
+            out.p("{s}✗{s} reindex could not allocate snapshot path\n", .{ s.red, s.reset });
+            out.flush();
+            std.process.exit(1);
+        };
+        defer allocator.free(snapshot_path);
+        snapshot_mod.writeSnapshotDual(io, &explorer, abs_root, snapshot_path, allocator) catch |err| {
+            out.p("{s}✗{s} reindex persisted indexes but could not write validated snapshot: {}\n", .{ s.red, s.reset, err });
+            out.flush();
+            std.process.exit(1);
+        };
+        // Confirm and exit
         // cleanly. It used to fall through to "unknown command: index" + exit 1
         // even though the index had been built.
         if (cliNotifyRefresh(io, allocator, abs_root, data_dir)) |refreshed| {

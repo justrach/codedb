@@ -6046,6 +6046,55 @@ pub const Explorer = struct {
         allocator: std.mem.Allocator,
         max_hops: usize,
     ) !?[]CallPathStep {
+        return self.findCallPathScoped(from_name, null, to_name, null, allocator, max_hops);
+    }
+
+    /// Return every call-graph node that matches a symbol name, optionally
+    /// narrowed to an exact project-relative path. Callers use this to make an
+    /// ambiguous bare endpoint explicit instead of silently choosing whichever
+    /// unrelated pair happens to be shortest.
+    pub fn findCallPathCandidates(
+        self: *Explorer,
+        name: []const u8,
+        path: ?[]const u8,
+        allocator: std.mem.Allocator,
+    ) ![]CallPathStep {
+        self.ensureSymbolIndex();
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        self.ensureCallGraph(allocator);
+        const cg = self.call_graph orelse return try allocator.alloc(CallPathStep, 0);
+
+        var candidates: std.ArrayList(CallPathStep) = .empty;
+        errdefer candidates.deinit(allocator);
+        for (cg.node_name, 0..) |node_name, id| {
+            if (!std.mem.eql(u8, node_name, name)) continue;
+            if (path) |selected_path| {
+                if (!std.mem.eql(u8, cg.node_path[id], selected_path)) continue;
+            }
+            try candidates.append(allocator, .{
+                .path = cg.node_path[id],
+                .name = node_name,
+                .line = cg.node_line[id],
+            });
+        }
+        return try candidates.toOwnedSlice(allocator);
+    }
+
+    /// Shortest resolved call chain with optional exact project-relative
+    /// endpoint paths. The public name-only method above preserves existing
+    /// callers; interactive surfaces should first inspect candidates and ask
+    /// for a path when a bare name is ambiguous.
+    pub fn findCallPathScoped(
+        self: *Explorer,
+        from_name: []const u8,
+        from_path: ?[]const u8,
+        to_name: []const u8,
+        to_path: ?[]const u8,
+        allocator: std.mem.Allocator,
+        max_hops: usize,
+    ) !?[]CallPathStep {
         self.ensureSymbolIndex();
         self.mu.lockShared();
         defer self.mu.unlockShared();
@@ -6060,8 +6109,12 @@ pub const Explorer = struct {
 
         for (cg.node_name, 0..) |name, id| {
             const nid: codegraph.NodeId = @intCast(id);
-            if (std.mem.eql(u8, name, from_name)) try from_ids.append(allocator, nid);
-            if (std.mem.eql(u8, name, to_name)) try to_ids.append(allocator, nid);
+            if (std.mem.eql(u8, name, from_name) and (from_path == null or std.mem.eql(u8, cg.node_path[id], from_path.?))) {
+                try from_ids.append(allocator, nid);
+            }
+            if (std.mem.eql(u8, name, to_name) and (to_path == null or std.mem.eql(u8, cg.node_path[id], to_path.?))) {
+                try to_ids.append(allocator, nid);
+            }
         }
         if (from_ids.items.len == 0 or to_ids.items.len == 0) return null;
 

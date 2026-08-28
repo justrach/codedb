@@ -692,7 +692,7 @@ pub const tools_list =
     \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_word","description":"O(1) exact-identifier occurrences via inverted index — every (file, line) one exact word appears. Use ONLY for a single exact identifier; for its definition prefer codedb_symbol, for substrings or phrases use codedb_search.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]},"annotations":{"readOnlyHint":true}},
-    \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). First move when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]},"annotations":{"readOnlyHint":true}},
+    \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Ambiguous bare names list candidates; pass from_path/to_path to select an exact project-relative file. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"from_path":{"type":"string","description":"Optional exact project-relative source file; required to disambiguate duplicate names"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"to_path":{"type":"string","description":"Optional exact project-relative target file; required to disambiguate duplicate names"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_explain","description":"One-shot neighborhood of a symbol: definition body plus every call site. Replaces codedb_symbol body=true then codedb_callers. First move when you know the name.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Local BM25/symbol retrieval always runs first. Hybrid retrieval is the default: it searches an explicitly built local OpenPuffer ANN sidecar using one transient remote request containing the task plus a fixed public calibration string; when the sidecar is absent or stale it can rerank up to 24 bounded local candidates instead. Set semantic=local for an entirely on-device call. The hosted service stores neither the repository, request body, candidate paths, nor vectors. Failure keeps the local result and never runs a CPU model.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"document_hops":{"type":"integer","description":"Explicitly expand Markdown document links from ranked files (0 default, hard-capped at 2 hops and 64 files)."},"semantic":{"type":"string","enum":["local","hybrid"],"description":"hybrid (default) sends the task plus a fixed public calibration string when a compatible local ANN sidecar exists; otherwise it may send the task plus up to 24 locally selected relative paths with bounded snippets. local is the explicit on-device-only opt-out. Build the sidecar explicitly with codedb <root> semantic-index. The hosted lane is transient; custom endpoint retention is reported as unverified."},"format":{"type":"string","enum":["markdown","json"],"description":"markdown (default) preserves the compact text response. json returns schema-versioned sections, evidence provenance, reader.md validation, retrieval privacy, and machine-readable token-budget omissions."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]},"annotations":{"readOnlyHint":true}},
@@ -835,7 +835,9 @@ const mini_prop_descriptions = [_]PropDesc{
     .{ .name = "path_glob", .desc = "Glob filter on paths, e.g. 'src/**/*.zig'" },
     .{ .name = "task", .desc = "Task in natural language; include likely identifiers" },
     .{ .name = "from", .desc = "Source symbol name (exact identifier)" },
+    .{ .name = "from_path", .desc = "Exact project-relative source file for an ambiguous symbol" },
     .{ .name = "to", .desc = "Target symbol name (exact identifier)" },
+    .{ .name = "to_path", .desc = "Exact project-relative target file for an ambiguous symbol" },
     .{ .name = "max_hops", .desc = "Max call hops (default: 12)" },
     .{ .name = "max_tokens", .desc = "Response token budget (min 256, ~2.5 bytes/token)" },
     .{ .name = "detail", .desc = "compact (default) or full sections" },
@@ -2699,6 +2701,25 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     }
 }
 
+fn appendAmbiguousCallpathEndpoint(
+    w: anytype,
+    label: []const u8,
+    name: []const u8,
+    path: ?[]const u8,
+    candidates: []const explore_mod.CallPathStep,
+) void {
+    if (path) |selected_path| {
+        w.print("ambiguous callpath {s} endpoint '{s}' in '{s}' ({d} definitions):\n", .{ label, name, selected_path, candidates.len }) catch {};
+    } else {
+        w.print("ambiguous callpath {s} endpoint '{s}' ({d} definitions); pass {s}_path=<project-relative path>:\n", .{ label, name, candidates.len, label }) catch {};
+    }
+    const shown = @min(candidates.len, 20);
+    for (candidates[0..shown]) |candidate| {
+        w.print("  - {s}:{s}@L{d}\n", .{ candidate.path, candidate.name, candidate.line }) catch {};
+    }
+    if (shown < candidates.len) w.print("  … {d} more candidates\n", .{candidates.len - shown}) catch {};
+}
+
 fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const from_name = getStr(args, "from") orelse {
         out.appendSlice(alloc, "error: missing 'from' argument") catch {};
@@ -2714,20 +2735,54 @@ fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
         out.appendSlice(alloc, "error: 'from' and 'to' must be non-empty symbol names") catch {};
         return;
     }
+    const from_path = getStr(args, "from_path");
+    const to_path = getStr(args, "to_path");
     const max_hops: usize = if (getInt(args, "max_hops")) |n| @intCast(@max(1, @min(n, 64))) else 12;
 
-    const steps = explorer.findCallPath(from_name, to_name, alloc, max_hops) catch {
+    const from_candidates = explorer.findCallPathCandidates(from_name, from_path, alloc) catch {
+        out.appendSlice(alloc, "error: callpath search failed") catch {};
+        return;
+    };
+    defer alloc.free(from_candidates);
+    const to_candidates = explorer.findCallPathCandidates(to_name, to_path, alloc) catch {
+        out.appendSlice(alloc, "error: callpath search failed") catch {};
+        return;
+    };
+    defer alloc.free(to_candidates);
+
+    const w = cio.listWriter(out, alloc);
+    if (from_candidates.len == 0) {
+        if (from_path) |selected_path| {
+            w.print("no source symbol '{s}' in '{s}'\n", .{ from_name, selected_path }) catch {};
+        } else {
+            w.print("no source symbol '{s}'\n", .{from_name}) catch {};
+        }
+        return;
+    }
+    if (to_candidates.len == 0) {
+        if (to_path) |selected_path| {
+            w.print("no target symbol '{s}' in '{s}'\n", .{ to_name, selected_path }) catch {};
+        } else {
+            w.print("no target symbol '{s}'\n", .{to_name}) catch {};
+        }
+        return;
+    }
+    if (from_candidates.len > 1 or to_candidates.len > 1) {
+        if (from_candidates.len > 1) appendAmbiguousCallpathEndpoint(w, "from", from_name, from_path, from_candidates);
+        if (to_candidates.len > 1) appendAmbiguousCallpathEndpoint(w, "to", to_name, to_path, to_candidates);
+        return;
+    }
+
+    const steps = explorer.findCallPathScoped(from_name, from_path, to_name, to_path, alloc, max_hops) catch {
         out.appendSlice(alloc, "error: callpath search failed") catch {};
         return;
     };
     const path = steps orelse {
-        const w = cio.listWriter(out, alloc);
         w.print("no call path from '{s}' to '{s}' within {d} hops\n", .{ from_name, to_name, max_hops }) catch {};
         return;
     };
     defer alloc.free(path);
 
-    const w = cio.listWriter(out, alloc);
     w.print("call path ({d} hops): {s} → {s}\n", .{ path.len - 1, from_name, to_name }) catch {};
     for (path, 0..) |step, i| {
         if (i > 0) w.print("  → ", .{}) catch {};
@@ -2735,6 +2790,62 @@ fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
         if (i + 1 < path.len) w.print("\n", .{}) catch {};
     }
     w.print("\n", .{}) catch {};
+}
+
+test "callpath requires paths for duplicate endpoints and preserves unique names" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/first.zig",
+        \\pub fn main() void { run(); }
+        \\fn run() void {}
+    );
+    try explorer.indexFile("src/second.zig",
+        \\pub fn main() void { run(); }
+        \\fn run() void {}
+    );
+    try explorer.indexFile("src/unique.zig",
+        \\pub fn onlyMain() void { onlyRun(); }
+        \\fn onlyRun() void {}
+    );
+
+    var args: std.json.ObjectMap = .empty;
+    defer args.deinit(testing.allocator);
+    try args.put(testing.allocator, "from", .{ .string = "main" });
+    try args.put(testing.allocator, "to", .{ .string = "run" });
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    handleCallpath(testing.allocator, &args, &out, &explorer);
+    try testing.expect(std.mem.indexOf(u8, out.items, "ambiguous callpath from endpoint 'main'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/first.zig:main") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/second.zig:run") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call path (") == null);
+
+    out.clearRetainingCapacity();
+    try args.put(testing.allocator, "from_path", .{ .string = "src/first.zig" });
+    try args.put(testing.allocator, "to_path", .{ .string = "src/first.zig" });
+    handleCallpath(testing.allocator, &args, &out, &explorer);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call path (1 hops): main → run") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/first.zig:main") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/second.zig") == null);
+
+    out.clearRetainingCapacity();
+    try args.put(testing.allocator, "from", .{ .string = "onlyMain" });
+    try args.put(testing.allocator, "to", .{ .string = "onlyRun" });
+    _ = args.swapRemove("from_path");
+    _ = args.swapRemove("to_path");
+    handleCallpath(testing.allocator, &args, &out, &explorer);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call path (1 hops): onlyMain → onlyRun") != null);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    out.clearRetainingCapacity();
+    const cli_args = [_][]const u8{ "main", "run", "--from-path", "src/second.zig", "--to-path=src/second.zig" };
+    try testing.expectEqual(
+        @as(?u8, 0),
+        runCliTool(testing.io, testing.allocator, &explorer, &store, ".", "callpath", &cli_args, 0, &out),
+    );
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/second.zig:main") != null);
 }
 
 fn handleExplain(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
@@ -5800,9 +5911,29 @@ pub fn runCliTool(
         handleChanges(alloc, &m, out, store);
         return finishCli(out, out_start);
     } else if (std.mem.eql(u8, cmd, "callpath") or std.mem.eql(u8, cmd, "path")) {
-        if (args.len < cmd_args_start + 2) return cliUsage(alloc, out, "callpath <from> <to>");
+        if (args.len < cmd_args_start + 2 or std.mem.startsWith(u8, args[cmd_args_start], "-") or std.mem.startsWith(u8, args[cmd_args_start + 1], "-")) {
+            return cliUsage(alloc, out, "callpath <from> <to> [--from-path <project-relative path>] [--to-path <project-relative path>]");
+        }
         m.put(alloc, "from", .{ .string = args[cmd_args_start] }) catch return 1;
         m.put(alloc, "to", .{ .string = args[cmd_args_start + 1] }) catch return 1;
+        var arg_i = cmd_args_start + 2;
+        while (arg_i < args.len) : (arg_i += 1) {
+            const arg = args[arg_i];
+            if (std.mem.eql(u8, arg, "--from-path") or std.mem.eql(u8, arg, "--to-path")) {
+                arg_i += 1;
+                if (arg_i >= args.len) {
+                    return cliUsage(alloc, out, "callpath <from> <to> [--from-path <project-relative path>] [--to-path <project-relative path>]");
+                }
+                const key = if (std.mem.eql(u8, arg, "--from-path")) "from_path" else "to_path";
+                m.put(alloc, key, .{ .string = args[arg_i] }) catch return 1;
+            } else if (std.mem.startsWith(u8, arg, "--from-path=")) {
+                m.put(alloc, "from_path", .{ .string = arg["--from-path=".len..] }) catch return 1;
+            } else if (std.mem.startsWith(u8, arg, "--to-path=")) {
+                m.put(alloc, "to_path", .{ .string = arg["--to-path=".len..] }) catch return 1;
+            } else {
+                return cliUsage(alloc, out, "callpath <from> <to> [--from-path <project-relative path>] [--to-path <project-relative path>]");
+            }
+        }
         handleCallpath(alloc, &m, out, explorer);
         return finishCli(out, out_start);
     } else if (std.mem.eql(u8, cmd, "explain") or std.mem.eql(u8, cmd, "around")) {

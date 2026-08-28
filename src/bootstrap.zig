@@ -670,11 +670,15 @@ pub fn coldLoadOrScan(
                 explorer.buildCallCentrality(allocator);
                 if (index_profile) profile_centrality_ns = cio.nanoTimestamp() - t_centrality;
             }
-            const t_snapshot: i128 = if (index_profile) cio.nanoTimestamp() else 0;
-            snapshot_mod.writeProjectCacheSnapshot(io, explorer, abs_root, allocator) catch |err| {
-                std.log.warn("could not persist project-cache snapshot: {}", .{err});
-            };
-            if (index_profile) profile_snapshot_ns = cio.nanoTimestamp() - t_snapshot;
+            // `main` writes the root + cache copies atomically for reindex.
+            // Avoid serializing the same snapshot twice on that hot path.
+            if (!commandRebuildsIndex(cmd)) {
+                const t_snapshot: i128 = if (index_profile) cio.nanoTimestamp() else 0;
+                snapshot_mod.writeProjectCacheSnapshot(io, explorer, abs_root, allocator) catch |err| {
+                    std.log.warn("could not persist project-cache snapshot: {}", .{err});
+                };
+                if (index_profile) profile_snapshot_ns = cio.nanoTimestamp() - t_snapshot;
+            }
         }
         if (release_contents_after_cache) {
             explorer.releaseContents();

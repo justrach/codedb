@@ -198,7 +198,7 @@ codedb hot                            # recently modified files
 | `codedb_word` | O(1) inverted index word lookup |
 | `codedb_callers` | Every call site of a symbol — word index ∩ outline scope, in one round-trip |
 | `codedb_explain` | Definition body + callers in one call (CLI aliases: `explain`, `around`) |
-| `codedb_callpath` | Shortest resolved call chain A→B (CLI alias: `path`) |
+| `codedb_callpath` | Shortest resolved call chain A→B (CLI alias: `path`); duplicate names list candidates—pass `from_path` / `to_path` (or CLI `--from-path` / `--to-path`) to select a file |
 | `codedb_context` | Task-shaped composer — Pareto-frontier hybrid retrieval by default: local BM25/symbol retrieval first, then local ANN search using a remote task embedding plus a fixed public calibration string when an explicit sidecar exists, or a bounded transient semantic rerank otherwise. Pass `semantic=local` for an on-device-only call. `format=json` adds typed provenance and retrieval-privacy metadata; `document_hops=1..2` expands linked Markdown |
 | `codedb_hot` | Most recently modified files |
 | `codedb_deps` | Typed dependency graph: imports by default, or Markdown links with `edge_type=documents`; document traversal is capped at 2 hops / 64 files |
