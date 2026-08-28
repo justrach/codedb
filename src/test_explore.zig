@@ -32,21 +32,257 @@ test "codegraph: extractCallees finds calls, filters keywords" {
     var found_method = false;
     var found_dothing = false;
     for (callees) |c| {
-        if (std.mem.eql(u8, c, "helper")) found_helper = true;
-        if (std.mem.eql(u8, c, "compute")) found_compute = true;
-        if (std.mem.eql(u8, c, "method")) found_method = true;
-        if (std.mem.eql(u8, c, "doThing")) found_dothing = true;
-        try testing.expect(!std.mem.eql(u8, c, "if"));
-        try testing.expect(!std.mem.eql(u8, c, "while"));
-        try testing.expect(!std.mem.eql(u8, c, "return"));
+        if (std.mem.eql(u8, c.name, "helper")) found_helper = true;
+        if (std.mem.eql(u8, c.name, "compute")) found_compute = true;
+        if (std.mem.eql(u8, c.name, "method")) {
+            found_method = true;
+            try testing.expectEqualStrings("obj", c.qualifier.?);
+        }
+        if (std.mem.eql(u8, c.name, "doThing")) found_dothing = true;
+        try testing.expect(!std.mem.eql(u8, c.name, "if"));
+        try testing.expect(!std.mem.eql(u8, c.name, "while"));
+        try testing.expect(!std.mem.eql(u8, c.name, "return"));
     }
     try testing.expect(found_helper and found_compute and found_method and found_dothing);
     // compute appears twice but is deduped.
     var compute_count: usize = 0;
-    for (callees) |c| if (std.mem.eql(u8, c, "compute")) {
+    for (callees) |c| if (std.mem.eql(u8, c.name, "compute")) {
         compute_count += 1;
     };
     try testing.expectEqual(@as(usize, 1), compute_count);
+}
+
+test "issue-725: extractCallees keeps qualified receivers distinct" {
+    const callees = try codegraph.extractCallees(
+        testing.allocator,
+        "server.run(); run(); workspace.run(); std.Thread.spawn(.{}, worker, .{});",
+    );
+    defer testing.allocator.free(callees);
+
+    try testing.expectEqual(@as(usize, 4), callees.len);
+    try testing.expectEqualStrings("run", callees[0].name);
+    try testing.expectEqualStrings("server", callees[0].qualifier.?);
+    try testing.expectEqualStrings("run", callees[1].name);
+    try testing.expect(callees[1].qualifier == null);
+    try testing.expectEqualStrings("workspace", callees[2].qualifier.?);
+    try testing.expectEqualStrings("spawn", callees[3].name);
+    try testing.expectEqualStrings("std.Thread", callees[3].qualifier.?);
+}
+
+test "issue-725: scoped edges resolve imports and skip same-language ambiguity" {
+    const imports = [_]codegraph.ImportBinding{
+        .{ .alias = "server", .target_path = "src/server.zig" },
+    };
+    const funcs = [_]codegraph.FuncInput{
+        .{ .id = 0, .body = "server.run();", .path = "src/main.zig", .imports = &imports },
+        .{ .id = 1, .body = "", .path = "src/server.zig" },
+        .{ .id = 2, .body = "", .path = "src/workspace.zig" },
+    };
+    const paths = [_][]const u8{ "src/main.zig", "src/server.zig", "src/workspace.zig" };
+    const groups = [_]u8{ 1, 1, 1 };
+    const run_ids = [_]codegraph.NodeId{ 1, 2 };
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    try resolve.put("run", &run_ids);
+
+    var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
+    defer edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), edges.items.len);
+    try testing.expectEqual(@as(codegraph.NodeId, 1), edges.items[0].to);
+
+    const ambiguous_funcs = [_]codegraph.FuncInput{
+        .{ .id = 0, .body = "run();", .path = "src/main.zig" },
+        funcs[1],
+        funcs[2],
+    };
+    var ambiguous_edges = try codegraph.buildEdgesScoped(testing.allocator, &ambiguous_funcs, &resolve, &paths, &groups, false);
+    defer ambiguous_edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), ambiguous_edges.items.len);
+}
+
+test "issue-725: scoped edges prefer the longest exact import qualifier" {
+    const imports = [_]codegraph.ImportBinding{
+        .{ .alias = "zigrep", .target_path = "zigrep/src/root.zig" },
+        .{ .alias = "zigrep.engine", .target_path = "zigrep/src/exec/search_engine.zig" },
+    };
+    const funcs = [_]codegraph.FuncInput{
+        .{ .id = 0, .body = "zigrep.engine.run();", .path = "zigrep/src/main.zig", .imports = &imports },
+        .{ .id = 1, .body = "", .path = "zigrep/src/root.zig" },
+        .{ .id = 2, .body = "", .path = "zigrep/src/exec/search_engine.zig" },
+    };
+    const paths = [_][]const u8{
+        "zigrep/src/main.zig",
+        "zigrep/src/root.zig",
+        "zigrep/src/exec/search_engine.zig",
+    };
+    const groups = [_]u8{ 1, 1, 1 };
+    const run_ids = [_]codegraph.NodeId{ 1, 2 };
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    try resolve.put("run", &run_ids);
+
+    var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
+    defer edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), edges.items.len);
+    try testing.expectEqual(@as(codegraph.NodeId, 2), edges.items[0].to);
+}
+
+test "issue-725: three conflicting longest import bindings are safely ambiguous" {
+    const imports = [_]codegraph.ImportBinding{
+        .{ .alias = "pkg.engine", .target_path = "src/a.zig" },
+        .{ .alias = "pkg.engine", .target_path = "src/b.zig" },
+        .{ .alias = "pkg.engine", .target_path = "src/c.zig" },
+    };
+    const funcs = [_]codegraph.FuncInput{
+        .{ .id = 0, .body = "pkg.engine.run();", .path = "src/main.zig", .imports = &imports },
+        .{ .id = 1, .body = "", .path = "src/a.zig" },
+        .{ .id = 2, .body = "", .path = "src/b.zig" },
+        .{ .id = 3, .body = "", .path = "src/c.zig" },
+    };
+    const paths = [_][]const u8{ "src/main.zig", "src/a.zig", "src/b.zig", "src/c.zig" };
+    const groups = [_]u8{ 1, 1, 1, 1 };
+    const run_ids = [_]codegraph.NodeId{ 1, 2, 3 };
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    try resolve.put("run", &run_ids);
+
+    var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
+    defer edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), edges.items.len);
+}
+
+test "issue-725: bare calls prefer the unique same-file helper" {
+    const funcs = [_]codegraph.FuncInput{
+        .{ .id = 0, .body = "persistLocked();", .path = "src/mergequeue.zig" },
+        .{ .id = 1, .body = "", .path = "src/mergequeue.zig" },
+        .{ .id = 2, .body = "", .path = "src/reviews.zig" },
+    };
+    const paths = [_][]const u8{ "src/mergequeue.zig", "src/mergequeue.zig", "src/reviews.zig" };
+    const groups = [_]u8{ 1, 1, 1 };
+    const helper_ids = [_]codegraph.NodeId{ 1, 2 };
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    try resolve.put("persistLocked", &helper_ids);
+
+    var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
+    defer edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), edges.items.len);
+    try testing.expectEqual(@as(codegraph.NodeId, 1), edges.items[0].to);
+}
+
+test "issue-725: Zig Thread.spawn callback resolves only within its file" {
+    const body =
+        \\// std.Thread.spawn(.{}, ghost, .{});
+        \\const text = "std.Thread.spawn(.{}, stringGhost, .{})";
+        \\const thread = try std.Thread.spawn(.{}, connection, .{ stream });
+        \\const watcher_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ stream });
+    ;
+    const callbacks = try codegraph.extractZigThreadSpawnCallbacks(testing.allocator, body);
+    defer testing.allocator.free(callbacks);
+    try testing.expectEqual(@as(usize, 2), callbacks.len);
+    try testing.expectEqualStrings("connection", callbacks[0].name);
+    try testing.expect(callbacks[0].qualifier == null);
+    try testing.expectEqualStrings("incrementalLoop", callbacks[1].name);
+    try testing.expectEqualStrings("watcher", callbacks[1].qualifier.?);
+
+    const funcs = [_]codegraph.FuncInput{
+        .{
+            .id = 0,
+            .body = body,
+            .path = "src/server.zig",
+            .extract_zig_thread_spawn_callbacks = true,
+        },
+        .{ .id = 1, .body = "", .path = "src/server.zig" },
+        .{ .id = 2, .body = "", .path = "experiments/server.zig" },
+    };
+    const paths = [_][]const u8{ "src/server.zig", "src/server.zig", "experiments/server.zig" };
+    const groups = [_]u8{ 1, 1, 1 };
+    const connection_ids = [_]codegraph.NodeId{ 1, 2 };
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    try resolve.put("connection", &connection_ids);
+
+    var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
+    defer edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), edges.items.len);
+    try testing.expectEqual(@as(codegraph.NodeId, 1), edges.items[0].to);
+}
+
+test "issue-725: Zig Thread.spawn callback rejects malformed calls" {
+    const malformed =
+        \\std.Thread.spawn(.{}, onlyTwo)
+        \\std.Thread.spawn(.{}, truncated,
+        \\std.Thread.spawn(.{}, fourArgs, .{}, extra)
+        \\std.Thread.spawn(.{}, mismatched, .{])
+        \\std.Thread.spawn(([)], crossed, .{})
+        \\std.Thread.spawn(.{}, expression + value, .{})
+        \\std.Thread.spawn(.{}, "unterminated, .{})
+    ;
+    const callbacks = try codegraph.extractZigThreadSpawnCallbacks(testing.allocator, malformed);
+    defer testing.allocator.free(callbacks);
+    try testing.expectEqual(@as(usize, 0), callbacks.len);
+
+    var stress: std.ArrayList(u8) = .empty;
+    defer stress.deinit(testing.allocator);
+    for (0..256) |_| try stress.appendSlice(testing.allocator, "std.Thread.spawn(");
+    const stress_callbacks = try codegraph.extractZigThreadSpawnCallbacks(testing.allocator, stress.items);
+    defer testing.allocator.free(stress_callbacks);
+    try testing.expectEqual(@as(usize, 0), stress_callbacks.len);
+}
+
+test "issue-725: Zig multiline strings do not create call or callback edges" {
+    const body =
+        \\pub fn usage() void {
+        \\    const text =
+        \\        \\\\std.Thread.spawn(.{}, connection, .{});
+        \\    _ = text;
+        \\}
+    ;
+    const callbacks = try codegraph.extractZigThreadSpawnCallbacks(testing.allocator, body);
+    defer testing.allocator.free(callbacks);
+    try testing.expectEqual(@as(usize, 0), callbacks.len);
+
+    const funcs = [_]codegraph.FuncInput{
+        .{ .id = 0, .body = body, .path = "src/main.zig", .extract_zig_thread_spawn_callbacks = true },
+        .{ .id = 1, .body = "", .path = "src/main.zig" },
+    };
+    const paths = [_][]const u8{ "src/main.zig", "src/main.zig" };
+    const groups = [_]u8{ 1, 1 };
+    const connection_ids = [_]codegraph.NodeId{1};
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    try resolve.put("connection", &connection_ids);
+    var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
+    defer edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), edges.items.len);
+}
+
+test "issue-725: Zig Thread.spawn callback resolves an imported function value" {
+    const imports = [_]codegraph.ImportBinding{
+        .{ .alias = "watcher", .target_path = "src/watcher.zig" },
+    };
+    const funcs = [_]codegraph.FuncInput{
+        .{
+            .id = 0,
+            .body = "std.Thread.spawn(.{}, watcher.incrementalLoop, .{});",
+            .path = "src/commands.zig",
+            .imports = &imports,
+            .extract_zig_thread_spawn_callbacks = true,
+        },
+        .{ .id = 1, .body = "", .path = "src/watcher.zig" },
+        .{ .id = 2, .body = "", .path = "experiments/watcher.zig" },
+    };
+    const paths = [_][]const u8{ "src/commands.zig", "src/watcher.zig", "experiments/watcher.zig" };
+    const groups = [_]u8{ 1, 1, 1 };
+    const callback_ids = [_]codegraph.NodeId{ 1, 2 };
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    try resolve.put("incrementalLoop", &callback_ids);
+
+    var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
+    defer edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), edges.items.len);
+    try testing.expectEqual(@as(codegraph.NodeId, 1), edges.items[0].to);
 }
 
 test "codegraph: buildEdges resolves callees + inDegree centrality" {
@@ -1606,10 +1842,11 @@ test "symbol-index: O(1) findSymbol via symbol_index" {
     defer arena.deinit();
     var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
-    try explorer.indexFile("math.zig", "pub fn add(a: i32, b: i32) i32 { return a + b; }\npub fn subtract(a: i32, b: i32) i32 { return a - b; }\n");
     try explorer.indexFile("utils.zig", "pub fn add(x: f64, y: f64) f64 { return x + y; }\npub fn format() void {}\n");
+    try explorer.indexFile("math.zig", "pub fn add(a: i32, b: i32) i32 { return a + b; }\npub fn subtract(a: i32, b: i32) i32 { return a - b; }\n");
 
-    // findSymbol should return first match via index
+    // The hash lookup stays O(1), but exact-name collisions are ranked instead
+    // of inheriting insertion order (utils was indexed first above).
     const result = try explorer.findSymbol("add", testing.allocator);
     try testing.expect(result != null);
     const r = result.?;
@@ -1619,6 +1856,7 @@ test "symbol-index: O(1) findSymbol via symbol_index" {
         if (r.symbol.detail) |d| testing.allocator.free(d);
     }
     try testing.expectEqualStrings("add", r.symbol.name);
+    try testing.expectEqualStrings("math.zig", r.path);
 
     // findAllSymbols should return both
     const all = try explorer.findAllSymbols("add", testing.allocator);
@@ -2714,9 +2952,9 @@ test "audit: extractCallees ignores comment/string mentions" {
     defer testing.allocator.free(callees);
     var saw_real = false;
     for (callees) |c| {
-        if (std.mem.eql(u8, c, "realCall")) saw_real = true;
-        try testing.expect(!std.mem.eql(u8, c, "ghostFn"));
-        try testing.expect(!std.mem.eql(u8, c, "stringOnlyFn"));
+        if (std.mem.eql(u8, c.name, "realCall")) saw_real = true;
+        try testing.expect(!std.mem.eql(u8, c.name, "ghostFn"));
+        try testing.expect(!std.mem.eql(u8, c.name, "stringOnlyFn"));
     }
     try testing.expect(saw_real); // real call in code is still captured
 }
@@ -2932,6 +3170,33 @@ test "issue-656: call graph is stale and dangling after a file edit" {
     try testing.expect(after != null);
 }
 
+test "Swift multiline bodies and initializers participate in call paths" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+
+    try explorer_inst.indexFile("Sources/App/Flow.swift",
+        \\final class Flow {
+        \\    init(
+        \\        enabled: Bool
+        \\    ) {
+        \\        if enabled {
+        \\            configure()
+        \\        }
+        \\    }
+        \\
+        \\    func configure() {
+        \\    }
+        \\}
+    );
+
+    const path = (try explorer_inst.findCallPath("init", "configure", testing.allocator, 2)) orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(path);
+    try testing.expectEqual(@as(usize, 2), path.len);
+    try testing.expectEqualStrings("init", path[0].name);
+    try testing.expectEqualStrings("configure", path[1].name);
+}
+
 test "issue-718: call paths do not cross languages through name collisions" {
     var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer_inst.deinit();
@@ -2953,6 +3218,176 @@ test "issue-718: call paths do not cross languages through name collisions" {
     const path = try explorer_inst.findCallPath("handle", "parseRequest", testing.allocator, 4);
     defer if (path) |steps| testing.allocator.free(steps);
     try testing.expect(path == null);
+}
+
+test "issue-725: call graph resolves imported receiver and same-file helper" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+
+    try explorer_inst.indexFile("src/main.zig",
+        \\const server = @import("server.zig");
+        \\pub fn cmdServe() void {
+        \\    server.run();
+        \\}
+    );
+    try explorer_inst.indexFile("src/server.zig",
+        \\pub fn run() void {
+        \\    serverOnly();
+        \\}
+        \\fn serverOnly() void {}
+    );
+    try explorer_inst.indexFile("src/workspace.zig",
+        \\pub fn run() void {
+        \\    workspaceOnly();
+        \\}
+        \\fn workspaceOnly() void {}
+    );
+
+    const imported = (try explorer_inst.findCallPath("cmdServe", "run", testing.allocator, 4)) orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(imported);
+    try testing.expectEqual(@as(usize, 2), imported.len);
+    try testing.expectEqualStrings("src/server.zig", imported[1].path);
+
+    const real_chain = try explorer_inst.findCallPath("cmdServe", "serverOnly", testing.allocator, 4);
+    defer if (real_chain) |steps| testing.allocator.free(steps);
+    try testing.expect(real_chain != null);
+    const fabricated_chain = try explorer_inst.findCallPath("cmdServe", "workspaceOnly", testing.allocator, 4);
+    defer if (fabricated_chain) |steps| testing.allocator.free(steps);
+    try testing.expect(fabricated_chain == null);
+
+    try explorer_inst.indexFile("src/mergequeue.zig",
+        \\pub fn enqueue() void {
+        \\    persistLocked();
+        \\}
+        \\fn persistLocked() void {
+        \\    correctOnly();
+        \\}
+        \\fn correctOnly() void {}
+    );
+    try explorer_inst.indexFile("src/reviews.zig",
+        \\fn persistLocked() void {
+        \\    wrongOnly();
+        \\}
+        \\fn wrongOnly() void {}
+    );
+
+    const local = (try explorer_inst.findCallPath("enqueue", "persistLocked", testing.allocator, 4)) orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(local);
+    try testing.expectEqualStrings("src/mergequeue.zig", local[1].path);
+    const correct = try explorer_inst.findCallPath("enqueue", "correctOnly", testing.allocator, 4);
+    defer if (correct) |steps| testing.allocator.free(steps);
+    try testing.expect(correct != null);
+    const wrong = try explorer_inst.findCallPath("enqueue", "wrongOnly", testing.allocator, 4);
+    defer if (wrong) |steps| testing.allocator.free(steps);
+    try testing.expect(wrong == null);
+}
+
+test "issue-725: call graph follows an exact Zig re-export chain" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+
+    try explorer_inst.indexFile("zigrep/src/main.zig",
+        \\const zigrep = @import("root.zig");
+        \\pub fn main() void {
+        \\    zigrep.engine.run();
+        \\}
+    );
+    try explorer_inst.indexFile("zigrep/src/root.zig",
+        \\pub const engine = @import("exec/search_engine.zig");
+        \\pub fn run() void {}
+    );
+    try explorer_inst.indexFile("zigrep/src/exec/search_engine.zig",
+        \\pub fn run() void {
+        \\    engineOnly();
+        \\}
+        \\fn engineOnly() void {}
+    );
+
+    // Ranking may build the fast approximate graph first; callpath must replace
+    // it with strict import-aware resolution rather than reusing stale edges.
+    explorer_inst.buildCallCentrality(testing.allocator);
+
+    const imported = (try explorer_inst.findCallPath("main", "run", testing.allocator, 4)) orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(imported);
+    try testing.expectEqual(@as(usize, 2), imported.len);
+    try testing.expectEqualStrings("zigrep/src/exec/search_engine.zig", imported[1].path);
+
+    const real_chain = try explorer_inst.findCallPath("main", "engineOnly", testing.allocator, 4);
+    defer if (real_chain) |steps| testing.allocator.free(steps);
+    try testing.expect(real_chain != null);
+}
+
+test "issue-725: nested Zig imports are not module re-exports" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+
+    try explorer_inst.indexFile("src/main.zig",
+        \\const pkg = @import("root.zig");
+        \\pub fn main() void {
+        \\    pkg.engine.run();
+        \\    pkg.decoy.run();
+        \\}
+    );
+    try explorer_inst.indexFile("src/root.zig",
+        \\pub const engine = struct {
+        \\    pub fn run() void {}
+        \\};
+        \\const Other = struct {
+        \\    const engine = @import("decoy.zig");
+        \\};
+        \\pub const decoy = struct { const hidden = @import("decoy.zig"); };
+    );
+    try explorer_inst.indexFile("src/decoy.zig",
+        \\pub fn run() void {
+        \\    decoyOnly();
+        \\}
+        \\fn decoyOnly() void {}
+    );
+
+    const real = (try explorer_inst.findCallPath("main", "run", testing.allocator, 4)) orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(real);
+    try testing.expectEqualStrings("src/root.zig", real[1].path);
+    const fabricated = try explorer_inst.findCallPath("main", "decoyOnly", testing.allocator, 4);
+    defer if (fabricated) |steps| testing.allocator.free(steps);
+    try testing.expect(fabricated == null);
+}
+
+test "issue-725: Zig Thread.spawn callback adds a unique same-file edge" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+
+    try explorer_inst.indexFile("src/server.zig",
+        \\pub fn run() void {
+        \\    const thread = std.Thread.spawn(.{}, connection, .{}) catch return;
+        \\    _ = thread;
+        \\}
+        \\fn connection() void {
+        \\    handle();
+        \\}
+        \\fn handle() void {}
+    );
+    try explorer_inst.indexFile("experiments/server.zig",
+        \\fn connection() void {
+        \\    decoyOnly();
+        \\}
+        \\fn decoyOnly() void {}
+    );
+
+    const callback = (try explorer_inst.findCallPath("run", "connection", testing.allocator, 4)) orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(callback);
+    try testing.expectEqual(@as(usize, 2), callback.len);
+    try testing.expectEqualStrings("src/server.zig", callback[1].path);
+    const real_chain = try explorer_inst.findCallPath("run", "handle", testing.allocator, 4);
+    defer if (real_chain) |steps| testing.allocator.free(steps);
+    try testing.expect(real_chain != null);
+    const decoy_chain = try explorer_inst.findCallPath("run", "decoyOnly", testing.allocator, 4);
+    defer if (decoy_chain) |steps| testing.allocator.free(steps);
+    try testing.expect(decoy_chain == null);
 }
 
 test "render caches preserve output and invalidate on mutation" {

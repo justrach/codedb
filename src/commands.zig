@@ -278,7 +278,7 @@ pub fn runSemanticIndex(ctx: *RunCtx) void {
     };
     var duration_buf: [64]u8 = undefined;
     ctx.out.p(
-        "{s}\xe2\x9c\x93{s} {s}semantic ANN ready{s}  {d} chunks from {d} files  {d}D  {s}\n" ++
+        "{s}\xe2\x9c\x93{s} {s}semantic ANN ready{s}  {d} chunks from {d} files  {d}D\n" ++
             "  local sidecar: {s}/{s} ({d} bytes total; mmap slab {d} bytes; metadata {d} bytes)\n" ++
             "  persistent vector payload: {d} bytes  remote text sent: {d} bytes\n" ++
             "  vector space: {x}  sensitive paths blocked: {d}  parallel batches: {d}\n" ++
@@ -291,7 +291,6 @@ pub fn runSemanticIndex(ctx: *RunCtx) void {
             stats.records,
             stats.files_indexed,
             stats.dimensions,
-            stats.model,
             ctx.data_dir,
             semantic_index.sidecar_name,
             stats.file_bytes,

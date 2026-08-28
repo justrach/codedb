@@ -198,8 +198,8 @@ codedb hot                            # recently modified files
 | `codedb_word` | O(1) inverted index word lookup |
 | `codedb_callers` | Every call site of a symbol — word index ∩ outline scope, in one round-trip |
 | `codedb_explain` | Definition body + callers in one call (CLI aliases: `explain`, `around`) |
-| `codedb_callpath` | Shortest resolved call chain A→B (CLI alias: `path`) |
-| `codedb_context` | Task-shaped composer — Pareto-frontier hybrid retrieval by default: local BM25/symbol retrieval first, then local ANN search using a remote task embedding plus a fixed public calibration string when an explicit sidecar exists, or a bounded transient Qwen rerank otherwise. Pass `semantic=local` for an on-device-only call. `format=json` adds typed provenance and retrieval-privacy metadata; `document_hops=1..2` expands linked Markdown |
+| `codedb_callpath` | Shortest resolved call chain A→B (CLI alias: `path`); duplicate names list candidates—pass `from_path` / `to_path` (or CLI `--from-path` / `--to-path`) to select a file |
+| `codedb_context` | Task-shaped composer — Pareto-frontier hybrid retrieval by default: local BM25/symbol retrieval first, then local ANN search using a remote task embedding plus a fixed public calibration string when an explicit sidecar exists, or a bounded transient semantic rerank otherwise. Pass `semantic=local` for an on-device-only call. `format=json` adds typed provenance and retrieval-privacy metadata; `document_hops=1..2` expands linked Markdown |
 | `codedb_hot` | Most recently modified files |
 | `codedb_deps` | Typed dependency graph: imports by default, or Markdown links with `edge_type=documents`; document traversal is capped at 2 hops / 64 files |
 | `codedb_read` | Read file content (line ranges, `if_hash` skip-unchanged, `compact` mode) |
@@ -252,6 +252,7 @@ backed by api.wiki.codes was removed; DeepWiki replaces that role.)
 | `codedb word <identifier>` | Exact word lookup via inverted index |
 | `codedb read <path>` | Read file contents (supports `-L FROM-TO`, `--compact`) |
 | `codedb hot` | Recently modified files |
+| `codedb reindex` | Force a fresh filesystem scan, rebuild all local indexes, and refresh the live daemon |
 | `codedb snapshot` | Write codedb.snapshot to project root |
 | `codedb serve` | HTTP daemon on :7719 |
 | `codedb mcp [path]` | JSON-RPC/MCP server over stdio |
@@ -459,7 +460,7 @@ embedding service. In the default hybrid mode:
   code chunks locally through a validated mmap-backed graph;
 - without a sidecar, codedb sends the task plus at most 24 locally selected
   relative paths and bounded snippets, capped at 2 KiB per path+snippet item /
-  8 KiB candidate text total, in one exact-rerank Qwen batch;
+  8 KiB candidate text total, in one exact-rerank batch;
 - the hosted codedb embedding service performs transient inference and does
   not retain request bodies, candidate paths, source snippets, or vectors;
 - no repository archive or server-side repository/vector index is created;
@@ -485,18 +486,17 @@ demand-paged rather than being copied into the query process.
 It never scans or uploads `.env`, `.env.*`, `.envrc`, credentials, private keys, or other paths on
 the sensitive-file denylist. Ordinary indexing does not build this sidecar.
 
-The default hosted 0.6B/512-D lane is free to call and requires no API token or
+The default managed semantic lane is free to call and requires no API token or
 manual setup. On first use, CodeDB creates a local Ed25519 installation key,
 enrolls its public key, and receives a short-lived server-signed certificate.
 Every request proves possession of the installation key; renewal is automatic.
 The private seed stays in a global `~/.codedb/credentials.json` file written
 atomically with mode `0600` on POSIX and is never part of an embedding request.
-The public route cannot select the protected 4B model and enforces enrollment,
-installation, and aggregate network limits. The general multi-model API remains
-authenticated.
+The public route exposes only the managed CodeDB lane and enforces enrollment,
+installation, and aggregate network limits. General provider APIs remain authenticated.
 
-`format=json` exposes this boundary in the `retrieval` object, including the
-model, dimensions, bounded byte/document counts, retention policy, and failure
+`format=json` exposes this boundary in the `retrieval` object, including vector
+dimensions, bounded byte/document counts, retention policy, and failure
 policy. If `CODEDB_EMBEDDINGS_URL` points to a custom provider, codedb labels
 its retention as `custom_endpoint_unverified` because the client cannot prove
 another operator's storage policy.
@@ -522,11 +522,11 @@ before serialization, so those paths remain blocked even if a stale or
 hand-built in-memory index contains one. Structured provenance reports only
 the aggregate `sensitive_paths_blocked` count, never the rejected path.
 
-Optional hybrid-provider overrides:
+Optional custom-provider overrides (the managed lane needs none):
 
 ```bash
-CODEDB_EMBEDDINGS_URL=https://embeddings.wiki.codes/v1/codedb/embeddings
-CODEDB_EMBEDDINGS_MODEL=Qwen/Qwen3-Embedding-0.6B
+CODEDB_EMBEDDINGS_URL=https://provider.example/v1/embeddings
+CODEDB_EMBEDDINGS_MODEL=your-deployment-id
 CODEDB_EMBEDDINGS_DIMENSIONS=512
 CODEDB_EMBEDDINGS_TOKEN='optional bearer token for a protected/custom endpoint'
 CODEDB_EMBEDDINGS_TIMEOUT_MS=15000

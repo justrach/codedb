@@ -6,6 +6,7 @@ const Explorer = @import("explore.zig").Explorer;
 const sty = @import("style.zig");
 const index_mod = @import("index.zig");
 const root_policy = @import("root_policy.zig");
+const snapshot_mod = @import("snapshot.zig");
 const nuke_mod = @import("nuke.zig");
 const update_mod = @import("update.zig");
 const codex_mod = @import("codex_setup.zig");
@@ -371,7 +372,7 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
                 out.p("  {s}head{s}      {s}{s}{s}\n", .{ s.dim, s.reset, s.cyan, h[0..12], s.reset });
             }
         } else {
-            out.p("  {s}files{s}     {s}not indexed{s}  \xe2\x80\x94 run `codedb {s} index`\n", .{ s.dim, s.reset, s.bold, s.reset, root });
+            out.p("  {s}files{s}     {s}not indexed{s}  \xe2\x80\x94 run `codedb {s} reindex`\n", .{ s.dim, s.reset, s.bold, s.reset, root });
         }
         out.p("  {s}data{s}      {s}{s}{s}\n", .{ s.dim, s.reset, s.dim, data_dir, s.reset });
         out.exitWithFlush(0);
@@ -528,14 +529,27 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
         try commands.runServe(&ctx);
     } else if (std.mem.eql(u8, cmd, "mcp")) {
         try commands.runMcp(&ctx);
-    } else if (std.mem.eql(u8, cmd, "index")) {
-        // #633: `index` is a first-class command. coldLoadOrScan above already
-        // scanned + persisted the on-disk index for this cmd; confirm and exit
+    } else if (bootstrap.commandRebuildsIndex(cmd)) {
+        // `reindex` is the public spelling; `index` remains a compatibility
+        // alias. coldLoadOrScan above already
+        // scanned + persisted the on-disk indexes for this cmd. Persist the
+        // validated snapshot to the user-writable central cache first, then
+        // mirror it into the checkout when possible. Read-only/system checkouts
+        // must still reindex successfully.
+        const root_snapshot_written = snapshot_mod.writeReindexSnapshots(io, &explorer, abs_root, allocator) catch |err| {
+            out.p("{s}✗{s} reindex persisted indexes but could not write validated snapshot: {}\n", .{ s.red, s.reset, err });
+            out.flush();
+            std.process.exit(1);
+        };
+        if (!root_snapshot_written) {
+            std.log.warn("reindex: central snapshot is ready; checkout is read-only so codedb.snapshot was not refreshed", .{});
+        }
+        // Confirm and exit
         // cleanly. It used to fall through to "unknown command: index" + exit 1
         // even though the index had been built.
         if (cliNotifyRefresh(io, allocator, abs_root, data_dir)) |refreshed| {
             if (!refreshed) {
-                out.p("{s}\xe2\x9c\x97{s} index persisted but live daemon refresh failed; restart the codedb daemon to load it\n", .{ s.red, s.reset });
+                out.p("{s}\xe2\x9c\x97{s} reindex persisted but live daemon refresh failed; restart the codedb daemon to load it\n", .{ s.red, s.reset });
                 out.flush();
                 std.process.exit(1);
             }
@@ -543,8 +557,8 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
         explorer.mu.lockShared();
         const file_count = explorer.outlines.count();
         explorer.mu.unlockShared();
-        out.p("{s}\xe2\x9c\x93{s} {s}index ready{s}  {s}{d} files{s}\n", .{
-            s.green, s.reset, s.bold, s.reset, s.dim, file_count, s.reset,
+        out.p("{s}\xe2\x9c\x93{s} {s}{s} ready{s}  {s}{d} files{s}\n", .{
+            s.green, s.reset, s.bold, cmd, s.reset, s.dim, file_count, s.reset,
         });
         out.flush();
         std.process.exit(0);

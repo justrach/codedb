@@ -2238,12 +2238,17 @@ test "find: symbol fast-path classifier + lookup" {
     var explorer = Explorer.init(alloc, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     try explorer.indexFile("src/auth.zig", "pub fn getTokenProvider() void {}\n");
     try explorer.indexFile("src/use.zig", "const getTokenProvider = @import(\"auth.zig\").getTokenProvider;\n");
+    try explorer.indexFile("experiments/probe_a.py", "def getTokenProvider():\n    return 1\n");
+    try explorer.indexFile("experiments/probe_b.py", "def getTokenProvider():\n    return 2\n");
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
-    try testing.expect(explorer.renderSymbolDefsFast("getTokenProvider", alloc, &out, 10));
-    try testing.expect(std.mem.indexOf(u8, out.items, "src/auth.zig") != null);
+    try testing.expect(explorer.renderSymbolDefsFast("getTokenProvider", alloc, &out, 2));
+    const canonical_pos = std.mem.indexOf(u8, out.items, "src/auth.zig") orelse return error.TestUnexpectedResult;
+    const probe_pos = std.mem.indexOf(u8, out.items, "experiments/probe_a.py") orelse return error.TestUnexpectedResult;
+    try testing.expect(canonical_pos < probe_pos);
     try testing.expect(std.mem.indexOf(u8, out.items, "(function)") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "more exact symbol matches truncated") != null);
 
     var miss: std.ArrayList(u8) = .empty;
     defer miss.deinit(alloc);

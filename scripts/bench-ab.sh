@@ -25,6 +25,8 @@ HEAD_FULL_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 HEAD_TREE_SHA="$(git -C "$REPO_ROOT" rev-parse 'HEAD^{tree}')"
 PAIRED_5829_BASE_SHA="dd36e9431925014ee2bed80346669a4afee7e42e"
 PAIRED_5829_SHA="24e89c70d4f9cdaf5542a78d83d1890a42b4a046"
+PAIRED_5846_BASE_SHA="3db4242b9b39a857bdb4657d39bb623c76501fe9"
+PAIRED_5846_SHA="f5657e30f2e5bad759b5de20b591e2f67436e1b9"
 WT="$HOME/.cache/codedb-bench-ab-$$"
 BENCH_WT="$WT"
 HEAD_WT="$WT-head"
@@ -61,7 +63,16 @@ echo "pairs:  $PAIRS (AB/BA counterbalanced)"
 echo "corpus: fixed 21-file set copied from the base worktree"
 
 git -C "$REPO_ROOT" worktree add --detach "$WT" "$BASE_REF" >/dev/null
-if ! grep -q 'corpus_hash' "$WT/src/bench.zig"; then
+if [[ "$BASE_FULL_SHA" == "$PAIRED_5846_BASE_SHA" ]]; then
+  git -C "$REPO_ROOT" cat-file -e "$PAIRED_5846_SHA^{commit}" 2>/dev/null || {
+    git -C "$REPO_ROOT" fetch origin bench/v0.2.5846-content-parity --depth=1
+    [[ "$(git -C "$REPO_ROOT" rev-parse FETCH_HEAD)" == "$PAIRED_5846_SHA" ]]
+  }
+  git -C "$REPO_ROOT" merge-base --is-ancestor "$BASE_FULL_SHA" "$PAIRED_5846_SHA"
+  [[ "$(git -C "$REPO_ROOT" diff --name-only "$BASE_FULL_SHA..$PAIRED_5846_SHA")" == 'src/mcp.zig' ]]
+  BENCH_WT="$WT-paired"
+  git -C "$REPO_ROOT" worktree add --detach "$BENCH_WT" "$PAIRED_5846_SHA" >/dev/null
+elif ! grep -q 'corpus_hash' "$WT/src/bench.zig"; then
   if [[ "$BASE_FULL_SHA" != "$PAIRED_5829_BASE_SHA" ]]; then
     echo "base ref lacks paired/parity benchmark schema and has no pinned harness" >&2
     exit 2
@@ -105,7 +116,7 @@ for ((pair = 1; pair <= PAIRS; pair++)); do
 done
 
 python3 "$HEAD_WT/scripts/compare-bench-paired.py" "$OUT" \
-  --require-parity --require-provenance --allow-parity-skip codedb_snapshot --allow-parity-skip codedb_status \
+  --require-parity --require-provenance --allow-parity-skip codedb_snapshot --allow-parity-skip codedb_status --allow-parity-skip codedb_context \
   --expected-head-sha "$HEAD_FULL_SHA" --expected-head-tree-sha "$HEAD_TREE_SHA" \
   --threshold-pct 10 --min-abs-ns 50000 --markdown-out "$OUT/report.md"
 

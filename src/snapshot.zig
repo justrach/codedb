@@ -1653,6 +1653,38 @@ pub fn writeSnapshotDual(
     try copyToProjectCache(io, explorer, root_path, output_path, allocator);
 }
 
+/// Reindex persistence is central-cache first so a read-only checkout remains
+/// fully usable. Returns whether the best-effort in-repo mirror was refreshed.
+/// The central snapshot is mandatory and atomically written; the root copy uses
+/// the same validated bytes and is also atomic when the checkout is writable.
+pub fn writeReindexSnapshots(
+    io: std.Io,
+    explorer: *Explorer,
+    root_path: []const u8,
+    allocator: std.mem.Allocator,
+) !bool {
+    try writeProjectCacheSnapshot(io, explorer, root_path, allocator);
+
+    const hash = std.hash.Wyhash.hash(0, root_path);
+    const home_raw = cio.homeDir() orelse return false;
+    const central_path = try std.fmt.allocPrint(
+        allocator,
+        "{s}/.codedb/projects/{x}/codedb.snapshot",
+        .{ home_raw, hash },
+    );
+    defer allocator.free(central_path);
+    const central_file = std.Io.Dir.cwd().openFile(io, central_path, .{
+        .allow_directory = false,
+        .follow_symlinks = false,
+    }) catch return false;
+    defer central_file.close(io);
+
+    const root_dir = explorer.root_dir orelse return false;
+    copyOpenFileAtomic(io, central_file, root_dir, "codedb.snapshot", allocator) catch return false;
+    ensureGitIgnoresSnapshot(io, root_path, allocator);
+    return true;
+}
+
 fn writePrivateFileAtomic(io: std.Io, dir: std.Io.Dir, name: []const u8, data: []const u8, allocator: std.mem.Allocator) !void {
     const tmp = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ name, cio.randU64() });
     defer allocator.free(tmp);

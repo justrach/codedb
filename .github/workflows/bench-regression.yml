@@ -13,6 +13,8 @@ env:
   LEGACY_ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
   PAIRED_5829_BASE_SHA: dd36e9431925014ee2bed80346669a4afee7e42e
   PAIRED_5829_SHA: 24e89c70d4f9cdaf5542a78d83d1890a42b4a046
+  PAIRED_5846_BASE_SHA: 3db4242b9b39a857bdb4657d39bb623c76501fe9
+  PAIRED_5846_SHA: f5657e30f2e5bad759b5de20b591e2f67436e1b9
 
 jobs:
   macos-resource-regression:
@@ -140,7 +142,16 @@ jobs:
           fi
 
           paired_base="../codedb-base"
-          if ! grep -q corpus_hash "$paired_base/src/bench.zig"; then
+          if [[ "$EVENT_BASE_SHA" == "$PAIRED_5846_BASE_SHA" ]]; then
+            git cat-file -e "$PAIRED_5846_SHA^{commit}" 2>/dev/null || {
+              git fetch origin bench/v0.2.5846-content-parity --depth=1
+              test "$(git rev-parse FETCH_HEAD)" = "$PAIRED_5846_SHA"
+            }
+            git merge-base --is-ancestor "$EVENT_BASE_SHA" "$PAIRED_5846_SHA"
+            test "$(git diff --name-only "$EVENT_BASE_SHA..$PAIRED_5846_SHA")" = 'src/mcp.zig'
+            git worktree add ../codedb-paired-base "$PAIRED_5846_SHA"
+            paired_base="../codedb-paired-base"
+          elif ! grep -q corpus_hash "$paired_base/src/bench.zig"; then
             if [[ "$EVENT_BASE_SHA" != "$PAIRED_5829_BASE_SHA" ]]; then
               echo "No pinned parity harness exists for base $EVENT_BASE_SHA" >&2
               exit 1

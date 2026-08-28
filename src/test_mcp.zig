@@ -24,6 +24,7 @@ const TrigramIndex = @import("index.zig").TrigramIndex;
 const SparseNgramIndex = @import("index.zig").SparseNgramIndex;
 const cli_args_mod = @import("cli_args.zig");
 const out_mod = @import("out.zig");
+const sty = @import("style.zig");
 const query_mod = @import("query.zig");
 const cli_proxy_mod = @import("cli_proxy.zig");
 const bootstrap_mod = @import("bootstrap.zig");
@@ -2576,6 +2577,92 @@ test "issue-570: codedb_context falls back to plain words for all-lowercase task
     try testing.expect(std.mem.indexOf(u8, out.items, "ranking") != null);
 }
 
+test "issue-725: codedb_context focuses production definitions and seeds their sites" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try setTestProjectRoot(&explorer);
+
+    // The first candidate (MCP) deliberately fills src/mcp.zig's three lexical
+    // preview slots before the later `dispatch` keyword is searched. The exact
+    // task also finds more than three symbol rows, which used to disable every
+    // focused body.
+    try explorer.indexFile("src/mcp.zig",
+        \\// MCP tool registry overview
+        \\// filler
+        \\// MCP project routing notes
+        \\// filler
+        \\// MCP calls and validation notes
+        \\// filler
+        \\// filler
+        \\// filler
+        \\pub fn dispatch() void {
+        \\    const canonical_project_validation = true;
+        \\    _ = canonical_project_validation;
+        \\}
+    );
+    try explorer.indexFile("website/src/dispatch.zig",
+        \\pub fn dispatch() void {
+        \\    const website_dispatch_decoy = true;
+        \\    _ = website_dispatch_decoy;
+        \\}
+    );
+    try explorer.indexFile("src/semantic.zig",
+        \\pub fn validate() void {
+        \\    const provider_validation = true;
+        \\    _ = provider_validation;
+        \\}
+    );
+    try explorer.indexFile("bench/validate.py", "def validate():\n    return 'bench'\n");
+    try explorer.indexFile("experiments/validate.py", "def validate():\n    return 'experiment'\n");
+    try explorer.indexFile("src/test_mcp.zig",
+        \\const dispatch = @import("dispatch_fixture.zig");
+        \\test "one" { const MCP = @import("mcp.zig"); _ = MCP; }
+        \\test "two" { const MCP = @import("mcp.zig"); _ = MCP; }
+        \\test "three" { const MCP = @import("mcp.zig"); _ = MCP; }
+        \\_ = dispatch;
+    );
+    try explorer.indexFile(
+        "patches/696-mcp-list-dir.patch",
+        "PATCH_DECOY MCP dispatch validate project calls MCP dispatch validate project calls\n",
+    );
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, explorer.root_path.?, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"task":"how does MCP tool dispatch validate project paths and route calls?","semantic":"local"}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    bench_ctx.runDispatch(io, testing.allocator, .codedb_context, &parsed.value.object, &out, &store, &explorer, &agents);
+
+    const defs_start = std.mem.indexOf(u8, out.items, "## Symbol definitions") orelse return error.TestUnexpectedResult;
+    const files_start = std.mem.indexOfPos(u8, out.items, defs_start, "## Most-relevant files") orelse return error.TestUnexpectedResult;
+    const definitions = out.items[defs_start..files_start];
+    try testing.expect(std.mem.indexOf(u8, definitions, "canonical_project_validation") != null);
+    try testing.expect(std.mem.indexOf(u8, definitions, "dispatch (import)") == null);
+
+    const sites_start = std.mem.indexOfPos(u8, out.items, files_start, "## Top sites") orelse return error.TestUnexpectedResult;
+    const sites = out.items[sites_start..];
+    const canonical_pos = std.mem.indexOf(u8, sites, "canonical_project_validation") orelse return error.TestUnexpectedResult;
+    if (std.mem.indexOf(u8, sites, "website_dispatch_decoy")) |decoy_pos| {
+        try testing.expect(canonical_pos < decoy_pos);
+    }
+    if (std.mem.indexOf(u8, sites, "PATCH_DECOY")) |patch_pos| {
+        try testing.expect(canonical_pos < patch_pos);
+    }
+}
+
 test "issue-718: architecture context prefers canonical docs and entrypoints" {
     try testing.expect(mcp_mod.isArchitectureOverviewTask("overview of the project architecture and source layout"));
     try testing.expect(!mcp_mod.isArchitectureOverviewTask("fix architecturePathPriority"));
@@ -2625,7 +2712,14 @@ test "issue-718: explain main puts the package entrypoint first" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try setTestProjectRoot(&explorer);
-    try explorer.indexFile("experiments/probe.py", "def main():\n    return 1\n");
+    // More than codedb_symbol/explain's default cap. The old implementation
+    // selected 50 lexicographic paths first and only then boosted src/main.zig,
+    // so the entrypoint was already gone before ranking ran.
+    for (0..51) |i| {
+        const path = try std.fmt.allocPrint(testing.allocator, "experiments/probe_{d}.py", .{i});
+        defer testing.allocator.free(path);
+        try explorer.indexFile(path, "def main():\n    return 1\n");
+    }
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
     var store = Store.init(testing.allocator);
@@ -2646,8 +2740,67 @@ test "issue-718: explain main puts the package entrypoint first" {
     bench_ctx.runDispatch(io, testing.allocator, .codedb_explain, &parsed.value.object, &out, &store, &explorer, &agents);
 
     const entrypoint_pos = std.mem.indexOf(u8, out.items, "src/main.zig") orelse return error.TestUnexpectedResult;
-    const experiment_pos = std.mem.indexOf(u8, out.items, "experiments/probe.py") orelse return error.TestUnexpectedResult;
+    const experiment_pos = std.mem.indexOf(u8, out.items, "experiments/probe_0.py") orelse return error.TestUnexpectedResult;
     try testing.expect(entrypoint_pos < experiment_pos);
+    try testing.expect(std.mem.indexOf(u8, out.items, "more symbol results truncated") != null);
+
+    // The legacy CLI `find` now uses the same pre-cap navigation order and
+    // discloses that its compact collision list omitted further definitions.
+    var cli_sink: std.ArrayList(u8) = .empty;
+    defer cli_sink.deinit(testing.allocator);
+    var cli_out = out_mod.Out{ .file = cio.File.stdout(), .alloc = testing.allocator, .sink = &cli_sink };
+    const cli_args = [_][]const u8{ "codedb", ".", "find", "main" };
+    try testing.expectEqual(@as(u8, 0), query_mod.runQuery(io, testing.allocator, &explorer, &store, ".", "find", &cli_args, 3, &cli_out, sty.off));
+    cli_out.flush();
+    const cli_entrypoint_pos = std.mem.indexOf(u8, cli_sink.items, "src/main.zig") orelse return error.TestUnexpectedResult;
+    const cli_experiment_pos = std.mem.indexOf(u8, cli_sink.items, "experiments/probe_0.py") orelse return error.TestUnexpectedResult;
+    try testing.expect(cli_entrypoint_pos < cli_experiment_pos);
+    try testing.expect(std.mem.indexOf(u8, cli_sink.items, "more exact definitions truncated") != null);
+}
+
+test "issue-725: codedb_symbol preserves structural order and reports truncation" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("z.py", "def sharedName():\n    pass\n");
+    try explorer.indexFile("a.py", "def sharedName():\n    pass\n");
+    try explorer.indexFile("m.py", "def sharedName():\n    pass\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"sharedName\",\"max_results\":2}", .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_symbol, &parsed.value.object, &out, &store, &explorer, &agents);
+        const a_pos = std.mem.indexOf(u8, out.items, "a.py") orelse return error.TestUnexpectedResult;
+        const m_pos = std.mem.indexOf(u8, out.items, "m.py") orelse return error.TestUnexpectedResult;
+        try testing.expect(a_pos < m_pos);
+        try testing.expect(std.mem.indexOf(u8, out.items, "z.py") == null);
+        try testing.expect(std.mem.indexOf(u8, out.items, "more symbol results truncated") != null);
+    }
+
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"sharedName\",\"max_results\":2,\"format\":\"json\"}", .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_symbol, &parsed.value.object, &out, &store, &explorer, &agents);
+        const rendered = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.items, .{});
+        defer rendered.deinit();
+        const obj = rendered.value.object;
+        try testing.expect(obj.get("meta").?.object.get("truncated").?.bool);
+        const rows = obj.get("results").?.array.items;
+        try testing.expectEqual(@as(usize, 2), rows.len);
+        try testing.expectEqualStrings("a.py", rows[0].object.get("path").?.string);
+        try testing.expectEqualStrings("m.py", rows[1].object.get("path").?.string);
+    }
 }
 
 test "issue-688: codedb_context json exposes typed provenance and preserves markdown default" {
@@ -2770,6 +2923,7 @@ test "codedb_context hybrid is default, local is explicit, and provider failure 
     defer structured.deinit();
     const retrieval = structured.value.object.get("retrieval").?.object;
     try testing.expectEqualStrings("local_bm25_and_symbols", retrieval.get("initial").?.string);
+    try testing.expect(retrieval.get("model") == null);
     try testing.expectEqualStrings("unavailable", retrieval.get("semantic").?.string);
     try testing.expectEqualStrings("InsecureEmbeddingEndpoint", retrieval.get("detail").?.string);
     try testing.expectEqual(@as(i64, 0), retrieval.get("documents_sent").?.integer);
@@ -3639,6 +3793,106 @@ test "issue-633: `index` is a recognized command (not a usage/unknown error)" {
     const p2 = main_mod.parsePositional(&[_][]const u8{ "codedb", "/proj", "index" });
     try testing.expectEqualStrings("index", p2.cmd);
     try testing.expectEqualStrings("/proj", p2.root);
+}
+
+test "reindex is public, parses with or without a root, and appears in help" {
+    const implicit = main_mod.parsePositional(&[_][]const u8{ "codedb", "reindex" });
+    try testing.expect(!implicit.usage_exit);
+    try testing.expectEqualStrings("reindex", implicit.cmd);
+    try testing.expectEqualStrings(".", implicit.root);
+
+    const explicit = main_mod.parsePositional(&[_][]const u8{ "codedb", "/proj", "reindex" });
+    try testing.expect(!explicit.usage_exit);
+    try testing.expectEqualStrings("reindex", explicit.cmd);
+    try testing.expectEqualStrings("/proj", explicit.root);
+
+    var sink: std.ArrayList(u8) = .empty;
+    defer sink.deinit(testing.allocator);
+    var out = out_mod.Out{ .file = cio.File.stdout(), .alloc = testing.allocator, .sink = &sink };
+    out_mod.printUsage(&out, sty.off);
+    out.flush();
+    try testing.expect(std.mem.indexOf(u8, sink.items, "reindex") != null);
+    try testing.expect(std.mem.indexOf(u8, sink.items, "force a fresh filesystem scan") != null);
+}
+
+test "reindex refreshes root snapshot so no-daemon queries do not rescan" {
+    try buildCliForHelpTests();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "project/src");
+    try tmp.dir.createDirPath(io, ".home");
+    try tmp.dir.writeFile(io, .{ .sub_path = "project/src/main.zig", .data = "pub fn oldSymbol() void {}\n" });
+
+    var project_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_len = try tmp.dir.realPathFile(io, "project", &project_buf);
+    const project_root = project_buf[0..project_len];
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home_len = try tmp.dir.realPathFile(io, ".home", &home_buf);
+    const test_home = home_buf[0..home_len];
+
+    const g_allow = EnvVarGuard.save("CODEDB_ALLOW_TEMP");
+    defer g_allow.restore();
+    const g_home = EnvVarGuard.save("HOME");
+    defer g_home.restore();
+    const g_profile = EnvVarGuard.save("USERPROFILE");
+    defer g_profile.restore();
+    const g_daemon = EnvVarGuard.save("CODEDB_NO_CLI_DAEMON");
+    defer g_daemon.restore();
+    const g_telemetry = EnvVarGuard.save("CODEDB_NO_TELEMETRY");
+    defer g_telemetry.restore();
+    cio.posixSetenv("CODEDB_ALLOW_TEMP", "1");
+    cio.posixSetenv("HOME", test_home);
+    cio.posixSetenv("USERPROFILE", test_home);
+    cio.posixSetenv("CODEDB_NO_CLI_DAEMON", "1");
+    cio.posixSetenv("CODEDB_NO_TELEMETRY", "1");
+
+    const old_snapshot = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ builtCodedbExe(), project_root, "snapshot" },
+        .max_output_bytes = 128 * 1024,
+    });
+    defer testing.allocator.free(old_snapshot.stdout);
+    defer testing.allocator.free(old_snapshot.stderr);
+    try testing.expectEqual(@as(u8, 0), old_snapshot.term.Exited);
+
+    // Leave an out-of-date in-repo snapshot behind. Before this fix reindex
+    // refreshed only the central cache copy, while freshness checks preferred
+    // this stale root copy and forced the next no-daemon lookup to scan again.
+    try tmp.dir.writeFile(io, .{ .sub_path = "project/src/main.zig", .data = "pub fn freshSymbol() void {}\n" });
+    // A central snapshot is mandatory, but the in-repo mirror is best-effort:
+    // system/CI checkouts can be readable without being writable.
+    if (builtin.os.tag != .windows) {
+        var project_z_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const project_z = try cio.bufPrintZ(&project_z_buf, "{s}", .{project_root});
+        try testing.expectEqual(@as(c_int, 0), std.c.chmod(project_z.ptr, 0o555));
+    }
+    defer if (builtin.os.tag != .windows) {
+        var project_z_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (cio.bufPrintZ(&project_z_buf, "{s}", .{project_root})) |project_z| {
+            _ = std.c.chmod(project_z.ptr, 0o755);
+        } else |_| {}
+    };
+    const reindexed = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ builtCodedbExe(), project_root, "reindex" },
+        .max_output_bytes = 128 * 1024,
+    });
+    defer testing.allocator.free(reindexed.stdout);
+    defer testing.allocator.free(reindexed.stderr);
+    try testing.expectEqual(@as(u8, 0), reindexed.term.Exited);
+
+    const warm = try cio.runCapture(.{
+        .allocator = testing.allocator,
+        .argv = &.{ builtCodedbExe(), project_root, "symbol", "freshSymbol" },
+        .max_output_bytes = 128 * 1024,
+    });
+    defer testing.allocator.free(warm.stdout);
+    defer testing.allocator.free(warm.stderr);
+    try testing.expectEqual(@as(u8, 0), warm.term.Exited);
+    try testing.expect(std.mem.indexOf(u8, warm.stdout, "loaded snapshot") != null);
+    try testing.expect(std.mem.indexOf(u8, warm.stdout, "indexed") == null);
+    try testing.expect(std.mem.indexOf(u8, warm.stdout, "freshSymbol") != null);
 }
 
 test "issue-632: codedb_read raw mode coverage — full-file byte-exact, default unchanged" {
@@ -4560,4 +4814,56 @@ test "issue: codedb_callers keeps a symbol used outside a string on a line that 
 
     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "mixed.zig:2") != null);
+}
+
+test "issue-725: codedb_callers keeps callback arguments and Ruby command calls" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "thread.zig", "pub fn callerA() void {\n    _ = std.Thread.spawn(.{}, callbacks.renderX, .{});\n}\n" },
+        .{ "map.js", "function callerB(items) {\n    return items.map(renderX);\n}\n" },
+        .{ "map.py", "def caller_c(items):\n    return map(renderX, items)\n" },
+        .{ "command.rb", "def caller_d(item)\n  renderX item\nend\n" },
+        .{ "not-calls.js", "function takes(renderX) {\n    const copy = renderX;\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "4 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "thread.zig:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "map.js:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "map.py:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "command.rb:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "not-calls.js") == null);
+}
+
+test "OpenWispr: callers excludes Swift declarations, locals, and parameter labels" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "definition.swift", "func start() {}\n" },
+        .{
+            "calls.swift",
+            \\func caller(since start: Date) {
+            \\    let start = Date()
+            \\    let snapshot = start
+            \\    start()
+            \\    start?()
+            \\    start {
+            \\    }
+            \\}
+        },
+    }, "start", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "3 call sites for 'start'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:1") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:2") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:3") == null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:4") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:5") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "calls.swift:6") != null);
 }

@@ -4,7 +4,7 @@ This directory contains only the pure-Zig in-process HNSW engine from
 [justrach/openpuffer](https://github.com/justrach/openpuffer), plus its Zig
 package files and MIT license.
 
-- Upstream revision: `90a06a713c18ec0e35a4727f013c6ac0f0551a5b`
+- Upstream revision: `b76cbfdafbad152a460dc956ed7482140ddacc6c`
 - Upstream library merge: [PR #16](https://github.com/justrach/openpuffer/pull/16)
 - The codedb adapter's 512D search profile (`ef=48`, rerank x2) comes from the
   real-repository/synthetic recall gate merged in upstream
@@ -14,7 +14,12 @@ package files and MIT license.
   [PR #30](https://github.com/justrach/openpuffer/pull/30), merged at
   `5596b785faf0c4fcf3a77f999a1d6883789ae454`. The accompanying server-only
   Zig 0.17 fix is intentionally absent because codedb vendors no server code.
-- Included from upstream: `src/lib.zig`, `src/hnsw.zig`, `src/vector.zig`,
+- POSIX HMLS persistence and macOS mmap coverage are synced through upstream
+  [PR #31](https://github.com/justrach/openpuffer/pull/31), merged at
+  `b76cbfdafbad152a460dc956ed7482140ddacc6c`. Upstream's model-specific 1536D
+  traversal prefix is disabled in this vendor because codedb accepts arbitrary
+  providers at that width; every configured dimension is traversed in full.
+- Included from upstream: `src/lib.zig`, `src/hnsw.zig`, `src/vector.zig`, `src/rss.zig`,
   `build.zig.zon`, `LICENSE`, `README.md`
 - Local adapter: `build.zig` exposes only upstream's `src/lib.zig` module and
   runs the included library/HNSW/vector tests; the omitted executable/server

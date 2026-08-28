@@ -243,7 +243,7 @@ pub fn isValidMcpFlag(arg: []const u8) bool {
 fn isCommand(arg: []const u8) bool {
     // cli_query_cmds is the shared query-command table (see its doc); only the
     // non-query commands are listed here.
-    const commands = cli_query_cmds ++ [_][]const u8{ "snapshot", "semantic-index", "serve", "mcp", "update", "nuke", "codex", "cli-daemon", "index" };
+    const commands = cli_query_cmds ++ [_][]const u8{ "snapshot", "semantic-index", "serve", "mcp", "update", "nuke", "codex", "cli-daemon", "index", "reindex" };
     for (commands) |c| {
         if (std.mem.eql(u8, arg, c)) return true;
     }

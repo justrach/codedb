@@ -161,6 +161,31 @@ class PairedComparisonTests(unittest.TestCase):
         self.assertIn("Provenance: PASS", report)
         self.assertEqual([], failures)
 
+    def test_v5846_version_neutral_baseline_harness_is_pinned(self) -> None:
+        base = add_provenance(payload(100), "base", 1, "AB", 1)
+        head = add_provenance(payload(90), "head", 1, "AB", 2)
+        meta = base["benchmark_provenance"]
+        meta["source_sha"] = "f5657e30f2e5bad759b5de20b591e2f67436e1b9"
+        meta["source_tree_sha"] = "6834d4dd512d9af34d1dab8e92815ea98dd1e00a"
+        meta["production_source_sha"] = "3db4242b9b39a857bdb4657d39bb623c76501fe9"
+        meta["corpus_source_sha"] = "3db4242b9b39a857bdb4657d39bb623c76501fe9"
+        meta["corpus_source_tree_sha"] = "f5a3c3a705f514833a0b1c61f41dc7f7ad6a0c5f"
+        head_meta = head["benchmark_provenance"]
+        head_meta["corpus_source_sha"] = "3db4242b9b39a857bdb4657d39bb623c76501fe9"
+        head_meta["corpus_source_tree_sha"] = "f5a3c3a705f514833a0b1c61f41dc7f7ad6a0c5f"
+
+        _, failures = paired.compare(
+            [(base, head)],
+            threshold_pct=10,
+            min_abs_ns=0,
+            require_parity=True,
+            bootstrap_samples=100,
+            require_provenance=True,
+            expected_head_sha="c" * 40,
+            expected_head_tree_sha="e" * 40,
+        )
+        self.assertEqual([], failures)
+
     def test_incorrect_counterbalance_provenance_fails(self) -> None:
         samples = [
             (

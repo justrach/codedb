@@ -19,8 +19,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const vecmath = @import("vector.zig");
+const rss = @import("rss.zig");
 const posix = std.posix;
-const linux = std.os.linux;
 
 /// Persist envelope magic ('OPSN' le). Duplicated so this file does not
 /// import persist.zig (persist already imports hnsw).
@@ -506,7 +506,9 @@ pub fn Hnsw(comptime D: type) type {
                     std.atomic.spinLoopHint();
                     continue;
                 }
-                const approx = @as(f64, @floatFromInt(vecmath.dotI8(qq, self.qvecConst(id)))) *
+                const stored = self.qvecConst(id);
+                const n = @min(qq.len, stored.len);
+                const approx = @as(f64, @floatFromInt(vecmath.dotI8(qq[0..n], stored[0..n]))) *
                     qs * self.qscaleOf(id);
                 const g2 = @atomicLoad(u32, &self.vec_gen.items[id], .acquire);
                 if (g1 == g2) return @max(0.0, 1.0 - @as(f32, @floatCast(approx)));
@@ -525,10 +527,20 @@ pub fn Hnsw(comptime D: type) type {
             s: *const Self,
             qq: []const i8,
             qs: f32,
+            n: usize,
             pub inline fn dist(d: @This(), id: u32) f32 {
-                return d.s.distQ(d.qq, d.qs, id);
+                const n = @min(d.n, d.qq.len);
+                return d.s.distQ(d.qq[0..n], d.qs, id);
             }
         };
+
+        /// CodeDB accepts arbitrary embedding providers, so dimension alone
+        /// cannot identify the 1536D distribution used to validate upstream's
+        /// E037 prefix shortcut. Traverse every configured dimension here;
+        /// reranking cannot recover a true neighbor excluded during traversal.
+        fn searchPrefix(self: *const Self) usize {
+            return self.dim;
+        }
 
         fn markVisited(visited: *std.DynamicBitSetUnmanaged, alloc: std.mem.Allocator, id: u32) !void {
             if (id >= visited.capacity()) {
@@ -596,6 +608,13 @@ pub fn Hnsw(comptime D: type) type {
                 // concurrently supplied/in-memory graph. Untrusted sidecars
                 // must never turn an invariant violation into a process panic.
                 if (layer >= self.layerCount(c.id)) return error.InvalidNeighborLayer;
+                if (candidates.count() > 0) {
+                    @prefetch(self.neighborSlotsConst(candidates.peek().?.id, layer).ptr, .{
+                        .rw = .read,
+                        .locality = 3,
+                        .cache = .data,
+                    });
+                }
                 var nbr_buf: [64]u32 = undefined;
                 const nbrs = self.snapshotNeighbors(c.id, layer, &nbr_buf);
                 for (nbrs, 0..) |nid, ni| {
@@ -777,7 +796,7 @@ pub fn Hnsw(comptime D: type) type {
 
             var visited = try std.DynamicBitSetUnmanaged.initEmpty(scratch, self.len() + 2048);
             defer visited.deinit(scratch);
-            const qctx = QDist{ .s = self, .qq = q.q8, .qs = q.scale };
+            const qctx = QDist{ .s = self, .qq = q.q8, .qs = q.scale, .n = q.q8.len };
             const ep_id = self.entryPoint().?;
             var ep: [1]Candidate = .{.{ .id = ep_id, .d = qctx.dist(ep_id) }};
             var cur = self.getMaxLevel();
@@ -962,7 +981,7 @@ pub fn Hnsw(comptime D: type) type {
                 }
                 break :blk buf;
             };
-            const ctx = QDist{ .s = self, .qq = qq, .qs = qs };
+            const ctx = QDist{ .s = self, .qq = qq, .qs = qs, .n = self.searchPrefix() };
 
             var visited = try std.DynamicBitSetUnmanaged.initEmpty(alloc, self.len() + 2048);
             defer visited.deinit(alloc);
@@ -2019,6 +2038,20 @@ pub fn Hnsw(comptime D: type) type {
     };
 }
 
+test "codedb vendor traverses the full width for every embedding provider" {
+    const Index = Hnsw(void);
+    var codedb = Index.init(std.testing.allocator, 512, .{});
+    defer codedb.deinit();
+    var embedding = Index.init(std.testing.allocator, 768, .{});
+    defer embedding.deinit();
+    var engine = Index.init(std.testing.allocator, 1536, .{});
+    defer engine.deinit();
+
+    try std.testing.expectEqual(@as(usize, 512), codedb.searchPrefix());
+    try std.testing.expectEqual(@as(usize, 768), embedding.searchPrefix());
+    try std.testing.expectEqual(@as(usize, 1536), engine.searchPrefix());
+}
+
 test "hnsw finds planted neighbor" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -2302,23 +2335,11 @@ test "hnsw store_f32=false serialize/load and update" {
 }
 
 fn rssKiBSelf() ?u64 {
-    const fd = posix.openat(posix.AT.FDCWD, "/proc/self/status", .{ .ACCMODE = .RDONLY }, 0) catch return null;
-    defer _ = linux.close(fd);
-    var buf: [4096]u8 = undefined;
-    const n = linux.read(fd, &buf, buf.len);
-    if (posix.errno(n) != .SUCCESS) return null;
-    const text = buf[0..n];
-    const key = "VmRSS:";
-    const idx = std.mem.indexOf(u8, text, key) orelse return null;
-    var rest = text[idx + key.len ..];
-    while (rest.len > 0 and (rest[0] == ' ' or rest[0] == '\t')) rest = rest[1..];
-    var end: usize = 0;
-    while (end < rest.len and rest[end] >= '0' and rest[end] <= '9') end += 1;
-    return std.fmt.parseInt(u64, rest[0..end], 10) catch null;
+    return rss.currentKiB();
 }
 
 test "hnsw slab mmap reopen + insert append buffer" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const alloc = arena_state.allocator();
@@ -2338,7 +2359,10 @@ test "hnsw slab mmap reopen + insert append buffer" {
     const planted = try index.insert(&v);
     const before = try index.search(&v, 5, 64, alloc);
 
-    const path = "/tmp/openpuffer-mmap-roundtrip.slabs";
+    var path_buf: [160]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "/tmp/openpuffer-mmap-roundtrip-{x}.slabs", .{
+        @intFromPtr(&path_buf),
+    });
     try index.writeSlabs(path);
 
     var loaded = Hnsw(void).init(alloc, dim, .{});
@@ -2386,8 +2410,9 @@ test "hnsw slab mmap reopen + insert append buffer" {
 }
 
 test "slab mmap vs alloc RSS (blank slabs)" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
-    const scale = builtin.mode != .debug;
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const mode_name = @tagName(builtin.mode);
+    const scale = !(std.mem.eql(u8, mode_name, "Debug") or std.mem.eql(u8, mode_name, "debug"));
     const cases = [_]struct { n: usize, dim: usize }{
         .{ .n = if (scale) 20_000 else 256, .dim = if (scale) 1536 else 64 },
         .{ .n = if (scale) 200_000 else 0, .dim = 1536 },
@@ -2396,7 +2421,10 @@ test "slab mmap vs alloc RSS (blank slabs)" {
     for (cases) |c| {
         if (c.n == 0) continue;
         var path_buf: [128]u8 = undefined;
-        const path = try std.fmt.bufPrint(&path_buf, "/tmp/openpuffer-mmap-rss-{d}.slabs", .{c.n});
+        const path = try std.fmt.bufPrint(&path_buf, "/tmp/openpuffer-mmap-rss-{d}-{x}.slabs", .{
+            c.n,
+            @intFromPtr(&path_buf),
+        });
         try Hnsw(void).writeBlankSlabs(path, c.n, c.dim, .{});
 
         const baseline = rssKiBSelf() orelse 0;

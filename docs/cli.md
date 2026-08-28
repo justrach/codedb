@@ -73,6 +73,9 @@ codedb-cli [root] <command> [args...]
 The native binary also exposes the task composer directly:
 
 ```bash
+# Force a fresh filesystem scan and rebuild the local indexes
+codedb /path/to/repo reindex
+
 # Default: Pareto-frontier hybrid retrieval with local BM25/symbol first
 codedb /path/to/repo context "find the request authentication path"
 
@@ -82,7 +85,7 @@ codedb /path/to/repo context --local "find the request authentication path"
 # Explicit one-time build: bounded code chunks become a local OpenPuffer ANN
 codedb /path/to/repo semantic-index
 
-# Machine-readable privacy, model, byte-count, ranks, and retention metadata
+# Machine-readable privacy, byte-count, ranks, and retention metadata
 codedb /path/to/repo context --json "find the request authentication path"
 ```
 
@@ -100,10 +103,10 @@ default; `--local` (or `--no-semantic`) is the explicit on-device-only mode.
 chunks using four concurrent 25-item requests by default (configurable from one
 to eight) and stores a small mapping plus a generation-named, validated `.hmls`
 mmap slab under codedb's local per-project data directory (0700/0600 on POSIX).
-Queries verify model/vector-space identity and repository freshness before
+Queries verify vector-space identity and repository freshness before
 mmap. Metadata heap use is capped at 64 MiB, graph validation at 128 MiB, and
 the vector slab stays demand-paged instead of being copied into RSS.
-The default hosted 0.6B/512-D lane is free and needs no token or setup. CodeDB
+The default managed semantic lane is free and needs no token or setup. CodeDB
 automatically creates a local Ed25519 installation key, enrolls its public key,
 renews the server-signed certificate, and signs every request. The private seed
 stays in `~/.codedb/credentials.json` (0600 on POSIX). Every cloud-bound path is rechecked against
@@ -131,8 +134,8 @@ codedb-cli stop                       # stop daemon
 | `CODEDB_PORT` | `7719` | HTTP port for the daemon |
 | `CODEDB_BINARY` | `codedb` | Path to the codedb binary |
 | `CODEDB_EMBEDDINGS_URL` | `https://embeddings.wiki.codes/v1/codedb/embeddings` | Free bounded hosted lane; may be overridden with another HTTPS endpoint |
-| `CODEDB_EMBEDDINGS_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | OpenAI-compatible embedding model name |
-| `CODEDB_EMBEDDINGS_DIMENSIONS` | `512` | Requested embedding dimensions (64-4096) |
+| `CODEDB_EMBEDDINGS_MODEL` | managed | Provider deployment/model identifier; set only with a custom endpoint |
+| `CODEDB_EMBEDDINGS_DIMENSIONS` | managed | Requested custom-provider dimensions (64-4096) |
 | `CODEDB_EMBEDDINGS_TOKEN` | unset | Optional legacy bearer token for protected/custom endpoints; the hosted lane enrolls automatically |
 | `CODEDB_EMBEDDINGS_TIMEOUT_MS` | `15000` | Per-request deadline in milliseconds (10-120000) |
 | `CODEDB_SEMANTIC_INDEX_CONCURRENCY` | `4` | Parallel 25-item index batches (clamped to 1-8) |
