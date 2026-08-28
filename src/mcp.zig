@@ -538,33 +538,6 @@ fn assembleMcpContentEnvelope(
     return true;
 }
 
-fn hashBenchParityResponse(response: []const u8) u64 {
-    // Release PRs necessarily change serverInfo.version. That metadata is not
-    // a tool-output regression, so normalize only its controlled semver value
-    // while retaining every other byte of the client-visible MCP envelope.
-    const marker = "\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"";
-    const marker_start = std.mem.indexOf(u8, response, marker) orelse
-        return std.hash.Wyhash.hash(0, response);
-    const version_start = marker_start + marker.len;
-    const version_end = std.mem.indexOfScalarPos(u8, response, version_start, '"') orelse
-        return std.hash.Wyhash.hash(0, response);
-
-    var hash = std.hash.Wyhash.init(0);
-    hash.update(response[0..version_start]);
-    hash.update("<release-version>");
-    hash.update(response[version_end..]);
-    return hash.final();
-}
-
-test "benchmark parity ignores only MCP server release version" {
-    const a = "{\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"0.2.5846\"}},\"content\":\"same\"}";
-    const b = "{\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"0.2.5847\"}},\"content\":\"same\"}";
-    const changed = "{\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"codedb\",\"version\":\"0.2.5847\"}},\"content\":\"changed\"}";
-
-    try std.testing.expectEqual(hashBenchParityResponse(a), hashBenchParityResponse(b));
-    try std.testing.expect(hashBenchParityResponse(a) != hashBenchParityResponse(changed));
-}
-
 pub const BenchContext = struct {
     cache: ProjectCache,
 
@@ -678,7 +651,10 @@ pub const BenchContext = struct {
         return .{
             .dispatch_ns = @intCast(elapsed),
             .response_bytes = rpc_result.items.len,
-            .response_hash = hashBenchParityResponse(parity_rpc_result.items),
+            // Hash the normalized MCP content envelope, not the outer JSON-RPC
+            // metadata: release PRs change serverInfo.version without changing
+            // any tool output. The summary, content, and guidance remain gated.
+            .response_hash = std.hash.Wyhash.hash(0, parity_result.items),
         };
     }
 };
