@@ -692,7 +692,7 @@ pub const tools_list =
     \\{"name":"codedb_search","description":"Replaces grep/rg for code search: ranked results with far fewer tokens than raw grep output. Exploratory substring/phrase search — use ONLY when you do NOT know the exact symbol name. If you know a symbol name, do NOT use this: codedb_symbol returns its definition, codedb_callers its call sites, codedb_word its every occurrence — each in one call. Substring full-text across the index (regex if regex=true). Pass format=json for structured output with search provenance meta.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Text to search for (substring match, or regex if regex=true)"},"max_results":{"type":"integer","description":"Page size (default: 20, raise to 50 for broad surveys)"},"offset":{"type":"integer","description":"Pagination offset into the ranked results (default: 0). When more results exist, the response ends with a 'more results ... offset=N' line; pass that offset to get the next page."},"scope":{"type":"boolean","description":"Annotate results with enclosing symbol scope (default: false)"},"compact":{"type":"boolean","description":"Skip comment and blank lines in results (default: false)"},"paths_only":{"type":"boolean","description":"Return path:line per result without the matching line text — ~50% fewer tokens per call, useful for broad surveys or for budget-conscious agents (default: false)"},"regex":{"type":"boolean","description":"Treat query as regex pattern (default: false)"},"path_glob":{"type":"string","description":"Filter results to paths matching this glob, e.g. '*.zig', 'src/**/*.zig', or '**/*.{yaml,yml}'. Bare patterns like '*.zig' are auto-promoted to '**/*.zig' to match nested files."},"format":{"type":"string","description":"Set to json for structured JSON output with provenance meta"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["query"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_word","description":"O(1) exact-identifier occurrences via inverted index — every (file, line) one exact word appears. Use ONLY for a single exact identifier; for its definition prefer codedb_symbol, for substrings or phrases use codedb_search.","inputSchema":{"type":"object","properties":{"word":{"type":"string","description":"Exact word/identifier to look up"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["word"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_callers","description":"Replaces grepping for call sites: PRIMARY tool for finding usages — reach for this FIRST when you need who calls or uses a symbol, instead of grepping with codedb_search. Finds every call site of a named symbol — fuses word-index occurrences with outline scope info. One round-trip vs codedb_word + codedb_outline-per-file. Returns {path, line, snippet, scope_name, scope_kind, scope_lines}. Excludes the symbol's own definition site.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Symbol name (exact identifier match)"},"max_results":{"type":"integer","description":"Maximum call sites to return (default: 30, raise for hot symbols)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]},"annotations":{"readOnlyHint":true}},
-    \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). First move when you need how execution reaches a callee. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]},"annotations":{"readOnlyHint":true}},
+    \\{"name":"codedb_callpath","description":"Shortest resolved call chain between two symbols via the local call graph (A→…→B). Ambiguous bare names list candidates; pass from_path/to_path to select an exact project-relative file. Returns each hop as path:name@line.","inputSchema":{"type":"object","properties":{"from":{"type":"string","description":"Source symbol name (exact identifier)"},"from_path":{"type":"string","description":"Optional exact project-relative source file; required to disambiguate duplicate names"},"to":{"type":"string","description":"Target symbol name (exact identifier)"},"to_path":{"type":"string","description":"Optional exact project-relative target file; required to disambiguate duplicate names"},"max_hops":{"type":"integer","description":"Max call hops to search (default: 12)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["from","to"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_explain","description":"One-shot neighborhood of a symbol: definition body plus every call site. Replaces codedb_symbol body=true then codedb_callers. First move when you know the name.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"Exact symbol name"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["name"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_context","description":"Task-shaped composer: pass a natural-language task; returns ONE compact block of definitions, focused bodies, graph neighbors, ranked files, and snippets. Local BM25/symbol retrieval always runs first. Hybrid retrieval is the default: it searches an explicitly built local OpenPuffer ANN sidecar using one transient remote request containing the task plus a fixed public calibration string; when the sidecar is absent or stale it can rerank up to 24 bounded local candidates instead. Set semantic=local for an entirely on-device call. The hosted service stores neither the repository, request body, candidate paths, nor vectors. Failure keeps the local result and never runs a CPU model.","inputSchema":{"type":"object","properties":{"task":{"type":"string","description":"Natural-language task description (3-1024 chars). Include candidate identifiers (camelCase / snake_case) or \"quoted strings\" so the composer can extract keywords."},"max_tokens":{"type":"integer","description":"Approximate response token budget (compact reserves a conservative ~2.5 bytes/token; min 256). Evidence is admitted monotonically by value; omitted evidence is summarized once."},"detail":{"type":"string","enum":["compact","full"],"description":"compact (default) removes redundant framing and uses focused body/site excerpts. full uses verbose legacy-style sections and a reader.md prepend."},"document_hops":{"type":"integer","description":"Explicitly expand Markdown document links from ranked files (0 default, hard-capped at 2 hops and 64 files)."},"semantic":{"type":"string","enum":["local","hybrid"],"description":"hybrid (default) sends the task plus a fixed public calibration string when a compatible local ANN sidecar exists; otherwise it may send the task plus up to 24 locally selected relative paths with bounded snippets. local is the explicit on-device-only opt-out. Build the sidecar explicitly with codedb <root> semantic-index. The hosted lane is transient; custom endpoint retention is reported as unverified."},"format":{"type":"string","enum":["markdown","json"],"description":"markdown (default) preserves the compact text response. json returns schema-versioned sections, evidence provenance, reader.md validation, retrieval privacy, and machine-readable token-budget omissions."},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":["task"]},"annotations":{"readOnlyHint":true}},
     \\{"name":"codedb_hot","description":"Recently modified files, newest first — reach for this to see WHERE work is happening before searching an unfamiliar or mid-sprint codebase.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Number of files to return (default: 10)"},"project":{"type":"string","description":"Optional absolute path to a different project (must have codedb.snapshot)"}},"required":[]},"annotations":{"readOnlyHint":true}},
@@ -835,7 +835,9 @@ const mini_prop_descriptions = [_]PropDesc{
     .{ .name = "path_glob", .desc = "Glob filter on paths, e.g. 'src/**/*.zig'" },
     .{ .name = "task", .desc = "Task in natural language; include likely identifiers" },
     .{ .name = "from", .desc = "Source symbol name (exact identifier)" },
+    .{ .name = "from_path", .desc = "Exact project-relative source file for an ambiguous symbol" },
     .{ .name = "to", .desc = "Target symbol name (exact identifier)" },
+    .{ .name = "to_path", .desc = "Exact project-relative target file for an ambiguous symbol" },
     .{ .name = "max_hops", .desc = "Max call hops (default: 12)" },
     .{ .name = "max_tokens", .desc = "Response token budget (min 256, ~2.5 bytes/token)" },
     .{ .name = "detail", .desc = "compact (default) or full sections" },
@@ -1984,33 +1986,6 @@ fn renderOutlineOrSkeleton(
     return explorer.renderOutline(path, alloc, out, compact);
 }
 
-fn genericEntrypointPathPriority(path: []const u8) i32 {
-    if (isLowSignalArchitecturePath(path)) return -1000;
-    const base = std.fs.path.basename(path);
-    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
-    if (!std.ascii.eqlIgnoreCase(stem, "main")) return 0;
-    if (std.mem.startsWith(u8, path, "src/")) return 1000;
-    if (std.mem.indexOfScalar(u8, path, '/') == null) return 900;
-    if (pathHasSegmentIgnoreCase(path, "cmd")) return 800;
-    return 200;
-}
-
-fn prioritizeGenericEntrypoint(name: ?[]const u8, fuzzy: bool, results: []Explorer.ScoredSymbolResult) void {
-    const exact_name = name orelse return;
-    if (fuzzy or !std.ascii.eqlIgnoreCase(exact_name, "main")) return;
-    std.mem.sort(Explorer.ScoredSymbolResult, results, {}, struct {
-        fn lessThan(_: void, a: Explorer.ScoredSymbolResult, b: Explorer.ScoredSymbolResult) bool {
-            const ap = genericEntrypointPathPriority(a.path);
-            const bp = genericEntrypointPathPriority(b.path);
-            if (ap != bp) return ap > bp;
-            if (a.score != b.score) return a.score > b.score;
-            const path_order = std.mem.order(u8, a.path, b.path);
-            if (path_order != .eq) return path_order == .lt;
-            return a.symbol.line_start < b.symbol.line_start;
-        }
-    }.lessThan);
-}
-
 fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const name = getStr(args, "name");
     const prefix = getStr(args, "prefix");
@@ -2058,7 +2033,11 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         .pattern = pattern,
         .kind = kind,
         .fuzzy = fuzzy,
-        .max_results = max_results,
+        // Retain one sentinel row so truncation is observable. Top-K selection
+        // still uses the requested structural/navigation comparator, so the
+        // first max_results rows are identical to an exact-size query.
+        .max_results = max_results + 1,
+        .rank_policy = if (getBool(args, "prefer_entrypoint")) .navigation else .structural,
     };
 
     const results = explorer.searchSymbols(spec, alloc) catch {
@@ -2069,10 +2048,6 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         }
         return;
     };
-    // Explain is the opinionated one-shot neighborhood tool; keep the lower-
-    // level codedb_symbol ordering byte-for-byte stable for callers that rely
-    // on its deterministic structural index order.
-    if (getBool(args, "prefer_entrypoint")) prioritizeGenericEntrypoint(name, fuzzy, results);
     defer {
         for (results) |r| {
             alloc.free(r.path);
@@ -2081,19 +2056,21 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         }
         alloc.free(results);
     }
+    const truncated = results.len > max_results;
+    const shown_results = results[0..@min(results.len, max_results)];
 
     if (json_fmt) {
         out.appendSlice(alloc, "{\"ok\":true,\"tool\":\"codedb_symbol\",\"count\":") catch {};
         var cnt_buf: [16]u8 = undefined;
-        const cnt_s = std.fmt.bufPrint(&cnt_buf, "{d}", .{results.len}) catch "0";
+        const cnt_s = std.fmt.bufPrint(&cnt_buf, "{d}", .{shown_results.len}) catch "0";
         out.appendSlice(alloc, cnt_s) catch {};
         out.appendSlice(alloc, ",\"match_mode\":") catch {};
         appendJsonStr(out, alloc, symbolMatchModeLabel(spec));
         out.appendSlice(alloc, ",\"meta\":{\"index\":\"symbol_index+outline\",\"match_mode\":") catch {};
         appendJsonStr(out, alloc, symbolMatchModeLabel(spec));
-        out.append(alloc, '}') catch {};
+        out.appendSlice(alloc, if (truncated) ",\"truncated\":true}" else ",\"truncated\":false}") catch {};
         out.appendSlice(alloc, ",\"results\":[") catch {};
-        for (results, 0..) |r, i| {
+        for (shown_results, 0..) |r, i| {
             if (i > 0) out.append(alloc, ',') catch {};
             out.appendSlice(alloc, "{\"path\":") catch {};
             appendJsonStr(out, alloc, r.path);
@@ -2115,7 +2092,7 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         return;
     }
 
-    if (results.len == 0) {
+    if (shown_results.len == 0) {
         out.appendSlice(alloc, "no results") catch {};
         if (name) |n| {
             out.appendSlice(alloc, " for: ") catch {};
@@ -2126,11 +2103,11 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
 
     const w = cio.listWriter(out, alloc);
     if (name) |n| {
-        w.print("{d} results for '{s}':\n", .{ results.len, n }) catch {};
+        w.print("{d} results for '{s}':\n", .{ shown_results.len, n }) catch {};
     } else {
-        w.print("{d} symbol results:\n", .{results.len}) catch {};
+        w.print("{d} symbol results:\n", .{shown_results.len}) catch {};
     }
-    for (results) |r| {
+    for (shown_results) |r| {
         w.print("  {s}:{d} ({s}) {s}", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind), r.symbol.name }) catch {};
         if (r.symbol.detail) |d| w.print("  // {s}", .{d}) catch {};
         w.writeAll("\n") catch {};
@@ -2159,7 +2136,8 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             }
         }
     }
-    if (depsHint(results.len)) |h| out.appendSlice(alloc, h) catch {};
+    if (truncated) w.print("… more symbol results truncated (raise max_results; cap 200)\n", .{}) catch {};
+    if (depsHint(shown_results.len)) |h| out.appendSlice(alloc, h) catch {};
 }
 
 // Issue #626: agents reach for codedb_search with a bare symbol name and skip
@@ -2704,7 +2682,9 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
         // A whole-word match that only lands inside a literal or comment is a
         // mention, not an invocation — a `("name", "file")` table row, a
         // `test "…name…" {` declaration, or `init(); // then name() …`. (#682)
-        if (!hasWholeWordMatchInCode(r.line_text, name, lang)) continue;
+        // A whole-word mention is not enough: declarations, local variables,
+        // and Swift parameter labels are all code, yet none invokes the name.
+        if (!hasCallSiteInCode(r.line_text, name, lang)) continue;
         kept.append(alloc, r_idx) catch {};
     }
 
@@ -2719,6 +2699,25 @@ fn handleCallers(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
             appendMatchLine(w, "  ", r.path, r.line_num, r.line_text);
         }
     }
+}
+
+fn appendAmbiguousCallpathEndpoint(
+    w: anytype,
+    label: []const u8,
+    name: []const u8,
+    path: ?[]const u8,
+    candidates: []const explore_mod.CallPathStep,
+) void {
+    if (path) |selected_path| {
+        w.print("ambiguous callpath {s} endpoint '{s}' in '{s}' ({d} definitions):\n", .{ label, name, selected_path, candidates.len }) catch {};
+    } else {
+        w.print("ambiguous callpath {s} endpoint '{s}' ({d} definitions); pass {s}_path=<project-relative path>:\n", .{ label, name, candidates.len, label }) catch {};
+    }
+    const shown = @min(candidates.len, 20);
+    for (candidates[0..shown]) |candidate| {
+        w.print("  - {s}:{s}@L{d}\n", .{ candidate.path, candidate.name, candidate.line }) catch {};
+    }
+    if (shown < candidates.len) w.print("  … {d} more candidates\n", .{candidates.len - shown}) catch {};
 }
 
 fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
@@ -2736,20 +2735,54 @@ fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
         out.appendSlice(alloc, "error: 'from' and 'to' must be non-empty symbol names") catch {};
         return;
     }
+    const from_path = getStr(args, "from_path");
+    const to_path = getStr(args, "to_path");
     const max_hops: usize = if (getInt(args, "max_hops")) |n| @intCast(@max(1, @min(n, 64))) else 12;
 
-    const steps = explorer.findCallPath(from_name, to_name, alloc, max_hops) catch {
+    const from_candidates = explorer.findCallPathCandidates(from_name, from_path, alloc) catch {
+        out.appendSlice(alloc, "error: callpath search failed") catch {};
+        return;
+    };
+    defer alloc.free(from_candidates);
+    const to_candidates = explorer.findCallPathCandidates(to_name, to_path, alloc) catch {
+        out.appendSlice(alloc, "error: callpath search failed") catch {};
+        return;
+    };
+    defer alloc.free(to_candidates);
+
+    const w = cio.listWriter(out, alloc);
+    if (from_candidates.len == 0) {
+        if (from_path) |selected_path| {
+            w.print("no source symbol '{s}' in '{s}'\n", .{ from_name, selected_path }) catch {};
+        } else {
+            w.print("no source symbol '{s}'\n", .{from_name}) catch {};
+        }
+        return;
+    }
+    if (to_candidates.len == 0) {
+        if (to_path) |selected_path| {
+            w.print("no target symbol '{s}' in '{s}'\n", .{ to_name, selected_path }) catch {};
+        } else {
+            w.print("no target symbol '{s}'\n", .{to_name}) catch {};
+        }
+        return;
+    }
+    if (from_candidates.len > 1 or to_candidates.len > 1) {
+        if (from_candidates.len > 1) appendAmbiguousCallpathEndpoint(w, "from", from_name, from_path, from_candidates);
+        if (to_candidates.len > 1) appendAmbiguousCallpathEndpoint(w, "to", to_name, to_path, to_candidates);
+        return;
+    }
+
+    const steps = explorer.findCallPathScoped(from_name, from_path, to_name, to_path, alloc, max_hops) catch {
         out.appendSlice(alloc, "error: callpath search failed") catch {};
         return;
     };
     const path = steps orelse {
-        const w = cio.listWriter(out, alloc);
         w.print("no call path from '{s}' to '{s}' within {d} hops\n", .{ from_name, to_name, max_hops }) catch {};
         return;
     };
     defer alloc.free(path);
 
-    const w = cio.listWriter(out, alloc);
     w.print("call path ({d} hops): {s} → {s}\n", .{ path.len - 1, from_name, to_name }) catch {};
     for (path, 0..) |step, i| {
         if (i > 0) w.print("  → ", .{}) catch {};
@@ -2757,6 +2790,62 @@ fn handleCallpath(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out
         if (i + 1 < path.len) w.print("\n", .{}) catch {};
     }
     w.print("\n", .{}) catch {};
+}
+
+test "callpath requires paths for duplicate endpoints and preserves unique names" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("src/first.zig",
+        \\pub fn main() void { run(); }
+        \\fn run() void {}
+    );
+    try explorer.indexFile("src/second.zig",
+        \\pub fn main() void { run(); }
+        \\fn run() void {}
+    );
+    try explorer.indexFile("src/unique.zig",
+        \\pub fn onlyMain() void { onlyRun(); }
+        \\fn onlyRun() void {}
+    );
+
+    var args: std.json.ObjectMap = .empty;
+    defer args.deinit(testing.allocator);
+    try args.put(testing.allocator, "from", .{ .string = "main" });
+    try args.put(testing.allocator, "to", .{ .string = "run" });
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    handleCallpath(testing.allocator, &args, &out, &explorer);
+    try testing.expect(std.mem.indexOf(u8, out.items, "ambiguous callpath from endpoint 'main'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/first.zig:main") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/second.zig:run") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call path (") == null);
+
+    out.clearRetainingCapacity();
+    try args.put(testing.allocator, "from_path", .{ .string = "src/first.zig" });
+    try args.put(testing.allocator, "to_path", .{ .string = "src/first.zig" });
+    handleCallpath(testing.allocator, &args, &out, &explorer);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call path (1 hops): main → run") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/first.zig:main") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/second.zig") == null);
+
+    out.clearRetainingCapacity();
+    try args.put(testing.allocator, "from", .{ .string = "onlyMain" });
+    try args.put(testing.allocator, "to", .{ .string = "onlyRun" });
+    _ = args.swapRemove("from_path");
+    _ = args.swapRemove("to_path");
+    handleCallpath(testing.allocator, &args, &out, &explorer);
+    try testing.expect(std.mem.indexOf(u8, out.items, "call path (1 hops): onlyMain → onlyRun") != null);
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    out.clearRetainingCapacity();
+    const cli_args = [_][]const u8{ "main", "run", "--from-path", "src/second.zig", "--to-path=src/second.zig" };
+    try testing.expectEqual(
+        @as(?u8, 0),
+        runCliTool(testing.io, testing.allocator, &explorer, &store, ".", "callpath", &cli_args, 0, &out),
+    );
+    try testing.expect(std.mem.indexOf(u8, out.items, "src/second.zig:main") != null);
 }
 
 fn handleExplain(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
@@ -2788,7 +2877,10 @@ fn handleExplain(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     const def_text = if (def_out.items.len > cap) def_out.items[0..cap] else def_out.items;
     const call_text = if (call_out.items.len > cap) call_out.items[0..cap] else call_out.items;
     const w = cio.listWriter(out, alloc);
-    w.print("## definition\n{s}\n\n## callers\n{s}", .{ def_text, call_text }) catch {};
+    w.print("## definition\n{s}", .{def_text}) catch {};
+    if (def_out.items.len > cap) w.print("\n… definition output truncated at {d} bytes", .{cap}) catch {};
+    w.print("\n\n## callers\n{s}", .{call_text}) catch {};
+    if (call_out.items.len > cap) w.print("\n… callers output truncated at {d} bytes", .{cap}) catch {};
 }
 
 fn isIdentChar(c: u8) bool {
@@ -2798,17 +2890,18 @@ fn isIdentChar(c: u8) bool {
         c == '_';
 }
 
-/// Returns true when `needle` occurs as a whole-word identifier in code rather
-/// than in a string, raw/template literal, or comment. This is deliberately a
-/// line-local lexical scan: it handles complete spans on the current line and
-/// conservatively treats an unclosed block/raw span as consuming the remainder.
-fn hasWholeWordMatchInCode(line: []const u8, needle: []const u8, language: explore_mod.Language) bool {
-    return hasWholeWordMatchInCodeDepth(line, needle, language, 0);
+/// Returns true when an identifier occurs as a syntactic invocation rather than
+/// a declaration, variable, parameter label, literal, or comment. This is
+/// deliberately a line-local lexical scan: it handles complete spans on the
+/// current line and conservatively treats an unclosed block/raw span as
+/// consuming the remainder.
+fn hasCallSiteInCode(line: []const u8, needle: []const u8, language: explore_mod.Language) bool {
+    return hasCallSiteInCodeDepth(line, needle, language, 0);
 }
 
 const max_template_nesting = 16;
 
-fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: explore_mod.Language, template_depth: usize) bool {
+fn hasCallSiteInCodeDepth(line: []const u8, needle: []const u8, language: explore_mod.Language, template_depth: usize) bool {
     if (needle.len == 0 or line.len < needle.len) return false;
     const markers = lineCommentMarkers(language);
     var i: usize = 0;
@@ -2831,7 +2924,7 @@ fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: 
         if (line[i] == '`' and hasBacktickLiterals(language)) {
             if (language == .r) {
                 if (stringLiteralEnd(line, i)) |end| {
-                    if (std.mem.eql(u8, line[i + 1 .. end], needle)) return true;
+                    if (std.mem.eql(u8, line[i + 1 .. end], needle) and isCallSyntaxAfter(line, i, end + 1, language)) return true;
                     i = end + 1;
                     continue;
                 }
@@ -2878,11 +2971,144 @@ fn hasWholeWordMatchInCodeDepth(line: []const u8, needle: []const u8, language: 
             const before_ok = i == 0 or !isIdentChar(line[i - 1]);
             const after = i + needle.len;
             const after_ok = after >= line.len or !isIdentChar(line[after]);
-            if (before_ok and after_ok) return true;
+            if (before_ok and after_ok and isCallSyntaxAfter(line, i, after, language)) return true;
         }
         i += 1;
     }
     return false;
+}
+
+fn isCallSyntaxAfter(line: []const u8, start: usize, after_name: usize, language: explore_mod.Language) bool {
+    var cursor = after_name;
+    while (cursor < line.len and (line[cursor] == ' ' or line[cursor] == '\t')) cursor += 1;
+    if (cursor < line.len and line[cursor] == '(') return true;
+
+    if (language == .swift) {
+        // work?(), work!(), and withAnimation { ... } are valid Swift calls.
+        // A parameter label (since start:) and local let start do not match.
+        if (cursor < line.len and (line[cursor] == '?' or line[cursor] == '!')) {
+            cursor += 1;
+            while (cursor < line.len and (line[cursor] == ' ' or line[cursor] == '\t')) cursor += 1;
+            if (cursor < line.len and line[cursor] == '(') return true;
+        }
+        if (cursor < line.len and line[cursor] == '{') return true;
+    }
+
+    // A function value passed to another call is still a caller relationship:
+    // `spawn(.{}, worker, .{})`, `map(render)`, `lapply(xs, render)`. Keep this
+    // narrower than a generic identifier reference so locals such as
+    // `let start = ...` and named arguments such as `to: start` stay excluded.
+    if (isFunctionValueArgument(line, start, after_name, language)) return true;
+    if (language == .ruby and isRubyCommandInvocation(line, start, after_name)) return true;
+    return language == .shell and isShellCommandInvocation(line, start, after_name);
+}
+
+fn isFunctionValueArgument(line: []const u8, start: usize, after_name: usize, language: explore_mod.Language) bool {
+    // Include a narrow dotted receiver chain in the argument. For example,
+    // `spawn(.{}, watcher.incrementalLoop, .{})` is a callback use of
+    // `incrementalLoop`; checking only the byte immediately before the final
+    // identifier would see `.` and incorrectly discard it.
+    var argument_start = start;
+    while (argument_start > 0) {
+        var dot = argument_start;
+        while (dot > 0 and (line[dot - 1] == ' ' or line[dot - 1] == '\t')) dot -= 1;
+        if (dot == 0 or line[dot - 1] != '.') break;
+        var receiver_end = dot - 1;
+        while (receiver_end > 0 and (line[receiver_end - 1] == ' ' or line[receiver_end - 1] == '\t')) receiver_end -= 1;
+        var receiver_start = receiver_end;
+        while (receiver_start > 0 and isIdentChar(line[receiver_start - 1])) receiver_start -= 1;
+        if (receiver_start == receiver_end) break;
+        argument_start = receiver_start;
+    }
+
+    var before = argument_start;
+    while (before > 0 and (line[before - 1] == ' ' or line[before - 1] == '\t')) before -= 1;
+    if (before == 0 or (line[before - 1] != '(' and line[before - 1] != ',')) return false;
+
+    var after = after_name;
+    while (after < line.len and (line[after] == ' ' or line[after] == '\t')) after += 1;
+    if (after >= line.len or (line[after] != ',' and line[after] != ')')) return false;
+
+    const open = enclosingOpenParenBefore(line, argument_start, language) orelse return false;
+    var callee_end = open;
+    while (callee_end > 0 and (line[callee_end - 1] == ' ' or line[callee_end - 1] == '\t')) callee_end -= 1;
+    var callee_start = callee_end;
+    while (callee_start > 0 and isIdentChar(line[callee_start - 1])) callee_start -= 1;
+    if (callee_start == callee_end) return false;
+    const callee = line[callee_start..callee_end];
+    const non_calls = [_][]const u8{
+        "if", "for", "while", "switch", "catch", "return", "sizeof", "typeof",
+    };
+    for (non_calls) |word| if (std.mem.eql(u8, callee, word)) return false;
+
+    // Reject bare parameters in common declaration forms: `fn foo(callback)`,
+    // `func foo(callback)`, `function foo(callback)`, and `def foo(callback)`.
+    // Typed C-family parameters do not satisfy the delimiter checks above.
+    if (callee_start > 0 and line[callee_start - 1] != '.') {
+        var leader_end = callee_start;
+        while (leader_end > 0 and (line[leader_end - 1] == ' ' or line[leader_end - 1] == '\t')) leader_end -= 1;
+        var leader_start = leader_end;
+        while (leader_start > 0 and isIdentChar(line[leader_start - 1])) leader_start -= 1;
+        const leader = line[leader_start..leader_end];
+        const declarations = [_][]const u8{ "fn", "func", "function", "def" };
+        for (declarations) |word| if (std.mem.eql(u8, leader, word)) return false;
+    }
+    return true;
+}
+
+fn enclosingOpenParenBefore(line: []const u8, limit: usize, language: explore_mod.Language) ?usize {
+    var stack: [64]usize = undefined;
+    var depth: usize = 0;
+    var i: usize = 0;
+    const markers = lineCommentMarkers(language);
+    while (i < @min(limit, line.len)) {
+        if (line[i] == '"' or line[i] == '\'') {
+            const end = stringLiteralEnd(line, i) orelse return null;
+            i = end + 1;
+            continue;
+        }
+        if (blockCommentAt(line, i, language)) |block| {
+            const end = block.end orelse return null;
+            i = end;
+            continue;
+        }
+        if (isLineCommentAt(line, i, language, markers)) return null;
+        if (line[i] == '(') {
+            if (depth == stack.len) return null;
+            stack[depth] = i;
+            depth += 1;
+        } else if (line[i] == ')' and depth > 0) {
+            depth -= 1;
+        }
+        i += 1;
+    }
+    return if (depth > 0) stack[depth - 1] else null;
+}
+
+fn isRubyCommandInvocation(line: []const u8, start: usize, after_name: usize) bool {
+    var before = start;
+    while (before > 0 and (line[before - 1] == ' ' or line[before - 1] == '\t')) before -= 1;
+    const receiver_call = before > 0 and line[before - 1] == '.';
+    const command_position = before == 0 or std.mem.indexOfScalar(u8, ";|&({", line[before - 1]) != null;
+    if (!receiver_call and !command_position) return false;
+
+    var cursor = after_name;
+    while (cursor < line.len and (line[cursor] == ' ' or line[cursor] == '\t')) cursor += 1;
+    if (cursor == line.len) return true;
+    if (cursor == after_name) return false;
+    return std.mem.indexOfScalar(u8, "=,:.)]}+-*/%<>", line[cursor]) == null;
+}
+
+fn isShellCommandInvocation(line: []const u8, start: usize, after_name: usize) bool {
+    // Shell functions may be called without parentheses, but only at command
+    // position: start of line or immediately after a shell command separator.
+    // This excludes echo helper, assignments, and ordinary word uses.
+    var before = start;
+    while (before > 0 and (line[before - 1] == ' ' or line[before - 1] == '\t')) before -= 1;
+    if (before > 0 and std.mem.indexOfScalar(u8, ";|&(", line[before - 1]) == null) return false;
+    if (after_name >= line.len) return true;
+    return line[after_name] == ' ' or line[after_name] == '\t' or
+        std.mem.indexOfScalar(u8, ";|&", line[after_name]) != null;
 }
 
 fn lineCommentMarkers(language: explore_mod.Language) []const []const u8 {
@@ -2968,7 +3194,7 @@ fn scanTemplateLiteral(line: []const u8, open: usize, needle: []const u8, langua
             const expression_start = i + 2;
             const expression_end = templateExpressionEnd(line, expression_start, language);
             const end = expression_end orelse line.len;
-            if (hasWholeWordMatchInCodeDepth(line[expression_start..end], needle, language, template_depth + 1)) {
+            if (hasCallSiteInCodeDepth(line[expression_start..end], needle, language, template_depth + 1)) {
                 return .{ .end = expression_end, .matched = true };
             }
             if (expression_end) |close| {
@@ -3738,7 +3964,14 @@ fn handleContext(
     };
     var by_file = std.StringHashMap(PerFile).init(A);
 
-    const SymRef = struct { kw: []const u8, kind: []const u8, path: []const u8, line: u32, line_end: u32 };
+    const SymRef = struct {
+        kw: []const u8,
+        kind: []const u8,
+        path: []const u8,
+        line: u32,
+        line_end: u32,
+        focused: bool = false,
+    };
     var sym_refs: std.ArrayList(SymRef) = .empty;
     var seen_syms = std.StringHashMap(void).init(A);
     var caller_evidence: std.ArrayList(ContextEvidenceItem) = .empty;
@@ -3746,11 +3979,17 @@ fn handleContext(
     var callee_evidence: std.ArrayList(ContextEvidenceItem) = .empty;
 
     for (candidates.items) |kw| {
-        // Symbol definitions (best-effort; ignore failures).
-        if (explorer.findAllSymbols(kw, A)) |defs| {
-            var accepted: usize = 0;
+        // Symbol definitions (best-effort; ignore failures). Context is a
+        // navigation surface, so select before the per-keyword cap using the
+        // same production-path priority as codedb_explain/codedb_find. That
+        // policy also suppresses import/comment rows whenever a real
+        // definition of this exact name exists.
+        if (explorer.searchSymbols(.{
+            .name = kw,
+            .max_results = 3,
+            .rank_policy = .navigation,
+        }, A)) |defs| {
             for (defs) |d| {
-                if (accepted >= 3) break;
                 if (architecture_intent and isLowSignalArchitecturePath(d.path)) continue;
                 const key = std.fmt.allocPrint(A, "{s}|{s}|{d}", .{ d.path, kw, d.symbol.line_start }) catch continue;
                 if (seen_syms.contains(key)) continue;
@@ -3762,7 +4001,6 @@ fn handleContext(
                     .line = d.symbol.line_start,
                     .line_end = d.symbol.line_end,
                 }) catch break;
-                accepted += 1;
             }
         } else |_| {}
 
@@ -3779,6 +4017,47 @@ fn handleContext(
         }
     }
     const pf_kwloop = cio.nanoTimestamp();
+
+    // Focus at most three real definitions across the whole task. Previously
+    // four exact matches disabled every body/caller/callee expansion, so a few
+    // generic words could erase the one useful definition. Imports/comments
+    // are fallback focus only when the task found no real definition at all.
+    var focused_count: usize = 0;
+    for (sym_refs.items) |*sr| {
+        if (focused_count >= 3) break;
+        if (std.mem.eql(u8, sr.kind, "import") or std.mem.eql(u8, sr.kind, "comment_block")) continue;
+        sr.focused = true;
+        focused_count += 1;
+    }
+    if (focused_count == 0) {
+        for (sym_refs.items) |*sr| {
+            if (focused_count >= 3) break;
+            sr.focused = true;
+            focused_count += 1;
+        }
+    }
+
+    // Definition lines are stronger sites than arbitrary early lexical hits.
+    // Seed each focused definition into its file's bounded preview window so
+    // an MCP header comment or a patch repeating the task words cannot consume
+    // all three slots ahead of the actual dispatch body.
+    for (sym_refs.items) |sr| {
+        if (!sr.focused) continue;
+        const gop = by_file.getOrPut(sr.path) catch continue;
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        var already_seeded = false;
+        for (gop.value_ptr.top.items) |hit| {
+            if (hit.line == sr.line) {
+                already_seeded = true;
+                break;
+            }
+        }
+        if (already_seeded) continue;
+        if (gop.value_ptr.top.items.len >= CONTEXT_TOP_LINES_PER_FILE) {
+            _ = gop.value_ptr.top.pop();
+        }
+        gop.value_ptr.top.insert(A, 0, .{ .line = sr.line, .text = sr.kw }) catch {};
+    }
 
     // Rank files by a composite score: raw hits, +bonus when the file
     // contains a symbol definition for any keyword (definition beats usage),
@@ -4172,16 +4451,13 @@ fn handleContext(
         const wsl = cio.listWriter(&sec_syms_lean, A);
         wsr.print("\n## Symbol definitions\n", .{}) catch {};
         wsl.print("\n## Symbol definitions\n", .{}) catch {};
-        // Enhancement (closes T1 flask variance gap): when there are ≤3
-        // symbol definitions, inline each symbol's FULL body (capped at 40
-        // lines) so the agent doesn't need a follow-up `codedb_read`. For wider
-        // result sets this would bloat the response, so cap at 3. The lean
-        // variant (def lines only) is the budget fallback.
-        const inline_bodies = sym_refs.items.len <= 3;
+        // Inline the three focused definitions selected above (each capped at
+        // 40 lines) even when the task also found lower-priority collisions.
+        // The lean variant (declaration lines only) remains the budget fallback.
         for (sym_refs.items) |sr| {
             wsr.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
             wsl.print("- {s} ({s}) — {s}:{d}\n", .{ sr.kw, sr.kind, sr.path, sr.line }) catch {};
-            if (inline_bodies) {
+            if (sr.focused) {
                 const body_end: u32 = if (sr.line_end > sr.line) @min(sr.line_end, sr.line +| 39) else sr.line;
                 _ = explorer.appendLineRange(sr.path, sr.line, body_end, "       ", A, &sec_syms_rich) catch false;
             }
@@ -4195,7 +4471,7 @@ fn handleContext(
         // follow-ups. Examples this targets directly:
         //   T1 flask: before_request → preprocess_request in app.py
         //   T2 regex: Builder::build → meta::Regex::new in regex.rs
-        if (inline_bodies) {
+        if (focused_count > 0) {
             const wc = cio.listWriter(&sec_callers, A);
             const wt = cio.listWriter(&sec_tests, A);
             var any_callers = false;
@@ -4210,6 +4486,7 @@ fn handleContext(
             // searches = 180 µs of redundant work on the bench task.
             var searched_kw = std.StringHashMap(void).init(A);
             for (sym_refs.items) |sr| {
+                if (!sr.focused) continue;
                 if (total_shown >= 6) break;
                 if (searched_kw.contains(sr.kw)) continue;
                 searched_kw.put(sr.kw, {}) catch {};
@@ -4287,11 +4564,12 @@ fn handleContext(
         // defined. This is the dependency side of the neighborhood — pairs with
         // the Callers section above so the agent sees both who calls a symbol and
         // what it calls, without a follow-up codedb_outline/read on the callees.
-        if (inline_bodies) {
+        if (focused_count > 0) {
             const wcal = cio.listWriter(&sec_calls, A);
             var any_callees = false;
             var done_sym = std.StringHashMap(void).init(A);
             for (sym_refs.items) |sr| {
+                if (!sr.focused) continue;
                 const sym_key = std.fmt.allocPrint(A, "{s}:{d}", .{ sr.path, sr.line }) catch continue;
                 if (done_sym.contains(sym_key)) continue;
                 done_sym.put(sym_key, {}) catch {};
@@ -5787,9 +6065,29 @@ pub fn runCliTool(
         handleChanges(alloc, &m, out, store);
         return finishCli(out, out_start);
     } else if (std.mem.eql(u8, cmd, "callpath") or std.mem.eql(u8, cmd, "path")) {
-        if (args.len < cmd_args_start + 2) return cliUsage(alloc, out, "callpath <from> <to>");
+        if (args.len < cmd_args_start + 2 or std.mem.startsWith(u8, args[cmd_args_start], "-") or std.mem.startsWith(u8, args[cmd_args_start + 1], "-")) {
+            return cliUsage(alloc, out, "callpath <from> <to> [--from-path <project-relative path>] [--to-path <project-relative path>]");
+        }
         m.put(alloc, "from", .{ .string = args[cmd_args_start] }) catch return 1;
         m.put(alloc, "to", .{ .string = args[cmd_args_start + 1] }) catch return 1;
+        var arg_i = cmd_args_start + 2;
+        while (arg_i < args.len) : (arg_i += 1) {
+            const arg = args[arg_i];
+            if (std.mem.eql(u8, arg, "--from-path") or std.mem.eql(u8, arg, "--to-path")) {
+                arg_i += 1;
+                if (arg_i >= args.len) {
+                    return cliUsage(alloc, out, "callpath <from> <to> [--from-path <project-relative path>] [--to-path <project-relative path>]");
+                }
+                const key = if (std.mem.eql(u8, arg, "--from-path")) "from_path" else "to_path";
+                m.put(alloc, key, .{ .string = args[arg_i] }) catch return 1;
+            } else if (std.mem.startsWith(u8, arg, "--from-path=")) {
+                m.put(alloc, "from_path", .{ .string = arg["--from-path=".len..] }) catch return 1;
+            } else if (std.mem.startsWith(u8, arg, "--to-path=")) {
+                m.put(alloc, "to_path", .{ .string = arg["--to-path=".len..] }) catch return 1;
+            } else {
+                return cliUsage(alloc, out, "callpath <from> <to> [--from-path <project-relative path>] [--to-path <project-relative path>]");
+            }
+        }
         handleCallpath(alloc, &m, out, explorer);
         return finishCli(out, out_start);
     } else if (std.mem.eql(u8, cmd, "explain") or std.mem.eql(u8, cmd, "around")) {

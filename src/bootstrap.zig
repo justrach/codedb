@@ -30,16 +30,16 @@ const project_file = @import("project_file.zig");
 /// A walk+stat of the tree is a few ms and early-exits on the first drifted
 /// file; conservative (returns not-stale) on any IO error.
 fn snapshotIsStale(io: std.Io, abs_root: []const u8, data_dir: []const u8, allocator: std.mem.Allocator) bool {
-    // Stat the snapshot that would actually be served — same precedence as
-    // loadBestSnapshot: in-repo first, then the central data dir.
+    // Stat the newest available snapshot. The central cache is authoritative
+    // for read-only checkouts, while a newer in-repo snapshot remains a valid
+    // explicit refresh. This must match loadBestSnapshot's mtime ordering.
     var snap_stat: @TypeOf(std.Io.Dir.cwd().statFile(io, abs_root, .{}) catch unreachable) = undefined;
     var found = false;
     for ([_][]const u8{ abs_root, data_dir }) |base| {
-        if (found) break;
         const snap_path = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{base}) catch return false;
         defer allocator.free(snap_path);
         if (std.Io.Dir.cwd().statFile(io, snap_path, .{})) |st| {
-            snap_stat = st;
+            if (!found or st.mtime.nanoseconds > snap_stat.mtime.nanoseconds) snap_stat = st;
             found = true;
         } else |_| {}
     }
@@ -96,6 +96,11 @@ fn loadSnapshotFileIfHeadMatches(
     return snapshot_mod.loadSnapshotValidatedFromFile(io, snapshot_file, expected_root, explorer, store, allocator);
 }
 
+fn snapshotFileMtime(io: std.Io, file: std.Io.File) ?i128 {
+    const stat = file.stat(io) catch return null;
+    return stat.mtime.nanoseconds;
+}
+
 pub fn loadBestSnapshot(
     io: std.Io,
     explorer: *Explorer,
@@ -109,24 +114,41 @@ pub fn loadBestSnapshot(
     const canonical_root = explorer.root_path orelse return false;
     if (!project_file.rootMatchesPath(io, root_dir, abs_root)) return false;
 
-    if (root_dir.openFile(io, "codedb.snapshot", .{
+    const root_snapshot: ?std.Io.File = root_dir.openFile(io, "codedb.snapshot", .{
         .allow_directory = false,
         .follow_symlinks = false,
         .resolve_beneath = true,
-    })) |root_snapshot| {
-        defer root_snapshot.close(io);
-        if (loadSnapshotFileIfHeadMatches(io, root_snapshot, explorer, store, canonical_root, current_git_head, allocator)) return true;
-    } else |_| {}
+    }) catch null;
+    defer if (root_snapshot) |file| file.close(io);
 
-    var central_dir = std.Io.Dir.cwd().openDir(io, data_dir, .{ .follow_symlinks = false }) catch return false;
-    defer central_dir.close(io);
-    const central_snapshot = central_dir.openFile(io, "codedb.snapshot", .{
+    const central_dir: ?std.Io.Dir = std.Io.Dir.cwd().openDir(io, data_dir, .{ .follow_symlinks = false }) catch null;
+    defer if (central_dir) |dir| dir.close(io);
+    const central_snapshot: ?std.Io.File = if (central_dir) |dir| dir.openFile(io, "codedb.snapshot", .{
         .allow_directory = false,
         .follow_symlinks = false,
         .resolve_beneath = true,
-    }) catch return false;
-    defer central_snapshot.close(io);
-    return loadSnapshotFileIfHeadMatches(io, central_snapshot, explorer, store, canonical_root, current_git_head, allocator);
+    }) catch null else null;
+    defer if (central_snapshot) |file| file.close(io);
+
+    const root_mtime = if (root_snapshot) |file| snapshotFileMtime(io, file) else null;
+    const central_mtime = if (central_snapshot) |file| snapshotFileMtime(io, file) else null;
+    const central_first = central_mtime != null and (root_mtime == null or central_mtime.? > root_mtime.?);
+    if (central_first) {
+        if (central_snapshot) |file| {
+            if (loadSnapshotFileIfHeadMatches(io, file, explorer, store, canonical_root, current_git_head, allocator)) return true;
+        }
+        if (root_snapshot) |file| {
+            if (loadSnapshotFileIfHeadMatches(io, file, explorer, store, canonical_root, current_git_head, allocator)) return true;
+        }
+    } else {
+        if (root_snapshot) |file| {
+            if (loadSnapshotFileIfHeadMatches(io, file, explorer, store, canonical_root, current_git_head, allocator)) return true;
+        }
+        if (central_snapshot) |file| {
+            if (loadSnapshotFileIfHeadMatches(io, file, explorer, store, canonical_root, current_git_head, allocator)) return true;
+        }
+    }
+    return false;
 }
 
 pub fn getDataDir(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8) ![]u8 {
@@ -670,11 +692,15 @@ pub fn coldLoadOrScan(
                 explorer.buildCallCentrality(allocator);
                 if (index_profile) profile_centrality_ns = cio.nanoTimestamp() - t_centrality;
             }
-            const t_snapshot: i128 = if (index_profile) cio.nanoTimestamp() else 0;
-            snapshot_mod.writeProjectCacheSnapshot(io, explorer, abs_root, allocator) catch |err| {
-                std.log.warn("could not persist project-cache snapshot: {}", .{err});
-            };
-            if (index_profile) profile_snapshot_ns = cio.nanoTimestamp() - t_snapshot;
+            // `main` writes the root + cache copies atomically for reindex.
+            // Avoid serializing the same snapshot twice on that hot path.
+            if (!commandRebuildsIndex(cmd)) {
+                const t_snapshot: i128 = if (index_profile) cio.nanoTimestamp() else 0;
+                snapshot_mod.writeProjectCacheSnapshot(io, explorer, abs_root, allocator) catch |err| {
+                    std.log.warn("could not persist project-cache snapshot: {}", .{err});
+                };
+                if (index_profile) profile_snapshot_ns = cio.nanoTimestamp() - t_snapshot;
+            }
         }
         if (release_contents_after_cache) {
             explorer.releaseContents();

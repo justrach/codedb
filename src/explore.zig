@@ -662,6 +662,93 @@ pub const SymbolLocation = struct {
     line_end: u32,
 };
 
+fn symbolNavigationKindPriority(kind: SymbolKind) i32 {
+    return switch (kind) {
+        .function, .method => 100,
+        .struct_def, .class_def, .interface_def, .enum_def, .union_def, .trait_def => 90,
+        .impl_block => 80,
+        .type_alias, .macro_def => 70,
+        .constant => 60,
+        .variable => 50,
+        .test_decl => 10,
+        .import, .comment_block => -1000,
+    };
+}
+
+fn symbolNavigationPriority(name: []const u8, path: []const u8, kind: SymbolKind) i32 {
+    var score = symbolNavigationKindPriority(kind);
+    const class = classifyPath(path);
+    if (class.is_vendor) score -= 1200;
+    if (class.is_test) score -= 800;
+    if (class.is_example) score -= 500;
+    if (class.is_tooling) score -= 400;
+
+    // Mixed-language repositories commonly keep executable-looking probes in
+    // these directories. They are useful definitions, but poor default
+    // navigation targets when production definitions of the same name exist.
+    var segments = std.mem.tokenizeAny(u8, path, "/\\");
+    while (segments.next()) |segment| {
+        if (std.ascii.eqlIgnoreCase(segment, "experiments") or
+            std.ascii.eqlIgnoreCase(segment, "experiment") or
+            std.ascii.eqlIgnoreCase(segment, "e2e") or
+            std.ascii.eqlIgnoreCase(segment, "fixtures") or
+            std.ascii.eqlIgnoreCase(segment, "fixture") or
+            std.ascii.eqlIgnoreCase(segment, "generated"))
+        {
+            score -= 700;
+            break;
+        }
+    }
+
+    const basename = std.fs.path.basename(path);
+    const dot = std.mem.lastIndexOfScalar(u8, basename, '.') orelse basename.len;
+    const stem = basename[0..dot];
+    const eponymous = std.ascii.eqlIgnoreCase(stem, name);
+    if (eponymous) score += 400;
+    if (std.mem.startsWith(u8, path, "src/")) score += 120 else if (std.mem.indexOfScalar(u8, path, '/') == null) score += 80;
+
+    // `main` is the one generic name with a cross-language package-entrypoint
+    // convention. Keep this narrow; other common names remain visibly
+    // ambiguous rather than acquiring hard-coded language preferences.
+    if (eponymous and std.ascii.eqlIgnoreCase(name, "main")) {
+        if (std.mem.startsWith(u8, path, "src/")) {
+            score += 400;
+        } else if (std.mem.indexOfScalar(u8, path, '/') == null) {
+            score += 350;
+        } else if (pathHasSegmentIgnoreCase(path, "cmd")) {
+            score += 300;
+        }
+    }
+    return score;
+}
+
+fn symbolNavigationBefore(
+    name: []const u8,
+    a_path: []const u8,
+    a_kind: SymbolKind,
+    a_line: u32,
+    b_path: []const u8,
+    b_kind: SymbolKind,
+    b_line: u32,
+) bool {
+    const ap = symbolNavigationPriority(name, a_path, a_kind);
+    const bp = symbolNavigationPriority(name, b_path, b_kind);
+    if (ap != bp) return ap > bp;
+    const path_order = std.mem.order(u8, a_path, b_path);
+    if (path_order != .eq) return path_order == .lt;
+    return a_line < b_line;
+}
+
+fn symbolNavigationLocationBefore(name: []const u8, a: SymbolLocation, b: SymbolLocation) bool {
+    return symbolNavigationBefore(name, a.path, a.kind, a.line_start, b.path, b.kind, b.line_start);
+}
+
+fn symbolNavigationResultBefore(a: SymbolResult, b: SymbolResult) bool {
+    const name_order = std.mem.order(u8, a.symbol.name, b.symbol.name);
+    if (name_order != .eq) return name_order == .lt;
+    return symbolNavigationBefore(a.symbol.name, a.path, a.symbol.kind, a.symbol.line_start, b.path, b.symbol.kind, b.symbol.line_start);
+}
+
 pub fn matchGlob(pattern: []const u8, path: []const u8) bool {
     // Fast path: `**/*X` where X is a literal — degenerates to endsWith(X).
     // Covers the common agent-style pattern `**/*.ext`.
@@ -1754,10 +1841,13 @@ pub const Explorer = struct {
     /// ranking boost in searchContentRanked. Null until built; guarded by
     /// centrality_build_mu. Keys are borrowed `outlines` keys (stable).
     call_centrality: ?std.StringHashMap(f32) = null,
-    /// Retained resolved call graph (edges + adjacency + per-node metadata) for
-    /// codedb_callpath. Built lazily alongside centrality; may be rebuilt after a
-    /// snapshot load that restored centrality without edges.
+    /// Retained call graph (edges + adjacency + per-node metadata). Ranking
+    /// first builds the historical fast approximate graph; codedb_callpath
+    /// upgrades it in place to strict scoped/import-aware resolution.
     call_graph: ?CallGraph = null,
+    /// Ranking uses the historical fast approximate graph. User-visible
+    /// callpaths upgrade it in place to strict scoped/import-aware resolution.
+    call_graph_exact: bool = false,
     centrality_build_mu: cio.Mutex = .{},
     root_dir: ?std.Io.Dir = null,
     /// Absolute project root path (duped in setRoot) — needed to shell out to
@@ -2072,6 +2162,7 @@ pub const Explorer = struct {
         if (self.call_graph) |*cg| {
             cg.deinit(self.allocator);
             self.call_graph = null;
+            self.call_graph_exact = false;
         }
         if (self.call_centrality) |*cc| {
             cc.deinit();
@@ -2192,7 +2283,8 @@ pub const Explorer = struct {
             outline.language == .javascript or outline.language == .rust or
             outline.language == .go_lang or outline.language == .php or
             outline.language == .dart or outline.language == .java or
-            outline.language == .kotlin or outline.language == .svelte or
+            outline.language == .kotlin or outline.language == .swift or
+            outline.language == .svelte or
             outline.language == .vue or outline.language == .astro or
             outline.language == .css or outline.language == .scss or
             outline.language == .protobuf or outline.language == .mlir or
@@ -3657,7 +3749,14 @@ pub const Explorer = struct {
         // O(1) lookup via symbol_index
         if (self.symbol_index.get(name)) |locs| {
             if (locs.items.len > 0) {
-                const loc = locs.items[0];
+                // The hash lookup is O(1); choose deterministically among the
+                // definitions of this name instead of inheriting scan/commit
+                // order from the symbol-index append list. This is O(k) in the
+                // number of exact-name collisions, never O(all symbols).
+                var loc = locs.items[0];
+                for (locs.items[1..]) |candidate| {
+                    if (symbolNavigationLocationBefore(name, candidate, loc)) loc = candidate;
+                }
                 // Fetch detail from outline
                 var detail: ?[]const u8 = null;
                 if (self.outlines.getPtr(loc.path)) |outline| {
@@ -3782,6 +3881,14 @@ pub const Explorer = struct {
         kind: ?SymbolKind = null,
         fuzzy: bool = false,
         max_results: usize = 50,
+        rank_policy: SymbolRankPolicy = .structural,
+    };
+
+    pub const SymbolRankPolicy = enum {
+        /// Stable low-level order: match score, name, path, line.
+        structural,
+        /// Opinionated navigation order for resolving an exact common name.
+        navigation,
     };
 
     pub const ScoredSymbolResult = struct {
@@ -3834,6 +3941,7 @@ pub const Explorer = struct {
             path: []const u8,
             symbol: Symbol,
             score: f32,
+            navigation_priority: i32,
         };
 
         var candidates: std.ArrayList(Candidate) = .empty;
@@ -3849,13 +3957,13 @@ pub const Explorer = struct {
         };
 
         const SortCtx = struct {
-            // Total order: score desc, then name, path, line. line_start is
-            // the final tiebreak — without it, same-name symbols in one file
-            // compared equal and their order fell out of hash-map iteration,
-            // the residual nondeterminism the deterministic-ordering rewrite
-            // meant to eliminate.
+            // Total order: score desc, optional navigation priority, then name,
+            // path, line. line_start is the final tiebreak — without it,
+            // same-name symbols in one file compared equal and their order fell
+            // out of hash-map iteration.
             pub fn lessThan(_: void, a: Candidate, b: Candidate) bool {
                 if (a.score != b.score) return a.score > b.score;
+                if (a.navigation_priority != b.navigation_priority) return a.navigation_priority > b.navigation_priority;
                 const name_cmp = std.mem.order(u8, a.symbol.name, b.symbol.name);
                 if (name_cmp != .eq) return name_cmp == .lt;
                 const path_cmp = std.mem.order(u8, a.path, b.path);
@@ -3909,6 +4017,7 @@ pub const Explorer = struct {
                 path: []const u8,
                 sym: Symbol,
                 score: f32,
+                rank_policy: SymbolRankPolicy,
             ) !void {
                 if (max_results == 0) return;
                 if (Dedup.contains(list_ptr.items, path, sym.line_start)) return;
@@ -3916,6 +4025,10 @@ pub const Explorer = struct {
                     .path = path,
                     .symbol = sym,
                     .score = score,
+                    .navigation_priority = if (rank_policy == .navigation)
+                        symbolNavigationPriority(sym.name, path, sym.kind)
+                    else
+                        0,
                 };
                 if (list_ptr.items.len >= max_results and
                     !SortCtx.candidateBefore(candidate, list_ptr.items[list_ptr.items.len - 1]))
@@ -3989,7 +4102,7 @@ pub const Explorer = struct {
                                 .line_start = loc.line_start,
                                 .line_end = loc.line_end,
                                 .detail = detail,
-                            }, score);
+                            }, score, spec.rank_policy);
                         }
                     }
                 }
@@ -3997,11 +4110,23 @@ pub const Explorer = struct {
         } else if (spec.name != null and spec.prefix == null and spec.pattern == null) {
             // Exact names are already hash-indexed. Avoid scanning and scoring
             // every distinct symbol name for the overwhelmingly common MCP form
-            // `{ "name": "..." }`; appendOne preserves the existing result order.
+            // `{ "name": "..." }`. Opinionated navigation suppresses
+            // import/comment rows when at least one real definition exists;
+            // structural codedb_symbol order and membership stay unchanged.
             const sym_name = spec.name.?;
             if (self.symbol_index.get(sym_name)) |locs| {
+                var has_navigation_def = false;
+                if (spec.rank_policy == .navigation) {
+                    for (locs.items) |loc| {
+                        if (loc.kind != .import and loc.kind != .comment_block) {
+                            has_navigation_def = true;
+                            break;
+                        }
+                    }
+                }
                 for (locs.items) |loc| {
                     if (spec.kind) |k| if (loc.kind != k) continue;
+                    if (has_navigation_def and (loc.kind == .import or loc.kind == .comment_block)) continue;
                     var detail: ?[]const u8 = null;
                     if (self.outlines.getPtr(loc.path)) |outline| {
                         for (outline.symbols.items) |sym| {
@@ -4017,7 +4142,7 @@ pub const Explorer = struct {
                         .line_start = loc.line_start,
                         .line_end = loc.line_end,
                         .detail = detail,
-                    }, 1.0);
+                    }, 1.0, spec.rank_policy);
                 }
             }
         } else {
@@ -4042,7 +4167,7 @@ pub const Explorer = struct {
                         .line_start = loc.line_start,
                         .line_end = loc.line_end,
                         .detail = detail,
-                    }, score);
+                    }, score, spec.rank_policy);
                 }
             }
         }
@@ -4054,7 +4179,7 @@ pub const Explorer = struct {
                     const score = symbolMatchScore(spec, sym.name) orelse continue;
                     if (spec.kind) |k| if (sym.kind != k) continue;
                     if (Dedup.contains(candidates.items, entry.key_ptr.*, sym.line_start)) continue;
-                    try appendOne(&candidates, allocator, spec.max_results, entry.key_ptr.*, sym, score);
+                    try appendOne(&candidates, allocator, spec.max_results, entry.key_ptr.*, sym, score, spec.rank_policy);
                 }
             }
         }
@@ -4093,12 +4218,22 @@ pub const Explorer = struct {
             allocator.free(results);
         }
         if (results.len == 0) return false;
+        std.mem.sort(SymbolResult, @constCast(results), {}, struct {
+            fn lessThan(_: void, a: SymbolResult, b: SymbolResult) bool {
+                return symbolNavigationResultBefore(a, b);
+            }
+        }.lessThan);
         var has_def = false;
         for (results) |r| {
             if (r.symbol.kind != .import and r.symbol.kind != .comment_block) {
                 has_def = true;
                 break;
             }
+        }
+        var total: usize = 0;
+        for (results) |r| {
+            const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+            if (!has_def or is_def) total += 1;
         }
         out.appendSlice(allocator, "exact symbol matches (codedb_symbol shows bodies):\n") catch return false;
         var n: usize = 0;
@@ -4112,6 +4247,10 @@ pub const Explorer = struct {
             var lb: [64]u8 = undefined;
             out.appendSlice(allocator, std.fmt.bufPrint(&lb, ":{d} ({s})\n", .{ r.symbol.line_start, @tagName(r.symbol.kind) }) catch continue) catch {};
             n += 1;
+        }
+        if (total > n) {
+            var tb: [128]u8 = undefined;
+            out.appendSlice(allocator, std.fmt.bufPrint(&tb, "… {d} more exact symbol matches truncated (raise max_results or use codedb_symbol)\n", .{total - n}) catch return n > 0) catch {};
         }
         return n > 0;
     }
@@ -4154,7 +4293,8 @@ pub const Explorer = struct {
         // commit, so for this high-precision/best-effort feature it is authoritative.
         self.mu.lockShared();
         defer self.mu.unlockShared();
-        for (callees) |name| {
+        for (callees) |callee| {
+            const name = callee.name;
             if (refs.items.len >= max) break;
             // Skip ubiquitous std/container/builtin method names. They are almost
             // always calls on some receiver (ArrayList.append, HashMap.get, ...),
@@ -5665,11 +5805,233 @@ pub const Explorer = struct {
         self.ensureCallCentrality(allocator);
     }
 
+    fn appendCallGraphZigImportBinding(
+        bindings: *std.ArrayList(codegraph.ImportBinding),
+        allocator: std.mem.Allocator,
+        alias: []const u8,
+        target_path: []const u8,
+    ) !void {
+        for (bindings.items) |binding| {
+            if (std.mem.eql(u8, binding.alias, alias) and
+                std.mem.eql(u8, binding.target_path, target_path)) return;
+        }
+        try bindings.append(allocator, .{ .alias = alias, .target_path = target_path });
+    }
+
+    /// Resolve one literal Zig source import declared by `alias` in `outline`.
+    /// Duplicate declarations with different targets are malformed/ambiguous and
+    /// intentionally do not produce a graph fact.
+    fn callGraphZigImportedPath(
+        self: *Explorer,
+        outline: *const FileOutline,
+        top_level_import_lines: *const U32HashMap(void),
+        alias: []const u8,
+        require_public: bool,
+        allocator: std.mem.Allocator,
+    ) ?[]const u8 {
+        if (outline.language != .zig) return null;
+        var found: ?[]const u8 = null;
+        for (outline.symbols.items) |sym| {
+            if (sym.kind != .import or !std.mem.eql(u8, sym.name, alias)) continue;
+            if (!top_level_import_lines.contains(sym.line_start)) continue;
+            const detail = sym.detail orelse continue;
+            if (require_public and !std.mem.startsWith(u8, std.mem.trim(u8, detail, " \t"), "pub ")) continue;
+            const raw_path = extractStringLiteral(detail) orelse continue;
+            // Package imports such as `std`, `builtin`, and named modules do not
+            // identify an indexed file. Resolution is deliberately limited to
+            // concrete Zig source imports.
+            if (!std.mem.endsWith(u8, raw_path, ".zig") or std.fs.path.isAbsolute(raw_path)) continue;
+            const target_path = resolveRelativeImportPath(outline.path, raw_path, allocator) orelse continue;
+            if (!self.outlines.contains(target_path)) continue;
+            if (found) |prior| {
+                if (!std.mem.eql(u8, prior, target_path)) return null;
+            } else {
+                found = target_path;
+            }
+        }
+        return found;
+    }
+
+    /// One lexical pass records lines whose `@import` token itself occurs at
+    /// file scope. Using the token depth (rather than the declaration's line)
+    /// also rejects `const S = struct { const x = @import(...); };` on line 1.
+    /// The resulting set is reused for every import in the file, avoiding the
+    /// former O(imports * file_bytes) prefix rescans on cold graph builds.
+    fn zigTopLevelImportLines(
+        content: []const u8,
+        outline: *const FileOutline,
+        allocator: std.mem.Allocator,
+    ) !U32HashMap(void) {
+        var lines = U32HashMap(void).init(allocator);
+        errdefer lines.deinit();
+        var last_import_line: u32 = 0;
+        for (outline.symbols.items) |sym| {
+            if (sym.kind == .import) last_import_line = @max(last_import_line, sym.line_start);
+        }
+        if (last_import_line == 0) return lines;
+        var brace_depth: usize = 0;
+        var block_comment_depth: usize = 0;
+        var string_quote: u8 = 0;
+        var escaped = false;
+        var line: u32 = 1;
+        var only_whitespace = true;
+        var i: usize = 0;
+        while (i < content.len and line <= last_import_line) : (i += 1) {
+            const c = content[i];
+            if (c == '\n') {
+                line += 1;
+                only_whitespace = true;
+                string_quote = 0;
+                escaped = false;
+                continue;
+            }
+            if (block_comment_depth > 0) {
+                if (c == '/' and i + 1 < content.len and content[i + 1] == '*') {
+                    block_comment_depth += 1;
+                    i += 1;
+                } else if (c == '*' and i + 1 < content.len and content[i + 1] == '/') {
+                    block_comment_depth -= 1;
+                    i += 1;
+                }
+                continue;
+            }
+            if (string_quote != 0) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == string_quote) {
+                    string_quote = 0;
+                }
+                continue;
+            }
+            if (only_whitespace and (c == ' ' or c == '\t' or c == '\r')) continue;
+            if (only_whitespace and c == '\\' and i + 1 < content.len and content[i + 1] == '\\') {
+                while (i + 1 < content.len and content[i + 1] != '\n') i += 1;
+                continue;
+            }
+            only_whitespace = false;
+            if (c == '/' and i + 1 < content.len) {
+                if (content[i + 1] == '/') {
+                    while (i + 1 < content.len and content[i + 1] != '\n') i += 1;
+                    continue;
+                }
+                if (content[i + 1] == '*') {
+                    block_comment_depth = 1;
+                    i += 1;
+                    continue;
+                }
+            }
+            if (c == '"' or c == '\'') {
+                string_quote = c;
+            } else if (brace_depth == 0 and c == '@' and
+                std.mem.startsWith(u8, content[i..], "@import") and
+                (i + 7 == content.len or !isIdentChar(content[i + 7])))
+            {
+                try lines.put(line, {});
+            } else if (c == '{') {
+                brace_depth += 1;
+            } else if (c == '}' and brace_depth > 0) {
+                brace_depth -= 1;
+            }
+        }
+        return lines;
+    }
+
+    fn callGraphImportTarget(bindings: []const codegraph.ImportBinding, alias: []const u8) ?[]const u8 {
+        for (bindings) |binding| {
+            if (std.mem.eql(u8, binding.alias, alias)) return binding.target_path;
+        }
+        return null;
+    }
+
+    fn hasNestedZigImportQualifier(content: []const u8, bindings: []const codegraph.ImportBinding) bool {
+        if (bindings.len == 0) return false;
+        var search_from: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, content, search_from, '.')) |dot| {
+            search_from = dot + 1;
+            var root_start = dot;
+            while (root_start > 0 and isIdentChar(content[root_start - 1])) root_start -= 1;
+            if (root_start == dot) continue;
+            if (callGraphImportTarget(bindings, content[root_start..dot]) == null) continue;
+            var segment_end = dot + 1;
+            const segment_start = segment_end;
+            while (segment_end < content.len and isIdentChar(content[segment_end])) segment_end += 1;
+            if (segment_end > segment_start and segment_end < content.len and content[segment_end] == '.') return true;
+        }
+        return false;
+    }
+
+    /// Build the narrow module-alias facts used by the call graph for Zig.
+    /// Zig file imports are relative even without a leading `./`, unlike the
+    /// generic dependency resolver, so resolve them against the importing file.
+    /// Nested re-export chains are added later from the already-extracted
+    /// function callees, so cold graph construction never scans a file twice.
+    fn callGraphZigImportBindings(
+        self: *Explorer,
+        outline: *const FileOutline,
+        content: []const u8,
+        allocator: std.mem.Allocator,
+    ) ![]const codegraph.ImportBinding {
+        if (outline.language != .zig) return &.{};
+        var bindings: std.ArrayList(codegraph.ImportBinding) = .empty;
+        errdefer bindings.deinit(allocator);
+        var top_level_import_lines = try zigTopLevelImportLines(content, outline, allocator);
+        defer top_level_import_lines.deinit();
+        for (outline.symbols.items) |sym| {
+            if (sym.kind != .import) continue;
+            const target_path = self.callGraphZigImportedPath(outline, &top_level_import_lines, sym.name, false, allocator) orelse continue;
+            try appendCallGraphZigImportBinding(&bindings, allocator, sym.name, target_path);
+        }
+
+        return bindings.toOwnedSlice(allocator);
+    }
+
+    fn extendCallGraphZigImportBindings(
+        self: *Explorer,
+        bindings: *std.ArrayList(codegraph.ImportBinding),
+        calls: []const codegraph.Callee,
+        allocator: std.mem.Allocator,
+    ) !void {
+        for (calls) |callee| {
+            const qualifier = callee.qualifier orelse continue;
+            var segments = std.mem.splitScalar(u8, qualifier, '.');
+            const root_alias = segments.next() orelse continue;
+            var target_path = callGraphImportTarget(bindings.items, root_alias) orelse continue;
+            var prefix_end = root_alias.len;
+            while (segments.next()) |segment| {
+                prefix_end += 1 + segment.len;
+                const prefix = qualifier[0..prefix_end];
+                if (callGraphImportTarget(bindings.items, prefix)) |cached| {
+                    target_path = cached;
+                    continue;
+                }
+                const target_outline = self.outlines.getPtr(target_path) orelse break;
+                const target_ref = self.readContentForSearch(target_path, allocator) orelse break;
+                var target_import_lines = zigTopLevelImportLines(target_ref.data, target_outline, allocator) catch {
+                    target_ref.deinit();
+                    break;
+                };
+                const next_path = self.callGraphZigImportedPath(
+                    target_outline,
+                    &target_import_lines,
+                    segment,
+                    true,
+                    allocator,
+                );
+                target_import_lines.deinit();
+                target_ref.deinit();
+                target_path = next_path orelse break;
+                try appendCallGraphZigImportBinding(bindings, allocator, prefix, target_path);
+            }
+        }
+    }
+
     /// Build the resolved call graph once (idempotent, mutex-guarded). Must be
     /// called while holding at least a shared lock on `mu`. Retains edges for
     /// codedb_callpath and computes per-file centrality (PageRank by default).
-    fn ensureCallGraph(self: *Explorer, allocator: std.mem.Allocator) void {
-        if (self.call_graph != null) return;
+    fn ensureCallGraphMode(self: *Explorer, allocator: std.mem.Allocator, exact: bool) void {
+        if (self.call_graph != null and (!exact or self.call_graph_exact)) return;
         // #564: never build (and cache) a graph from a deferred symbol index —
         // resolveCallees would see no definitions and the empty graph would be
         // cached forever. Callers that need the graph ensureSymbolIndex first;
@@ -5677,7 +6039,12 @@ pub const Explorer = struct {
         if (!self.symbol_index_complete) return;
         self.centrality_build_mu.lock();
         defer self.centrality_build_mu.unlock();
-        if (self.call_graph != null) return;
+        if (self.call_graph != null and (!exact or self.call_graph_exact)) return;
+        if (exact) {
+            if (self.call_graph) |*cg| cg.deinit(self.allocator);
+            self.call_graph = null;
+            self.call_graph_exact = false;
+        }
 
         var arena_state = std.heap.ArenaAllocator.init(allocator);
         defer arena_state.deinit();
@@ -5696,6 +6063,13 @@ pub const Explorer = struct {
             const ref = self.readContentForSearch(path, a) orelse continue;
             defer ref.deinit();
             const content = ref.data;
+            const direct_import_bindings = if (exact)
+                self.callGraphZigImportBindings(entry.value_ptr, content, a) catch &.{}
+            else
+                &.{};
+            var import_bindings: std.ArrayList(codegraph.ImportBinding) = .empty;
+            import_bindings.appendSlice(a, direct_import_bindings) catch return;
+            const file_func_start = funcs.items.len;
             var offs: std.ArrayList(usize) = .empty;
             offs.append(a, 0) catch continue;
             for (content, 0..) |ch, i| {
@@ -5709,16 +6083,26 @@ pub const Explorer = struct {
                 const end_line = @min(sym.line_end, nlines);
                 const end = if (end_line < nlines) offs.items[end_line] else content.len;
                 if (end <= start) continue;
+                const body = content[start..end];
+                const is_zig = exact and entry.value_ptr.language == .zig;
+                const has_thread_spawn = is_zig and std.mem.indexOf(u8, body, "std.Thread.spawn") != null;
                 const id: codegraph.NodeId = @intCast(node_path.items.len);
                 node_path.append(a, path) catch return;
                 node_name.append(a, sym.name) catch return;
                 node_line.append(a, sym.line_start) catch return;
                 node_language_group.append(a, callGraphLanguageGroup(detectLanguage(path))) catch return;
-                funcs.append(a, .{ .id = id, .body = content[start..end] }) catch return;
+                funcs.append(a, .{
+                    .id = id,
+                    .body = body,
+                    .path = path,
+                    .skip_zig_multiline_strings = is_zig and std.mem.indexOf(u8, body, "\\\\") != null,
+                    .extract_zig_thread_spawn_callbacks = has_thread_spawn,
+                }) catch return;
                 const gop = name_to_ids.getOrPut(sym.name) catch return;
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 gop.value_ptr.append(a, id) catch return;
             }
+            for (funcs.items[file_func_start..]) |*func| func.imports = import_bindings.items;
         }
         const n_nodes = node_path.items.len;
         if (n_nodes == 0) return;
@@ -5727,7 +6111,51 @@ pub const Explorer = struct {
         var n2i = name_to_ids.iterator();
         while (n2i.next()) |e| resolve.put(e.key_ptr.*, e.value_ptr.items) catch return;
 
-        var edges_tmp = codegraph.buildEdgesWithinGroups(a, funcs.items, &resolve, node_language_group.items, false) catch return;
+        if (exact) {
+            // Only the uncommon nested receiver shape needs a preparatory
+            // extraction; all other exact edges stream directly from bodies.
+            for (funcs.items) |*func| {
+                if (!hasNestedZigImportQualifier(func.body, func.imports)) continue;
+                const calls = codegraph.extractResolvableCallees(
+                    a,
+                    func.body,
+                    func.skip_zig_multiline_strings,
+                    func.imports,
+                    &resolve,
+                ) catch return;
+                func.preextracted_callees = calls;
+
+                const callbacks: ?[]const codegraph.Callee = if (func.extract_zig_thread_spawn_callbacks)
+                    codegraph.extractZigThreadSpawnCallbacks(a, func.body) catch return
+                else
+                    null;
+                func.preextracted_thread_callbacks = callbacks;
+
+                var enriched: std.ArrayList(codegraph.ImportBinding) = .empty;
+                enriched.appendSlice(a, func.imports) catch return;
+                self.extendCallGraphZigImportBindings(&enriched, calls, a) catch return;
+                if (callbacks) |items| self.extendCallGraphZigImportBindings(&enriched, items, a) catch return;
+                func.imports = enriched.items;
+            }
+        }
+
+        var edges_tmp = if (exact)
+            codegraph.buildEdgesScoped(
+                a,
+                funcs.items,
+                &resolve,
+                node_path.items,
+                node_language_group.items,
+                false,
+            ) catch return
+        else
+            codegraph.buildEdgesApproximate(
+                a,
+                funcs.items,
+                &resolve,
+                node_language_group.items,
+                false,
+            ) catch return;
         defer edges_tmp.deinit(a);
 
         const edges_owned = self.allocator.alloc(codegraph.Edge, edges_tmp.items.len) catch return;
@@ -5849,9 +6277,18 @@ pub const Explorer = struct {
             .node_name = nn,
             .node_line = nl,
         };
+        self.call_graph_exact = exact;
         // The graph-distance boost gate (`call_graph != null`) just flipped:
         // results cached before the build could differ from a fresh search.
         self.bumpSearchGen();
+    }
+
+    fn ensureCallGraph(self: *Explorer, allocator: std.mem.Allocator) void {
+        self.ensureCallGraphMode(allocator, false);
+    }
+
+    fn ensureExactCallGraph(self: *Explorer, allocator: std.mem.Allocator) void {
+        self.ensureCallGraphMode(allocator, true);
     }
 
     /// Build `call_centrality` once (idempotent, mutex-guarded). Must be called
@@ -5870,11 +6307,60 @@ pub const Explorer = struct {
         allocator: std.mem.Allocator,
         max_hops: usize,
     ) !?[]CallPathStep {
+        return self.findCallPathScoped(from_name, null, to_name, null, allocator, max_hops);
+    }
+
+    /// Return every call-graph node that matches a symbol name, optionally
+    /// narrowed to an exact project-relative path. Callers use this to make an
+    /// ambiguous bare endpoint explicit instead of silently choosing whichever
+    /// unrelated pair happens to be shortest.
+    pub fn findCallPathCandidates(
+        self: *Explorer,
+        name: []const u8,
+        path: ?[]const u8,
+        allocator: std.mem.Allocator,
+    ) ![]CallPathStep {
         self.ensureSymbolIndex();
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
-        self.ensureCallGraph(allocator);
+        self.ensureExactCallGraph(allocator);
+        const cg = self.call_graph orelse return try allocator.alloc(CallPathStep, 0);
+
+        var candidates: std.ArrayList(CallPathStep) = .empty;
+        errdefer candidates.deinit(allocator);
+        for (cg.node_name, 0..) |node_name, id| {
+            if (!std.mem.eql(u8, node_name, name)) continue;
+            if (path) |selected_path| {
+                if (!std.mem.eql(u8, cg.node_path[id], selected_path)) continue;
+            }
+            try candidates.append(allocator, .{
+                .path = cg.node_path[id],
+                .name = node_name,
+                .line = cg.node_line[id],
+            });
+        }
+        return try candidates.toOwnedSlice(allocator);
+    }
+
+    /// Shortest resolved call chain with optional exact project-relative
+    /// endpoint paths. The public name-only method above preserves existing
+    /// callers; interactive surfaces should first inspect candidates and ask
+    /// for a path when a bare name is ambiguous.
+    pub fn findCallPathScoped(
+        self: *Explorer,
+        from_name: []const u8,
+        from_path: ?[]const u8,
+        to_name: []const u8,
+        to_path: ?[]const u8,
+        allocator: std.mem.Allocator,
+        max_hops: usize,
+    ) !?[]CallPathStep {
+        self.ensureSymbolIndex();
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        self.ensureExactCallGraph(allocator);
         const cg = self.call_graph orelse return null;
 
         var from_ids: std.ArrayList(codegraph.NodeId) = .empty;
@@ -5884,8 +6370,12 @@ pub const Explorer = struct {
 
         for (cg.node_name, 0..) |name, id| {
             const nid: codegraph.NodeId = @intCast(id);
-            if (std.mem.eql(u8, name, from_name)) try from_ids.append(allocator, nid);
-            if (std.mem.eql(u8, name, to_name)) try to_ids.append(allocator, nid);
+            if (std.mem.eql(u8, name, from_name) and (from_path == null or std.mem.eql(u8, cg.node_path[id], from_path.?))) {
+                try from_ids.append(allocator, nid);
+            }
+            if (std.mem.eql(u8, name, to_name) and (to_path == null or std.mem.eql(u8, cg.node_path[id], to_path.?))) {
+                try to_ids.append(allocator, nid);
+            }
         }
         if (from_ids.items.len == 0 or to_ids.items.len == 0) return null;
 
@@ -7069,7 +7559,49 @@ pub const Explorer = struct {
             try appendOutlineSymbol(a, outline, name, .enum_def, line_num, line);
         } else if (extractIdentAfterKeyword(line, "func ")) |name| {
             try appendOutlineSymbol(a, outline, name, .function, line_num, line);
+        } else if (swiftSpecialMethodName(line)) |name| {
+            try appendOutlineSymbol(a, outline, name, .method, line_num, line);
         }
+    }
+
+    /// Swift initializers are declarations, but unlike ordinary methods their
+    /// identifier is the language keyword itself. Keep them in the outline as
+    /// methods so constructor lookups and call-graph bodies behave like other
+    /// member functions. The prefix guard rejects expression uses such as
+    /// `super.init()` and `value = Type.init`.
+    fn swiftSpecialMethodName(line: []const u8) ?[]const u8 {
+        const names = [_][]const u8{ "deinit", "init" };
+        for (names) |name| {
+            var search_from: usize = 0;
+            while (std.mem.indexOfPos(u8, line, search_from, name)) |pos| {
+                search_from = pos + name.len;
+                if (pos > 0 and isIdentChar(line[pos - 1])) continue;
+                const after_name = pos + name.len;
+                if (after_name < line.len and isIdentChar(line[after_name])) continue;
+                if (!isSwiftDeclarationPrefix(line[0..pos])) continue;
+
+                var cursor = after_name;
+                if (std.mem.eql(u8, name, "init") and cursor < line.len and
+                    (line[cursor] == '?' or line[cursor] == '!')) cursor += 1;
+                while (cursor < line.len and (line[cursor] == ' ' or line[cursor] == '\t')) cursor += 1;
+                if (std.mem.eql(u8, name, "init")) {
+                    if (cursor < line.len and line[cursor] == '(') return name;
+                } else if (cursor >= line.len or line[cursor] == '{') {
+                    return name;
+                }
+            }
+        }
+        return null;
+    }
+
+    fn isSwiftDeclarationPrefix(prefix: []const u8) bool {
+        for (prefix) |ch| {
+            // Modifiers and attributes are fine; punctuation that starts an
+            // expression is not. This deliberately remains permissive for
+            // future Swift modifiers.
+            if (ch == '.' or ch == '=' or ch == '(' or ch == ')' or ch == ';') return false;
+        }
+        return true;
     }
 
     fn parseComponentLine(self: *Explorer, raw_line: []const u8, line_num: u32, outline: *FileOutline) !void {

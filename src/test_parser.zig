@@ -1725,8 +1725,17 @@ test "issue-392: Swift parser" {
         \\public struct Greeter {
         \\    let name: String
         \\
+        \\    public init(
+        \\        name: String
+        \\    ) {
+        \\        self.name = name
+        \\    }
+        \\
         \\    public func greet() -> String {
         \\        return "Hello, \(name)"
+        \\    }
+        \\
+        \\    deinit {
         \\    }
         \\}
         \\
@@ -1761,6 +1770,10 @@ test "issue-392: Swift parser" {
     var found_enum = false;
     var found_top_fn = false;
     var found_method = false;
+    var found_init = false;
+    var found_deinit = false;
+    var init_start: u32 = 0;
+    var init_end: u32 = 0;
     for (outline.symbols.items) |sym| {
         if (std.mem.eql(u8, sym.name, "Greeter")) found_struct = true;
         if (std.mem.eql(u8, sym.name, "HomeViewController")) found_class = true;
@@ -1768,6 +1781,12 @@ test "issue-392: Swift parser" {
         if (std.mem.eql(u8, sym.name, "LoadState")) found_enum = true;
         if (std.mem.eql(u8, sym.name, "topLevel")) found_top_fn = true;
         if (std.mem.eql(u8, sym.name, "greet")) found_method = true;
+        if (std.mem.eql(u8, sym.name, "init")) {
+            found_init = sym.kind == .method;
+            init_start = sym.line_start;
+            init_end = sym.line_end;
+        }
+        if (std.mem.eql(u8, sym.name, "deinit")) found_deinit = sym.kind == .method;
     }
     try testing.expect(found_struct);
     try testing.expect(found_class);
@@ -1775,6 +1794,14 @@ test "issue-392: Swift parser" {
     try testing.expect(found_enum);
     try testing.expect(found_top_fn);
     try testing.expect(found_method);
+    try testing.expect(found_init);
+    try testing.expect(found_deinit);
+    // Swift functions use braces too. A multiline initializer must retain its
+    // body range rather than collapsing to its declaration line.
+    try testing.expect(init_end > init_start);
+    const init_body = (try explorer.getSymbolBody("Sources/App/Greeter.swift", init_start, init_end, testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer testing.allocator.free(init_body);
+    try testing.expect(std.mem.indexOf(u8, init_body, "self.name = name") != null);
 }
 
 test "issue-532: ReScript parser" {

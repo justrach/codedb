@@ -6,6 +6,7 @@ const Explorer = @import("explore.zig").Explorer;
 const sty = @import("style.zig");
 const index_mod = @import("index.zig");
 const root_policy = @import("root_policy.zig");
+const snapshot_mod = @import("snapshot.zig");
 const nuke_mod = @import("nuke.zig");
 const update_mod = @import("update.zig");
 const codex_mod = @import("codex_setup.zig");
@@ -531,7 +532,19 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
     } else if (bootstrap.commandRebuildsIndex(cmd)) {
         // `reindex` is the public spelling; `index` remains a compatibility
         // alias. coldLoadOrScan above already
-        // scanned + persisted the on-disk index for this cmd; confirm and exit
+        // scanned + persisted the on-disk indexes for this cmd. Persist the
+        // validated snapshot to the user-writable central cache first, then
+        // mirror it into the checkout when possible. Read-only/system checkouts
+        // must still reindex successfully.
+        const root_snapshot_written = snapshot_mod.writeReindexSnapshots(io, &explorer, abs_root, allocator) catch |err| {
+            out.p("{s}✗{s} reindex persisted indexes but could not write validated snapshot: {}\n", .{ s.red, s.reset, err });
+            out.flush();
+            std.process.exit(1);
+        };
+        if (!root_snapshot_written) {
+            std.log.warn("reindex: central snapshot is ready; checkout is read-only so codedb.snapshot was not refreshed", .{});
+        }
+        // Confirm and exit
         // cleanly. It used to fall through to "unknown command: index" + exit 1
         // even though the index had been built.
         if (cliNotifyRefresh(io, allocator, abs_root, data_dir)) |refreshed| {
