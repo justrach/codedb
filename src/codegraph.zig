@@ -36,7 +36,10 @@ pub const FuncInput = struct {
     /// Explorer supplies them for same-file and imported-module resolution.
     path: []const u8 = "",
     imports: []const ImportBinding = &.{},
+    skip_zig_multiline_strings: bool = false,
     extract_zig_thread_spawn_callbacks: bool = false,
+    preextracted_callees: ?[]const Callee = null,
+    preextracted_thread_callbacks: ?[]const Callee = null,
 };
 
 pub const Callee = struct {
@@ -117,6 +120,29 @@ fn calleeBeforeOpenParen(body: []const u8, open_paren: usize) ?ParsedCallee {
 /// edge builder can use import facts instead of fanning out by bare name.
 /// Items borrow from `body`; the caller frees only the returned array.
 pub fn extractCallees(allocator: std.mem.Allocator, body: []const u8) ![]Callee {
+    return extractCalleesImpl(allocator, body, false);
+}
+
+fn qualifierRootIsImported(qualifier: []const u8, imports: []const ImportBinding) bool {
+    const dot = std.mem.indexOfScalar(u8, qualifier, '.') orelse qualifier.len;
+    const root = qualifier[0..dot];
+    for (imports) |binding| {
+        if (std.mem.eql(u8, binding.alias, root)) return true;
+    }
+    return false;
+}
+
+/// Call-graph-specific extraction filters names with no indexed definition and
+/// normalizes qualifiers that cannot affect resolution. Imported receivers and
+/// ambiguous names retain their full qualifier; globally unique calls dedupe by
+/// name exactly as the older fast graph builder did.
+pub fn extractResolvableCallees(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+    zig_multiline_strings: bool,
+    imports: []const ImportBinding,
+    resolve: *const std.StringHashMap([]const NodeId),
+) ![]Callee {
     var seen = std.StringHashMap(void).init(allocator);
     defer seen.deinit();
     var out: std.ArrayList(Callee) = .empty;
@@ -125,6 +151,83 @@ pub fn extractCallees(allocator: std.mem.Allocator, body: []const u8) ![]Callee 
     var i: usize = 0;
     while (i < body.len) : (i += 1) {
         const c = body[i];
+        if (zig_multiline_strings and isZigMultilineStringStart(body, i)) {
+            i += 2;
+            while (i < body.len and body[i] != '\n') i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < body.len and body[i + 1] == '/') {
+            i += 2;
+            while (i < body.len and body[i] != '\n') i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < body.len and body[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < body.len and !(body[i] == '*' and body[i + 1] == '/')) i += 1;
+            i += 1;
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            i += 1;
+            while (i < body.len and body[i] != c) {
+                if (body[i] == '\\') i += 1;
+                i += 1;
+            }
+            continue;
+        }
+        if (c != '(') continue;
+        // Resolve the cheap final identifier before walking a dotted receiver.
+        // Most call-like tokens in a large source file have no indexed
+        // definition, so they should never pay qualifier parsing or hashing.
+        var end = i;
+        while (end > 0 and (body[end - 1] == ' ' or body[end - 1] == '\t')) end -= 1;
+        var start = end;
+        while (start > 0 and isIdentChar(body[start - 1])) start -= 1;
+        if (start == end) continue;
+        const name = body[start..end];
+        if (!isIdentStart(name[0]) or isCallKeyword(name)) continue;
+        const is_qualified = start > 0 and body[start - 1] == '.';
+        if (!is_qualified) {
+            const g = try seen.getOrPut(name);
+            if (g.found_existing) continue;
+            if (resolve.get(name) == null) continue;
+            try out.append(allocator, .{ .name = name });
+            continue;
+        }
+
+        const candidates = resolve.get(name) orelse continue;
+
+        var normalized = Callee{ .name = name };
+        var key = name;
+        if (candidates.len > 1 or imports.len > 0) {
+            const parsed = calleeBeforeOpenParen(body, i) orelse continue;
+            if (parsed.callee.qualifier) |qualifier| {
+                if (candidates.len > 1 or qualifierRootIsImported(qualifier, imports)) {
+                    normalized = parsed.callee;
+                    key = parsed.key;
+                }
+            }
+        }
+        const g = try seen.getOrPut(key);
+        if (!g.found_existing) try out.append(allocator, normalized);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn extractCalleesImpl(allocator: std.mem.Allocator, body: []const u8, zig_multiline_strings: bool) ![]Callee {
+    var seen = std.StringHashMap(void).init(allocator);
+    defer seen.deinit();
+    var out: std.ArrayList(Callee) = .empty;
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < body.len) : (i += 1) {
+        const c = body[i];
+        if (zig_multiline_strings and isZigMultilineStringStart(body, i)) {
+            i += 2;
+            while (i < body.len and body[i] != '\n') i += 1;
+            continue;
+        }
         // Skip line comments, block comments, and string/char literals so an identifier
         // mentioned only inside one is not mistaken for a call site (#548 family).
         if (c == '/' and i + 1 < body.len and body[i + 1] == '/') {
@@ -152,6 +255,96 @@ pub fn extractCallees(allocator: std.mem.Allocator, body: []const u8) ![]Callee 
         if (!g.found_existing) try out.append(allocator, parsed.callee);
     }
     return out.toOwnedSlice(allocator);
+}
+
+fn extractCalleeNames(allocator: std.mem.Allocator, body: []const u8) ![]Callee {
+    var seen = std.StringHashMap(void).init(allocator);
+    defer seen.deinit();
+    var out: std.ArrayList(Callee) = .empty;
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < body.len) : (i += 1) {
+        const c = body[i];
+        if (c == '/' and i + 1 < body.len and body[i + 1] == '/') {
+            i += 2;
+            while (i < body.len and body[i] != '\n') i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < body.len and body[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < body.len and !(body[i] == '*' and body[i + 1] == '/')) i += 1;
+            i += 1;
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            i += 1;
+            while (i < body.len and body[i] != c) {
+                if (body[i] == '\\') i += 1;
+                i += 1;
+            }
+            continue;
+        }
+        if (c != '(') continue;
+        var end = i;
+        while (end > 0 and (body[end - 1] == ' ' or body[end - 1] == '\t')) end -= 1;
+        var start = end;
+        while (start > 0 and isIdentChar(body[start - 1])) start -= 1;
+        if (start == end) continue;
+        const name = body[start..end];
+        if (!isIdentStart(name[0]) or isCallKeyword(name)) continue;
+        const g = try seen.getOrPut(name);
+        if (!g.found_existing) try out.append(allocator, .{ .name = name });
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Fast ranking graph used for centrality and query-distance boosts. Ambiguous
+/// names fan out with split weight, preserving the long-standing ranking signal;
+/// user-visible callpath uses the stricter scoped graph below.
+pub fn buildEdgesApproximate(
+    allocator: std.mem.Allocator,
+    funcs: []const FuncInput,
+    resolve: *const std.StringHashMap([]const NodeId),
+    groups: ?[]const u8,
+    allow_self: bool,
+) !std.ArrayList(Edge) {
+    var edges: std.ArrayList(Edge) = .empty;
+    errdefer edges.deinit(allocator);
+    for (funcs) |f| {
+        const callees = try extractCalleeNames(allocator, f.body);
+        defer allocator.free(callees);
+        for (callees) |callee| {
+            const candidates = resolve.get(callee.name) orelse continue;
+            var count: usize = 0;
+            for (candidates) |to| {
+                if (groups) |node_groups| {
+                    if (f.id >= node_groups.len or to >= node_groups.len or node_groups[to] != node_groups[f.id]) continue;
+                }
+                count += 1;
+            }
+            if (count == 0) continue;
+            const weight = 1.0 / @as(f32, @floatFromInt(count));
+            for (candidates) |to| {
+                if (groups) |node_groups| {
+                    if (f.id >= node_groups.len or to >= node_groups.len or node_groups[to] != node_groups[f.id]) continue;
+                }
+                if (!allow_self and to == f.id) continue;
+                try edges.append(allocator, .{ .from = f.id, .to = to, .weight = weight });
+            }
+        }
+    }
+    return edges;
+}
+
+fn isZigMultilineStringStart(body: []const u8, pos: usize) bool {
+    if (pos + 1 >= body.len or body[pos] != '\\' or body[pos + 1] != '\\') return false;
+    var cursor = pos;
+    while (cursor > 0 and body[cursor - 1] != '\n') {
+        if (body[cursor - 1] != ' ' and body[cursor - 1] != '\t' and body[cursor - 1] != '\r') return false;
+        cursor -= 1;
+    }
+    return true;
 }
 
 fn functionValueOnly(raw: []const u8) ?ParsedCallee {
@@ -199,6 +392,11 @@ fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) SpawnCallbackPars
     var i = open_paren + 1;
     while (i < body.len) : (i += 1) {
         const c = body[i];
+        if (isZigMultilineStringStart(body, i)) {
+            i += 2;
+            while (i < body.len and body[i] != '\n') i += 1;
+            continue;
+        }
         if (c == '/' and i + 1 < body.len and body[i + 1] == '/') {
             i += 2;
             while (i < body.len and body[i] != '\n') i += 1;
@@ -276,6 +474,11 @@ pub fn extractZigThreadSpawnCallbacks(allocator: std.mem.Allocator, body: []cons
     var i: usize = 0;
     while (i < body.len) : (i += 1) {
         const c = body[i];
+        if (isZigMultilineStringStart(body, i)) {
+            i += 2;
+            while (i < body.len and body[i] != '\n') i += 1;
+            continue;
+        }
         if (c == '/' and i + 1 < body.len and body[i + 1] == '/') {
             i += 2;
             while (i < body.len and body[i] != '\n') i += 1;
@@ -383,7 +586,7 @@ fn importedTarget(f: FuncInput, qualifier: []const u8) ImportTarget {
         if (!result.found) {
             result.found = true;
             result.path = binding.target_path;
-        } else if (!std.mem.eql(u8, result.path.?, binding.target_path)) {
+        } else if (!result.ambiguous and !std.mem.eql(u8, result.path.?, binding.target_path)) {
             result.ambiguous = true;
             result.path = null;
         }
@@ -458,6 +661,67 @@ fn appendUniqueEdge(
     try edges.append(allocator, .{ .from = from, .to = to, .weight = 1.0 });
 }
 
+fn appendResolvedBodyEdges(
+    allocator: std.mem.Allocator,
+    edges: *std.ArrayList(Edge),
+    function_edge_start: usize,
+    f: FuncInput,
+    resolve: *const std.StringHashMap([]const NodeId),
+    node_paths: ?[]const []const u8,
+    groups: ?[]const u8,
+    allow_self: bool,
+) !void {
+    var seen = std.StringHashMap(void).init(allocator);
+    defer seen.deinit();
+    var i: usize = 0;
+    while (i < f.body.len) : (i += 1) {
+        const c = f.body[i];
+        if ((f.skip_zig_multiline_strings or f.extract_zig_thread_spawn_callbacks) and isZigMultilineStringStart(f.body, i)) {
+            i += 2;
+            while (i < f.body.len and f.body[i] != '\n') i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < f.body.len and f.body[i + 1] == '/') {
+            i += 2;
+            while (i < f.body.len and f.body[i] != '\n') i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < f.body.len and f.body[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < f.body.len and !(f.body[i] == '*' and f.body[i + 1] == '/')) i += 1;
+            i += 1;
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            i += 1;
+            while (i < f.body.len and f.body[i] != c) {
+                if (f.body[i] == '\\') i += 1;
+                i += 1;
+            }
+            continue;
+        }
+        if (c != '(') continue;
+
+        var end = i;
+        while (end > 0 and (f.body[end - 1] == ' ' or f.body[end - 1] == '\t')) end -= 1;
+        var start = end;
+        while (start > 0 and isIdentChar(f.body[start - 1])) start -= 1;
+        if (start == end) continue;
+        const name = f.body[start..end];
+        if (!isIdentStart(name[0]) or isCallKeyword(name)) continue;
+        const candidates = resolve.get(name) orelse continue;
+        const parsed = if (start > 0 and f.body[start - 1] == '.')
+            calleeBeforeOpenParen(f.body, i) orelse continue
+        else
+            ParsedCallee{ .callee = .{ .name = name }, .key = name };
+        const g = try seen.getOrPut(parsed.key);
+        if (g.found_existing) continue;
+        const callee = parsed.callee;
+        const to = resolveDirectCallee(f, callee, candidates, node_paths, groups) orelse continue;
+        try appendUniqueEdge(allocator, edges, function_edge_start, f.id, to, allow_self);
+    }
+}
+
 /// Resolve using caller paths and per-file import bindings. Resolution priority
 /// is: imported module receiver, same-file bare helper, globally unique name.
 /// Every tier keeps the language-family guard; ambiguity emits no edge.
@@ -473,17 +737,32 @@ pub fn buildEdgesScoped(
     errdefer edges.deinit(allocator);
     for (funcs) |f| {
         const function_edge_start = edges.items.len;
-        const callees = try extractCallees(allocator, f.body);
-        defer allocator.free(callees);
-        for (callees) |callee| {
-            const cands = resolve.get(callee.name) orelse continue;
-            const to = resolveDirectCallee(f, callee, cands, node_paths, groups) orelse continue;
-            try appendUniqueEdge(allocator, &edges, function_edge_start, f.id, to, allow_self);
+        if (f.preextracted_callees) |callees| {
+            for (callees) |callee| {
+                const cands = resolve.get(callee.name) orelse continue;
+                const to = resolveDirectCallee(f, callee, cands, node_paths, groups) orelse continue;
+                try appendUniqueEdge(allocator, &edges, function_edge_start, f.id, to, allow_self);
+            }
+        } else {
+            try appendResolvedBodyEdges(
+                allocator,
+                &edges,
+                function_edge_start,
+                f,
+                resolve,
+                node_paths,
+                groups,
+                allow_self,
+            );
         }
 
         if (f.extract_zig_thread_spawn_callbacks and node_paths != null and f.path.len != 0) {
-            const callbacks = try extractZigThreadSpawnCallbacks(allocator, f.body);
-            defer allocator.free(callbacks);
+            const owned_callbacks = if (f.preextracted_thread_callbacks == null)
+                try extractZigThreadSpawnCallbacks(allocator, f.body)
+            else
+                null;
+            defer if (owned_callbacks) |callbacks| allocator.free(callbacks);
+            const callbacks = f.preextracted_thread_callbacks orelse owned_callbacks.?;
             for (callbacks) |callback| {
                 const cands = resolve.get(callback.name) orelse continue;
                 const to = resolveThreadCallback(f, callback, cands, node_paths, groups) orelse continue;

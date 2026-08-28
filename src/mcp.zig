@@ -2994,7 +2994,109 @@ fn isCallSyntaxAfter(line: []const u8, start: usize, after_name: usize, language
         if (cursor < line.len and line[cursor] == '{') return true;
     }
 
+    // A function value passed to another call is still a caller relationship:
+    // `spawn(.{}, worker, .{})`, `map(render)`, `lapply(xs, render)`. Keep this
+    // narrower than a generic identifier reference so locals such as
+    // `let start = ...` and named arguments such as `to: start` stay excluded.
+    if (isFunctionValueArgument(line, start, after_name, language)) return true;
+    if (language == .ruby and isRubyCommandInvocation(line, start, after_name)) return true;
     return language == .shell and isShellCommandInvocation(line, start, after_name);
+}
+
+fn isFunctionValueArgument(line: []const u8, start: usize, after_name: usize, language: explore_mod.Language) bool {
+    // Include a narrow dotted receiver chain in the argument. For example,
+    // `spawn(.{}, watcher.incrementalLoop, .{})` is a callback use of
+    // `incrementalLoop`; checking only the byte immediately before the final
+    // identifier would see `.` and incorrectly discard it.
+    var argument_start = start;
+    while (argument_start > 0) {
+        var dot = argument_start;
+        while (dot > 0 and (line[dot - 1] == ' ' or line[dot - 1] == '\t')) dot -= 1;
+        if (dot == 0 or line[dot - 1] != '.') break;
+        var receiver_end = dot - 1;
+        while (receiver_end > 0 and (line[receiver_end - 1] == ' ' or line[receiver_end - 1] == '\t')) receiver_end -= 1;
+        var receiver_start = receiver_end;
+        while (receiver_start > 0 and isIdentChar(line[receiver_start - 1])) receiver_start -= 1;
+        if (receiver_start == receiver_end) break;
+        argument_start = receiver_start;
+    }
+
+    var before = argument_start;
+    while (before > 0 and (line[before - 1] == ' ' or line[before - 1] == '\t')) before -= 1;
+    if (before == 0 or (line[before - 1] != '(' and line[before - 1] != ',')) return false;
+
+    var after = after_name;
+    while (after < line.len and (line[after] == ' ' or line[after] == '\t')) after += 1;
+    if (after >= line.len or (line[after] != ',' and line[after] != ')')) return false;
+
+    const open = enclosingOpenParenBefore(line, argument_start, language) orelse return false;
+    var callee_end = open;
+    while (callee_end > 0 and (line[callee_end - 1] == ' ' or line[callee_end - 1] == '\t')) callee_end -= 1;
+    var callee_start = callee_end;
+    while (callee_start > 0 and isIdentChar(line[callee_start - 1])) callee_start -= 1;
+    if (callee_start == callee_end) return false;
+    const callee = line[callee_start..callee_end];
+    const non_calls = [_][]const u8{
+        "if", "for", "while", "switch", "catch", "return", "sizeof", "typeof",
+    };
+    for (non_calls) |word| if (std.mem.eql(u8, callee, word)) return false;
+
+    // Reject bare parameters in common declaration forms: `fn foo(callback)`,
+    // `func foo(callback)`, `function foo(callback)`, and `def foo(callback)`.
+    // Typed C-family parameters do not satisfy the delimiter checks above.
+    if (callee_start > 0 and line[callee_start - 1] != '.') {
+        var leader_end = callee_start;
+        while (leader_end > 0 and (line[leader_end - 1] == ' ' or line[leader_end - 1] == '\t')) leader_end -= 1;
+        var leader_start = leader_end;
+        while (leader_start > 0 and isIdentChar(line[leader_start - 1])) leader_start -= 1;
+        const leader = line[leader_start..leader_end];
+        const declarations = [_][]const u8{ "fn", "func", "function", "def" };
+        for (declarations) |word| if (std.mem.eql(u8, leader, word)) return false;
+    }
+    return true;
+}
+
+fn enclosingOpenParenBefore(line: []const u8, limit: usize, language: explore_mod.Language) ?usize {
+    var stack: [64]usize = undefined;
+    var depth: usize = 0;
+    var i: usize = 0;
+    const markers = lineCommentMarkers(language);
+    while (i < @min(limit, line.len)) {
+        if (line[i] == '"' or line[i] == '\'') {
+            const end = stringLiteralEnd(line, i) orelse return null;
+            i = end + 1;
+            continue;
+        }
+        if (blockCommentAt(line, i, language)) |block| {
+            const end = block.end orelse return null;
+            i = end;
+            continue;
+        }
+        if (isLineCommentAt(line, i, language, markers)) return null;
+        if (line[i] == '(') {
+            if (depth == stack.len) return null;
+            stack[depth] = i;
+            depth += 1;
+        } else if (line[i] == ')' and depth > 0) {
+            depth -= 1;
+        }
+        i += 1;
+    }
+    return if (depth > 0) stack[depth - 1] else null;
+}
+
+fn isRubyCommandInvocation(line: []const u8, start: usize, after_name: usize) bool {
+    var before = start;
+    while (before > 0 and (line[before - 1] == ' ' or line[before - 1] == '\t')) before -= 1;
+    const receiver_call = before > 0 and line[before - 1] == '.';
+    const command_position = before == 0 or std.mem.indexOfScalar(u8, ";|&({", line[before - 1]) != null;
+    if (!receiver_call and !command_position) return false;
+
+    var cursor = after_name;
+    while (cursor < line.len and (line[cursor] == ' ' or line[cursor] == '\t')) cursor += 1;
+    if (cursor == line.len) return true;
+    if (cursor == after_name) return false;
+    return std.mem.indexOfScalar(u8, "=,:.)]}+-*/%<>", line[cursor]) == null;
 }
 
 fn isShellCommandInvocation(line: []const u8, start: usize, after_name: usize) bool {

@@ -127,6 +127,30 @@ test "issue-725: scoped edges prefer the longest exact import qualifier" {
     try testing.expectEqual(@as(codegraph.NodeId, 2), edges.items[0].to);
 }
 
+test "issue-725: three conflicting longest import bindings are safely ambiguous" {
+    const imports = [_]codegraph.ImportBinding{
+        .{ .alias = "pkg.engine", .target_path = "src/a.zig" },
+        .{ .alias = "pkg.engine", .target_path = "src/b.zig" },
+        .{ .alias = "pkg.engine", .target_path = "src/c.zig" },
+    };
+    const funcs = [_]codegraph.FuncInput{
+        .{ .id = 0, .body = "pkg.engine.run();", .path = "src/main.zig", .imports = &imports },
+        .{ .id = 1, .body = "", .path = "src/a.zig" },
+        .{ .id = 2, .body = "", .path = "src/b.zig" },
+        .{ .id = 3, .body = "", .path = "src/c.zig" },
+    };
+    const paths = [_][]const u8{ "src/main.zig", "src/a.zig", "src/b.zig", "src/c.zig" };
+    const groups = [_]u8{ 1, 1, 1, 1 };
+    const run_ids = [_]codegraph.NodeId{ 1, 2, 3 };
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    try resolve.put("run", &run_ids);
+
+    var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
+    defer edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), edges.items.len);
+}
+
 test "issue-725: bare calls prefer the unique same-file helper" {
     const funcs = [_]codegraph.FuncInput{
         .{ .id = 0, .body = "persistLocked();", .path = "src/mergequeue.zig" },
@@ -204,6 +228,33 @@ test "issue-725: Zig Thread.spawn callback rejects malformed calls" {
     const stress_callbacks = try codegraph.extractZigThreadSpawnCallbacks(testing.allocator, stress.items);
     defer testing.allocator.free(stress_callbacks);
     try testing.expectEqual(@as(usize, 0), stress_callbacks.len);
+}
+
+test "issue-725: Zig multiline strings do not create call or callback edges" {
+    const body =
+        \\pub fn usage() void {
+        \\    const text =
+        \\        \\\\std.Thread.spawn(.{}, connection, .{});
+        \\    _ = text;
+        \\}
+    ;
+    const callbacks = try codegraph.extractZigThreadSpawnCallbacks(testing.allocator, body);
+    defer testing.allocator.free(callbacks);
+    try testing.expectEqual(@as(usize, 0), callbacks.len);
+
+    const funcs = [_]codegraph.FuncInput{
+        .{ .id = 0, .body = body, .path = "src/main.zig", .extract_zig_thread_spawn_callbacks = true },
+        .{ .id = 1, .body = "", .path = "src/main.zig" },
+    };
+    const paths = [_][]const u8{ "src/main.zig", "src/main.zig" };
+    const groups = [_]u8{ 1, 1 };
+    const connection_ids = [_]codegraph.NodeId{1};
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    try resolve.put("connection", &connection_ids);
+    var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
+    defer edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), edges.items.len);
 }
 
 test "issue-725: Zig Thread.spawn callback resolves an imported function value" {
@@ -3254,6 +3305,10 @@ test "issue-725: call graph follows an exact Zig re-export chain" {
         \\fn engineOnly() void {}
     );
 
+    // Ranking may build the fast approximate graph first; callpath must replace
+    // it with strict import-aware resolution rather than reusing stale edges.
+    explorer_inst.buildCallCentrality(testing.allocator);
+
     const imported = (try explorer_inst.findCallPath("main", "run", testing.allocator, 4)) orelse
         return error.TestExpectedEqual;
     defer testing.allocator.free(imported);
@@ -3263,6 +3318,42 @@ test "issue-725: call graph follows an exact Zig re-export chain" {
     const real_chain = try explorer_inst.findCallPath("main", "engineOnly", testing.allocator, 4);
     defer if (real_chain) |steps| testing.allocator.free(steps);
     try testing.expect(real_chain != null);
+}
+
+test "issue-725: nested Zig imports are not module re-exports" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+
+    try explorer_inst.indexFile("src/main.zig",
+        \\const pkg = @import("root.zig");
+        \\pub fn main() void {
+        \\    pkg.engine.run();
+        \\    pkg.decoy.run();
+        \\}
+    );
+    try explorer_inst.indexFile("src/root.zig",
+        \\pub const engine = struct {
+        \\    pub fn run() void {}
+        \\};
+        \\const Other = struct {
+        \\    const engine = @import("decoy.zig");
+        \\};
+        \\pub const decoy = struct { const hidden = @import("decoy.zig"); };
+    );
+    try explorer_inst.indexFile("src/decoy.zig",
+        \\pub fn run() void {
+        \\    decoyOnly();
+        \\}
+        \\fn decoyOnly() void {}
+    );
+
+    const real = (try explorer_inst.findCallPath("main", "run", testing.allocator, 4)) orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(real);
+    try testing.expectEqualStrings("src/root.zig", real[1].path);
+    const fabricated = try explorer_inst.findCallPath("main", "decoyOnly", testing.allocator, 4);
+    defer if (fabricated) |steps| testing.allocator.free(steps);
+    try testing.expect(fabricated == null);
 }
 
 test "issue-725: Zig Thread.spawn callback adds a unique same-file edge" {

@@ -3860,6 +3860,19 @@ test "reindex refreshes root snapshot so no-daemon queries do not rescan" {
     // refreshed only the central cache copy, while freshness checks preferred
     // this stale root copy and forced the next no-daemon lookup to scan again.
     try tmp.dir.writeFile(io, .{ .sub_path = "project/src/main.zig", .data = "pub fn freshSymbol() void {}\n" });
+    // A central snapshot is mandatory, but the in-repo mirror is best-effort:
+    // system/CI checkouts can be readable without being writable.
+    if (builtin.os.tag != .windows) {
+        var project_z_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const project_z = try cio.bufPrintZ(&project_z_buf, "{s}", .{project_root});
+        try testing.expectEqual(@as(c_int, 0), std.c.chmod(project_z.ptr, 0o555));
+    }
+    defer if (builtin.os.tag != .windows) {
+        var project_z_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (cio.bufPrintZ(&project_z_buf, "{s}", .{project_root})) |project_z| {
+            _ = std.c.chmod(project_z.ptr, 0o755);
+        } else |_| {}
+    };
     const reindexed = try cio.runCapture(.{
         .allocator = testing.allocator,
         .argv = &.{ builtCodedbExe(), project_root, "reindex" },
@@ -4682,7 +4695,7 @@ test "issue-682: codedb_callers keeps a call after a string containing the comme
     defer out.deinit(testing.allocator);
 
     try renderCallersFixture(arena.allocator(), &.{
-        .{ "url.zig", "pub fn callerA() void {\n    fetch(\"https://x\", renderX());\n}\n" },
+        .{ "url.zig", "pub fn callerA() void {\n    fetch(\"https://x\", renderX);\n}\n" },
     }, "renderX", &out);
 
     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
@@ -4796,11 +4809,33 @@ test "issue: codedb_callers keeps a symbol used outside a string on a line that 
     defer out.deinit(testing.allocator);
 
     try renderCallersFixture(arena.allocator(), &.{
-        .{ "mixed.zig", "pub fn callerA() void {\n    foo(\"msg\", renderX());\n}\n" },
+        .{ "mixed.zig", "pub fn callerA() void {\n    foo(\"msg\", renderX);\n}\n" },
     }, "renderX", &out);
 
     try testing.expect(std.mem.indexOf(u8, out.items, "1 call sites for 'renderX'") != null);
     try testing.expect(std.mem.indexOf(u8, out.items, "mixed.zig:2") != null);
+}
+
+test "issue-725: codedb_callers keeps callback arguments and Ruby command calls" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+
+    try renderCallersFixture(arena.allocator(), &.{
+        .{ "thread.zig", "pub fn callerA() void {\n    _ = std.Thread.spawn(.{}, callbacks.renderX, .{});\n}\n" },
+        .{ "map.js", "function callerB(items) {\n    return items.map(renderX);\n}\n" },
+        .{ "map.py", "def caller_c(items):\n    return map(renderX, items)\n" },
+        .{ "command.rb", "def caller_d(item)\n  renderX item\nend\n" },
+        .{ "not-calls.js", "function takes(renderX) {\n    const copy = renderX;\n}\n" },
+    }, "renderX", &out);
+
+    try testing.expect(std.mem.indexOf(u8, out.items, "4 call sites for 'renderX'") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "thread.zig:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "map.js:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "map.py:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "command.rb:2") != null);
+    try testing.expect(std.mem.indexOf(u8, out.items, "not-calls.js") == null);
 }
 
 test "OpenWispr: callers excludes Swift declarations, locals, and parameter labels" {

@@ -532,22 +532,18 @@ fn mainImpl(argv: []const [*:0]const u8) !void {
     } else if (bootstrap.commandRebuildsIndex(cmd)) {
         // `reindex` is the public spelling; `index` remains a compatibility
         // alias. coldLoadOrScan above already
-        // scanned + persisted the on-disk index for this cmd. Publish the same
-        // validated, atomically-written snapshot at the project root as well:
-        // snapshot freshness deliberately checks the in-repo copy first, so a
-        // stale old root snapshot would otherwise force every no-daemon query
-        // to rescan despite the fresh project-cache snapshot.
-        const snapshot_path = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch {
-            out.p("{s}✗{s} reindex could not allocate snapshot path\n", .{ s.red, s.reset });
-            out.flush();
-            std.process.exit(1);
-        };
-        defer allocator.free(snapshot_path);
-        snapshot_mod.writeSnapshotDual(io, &explorer, abs_root, snapshot_path, allocator) catch |err| {
+        // scanned + persisted the on-disk indexes for this cmd. Persist the
+        // validated snapshot to the user-writable central cache first, then
+        // mirror it into the checkout when possible. Read-only/system checkouts
+        // must still reindex successfully.
+        const root_snapshot_written = snapshot_mod.writeReindexSnapshots(io, &explorer, abs_root, allocator) catch |err| {
             out.p("{s}✗{s} reindex persisted indexes but could not write validated snapshot: {}\n", .{ s.red, s.reset, err });
             out.flush();
             std.process.exit(1);
         };
+        if (!root_snapshot_written) {
+            std.log.warn("reindex: central snapshot is ready; checkout is read-only so codedb.snapshot was not refreshed", .{});
+        }
         // Confirm and exit
         // cleanly. It used to fall through to "unknown command: index" + exit 1
         // even though the index had been built.

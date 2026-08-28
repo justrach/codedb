@@ -1841,10 +1841,13 @@ pub const Explorer = struct {
     /// ranking boost in searchContentRanked. Null until built; guarded by
     /// centrality_build_mu. Keys are borrowed `outlines` keys (stable).
     call_centrality: ?std.StringHashMap(f32) = null,
-    /// Retained resolved call graph (edges + adjacency + per-node metadata) for
-    /// codedb_callpath. Built lazily alongside centrality; may be rebuilt after a
-    /// snapshot load that restored centrality without edges.
+    /// Retained call graph (edges + adjacency + per-node metadata). Ranking
+    /// first builds the historical fast approximate graph; codedb_callpath
+    /// upgrades it in place to strict scoped/import-aware resolution.
     call_graph: ?CallGraph = null,
+    /// Ranking uses the historical fast approximate graph. User-visible
+    /// callpaths upgrade it in place to strict scoped/import-aware resolution.
+    call_graph_exact: bool = false,
     centrality_build_mu: cio.Mutex = .{},
     root_dir: ?std.Io.Dir = null,
     /// Absolute project root path (duped in setRoot) — needed to shell out to
@@ -2159,6 +2162,7 @@ pub const Explorer = struct {
         if (self.call_graph) |*cg| {
             cg.deinit(self.allocator);
             self.call_graph = null;
+            self.call_graph_exact = false;
         }
         if (self.call_centrality) |*cc| {
             cc.deinit();
@@ -5820,14 +5824,18 @@ pub const Explorer = struct {
     fn callGraphZigImportedPath(
         self: *Explorer,
         outline: *const FileOutline,
+        top_level_import_lines: *const U32HashMap(void),
         alias: []const u8,
+        require_public: bool,
         allocator: std.mem.Allocator,
     ) ?[]const u8 {
         if (outline.language != .zig) return null;
         var found: ?[]const u8 = null;
         for (outline.symbols.items) |sym| {
             if (sym.kind != .import or !std.mem.eql(u8, sym.name, alias)) continue;
+            if (!top_level_import_lines.contains(sym.line_start)) continue;
             const detail = sym.detail orelse continue;
+            if (require_public and !std.mem.startsWith(u8, std.mem.trim(u8, detail, " \t"), "pub ")) continue;
             const raw_path = extractStringLiteral(detail) orelse continue;
             // Package imports such as `std`, `builtin`, and named modules do not
             // identify an indexed file. Resolution is deliberately limited to
@@ -5844,12 +5852,121 @@ pub const Explorer = struct {
         return found;
     }
 
+    /// One lexical pass records lines whose `@import` token itself occurs at
+    /// file scope. Using the token depth (rather than the declaration's line)
+    /// also rejects `const S = struct { const x = @import(...); };` on line 1.
+    /// The resulting set is reused for every import in the file, avoiding the
+    /// former O(imports * file_bytes) prefix rescans on cold graph builds.
+    fn zigTopLevelImportLines(
+        content: []const u8,
+        outline: *const FileOutline,
+        allocator: std.mem.Allocator,
+    ) !U32HashMap(void) {
+        var lines = U32HashMap(void).init(allocator);
+        errdefer lines.deinit();
+        var last_import_line: u32 = 0;
+        for (outline.symbols.items) |sym| {
+            if (sym.kind == .import) last_import_line = @max(last_import_line, sym.line_start);
+        }
+        if (last_import_line == 0) return lines;
+        var brace_depth: usize = 0;
+        var block_comment_depth: usize = 0;
+        var string_quote: u8 = 0;
+        var escaped = false;
+        var line: u32 = 1;
+        var only_whitespace = true;
+        var i: usize = 0;
+        while (i < content.len and line <= last_import_line) : (i += 1) {
+            const c = content[i];
+            if (c == '\n') {
+                line += 1;
+                only_whitespace = true;
+                string_quote = 0;
+                escaped = false;
+                continue;
+            }
+            if (block_comment_depth > 0) {
+                if (c == '/' and i + 1 < content.len and content[i + 1] == '*') {
+                    block_comment_depth += 1;
+                    i += 1;
+                } else if (c == '*' and i + 1 < content.len and content[i + 1] == '/') {
+                    block_comment_depth -= 1;
+                    i += 1;
+                }
+                continue;
+            }
+            if (string_quote != 0) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == string_quote) {
+                    string_quote = 0;
+                }
+                continue;
+            }
+            if (only_whitespace and (c == ' ' or c == '\t' or c == '\r')) continue;
+            if (only_whitespace and c == '\\' and i + 1 < content.len and content[i + 1] == '\\') {
+                while (i + 1 < content.len and content[i + 1] != '\n') i += 1;
+                continue;
+            }
+            only_whitespace = false;
+            if (c == '/' and i + 1 < content.len) {
+                if (content[i + 1] == '/') {
+                    while (i + 1 < content.len and content[i + 1] != '\n') i += 1;
+                    continue;
+                }
+                if (content[i + 1] == '*') {
+                    block_comment_depth = 1;
+                    i += 1;
+                    continue;
+                }
+            }
+            if (c == '"' or c == '\'') {
+                string_quote = c;
+            } else if (brace_depth == 0 and c == '@' and
+                std.mem.startsWith(u8, content[i..], "@import") and
+                (i + 7 == content.len or !isIdentChar(content[i + 7])))
+            {
+                try lines.put(line, {});
+            } else if (c == '{') {
+                brace_depth += 1;
+            } else if (c == '}' and brace_depth > 0) {
+                brace_depth -= 1;
+            }
+        }
+        return lines;
+    }
+
+    fn callGraphImportTarget(bindings: []const codegraph.ImportBinding, alias: []const u8) ?[]const u8 {
+        for (bindings) |binding| {
+            if (std.mem.eql(u8, binding.alias, alias)) return binding.target_path;
+        }
+        return null;
+    }
+
+    fn hasNestedZigImportQualifier(content: []const u8, bindings: []const codegraph.ImportBinding) bool {
+        if (bindings.len == 0) return false;
+        var search_from: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, content, search_from, '.')) |dot| {
+            search_from = dot + 1;
+            var root_start = dot;
+            while (root_start > 0 and isIdentChar(content[root_start - 1])) root_start -= 1;
+            if (root_start == dot) continue;
+            if (callGraphImportTarget(bindings, content[root_start..dot]) == null) continue;
+            var segment_end = dot + 1;
+            const segment_start = segment_end;
+            while (segment_end < content.len and isIdentChar(content[segment_end])) segment_end += 1;
+            if (segment_end > segment_start and segment_end < content.len and content[segment_end] == '.') return true;
+        }
+        return false;
+    }
+
     /// Build the narrow module-alias facts used by the call graph for Zig.
     /// Zig file imports are relative even without a leading `./`, unlike the
     /// generic dependency resolver, so resolve them against the importing file.
-    /// Follow exact re-export chains only for qualifiers that occur in this file
-    /// (`pkg.engine.run` => `pkg` then `engine`), avoiding an eager traversal of
-    /// the whole module tree.
+    /// Nested re-export chains are added later from the already-extracted
+    /// function callees, so cold graph construction never scans a file twice.
     fn callGraphZigImportBindings(
         self: *Explorer,
         outline: *const FileOutline,
@@ -5859,45 +5976,62 @@ pub const Explorer = struct {
         if (outline.language != .zig) return &.{};
         var bindings: std.ArrayList(codegraph.ImportBinding) = .empty;
         errdefer bindings.deinit(allocator);
+        var top_level_import_lines = try zigTopLevelImportLines(content, outline, allocator);
+        defer top_level_import_lines.deinit();
         for (outline.symbols.items) |sym| {
             if (sym.kind != .import) continue;
-            const target_path = self.callGraphZigImportedPath(outline, sym.name, allocator) orelse continue;
+            const target_path = self.callGraphZigImportedPath(outline, &top_level_import_lines, sym.name, false, allocator) orelse continue;
             try appendCallGraphZigImportBinding(&bindings, allocator, sym.name, target_path);
         }
 
-        const callees = try codegraph.extractCallees(allocator, content);
-        defer allocator.free(callees);
-        const callbacks = try codegraph.extractZigThreadSpawnCallbacks(allocator, content);
-        defer allocator.free(callbacks);
-        const call_sets = [_][]const codegraph.Callee{ callees, callbacks };
-        for (call_sets) |calls| {
-            for (calls) |callee| {
-                const qualifier = callee.qualifier orelse continue;
-                var segments = std.mem.splitScalar(u8, qualifier, '.');
-                const root_alias = segments.next() orelse continue;
-                var target_path = self.callGraphZigImportedPath(outline, root_alias, allocator) orelse continue;
-                var prefix_end = root_alias.len;
-                while (segments.next()) |segment| {
-                    const target_outline = self.outlines.getPtr(target_path) orelse break;
-                    target_path = self.callGraphZigImportedPath(target_outline, segment, allocator) orelse break;
-                    prefix_end += 1 + segment.len;
-                    try appendCallGraphZigImportBinding(
-                        &bindings,
-                        allocator,
-                        qualifier[0..prefix_end],
-                        target_path,
-                    );
+        return bindings.toOwnedSlice(allocator);
+    }
+
+    fn extendCallGraphZigImportBindings(
+        self: *Explorer,
+        bindings: *std.ArrayList(codegraph.ImportBinding),
+        calls: []const codegraph.Callee,
+        allocator: std.mem.Allocator,
+    ) !void {
+        for (calls) |callee| {
+            const qualifier = callee.qualifier orelse continue;
+            var segments = std.mem.splitScalar(u8, qualifier, '.');
+            const root_alias = segments.next() orelse continue;
+            var target_path = callGraphImportTarget(bindings.items, root_alias) orelse continue;
+            var prefix_end = root_alias.len;
+            while (segments.next()) |segment| {
+                prefix_end += 1 + segment.len;
+                const prefix = qualifier[0..prefix_end];
+                if (callGraphImportTarget(bindings.items, prefix)) |cached| {
+                    target_path = cached;
+                    continue;
                 }
+                const target_outline = self.outlines.getPtr(target_path) orelse break;
+                const target_ref = self.readContentForSearch(target_path, allocator) orelse break;
+                var target_import_lines = zigTopLevelImportLines(target_ref.data, target_outline, allocator) catch {
+                    target_ref.deinit();
+                    break;
+                };
+                const next_path = self.callGraphZigImportedPath(
+                    target_outline,
+                    &target_import_lines,
+                    segment,
+                    true,
+                    allocator,
+                );
+                target_import_lines.deinit();
+                target_ref.deinit();
+                target_path = next_path orelse break;
+                try appendCallGraphZigImportBinding(bindings, allocator, prefix, target_path);
             }
         }
-        return bindings.toOwnedSlice(allocator);
     }
 
     /// Build the resolved call graph once (idempotent, mutex-guarded). Must be
     /// called while holding at least a shared lock on `mu`. Retains edges for
     /// codedb_callpath and computes per-file centrality (PageRank by default).
-    fn ensureCallGraph(self: *Explorer, allocator: std.mem.Allocator) void {
-        if (self.call_graph != null) return;
+    fn ensureCallGraphMode(self: *Explorer, allocator: std.mem.Allocator, exact: bool) void {
+        if (self.call_graph != null and (!exact or self.call_graph_exact)) return;
         // #564: never build (and cache) a graph from a deferred symbol index —
         // resolveCallees would see no definitions and the empty graph would be
         // cached forever. Callers that need the graph ensureSymbolIndex first;
@@ -5905,7 +6039,12 @@ pub const Explorer = struct {
         if (!self.symbol_index_complete) return;
         self.centrality_build_mu.lock();
         defer self.centrality_build_mu.unlock();
-        if (self.call_graph != null) return;
+        if (self.call_graph != null and (!exact or self.call_graph_exact)) return;
+        if (exact) {
+            if (self.call_graph) |*cg| cg.deinit(self.allocator);
+            self.call_graph = null;
+            self.call_graph_exact = false;
+        }
 
         var arena_state = std.heap.ArenaAllocator.init(allocator);
         defer arena_state.deinit();
@@ -5924,7 +6063,13 @@ pub const Explorer = struct {
             const ref = self.readContentForSearch(path, a) orelse continue;
             defer ref.deinit();
             const content = ref.data;
-            const import_bindings = self.callGraphZigImportBindings(entry.value_ptr, content, a) catch &.{};
+            const direct_import_bindings = if (exact)
+                self.callGraphZigImportBindings(entry.value_ptr, content, a) catch &.{}
+            else
+                &.{};
+            var import_bindings: std.ArrayList(codegraph.ImportBinding) = .empty;
+            import_bindings.appendSlice(a, direct_import_bindings) catch return;
+            const file_func_start = funcs.items.len;
             var offs: std.ArrayList(usize) = .empty;
             offs.append(a, 0) catch continue;
             for (content, 0..) |ch, i| {
@@ -5938,6 +6083,9 @@ pub const Explorer = struct {
                 const end_line = @min(sym.line_end, nlines);
                 const end = if (end_line < nlines) offs.items[end_line] else content.len;
                 if (end <= start) continue;
+                const body = content[start..end];
+                const is_zig = exact and entry.value_ptr.language == .zig;
+                const has_thread_spawn = is_zig and std.mem.indexOf(u8, body, "std.Thread.spawn") != null;
                 const id: codegraph.NodeId = @intCast(node_path.items.len);
                 node_path.append(a, path) catch return;
                 node_name.append(a, sym.name) catch return;
@@ -5945,15 +6093,16 @@ pub const Explorer = struct {
                 node_language_group.append(a, callGraphLanguageGroup(detectLanguage(path))) catch return;
                 funcs.append(a, .{
                     .id = id,
-                    .body = content[start..end],
+                    .body = body,
                     .path = path,
-                    .imports = import_bindings,
-                    .extract_zig_thread_spawn_callbacks = entry.value_ptr.language == .zig,
+                    .skip_zig_multiline_strings = is_zig and std.mem.indexOf(u8, body, "\\\\") != null,
+                    .extract_zig_thread_spawn_callbacks = has_thread_spawn,
                 }) catch return;
                 const gop = name_to_ids.getOrPut(sym.name) catch return;
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 gop.value_ptr.append(a, id) catch return;
             }
+            for (funcs.items[file_func_start..]) |*func| func.imports = import_bindings.items;
         }
         const n_nodes = node_path.items.len;
         if (n_nodes == 0) return;
@@ -5962,14 +6111,51 @@ pub const Explorer = struct {
         var n2i = name_to_ids.iterator();
         while (n2i.next()) |e| resolve.put(e.key_ptr.*, e.value_ptr.items) catch return;
 
-        var edges_tmp = codegraph.buildEdgesScoped(
-            a,
-            funcs.items,
-            &resolve,
-            node_path.items,
-            node_language_group.items,
-            false,
-        ) catch return;
+        if (exact) {
+            // Only the uncommon nested receiver shape needs a preparatory
+            // extraction; all other exact edges stream directly from bodies.
+            for (funcs.items) |*func| {
+                if (!hasNestedZigImportQualifier(func.body, func.imports)) continue;
+                const calls = codegraph.extractResolvableCallees(
+                    a,
+                    func.body,
+                    func.skip_zig_multiline_strings,
+                    func.imports,
+                    &resolve,
+                ) catch return;
+                func.preextracted_callees = calls;
+
+                const callbacks: ?[]const codegraph.Callee = if (func.extract_zig_thread_spawn_callbacks)
+                    codegraph.extractZigThreadSpawnCallbacks(a, func.body) catch return
+                else
+                    null;
+                func.preextracted_thread_callbacks = callbacks;
+
+                var enriched: std.ArrayList(codegraph.ImportBinding) = .empty;
+                enriched.appendSlice(a, func.imports) catch return;
+                self.extendCallGraphZigImportBindings(&enriched, calls, a) catch return;
+                if (callbacks) |items| self.extendCallGraphZigImportBindings(&enriched, items, a) catch return;
+                func.imports = enriched.items;
+            }
+        }
+
+        var edges_tmp = if (exact)
+            codegraph.buildEdgesScoped(
+                a,
+                funcs.items,
+                &resolve,
+                node_path.items,
+                node_language_group.items,
+                false,
+            ) catch return
+        else
+            codegraph.buildEdgesApproximate(
+                a,
+                funcs.items,
+                &resolve,
+                node_language_group.items,
+                false,
+            ) catch return;
         defer edges_tmp.deinit(a);
 
         const edges_owned = self.allocator.alloc(codegraph.Edge, edges_tmp.items.len) catch return;
@@ -6091,9 +6277,18 @@ pub const Explorer = struct {
             .node_name = nn,
             .node_line = nl,
         };
+        self.call_graph_exact = exact;
         // The graph-distance boost gate (`call_graph != null`) just flipped:
         // results cached before the build could differ from a fresh search.
         self.bumpSearchGen();
+    }
+
+    fn ensureCallGraph(self: *Explorer, allocator: std.mem.Allocator) void {
+        self.ensureCallGraphMode(allocator, false);
+    }
+
+    fn ensureExactCallGraph(self: *Explorer, allocator: std.mem.Allocator) void {
+        self.ensureCallGraphMode(allocator, true);
     }
 
     /// Build `call_centrality` once (idempotent, mutex-guarded). Must be called
@@ -6129,7 +6324,7 @@ pub const Explorer = struct {
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
-        self.ensureCallGraph(allocator);
+        self.ensureExactCallGraph(allocator);
         const cg = self.call_graph orelse return try allocator.alloc(CallPathStep, 0);
 
         var candidates: std.ArrayList(CallPathStep) = .empty;
@@ -6165,7 +6360,7 @@ pub const Explorer = struct {
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
-        self.ensureCallGraph(allocator);
+        self.ensureExactCallGraph(allocator);
         const cg = self.call_graph orelse return null;
 
         var from_ids: std.ArrayList(codegraph.NodeId) = .empty;
