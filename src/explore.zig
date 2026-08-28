@@ -5801,12 +5801,59 @@ pub const Explorer = struct {
         self.ensureCallCentrality(allocator);
     }
 
+    fn appendCallGraphZigImportBinding(
+        bindings: *std.ArrayList(codegraph.ImportBinding),
+        allocator: std.mem.Allocator,
+        alias: []const u8,
+        target_path: []const u8,
+    ) !void {
+        for (bindings.items) |binding| {
+            if (std.mem.eql(u8, binding.alias, alias) and
+                std.mem.eql(u8, binding.target_path, target_path)) return;
+        }
+        try bindings.append(allocator, .{ .alias = alias, .target_path = target_path });
+    }
+
+    /// Resolve one literal Zig source import declared by `alias` in `outline`.
+    /// Duplicate declarations with different targets are malformed/ambiguous and
+    /// intentionally do not produce a graph fact.
+    fn callGraphZigImportedPath(
+        self: *Explorer,
+        outline: *const FileOutline,
+        alias: []const u8,
+        allocator: std.mem.Allocator,
+    ) ?[]const u8 {
+        if (outline.language != .zig) return null;
+        var found: ?[]const u8 = null;
+        for (outline.symbols.items) |sym| {
+            if (sym.kind != .import or !std.mem.eql(u8, sym.name, alias)) continue;
+            const detail = sym.detail orelse continue;
+            const raw_path = extractStringLiteral(detail) orelse continue;
+            // Package imports such as `std`, `builtin`, and named modules do not
+            // identify an indexed file. Resolution is deliberately limited to
+            // concrete Zig source imports.
+            if (!std.mem.endsWith(u8, raw_path, ".zig") or std.fs.path.isAbsolute(raw_path)) continue;
+            const target_path = resolveRelativeImportPath(outline.path, raw_path, allocator) orelse continue;
+            if (!self.outlines.contains(target_path)) continue;
+            if (found) |prior| {
+                if (!std.mem.eql(u8, prior, target_path)) return null;
+            } else {
+                found = target_path;
+            }
+        }
+        return found;
+    }
+
     /// Build the narrow module-alias facts used by the call graph for Zig.
     /// Zig file imports are relative even without a leading `./`, unlike the
     /// generic dependency resolver, so resolve them against the importing file.
+    /// Follow exact re-export chains only for qualifiers that occur in this file
+    /// (`pkg.engine.run` => `pkg` then `engine`), avoiding an eager traversal of
+    /// the whole module tree.
     fn callGraphZigImportBindings(
         self: *Explorer,
         outline: *const FileOutline,
+        content: []const u8,
         allocator: std.mem.Allocator,
     ) ![]const codegraph.ImportBinding {
         if (outline.language != .zig) return &.{};
@@ -5814,15 +5861,34 @@ pub const Explorer = struct {
         errdefer bindings.deinit(allocator);
         for (outline.symbols.items) |sym| {
             if (sym.kind != .import) continue;
-            const detail = sym.detail orelse continue;
-            const raw_path = extractStringLiteral(detail) orelse continue;
-            // Package imports such as `std`, `builtin`, and named modules do not
-            // identify an indexed file. The requested receiver resolution is for
-            // concrete Zig source imports.
-            if (!std.mem.endsWith(u8, raw_path, ".zig") or std.fs.path.isAbsolute(raw_path)) continue;
-            const target_path = resolveRelativeImportPath(outline.path, raw_path, allocator) orelse continue;
-            if (!self.outlines.contains(target_path)) continue;
-            try bindings.append(allocator, .{ .alias = sym.name, .target_path = target_path });
+            const target_path = self.callGraphZigImportedPath(outline, sym.name, allocator) orelse continue;
+            try appendCallGraphZigImportBinding(&bindings, allocator, sym.name, target_path);
+        }
+
+        const callees = try codegraph.extractCallees(allocator, content);
+        defer allocator.free(callees);
+        const callbacks = try codegraph.extractZigThreadSpawnCallbacks(allocator, content);
+        defer allocator.free(callbacks);
+        const call_sets = [_][]const codegraph.Callee{ callees, callbacks };
+        for (call_sets) |calls| {
+            for (calls) |callee| {
+                const qualifier = callee.qualifier orelse continue;
+                var segments = std.mem.splitScalar(u8, qualifier, '.');
+                const root_alias = segments.next() orelse continue;
+                var target_path = self.callGraphZigImportedPath(outline, root_alias, allocator) orelse continue;
+                var prefix_end = root_alias.len;
+                while (segments.next()) |segment| {
+                    const target_outline = self.outlines.getPtr(target_path) orelse break;
+                    target_path = self.callGraphZigImportedPath(target_outline, segment, allocator) orelse break;
+                    prefix_end += 1 + segment.len;
+                    try appendCallGraphZigImportBinding(
+                        &bindings,
+                        allocator,
+                        qualifier[0..prefix_end],
+                        target_path,
+                    );
+                }
+            }
         }
         return bindings.toOwnedSlice(allocator);
     }
@@ -5855,10 +5921,10 @@ pub const Explorer = struct {
         var it = self.outlines.iterator();
         while (it.next()) |entry| {
             const path = entry.key_ptr.*;
-            const import_bindings = self.callGraphZigImportBindings(entry.value_ptr, a) catch &.{};
             const ref = self.readContentForSearch(path, a) orelse continue;
             defer ref.deinit();
             const content = ref.data;
+            const import_bindings = self.callGraphZigImportBindings(entry.value_ptr, content, a) catch &.{};
             var offs: std.ArrayList(usize) = .empty;
             offs.append(a, 0) catch continue;
             for (content, 0..) |ch, i| {

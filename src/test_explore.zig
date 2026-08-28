@@ -100,6 +100,33 @@ test "issue-725: scoped edges resolve imports and skip same-language ambiguity" 
     try testing.expectEqual(@as(usize, 0), ambiguous_edges.items.len);
 }
 
+test "issue-725: scoped edges prefer the longest exact import qualifier" {
+    const imports = [_]codegraph.ImportBinding{
+        .{ .alias = "zigrep", .target_path = "zigrep/src/root.zig" },
+        .{ .alias = "zigrep.engine", .target_path = "zigrep/src/exec/search_engine.zig" },
+    };
+    const funcs = [_]codegraph.FuncInput{
+        .{ .id = 0, .body = "zigrep.engine.run();", .path = "zigrep/src/main.zig", .imports = &imports },
+        .{ .id = 1, .body = "", .path = "zigrep/src/root.zig" },
+        .{ .id = 2, .body = "", .path = "zigrep/src/exec/search_engine.zig" },
+    };
+    const paths = [_][]const u8{
+        "zigrep/src/main.zig",
+        "zigrep/src/root.zig",
+        "zigrep/src/exec/search_engine.zig",
+    };
+    const groups = [_]u8{ 1, 1, 1 };
+    const run_ids = [_]codegraph.NodeId{ 1, 2 };
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    try resolve.put("run", &run_ids);
+
+    var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
+    defer edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), edges.items.len);
+    try testing.expectEqual(@as(codegraph.NodeId, 2), edges.items[0].to);
+}
+
 test "issue-725: bare calls prefer the unique same-file helper" {
     const funcs = [_]codegraph.FuncInput{
         .{ .id = 0, .body = "persistLocked();", .path = "src/mergequeue.zig" },
@@ -3204,6 +3231,38 @@ test "issue-725: call graph resolves imported receiver and same-file helper" {
     const wrong = try explorer_inst.findCallPath("enqueue", "wrongOnly", testing.allocator, 4);
     defer if (wrong) |steps| testing.allocator.free(steps);
     try testing.expect(wrong == null);
+}
+
+test "issue-725: call graph follows an exact Zig re-export chain" {
+    var explorer_inst = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer_inst.deinit();
+
+    try explorer_inst.indexFile("zigrep/src/main.zig",
+        \\const zigrep = @import("root.zig");
+        \\pub fn main() void {
+        \\    zigrep.engine.run();
+        \\}
+    );
+    try explorer_inst.indexFile("zigrep/src/root.zig",
+        \\pub const engine = @import("exec/search_engine.zig");
+        \\pub fn run() void {}
+    );
+    try explorer_inst.indexFile("zigrep/src/exec/search_engine.zig",
+        \\pub fn run() void {
+        \\    engineOnly();
+        \\}
+        \\fn engineOnly() void {}
+    );
+
+    const imported = (try explorer_inst.findCallPath("main", "run", testing.allocator, 4)) orelse
+        return error.TestExpectedEqual;
+    defer testing.allocator.free(imported);
+    try testing.expectEqual(@as(usize, 2), imported.len);
+    try testing.expectEqualStrings("zigrep/src/exec/search_engine.zig", imported[1].path);
+
+    const real_chain = try explorer_inst.findCallPath("main", "engineOnly", testing.allocator, 4);
+    defer if (real_chain) |steps| testing.allocator.free(steps);
+    try testing.expect(real_chain != null);
 }
 
 test "issue-725: Zig Thread.spawn callback adds a unique same-file edge" {

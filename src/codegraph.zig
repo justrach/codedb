@@ -369,11 +369,17 @@ const ImportTarget = struct {
 };
 
 fn importedTarget(f: FuncInput, qualifier: []const u8) ImportTarget {
-    const alias_end = std.mem.indexOfScalar(u8, qualifier, '.') orelse qualifier.len;
-    const alias = qualifier[0..alias_end];
     var result: ImportTarget = .{};
+    var best_alias_len: usize = 0;
     for (f.imports) |binding| {
-        if (!std.mem.eql(u8, binding.alias, alias)) continue;
+        if (binding.alias.len > qualifier.len) continue;
+        if (!std.mem.startsWith(u8, qualifier, binding.alias)) continue;
+        if (binding.alias.len < qualifier.len and qualifier[binding.alias.len] != '.') continue;
+        if (binding.alias.len < best_alias_len) continue;
+        if (binding.alias.len > best_alias_len) {
+            best_alias_len = binding.alias.len;
+            result = .{};
+        }
         if (!result.found) {
             result.found = true;
             result.path = binding.target_path;
