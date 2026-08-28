@@ -1710,10 +1710,11 @@ test "symbol-index: O(1) findSymbol via symbol_index" {
     defer arena.deinit();
     var explorer = Explorer.init(arena.allocator(), Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
 
-    try explorer.indexFile("math.zig", "pub fn add(a: i32, b: i32) i32 { return a + b; }\npub fn subtract(a: i32, b: i32) i32 { return a - b; }\n");
     try explorer.indexFile("utils.zig", "pub fn add(x: f64, y: f64) f64 { return x + y; }\npub fn format() void {}\n");
+    try explorer.indexFile("math.zig", "pub fn add(a: i32, b: i32) i32 { return a + b; }\npub fn subtract(a: i32, b: i32) i32 { return a - b; }\n");
 
-    // findSymbol should return first match via index
+    // The hash lookup stays O(1), but exact-name collisions are ranked instead
+    // of inheriting insertion order (utils was indexed first above).
     const result = try explorer.findSymbol("add", testing.allocator);
     try testing.expect(result != null);
     const r = result.?;
@@ -1723,6 +1724,7 @@ test "symbol-index: O(1) findSymbol via symbol_index" {
         if (r.symbol.detail) |d| testing.allocator.free(d);
     }
     try testing.expectEqualStrings("add", r.symbol.name);
+    try testing.expectEqualStrings("math.zig", r.path);
 
     // findAllSymbols should return both
     const all = try explorer.findAllSymbols("add", testing.allocator);

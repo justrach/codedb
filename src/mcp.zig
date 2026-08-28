@@ -1984,33 +1984,6 @@ fn renderOutlineOrSkeleton(
     return explorer.renderOutline(path, alloc, out, compact);
 }
 
-fn genericEntrypointPathPriority(path: []const u8) i32 {
-    if (isLowSignalArchitecturePath(path)) return -1000;
-    const base = std.fs.path.basename(path);
-    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
-    if (!std.ascii.eqlIgnoreCase(stem, "main")) return 0;
-    if (std.mem.startsWith(u8, path, "src/")) return 1000;
-    if (std.mem.indexOfScalar(u8, path, '/') == null) return 900;
-    if (pathHasSegmentIgnoreCase(path, "cmd")) return 800;
-    return 200;
-}
-
-fn prioritizeGenericEntrypoint(name: ?[]const u8, fuzzy: bool, results: []Explorer.ScoredSymbolResult) void {
-    const exact_name = name orelse return;
-    if (fuzzy or !std.ascii.eqlIgnoreCase(exact_name, "main")) return;
-    std.mem.sort(Explorer.ScoredSymbolResult, results, {}, struct {
-        fn lessThan(_: void, a: Explorer.ScoredSymbolResult, b: Explorer.ScoredSymbolResult) bool {
-            const ap = genericEntrypointPathPriority(a.path);
-            const bp = genericEntrypointPathPriority(b.path);
-            if (ap != bp) return ap > bp;
-            if (a.score != b.score) return a.score > b.score;
-            const path_order = std.mem.order(u8, a.path, b.path);
-            if (path_order != .eq) return path_order == .lt;
-            return a.symbol.line_start < b.symbol.line_start;
-        }
-    }.lessThan);
-}
-
 fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: *std.ArrayList(u8), explorer: *Explorer) void {
     const name = getStr(args, "name");
     const prefix = getStr(args, "prefix");
@@ -2058,7 +2031,11 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         .pattern = pattern,
         .kind = kind,
         .fuzzy = fuzzy,
-        .max_results = max_results,
+        // Retain one sentinel row so truncation is observable. Top-K selection
+        // still uses the requested structural/navigation comparator, so the
+        // first max_results rows are identical to an exact-size query.
+        .max_results = max_results + 1,
+        .rank_policy = if (getBool(args, "prefer_entrypoint")) .navigation else .structural,
     };
 
     const results = explorer.searchSymbols(spec, alloc) catch {
@@ -2069,10 +2046,6 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         }
         return;
     };
-    // Explain is the opinionated one-shot neighborhood tool; keep the lower-
-    // level codedb_symbol ordering byte-for-byte stable for callers that rely
-    // on its deterministic structural index order.
-    if (getBool(args, "prefer_entrypoint")) prioritizeGenericEntrypoint(name, fuzzy, results);
     defer {
         for (results) |r| {
             alloc.free(r.path);
@@ -2081,19 +2054,21 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         }
         alloc.free(results);
     }
+    const truncated = results.len > max_results;
+    const shown_results = results[0..@min(results.len, max_results)];
 
     if (json_fmt) {
         out.appendSlice(alloc, "{\"ok\":true,\"tool\":\"codedb_symbol\",\"count\":") catch {};
         var cnt_buf: [16]u8 = undefined;
-        const cnt_s = std.fmt.bufPrint(&cnt_buf, "{d}", .{results.len}) catch "0";
+        const cnt_s = std.fmt.bufPrint(&cnt_buf, "{d}", .{shown_results.len}) catch "0";
         out.appendSlice(alloc, cnt_s) catch {};
         out.appendSlice(alloc, ",\"match_mode\":") catch {};
         appendJsonStr(out, alloc, symbolMatchModeLabel(spec));
         out.appendSlice(alloc, ",\"meta\":{\"index\":\"symbol_index+outline\",\"match_mode\":") catch {};
         appendJsonStr(out, alloc, symbolMatchModeLabel(spec));
-        out.append(alloc, '}') catch {};
+        out.appendSlice(alloc, if (truncated) ",\"truncated\":true}" else ",\"truncated\":false}") catch {};
         out.appendSlice(alloc, ",\"results\":[") catch {};
-        for (results, 0..) |r, i| {
+        for (shown_results, 0..) |r, i| {
             if (i > 0) out.append(alloc, ',') catch {};
             out.appendSlice(alloc, "{\"path\":") catch {};
             appendJsonStr(out, alloc, r.path);
@@ -2115,7 +2090,7 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
         return;
     }
 
-    if (results.len == 0) {
+    if (shown_results.len == 0) {
         out.appendSlice(alloc, "no results") catch {};
         if (name) |n| {
             out.appendSlice(alloc, " for: ") catch {};
@@ -2126,11 +2101,11 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
 
     const w = cio.listWriter(out, alloc);
     if (name) |n| {
-        w.print("{d} results for '{s}':\n", .{ results.len, n }) catch {};
+        w.print("{d} results for '{s}':\n", .{ shown_results.len, n }) catch {};
     } else {
-        w.print("{d} symbol results:\n", .{results.len}) catch {};
+        w.print("{d} symbol results:\n", .{shown_results.len}) catch {};
     }
-    for (results) |r| {
+    for (shown_results) |r| {
         w.print("  {s}:{d} ({s}) {s}", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind), r.symbol.name }) catch {};
         if (r.symbol.detail) |d| w.print("  // {s}", .{d}) catch {};
         w.writeAll("\n") catch {};
@@ -2159,7 +2134,8 @@ fn handleSymbol(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out: 
             }
         }
     }
-    if (depsHint(results.len)) |h| out.appendSlice(alloc, h) catch {};
+    if (truncated) w.print("… more symbol results truncated (raise max_results; cap 200)\n", .{}) catch {};
+    if (depsHint(shown_results.len)) |h| out.appendSlice(alloc, h) catch {};
 }
 
 // Issue #626: agents reach for codedb_search with a bare symbol name and skip
@@ -2788,7 +2764,10 @@ fn handleExplain(alloc: std.mem.Allocator, args: *const std.json.ObjectMap, out:
     const def_text = if (def_out.items.len > cap) def_out.items[0..cap] else def_out.items;
     const call_text = if (call_out.items.len > cap) call_out.items[0..cap] else call_out.items;
     const w = cio.listWriter(out, alloc);
-    w.print("## definition\n{s}\n\n## callers\n{s}", .{ def_text, call_text }) catch {};
+    w.print("## definition\n{s}", .{def_text}) catch {};
+    if (def_out.items.len > cap) w.print("\n… definition output truncated at {d} bytes", .{cap}) catch {};
+    w.print("\n\n## callers\n{s}", .{call_text}) catch {};
+    if (call_out.items.len > cap) w.print("\n… callers output truncated at {d} bytes", .{cap}) catch {};
 }
 
 fn isIdentChar(c: u8) bool {

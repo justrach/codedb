@@ -662,6 +662,93 @@ pub const SymbolLocation = struct {
     line_end: u32,
 };
 
+fn symbolNavigationKindPriority(kind: SymbolKind) i32 {
+    return switch (kind) {
+        .function, .method => 100,
+        .struct_def, .class_def, .interface_def, .enum_def, .union_def, .trait_def => 90,
+        .impl_block => 80,
+        .type_alias, .macro_def => 70,
+        .constant => 60,
+        .variable => 50,
+        .test_decl => 10,
+        .import, .comment_block => -1000,
+    };
+}
+
+fn symbolNavigationPriority(name: []const u8, path: []const u8, kind: SymbolKind) i32 {
+    var score = symbolNavigationKindPriority(kind);
+    const class = classifyPath(path);
+    if (class.is_vendor) score -= 1200;
+    if (class.is_test) score -= 800;
+    if (class.is_example) score -= 500;
+    if (class.is_tooling) score -= 400;
+
+    // Mixed-language repositories commonly keep executable-looking probes in
+    // these directories. They are useful definitions, but poor default
+    // navigation targets when production definitions of the same name exist.
+    var segments = std.mem.tokenizeAny(u8, path, "/\\");
+    while (segments.next()) |segment| {
+        if (std.ascii.eqlIgnoreCase(segment, "experiments") or
+            std.ascii.eqlIgnoreCase(segment, "experiment") or
+            std.ascii.eqlIgnoreCase(segment, "e2e") or
+            std.ascii.eqlIgnoreCase(segment, "fixtures") or
+            std.ascii.eqlIgnoreCase(segment, "fixture") or
+            std.ascii.eqlIgnoreCase(segment, "generated"))
+        {
+            score -= 700;
+            break;
+        }
+    }
+
+    const basename = std.fs.path.basename(path);
+    const dot = std.mem.lastIndexOfScalar(u8, basename, '.') orelse basename.len;
+    const stem = basename[0..dot];
+    const eponymous = std.ascii.eqlIgnoreCase(stem, name);
+    if (eponymous) score += 400;
+    if (std.mem.startsWith(u8, path, "src/")) score += 120 else if (std.mem.indexOfScalar(u8, path, '/') == null) score += 80;
+
+    // `main` is the one generic name with a cross-language package-entrypoint
+    // convention. Keep this narrow; other common names remain visibly
+    // ambiguous rather than acquiring hard-coded language preferences.
+    if (eponymous and std.ascii.eqlIgnoreCase(name, "main")) {
+        if (std.mem.startsWith(u8, path, "src/")) {
+            score += 400;
+        } else if (std.mem.indexOfScalar(u8, path, '/') == null) {
+            score += 350;
+        } else if (pathHasSegmentIgnoreCase(path, "cmd")) {
+            score += 300;
+        }
+    }
+    return score;
+}
+
+fn symbolNavigationBefore(
+    name: []const u8,
+    a_path: []const u8,
+    a_kind: SymbolKind,
+    a_line: u32,
+    b_path: []const u8,
+    b_kind: SymbolKind,
+    b_line: u32,
+) bool {
+    const ap = symbolNavigationPriority(name, a_path, a_kind);
+    const bp = symbolNavigationPriority(name, b_path, b_kind);
+    if (ap != bp) return ap > bp;
+    const path_order = std.mem.order(u8, a_path, b_path);
+    if (path_order != .eq) return path_order == .lt;
+    return a_line < b_line;
+}
+
+fn symbolNavigationLocationBefore(name: []const u8, a: SymbolLocation, b: SymbolLocation) bool {
+    return symbolNavigationBefore(name, a.path, a.kind, a.line_start, b.path, b.kind, b.line_start);
+}
+
+fn symbolNavigationResultBefore(a: SymbolResult, b: SymbolResult) bool {
+    const name_order = std.mem.order(u8, a.symbol.name, b.symbol.name);
+    if (name_order != .eq) return name_order == .lt;
+    return symbolNavigationBefore(a.symbol.name, a.path, a.symbol.kind, a.symbol.line_start, b.path, b.symbol.kind, b.symbol.line_start);
+}
+
 pub fn matchGlob(pattern: []const u8, path: []const u8) bool {
     // Fast path: `**/*X` where X is a literal — degenerates to endsWith(X).
     // Covers the common agent-style pattern `**/*.ext`.
@@ -3657,7 +3744,14 @@ pub const Explorer = struct {
         // O(1) lookup via symbol_index
         if (self.symbol_index.get(name)) |locs| {
             if (locs.items.len > 0) {
-                const loc = locs.items[0];
+                // The hash lookup is O(1); choose deterministically among the
+                // definitions of this name instead of inheriting scan/commit
+                // order from the symbol-index append list. This is O(k) in the
+                // number of exact-name collisions, never O(all symbols).
+                var loc = locs.items[0];
+                for (locs.items[1..]) |candidate| {
+                    if (symbolNavigationLocationBefore(name, candidate, loc)) loc = candidate;
+                }
                 // Fetch detail from outline
                 var detail: ?[]const u8 = null;
                 if (self.outlines.getPtr(loc.path)) |outline| {
@@ -3782,6 +3876,14 @@ pub const Explorer = struct {
         kind: ?SymbolKind = null,
         fuzzy: bool = false,
         max_results: usize = 50,
+        rank_policy: SymbolRankPolicy = .structural,
+    };
+
+    pub const SymbolRankPolicy = enum {
+        /// Stable low-level order: match score, name, path, line.
+        structural,
+        /// Opinionated navigation order for resolving an exact common name.
+        navigation,
     };
 
     pub const ScoredSymbolResult = struct {
@@ -3834,6 +3936,7 @@ pub const Explorer = struct {
             path: []const u8,
             symbol: Symbol,
             score: f32,
+            navigation_priority: i32,
         };
 
         var candidates: std.ArrayList(Candidate) = .empty;
@@ -3849,13 +3952,13 @@ pub const Explorer = struct {
         };
 
         const SortCtx = struct {
-            // Total order: score desc, then name, path, line. line_start is
-            // the final tiebreak — without it, same-name symbols in one file
-            // compared equal and their order fell out of hash-map iteration,
-            // the residual nondeterminism the deterministic-ordering rewrite
-            // meant to eliminate.
+            // Total order: score desc, optional navigation priority, then name,
+            // path, line. line_start is the final tiebreak — without it,
+            // same-name symbols in one file compared equal and their order fell
+            // out of hash-map iteration.
             pub fn lessThan(_: void, a: Candidate, b: Candidate) bool {
                 if (a.score != b.score) return a.score > b.score;
+                if (a.navigation_priority != b.navigation_priority) return a.navigation_priority > b.navigation_priority;
                 const name_cmp = std.mem.order(u8, a.symbol.name, b.symbol.name);
                 if (name_cmp != .eq) return name_cmp == .lt;
                 const path_cmp = std.mem.order(u8, a.path, b.path);
@@ -3909,6 +4012,7 @@ pub const Explorer = struct {
                 path: []const u8,
                 sym: Symbol,
                 score: f32,
+                rank_policy: SymbolRankPolicy,
             ) !void {
                 if (max_results == 0) return;
                 if (Dedup.contains(list_ptr.items, path, sym.line_start)) return;
@@ -3916,6 +4020,10 @@ pub const Explorer = struct {
                     .path = path,
                     .symbol = sym,
                     .score = score,
+                    .navigation_priority = if (rank_policy == .navigation)
+                        symbolNavigationPriority(sym.name, path, sym.kind)
+                    else
+                        0,
                 };
                 if (list_ptr.items.len >= max_results and
                     !SortCtx.candidateBefore(candidate, list_ptr.items[list_ptr.items.len - 1]))
@@ -3989,7 +4097,7 @@ pub const Explorer = struct {
                                 .line_start = loc.line_start,
                                 .line_end = loc.line_end,
                                 .detail = detail,
-                            }, score);
+                            }, score, spec.rank_policy);
                         }
                     }
                 }
@@ -3997,11 +4105,23 @@ pub const Explorer = struct {
         } else if (spec.name != null and spec.prefix == null and spec.pattern == null) {
             // Exact names are already hash-indexed. Avoid scanning and scoring
             // every distinct symbol name for the overwhelmingly common MCP form
-            // `{ "name": "..." }`; appendOne preserves the existing result order.
+            // `{ "name": "..." }`. Opinionated navigation suppresses
+            // import/comment rows when at least one real definition exists;
+            // structural codedb_symbol order and membership stay unchanged.
             const sym_name = spec.name.?;
             if (self.symbol_index.get(sym_name)) |locs| {
+                var has_navigation_def = false;
+                if (spec.rank_policy == .navigation) {
+                    for (locs.items) |loc| {
+                        if (loc.kind != .import and loc.kind != .comment_block) {
+                            has_navigation_def = true;
+                            break;
+                        }
+                    }
+                }
                 for (locs.items) |loc| {
                     if (spec.kind) |k| if (loc.kind != k) continue;
+                    if (has_navigation_def and (loc.kind == .import or loc.kind == .comment_block)) continue;
                     var detail: ?[]const u8 = null;
                     if (self.outlines.getPtr(loc.path)) |outline| {
                         for (outline.symbols.items) |sym| {
@@ -4017,7 +4137,7 @@ pub const Explorer = struct {
                         .line_start = loc.line_start,
                         .line_end = loc.line_end,
                         .detail = detail,
-                    }, 1.0);
+                    }, 1.0, spec.rank_policy);
                 }
             }
         } else {
@@ -4042,7 +4162,7 @@ pub const Explorer = struct {
                         .line_start = loc.line_start,
                         .line_end = loc.line_end,
                         .detail = detail,
-                    }, score);
+                    }, score, spec.rank_policy);
                 }
             }
         }
@@ -4054,7 +4174,7 @@ pub const Explorer = struct {
                     const score = symbolMatchScore(spec, sym.name) orelse continue;
                     if (spec.kind) |k| if (sym.kind != k) continue;
                     if (Dedup.contains(candidates.items, entry.key_ptr.*, sym.line_start)) continue;
-                    try appendOne(&candidates, allocator, spec.max_results, entry.key_ptr.*, sym, score);
+                    try appendOne(&candidates, allocator, spec.max_results, entry.key_ptr.*, sym, score, spec.rank_policy);
                 }
             }
         }
@@ -4093,12 +4213,22 @@ pub const Explorer = struct {
             allocator.free(results);
         }
         if (results.len == 0) return false;
+        std.mem.sort(SymbolResult, @constCast(results), {}, struct {
+            fn lessThan(_: void, a: SymbolResult, b: SymbolResult) bool {
+                return symbolNavigationResultBefore(a, b);
+            }
+        }.lessThan);
         var has_def = false;
         for (results) |r| {
             if (r.symbol.kind != .import and r.symbol.kind != .comment_block) {
                 has_def = true;
                 break;
             }
+        }
+        var total: usize = 0;
+        for (results) |r| {
+            const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+            if (!has_def or is_def) total += 1;
         }
         out.appendSlice(allocator, "exact symbol matches (codedb_symbol shows bodies):\n") catch return false;
         var n: usize = 0;
@@ -4112,6 +4242,10 @@ pub const Explorer = struct {
             var lb: [64]u8 = undefined;
             out.appendSlice(allocator, std.fmt.bufPrint(&lb, ":{d} ({s})\n", .{ r.symbol.line_start, @tagName(r.symbol.kind) }) catch continue) catch {};
             n += 1;
+        }
+        if (total > n) {
+            var tb: [128]u8 = undefined;
+            out.appendSlice(allocator, std.fmt.bufPrint(&tb, "… {d} more exact symbol matches truncated (raise max_results or use codedb_symbol)\n", .{total - n}) catch return n > 0) catch {};
         }
         return n > 0;
     }

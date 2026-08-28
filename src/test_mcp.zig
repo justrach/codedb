@@ -2626,7 +2626,14 @@ test "issue-718: explain main puts the package entrypoint first" {
     var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
     defer explorer.deinit();
     try setTestProjectRoot(&explorer);
-    try explorer.indexFile("experiments/probe.py", "def main():\n    return 1\n");
+    // More than codedb_symbol/explain's default cap. The old implementation
+    // selected 50 lexicographic paths first and only then boosted src/main.zig,
+    // so the entrypoint was already gone before ranking ran.
+    for (0..51) |i| {
+        const path = try std.fmt.allocPrint(testing.allocator, "experiments/probe_{d}.py", .{i});
+        defer testing.allocator.free(path);
+        try explorer.indexFile(path, "def main():\n    return 1\n");
+    }
     try explorer.indexFile("src/main.zig", "pub fn main() void {}\n");
 
     var store = Store.init(testing.allocator);
@@ -2647,8 +2654,67 @@ test "issue-718: explain main puts the package entrypoint first" {
     bench_ctx.runDispatch(io, testing.allocator, .codedb_explain, &parsed.value.object, &out, &store, &explorer, &agents);
 
     const entrypoint_pos = std.mem.indexOf(u8, out.items, "src/main.zig") orelse return error.TestUnexpectedResult;
-    const experiment_pos = std.mem.indexOf(u8, out.items, "experiments/probe.py") orelse return error.TestUnexpectedResult;
+    const experiment_pos = std.mem.indexOf(u8, out.items, "experiments/probe_0.py") orelse return error.TestUnexpectedResult;
     try testing.expect(entrypoint_pos < experiment_pos);
+    try testing.expect(std.mem.indexOf(u8, out.items, "more symbol results truncated") != null);
+
+    // The legacy CLI `find` now uses the same pre-cap navigation order and
+    // discloses that its compact collision list omitted further definitions.
+    var cli_sink: std.ArrayList(u8) = .empty;
+    defer cli_sink.deinit(testing.allocator);
+    var cli_out = out_mod.Out{ .file = cio.File.stdout(), .alloc = testing.allocator, .sink = &cli_sink };
+    const cli_args = [_][]const u8{ "codedb", ".", "find", "main" };
+    try testing.expectEqual(@as(u8, 0), query_mod.runQuery(io, testing.allocator, &explorer, &store, ".", "find", &cli_args, 3, &cli_out, sty.off));
+    cli_out.flush();
+    const cli_entrypoint_pos = std.mem.indexOf(u8, cli_sink.items, "src/main.zig") orelse return error.TestUnexpectedResult;
+    const cli_experiment_pos = std.mem.indexOf(u8, cli_sink.items, "experiments/probe_0.py") orelse return error.TestUnexpectedResult;
+    try testing.expect(cli_entrypoint_pos < cli_experiment_pos);
+    try testing.expect(std.mem.indexOf(u8, cli_sink.items, "more exact definitions truncated") != null);
+}
+
+test "issue-725: codedb_symbol preserves structural order and reports truncation" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.indexFile("z.py", "def sharedName():\n    pass\n");
+    try explorer.indexFile("a.py", "def sharedName():\n    pass\n");
+    try explorer.indexFile("m.py", "def sharedName():\n    pass\n");
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var agents = AgentRegistry.init(testing.allocator);
+    defer agents.deinit();
+    _ = try agents.register("__filesystem__");
+    var bench_ctx = mcp_mod.BenchContext.init(testing.allocator, ".", Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer bench_ctx.deinit();
+
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"sharedName\",\"max_results\":2}", .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_symbol, &parsed.value.object, &out, &store, &explorer, &agents);
+        const a_pos = std.mem.indexOf(u8, out.items, "a.py") orelse return error.TestUnexpectedResult;
+        const m_pos = std.mem.indexOf(u8, out.items, "m.py") orelse return error.TestUnexpectedResult;
+        try testing.expect(a_pos < m_pos);
+        try testing.expect(std.mem.indexOf(u8, out.items, "z.py") == null);
+        try testing.expect(std.mem.indexOf(u8, out.items, "more symbol results truncated") != null);
+    }
+
+    {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"name\":\"sharedName\",\"max_results\":2,\"format\":\"json\"}", .{});
+        defer parsed.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        bench_ctx.runDispatch(io, testing.allocator, .codedb_symbol, &parsed.value.object, &out, &store, &explorer, &agents);
+        const rendered = try std.json.parseFromSlice(std.json.Value, testing.allocator, out.items, .{});
+        defer rendered.deinit();
+        const obj = rendered.value.object;
+        try testing.expect(obj.get("meta").?.object.get("truncated").?.bool);
+        const rows = obj.get("results").?.array.items;
+        try testing.expectEqual(@as(usize, 2), rows.len);
+        try testing.expectEqualStrings("a.py", rows[0].object.get("path").?.string);
+        try testing.expectEqualStrings("m.py", rows[1].object.get("path").?.string);
+    }
 }
 
 test "issue-688: codedb_context json exposes typed provenance and preserves markdown default" {

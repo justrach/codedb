@@ -139,28 +139,69 @@ pub fn runQuery(io: std.Io, allocator: std.mem.Allocator, explorer: *Explorer, s
             return 1;
         };
         const t0 = cio.nanoTimestamp();
-        if (explorer.findSymbol(name, allocator) catch return 1) |r| {
-            defer {
+        const result_cap: usize = 5;
+        const results = explorer.searchSymbols(.{
+            .name = name,
+            .max_results = result_cap + 1,
+            .rank_policy = .navigation,
+        }, allocator) catch return 1;
+        defer {
+            for (results) |r| {
                 allocator.free(r.path);
                 allocator.free(r.symbol.name);
                 if (r.symbol.detail) |d| allocator.free(d);
             }
+            allocator.free(results);
+        }
+        if (results.len > 0) {
             const elapsed = cio.nanoTimestamp() - t0;
             var dur_buf: [64]u8 = undefined;
-            const kind = @tagName(r.symbol.kind);
-            out.p("{s}\xe2\x9c\x93{s} {s}{s}{s} {s}{s}{s}  {s}{s}{s}:{s}{d}{s}  {s}{s}{s}\n", .{
-                s.green,                       s.reset,
-                s.kindColor(kind),             kind,
-                s.reset,                       s.bold,
-                name,                          s.reset,
-                s.dim,                         r.path,
-                s.reset,                       s.cyan,
-                r.symbol.line_start,           s.reset,
-                sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed),
-                s.reset,
-            });
-            if (r.symbol.detail) |d| {
-                out.p("  {s}{s}{s}\n", .{ s.dim, d, s.reset });
+            const truncated = results.len > result_cap;
+            const shown = results[0..@min(results.len, result_cap)];
+            if (shown.len == 1 and !truncated) {
+                const r = shown[0];
+                const kind = @tagName(r.symbol.kind);
+                out.p("{s}\xe2\x9c\x93{s} {s}{s}{s} {s}{s}{s}  {s}{s}{s}:{s}{d}{s}  {s}{s}{s}\n", .{
+                    s.green,                       s.reset,
+                    s.kindColor(kind),             kind,
+                    s.reset,                       s.bold,
+                    name,                          s.reset,
+                    s.dim,                         r.path,
+                    s.reset,                       s.cyan,
+                    r.symbol.line_start,           s.reset,
+                    sty.durationColor(s, elapsed), sty.formatDuration(&dur_buf, elapsed),
+                    s.reset,
+                });
+                if (r.symbol.detail) |d| out.p("  {s}{s}{s}\n", .{ s.dim, d, s.reset });
+            } else {
+                out.p("{s}\xe2\x9c\x93{s} {d}{s} exact definitions for {s}{s}{s} (ranked)  {s}{s}{s}\n", .{
+                    s.green,
+                    s.reset,
+                    shown.len,
+                    if (truncated) "+" else "",
+                    s.bold,
+                    name,
+                    s.reset,
+                    sty.durationColor(s, elapsed),
+                    sty.formatDuration(&dur_buf, elapsed),
+                    s.reset,
+                });
+                for (shown, 1..) |r, rank| {
+                    const kind = @tagName(r.symbol.kind);
+                    out.p("  {d}. {s}{s}{s}  {s}{s}{s}:{s}{d}{s}\n", .{
+                        rank,
+                        s.kindColor(kind),
+                        kind,
+                        s.reset,
+                        s.dim,
+                        r.path,
+                        s.reset,
+                        s.cyan,
+                        r.symbol.line_start,
+                        s.reset,
+                    });
+                }
+                if (truncated) out.p("  {s}\xe2\x80\xa6 more exact definitions truncated; use `codedb symbol {s}`{s}\n", .{ s.dim, name, s.reset });
             }
         } else {
             out.p("{s}\xe2\x9c\x97{s} not found: {s}{s}{s}\n", .{
