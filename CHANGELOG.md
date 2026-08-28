@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.2.5849 - 2026-08-28
+
+- **Compact hosted embedding transport.** The managed endpoint now negotiates
+  base64-encoded little-endian float16 vectors, cutting the measured 25×512
+  response from 172 KB to 36 KB raw and from 62 KB to 26 KB compressed. The
+  client validates encoding, byte length, row indices, dimensions, model
+  identity, and finite values before use. Custom endpoints and older managed
+  deployments retain ordinary JSON-float compatibility, including one bounded
+  fallback request with a freshly signed proof.
+
 ## 0.2.5848 - 2026-08-28
 
 - **Production-measured semantic indexing concurrency is release-locked.**
