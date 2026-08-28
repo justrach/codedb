@@ -2770,6 +2770,7 @@ test "codedb_context hybrid is default, local is explicit, and provider failure 
     defer structured.deinit();
     const retrieval = structured.value.object.get("retrieval").?.object;
     try testing.expectEqualStrings("local_bm25_and_symbols", retrieval.get("initial").?.string);
+    try testing.expect(retrieval.get("model") == null);
     try testing.expectEqualStrings("unavailable", retrieval.get("semantic").?.string);
     try testing.expectEqualStrings("InsecureEmbeddingEndpoint", retrieval.get("detail").?.string);
     try testing.expectEqual(@as(i64, 0), retrieval.get("documents_sent").?.integer);

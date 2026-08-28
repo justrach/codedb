@@ -1234,6 +1234,8 @@ def run_scenario_8_symlink_privacy_boundary(binary: str, project: str) -> list[T
             r.fail(f"hybrid exact fallback failed: {hybrid_text[:240]!r}")
         elif semantic_run.returncode != 0 or "semantic ANN ready" not in semantic_run.stdout:
             r.fail(f"semantic-index failed: code={semantic_run.returncode} stdout={semantic_run.stdout[:180]!r} stderr={semantic_run.stderr[-240:]!r}")
+        elif "mock-symlink-model" in hybrid_text or "mock-symlink-model" in semantic_run.stdout:
+            r.fail("provider model identity leaked into user-visible output")
         elif "SAFE_SYMLINK_CANARY" not in request_text:
             r.fail("safe indexed content never reached the mock endpoint")
         elif any(secret in request_text for secret in (
