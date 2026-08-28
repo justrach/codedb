@@ -15,19 +15,35 @@ const std = @import("std");
 
 pub const NodeId = u32;
 
-/// A resolved call edge `from` → `to`. `weight` splits 1.0 across the candidate
-/// definitions of an ambiguous callee name (1 candidate → 1.0), so a name that
-/// resolves cleanly contributes full weight and an ambiguous one is discounted.
+/// A resolved call edge `from` → `to`. Edges are emitted only when resolution
+/// selects one definition, so every retained call contributes its full weight.
 pub const Edge = struct {
     from: NodeId,
     to: NodeId,
     weight: f32,
 };
 
+pub const ImportBinding = struct {
+    alias: []const u8,
+    target_path: []const u8,
+};
+
 pub const FuncInput = struct {
     id: NodeId,
     /// The function's body text (caller slices it from content via line ranges).
     body: []const u8,
+    /// Optional resolution facts. The lightweight unit-test API can omit these;
+    /// Explorer supplies them for same-file and imported-module resolution.
+    path: []const u8 = "",
+    imports: []const ImportBinding = &.{},
+    extract_zig_thread_spawn_callbacks: bool = false,
+};
+
+pub const Callee = struct {
+    name: []const u8,
+    /// Dotted expression before the final callee name (`std.Thread` in
+    /// `std.Thread.spawn`). Null for a bare call such as `helper()`.
+    qualifier: ?[]const u8 = null,
 };
 
 /// True for identifiers that precede `(` but are language keywords / control flow,
@@ -55,14 +71,55 @@ inline fn isIdentChar(c: u8) bool {
     return isIdentStart(c) or (c >= '0' and c <= '9');
 }
 
-/// Extract deduped callee identifier names that appear as call sites (`ident(`)
-/// in a function body. The identifier immediately preceding an unmatched `(` is
-/// the candidate callee (`obj.foo(` yields `foo`; `a[i](` yields nothing). Items
-/// are slices into `body`; caller frees the returned array.
-pub fn extractCallees(allocator: std.mem.Allocator, body: []const u8) ![][]const u8 {
+const ParsedCallee = struct {
+    callee: Callee,
+    key: []const u8,
+};
+
+fn calleeBeforeOpenParen(body: []const u8, open_paren: usize) ?ParsedCallee {
+    var end = open_paren;
+    while (end > 0 and (body[end - 1] == ' ' or body[end - 1] == '\t')) end -= 1;
+
+    var start = end;
+    while (start > 0 and isIdentChar(body[start - 1])) start -= 1;
+    if (start == end) return null;
+    const name = body[start..end];
+    if (!isIdentStart(name[0]) or isCallKeyword(name)) return null;
+
+    var qualifier: ?[]const u8 = null;
+    var key_start = start;
+    if (start > 0 and body[start - 1] == '.') {
+        const qualifier_end = start - 1;
+        var cursor = qualifier_end;
+        var qualifier_start = qualifier_end;
+        while (cursor > 0) {
+            const segment_end = cursor;
+            while (cursor > 0 and isIdentChar(body[cursor - 1])) cursor -= 1;
+            if (cursor == segment_end or !isIdentStart(body[cursor])) break;
+            qualifier_start = cursor;
+            if (cursor == 0 or body[cursor - 1] != '.') break;
+            cursor -= 1;
+        }
+        if (qualifier_start < qualifier_end) {
+            qualifier = body[qualifier_start..qualifier_end];
+            key_start = qualifier_start;
+        }
+    }
+
+    return .{
+        .callee = .{ .name = name, .qualifier = qualifier },
+        .key = body[key_start..end],
+    };
+}
+
+/// Extract deduped call sites from a function body. Qualified calls retain the
+/// receiver/module expression (`server.run(` becomes `{run, server}`) so the
+/// edge builder can use import facts instead of fanning out by bare name.
+/// Items borrow from `body`; the caller frees only the returned array.
+pub fn extractCallees(allocator: std.mem.Allocator, body: []const u8) ![]Callee {
     var seen = std.StringHashMap(void).init(allocator);
     defer seen.deinit();
-    var out: std.ArrayList([]const u8) = .empty;
+    var out: std.ArrayList(Callee) = .empty;
     errdefer out.deinit(allocator);
 
     var i: usize = 0;
@@ -90,32 +147,132 @@ pub fn extractCallees(allocator: std.mem.Allocator, body: []const u8) ![][]const
             continue;
         }
         if (c != '(') continue;
-        // Skip spaces/tabs between the identifier and the '('.
-        var end = i;
-        while (end > 0 and (body[end - 1] == ' ' or body[end - 1] == '\t')) end -= 1;
-        // Walk back over identifier characters.
-        var start = end;
-        while (start > 0 and isIdentChar(body[start - 1])) start -= 1;
-        if (start == end) continue; // nothing before '(' (e.g. `(expr)`, `)(`)
-        const name = body[start..end];
-        if (!isIdentStart(name[0])) continue; // started on a digit → not an ident
-        if (isCallKeyword(name)) continue;
-        const g = try seen.getOrPut(name);
-        if (!g.found_existing) try out.append(allocator, name);
+        const parsed = calleeBeforeOpenParen(body, i) orelse continue;
+        const g = try seen.getOrPut(parsed.key);
+        if (!g.found_existing) try out.append(allocator, parsed.callee);
     }
     return out.toOwnedSlice(allocator);
 }
 
-/// Build resolved call edges for a set of functions. `resolve` maps a callee name
-/// to the node ids of its candidate definitions (codedb's `symbol_index`). Edge
-/// weight is split across candidates; self-edges are dropped unless `allow_self`.
+fn identifierOnly(raw: []const u8) ?[]const u8 {
+    const value = std.mem.trim(u8, raw, " \t\r\n");
+    if (value.len == 0 or !isIdentStart(value[0])) return null;
+    for (value[1..]) |c| if (!isIdentChar(c)) return null;
+    return value;
+}
+
+/// Return the identifier passed as the second argument to one exact Zig form:
+/// `std.Thread.spawn(config, callback, args)`. This intentionally does not try
+/// to infer arbitrary function values or dynamic callbacks.
+fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) ?[]const u8 {
+    var paren_depth: usize = 0;
+    var brace_depth: usize = 0;
+    var bracket_depth: usize = 0;
+    var arg_index: usize = 0;
+    var second_start: ?usize = null;
+    var i = open_paren + 1;
+    while (i < body.len) : (i += 1) {
+        const c = body[i];
+        if (c == '/' and i + 1 < body.len and body[i + 1] == '/') {
+            i += 2;
+            while (i < body.len and body[i] != '\n') i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < body.len and body[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < body.len and !(body[i] == '*' and body[i + 1] == '/')) i += 1;
+            i += 1;
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            i += 1;
+            while (i < body.len and body[i] != c) {
+                if (body[i] == '\\') i += 1;
+                i += 1;
+            }
+            continue;
+        }
+        switch (c) {
+            '(' => paren_depth += 1,
+            ')' => {
+                if (paren_depth > 0) {
+                    paren_depth -= 1;
+                } else {
+                    if (arg_index == 1) return identifierOnly(body[second_start.?..i]);
+                    return null;
+                }
+            },
+            '{' => brace_depth += 1,
+            '}' => if (brace_depth > 0) {
+                brace_depth -= 1;
+            },
+            '[' => bracket_depth += 1,
+            ']' => if (bracket_depth > 0) {
+                bracket_depth -= 1;
+            },
+            ',' => if (paren_depth == 0 and brace_depth == 0 and bracket_depth == 0) {
+                if (arg_index == 0) {
+                    second_start = i + 1;
+                    arg_index = 1;
+                } else if (arg_index == 1) {
+                    return identifierOnly(body[second_start.?..i]);
+                }
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+pub fn extractZigThreadSpawnCallbacks(allocator: std.mem.Allocator, body: []const u8) ![][]const u8 {
+    var seen = std.StringHashMap(void).init(allocator);
+    defer seen.deinit();
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < body.len) : (i += 1) {
+        const c = body[i];
+        if (c == '/' and i + 1 < body.len and body[i + 1] == '/') {
+            i += 2;
+            while (i < body.len and body[i] != '\n') i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < body.len and body[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < body.len and !(body[i] == '*' and body[i + 1] == '/')) i += 1;
+            i += 1;
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            i += 1;
+            while (i < body.len and body[i] != c) {
+                if (body[i] == '\\') i += 1;
+                i += 1;
+            }
+            continue;
+        }
+        if (c != '(') continue;
+        const parsed = calleeBeforeOpenParen(body, i) orelse continue;
+        if (!std.mem.eql(u8, parsed.callee.name, "spawn")) continue;
+        const qualifier = parsed.callee.qualifier orelse continue;
+        if (!std.mem.eql(u8, qualifier, "std.Thread")) continue;
+        const callback = zigThreadSpawnCallback(body, i) orelse continue;
+        const g = try seen.getOrPut(callback);
+        if (!g.found_existing) try out.append(allocator, callback);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Build resolved call edges for a set of functions. Ambiguous names are skipped
+/// instead of fanning out to unrelated definitions.
 pub fn buildEdges(
     allocator: std.mem.Allocator,
     funcs: []const FuncInput,
     resolve: *const std.StringHashMap([]const NodeId),
     allow_self: bool,
 ) !std.ArrayList(Edge) {
-    return buildEdgesWithinGroups(allocator, funcs, resolve, null, allow_self);
+    return buildEdgesScoped(allocator, funcs, resolve, null, null, allow_self);
 }
 
 /// Like buildEdges, but only resolves a call to definitions in the caller's
@@ -130,30 +287,134 @@ pub fn buildEdgesWithinGroups(
     groups: ?[]const u8,
     allow_self: bool,
 ) !std.ArrayList(Edge) {
+    return buildEdgesScoped(allocator, funcs, resolve, null, groups, allow_self);
+}
+
+const CandidateChoice = struct {
+    id: ?NodeId = null,
+    count: usize = 0,
+};
+
+fn chooseCandidates(
+    f: FuncInput,
+    cands: []const NodeId,
+    node_paths: ?[]const []const u8,
+    groups: ?[]const u8,
+    required_path: ?[]const u8,
+) CandidateChoice {
+    var result: CandidateChoice = .{};
+    for (cands) |to| {
+        if (groups) |node_groups| {
+            if (f.id >= node_groups.len or to >= node_groups.len or node_groups[to] != node_groups[f.id]) continue;
+        }
+        if (required_path) |path| {
+            const paths = node_paths orelse continue;
+            if (to >= paths.len or !std.mem.eql(u8, paths[to], path)) continue;
+        }
+        result.count += 1;
+        if (result.count == 1) result.id = to else result.id = null;
+    }
+    return result;
+}
+
+const ImportTarget = struct {
+    found: bool = false,
+    ambiguous: bool = false,
+    path: ?[]const u8 = null,
+};
+
+fn importedTarget(f: FuncInput, qualifier: []const u8) ImportTarget {
+    const alias_end = std.mem.indexOfScalar(u8, qualifier, '.') orelse qualifier.len;
+    const alias = qualifier[0..alias_end];
+    var result: ImportTarget = .{};
+    for (f.imports) |binding| {
+        if (!std.mem.eql(u8, binding.alias, alias)) continue;
+        if (!result.found) {
+            result.found = true;
+            result.path = binding.target_path;
+        } else if (!std.mem.eql(u8, result.path.?, binding.target_path)) {
+            result.ambiguous = true;
+            result.path = null;
+        }
+    }
+    return result;
+}
+
+fn resolveDirectCallee(
+    f: FuncInput,
+    callee: Callee,
+    cands: []const NodeId,
+    node_paths: ?[]const []const u8,
+    groups: ?[]const u8,
+) ?NodeId {
+    if (callee.qualifier) |qualifier| {
+        const imported = importedTarget(f, qualifier);
+        if (imported.found) {
+            if (imported.ambiguous) return null;
+            const choice = chooseCandidates(f, cands, node_paths, groups, imported.path.?);
+            return if (choice.count == 1) choice.id else null;
+        }
+        // Preserve the old behavior for globally unique method names when the
+        // receiver is a value whose type codedb cannot infer.
+        const choice = chooseCandidates(f, cands, node_paths, groups, null);
+        return if (choice.count == 1) choice.id else null;
+    }
+
+    if (node_paths != null and f.path.len != 0) {
+        const local = chooseCandidates(f, cands, node_paths, groups, f.path);
+        if (local.count > 0) return if (local.count == 1) local.id else null;
+    }
+    const global = chooseCandidates(f, cands, node_paths, groups, null);
+    return if (global.count == 1) global.id else null;
+}
+
+fn appendUniqueEdge(
+    allocator: std.mem.Allocator,
+    edges: *std.ArrayList(Edge),
+    function_edge_start: usize,
+    from: NodeId,
+    to: NodeId,
+    allow_self: bool,
+) !void {
+    if (!allow_self and to == from) return;
+    for (edges.items[function_edge_start..]) |edge| {
+        if (edge.to == to) return;
+    }
+    try edges.append(allocator, .{ .from = from, .to = to, .weight = 1.0 });
+}
+
+/// Resolve using caller paths and per-file import bindings. Resolution priority
+/// is: imported module receiver, same-file bare helper, globally unique name.
+/// Every tier keeps the language-family guard; ambiguity emits no edge.
+pub fn buildEdgesScoped(
+    allocator: std.mem.Allocator,
+    funcs: []const FuncInput,
+    resolve: *const std.StringHashMap([]const NodeId),
+    node_paths: ?[]const []const u8,
+    groups: ?[]const u8,
+    allow_self: bool,
+) !std.ArrayList(Edge) {
     var edges: std.ArrayList(Edge) = .empty;
     errdefer edges.deinit(allocator);
     for (funcs) |f| {
+        const function_edge_start = edges.items.len;
         const callees = try extractCallees(allocator, f.body);
         defer allocator.free(callees);
-        for (callees) |name| {
-            const cands = resolve.get(name) orelse continue;
-            if (cands.len == 0) continue;
-            const scoped_count: usize = if (groups) |node_groups| blk: {
-                if (f.id >= node_groups.len) break :blk 0;
-                var count: usize = 0;
-                for (cands) |to| {
-                    if (to < node_groups.len and node_groups[to] == node_groups[f.id]) count += 1;
-                }
-                break :blk count;
-            } else cands.len;
-            if (scoped_count == 0) continue;
-            const w: f32 = 1.0 / @as(f32, @floatFromInt(scoped_count));
-            for (cands) |to| {
-                if (groups) |node_groups| {
-                    if (to >= node_groups.len or f.id >= node_groups.len or node_groups[to] != node_groups[f.id]) continue;
-                }
-                if (!allow_self and to == f.id) continue;
-                try edges.append(allocator, .{ .from = f.id, .to = to, .weight = w });
+        for (callees) |callee| {
+            const cands = resolve.get(callee.name) orelse continue;
+            const to = resolveDirectCallee(f, callee, cands, node_paths, groups) orelse continue;
+            try appendUniqueEdge(allocator, &edges, function_edge_start, f.id, to, allow_self);
+        }
+
+        if (f.extract_zig_thread_spawn_callbacks and node_paths != null and f.path.len != 0) {
+            const callbacks = try extractZigThreadSpawnCallbacks(allocator, f.body);
+            defer allocator.free(callbacks);
+            for (callbacks) |name| {
+                const cands = resolve.get(name) orelse continue;
+                const local = chooseCandidates(f, cands, node_paths, groups, f.path);
+                if (local.count != 1) continue;
+                const to = local.id.?;
+                try appendUniqueEdge(allocator, &edges, function_edge_start, f.id, to, allow_self);
             }
         }
     }

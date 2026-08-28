@@ -4154,7 +4154,8 @@ pub const Explorer = struct {
         // commit, so for this high-precision/best-effort feature it is authoritative.
         self.mu.lockShared();
         defer self.mu.unlockShared();
-        for (callees) |name| {
+        for (callees) |callee| {
+            const name = callee.name;
             if (refs.items.len >= max) break;
             // Skip ubiquitous std/container/builtin method names. They are almost
             // always calls on some receiver (ArrayList.append, HashMap.get, ...),
@@ -5665,6 +5666,32 @@ pub const Explorer = struct {
         self.ensureCallCentrality(allocator);
     }
 
+    /// Build the narrow module-alias facts used by the call graph for Zig.
+    /// Zig file imports are relative even without a leading `./`, unlike the
+    /// generic dependency resolver, so resolve them against the importing file.
+    fn callGraphZigImportBindings(
+        self: *Explorer,
+        outline: *const FileOutline,
+        allocator: std.mem.Allocator,
+    ) ![]const codegraph.ImportBinding {
+        if (outline.language != .zig) return &.{};
+        var bindings: std.ArrayList(codegraph.ImportBinding) = .empty;
+        errdefer bindings.deinit(allocator);
+        for (outline.symbols.items) |sym| {
+            if (sym.kind != .import) continue;
+            const detail = sym.detail orelse continue;
+            const raw_path = extractStringLiteral(detail) orelse continue;
+            // Package imports such as `std`, `builtin`, and named modules do not
+            // identify an indexed file. The requested receiver resolution is for
+            // concrete Zig source imports.
+            if (!std.mem.endsWith(u8, raw_path, ".zig") or std.fs.path.isAbsolute(raw_path)) continue;
+            const target_path = resolveRelativeImportPath(outline.path, raw_path, allocator) orelse continue;
+            if (!self.outlines.contains(target_path)) continue;
+            try bindings.append(allocator, .{ .alias = sym.name, .target_path = target_path });
+        }
+        return bindings.toOwnedSlice(allocator);
+    }
+
     /// Build the resolved call graph once (idempotent, mutex-guarded). Must be
     /// called while holding at least a shared lock on `mu`. Retains edges for
     /// codedb_callpath and computes per-file centrality (PageRank by default).
@@ -5693,6 +5720,7 @@ pub const Explorer = struct {
         var it = self.outlines.iterator();
         while (it.next()) |entry| {
             const path = entry.key_ptr.*;
+            const import_bindings = self.callGraphZigImportBindings(entry.value_ptr, a) catch &.{};
             const ref = self.readContentForSearch(path, a) orelse continue;
             defer ref.deinit();
             const content = ref.data;
@@ -5714,7 +5742,13 @@ pub const Explorer = struct {
                 node_name.append(a, sym.name) catch return;
                 node_line.append(a, sym.line_start) catch return;
                 node_language_group.append(a, callGraphLanguageGroup(detectLanguage(path))) catch return;
-                funcs.append(a, .{ .id = id, .body = content[start..end] }) catch return;
+                funcs.append(a, .{
+                    .id = id,
+                    .body = content[start..end],
+                    .path = path,
+                    .imports = import_bindings,
+                    .extract_zig_thread_spawn_callbacks = entry.value_ptr.language == .zig,
+                }) catch return;
                 const gop = name_to_ids.getOrPut(sym.name) catch return;
                 if (!gop.found_existing) gop.value_ptr.* = .empty;
                 gop.value_ptr.append(a, id) catch return;
@@ -5727,7 +5761,14 @@ pub const Explorer = struct {
         var n2i = name_to_ids.iterator();
         while (n2i.next()) |e| resolve.put(e.key_ptr.*, e.value_ptr.items) catch return;
 
-        var edges_tmp = codegraph.buildEdgesWithinGroups(a, funcs.items, &resolve, node_language_group.items, false) catch return;
+        var edges_tmp = codegraph.buildEdgesScoped(
+            a,
+            funcs.items,
+            &resolve,
+            node_path.items,
+            node_language_group.items,
+            false,
+        ) catch return;
         defer edges_tmp.deinit(a);
 
         const edges_owned = self.allocator.alloc(codegraph.Edge, edges_tmp.items.len) catch return;
