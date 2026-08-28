@@ -154,17 +154,35 @@ pub fn extractCallees(allocator: std.mem.Allocator, body: []const u8) ![]Callee 
     return out.toOwnedSlice(allocator);
 }
 
-fn identifierOnly(raw: []const u8) ?[]const u8 {
+fn functionValueOnly(raw: []const u8) ?ParsedCallee {
     const value = std.mem.trim(u8, raw, " \t\r\n");
     if (value.len == 0 or !isIdentStart(value[0])) return null;
-    for (value[1..]) |c| if (!isIdentChar(c)) return null;
-    return value;
+    var segment_start: usize = 0;
+    var last_dot: ?usize = null;
+    for (value, 0..) |c, i| {
+        if (c == '.') {
+            if (i == segment_start) return null;
+            last_dot = i;
+            segment_start = i + 1;
+            continue;
+        }
+        if (!isIdentChar(c) or (i == segment_start and !isIdentStart(c))) return null;
+    }
+    if (segment_start == value.len) return null;
+    const name = value[segment_start..];
+    return .{
+        .callee = .{
+            .name = name,
+            .qualifier = if (last_dot) |dot| value[0..dot] else null,
+        },
+        .key = value,
+    };
 }
 
-/// Return the identifier passed as the second argument to one exact Zig form:
-/// `std.Thread.spawn(config, callback, args)`. This intentionally does not try
-/// to infer arbitrary function values or dynamic callbacks.
-fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) ?[]const u8 {
+/// Return the bare or module-qualified function value passed as the second
+/// argument to one exact Zig form: `std.Thread.spawn(config, callback, args)`.
+/// This intentionally does not infer arbitrary expressions or dynamic callbacks.
+fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) ?ParsedCallee {
     var paren_depth: usize = 0;
     var brace_depth: usize = 0;
     var bracket_depth: usize = 0;
@@ -198,7 +216,7 @@ fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) ?[]const u8 {
                 if (paren_depth > 0) {
                     paren_depth -= 1;
                 } else {
-                    if (arg_index == 1) return identifierOnly(body[second_start.?..i]);
+                    if (arg_index == 1) return functionValueOnly(body[second_start.?..i]);
                     return null;
                 }
             },
@@ -215,7 +233,7 @@ fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) ?[]const u8 {
                     second_start = i + 1;
                     arg_index = 1;
                 } else if (arg_index == 1) {
-                    return identifierOnly(body[second_start.?..i]);
+                    return functionValueOnly(body[second_start.?..i]);
                 }
             },
             else => {},
@@ -224,10 +242,10 @@ fn zigThreadSpawnCallback(body: []const u8, open_paren: usize) ?[]const u8 {
     return null;
 }
 
-pub fn extractZigThreadSpawnCallbacks(allocator: std.mem.Allocator, body: []const u8) ![][]const u8 {
+pub fn extractZigThreadSpawnCallbacks(allocator: std.mem.Allocator, body: []const u8) ![]Callee {
     var seen = std.StringHashMap(void).init(allocator);
     defer seen.deinit();
-    var out: std.ArrayList([]const u8) = .empty;
+    var out: std.ArrayList(Callee) = .empty;
     errdefer out.deinit(allocator);
 
     var i: usize = 0;
@@ -258,8 +276,8 @@ pub fn extractZigThreadSpawnCallbacks(allocator: std.mem.Allocator, body: []cons
         const qualifier = parsed.callee.qualifier orelse continue;
         if (!std.mem.eql(u8, qualifier, "std.Thread")) continue;
         const callback = zigThreadSpawnCallback(body, i) orelse continue;
-        const g = try seen.getOrPut(callback);
-        if (!g.found_existing) try out.append(allocator, callback);
+        const g = try seen.getOrPut(callback.key);
+        if (!g.found_existing) try out.append(allocator, callback.callee);
     }
     return out.toOwnedSlice(allocator);
 }
@@ -368,6 +386,30 @@ fn resolveDirectCallee(
     return if (global.count == 1) global.id else null;
 }
 
+/// Thread callback values are resolved more strictly than direct calls: an
+/// imported qualifier must bind to exactly one function in that imported file;
+/// otherwise the callback must name exactly one function in the caller's file.
+/// There is deliberately no repository-global fallback for function values.
+fn resolveThreadCallback(
+    f: FuncInput,
+    callback: Callee,
+    cands: []const NodeId,
+    node_paths: ?[]const []const u8,
+    groups: ?[]const u8,
+) ?NodeId {
+    if (callback.qualifier) |qualifier| {
+        const imported = importedTarget(f, qualifier);
+        if (imported.found) {
+            if (imported.ambiguous) return null;
+            const choice = chooseCandidates(f, cands, node_paths, groups, imported.path.?);
+            return if (choice.count == 1) choice.id else null;
+        }
+    }
+    if (node_paths == null or f.path.len == 0) return null;
+    const local = chooseCandidates(f, cands, node_paths, groups, f.path);
+    return if (local.count == 1) local.id else null;
+}
+
 fn appendUniqueEdge(
     allocator: std.mem.Allocator,
     edges: *std.ArrayList(Edge),
@@ -409,11 +451,9 @@ pub fn buildEdgesScoped(
         if (f.extract_zig_thread_spawn_callbacks and node_paths != null and f.path.len != 0) {
             const callbacks = try extractZigThreadSpawnCallbacks(allocator, f.body);
             defer allocator.free(callbacks);
-            for (callbacks) |name| {
-                const cands = resolve.get(name) orelse continue;
-                const local = chooseCandidates(f, cands, node_paths, groups, f.path);
-                if (local.count != 1) continue;
-                const to = local.id.?;
+            for (callbacks) |callback| {
+                const cands = resolve.get(callback.name) orelse continue;
+                const to = resolveThreadCallback(f, callback, cands, node_paths, groups) orelse continue;
                 try appendUniqueEdge(allocator, &edges, function_edge_start, f.id, to, allow_self);
             }
         }

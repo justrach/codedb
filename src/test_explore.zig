@@ -124,11 +124,15 @@ test "issue-725: Zig Thread.spawn callback resolves only within its file" {
         \\// std.Thread.spawn(.{}, ghost, .{});
         \\const text = "std.Thread.spawn(.{}, stringGhost, .{})";
         \\const thread = try std.Thread.spawn(.{}, connection, .{ stream });
+        \\const watcher_thread = try std.Thread.spawn(.{}, watcher.incrementalLoop, .{ stream });
     ;
     const callbacks = try codegraph.extractZigThreadSpawnCallbacks(testing.allocator, body);
     defer testing.allocator.free(callbacks);
-    try testing.expectEqual(@as(usize, 1), callbacks.len);
-    try testing.expectEqualStrings("connection", callbacks[0]);
+    try testing.expectEqual(@as(usize, 2), callbacks.len);
+    try testing.expectEqualStrings("connection", callbacks[0].name);
+    try testing.expect(callbacks[0].qualifier == null);
+    try testing.expectEqualStrings("incrementalLoop", callbacks[1].name);
+    try testing.expectEqualStrings("watcher", callbacks[1].qualifier.?);
 
     const funcs = [_]codegraph.FuncInput{
         .{
@@ -146,6 +150,34 @@ test "issue-725: Zig Thread.spawn callback resolves only within its file" {
     var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
     defer resolve.deinit();
     try resolve.put("connection", &connection_ids);
+
+    var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
+    defer edges.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), edges.items.len);
+    try testing.expectEqual(@as(codegraph.NodeId, 1), edges.items[0].to);
+}
+
+test "issue-725: Zig Thread.spawn callback resolves an imported function value" {
+    const imports = [_]codegraph.ImportBinding{
+        .{ .alias = "watcher", .target_path = "src/watcher.zig" },
+    };
+    const funcs = [_]codegraph.FuncInput{
+        .{
+            .id = 0,
+            .body = "std.Thread.spawn(.{}, watcher.incrementalLoop, .{});",
+            .path = "src/commands.zig",
+            .imports = &imports,
+            .extract_zig_thread_spawn_callbacks = true,
+        },
+        .{ .id = 1, .body = "", .path = "src/watcher.zig" },
+        .{ .id = 2, .body = "", .path = "experiments/watcher.zig" },
+    };
+    const paths = [_][]const u8{ "src/commands.zig", "src/watcher.zig", "experiments/watcher.zig" };
+    const groups = [_]u8{ 1, 1, 1 };
+    const callback_ids = [_]codegraph.NodeId{ 1, 2 };
+    var resolve = std.StringHashMap([]const codegraph.NodeId).init(testing.allocator);
+    defer resolve.deinit();
+    try resolve.put("incrementalLoop", &callback_ids);
 
     var edges = try codegraph.buildEdgesScoped(testing.allocator, &funcs, &resolve, &paths, &groups, false);
     defer edges.deinit(testing.allocator);
