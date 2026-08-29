@@ -35,6 +35,10 @@ const cliIsQueryCmd = cli_args.cliIsQueryCmd;
 //   response (daemon→client): [u8 exit_code][u32 out_len][out_bytes]
 const cli_blob_max: u32 = 64 * 1024;
 const cli_response_max: u32 = 16 * 1024 * 1024;
+/// A warm project daemon is shared by every terminal and agent using that
+/// project. Keep enough read-only queries in flight to match the hosted
+/// embedding lane without allowing an unbounded local connection stampede.
+const cli_max_concurrent_queries: u8 = 8;
 
 fn cliResponseLenAllowed(out_len: u32) bool {
     return out_len <= cli_response_max;
@@ -628,9 +632,12 @@ pub fn cliAcquireListener(sock_path: []const u8, retry: bool, retry_interval_ms:
 
 /// Daemon side. Bind a per-project Unix socket and serve framed query requests
 /// against the warm `explorer`/`store`. Runs on its own detached thread so it
-/// never blocks the daemon's primary loop. Connections are handled sequentially
-/// (CLI calls are infrequent and runQuery already tolerates concurrent reads
-/// from the watcher).
+/// never blocks the daemon's primary loop. POSIX query connections are handled
+/// concurrently with a small fixed cap; a handoff frame wakes the listener and
+/// drains already-accepted work before the daemon retires. `runQuery` already
+/// tolerates concurrent reads from watcher refreshes. Windows keeps the existing
+/// sequential named-pipe path until it has an equivalent bounded ownership
+/// handoff implementation.
 ///
 /// `last_activity_ms` is bumped to the current ms timestamp at the start of
 /// every accepted connection so a time-based idle watchdog (cli-daemon) can
@@ -784,27 +791,133 @@ fn cliDaemonListenPosix(io: std.Io, allocator: std.mem.Allocator, explorer: *Exp
 
     std.log.info("cli-proxy: listening on {s}", .{sock_path});
 
-    while (true) {
+    var active_queries = std.atomic.Value(u8).init(0);
+    var retire_requested = std.atomic.Value(bool).init(false);
+
+    while (!retire_requested.load(.acquire)) {
         const conn = std.c.accept(listenfd, null, null);
         if (conn < 0) {
             if (std.c.errno(conn) == .INTR) continue;
+            if (retire_requested.load(.acquire)) break;
             // Listener went bad; stop the loop (daemon still serves its main API).
-            return;
+            break;
         }
         // Record activity for the cli-daemon idle watchdog before serving.
         last_activity_ms.store(cio.milliTimestamp(), .release);
-        const yield_requested = cliServeConn(io, allocator, explorer, store, abs_root, conn);
-        _ = std.c.close(conn);
-        if (yield_requested) {
-            // #619 handover: give the socket up right away. The `defer`
-            // above closes the listener and unlinks the path so the
-            // requesting daemon's next bind attempt succeeds; `shutdown` is
-            // set so any caller watching it (e.g. the cli-daemon idle
-            // watchdog) treats this exactly like a lost bind race.
-            shutdown.store(true, .release);
-            return;
+
+        if (!cliWorkerSlotAcquire(&active_queries, &retire_requested, shutdown)) {
+            _ = std.c.close(conn);
+            break;
+        }
+        const job = std.heap.c_allocator.create(CliPosixQueryJob) catch {
+            cliWorkerSlotRelease(&active_queries);
+            const retire = cliServeConn(io, allocator, explorer, store, abs_root, conn);
+            _ = std.c.close(conn);
+            if (retire) retire_requested.store(true, .release);
+            continue;
+        };
+        job.* = .{
+            .io = io,
+            .explorer = explorer,
+            .store = store,
+            .abs_root = abs_root,
+            .conn = conn,
+            .listenfd = listenfd,
+            .active_queries = &active_queries,
+            .retire_requested = &retire_requested,
+        };
+        const worker = std.Thread.spawn(.{}, cliServePosixQuery, .{job}) catch {
+            std.heap.c_allocator.destroy(job);
+            cliWorkerSlotRelease(&active_queries);
+            const retire = cliServeConn(io, allocator, explorer, store, abs_root, conn);
+            _ = std.c.close(conn);
+            if (retire) retire_requested.store(true, .release);
+            continue;
+        };
+        worker.detach();
+
+        if (retire_requested.load(.acquire)) {
+            break;
         }
     }
+
+    // The daemon owns Explorer/Store and abs_root. Do not let their lifetime
+    // end while a detached query still reads them.
+    cliWorkerWaitForIdle(&active_queries);
+    if (retire_requested.load(.acquire)) {
+        // #619/version handover: only publish process shutdown after all
+        // already-accepted queries have completed safely.
+        shutdown.store(true, .release);
+    }
+}
+
+const CliPosixQueryJob = struct {
+    io: std.Io,
+    explorer: *Explorer,
+    store: *Store,
+    abs_root: []const u8,
+    conn: CliConn,
+    listenfd: c_int,
+    active_queries: *std.atomic.Value(u8),
+    retire_requested: *std.atomic.Value(bool),
+};
+
+fn cliWorkerSlotAcquire(active: *std.atomic.Value(u8), retire_requested: *std.atomic.Value(bool), shutdown: *std.atomic.Value(bool)) bool {
+    while (!retire_requested.load(.acquire) and !shutdown.load(.acquire)) {
+        const current = active.load(.acquire);
+        if (current < cli_max_concurrent_queries and
+            active.cmpxchgWeak(current, current + 1, .acq_rel, .acquire) == null)
+        {
+            return true;
+        }
+        cio.sleepMs(1);
+    }
+    return false;
+}
+
+fn cliWorkerSlotRelease(active: *std.atomic.Value(u8)) void {
+    _ = active.fetchSub(1, .release);
+}
+
+fn cliWorkerWaitForIdle(active: *std.atomic.Value(u8)) void {
+    while (active.load(.acquire) != 0) cio.sleepMs(1);
+}
+
+fn cliServePosixQuery(job: *CliPosixQueryJob) void {
+    // c_allocator is thread-safe and avoids sharing a caller-owned test arena
+    // across detached workers.
+    // Capture the counter before destroying `job`: defers run in reverse order,
+    // so the allocation is freed first and the final slot release must not
+    // dereference that freed record.
+    const active_queries = job.active_queries;
+    defer cliWorkerSlotRelease(active_queries);
+    defer std.heap.c_allocator.destroy(job);
+
+    const retire = cliServeConn(job.io, std.heap.c_allocator, job.explorer, job.store, job.abs_root, job.conn);
+    _ = std.c.close(job.conn);
+    if (retire) {
+        job.retire_requested.store(true, .release);
+        // Wake the listener's blocking accept so it can stop admitting work,
+        // drain the active workers, and relinquish the socket promptly.
+        _ = std.c.shutdown(job.listenfd, std.c.SHUT.RDWR);
+    }
+}
+
+test "cli worker gate caps concurrent POSIX queries" {
+    var active = std.atomic.Value(u8).init(0);
+    var retire_requested = std.atomic.Value(bool).init(false);
+    var shutdown = std.atomic.Value(bool).init(false);
+
+    for (0..cli_max_concurrent_queries) |_| {
+        try std.testing.expect(cliWorkerSlotAcquire(&active, &retire_requested, &shutdown));
+    }
+    try std.testing.expectEqual(cli_max_concurrent_queries, active.load(.acquire));
+
+    retire_requested.store(true, .release);
+    try std.testing.expect(!cliWorkerSlotAcquire(&active, &retire_requested, &shutdown));
+    for (0..cli_max_concurrent_queries) |_| cliWorkerSlotRelease(&active);
+    cliWorkerWaitForIdle(&active);
+    try std.testing.expectEqual(@as(u8, 0), active.load(.acquire));
 }
 
 /// Handle one client connection: read the framed request, run the query into a
