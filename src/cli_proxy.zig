@@ -886,7 +886,11 @@ fn cliWorkerWaitForIdle(active: *std.atomic.Value(u8)) void {
 fn cliServePosixQuery(job: *CliPosixQueryJob) void {
     // c_allocator is thread-safe and avoids sharing a caller-owned test arena
     // across detached workers.
-    defer cliWorkerSlotRelease(job.active_queries);
+    // Capture the counter before destroying `job`: defers run in reverse order,
+    // so the allocation is freed first and the final slot release must not
+    // dereference that freed record.
+    const active_queries = job.active_queries;
+    defer cliWorkerSlotRelease(active_queries);
     defer std.heap.c_allocator.destroy(job);
 
     const retire = cliServeConn(job.io, std.heap.c_allocator, job.explorer, job.store, job.abs_root, job.conn);
