@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.2.5850 - 2026-08-29
+
+- **Concurrent warm CLI queries for multi-agent workloads.** On macOS and Linux,
+  each project's warm daemon now dispatches up to eight read-only CLI queries
+  concurrently instead of serializing every terminal and agent behind one
+  connection. Daemon handoff stops new admissions and drains accepted work
+  before releasing shared index state. Eight concurrent hybrid context calls
+  completed in 2.69 seconds instead of 6.44 seconds in the release benchmark,
+  a 58% wall-time reduction with unchanged result parity. No configuration or
+  API-key setup is required; hybrid retrieval, device-bound authentication, and
+  the compact managed transport remain the defaults. Windows keeps its existing
+  sequential named-pipe dispatcher pending an equivalent safe handoff design.
+
 ## 0.2.5849 - 2026-08-28
 
 - **Compact hosted embedding transport.** The managed endpoint now negotiates
