@@ -24,9 +24,11 @@ pub const slab_file_suffix = ".hmls";
 pub const max_chunk_card_bytes: usize = 1024;
 pub const chunk_source_bytes: usize = 832;
 pub const max_chunks_per_file: usize = 256;
-// Hosted-lane hill climb (256 chunks, 2026-08-26): c1=12.4s, c2=9.4s,
-// c4=6.1s, c8=16.7s. Four avoids queue/rate-limit contention while keeping
-// the explicit override available for differently provisioned endpoints.
+// Hosted-lane hill climbs: 256 chunks (2026-08-26) gave c1=12.4s, c2=9.4s,
+// c4=6.1s, c8=16.7s. A 6,713-chunk React subset (2026-08-30) confirmed
+// c1=180.8s, c2=98.9s, c4=68.8s, while c8 was aborted after 338s in retry/
+// queue contention. Four remains the Pareto point; differently provisioned
+// endpoints can still use the explicit override.
 pub const default_parallel_batches: usize = 4;
 pub const max_parallel_batches: usize = 8;
 pub const default_search_results: usize = 24;
