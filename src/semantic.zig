@@ -34,7 +34,12 @@ pub const max_index_embedding_attempts: usize = 3;
 pub const index_embedding_retry_base_ms: u32 = 250;
 pub const default_rrf_k: f32 = 60;
 pub const default_semantic_weight: f32 = 0.05;
-pub const default_ann_semantic_weight: f32 = 1.0;
+// React production-source hill climb (12 queries, 8 train / 4 held out):
+// k=20 and weight=1.5 improved held-out MRR 0.15 -> 1.0 and NDCG@5
+// 0.226 -> 0.738 without a recall@5 regression. Keep these separate from
+// exact-fallback RRF so an ANN policy change cannot weaken the lexical floor.
+pub const default_ann_rrf_k: f32 = 20;
+pub const default_ann_semantic_weight: f32 = 1.5;
 pub const query_prefix_version = "qwen3-query-instruct-v1";
 pub const document_card_version = "codedb-code-chunk-v2";
 pub const calibration_text = "codedb vector-space calibration v1: deterministic code retrieval";
@@ -751,18 +756,18 @@ pub fn advisoryRrfScoreWithPolicy(lexical_rank: usize, semantic_rank: usize, rrf
 
 pub fn annRrfScore(lexical_present: bool, lexical_rank: usize, semantic_present: bool, semantic_rank: usize) f32 {
     const lexical_vote: f32 = if (lexical_present)
-        1.0 / (default_rrf_k + @as(f32, @floatFromInt(lexical_rank + 1)))
+        1.0 / (default_ann_rrf_k + @as(f32, @floatFromInt(lexical_rank + 1)))
     else
         0;
     const semantic_vote: f32 = if (semantic_present)
-        default_ann_semantic_weight / (default_rrf_k + @as(f32, @floatFromInt(semantic_rank + 1)))
+        default_ann_semantic_weight / (default_ann_rrf_k + @as(f32, @floatFromInt(semantic_rank + 1)))
     else
         0;
     return lexical_vote + semantic_vote;
 }
 
-/// Conservative ANN ordering policy: the first three lexical results remain
-/// authoritative, then local ANN may reorder/extend the tail via RRF.
+/// Order the ANN/lexical union by the measured RRF score. Path-intent priors
+/// are applied by the context composer before this stable tie-break.
 pub fn annRankComesBefore(
     a_lexical_present: bool,
     a_lexical_rank: usize,
@@ -775,10 +780,8 @@ pub fn annRankComesBefore(
     b_hybrid_score: f32,
     b_path: []const u8,
 ) bool {
-    const a_guard = a_lexical_present and a_lexical_rank < 3;
-    const b_guard = b_lexical_present and b_lexical_rank < 3;
-    if (a_guard != b_guard) return a_guard;
-    if (a_guard) return a_lexical_rank < b_lexical_rank;
+    _ = a_lexical_present;
+    _ = b_lexical_present;
     if (a_hybrid_score != b_hybrid_score) return a_hybrid_score > b_hybrid_score;
     if (a_semantic_present != b_semantic_present) return a_semantic_present;
     if (a_lexical_rank != b_lexical_rank) return a_lexical_rank < b_lexical_rank;

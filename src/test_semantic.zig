@@ -272,23 +272,11 @@ test "semantic: advisory fusion keeps lexical channel dominant" {
     try testing.expect(best_lexical_worst_semantic > second_lexical_best_semantic);
 }
 
-test "semantic: ANN fusion preserves the top-three lexical guard" {
-    const guarded_score = semantic.annRrfScore(true, 2, false, 99);
+test "semantic: ANN fusion follows measured union RRF without a lexical guard" {
+    const lexical_score = semantic.annRrfScore(true, 2, false, 99);
     const semantic_only_score = semantic.annRrfScore(false, 3, true, 0);
-    try testing.expect(semantic_only_score > guarded_score);
+    try testing.expect(semantic_only_score > lexical_score);
     try testing.expect(semantic.annRankComesBefore(
-        true,
-        2,
-        false,
-        guarded_score,
-        "src/lexical.zig",
-        false,
-        3,
-        true,
-        semantic_only_score,
-        "src/semantic.zig",
-    ));
-    try testing.expect(!semantic.annRankComesBefore(
         false,
         3,
         true,
@@ -297,7 +285,7 @@ test "semantic: ANN fusion preserves the top-three lexical guard" {
         true,
         2,
         false,
-        guarded_score,
+        lexical_score,
         "src/lexical.zig",
     ));
 }
