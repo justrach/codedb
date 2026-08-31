@@ -473,6 +473,16 @@ The local ANN is built only by an explicit command:
 codedb /path/to/repo semantic-index
 ```
 
+CodeDB 0.2.5851 stages the managed embedding migration without breaking older
+clients. Versions through 0.2.5850 continue to request
+`Qwen/Qwen3-Embedding-0.6B`; 0.2.5851 and later request
+`jinaai/jina-embeddings-v2-base-code`. The service keeps both routes live. An
+existing Qwen ANN sidecar is rejected by the new client's model/vector-space
+check and hybrid retrieval safely uses transient exact reranking until the user
+runs `semantic-index` once to replace it with a Jina sidecar. CodeDB never
+mixes vectors from the two models and never uploads a repository automatically
+during update or ordinary queries.
+
 It splits already-indexable files into bounded 832-byte source chunks, uses
 four concurrent 25-item requests by default (explicitly configurable from one
 to eight), and writes a
