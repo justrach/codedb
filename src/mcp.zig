@@ -448,11 +448,12 @@ const ProjectCache = struct {
                 const central_dir_path = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}", .{ home, hash }) catch break :blk false;
                 var central_dir = std.Io.Dir.cwd().openDir(io, central_dir_path, .{ .follow_symlinks = false }) catch break :blk false;
                 defer central_dir.close(io);
-                const central_file = central_dir.openFile(io, "codedb.snapshot", .{
+                var central_file = central_dir.openFile(io, "codedb.snapshot", .{
                     .allow_directory = false,
                     .follow_symlinks = false,
                     .resolve_beneath = true,
                 }) catch break :blk false;
+                project_file_read.prepareNoFollowFile(&central_file);
                 defer central_file.close(io);
                 break :blk snapshot_mod.loadSnapshotValidatedFromFile(io, central_file, canonical_root, &new_entry.explorer, &new_entry.store, self.alloc);
             };

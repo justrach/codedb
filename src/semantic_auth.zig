@@ -10,6 +10,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const cio = @import("cio.zig");
 const release_info = @import("release_info.zig");
+const project_file = @import("project_file.zig");
 
 const Ed25519 = std.crypto.sign.Ed25519;
 const Sha256 = std.crypto.hash.sha2.Sha256;
@@ -266,7 +267,7 @@ fn readCredential(
     dir: std.Io.Dir,
     dir_path: []const u8,
 ) !?DeviceCredential {
-    const file = dir.openFile(io, credential_file_name, .{
+    var file = dir.openFile(io, credential_file_name, .{
         .allow_directory = false,
         .follow_symlinks = false,
         .resolve_beneath = true,
@@ -274,6 +275,7 @@ fn readCredential(
         error.FileNotFound => return null,
         else => return err,
     };
+    project_file.prepareNoFollowFile(&file);
     defer file.close(io);
     const stat = try file.stat(io);
     if (stat.size > max_credential_bytes) return error.InvalidDeviceCredentials;

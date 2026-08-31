@@ -114,20 +114,22 @@ pub fn loadBestSnapshot(
     const canonical_root = explorer.root_path orelse return false;
     if (!project_file.rootMatchesPath(io, root_dir, abs_root)) return false;
 
-    const root_snapshot: ?std.Io.File = root_dir.openFile(io, "codedb.snapshot", .{
+    var root_snapshot: ?std.Io.File = root_dir.openFile(io, "codedb.snapshot", .{
         .allow_directory = false,
         .follow_symlinks = false,
         .resolve_beneath = true,
     }) catch null;
+    if (root_snapshot) |*file| project_file.prepareNoFollowFile(file);
     defer if (root_snapshot) |file| file.close(io);
 
     const central_dir: ?std.Io.Dir = std.Io.Dir.cwd().openDir(io, data_dir, .{ .follow_symlinks = false }) catch null;
     defer if (central_dir) |dir| dir.close(io);
-    const central_snapshot: ?std.Io.File = if (central_dir) |dir| dir.openFile(io, "codedb.snapshot", .{
+    var central_snapshot: ?std.Io.File = if (central_dir) |dir| dir.openFile(io, "codedb.snapshot", .{
         .allow_directory = false,
         .follow_symlinks = false,
         .resolve_beneath = true,
     }) catch null else null;
+    if (central_snapshot) |*file| project_file.prepareNoFollowFile(file);
     defer if (central_snapshot) |file| file.close(io);
 
     const root_mtime = if (root_snapshot) |file| snapshotFileMtime(io, file) else null;
