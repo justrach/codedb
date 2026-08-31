@@ -1126,7 +1126,7 @@ pub fn search(
     return searchLoaded(io, allocator, &loaded, task, k, load_ns, false);
 }
 
-test "semantic ANN sidecar accepts the CodeDB Qwen 512D mapping out of the box" {
+test "semantic ANN sidecar accepts Jina 512D and rejects a legacy Qwen vector space" {
     const testing = std.testing;
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
@@ -1148,7 +1148,15 @@ test "semantic ANN sidecar accepts the CodeDB Qwen 512D mapping out of the box" 
     try source.writeSlabs(slab_path);
     var calibration: [ann.default_dimensions]f32 = @splat(0);
     calibration[3] = 1;
-    _ = try writeMetadata(io, testing.allocator, dir_path, semantic.default_model, ann.default_dimensions, 1234, 5678, &calibration, null, slab_name, &.{
+    const config = semantic.Config{
+        .url = semantic.default_url,
+        .model = semantic.default_model,
+        .token = null,
+        .dimensions = ann.default_dimensions,
+        .timeout_ms = semantic.default_timeout_ms,
+    };
+    const vector_space_id = config.vectorSpaceId();
+    _ = try writeMetadata(io, testing.allocator, dir_path, semantic.default_model, ann.default_dimensions, 1234, vector_space_id, &calibration, null, slab_name, &.{
         .{ .path = "src/a.zig", .line_start = 1, .line_end = 2 },
         .{ .path = "src/b.zig", .line_start = 8, .line_end = 12 },
     });
@@ -1160,10 +1168,14 @@ test "semantic ANN sidecar accepts the CodeDB Qwen 512D mapping out of the box" 
     try testing.expectEqualStrings("src/b.zig", restored.records[1].path);
     try testing.expectEqual(@as(u32, 8), restored.records[1].line_start);
     try testing.expectEqual(@as(u64, 1234), restored.manifest);
-    try testing.expectEqual(@as(u64, 5678), restored.vector_space_id);
+    try testing.expectEqual(vector_space_id, restored.vector_space_id);
     try testing.expectEqual(ann.default_dimensions, restored.dimensions);
     try testing.expectEqualStrings(semantic.default_model, restored.model);
     try testing.expectEqualSlices(f32, &calibration, restored.calibration);
+    try validateLoadedConfig(&config, &restored);
+    var legacy_config = config;
+    legacy_config.model = semantic.legacy_qwen_model;
+    try testing.expectError(error.AnnModelMismatch, validateLoadedConfig(&legacy_config, &restored));
     const results = try restored.index.search(&b, 1, testing.allocator);
     defer testing.allocator.free(results);
     try testing.expectEqual(@as(u32, 1), results[0].id);

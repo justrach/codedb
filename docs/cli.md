@@ -113,6 +113,23 @@ stays in `~/.codedb/credentials.json` (0600 on POSIX). Every cloud-bound path is
 the sensitive-file denylist; `.env`, `.env.*`, `.envrc`, credentials, private keys, and unsafe
 paths cannot enter a batch even from a stale index.
 
+### Managed model migration
+
+CodeDB 0.2.5851 changes the managed default to
+`jinaai/jina-embeddings-v2-base-code`; clients through 0.2.5850 continue to
+request `Qwen/Qwen3-Embedding-0.6B`, and the hosted service serves both model
+names during the migration. Sidecar metadata includes the model, dimensions,
+query encoding, document-card encoding, and a calibration vector. A new client
+therefore refuses an old Qwen sidecar and uses transient exact reranking until
+you explicitly replace it:
+
+```bash
+codedb /path/to/repo semantic-index
+```
+
+That command transactionally replaces the old generation. Updating the binary
+does not automatically send repository contents or build a semantic sidecar.
+
 ## Daemon Management
 
 ```bash

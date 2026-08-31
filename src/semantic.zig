@@ -13,7 +13,8 @@ const snapshot = @import("snapshot.zig");
 const semantic_auth = @import("semantic_auth.zig");
 
 pub const default_url = "https://embeddings.wiki.codes/v1/codedb/embeddings";
-pub const default_model = "Qwen/Qwen3-Embedding-0.6B";
+pub const legacy_qwen_model = "Qwen/Qwen3-Embedding-0.6B";
+pub const default_model = "jinaai/jina-embeddings-v2-base-code";
 pub const default_dimensions: u16 = 512;
 pub const default_timeout_ms: u32 = 15_000;
 pub const min_timeout_ms: u32 = 10;
@@ -40,7 +41,8 @@ pub const default_semantic_weight: f32 = 0.05;
 // exact-fallback RRF so an ANN policy change cannot weaken the lexical floor.
 pub const default_ann_rrf_k: f32 = 20;
 pub const default_ann_semantic_weight: f32 = 1.5;
-pub const query_prefix_version = "qwen3-query-instruct-v1";
+pub const qwen_query_encoding_version = "qwen3-query-instruct-v1";
+pub const jina_query_encoding_version = "jina-v2-code-symmetric-raw-v1";
 pub const document_card_version = "codedb-code-chunk-v2";
 pub const calibration_text = "codedb vector-space calibration v1: deterministic code retrieval";
 pub const calibration_min_cosine: f32 = 0.9999;
@@ -137,12 +139,49 @@ pub const Config = struct {
         hash.update(self.model);
         hash.update(&.{0});
         hash.update(std.mem.asBytes(&self.dimensions));
-        hash.update(query_prefix_version);
+        hash.update(queryEncodingVersion(self.model));
         hash.update(&.{0});
         hash.update(document_card_version);
         return hash.final();
     }
 };
+
+fn queryEncodingVersion(model: []const u8) []const u8 {
+    return if (std.mem.eql(u8, model, default_model))
+        jina_query_encoding_version
+    else
+        qwen_query_encoding_version;
+}
+
+/// Jina v2 code is a symmetric embedding model, so queries and code cards
+/// share one raw-text vector space. Preserve the historical Qwen instruction
+/// for explicit Qwen/custom-model overrides so upgrading CodeDB does not
+/// silently change those deployments.
+fn formatQueryInput(allocator: std.mem.Allocator, model: []const u8, task: []const u8) ![]u8 {
+    if (std.mem.eql(u8, model, default_model)) return allocator.dupe(u8, task);
+    return std.fmt.allocPrint(
+        allocator,
+        "Instruct: Retrieve code relevant to the user request.\nQuery: {s}",
+        .{task},
+    );
+}
+
+test "semantic query encoding is raw for Jina and backward compatible for Qwen" {
+    const testing = std.testing;
+    const task = "find the authentication middleware";
+    const jina = try formatQueryInput(testing.allocator, default_model, task);
+    defer testing.allocator.free(jina);
+    try testing.expectEqualStrings(task, jina);
+
+    const qwen = try formatQueryInput(testing.allocator, legacy_qwen_model, task);
+    defer testing.allocator.free(qwen);
+    try testing.expectEqualStrings(
+        "Instruct: Retrieve code relevant to the user request.\nQuery: find the authentication middleware",
+        qwen,
+    );
+    try testing.expectEqualStrings(jina_query_encoding_version, queryEncodingVersion(default_model));
+    try testing.expectEqualStrings(qwen_query_encoding_version, queryEncodingVersion(legacy_qwen_model));
+}
 
 fn uriHost(uri: std.Uri, buffer: *[std.Io.net.HostName.max_len]u8) ![]const u8 {
     const component = uri.host orelse return error.UriMissingHost;
@@ -468,11 +507,8 @@ pub fn embedQueryRemote(
     task: []const u8,
 ) !EmbeddingBatchResult {
     if (task.len < 3 or task.len > 1024) return error.InvalidEmbeddingQuery;
-    const query = try std.fmt.allocPrint(
-        allocator,
-        "Instruct: Retrieve code relevant to the user request.\nQuery: {s}",
-        .{task},
-    );
+    const config = Config.fromEnv();
+    const query = try formatQueryInput(allocator, config.model, task);
     defer allocator.free(query);
     return embedRemoteTexts(io, allocator, &.{query});
 }
@@ -486,11 +522,8 @@ pub fn embedQueryAndCalibrationRemote(
     task: []const u8,
 ) !EmbeddingBatchResult {
     if (task.len < 3 or task.len > 1024) return error.InvalidEmbeddingQuery;
-    const query = try std.fmt.allocPrint(
-        allocator,
-        "Instruct: Retrieve code relevant to the user request.\nQuery: {s}",
-        .{task},
-    );
+    const config = Config.fromEnv();
+    const query = try formatQueryInput(allocator, config.model, task);
     defer allocator.free(query);
     return embedRemoteTexts(io, allocator, &.{ query, calibration_text });
 }
@@ -561,8 +594,7 @@ pub fn scoreRemote(
     }
     if (actual_documents == 0) return error.NoEmbeddingCandidates;
 
-    const instruction = "Instruct: Retrieve code relevant to the user request.\nQuery: ";
-    const query = try std.fmt.allocPrint(allocator, "{s}{s}", .{ instruction, task });
+    const query = try formatQueryInput(allocator, config.model, task);
     defer allocator.free(query);
 
     const inputs = try allocator.alloc([]const u8, actual_documents + 1);
