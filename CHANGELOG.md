@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.2.5851 - 2026-09-01
+
+- **Windows indexing works again.** Zig 0.17 can return pending positional
+  reads for no-follow Windows handles while reporting them as blocking. CodeDB
+  now preserves the no-follow/resolve-beneath security boundary and corrects
+  the handle metadata before reading project files, snapshots, MCP caches, and
+  device credentials. A native Windows Server smoke covers fresh indexes and
+  upgrades from 0.2.5841.
+- **More intent-aware hybrid ranking.** Production and architecture queries
+  more strongly demote tests, fixtures, generated frontend output, and debug
+  artifacts while preserving explicit requests for those files. The paired
+  benchmark and corpus-parity gate remains green.
+- **Backward-compatible Jina migration.** New semantic indexes use
+  `jinaai/jina-embeddings-v2-base-code` at 512 dimensions. Older clients remain
+  on Qwen, both hosted GPU routes stay live, and model-specific vector-space
+  identities prevent incompatible ANN sidecars from being mixed. Run
+  `codedb /path/to/repo semantic-index` once to build the new local sidecar.
+
 ## 0.2.5850 - 2026-08-29
 
 - **Concurrent warm CLI queries for multi-agent workloads.** On macOS and Linux,

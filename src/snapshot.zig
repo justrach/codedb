@@ -691,11 +691,12 @@ pub fn loadSnapshotValidatedFromRoot(
     store: *Store,
     allocator: std.mem.Allocator,
 ) bool {
-    const file = root_dir.openFile(io, "codedb.snapshot", .{
+    var file = root_dir.openFile(io, "codedb.snapshot", .{
         .allow_directory = false,
         .follow_symlinks = false,
         .resolve_beneath = true,
     }) catch return false;
+    project_file.prepareNoFollowFile(&file);
     defer file.close(io);
     return loadSnapshotValidatedFromFile(io, file, expected_root, explorer, store, allocator);
 }
@@ -1673,10 +1674,11 @@ pub fn writeReindexSnapshots(
         .{ home_raw, hash },
     );
     defer allocator.free(central_path);
-    const central_file = std.Io.Dir.cwd().openFile(io, central_path, .{
+    var central_file = std.Io.Dir.cwd().openFile(io, central_path, .{
         .allow_directory = false,
         .follow_symlinks = false,
     }) catch return false;
+    project_file.prepareNoFollowFile(&central_file);
     defer central_file.close(io);
 
     const root_dir = explorer.root_dir orelse return false;
@@ -1733,11 +1735,12 @@ fn copyOpenFileAtomic(io: std.Io, source: std.Io.File, dest_dir: std.Io.Dir, des
 }
 
 fn openRegularFileNoFollow(io: std.Io, dir: std.Io.Dir, name: []const u8) !std.Io.File {
-    const source = try dir.openFile(io, name, .{
+    var source = try dir.openFile(io, name, .{
         .allow_directory = false,
         .follow_symlinks = false,
         .resolve_beneath = true,
     });
+    project_file.prepareNoFollowFile(&source);
     errdefer source.close(io);
     const source_stat = try source.stat(io);
     if (source_stat.kind != .file) return error.InvalidSnapshotSource;

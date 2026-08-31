@@ -6,10 +6,19 @@
 //! check/retarget/open race, while `resolve_beneath` keeps resolution anchored
 //! to the supplied project directory capability.
 const std = @import("std");
+const builtin = @import("builtin");
 const project_path = @import("project_path.zig");
 const root_policy = @import("root_policy.zig");
 
 pub const isAllowedPath = project_path.isReadable;
+
+/// `follow_symlinks = false` maps to an asynchronous Windows handle in Zig
+/// 0.17, but the returned File is currently tagged as blocking. Correct the
+/// metadata so reads wait for normal asynchronous completion instead of
+/// treating `STATUS_PENDING` as an impossible result.
+pub fn prepareNoFollowFile(file: *std.Io.File) void {
+    if (builtin.os.tag == .windows) file.flags.nonblocking = true;
+}
 
 pub fn rootIsAllowed(io: std.Io, dir: std.Io.Dir) bool {
     var root_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -51,6 +60,8 @@ fn openValidatedAtRoot(
     });
     errdefer file.close(io);
 
+    prepareNoFollowFile(&file);
+
     // Validate the object actually opened, not a pre-open realpath. The file
     // handle cannot be retargeted underneath this check, so an allowed-looking
     // directory alias such as `alias -> .ssh` cannot bypass the sensitive-path
@@ -76,6 +87,12 @@ fn openValidatedAtRoot(
     if (!isAllowedPath(normalized_buf[0..rel.len])) return error.AccessDenied;
 
     return file;
+}
+
+test "no-follow file metadata matches the Windows handle mode" {
+    var file: std.Io.File = .{ .handle = undefined, .flags = .{ .nonblocking = false } };
+    prepareNoFollowFile(&file);
+    try std.testing.expectEqual(builtin.os.tag == .windows, file.flags.nonblocking);
 }
 
 fn openValidated(io: std.Io, dir: std.Io.Dir, path: []const u8) !std.Io.File {

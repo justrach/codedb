@@ -448,11 +448,12 @@ const ProjectCache = struct {
                 const central_dir_path = std.fmt.bufPrint(&central_buf, "{s}/.codedb/projects/{x}", .{ home, hash }) catch break :blk false;
                 var central_dir = std.Io.Dir.cwd().openDir(io, central_dir_path, .{ .follow_symlinks = false }) catch break :blk false;
                 defer central_dir.close(io);
-                const central_file = central_dir.openFile(io, "codedb.snapshot", .{
+                var central_file = central_dir.openFile(io, "codedb.snapshot", .{
                     .allow_directory = false,
                     .follow_symlinks = false,
                     .resolve_beneath = true,
                 }) catch break :blk false;
+                project_file_read.prepareNoFollowFile(&central_file);
                 defer central_file.close(io);
                 break :blk snapshot_mod.loadSnapshotValidatedFromFile(io, central_file, canonical_root, &new_entry.explorer, &new_entry.store, self.alloc);
             };
@@ -3617,14 +3618,95 @@ pub fn extractContextFallbackWords(task: []const u8, alloc: std.mem.Allocator, o
 /// section on exactly the files agents need. Matches real test conventions:
 /// test(s)/ dirs, test_*.py, *_test.go, *.test.js, __tests__, spec, fixtures.
 fn isTestPath(path: []const u8) bool {
-    if (std.mem.startsWith(u8, path, "tests/") or std.mem.startsWith(u8, path, "test/")) return true;
+    if (std.mem.startsWith(u8, path, "tests/") or std.mem.startsWith(u8, path, "test/") or
+        std.mem.startsWith(u8, path, "fixtures/") or std.mem.startsWith(u8, path, "fixture/") or
+        std.mem.startsWith(u8, path, "examples/")) return true;
     if (std.mem.indexOf(u8, path, "/tests/") != null or std.mem.indexOf(u8, path, "/test/") != null) return true;
-    if (std.mem.indexOf(u8, path, "_test.") != null or std.mem.indexOf(u8, path, ".test.") != null) return true;
-    if (std.mem.indexOf(u8, path, "/__tests__/") != null) return true;
-    if (std.mem.indexOf(u8, path, "/spec/") != null or std.mem.indexOf(u8, path, "/fixtures/") != null) return true;
+    if (std.mem.indexOf(u8, path, "_test.") != null or std.mem.indexOf(u8, path, ".test.") != null or
+        std.mem.indexOf(u8, path, ".spec.") != null) return true;
+    if (std.mem.indexOf(u8, path, "/__tests__/") != null or std.mem.indexOf(u8, path, "/__snapshots__/") != null) return true;
+    if (std.mem.indexOf(u8, path, "/spec/") != null or std.mem.indexOf(u8, path, "/fixtures/") != null or
+        std.mem.indexOf(u8, path, "/fixture/") != null or std.mem.indexOf(u8, path, "/examples/") != null) return true;
+    if (std.mem.indexOf(u8, path, "/internal-test-utils/") != null or
+        std.mem.indexOf(u8, path, "/react-suspense-test-utils/") != null or
+        std.mem.indexOf(u8, path, "/jest-react/") != null) return true;
     const base = std.fs.path.basename(path);
     if (std.mem.startsWith(u8, base, "test_") or std.mem.startsWith(u8, base, "test-")) return true;
+    if (std.mem.endsWith(u8, base, ".snap") or std.mem.endsWith(u8, base, ".map") or
+        std.mem.indexOf(u8, base, ".expect.") != null) return true;
     return false;
+}
+
+fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i..][0..needle.len], needle)) return true;
+    }
+    return false;
+}
+
+const ContextPathIntent = struct {
+    production_source: bool = false,
+    exclude_tests: bool = false,
+    exclude_debug: bool = false,
+    exclude_server: bool = false,
+    prefer_docs: bool = false,
+};
+
+fn contextPathIntent(task: []const u8) ContextPathIntent {
+    const production_source = containsAsciiIgnoreCase(task, "production") or
+        containsAsciiIgnoreCase(task, "source implementation");
+    const mentions_debug = containsAsciiIgnoreCase(task, "debug") or containsAsciiIgnoreCase(task, "devtools");
+    const mentions_server = containsAsciiIgnoreCase(task, "server");
+    const exclusion_clause = containsAsciiIgnoreCase(task, "exclude") or containsAsciiIgnoreCase(task, "without") or
+        containsAsciiIgnoreCase(task, "ignore") or containsAsciiIgnoreCase(task, "omit");
+    const mentions_test_material = containsAsciiIgnoreCase(task, "test") or containsAsciiIgnoreCase(task, "fixture") or
+        containsAsciiIgnoreCase(task, "example") or containsAsciiIgnoreCase(task, "snapshot") or
+        containsAsciiIgnoreCase(task, "generated");
+    const exclude_tests = (exclusion_clause and mentions_test_material) or
+        containsAsciiIgnoreCase(task, "production-only") or containsAsciiIgnoreCase(task, "production source");
+    return .{
+        .production_source = production_source,
+        .exclude_tests = exclude_tests,
+        .exclude_debug = (exclusion_clause and mentions_debug) or
+            (production_source and !mentions_debug),
+        .exclude_server = (exclusion_clause and mentions_server) or
+            (production_source and containsAsciiIgnoreCase(task, "client") and !mentions_server),
+        .prefer_docs = containsAsciiIgnoreCase(task, "documentation") or
+            containsAsciiIgnoreCase(task, "docs") or containsAsciiIgnoreCase(task, "readme"),
+    };
+}
+
+fn contextPathMultiplier(path: []const u8, intent: ContextPathIntent) f32 {
+    if (intent.exclude_tests and isTestPath(path)) return 0;
+    var multiplier: f32 = 1;
+    if (intent.exclude_debug and
+        (containsAsciiIgnoreCase(path, "debug") or containsAsciiIgnoreCase(path, "devtools"))) multiplier *= 0.05;
+    if (intent.exclude_server and
+        (containsAsciiIgnoreCase(path, "/server/") or containsAsciiIgnoreCase(path, "/react-server/") or
+            containsAsciiIgnoreCase(std.fs.path.basename(path), "server"))) multiplier *= 0.05;
+    if (intent.production_source and !intent.prefer_docs and
+        (std.mem.endsWith(u8, path, ".md") or std.mem.endsWith(u8, path, ".mdx"))) multiplier *= 0.1;
+    return multiplier;
+}
+
+test "context production intent demotes excluded path classes without hiding requested docs" {
+    const production = contextPathIntent("Trace the production client implementation; exclude tests and debug tools");
+    try testing.expectEqual(@as(f32, 0), contextPathMultiplier("packages/x/src/__tests__/feature.test.js", production));
+    try testing.expectEqual(@as(f32, 0), contextPathMultiplier("packages/internal-test-utils/helper.js", production));
+    try testing.expect(contextPathMultiplier("packages/react-debug-tools/src/hooks.js", production) < 0.1);
+    try testing.expect(contextPathMultiplier("packages/react-server/src/Hooks.js", production) < 0.1);
+    try testing.expectEqual(@as(f32, 1), contextPathMultiplier("packages/react/src/ReactHooks.js", production));
+
+    const architecture = contextPathIntent("Find the production architecture docs and README");
+    try testing.expectEqual(@as(f32, 1), contextPathMultiplier("docs/architecture.md", architecture));
+
+    const requested_debug = contextPathIntent("Trace the production debug tools implementation");
+    try testing.expectEqual(@as(f32, 1), contextPathMultiplier("src/debug/tools.zig", requested_debug));
+    const failing_test = contextPathIntent("Why does the production test fail?");
+    try testing.expectEqual(@as(f32, 1), contextPathMultiplier("tests/production_test.zig", failing_test));
 }
 
 /// A persisted ANN can be newer than the snapshot selected at MCP startup.
@@ -3810,6 +3892,7 @@ fn handleContext(
         return;
     }
     const semantic_requested = std.mem.eql(u8, semantic_mode, "hybrid");
+    const path_intent = contextPathIntent(task);
     const architecture_intent = isArchitectureOverviewTask(task);
     var retrieval: ContextRetrievalProvenance = .{};
     const format = getStr(args, "format") orelse "markdown";
@@ -3989,11 +4072,15 @@ fn handleContext(
         // definition of this exact name exists.
         if (explorer.searchSymbols(.{
             .name = kw,
-            .max_results = 3,
+            // Intent filtering happens below, so inspect a wider bounded pool
+            // before keeping the same three-definition response cap.
+            .max_results = if (path_intent.exclude_tests or path_intent.exclude_debug or path_intent.exclude_server) 16 else 3,
             .rank_policy = .navigation,
         }, A)) |defs| {
+            var accepted: usize = 0;
             for (defs) |d| {
                 if (architecture_intent and isLowSignalArchitecturePath(d.path)) continue;
+                if (contextPathMultiplier(d.path, path_intent) < 1) continue;
                 const key = std.fmt.allocPrint(A, "{s}|{s}|{d}", .{ d.path, kw, d.symbol.line_start }) catch continue;
                 if (seen_syms.contains(key)) continue;
                 seen_syms.put(key, {}) catch continue;
@@ -4004,6 +4091,8 @@ fn handleContext(
                     .line = d.symbol.line_start,
                     .line_end = d.symbol.line_end,
                 }) catch break;
+                accepted += 1;
+                if (accepted == 3) break;
             }
         } else |_| {}
 
@@ -4144,7 +4233,8 @@ fn handleContext(
             semantic_index_mod.default_search_results,
         )) |ann_result| {
             retrieval.semantic = "ann_applied";
-            retrieval.fusion = "top3_lexical_guard_union_rrf";
+            retrieval.fusion = "intent_aware_union_rrf";
+            retrieval.rrf_k = semantic_mod.default_ann_rrf_k;
             retrieval.semantic_weight = semantic_mod.default_ann_semantic_weight;
             retrieval.dimensions = ann_result.dimensions;
             // Query + fixed public calibration string share one request. No
@@ -4217,7 +4307,7 @@ fn handleContext(
                     file.lexical_rank,
                     file.semantic_present,
                     file.semantic_rank,
-                );
+                ) * contextPathMultiplier(file.path, path_intent);
             }
 
             if (A.alloc(ContextRetrievalCandidate, ann_result.hits.len) catch null) |provenance| {
