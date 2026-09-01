@@ -4214,6 +4214,7 @@ fn handleContext(
     }
 
     var use_exact_semantic_fallback = false;
+    var schedule_legacy_semantic_migration = false;
     if (semantic_requested) ann_lane: {
         const data_dir = getProjectDataDir(A, rooted_project) orelse {
             retrieval.semantic = "unavailable";
@@ -4345,6 +4346,7 @@ fn handleContext(
         } else |err| {
             retrieval.semantic = "unavailable";
             retrieval.detail = @errorName(err);
+            schedule_legacy_semantic_migration = err == error.AnnModelMismatch;
             use_exact_semantic_fallback = switch (err) {
                 error.AnnIndexMissing,
                 error.InvalidAnnSidecar,
@@ -4443,6 +4445,30 @@ fn handleContext(
             }
         } else {
             retrieval.semantic = "no_candidates";
+        }
+    }
+
+    // Prioritize the bounded exact rerank above, then rebuild the recognized
+    // hosted-Qwen sidecar concurrently with the rest of the session. SearchCache
+    // owns and joins the worker, so project eviction or shutdown cannot free the
+    // Explorer/Store while migration is still reading them.
+    if (schedule_legacy_semantic_migration) {
+        if (semantic_cache) |cache| {
+            const data_dir = getProjectDataDir(A, rooted_project);
+            if (data_dir) |project_data_dir| {
+                switch (semantic_index_mod.scheduleLegacyHostedMigration(
+                    io,
+                    cache,
+                    explorer,
+                    store,
+                    rooted_project,
+                    project_data_dir,
+                )) {
+                    .scheduled => retrieval.detail = "AnnSidecarMigrationScheduled",
+                    .in_progress => retrieval.detail = "AnnSidecarMigrationInProgress",
+                    .not_eligible => {},
+                }
+            }
         }
     }
 

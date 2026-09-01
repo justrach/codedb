@@ -99,10 +99,11 @@ command returns the local result and does not run an embedding model on CPU.
 `--semantic` and `--hybrid` remain accepted compatibility aliases for the
 default; `--local` (or `--no-semantic`) is the explicit on-device-only mode.
 
-`semantic-index` is the only ANN build trigger. It sends bounded 832-byte code
-chunks using four concurrent 25-item requests by default (configurable from one
-to eight) and stores a small mapping plus a generation-named, validated `.hmls`
-mmap slab under codedb's local per-project data directory (0700/0600 on POSIX).
+`semantic-index` is the explicit ANN build trigger. It sends bounded 832-byte
+code chunks using four concurrent 25-item requests by default (configurable
+from one to eight) and stores a small mapping plus a generation-named,
+validated `.hmls` mmap slab under codedb's local per-project data directory
+(0700/0600 on POSIX).
 Queries verify vector-space identity and repository freshness before
 mmap. Metadata heap use is capped at 64 MiB, graph validation at 128 MiB, and
 the vector slab stays demand-paged instead of being copied into RSS.
@@ -120,15 +121,21 @@ CodeDB 0.2.5851 changes the managed default to
 request `Qwen/Qwen3-Embedding-0.6B`, and the hosted service serves both model
 names during the migration. Sidecar metadata includes the model, dimensions,
 query encoding, document-card encoding, and a calibration vector. A new client
-therefore refuses an old Qwen sidecar and uses transient exact reranking until
-you explicitly replace it:
+therefore refuses an old Qwen sidecar rather than searching it with Jina
+vectors. In 0.2.5852, the first hybrid MCP query returns via transient exact
+reranking and schedules one background rebuild when—and only when—the sidecar
+exactly matches CodeDB's former hosted-Qwen vector space. You can still replace
+it explicitly:
 
 ```bash
 codedb /path/to/repo semantic-index
 ```
 
-That command transactionally replaces the old generation. Updating the binary
-does not automatically send repository contents or build a semantic sidecar.
+Both paths replace the old generation transactionally. The previous sidecar is
+kept until the new Jina generation has passed source/Git freshness and metadata
+validation. Custom endpoints, model overrides, fresh repositories, Windows
+(until OpenPuffer has native mmap loading there), and
+`CODEDB_NO_AUTO_SEMANTIC_MIGRATION=1` remain explicit-only.
 
 ## Daemon Management
 

@@ -260,9 +260,9 @@ pub fn runSnapshot(ctx: *RunCtx) void {
     }
 }
 
-/// Explicitly build the local file-card ANN sidecar. This is never triggered
-/// by an ordinary query because indexing sends bounded, safe code-chunk cards
-/// to the configured embedding endpoint.
+/// Explicitly build the local file-card ANN sidecar. Ordinary queries do not
+/// create a new sidecar, except for the narrowly recognized hosted-Qwen to
+/// hosted-Jina migration owned by the MCP SearchCache.
 pub fn runSemanticIndex(ctx: *RunCtx) void {
     const stats = semantic_index.build(
         ctx.io,
