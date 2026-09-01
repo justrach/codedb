@@ -467,21 +467,25 @@ embedding service. In the default hybrid mode:
 - provider/network failure keeps the local result and never invokes a CPU
   embedding fallback.
 
-The local ANN is built only by an explicit command:
+Build a new local ANN explicitly with:
 
 ```bash
 codedb /path/to/repo semantic-index
 ```
 
-CodeDB 0.2.5851 stages the managed embedding migration without breaking older
+CodeDB 0.2.5851 staged the managed embedding migration without breaking older
 clients. Versions through 0.2.5850 continue to request
 `Qwen/Qwen3-Embedding-0.6B`; 0.2.5851 and later request
 `jinaai/jina-embeddings-v2-base-code`. The service keeps both routes live. An
 existing Qwen ANN sidecar is rejected by the new client's model/vector-space
-check and hybrid retrieval safely uses transient exact reranking until the user
-runs `semantic-index` once to replace it with a Jina sidecar. CodeDB never
-mixes vectors from the two models and never uploads a repository automatically
-during update or ordinary queries.
+check. Starting in 0.2.5852, the first hybrid MCP query still returns through
+the bounded exact Jina reranker, then schedules one background rebuild of that
+exact legacy hosted-Qwen sidecar. The old OpenPuffer generation remains intact
+until the Jina replacement passes source, Git, metadata, and vector-space
+validation and commits atomically. Custom endpoints/model overrides and new
+repositories are never auto-built; set `CODEDB_NO_AUTO_SEMANTIC_MIGRATION=1`
+to disable even this legacy migration. CodeDB never mixes vectors from the two
+models.
 
 It splits already-indexable files into bounded 832-byte source chunks, uses
 four concurrent 25-item requests by default (explicitly configurable from one
@@ -493,8 +497,9 @@ On lookup, codedb checks model/vector-space identity, Git/content freshness,
 and the bounded metadata before opening the slab. Metadata heap use is capped
 at 64 MiB and graph-validation reads at 128 MiB; vector slabs remain
 demand-paged rather than being copied into the query process.
-It never scans or uploads `.env`, `.env.*`, `.envrc`, credentials, private keys, or other paths on
-the sensitive-file denylist. Ordinary indexing does not build this sidecar.
+It never scans or uploads `.env`, `.env.*`, `.envrc`, credentials, private keys,
+or other paths on the sensitive-file denylist. Ordinary lexical indexing does
+not build this sidecar.
 
 The default managed semantic lane is free to call and requires no API token or
 manual setup. On first use, CodeDB creates a local Ed25519 installation key,

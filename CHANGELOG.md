@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.2.5852 - 2026-09-01
+
+- **Automatic legacy semantic-sidecar migration.** The first hybrid MCP query
+  that encounters the exact former hosted-Qwen vector space returns through
+  bounded exact Jina reranking, then starts one background Jina rebuild. The
+  existing OpenPuffer generation remains intact until the replacement passes
+  source, Git, metadata, calibration, and vector-space checks and commits
+  atomically. Custom providers, fresh repositories, and Windows stay explicit;
+  `CODEDB_NO_AUTO_SEMANTIC_MIGRATION=1` disables the migration.
+- **Lifecycle and privacy are release-gated.** Project eviction and shutdown
+  join the migration worker before releasing shared index state, while the
+  existing sensitive-path filters continue to run before every remote batch.
+  Provider failure keeps local retrieval and never starts a CPU fallback.
+
 ## 0.2.5851 - 2026-09-01
 
 - **Windows indexing works again.** Zig 0.17 can return pending positional

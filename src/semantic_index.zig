@@ -1,6 +1,8 @@
 //! Persistent, local code-chunk ANN index for hybrid codedb retrieval.
 //!
-//! Building is explicit: `codedb <root> semantic-index`. Safe, bounded file
+//! Building is explicit with `codedb <root> semantic-index`, except that a
+//! sidecar produced by the former hosted Qwen default is migrated once in the
+//! background when a hybrid query first encounters it. Safe, bounded file
 //! chunks are embedded remotely in batches, while the vectors, HNSW graph, and
 //! record mapping are written only to codedb's per-project local data dir.
 //! Querying sends only the user's bounded query and searches OpenPuffer in
@@ -39,6 +41,7 @@ pub const max_records: usize = 250_000;
 /// the 650-700 MiB query RSS profile that mmap is meant to avoid.
 pub const max_metadata_bytes: usize = 64 * 1024 * 1024;
 pub const max_slab_bytes: usize = 1024 * 1024 * 1024;
+pub const auto_migration_opt_out_env = "CODEDB_NO_AUTO_SEMANTIC_MIGRATION";
 
 const magic = [8]u8{ 'C', 'D', 'B', 'A', 'N', 'N', '0', '3' };
 const format_version: u16 = 3;
@@ -154,20 +157,102 @@ const CachedLoaded = struct {
 /// generation and is never queried.
 pub const SearchCache = struct {
     mu: cio.RwLock = .{},
+    migration_mu: cio.Mutex = .{},
     allocator: std.mem.Allocator,
     cached: ?CachedLoaded = null,
+    migration_thread: ?std.Thread = null,
+    migration_state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(MigrationState.idle)),
 
     pub fn init(allocator: std.mem.Allocator) SearchCache {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *SearchCache) void {
+        // A migration borrows the owning Explorer and Store. Join it before
+        // ProjectCache tears either one down, and before releasing this cache
+        // whose atomic state the worker updates on completion.
+        self.migration_mu.lock();
+        const migration_thread = self.migration_thread;
+        self.migration_thread = null;
+        self.migration_mu.unlock();
+        if (migration_thread) |thread| thread.join();
+
         self.mu.lock();
         defer self.mu.unlock();
         if (self.cached) |*cached| cached.loaded.deinit();
         self.cached = null;
     }
+
+    pub fn migrationState(self: *const SearchCache) MigrationState {
+        return @enumFromInt(self.migration_state.load(.acquire));
+    }
 };
+
+pub const MigrationState = enum(u8) {
+    idle,
+    running,
+    succeeded,
+    failed,
+};
+
+pub const MigrationSchedule = enum {
+    not_eligible,
+    scheduled,
+    in_progress,
+};
+
+const MigrationJob = struct {
+    io: std.Io,
+    cache: *SearchCache,
+    explorer: *Explorer,
+    store: *Store,
+    project_root: []u8,
+    data_dir: []u8,
+
+    fn run(self: *MigrationJob) void {
+        const allocator = std.heap.page_allocator;
+        const result = build(self.io, allocator, self.explorer, self.store, self.project_root, self.data_dir);
+        if (result) |stats| {
+            self.cache.migration_state.store(@intFromEnum(MigrationState.succeeded), .release);
+            std.log.info(
+                "semantic sidecar migration committed: {d} chunks from {d} files in {d} ms",
+                .{ stats.records, stats.files_indexed, stats.elapsed_ns / std.time.ns_per_ms },
+            );
+        } else |err| {
+            self.cache.migration_state.store(@intFromEnum(MigrationState.failed), .release);
+            std.log.warn("semantic sidecar migration failed: {s}", .{@errorName(err)});
+        }
+        allocator.free(self.project_root);
+        allocator.free(self.data_dir);
+        allocator.destroy(self);
+    }
+};
+
+fn createMigrationJob(
+    io: std.Io,
+    cache: *SearchCache,
+    explorer: *Explorer,
+    store: *Store,
+    project_root: []const u8,
+    data_dir: []const u8,
+) !*MigrationJob {
+    const allocator = std.heap.page_allocator;
+    const job = try allocator.create(MigrationJob);
+    errdefer allocator.destroy(job);
+    const owned_root = try allocator.dupe(u8, project_root);
+    errdefer allocator.free(owned_root);
+    const owned_data_dir = try allocator.dupe(u8, data_dir);
+    errdefer allocator.free(owned_data_dir);
+    job.* = .{
+        .io = io,
+        .cache = cache,
+        .explorer = explorer,
+        .store = store,
+        .project_root = owned_root,
+        .data_dir = owned_data_dir,
+    };
+    return job;
+}
 
 fn elapsedNs(since: i128) u64 {
     const now = cio.nanoTimestamp();
@@ -914,6 +999,79 @@ fn validateLoadedConfig(config: *const semantic.Config, loaded: *const Loaded) !
     if (config.vectorSpaceId() != loaded.vector_space_id) return error.AnnVectorSpaceMismatch;
 }
 
+fn isLegacyHostedVectorSpace(
+    current: *const semantic.Config,
+    stored_model: []const u8,
+    stored_dimensions: u16,
+    stored_vector_space_id: u64,
+) bool {
+    // Automatic repository-wide embedding is deliberately limited to the one
+    // vector space shipped as CodeDB's hosted default before Jina. Custom URLs,
+    // custom model overrides, malformed metadata, and merely similar Qwen
+    // sidecars remain explicit user decisions.
+    if (!std.mem.eql(u8, current.url, semantic.default_url) or
+        !std.mem.eql(u8, current.model, semantic.default_model) or
+        current.dimensions != semantic.default_dimensions or
+        !std.mem.eql(u8, stored_model, semantic.legacy_qwen_model) or
+        stored_dimensions != semantic.default_dimensions)
+    {
+        return false;
+    }
+    const legacy = semantic.Config{
+        .url = semantic.default_url,
+        .model = semantic.legacy_qwen_model,
+        .token = null,
+        .dimensions = semantic.default_dimensions,
+        .timeout_ms = semantic.default_timeout_ms,
+    };
+    return stored_vector_space_id == legacy.vectorSpaceId();
+}
+
+/// Schedule a single transactional Qwen-to-Jina sidecar migration owned by
+/// `cache`. The old generation stays referenced until build() atomically
+/// publishes the validated replacement. The exact semantic fallback can serve
+/// the triggering request while this worker runs.
+pub fn scheduleLegacyHostedMigration(
+    io: std.Io,
+    cache: *SearchCache,
+    explorer: *Explorer,
+    store: *Store,
+    project_root: []const u8,
+    data_dir: []const u8,
+) MigrationSchedule {
+    if (comptime builtin.os.tag == .windows) return .not_eligible;
+    if (cio.posixGetenv(auto_migration_opt_out_env) != null) return .not_eligible;
+
+    const config = semantic.Config.fromEnv();
+    config.validate() catch return .not_eligible;
+    var loaded = loadMetadata(io, std.heap.page_allocator, data_dir) catch return .not_eligible;
+    defer loaded.deinit();
+    if (!isLegacyHostedVectorSpace(&config, loaded.model, loaded.dimensions, loaded.vector_space_id)) {
+        return .not_eligible;
+    }
+
+    cache.migration_mu.lock();
+    defer cache.migration_mu.unlock();
+    switch (cache.migrationState()) {
+        .running => return .in_progress,
+        .idle => {},
+        .succeeded, .failed => return .not_eligible,
+    }
+
+    const allocator = std.heap.page_allocator;
+    const job = createMigrationJob(io, cache, explorer, store, project_root, data_dir) catch return .not_eligible;
+
+    cache.migration_state.store(@intFromEnum(MigrationState.running), .release);
+    cache.migration_thread = std.Thread.spawn(.{}, MigrationJob.run, .{job}) catch {
+        cache.migration_state.store(@intFromEnum(MigrationState.failed), .release);
+        allocator.free(job.project_root);
+        allocator.free(job.data_dir);
+        allocator.destroy(job);
+        return .not_eligible;
+    };
+    return .scheduled;
+}
+
 fn searchLoaded(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -1176,9 +1334,87 @@ test "semantic ANN sidecar accepts Jina 512D and rejects a legacy Qwen vector sp
     var legacy_config = config;
     legacy_config.model = semantic.legacy_qwen_model;
     try testing.expectError(error.AnnModelMismatch, validateLoadedConfig(&legacy_config, &restored));
+    try testing.expect(isLegacyHostedVectorSpace(
+        &config,
+        semantic.legacy_qwen_model,
+        semantic.default_dimensions,
+        legacy_config.vectorSpaceId(),
+    ));
+    try testing.expect(!isLegacyHostedVectorSpace(
+        &config,
+        semantic.default_model,
+        semantic.default_dimensions,
+        config.vectorSpaceId(),
+    ));
+    var custom_current = config;
+    custom_current.url = "http://localhost:8080/v1/embeddings";
+    try testing.expect(!isLegacyHostedVectorSpace(
+        &custom_current,
+        semantic.legacy_qwen_model,
+        semantic.default_dimensions,
+        legacy_config.vectorSpaceId(),
+    ));
+    try testing.expect(!isLegacyHostedVectorSpace(
+        &config,
+        semantic.legacy_qwen_model,
+        semantic.default_dimensions,
+        legacy_config.vectorSpaceId() ^ 1,
+    ));
     const results = try restored.index.search(&b, 1, testing.allocator);
     defer testing.allocator.free(results);
     try testing.expectEqual(@as(u32, 1), results[0].id);
+
+    if (builtin.os.tag != .windows and
+        std.mem.eql(u8, config.url, semantic.default_url) and
+        std.mem.eql(u8, config.model, semantic.default_model))
+    {
+        // Repoint metadata at the exact former hosted default, then prove that
+        // an already-running migration is recognized without launching a
+        // duplicate worker or touching the Explorer/Store arguments.
+        _ = try writeMetadata(
+            io,
+            testing.allocator,
+            dir_path,
+            semantic.legacy_qwen_model,
+            semantic.default_dimensions,
+            1234,
+            legacy_config.vectorSpaceId(),
+            &calibration,
+            null,
+            slab_name,
+            &.{
+                .{ .path = "src/a.zig", .line_start = 1, .line_end = 2 },
+                .{ .path = "src/b.zig", .line_start = 8, .line_end = 12 },
+            },
+        );
+        var cache = SearchCache.init(testing.allocator);
+        defer cache.deinit();
+        cache.migration_state.store(@intFromEnum(MigrationState.running), .release);
+        var explorer = Explorer.init(testing.allocator, 1024);
+        defer explorer.deinit();
+        var store = Store.init(testing.allocator);
+        defer store.deinit();
+        try testing.expectEqual(
+            MigrationSchedule.in_progress,
+            scheduleLegacyHostedMigration(io, &cache, &explorer, &store, dir_path, dir_path),
+        );
+        try testing.expect(cache.migration_thread == null);
+    }
+}
+
+test "semantic search cache joins its migration worker before destruction" {
+    const testing = std.testing;
+    var finished = std.atomic.Value(bool).init(false);
+    var cache = SearchCache.init(testing.allocator);
+    cache.migration_state.store(@intFromEnum(MigrationState.running), .release);
+    cache.migration_thread = try std.Thread.spawn(.{}, struct {
+        fn run(done: *std.atomic.Value(bool)) void {
+            cio.sleepMs(20);
+            done.store(true, .release);
+        }
+    }.run, .{&finished});
+    cache.deinit();
+    try testing.expect(finished.load(.acquire));
 }
 
 test "semantic repository fingerprint survives cold scan snapshot reload" {
