@@ -62,7 +62,11 @@ pub fn run(io: std.Io, stdout: cio.File, s: sty.Style, allocator: std.mem.Alloca
             return;
         },
         .gt => {
-            out.p("{s}✗{s} refusing to replace codedb {s} with older release {s}\n", .{ s.red, s.reset, release_info.semver, resolved.value });
+            if (resolved.source == .env) {
+                out.p("{s}✗{s} refusing to replace codedb {s} with older release {s} requested by CODEDB_VERSION\n", .{ s.red, s.reset, release_info.semver, resolved.value });
+            } else {
+                out.p("{s}✗{s} cannot confirm the latest release: update source reports {s}, older than installed codedb {s}. No changes made; please retry later.\n", .{ s.red, s.reset, resolved.value, release_info.semver });
+            }
             std.process.exit(1);
         },
         .lt => {},

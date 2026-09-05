@@ -1,5 +1,4 @@
 const GITHUB_REPO = "justrach/codedb";
-const FALLBACK_VERSION = "0.2.56";
 const INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/install/install.sh`;
 
 export default {
@@ -49,28 +48,25 @@ async function serveInstallScript() {
 }
 
 async function serveLatestVersion() {
-  const resp = await fetch(
-    `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
-    { headers: { "User-Agent": "codedb-worker", Accept: "application/vnd.github.v3+json" } }
-  );
-
-  if (resp.ok) {
-    const release = await resp.json();
-    const version = release.tag_name.replace(/^v/, "");
-    return new Response(JSON.stringify({ version }), {
-      headers: {
-        "Content-Type": "application/json",
-        "Cache-Control": "public, max-age=60",
-      },
-    });
+  try {
+    const resp = await fetch(
+      `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
+      { headers: { "User-Agent": "codedb-worker", Accept: "application/vnd.github.v3+json" } }
+    );
+    if (resp.ok) {
+      const release = await resp.json();
+      if (typeof release.tag_name === "string" && /^v?\d+\.\d+\.\d+$/.test(release.tag_name)) {
+        return new Response(JSON.stringify({ version: release.tag_name.replace(/^v/, "") }), {
+          headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=60" },
+        });
+      }
+    }
+  } catch {
+    // Network errors and invalid responses must not advertise a stale release.
   }
-
-  // Fallback: hardcoded latest version (update on each release)
-  return new Response(JSON.stringify({ version: FALLBACK_VERSION }), {
-    headers: {
-      "Content-Type": "application/json",
-      "Cache-Control": "public, max-age=60",
-    },
+  return new Response(JSON.stringify({ error: "Unable to check the latest release. Please retry later." }), {
+    status: 503,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 }
 
