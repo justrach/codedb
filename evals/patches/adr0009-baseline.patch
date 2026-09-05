@@ -1,0 +1,132 @@
+--- a/src/mcp.zig
++++ b/src/mcp.zig
+@@ -3647,6 +3647,50 @@
+     return false;
+ }
+ 
++// A literal code name is stronger evidence than an embedding match to a
++// neighboring API. Ordinary prose words must not receive this priority.
++fn isExplicitContextIdentifier(word: []const u8) bool {
++    if (!isBareIdentifier(word)) return false;
++    if (std.mem.indexOfScalar(u8, word, '_') != null) return true;
++    for (word, 0..) |c, i| {
++        if (i > 0 and std.ascii.isUpper(c) and std.ascii.isLower(word[i - 1])) return true;
++    }
++    return false;
++}
++
++fn contextWantsDefinitionPriority(task: []const u8) bool {
++    return !containsAsciiIgnoreCase(task, "test") and
++        !containsAsciiIgnoreCase(task, "caller") and
++        !containsAsciiIgnoreCase(task, "usage") and
++        !containsAsciiIgnoreCase(task, "reference");
++}
++
++test "context definition priority requires a code-shaped name and compatible intent" {
++    try testing.expect(isExplicitContextIdentifier("resolveGatewayAuthToken"));
++    try testing.expect(isExplicitContextIdentifier("parse_request"));
++    try testing.expect(!isExplicitContextIdentifier("Where"));
++    try testing.expect(!isExplicitContextIdentifier("configuration"));
++    try testing.expect(!isExplicitContextIdentifier("foo/bar"));
++    try testing.expect(contextWantsDefinitionPriority("Find resolveGatewayAuthToken"));
++    try testing.expect(!contextWantsDefinitionPriority("Find tests for resolveGatewayAuthToken"));
++    try testing.expect(!contextWantsDefinitionPriority("Find callers of parse_request"));
++}
++
++fn contextAnnImplementationWeight(path: []const u8, task: []const u8) f32 {
++    // A where-is/implementation question seeks code, unless it explicitly
++    // asks for tests, callers, or references. Keep test evidence available.
++    if (isTestPath(path) and contextWantsDefinitionPriority(task) and
++        (containsAsciiIgnoreCase(task, "where ") or containsAsciiIgnoreCase(task, "implementation"))) return 0.5;
++    return 1;
++}
++
++test "ANN implementation preference preserves explicit test and caller requests" {
++    try testing.expectEqual(@as(f32, 0.5), contextAnnImplementationWeight("test/rate-limit.test.ts", "Where are login failures rate limited?"));
++    try testing.expectEqual(@as(f32, 1), contextAnnImplementationWeight("src/rate-limit.ts", "Where are login failures rate limited?"));
++    try testing.expectEqual(@as(f32, 1), contextAnnImplementationWeight("test/rate-limit.test.ts", "Where are the rate limit tests?"));
++    try testing.expectEqual(@as(f32, 1), contextAnnImplementationWeight("test/rate-limit.test.ts", "Where are callers of rate_limit?"));
++}
++
+ const ContextPathIntent = struct {
+     production_source: bool = false,
+     exclude_tests: bool = false,
+@@ -4057,6 +4101,7 @@
+         line: u32,
+         line_end: u32,
+         focused: bool = false,
++        exact_code_definition: bool = false,
+     };
+     var sym_refs: std.ArrayList(SymRef) = .empty;
+     var seen_syms = std.StringHashMap(void).init(A);
+@@ -4090,6 +4135,8 @@
+                     .path = d.path,
+                     .line = d.symbol.line_start,
+                     .line_end = d.symbol.line_end,
++                    .exact_code_definition = d.symbol.kind != .import and d.symbol.kind != .comment_block and
++                        isExplicitContextIdentifier(kw) and std.mem.eql(u8, d.symbol.name, kw),
+                 }) catch break;
+                 accepted += 1;
+                 if (accepted == 3) break;
+@@ -4157,6 +4204,12 @@
+     // the real source on T3/F1/F3/G2). Final secondary sort by hits.
+     var symbol_files = std.StringHashMap(void).init(A);
+     for (sym_refs.items) |sr| symbol_files.put(sr.path, {}) catch {};
++    var exact_definition_paths = std.StringHashMap(void).init(A);
++    if (contextWantsDefinitionPriority(task)) {
++        for (sym_refs.items) |sr| {
++            if (sr.exact_code_definition) exact_definition_paths.put(sr.path, {}) catch {};
++        }
++    }
+ 
+     const FileRank = struct {
+         path: []const u8,
+@@ -4170,6 +4223,7 @@
+         lexical_present: bool = true,
+         semantic_present: bool = false,
+         retrieval_rank: usize = 0,
++        exact_definition: bool = false,
+     };
+     var ranked: std.ArrayList(FileRank) = .empty;
+     var iter = by_file.iterator();
+@@ -4308,8 +4362,10 @@
+                     file.lexical_rank,
+                     file.semantic_present,
+                     file.semantic_rank,
+-                ) * contextPathMultiplier(file.path, path_intent);
+-            }
++                ) * contextPathMultiplier(file.path, path_intent) * contextAnnImplementationWeight(file.path, task);
++                file.exact_definition = exact_definition_paths.count() == 1 and exact_definition_paths.contains(file.path);
++            }
++            if (exact_definition_paths.count() == 1) retrieval.fusion = "definition_aware_union_rrf";
+ 
+             if (A.alloc(ContextRetrievalCandidate, ann_result.hits.len) catch null) |provenance| {
+                 for (provenance, ann_result.hits, 0..) |*item, hit, semantic_rank| {
+@@ -4329,6 +4385,7 @@
+             }
+             std.mem.sort(FileRank, ranked.items, {}, struct {
+                 fn lt(_: void, a: FileRank, b: FileRank) bool {
++                    if (a.exact_definition != b.exact_definition) return a.exact_definition;
+                     return semantic_mod.annRankComesBefore(
+                         a.lexical_present,
+                         a.lexical_rank,
+--- a/src/semantic.zig
++++ b/src/semantic.zig
+@@ -35,12 +35,11 @@
+ pub const index_embedding_retry_base_ms: u32 = 250;
+ pub const default_rrf_k: f32 = 60;
+ pub const default_semantic_weight: f32 = 0.05;
+-// React production-source hill climb (12 queries, 8 train / 4 held out):
+-// k=20 and weight=1.5 improved held-out MRR 0.15 -> 1.0 and NDCG@5
+-// 0.226 -> 0.738 without a recall@5 regression. Keep these separate from
+-// exact-fallback RRF so an ANN policy change cannot weaken the lexical floor.
+-pub const default_ann_rrf_k: f32 = 20;
+-pub const default_ann_semantic_weight: f32 = 1.5;
++// Accuracy-oriented Jina hybrid policy; see ADR 0008 for live-service
++// experiments and cross-repository validation. Keep ANN fusion separate
++// from the exact fallback's lexical-authoritative policy.
++pub const default_ann_rrf_k: f32 = 1;
++pub const default_ann_semantic_weight: f32 = 2.5;
+ pub const qwen_query_encoding_version = "qwen3-query-instruct-v1";
+ pub const jina_query_encoding_version = "jina-v2-code-symmetric-raw-v1";
+ pub const document_card_version = "codedb-code-chunk-v2";

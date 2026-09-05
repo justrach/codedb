@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "id": "chi-jina-round3-v2",
+  "description": "Source-checked file-level questions authored before baseline collection. Includes 16 behavior/identifier lookups and 4 explicit test requests, varied phrasings. Correlated hand-labeled targets, not exhaustive judgments.",
+  "source_url": "https://github.com/go-chi/chi",
+  "source_revision": "ae6be7469132cf471ca099d8c7bda4010c4ff7b2",
+  "corpus_files": {
+    "chain.go": "8c22d7bbc23f4b4d46ded5ef721a9c3a173031fa2c2c9a7b48c46c2b07e8bd80",
+    "chi.go": "47c70ececcbb9d71f973eda3cbadad0a46c8cc2261b285f7049b5261f337d678",
+    "context.go": "b19edcca252e2fe74e82802c4c7ce1a1c0855728f9ede1288f0224283dfc7e53",
+    "context_test.go": "136eb280cdcf619e45313dafc8f16e7d9a49df181135db6fe62cd04dde20ddbb",
+    "middleware/basic_auth.go": "d1cfa0a32e9871cfba478590d1c1010297df20e53bbf83f34b09a4ec76e8b278",
+    "middleware/basic_auth_test.go": "fffb9b471f26e5b5a5562faa95bc0205f4b62ad77216d846f01ae61c36717c53",
+    "middleware/clean_path.go": "00cf47dd47cf4b6a1fa29dd3d5cdff4f7de8adbea410801128afe8aeaed35f0d",
+    "middleware/clean_path_test.go": "81b6a3dff384a06104eefc1a9f5aea74394d36745ef78c4460cc80b56151bb00",
+    "middleware/client_ip.go": "fc4eef97991796067607038437bd3b23e04337ba9b07ed3c4147d8b49ecf5e9e",
+    "middleware/client_ip_bench_test.go": "1dc0dd20952948a2be9ed9e968c878b4850e91feabac7e05cfc1d3ffab993486",
+    "middleware/client_ip_example_test.go": "4a00c5e73326b5be7985b99e433ef87ae90ec415dbb2a0a9cb366b81fb57b3b6",
+    "middleware/client_ip_test.go": "bfc0d690534b833f73117d8a4c25aaedef6923c3145b6aadd3a0c149e2a427de",
+    "middleware/compress.go": "1a54e1cd05a913dd26bc00faab499cddc58a00646a92af5051961100d1532698",
+    "middleware/compress_test.go": "49c8a68651c0542fde332dd035990226dd344d05b980e6591e46f0777a6571bb",
+    "middleware/content_charset.go": "0e618e324ac9ef288b924323b42e6ae3d3d865f1acc6fa72c9c4ca827f124aeb",
+    "middleware/content_charset_test.go": "7236401c5c2e1fca429416a6d99aff2f7683c8b737ddf2fb1cd25360271cfd95",
+    "middleware/content_encoding.go": "a1b35d124400a423d385eca9d066593c790e867db165af75e25b31b649d37fd8",
+    "middleware/content_encoding_test.go": "98bf93fb59e1613843f8f838ddb17dc160cf88dd95135b1b2637e188c69c4644",
+    "middleware/content_type.go": "5cedd359e3390edc613557681dda3cbc60faa2e4efb2a8974464876377b3a797",
+    "middleware/content_type_test.go": "233f0c2f27f3d37719c6abc393c86804424a47d1ccebe17b018629b42f05a050",
+    "middleware/get_head.go": "76af2014d2080f597a0205f51265badcad7af64d09652a79ed1a214074f5c582",
+    "middleware/get_head_test.go": "a660972a6e389bbea07db1414dd72c0593809c644a941b431ce43c902ec65099",
+    "middleware/heartbeat.go": "fc242f8c645cfc7640a36bccccb490cad9136ed07a751b0998f554412c29bca4",
+    "middleware/heartbeat_test.go": "15a525640be2325d5291202c44559e87f290b3789ad18c98661fe760e8acf414",
+    "middleware/logger.go": "40e7b7b01eb0363aad9930d3764880e3cf6f1f8aed6ad3fd918866ec34602729",
+    "middleware/logger_test.go": "f15a9900122e075c3b2d146aeae6128dfe17d57a45ef40b06f7a9e74cc4fb35f",
+    "middleware/maybe.go": "d600d7ea5b3184ea8ea952a145b1fca21e458b94601eae4a6cb215b3a04a3dee",
+    "middleware/middleware.go": "8789f84814d815185cb5a7bc6c247969b67d0ff9b8045ee1c95f4c9ad59ff4b1",
+    "middleware/middleware_test.go": "f93aec66e191433ab67ea727d45dc6cbdb4184d874132339c2715431c41e3eba",
+    "middleware/nocache.go": "389eb1e308194561aea139b8d56d49f46b9fb30d84f8da146f5deaea66c5f5cc",
+    "middleware/page_route.go": "03f3b50c4a55c345b52ce8f4b6d5da4b977647dd66e2e59b5f3635bda93e779c",
+    "middleware/path_rewrite.go": "0f3c01a40e320494a093d804376f3be8519b86285b5e24e8937bcee2c13c9279",
+    "middleware/path_rewrite_test.go": "5201c0caf7955e44397be15e7d41d9235d569f96172ac7f630aed2c91e0590a2",
+    "middleware/profiler.go": "5b21bca97731b2df9aff87767ea1325b77a401c823fa6cdcf52ad38616d48faa",
+    "middleware/realip.go": "2f837f2213de7074c5c6915dad70f85c4588077291a8563d1cbad6698a757220",
+    "middleware/realip_test.go": "6cab78b3ebc7fd581261afae6740423edc2199d9ba7ae3e0ffda99354f90d534",
+    "middleware/recoverer.go": "efc38c7b32bfb29ebbe16b199832d1eff13179a34a025c07b53c733c11a2154c",
+    "middleware/recoverer_test.go": "d54b59bdd910cf56458ddc7eaacba031b203290b18f2b2e2308acb75920b7715",
+    "middleware/request_id.go": "31b21034dd5cd6393fa9abc9ce1207acc78fea1e162d866edf6bb2a7badd288b",
+    "middleware/request_id_test.go": "519e920890f2a33b77d0140a4a8ffcc933752bc04b3efb0af0793e11722b639e",
+    "middleware/request_size.go": "81a98f72a81442a01a4353be9833fda6803f585bf768cebde5a34ebc1c44c390",
+    "middleware/route_headers.go": "cfd320f1a996ac95e29e25ab8a2ffa9606577996d6e001fb3835ede2795a3f69",
+    "middleware/route_headers_test.go": "dd48799f1da69155927452801354ef413a97b1a83109fc8ad5f0560ae1f66906",
+    "middleware/strip.go": "d5a0929e147b8b2a58ee78f0166a67f0949255b698bd5d26983a62643fc8fe10",
+    "middleware/strip_test.go": "1002bd43aea540f4661806adcfc6ad21525e1e2c1e9fb92f47dda16fdaae0a4d",
+    "middleware/sunset.go": "16d99c4da576c4b7c024a12da139421d5659290250bed8f3d3ff6e0ed5d93b0e",
+    "middleware/sunset_test.go": "ea640c109f86cc5d1fbceea558e3ab983d8f0de642c16fd2b4ad750efada0101",
+    "middleware/supress_notfound.go": "b3c6cb935d27aaddef0dcb5d165447babf5e9bb42cf28b4ee4e5f4693810888f",
+    "middleware/terminal.go": "6e663b6ab8e26417198021c226b5aa5bce92648c5bb172d329389c16bef8ca20",
+    "middleware/terminal_test.go": "fa3a1ce23af7f0a599ed9375ec6e7e6ae4bf4724724bf32f1bd8fb2fd41b68fc",
+    "middleware/throttle.go": "05569797a14131ba177a71fccccd509363ca2016fa4c45a31cff033ae44301e4",
+    "middleware/throttle_test.go": "a3ce6877228106bd4061333c8f1a020283d723da4e7553632daf628531f013bd",
+    "middleware/timeout.go": "3e83d007ec300b4ea605d97a336351e562ecd84b32c2b26206791d11ce7501c0",
+    "middleware/url_format.go": "a1ea4ec9039b5a704f8aea7754a9b00d8026b72d18ba98208cd04b182e1b5800",
+    "middleware/url_format_test.go": "04efa8cfbda922ff671ab3bdbc00f6fa06bf776c300dc8605815de1def33aaa1",
+    "middleware/value.go": "288b19d77e375d2b2f65dbd901f958f3fb7c93c26de0691e70817dd343c9a679",
+    "middleware/value_test.go": "9e40bcd53a62241f496dc7fc011faab7bdaf7e9a48358f3e1c843278f11f0c9f",
+    "middleware/wrap_writer.go": "bd6e76151cacaee5fdb11af48cf3c417f4587967cac8e7193a3cc0f7febe2f5b",
+    "middleware/wrap_writer_test.go": "16392ba2eb524e838e2c3295dfa7a229339a478f85ac99466683074464435bce",
+    "mux.go": "cc44c2d620e6306b16d6d80f5f6c70f02b5814b357a4f5823372818f355ae67d",
+    "mux_test.go": "162d82fa10418b99baf750e3fbcb1fee018bfd654850a9f01382a175390dc965",
+    "path_value_test.go": "2c6f68e8540ceb9953869fbf57721ca6b03943c1903011bb0dcea202aa5d9fd8",
+    "pattern_test.go": "2cb5166ea7db6a38ac3b67bf40ea2fd82393311967888a71e3b296592119d06e",
+    "tree.go": "f4b12b63b662fb8e36658172b36b35705cfb24eefae0665635f4fbd52e64fb79",
+    "tree_test.go": "e9d8f7755589f1852791ed5b4a853c16ad12cdf8ba0db3208dac33b2dac398c1"
+  },
+  "queries": [
+    {
+      "id": "chi-00",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where are concurrent requests limited by processing tokens and a bounded backlog?",
+      "gold": {
+        "middleware/throttle.go": 3
+      },
+      "source_anchor": "case btok := <-t.backlogTokens:",
+      "source_line": 85
+    },
+    {
+      "id": "chi-01",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Which middleware returns a gateway timeout after the request context deadline expires?",
+      "gold": {
+        "middleware/timeout.go": 3
+      },
+      "source_anchor": "ctx.Err() == context.DeadlineExceeded",
+      "source_line": 38
+    },
+    {
+      "id": "chi-02",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where is an incoming request ID reused or a new ID generated and placed in the context?",
+      "gold": {
+        "middleware/request_id.go": 3
+      },
+      "source_anchor": "func RequestID(",
+      "source_line": 67
+    },
+    {
+      "id": "chi-03",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Locate the implementation that derives the remote client address from forwarded headers.",
+      "gold": {
+        "middleware/realip.go": 3,
+        "middleware/client_ip.go": 3
+      },
+      "source_anchor": "func realIP(",
+      "source_line": 39,
+      "alternate_source_anchor": "func ClientIPFromXFF("
+    },
+    {
+      "id": "chi-04",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where is response compression selected from the accepted encoding header?",
+      "gold": {
+        "middleware/compress.go": 3
+      },
+      "source_anchor": "func (c *Compressor) selectEncoder(",
+      "source_line": 231
+    },
+    {
+      "id": "chi-05",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where are handler panics recovered while the special abort-handler panic is rethrown?",
+      "gold": {
+        "middleware/recoverer.go": 3
+      },
+      "source_anchor": "if rvr == http.ErrAbortHandler",
+      "source_line": 26
+    },
+    {
+      "id": "chi-06",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Locate the implementation that checks basic authentication passwords using constant-time comparison.",
+      "gold": {
+        "middleware/basic_auth.go": 3
+      },
+      "source_anchor": "subtle.ConstantTimeCompare",
+      "source_line": 20
+    },
+    {
+      "id": "chi-07",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where are repeated slashes cleaned from the request path before the next handler?",
+      "gold": {
+        "middleware/clean_path.go": 3
+      },
+      "source_anchor": "func CleanPath(",
+      "source_line": 12
+    },
+    {
+      "id": "chi-08",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Which component redirects a trailing-slash request to a slash-free URL?",
+      "gold": {
+        "middleware/strip.go": 3
+      },
+      "source_anchor": "func RedirectSlashes(",
+      "source_line": 41
+    },
+    {
+      "id": "chi-09",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where is a configured heartbeat URL intercepted without calling the application handler?",
+      "gold": {
+        "middleware/heartbeat.go": 3
+      },
+      "source_anchor": "func Heartbeat(",
+      "source_line": 12
+    },
+    {
+      "id": "chi-10",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where is the combined route pattern cleaned of wildcard segments and trailing slashes?",
+      "gold": {
+        "context.go": 3
+      },
+      "source_anchor": "routePattern = replaceWildcards(routePattern)",
+      "source_line": 152
+    },
+    {
+      "id": "chi-11",
+      "kind": "relevant",
+      "split": "train",
+      "query": "How are middleware handlers wrapped in reverse order around the final endpoint?",
+      "gold": {
+        "chain.go": 3
+      },
+      "source_anchor": "for i := len(middlewares) - 2; i >= 0; i--",
+      "source_line": 44
+    },
+    {
+      "id": "chi-12",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where does mounting a subrouter reject duplicate mount patterns?",
+      "gold": {
+        "mux.go": 3
+      },
+      "source_anchor": "func (mx *Mux) Mount(",
+      "source_line": 295
+    },
+    {
+      "id": "chi-13",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where does route dispatch choose between not-found and method-not-allowed responses?",
+      "gold": {
+        "mux.go": 3
+      },
+      "source_anchor": "func (mx *Mux) routeHTTP(",
+      "source_line": 455
+    },
+    {
+      "id": "chi-14",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Find the implementation of URLParamFromCtx.",
+      "gold": {
+        "context.go": 3
+      },
+      "source_anchor": "func URLParamFromCtx(",
+      "source_line": 16
+    },
+    {
+      "id": "chi-15",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Find the implementation of StripPrefix.",
+      "gold": {
+        "middleware/strip.go": 3
+      },
+      "source_anchor": "func StripPrefix(",
+      "source_line": 73
+    },
+    {
+      "id": "chi-16",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Find tests for limiting requests with a backlog and cancelling waiting clients.",
+      "gold": {
+        "middleware/throttle_test.go": 3
+      },
+      "source_anchor": "func TestThrottleClientTimeout(",
+      "source_line": 58
+    },
+    {
+      "id": "chi-17",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Find the tests for wildcard response compression content types.",
+      "gold": {
+        "middleware/compress_test.go": 3
+      },
+      "source_anchor": "func TestCompressorWildcards(",
+      "source_line": 136
+    },
+    {
+      "id": "chi-18",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Find tests that verify request ID propagation.",
+      "gold": {
+        "middleware/request_id_test.go": 3
+      },
+      "source_anchor": "func TestRequestID(",
+      "source_line": 20
+    },
+    {
+      "id": "chi-19",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Find tests for cleaning doubled slashes in URL paths.",
+      "gold": {
+        "middleware/clean_path_test.go": 3
+      },
+      "source_anchor": "func TestCleanPath(",
+      "source_line": 11
+    }
+  ],
+  "label_revision": "Before policy tuning, source review confirmed chi-03 has two valid implementations. Preserve v1 and its baseline as the audit trail; compare all candidates against a remeasured v2 baseline."
+}

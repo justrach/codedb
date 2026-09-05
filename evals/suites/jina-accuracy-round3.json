@@ -1,0 +1,41 @@
+{
+  "description": "Round 3: 108 development questions across five repos, then 20 fresh Requests questions. After the frozen run Requests is observed too; this grouping records experiment history, not perpetual freshness.",
+  "repositories": [
+    {
+      "name": "openclaw",
+      "dataset": "datasets/openclaw-autoresearch-v2.json",
+      "corpus_report": "results/2026-09-05-jina-hybrid-installed.json",
+      "group": "development"
+    },
+    {
+      "name": "express",
+      "dataset": "datasets/express-jina-accuracy-heldout-v1.json",
+      "corpus_report": "results/2026-09-05-jina-express-corpus.json",
+      "group": "development"
+    },
+    {
+      "name": "flask",
+      "dataset": "datasets/flask-jina-accuracy-heldout-v1.json",
+      "corpus_report": "results/2026-09-05-jina-round2-flask-corpus.json",
+      "group": "development"
+    },
+    {
+      "name": "chi",
+      "dataset": "datasets/chi-jina-round3-v2.json",
+      "corpus_report": "results/2026-09-05-jina-round3-chi-corpus.json",
+      "group": "development"
+    },
+    {
+      "name": "anyhow",
+      "dataset": "datasets/anyhow-jina-round3-v1.json",
+      "corpus_report": "results/2026-09-05-jina-round3-anyhow-corpus.json",
+      "group": "development"
+    },
+    {
+      "name": "requests",
+      "dataset": "datasets/requests-jina-round3-v1.json",
+      "corpus_report": "results/2026-09-05-jina-round3-requests-corpus.json",
+      "group": "holdout"
+    }
+  ]
+}

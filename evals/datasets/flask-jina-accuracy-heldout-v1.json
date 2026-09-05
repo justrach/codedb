@@ -1,0 +1,256 @@
+{
+  "schema_version": 1,
+  "id": "flask-jina-accuracy-heldout-v1",
+  "description": "Third-repository Python holdout authored and source-checked before collecting any ranking results. All Flask Python package files plus all top-level test modules; correlated file-level behavior questions.",
+  "source_revision": "d318b683471101618febed18996405ad26462110",
+  "corpus_files": {
+    "src/flask/__init__.py": "2daebda4dc29fed5cb36c912a6115a234e9a4b5f9c33fd795e4bfeffd0cc9386",
+    "src/flask/__main__.py": "6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279",
+    "src/flask/app.py": "fdcffafdf4614b57f3f2a7f1e0ac945d639bfe19f742b8bf46deeb29b9837a84",
+    "src/flask/blueprints.py": "a79404da5635f0622d6ddaff44a46967c0e8d7b8343ef4062206644940e15f69",
+    "src/flask/cli.py": "eaec68e1cd30b00d184c347d86dfbe21755901b19d415c41fc53b124de08126d",
+    "src/flask/config.py": "3e2a85d033da9ba1d6d051f8087d61a574c17b7d0d4b38cf10ec2bcf56fa92dd",
+    "src/flask/ctx.py": "e21952d044159438765eb27848b0fe4c75f83faee8645181a09a1eccb1d5cab7",
+    "src/flask/debughelpers.py": "75c8258dc3487e1d0857dc5d3c7ca471fac1a254282570fa57e56d71aada037e",
+    "src/flask/globals.py": "1abe9a4e0a96c8bb28c232e2b08993fffdfb9bb694be2230755e54a46a40ca4d",
+    "src/flask/helpers.py": "7590b89bcae6c437b621a315854d8401bc38b5439ec95c9be7cc4c909f9e9221",
+    "src/flask/json/__init__.py": "b402bd0b89b87250f932bf4b8e2bec7af7130a8ebdc3ff5a0bba3865e9984173",
+    "src/flask/json/provider.py": "cefdd0dfdde6bb6f73e7b853aa789de432e2af52a8c920c1c2af17228235b72c",
+    "src/flask/json/tag.py": "0e168dc2e20e85db7647be28382f58e19f19a6bc4562245be5d50fe5bcb220dc",
+    "src/flask/logging.py": "f2c33758c4ee6e2d5c05bd9cfe53e45a937427c74c02aae029160b2e2d5d0952",
+    "src/flask/sansio/app.py": "410e21f53b5da3f5b73918733160dccfc22c17b0b48fe101dea56bad001c03f3",
+    "src/flask/sansio/blueprints.py": "da960c5792daf2f1cef8c14113d9c95c8ce389a9689abb395fe867f4054d0ba1",
+    "src/flask/sansio/scaffold.py": "d6578d2b5f06d227482e4110f8b750d04c8d94c9525c8857f9183f727ee2858b",
+    "src/flask/sessions.py": "7b2c11aa6cad4e66275ff102efcf980462684dce570ff951a61406e4b6cdd5dd",
+    "src/flask/signals.py": "57b94c530c3b0aa809d93854067d4f89ab59b506a73b2b7b399a6ed86648fb7e",
+    "src/flask/templating.py": "3ed7a044a96c911267e855b7359d9f159f06321f75fbe678a6656923d5e0989e",
+    "src/flask/testing.py": "629d481658aaec7076a55913eda38c270ec45d430b34b2f9d38b2eec2b0ad3da",
+    "src/flask/typing.py": "ac3b0f12bf2a89e10c6b8f04d142b6103f9f1495030b8ff2c559d9952e060a00",
+    "src/flask/views.py": "d0d5ceecd117533169c924cdbb01ea5bb0ee74b7b1c4b22855f73f0e4dea0ee7",
+    "src/flask/wrappers.py": "8d492fe2655e93622ae21c3177846faab20c6faf41bf43c49438162e6779391a",
+    "tests/test_appctx.py": "43b4a6355ab16fd5c98a7d188eca102ee427928a2bed158782cb557dfdec37cc",
+    "tests/test_async.py": "0a6a50bfd651581478abe8cda5c94aba6d70df35567a220aabc7ba08202d471c",
+    "tests/test_basic.py": "ed677d4140710071d7344e67ab5d9f4a73e4c0eca2374fbd3cc447e0715fc58b",
+    "tests/test_blueprints.py": "9c7e1a3caf96db080ed22d52dcab8994f7e64381a06b5aa7f605eff62e8b21fc",
+    "tests/test_cli.py": "066c90f03644783021eef5cc99bb82a0b8795bd4281397190ca6182179060137",
+    "tests/test_config.py": "09df8aec5f88df421fa5b47bd66ee4e3aef23384c7c36a1be191d24723caadd0",
+    "tests/test_converters.py": "4f529ca6ee85a88c487a488807ff30cb8e4672307b9017f348174a67a5984347",
+    "tests/test_helpers.py": "04d700b48f3d5e3139ebe1e162df30bf9a223213c82c50b4f77b3692b111c011",
+    "tests/test_instance_config.py": "26466b388aabecbce19f2122bf0631e964bb79fdab84eae4716fe488d71b3857",
+    "tests/test_json.py": "f6c73c61a602ee3b8b87bfa90284fbc96e567b77c3a6d86c0e3919c5f12b64c6",
+    "tests/test_json_tag.py": "019a2cd9b43245667b178e023dbd3541086f561677c32f06fa2eb85fd81aff65",
+    "tests/test_logging.py": "311ea43751a836c3d585a40f08fa54a60d783a232aa50c5ea1225b689e9ac683",
+    "tests/test_regression.py": "2749a17454a9aa8a610a2213d739046488af06fe742da1c06802d00ab28a3bf8",
+    "tests/test_reqctx.py": "93d7f891096b037099b4770fb3498019436c4fa16062a0b99ea610af3ce32c5a",
+    "tests/test_request.py": "4e9b4bb6fa9ec22285bf8c5004bec5a32d25b60ab1717acd38f98ed8f6ec63c4",
+    "tests/test_session_interface.py": "e898a1d162e524d36325f474e353a748ddeb3c2d5ac7b863c32c78ca219b25c3",
+    "tests/test_signals.py": "eaa27de84a44ad1f1b0baa883ec7b76793ee0973362646a7f93ebb7d5e3b2abe",
+    "tests/test_subclassing.py": "8d2b60b6f231bb0af1dc89cbe02e61c1f0907bbb1d23a1d1a5916699118694c5",
+    "tests/test_templating.py": "fe9037d2bc5c67c031e9a78df9686ce84f919e973498a3e9706c40fddb360f4e",
+    "tests/test_testing.py": "f243647da60a4526a47bd0a69a33d84bdda8d0c5b7b9e5dcd8fd9e6ebe759dc7",
+    "tests/test_user_error_handler.py": "f05213bb275e08d354bf9750eb3a37aeb8fc713a8beee7edcdd3078d11af9d60",
+    "tests/test_views.py": "1fb41b3d4d3228624c9ec60ca66ac8ad7614626d78497c9f057d6aca312cd0e0"
+  },
+  "queries": [
+    {
+      "id": "flask-00",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does request dispatch automatically answer OPTIONS instead of invoking the endpoint?",
+      "gold": {
+        "src/flask/app.py": 3
+      },
+      "source_anchor": "def dispatch_request"
+    },
+    {
+      "id": "flask-01",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are view return tuples unpacked into response body, status, and headers?",
+      "gold": {
+        "src/flask/app.py": 3
+      },
+      "source_anchor": "def make_response"
+    },
+    {
+      "id": "flask-02",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are coroutine view functions adapted for synchronous WSGI execution?",
+      "gold": {
+        "src/flask/app.py": 3
+      },
+      "source_anchor": "def ensure_sync"
+    },
+    {
+      "id": "flask-03",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are before-request callbacks run before dispatch and user exceptions caught?",
+      "gold": {
+        "src/flask/app.py": 3
+      },
+      "source_anchor": "def full_dispatch_request"
+    },
+    {
+      "id": "flask-04",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does an invalid signed session cookie produce an empty session?",
+      "gold": {
+        "src/flask/sessions.py": 3
+      },
+      "source_anchor": "except BadSignature"
+    },
+    {
+      "id": "flask-05",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where is the session cookie deleted when the session was modified to become empty?",
+      "gold": {
+        "src/flask/sessions.py": 3
+      },
+      "source_anchor": "response.delete_cookie"
+    },
+    {
+      "id": "flask-06",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where can a streaming response keep access to the active request context?",
+      "gold": {
+        "src/flask/helpers.py": 3
+      },
+      "source_anchor": "def stream_with_context"
+    },
+    {
+      "id": "flask-07",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are flashed messages cached within the request and filtered by category?",
+      "gold": {
+        "src/flask/helpers.py": 3
+      },
+      "source_anchor": "def get_flashed_messages"
+    },
+    {
+      "id": "flask-08",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are signals emitted immediately before and after rendering a template?",
+      "gold": {
+        "src/flask/templating.py": 3
+      },
+      "source_anchor": "def _render"
+    },
+    {
+      "id": "flask-09",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does template streaming send the rendered signal only after yielding the generated output?",
+      "gold": {
+        "src/flask/templating.py": 3
+      },
+      "source_anchor": "def _stream"
+    },
+    {
+      "id": "flask-10",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does a class-based view fall back from HEAD to the GET handler?",
+      "gold": {
+        "src/flask/views.py": 3
+      },
+      "source_anchor": "meth = getattr(self, \"get\", None)"
+    },
+    {
+      "id": "flask-11",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where is a view instance reused across requests when initialization on every request is disabled?",
+      "gold": {
+        "src/flask/views.py": 3
+      },
+      "source_anchor": "if cls.init_every_request"
+    },
+    {
+      "id": "flask-12",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are duplicate JSON serialization tag keys rejected unless replacement is forced?",
+      "gold": {
+        "src/flask/json/tag.py": 3
+      },
+      "source_anchor": "if not force and key in self.tags"
+    },
+    {
+      "id": "flask-13",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does blueprint registration reject a name already assigned to another blueprint?",
+      "gold": {
+        "src/flask/sansio/blueprints.py": 3
+      },
+      "source_anchor": "if name in app.blueprints"
+    },
+    {
+      "id": "flask-14",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are prefixed environment variables decoded as JSON and double underscores used for nested configuration?",
+      "gold": {
+        "src/flask/config.py": 3
+      },
+      "source_anchor": "def from_prefixed_env"
+    },
+    {
+      "id": "flask-15",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where can configuration files be opened in binary mode and missing files silently ignored?",
+      "gold": {
+        "src/flask/config.py": 3
+      },
+      "source_anchor": "def from_file"
+    },
+    {
+      "id": "flask-16",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find the tests for loading nested configuration from prefixed environment variables.",
+      "gold": {
+        "tests/test_config.py": 3
+      },
+      "source_anchor": "def test_from_prefixed_env_nested"
+    },
+    {
+      "id": "flask-17",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find tests for implicit and explicit HEAD handling in method-based views.",
+      "gold": {
+        "tests/test_views.py": 3
+      },
+      "source_anchor": "def test_implicit_head"
+    },
+    {
+      "id": "flask-18",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find the tests checking that JSON tag registration order is respected.",
+      "gold": {
+        "tests/test_json_tag.py": 3
+      },
+      "source_anchor": "def test_tag_order"
+    },
+    {
+      "id": "flask-19",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find tests for template context processors and the precedence of explicitly supplied context.",
+      "gold": {
+        "tests/test_templating.py": 3
+      },
+      "source_anchor": "def test_original_win"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "summary": {
+    "baseline": {
+      "samples": 32,
+      "ndcg_at_5": 0.8870335040760192,
+      "recall_at_5": 1.0,
+      "top1_rate": 0.75,
+      "median_ms": 169.80583348777145,
+      "p95_ms": 197.4567079450935,
+      "mean_ann_files": 19.125,
+      "mean_search_ns": 57906.25,
+      "cache_hits": 31
+    },
+    "candidate": {
+      "samples": 32,
+      "ndcg_at_5": 0.8870335040760192,
+      "recall_at_5": 1.0,
+      "top1_rate": 0.75,
+      "median_ms": 150.1219579949975,
+      "p95_ms": 175.13345798943192,
+      "mean_ann_files": 19.125,
+      "mean_search_ns": 53250,
+      "cache_hits": 31
+    }
+  },
+  "failures": []
+}

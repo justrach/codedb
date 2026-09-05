@@ -3647,6 +3647,70 @@ fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
+// A literal code name is stronger evidence than an embedding match to a
+// neighboring API. Ordinary prose words must not receive this priority.
+fn isExplicitContextIdentifier(word: []const u8) bool {
+    if (!isBareIdentifier(word)) return false;
+    if (std.mem.indexOfScalar(u8, word, '_') != null) return true;
+    for (word, 0..) |c, i| {
+        if (i > 0 and std.ascii.isUpper(c) and std.ascii.isLower(word[i - 1])) return true;
+    }
+    return false;
+}
+
+fn contextRequestsTests(task: []const u8) bool {
+    var words = std.mem.tokenizeAny(u8, task, " \t\r\n.,;:!?()[]{}\"'`/\\-");
+    while (words.next()) |word| {
+        if (std.ascii.eqlIgnoreCase(word, "test") or std.ascii.eqlIgnoreCase(word, "tests")) return true;
+    }
+    return false;
+}
+
+fn contextWantsDefinitionPriority(task: []const u8) bool {
+    return !contextRequestsTests(task) and
+        !containsAsciiIgnoreCase(task, "caller") and
+        !containsAsciiIgnoreCase(task, "usage") and
+        !containsAsciiIgnoreCase(task, "reference");
+}
+
+test "context definition priority requires a code-shaped name and compatible intent" {
+    try testing.expect(isExplicitContextIdentifier("resolveGatewayAuthToken"));
+    try testing.expect(isExplicitContextIdentifier("parse_request"));
+    try testing.expect(!isExplicitContextIdentifier("Where"));
+    try testing.expect(!isExplicitContextIdentifier("configuration"));
+    try testing.expect(!isExplicitContextIdentifier("foo/bar"));
+    try testing.expect(contextWantsDefinitionPriority("Find resolveGatewayAuthToken"));
+    try testing.expect(!contextWantsDefinitionPriority("Find tests for resolveGatewayAuthToken"));
+    try testing.expect(!contextWantsDefinitionPriority("Find callers of parse_request"));
+}
+
+fn contextAnnIntentWeight(path: []const u8, task: []const u8) f32 {
+    // Apply the same soft preference to explicit test requests as to
+    // implementation requests. Neither path removes candidate evidence.
+    if (contextRequestsTests(task) and !contextPathIntent(task).exclude_tests) {
+        return if (isTestPath(path)) 1 else 0.5;
+    }
+    if (isTestPath(path) and contextWantsDefinitionPriority(task) and
+        (containsAsciiIgnoreCase(task, "where ") or containsAsciiIgnoreCase(task, "implementation"))) return 0.5;
+    return 1;
+}
+
+test "ANN implementation preference preserves explicit test and caller requests" {
+    try testing.expectEqual(@as(f32, 0.5), contextAnnIntentWeight("test/rate-limit.test.ts", "Where are login failures rate limited?"));
+    try testing.expectEqual(@as(f32, 1), contextAnnIntentWeight("src/rate-limit.ts", "Where are login failures rate limited?"));
+    try testing.expectEqual(@as(f32, 1), contextAnnIntentWeight("test/rate-limit.test.ts", "Where are the rate limit tests?"));
+    try testing.expectEqual(@as(f32, 1), contextAnnIntentWeight("test/rate-limit.test.ts", "Where are callers of rate_limit?"));
+}
+
+test "ANN test intent recognizes whole words and respects test exclusions" {
+    try testing.expectEqual(@as(f32, 0.5), contextAnnIntentWeight("src/chain.rs", "Find tests for reversing the error chain"));
+    try testing.expectEqual(@as(f32, 1), contextAnnIntentWeight("tests/test_chain.rs", "Find tests for reversing the error chain"));
+    try testing.expect(contextRequestsTests("Find a TEST for this function"));
+    try testing.expect(!contextRequestsTests("Find the latest contest results"));
+    try testing.expect(contextWantsDefinitionPriority("Find the latest parse_request implementation"));
+    try testing.expectEqual(@as(f32, 1), contextAnnIntentWeight("src/chain.rs", "Where is iteration implemented? Exclude tests."));
+}
+
 const ContextPathIntent = struct {
     production_source: bool = false,
     exclude_tests: bool = false,
@@ -4057,6 +4121,7 @@ fn handleContext(
         line: u32,
         line_end: u32,
         focused: bool = false,
+        exact_code_definition: bool = false,
     };
     var sym_refs: std.ArrayList(SymRef) = .empty;
     var seen_syms = std.StringHashMap(void).init(A);
@@ -4090,6 +4155,8 @@ fn handleContext(
                     .path = d.path,
                     .line = d.symbol.line_start,
                     .line_end = d.symbol.line_end,
+                    .exact_code_definition = d.symbol.kind != .import and d.symbol.kind != .comment_block and
+                        isExplicitContextIdentifier(kw) and std.mem.eql(u8, d.symbol.name, kw),
                 }) catch break;
                 accepted += 1;
                 if (accepted == 3) break;
@@ -4157,6 +4224,12 @@ fn handleContext(
     // the real source on T3/F1/F3/G2). Final secondary sort by hits.
     var symbol_files = std.StringHashMap(void).init(A);
     for (sym_refs.items) |sr| symbol_files.put(sr.path, {}) catch {};
+    var exact_definition_paths = std.StringHashMap(void).init(A);
+    if (contextWantsDefinitionPriority(task)) {
+        for (sym_refs.items) |sr| {
+            if (sr.exact_code_definition) exact_definition_paths.put(sr.path, {}) catch {};
+        }
+    }
 
     const FileRank = struct {
         path: []const u8,
@@ -4170,6 +4243,7 @@ fn handleContext(
         lexical_present: bool = true,
         semantic_present: bool = false,
         retrieval_rank: usize = 0,
+        exact_definition: bool = false,
     };
     var ranked: std.ArrayList(FileRank) = .empty;
     var iter = by_file.iterator();
@@ -4308,8 +4382,10 @@ fn handleContext(
                     file.lexical_rank,
                     file.semantic_present,
                     file.semantic_rank,
-                ) * contextPathMultiplier(file.path, path_intent);
+                ) * contextPathMultiplier(file.path, path_intent) * contextAnnIntentWeight(file.path, task);
+                file.exact_definition = exact_definition_paths.count() == 1 and exact_definition_paths.contains(file.path);
             }
+            if (exact_definition_paths.count() == 1) retrieval.fusion = "definition_aware_union_rrf";
 
             if (A.alloc(ContextRetrievalCandidate, ann_result.hits.len) catch null) |provenance| {
                 for (provenance, ann_result.hits, 0..) |*item, hit, semantic_rank| {
@@ -4329,6 +4405,7 @@ fn handleContext(
             }
             std.mem.sort(FileRank, ranked.items, {}, struct {
                 fn lt(_: void, a: FileRank, b: FileRank) bool {
+                    if (a.exact_definition != b.exact_definition) return a.exact_definition;
                     return semantic_mod.annRankComesBefore(
                         a.lexical_present,
                         a.lexical_rank,

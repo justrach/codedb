@@ -1,0 +1,11 @@
+{
+  "candidate_sha256": "b331831a54f6be30e2a9c3ac71c911d596b4103b592c58c77a6643f8ea9371c8",
+  "release_fast_build": "passed; restored byte-identical after unit tests rebuilt debug CLI",
+  "zig_tests": "31/31 steps; 1249/1253 executed tests passed; 4 skipped; other steps cached",
+  "frozen_binary_mcp_e2e": "76/76 passed",
+  "flask_frozen_binary_recheck": "40/40 calls; all returned file rankings exactly match the frozen holdout",
+  "python_compile": "passed",
+  "freeze_and_corpus_mismatch_rejection": "passed before inference",
+  "baseline_patch_reconstruction": "byte-identical to ADR 0008 source backup",
+  "diff_check": "passed"
+}

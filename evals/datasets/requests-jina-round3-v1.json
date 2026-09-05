@@ -1,0 +1,259 @@
+{
+  "schema_version": 1,
+  "id": "requests-jina-round3-v1",
+  "description": "Source-checked file-level questions authored before baseline collection. Includes 16 behavior/identifier lookups and 4 explicit test requests, varied phrasings. Correlated hand-labeled targets, not exhaustive judgments.",
+  "source_url": "https://github.com/psf/requests",
+  "source_revision": "dae7ef63b4df6eded86637f251fc4e3a06c3b479",
+  "corpus_files": {
+    "src/requests/__init__.py": "80534322a1a3167d8775829ee220a6acf4fe455f3f778c4b8e94bcf7fadfa0b5",
+    "src/requests/__version__.py": "abba90670b0370a3dc40d97c2dea46a35d4bec941ff10d7c3cf3098ef04a17f9",
+    "src/requests/_internal_utils.py": "4c7d8d132c9898fc7d715e473f3ac74785ddc4ab96d2c9240f87835dc6d981ff",
+    "src/requests/_types.py": "84dec9789a8e839807242448a9aa86acd12c440211921e32f43afcbc422a629c",
+    "src/requests/adapters.py": "cc9b1b02694fee0353481fbad84fe3ddbedec4441dba54df7914c63f2aa85937",
+    "src/requests/api.py": "4d15480ac046f089209798e8650476ef4a28ebe6f81b400758f8ef42ec6b5509",
+    "src/requests/auth.py": "fdc8bb34a8a5a088b169ca13277d107b0bc94ee63ed5e89dd4f5569d9b2bb04c",
+    "src/requests/certs.py": "fd9c6b83359cef90ff6c4eeeab8dcc2388da382ebca7d00a499b3c0b434a87e4",
+    "src/requests/compat.py": "4a51c5ab07b015c298d6ea69d71502979cd3ed6b935d88e4433ce5341dacf584",
+    "src/requests/cookies.py": "05d12b965c76f229803e17aef1c9969d712e4f4d0f6a06c05e0a47212fd5b417",
+    "src/requests/exceptions.py": "c5e18f3352454968e337bb3056f0867df2f37c0a0d2c1a77dc05e7e0b3c0411b",
+    "src/requests/help.py": "e5845e93980b2e25be418fb7fe0b8e6e999fef8f84afc5a43f4546efdc24691f",
+    "src/requests/hooks.py": "ebd8a02475d31a0e473a8f553e9501ff43645b9563885ad52844e7a63f0d76ab",
+    "src/requests/models.py": "a3351c3c12a86bf5ed211533875350bc4791e9327a685f8c19ba54343e471e26",
+    "src/requests/packages.py": "fe0d2067af355320252874631fa91a9db6a8c71d9e01beaacdc5e2383c932287",
+    "src/requests/sessions.py": "3d2089736ced93b2b405624a943f866d22652b17df06a85eb010f86272fc3e7d",
+    "src/requests/status_codes.py": "1950f47c89cf18019787e07d8ce48f66d6b38e622f7d94d70a90247fee6c040e",
+    "src/requests/structures.py": "ba9460c39078f25e6f1d2a24ac941ac6f8d2ee97197fa8c8d0c262d8a1e67a02",
+    "src/requests/utils.py": "b879cb3f671cf1c28e8ff9b2b02151bcdb8974b4820a514cfdd1f5a038443cd2",
+    "tests/test_adapters.py": "102494aa704f8505fb22fa476452f6aa3aae756da82fe2d5b2a2a3f366b38bf4",
+    "tests/test_help.py": "1c2ac8ca9f4986429717791df766122b23e1fe90aa621318380ccf1f8e83d0f6",
+    "tests/test_hooks.py": "a9e5163f538543a660be3b06650cd0b803ff0c503f5948f66b6fc50ede38109c",
+    "tests/test_lowlevel.py": "db5fac7340c49c49551e3e41679a8ee6e385c56054f84073932354a8da87df65",
+    "tests/test_packages.py": "90875423db059d65b39416d7b6d01b18938851b8071279877400beb506e08676",
+    "tests/test_requests.py": "5eacf6341d236e225ce6a37a592f3b410f20e69ec17641f0e2c99b03a79b904d",
+    "tests/test_structures.py": "f984b7fc68fb2bd6ec82463b0cf5b6bd2ac773293cac6629fc3361f9f66947e9",
+    "tests/test_testserver.py": "90ac39d6cb9c0fbaa94c5aa59646bf6097829ae73e50ac284a41135188f95d33",
+    "tests/test_utils.py": "00d027432443a1aa9539c00a09550de9439cdd696d2e6acf2dc997de3a416946"
+  },
+  "queries": [
+    {
+      "id": "requests-00",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are request-level and session-level dictionaries merged while removing keys assigned None?",
+      "gold": {
+        "src/requests/sessions.py": 3
+      },
+      "source_anchor": "def merge_setting(",
+      "source_line": 76
+    },
+    {
+      "id": "requests-01",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Which implementation strips authorization when a redirect changes the destination host?",
+      "gold": {
+        "src/requests/sessions.py": 3
+      },
+      "source_anchor": "def rebuild_auth(",
+      "source_line": 309
+    },
+    {
+      "id": "requests-02",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are redirect response codes used to change a POST into a GET?",
+      "gold": {
+        "src/requests/sessions.py": 3
+      },
+      "source_anchor": "def rebuild_method(",
+      "source_line": 370
+    },
+    {
+      "id": "requests-03",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are redirects followed while recording response history and preserving fragments?",
+      "gold": {
+        "src/requests/sessions.py": 3
+      },
+      "source_anchor": "def resolve_redirects(",
+      "source_line": 186
+    },
+    {
+      "id": "requests-04",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where is a JSON request body serialized and assigned its content type?",
+      "gold": {
+        "src/requests/models.py": 3
+      },
+      "source_anchor": "def prepare_body(",
+      "source_line": 576
+    },
+    {
+      "id": "requests-05",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Which component detects Unicode encoding before decoding a JSON response?",
+      "gold": {
+        "src/requests/models.py": 3
+      },
+      "source_anchor": "encoding = guess_json_utf(self.content)",
+      "source_line": 1106
+    },
+    {
+      "id": "requests-06",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are partial lines buffered across successive streamed response chunks?",
+      "gold": {
+        "src/requests/models.py": 3
+      },
+      "source_anchor": "pending: str | bytes | None = None",
+      "source_line": 1010
+    },
+    {
+      "id": "requests-07",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Locate the implementation that turns HTTP error status codes into exceptions with a decoded reason.",
+      "gold": {
+        "src/requests/models.py": 3
+      },
+      "source_anchor": "def raise_for_status(",
+      "source_line": 1144
+    },
+    {
+      "id": "requests-08",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does HTTP digest authentication select a hash algorithm from the server challenge?",
+      "gold": {
+        "src/requests/auth.py": 3
+      },
+      "source_anchor": "def build_digest_header(",
+      "source_line": 157
+    },
+    {
+      "id": "requests-09",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does digest authentication rewind the request body before retrying a challenge?",
+      "gold": {
+        "src/requests/auth.py": 3
+      },
+      "source_anchor": "def handle_401(",
+      "source_line": 273
+    },
+    {
+      "id": "requests-10",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does the adapter decide whether a proxy request needs an absolute URL or a relative path?",
+      "gold": {
+        "src/requests/adapters.py": 3
+      },
+      "source_anchor": "def request_url(",
+      "source_line": 565
+    },
+    {
+      "id": "requests-11",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Which implementation raises an error when multiple cookies match the same name without a disambiguating domain?",
+      "gold": {
+        "src/requests/cookies.py": 3
+      },
+      "source_anchor": "def _find_no_duplicates(",
+      "source_line": 423
+    },
+    {
+      "id": "requests-12",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where is the cookie jar lock omitted from its serialized pickle state?",
+      "gold": {
+        "src/requests/cookies.py": 3
+      },
+      "source_anchor": "state.pop(\"_cookies_lock\")",
+      "source_line": 458
+    },
+    {
+      "id": "requests-13",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where are dictionary keys normalized for lookup while retaining the originally supplied spelling?",
+      "gold": {
+        "src/requests/structures.py": 3
+      },
+      "source_anchor": "self._store[key.lower()] = (key, value)",
+      "source_line": 62
+    },
+    {
+      "id": "requests-14",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Which component allows each response hook to replace the data passed to subsequent hooks?",
+      "gold": {
+        "src/requests/hooks.py": 3
+      },
+      "source_anchor": "_hook_data = hook(hook_data, **kwargs)",
+      "source_line": 45
+    },
+    {
+      "id": "requests-15",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does rewinding a streamed request fail when the original body position cannot be restored?",
+      "gold": {
+        "src/requests/utils.py": 3
+      },
+      "source_anchor": "def rewind_body(",
+      "source_line": 1139
+    },
+    {
+      "id": "requests-16",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find tests for the default response hooks and hook replacement results.",
+      "gold": {
+        "tests/test_hooks.py": 3
+      },
+      "source_anchor": "def test_default_hooks()",
+      "source_line": 21
+    },
+    {
+      "id": "requests-17",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find tests for proxy request URLs with leading path separators.",
+      "gold": {
+        "tests/test_adapters.py": 3
+      },
+      "source_anchor": "def test_request_url_handles_leading_path_separators()",
+      "source_line": 4
+    },
+    {
+      "id": "requests-18",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find tests for calculating the remaining length of a partially read file.",
+      "gold": {
+        "tests/test_utils.py": 3
+      },
+      "source_anchor": "def test_super_len_correctly_calculates_len_of_partially_read_file(",
+      "source_line": 66
+    },
+    {
+      "id": "requests-19",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find the tests for case-insensitive dictionary access and equality.",
+      "gold": {
+        "tests/test_structures.py": 3
+      },
+      "source_anchor": "class TestCaseInsensitiveDict",
+      "source_line": 6
+    }
+  ]
+}
