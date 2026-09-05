@@ -131,7 +131,7 @@ fn handleConn(ctx: *ConnCtx) void {
                 dev_mod.sendErrorOverlay(&std_req, std_req.head.target, err, mer.version) catch {};
             }
             // Telemetry: report error to Sentry + Datadog.
-            telemetry.sentryCapture(@errorName(err), std_req.head.target, mer.version);
+            @import("telemetry.zig").sentryCapture(@errorName(err), std_req.head.target, mer.version);
             telemetry.ddError(std_req.head.target, @tagName(std_req.head.method), @errorName(err));
             return;
         };
@@ -392,15 +392,9 @@ fn tryServePrerendered(
     std_req: *std.http.Server.Request,
     url_path: []const u8,
 ) ?void {
-    const fs_path = if (std.mem.eql(u8, url_path, "/"))
-        std.fmt.allocPrint(alloc, "dist/index.html", .{}) catch return null
-    else blk: {
-        const rel = if (url_path.len > 0 and url_path[0] == '/') url_path[1..] else url_path;
-        break :blk std.fmt.allocPrint(alloc, "dist/{s}.html", .{rel}) catch return null;
-    };
-    defer alloc.free(fs_path);
-
-    const file = std.fs.cwd().openFile(fs_path, .{}) catch return null;
+    var dist = std.fs.cwd().openDir("dist", .{ .no_follow = true }) catch return null;
+    defer dist.close();
+    const file = @import("prerender_file.zig").openPrerendered(alloc, dist, url_path) catch return null;
     defer file.close();
 
     const body = file.readToEndAlloc(alloc, 10 * 1024 * 1024) catch return null;

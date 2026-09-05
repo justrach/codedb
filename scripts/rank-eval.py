@@ -36,6 +36,7 @@ Notes:
 """
 from __future__ import annotations
 
+import time
 import argparse
 import json
 import os
@@ -96,8 +97,8 @@ def child_env(home: Path) -> dict:
 
 def prewarm(binary: str, corpus: Path, env: dict) -> None:
     """Build + persist the snapshot once so per-query MCP loads are fast/ready."""
-    subprocess.run(["bash", "-c", f"cd {corpus} && {binary} . index"],
-                   capture_output=True, text=True, env=env, timeout=180)
+    subprocess.run([str(Path(binary).resolve()), ".", "index"], cwd=corpus,
+                   capture_output=True, text=True, env=env, timeout=180, check=True)
 
 
 def search(binary: str, corpus: Path, env: dict, query: str, max_results: int = 10) -> list:
@@ -107,16 +108,24 @@ def search(binary: str, corpus: Path, env: dict, query: str, max_results: int = 
     snapshot asynchronously, so a query fired immediately hits `loading_snapshot`
     and returns 0 results. `sleep 6` between them lets the load finish.
     """
-    req = ('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":'
-           '{"name":"codedb_search","arguments":{"query":"%s","max_results":%d}}}'
-           % (query, max_results))
-    script = (f"cd {corpus} && "
-              f"{{ printf '%s\\n' {json.dumps(INIT)}; sleep 6; "
-              f"printf '%s\\n' {json.dumps(req)}; sleep 2; }} | {binary} mcp 2>/dev/null")
-    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                          env=env, timeout=90)
+    req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                      "params": {"name": "codedb_search", "arguments":
+                                 {"query": query, "max_results": max_results}}})
+    # Keep case text, paths, and executable names out of a shell entirely.
+    with subprocess.Popen([str(Path(binary).resolve()), "mcp"], cwd=corpus,
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, text=True, env=env) as proc:
+        try:
+            proc.stdin.write(INIT + "\n")
+            proc.stdin.flush()
+            time.sleep(6)
+            stdout, _ = proc.communicate(req + "\n", timeout=90)
+        except BaseException:
+            proc.kill()
+            proc.communicate()
+            raise
     hits = []
-    for line in proc.stdout.splitlines():
+    for line in stdout.splitlines():
         line = line.strip()
         if not line.startswith("{"):
             continue

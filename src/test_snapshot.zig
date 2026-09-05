@@ -1343,3 +1343,26 @@ test "p0: writeSnapshot tolerates over-long symbol names (u16 length overflow)" 
     try testing.expect(snapshot_mod.loadSnapshot(io, snap, &exp2, &store, testing.allocator));
     try testing.expectEqual(@as(usize, 1), exp2.outlines.count());
 }
+
+test "security: snapshot section overflow and out-of-file bounds are rejected" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var bytes: [72]u8 = @splat(0);
+    @memcpy(bytes[0..4], "CDB\x01");
+    std.mem.writeInt(u16, bytes[4..6], 4, .little);
+    std.mem.writeInt(u32, bytes[48..52], 1, .little);
+    std.mem.writeInt(u32, bytes[52..56], 1, .little);
+    std.mem.writeInt(u64, bytes[56..64], std.math.maxInt(u64) - 8, .little);
+    std.mem.writeInt(u64, bytes[64..72], 32, .little);
+    try tmp.dir.writeFile(io, .{ .sub_path = "bad.snapshot", .data = &bytes });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPathFile(io, "bad.snapshot", &buf);
+    try testing.expect(try snapshot_mod.readSections(io, buf[0..len], testing.allocator) == null);
+    // A valid empty section with the same header remains readable.
+    std.mem.writeInt(u64, bytes[56..64], bytes.len, .little);
+    std.mem.writeInt(u64, bytes[64..72], 0, .little);
+    try tmp.dir.writeFile(io, .{ .sub_path = "bad.snapshot", .data = &bytes });
+    var sections = (try snapshot_mod.readSections(io, buf[0..len], testing.allocator)) orelse return error.TestUnexpectedResult;
+    defer sections.deinit();
+    try testing.expectEqual(@as(usize, 1), sections.count());
+}
