@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.5854 - 2026-09-05
+
+- Authenticate Unix CLI daemon peers and validate notification-file ownership and type before consuming edits.
+- Use exclusive random temporary files for repository policy updates and reject overflowing snapshot sections.
+- Confine native website prerendered reads to `dist` and give detached Sentry workers stable allocation ownership.
+- Execute ranking-evaluation subprocesses without a shell; add live MCP/HTTP security regression checks.
+- Preserve the existing release source-file, sensitive-path, and notification-path protections.
+
 ## 0.2.5853 - 2026-09-05
 
 - Improve default Jina hybrid rank fusion and preserve unique exact definitions.

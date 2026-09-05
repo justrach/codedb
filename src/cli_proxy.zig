@@ -1141,7 +1141,27 @@ fn cliConnect(io: std.Io, allocator: std.mem.Allocator, abs_root: []const u8, da
         _ = std.c.close(fd);
         return null;
     }
+    if (!unixPeerTrusted(fd)) {
+        _ = std.c.close(fd);
+        return null;
+    }
     return fd;
+}
+
+extern "c" fn getpeereid(fd: c_int, uid: *std.c.uid_t, gid: *std.c.gid_t) c_int;
+
+fn unixPeerTrusted(fd: c_int) bool {
+    if (comptime builtin.os.tag == .linux) {
+        const Credentials = extern struct { pid: std.c.pid_t, uid: std.c.uid_t, gid: std.c.gid_t };
+        var peer: Credentials = undefined;
+        var len: std.c.socklen_t = @sizeOf(Credentials);
+        if (std.c.getsockopt(fd, std.c.SOL.SOCKET, std.c.SO.PEERCRED, @ptrCast(&peer), &len) != 0) return false;
+        return len == @sizeOf(Credentials) and peer.uid == std.c.geteuid();
+    } else if (comptime builtin.os.tag == .macos or builtin.os.tag == .freebsd or builtin.os.tag == .openbsd or builtin.os.tag == .netbsd) {
+        var uid: std.c.uid_t = undefined;
+        var gid: std.c.gid_t = undefined;
+        return getpeereid(fd, &uid, &gid) == 0 and uid == std.c.geteuid();
+    } else return false;
 }
 
 fn cliCloseConn(conn: CliConn) void {
@@ -1150,4 +1170,14 @@ fn cliCloseConn(conn: CliConn) void {
         return;
     }
     _ = std.c.close(conn);
+}
+
+test "security: unix peer credentials authenticate same-user socket pairs" {
+    if (comptime builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    var pair: [2]c_int = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &pair));
+    defer _ = std.c.close(pair[0]);
+    defer _ = std.c.close(pair[1]);
+    try std.testing.expect(unixPeerTrusted(pair[0]));
+    try std.testing.expect(!unixPeerTrusted(-1));
 }

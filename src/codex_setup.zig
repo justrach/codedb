@@ -371,11 +371,13 @@ fn readOptionalFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) 
 
 /// Atomic write via a sibling temp file + rename, matching nuke.rewriteConfigFile.
 fn writeFileAtomic(io: std.Io, allocator: std.mem.Allocator, path: []const u8, content: []const u8) !void {
-    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
+    var nonce: [16]u8 = undefined;
+    io.random(&nonce);
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ path, nonce });
     defer allocator.free(tmp_path);
+    const file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{ .exclusive = true });
     errdefer std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
     {
-        const file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{});
         defer file.close(io);
         try file.writeStreamingAll(io, content);
         try file.sync(io);
@@ -814,4 +816,24 @@ fn printCodexUsage(out: *Out, s: sty.Style) void {
         s.dim,  s.reset,
         s.dim,  s.reset,
     });
+}
+
+test "security: atomic policy writer ignores planted predictable temp symlink" {
+    const t = std.testing;
+    const io = t.io;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "victim", .data = "unchanged" });
+    try tmp.dir.symLink(io, "victim", "AGENTS.md.tmp", .{});
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &path_buf);
+    const path = try std.fmt.allocPrint(t.allocator, "{s}/AGENTS.md", .{path_buf[0..len]});
+    defer t.allocator.free(path);
+    try writeFileAtomic(io, t.allocator, path, "policy");
+    const victim = try tmp.dir.readFileAlloc(io, "victim", t.allocator, .limited(1024));
+    defer t.allocator.free(victim);
+    try t.expectEqualStrings("unchanged", victim);
+    const policy = try tmp.dir.readFileAlloc(io, "AGENTS.md", t.allocator, .limited(1024));
+    defer t.allocator.free(policy);
+    try t.expectEqualStrings("policy", policy);
 }

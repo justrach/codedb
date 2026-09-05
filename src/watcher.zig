@@ -2960,6 +2960,31 @@ fn indexFileContentAt(
 // We drain this file on every poll cycle and re-index the listed files
 // immediately, eliminating the 2s polling delay for muonry-sourced edits.
 
+fn openTrustedNotify(io: std.Io, notify_dir: std.Io.Dir, notify_path: [*:0]const u8) ?std.Io.File {
+    if (comptime builtin.os.tag != .linux and builtin.os.tag != .macos) return null;
+    // Authenticate the opened inode before reading or truncating it.
+    const flags: std.c.O = .{ .ACCMODE = .RDWR, .NOFOLLOW = true, .NONBLOCK = true, .CLOEXEC = true };
+    const fd = std.c.openat(notify_dir.handle, notify_path, flags);
+    if (fd < 0) return null;
+    const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = true } };
+    var accepted = false;
+    defer if (!accepted) file.close(io);
+
+    const trusted = if (comptime builtin.os.tag == .linux) blk: {
+        var st: std.os.linux.Statx = undefined;
+        if (std.os.linux.statx(fd, "", std.os.linux.AT.EMPTY_PATH, .{ .TYPE = true, .MODE = true, .UID = true, .NLINK = true }, &st) != 0) break :blk false;
+        if (!st.mask.TYPE or !st.mask.MODE or !st.mask.UID or !st.mask.NLINK) break :blk false;
+        break :blk st.uid == std.c.geteuid() and st.nlink == 1 and (st.mode & 0o170000) == 0o100000 and (st.mode & 0o022) == 0;
+    } else blk: {
+        var st: std.c.Stat = undefined;
+        if (std.c.fstat(fd, &st) != 0) break :blk false;
+        break :blk st.uid == std.c.geteuid() and st.nlink == 1 and (st.mode & 0o170000) == 0o100000 and (st.mode & 0o022) == 0;
+    };
+    if (!trusted) return null;
+    accepted = true;
+    return file;
+}
+
 fn drainNotifyFile(io: std.Io, store: *Store, explorer: *Explorer, queue: *EventQueue, known: *FileMap, alloc: std.mem.Allocator) void {
     drainNotifyFileFrom(io, store, explorer, queue, known, alloc, std.Io.Dir.cwd(), "/tmp/codedb-notify");
 }
@@ -2974,8 +2999,9 @@ fn drainNotifyFileFrom(
     notify_dir: std.Io.Dir,
     notify_path: []const u8,
 ) void {
-    // Atomically read + truncate.
-    const file = notify_dir.openFile(io, notify_path, .{ .mode = .read_write }) catch return;
+    const notify_name = alloc.dupeSentinel(u8, notify_path, 0) catch return;
+    defer alloc.free(notify_name);
+    const file = openTrustedNotify(io, notify_dir, notify_name) orelse return;
     defer file.close(io);
 
     const file_len = file.length(io) catch return;
@@ -3149,7 +3175,7 @@ test "issue-685: watcher diff updates document edges for modify add and delete" 
     defer root_dir.close(io);
     for ([_][]const u8{ "docs/a.md", "docs/b.md" }) |path| {
         const stat = try root_dir.statFile(io, path, .{});
-        const content = try root_dir.readFileAlloc(io, path, testing.allocator, .limited(max_indexed_file_bytes));
+        const content = try project_file.readAllocNoFollow(io, root_dir, path, testing.allocator, .limited(max_indexed_file_bytes));
         defer testing.allocator.free(content);
         const owned_path = try testing.allocator.dupe(u8, path);
         try known.put(owned_path, .{
@@ -3251,4 +3277,26 @@ test "dir-mtime prune still stats known files and notices new siblings" {
         try incrementalDiffInner(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator());
     }
     try testing.expect(explorer.outlines.contains("src/c.py"));
+}
+
+test "security: notify channel refuses symlinks and accepts owner regular files" {
+    if (comptime builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    const t = std.testing;
+    const io = t.io;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "owned", .data = "notification" });
+    try tmp.dir.symLink(io, "owned", "link", .{});
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &buf);
+    const link = try std.fmt.allocPrintSentinel(t.allocator, "{s}/link", .{buf[0..len]}, 0);
+    defer t.allocator.free(link);
+    try t.expect(openTrustedNotify(io, std.Io.Dir.cwd(), link) == null);
+    const owned = try std.fmt.allocPrintSentinel(t.allocator, "{s}/owned", .{buf[0..len]}, 0);
+    defer t.allocator.free(owned);
+    const file = openTrustedNotify(io, std.Io.Dir.cwd(), owned) orelse return error.TestUnexpectedResult;
+    file.close(io);
+    const content = try tmp.dir.readFileAlloc(io, "owned", t.allocator, .limited(1024));
+    defer t.allocator.free(content);
+    try t.expectEqualStrings("notification", content);
 }

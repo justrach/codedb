@@ -4,10 +4,10 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const env_mod = @import("env.zig");
+const env_mod = @import("mer");
 
 fn env(name: []const u8) ?[]const u8 {
-    return env_mod.get(name);
+    return env_mod.env(name);
 }
 
 // ── Sentry ──────────────────────────────────────────────────────────────────
@@ -54,32 +54,38 @@ pub fn sentryCapture(
 
     // Build the POST URL.
     var url_buf: [256]u8 = undefined;
-    const url = std.fmt.bufPrint(&url_buf,
-        "https://{s}/api/{s}/envelope/", .{ cfg.host, cfg.project_id },
+    const url = std.fmt.bufPrint(
+        &url_buf,
+        "https://{s}/api/{s}/envelope/",
+        .{ cfg.host, cfg.project_id },
     ) catch return;
 
-    // Copy to heap for the thread.
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const alloc = gpa.allocator();
-    const url_copy = alloc.dupe(u8, url) catch return;
-    const payload_copy = alloc.dupe(u8, envelope) catch return;
-
-    const t = std.Thread.spawn(.{}, sentrySendThread, .{ &gpa, url_copy, payload_copy }) catch {
-        alloc.free(url_copy);
-        alloc.free(payload_copy);
-        return;
-    };
+    const t = spawnSentry(url, envelope) orelse return;
     t.detach();
 }
 
-fn sentrySendThread(gpa: *std.heap.GeneralPurposeAllocator(.{}), url: []const u8, payload: []const u8) void {
+fn spawnSentry(url: []const u8, envelope: []const u8) ?std.Thread {
+    // Both buffers and the allocator survive the request's stack frame.
+    const alloc = std.heap.page_allocator;
+    const url_copy = alloc.dupe(u8, url) catch return null;
+    const payload_copy = alloc.dupe(u8, envelope) catch {
+        alloc.free(url_copy);
+        return null;
+    };
+    return std.Thread.spawn(.{}, sentrySendThread, .{ url_copy, payload_copy }) catch {
+        alloc.free(url_copy);
+        alloc.free(payload_copy);
+        return null;
+    };
+}
+
+fn sentrySendThread(url: []const u8, payload: []const u8) void {
     defer {
-        const alloc = gpa.allocator();
+        const alloc = std.heap.page_allocator;
         alloc.free(url);
         alloc.free(payload);
-        _ = gpa.deinit();
     }
-    const alloc = gpa.allocator();
+    const alloc = std.heap.page_allocator;
     var client = std.http.Client{ .allocator = alloc };
     defer client.deinit();
 
@@ -123,7 +129,8 @@ pub fn ddTiming(path: []const u8, method: []const u8, status: u16, duration_us: 
     const addr = statsd_addr orelse return;
 
     var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf,
+    const msg = std.fmt.bufPrint(
+        &buf,
         "merjs.request.duration:{d}|ms|#path:{s},method:{s},status:{d}\n" ++
             "merjs.request.count:1|c|#path:{s},method:{s},status:{d}",
         .{ duration_us / 1000, path, method, status, path, method, status },
@@ -138,7 +145,8 @@ pub fn ddError(path: []const u8, method: []const u8, error_name: []const u8) voi
     const addr = statsd_addr orelse return;
 
     var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf,
+    const msg = std.fmt.bufPrint(
+        &buf,
         "merjs.request.error:1|c|#path:{s},method:{s},error:{s}",
         .{ path, method, error_name },
     ) catch return;
@@ -171,4 +179,17 @@ test "parseSentryDsn: empty key returns null" {
 
 test "parseSentryDsn: empty project_id returns null" {
     try std.testing.expect(parseSentryDsn("https://abc123@o1234.ingest.sentry.io/") == null);
+}
+
+test "security: sentry worker outlives the caller's stack buffers" {
+    const thread = blk: {
+        var url = "invalid-url".*;
+        var payload = "test-envelope".*;
+        const worker = spawnSentry(&url, &payload) orelse return error.TestUnexpectedResult;
+        @memset(&url, 0);
+        @memset(&payload, 0);
+        break :blk worker;
+    };
+    // An invalid URL exercises cleanup without sending any network traffic.
+    thread.join();
 }

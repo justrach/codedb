@@ -567,8 +567,11 @@ fn readSectionsFromFile(io: std.Io, file: std.Io.File, allocator: std.mem.Alloca
     if (scn != 4) return null;
     const section_count = std.mem.readInt(u32, &sc_buf, .little);
 
+    const file_size = (file.stat(io) catch return null).size;
+    if (file_size < 52 or section_count > (file_size - 52) / 20) return null;
     var result = std.AutoHashMap(u32, SectionEntry).init(allocator);
-    errdefer result.deinit();
+    var success = false;
+    defer if (!success) result.deinit();
 
     var pos: u64 = 52;
     for (0..section_count) |_| {
@@ -576,6 +579,9 @@ fn readSectionsFromFile(io: std.Io, file: std.Io.File, allocator: std.mem.Alloca
         const en = file.readPositionalAll(io, &entry_buf, pos) catch return null;
         if (en != 20) return null;
         pos += 20;
+        const offset = std.mem.readInt(u64, entry_buf[4..12], .little);
+        const length = std.mem.readInt(u64, entry_buf[12..20], .little);
+        if (offset > file_size or length > file_size - offset) return null;
         try result.put(
             std.mem.readInt(u32, entry_buf[0..4], .little),
             .{
@@ -585,6 +591,7 @@ fn readSectionsFromFile(io: std.Io, file: std.Io.File, allocator: std.mem.Alloca
             },
         );
     }
+    success = true;
     return result;
 }
 
@@ -611,7 +618,7 @@ fn readSectionBytesFromFile(io: std.Io, file: std.Io.File, section_id: SectionId
 
     // Validate section fits within file
     const file_size = file.length(io) catch return null;
-    if (entry.offset + entry.length > file_size) return null;
+    if (entry.offset > file_size or entry.length > file_size - entry.offset) return null;
 
     const buf = try allocator.alloc(u8, @intCast(entry.length));
     errdefer allocator.free(buf);
@@ -784,7 +791,7 @@ pub fn loadSnapshotValidatedFromFile(
     // Validate content section fits within actual file size (issue-40: truncation detection)
     const file_stat = file.stat(io) catch return false;
     const file_size = file_stat.size;
-    if (content_entry.offset + content_entry.length > file_size) return false;
+    if (content_entry.offset > file_size or content_entry.length > file_size - content_entry.offset) return false;
 
     var read_pos: u64 = content_entry.offset;
     const snap_mtime: i128 = @intCast(file_stat.mtime.nanoseconds);
@@ -1229,7 +1236,7 @@ fn loadSnapshotFast(
     const content_file = snapshot_file;
 
     const file_stat = content_file.stat(io) catch return false;
-    if (content_entry.offset + content_entry.length > file_stat.size) return false;
+    if (content_entry.offset > file_stat.size or content_entry.length > file_stat.size - content_entry.offset) return false;
 
     const snap_mtime: i128 = @intCast(file_stat.mtime.nanoseconds);
     var file_count: u32 = 0;
