@@ -1,0 +1,16 @@
+{
+  "decision": "retain",
+  "freeze": "2026-09-05-jina-round2-freeze.json",
+  "holdout": "2026-09-05-jina-round2-flask-heldout.json",
+  "predeclared_holdout_gate_passed": true,
+  "development_tradeoff": "Express top1 +4/16; OpenClaw top1 -1/32. Top-five recall preserved for every query.",
+  "flask_top1": "19/20 unchanged",
+  "flask_ndcg_at_5": [
+    0.9715338279036696,
+    0.975
+  ],
+  "remaining_regressions": [
+    "auth-resolve-1"
+  ],
+  "installed_or_deployed": false
+}

@@ -1,0 +1,9 @@
+trial	corpus	arm	top1_rate	ndcg_at_5	recall_at_5	raw_report
+intent	openclaw	baseline	0.96875	0.988466554799108	1.0	2026-09-05-jina-round2-intent-openclaw.json
+intent	openclaw	candidate	0.96875	0.988466554799108	1.0	2026-09-05-jina-round2-intent-openclaw.json
+intent	express	baseline	0.5	0.7756607388450232	1.0	2026-09-05-jina-round2-intent-express.json
+intent	express	candidate	0.5625	0.8150938484432393	1.0	2026-09-05-jina-round2-intent-express.json
+weight	openclaw	baseline	0.96875	0.988466554799108	1.0	2026-09-05-jina-round2-weight-openclaw.json
+weight	openclaw	candidate	0.9375	0.9769331095982161	1.0	2026-09-05-jina-round2-weight-openclaw.json
+weight	express	baseline	0.5	0.7756607388450232	1.0	2026-09-05-jina-round2-weight-express.json
+weight	express	candidate	0.75	0.8870335040760192	1.0	2026-09-05-jina-round2-weight-express.json

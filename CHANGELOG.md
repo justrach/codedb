@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.2.5853 - 2026-09-05
+
+- Improve default Jina hybrid rank fusion and preserve unique exact definitions.
+- Favor the requested implementation/test file type without removing candidates;
+  recognize test intent as whole words.
+- Add 128 pinned evaluation questions across six repositories, a live comparison
+  runner, frozen holdout evidence, ADRs, and an explicit remaining-failure catalog.
+- Preserve hosted embeddings, calibration, ANN breadth, and exact fallback.
+
 ## 0.2.5852 - 2026-09-01
 
 - **Automatic legacy semantic-sidecar migration.** The first hybrid MCP query

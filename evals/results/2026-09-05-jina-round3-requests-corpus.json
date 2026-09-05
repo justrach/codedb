@@ -1,0 +1,23 @@
+{
+  "binary": "/Users/blackfloofie/tmp/codedb-jina-round2-frozen",
+  "binary_sha256": "b331831a54f6be30e2a9c3ac71c911d596b4103b592c58c77a6643f8ea9371c8",
+  "version": "codedb 0.2.5852",
+  "corpus_root": "/Users/blackfloofie/tmp/codedb-round3-corpora/codedb-jina-hybrid-6in1a27d",
+  "dataset": "requests-jina-round3-v1",
+  "mode": "default hybrid; no semantic override; live service on every measured request",
+  "scope": "sidecar preparation only",
+  "rows": [],
+  "failures": [],
+  "build": {
+    "exit_code": 0,
+    "wall_ms": 10555.555917089805,
+    "stdout": "\u2713 indexed  \u26a1 984.0\u00b5s\n\u2713 semantic ANN ready  487 chunks from 28 files  512D\n  local sidecar: /Users/blackfloofie/.codedb/projects/47a8bb6a436bafd6/semantic-chunks-v3.meta (1459666 bytes total; mmap slab 1441792 bytes; metadata 17874 bytes)\n  persistent vector payload: 1246720 bytes  remote text sent: 417740 bytes\n  vector space: 7435ff6f7e803912  sensitive paths blocked: 0  parallel batches: 4\n  embedding wall: 10331 ms  HNSW insertion: 150 ms  source revalidation: 14 ms  total: 10.5s"
+  },
+  "sidecar": {
+    "model": "jinaai/jina-embeddings-v2-base-code",
+    "dimensions": 512,
+    "records": 487,
+    "magic": "CDBANN03",
+    "metadata_sha256": "25abe8f4962a264d056b06190239c695a6006ec35562d72876af4d62b4b2547d"
+  }
+}

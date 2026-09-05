@@ -1,0 +1,11 @@
+{
+  "frozen_at": "2026-09-05T03:22:00.245131+00:00",
+  "policy": "ADR 0009 fusion weights; symmetric soft preference for explicit tests; whole-word test intent detection; no architecture or candidate-pool changes",
+  "selection": "Higher development macro-average top1 and NDCG, no per-question rank or recall regressions across five repositories. Chi v2 labels fixed before tuning.",
+  "holdout_acceptance": "No per-question recall@5 regressions; aggregate top1 and NDCG@5 must not decline; all requests must use the live Jina mmap path without failures. No tuning after holdout.",
+  "baseline_sha256": "b331831a54f6be30e2a9c3ac71c911d596b4103b592c58c77a6643f8ea9371c8",
+  "candidate_sha256": "8eb516f09e7593a48a2c49a09b669d2767f4ae1255751cd31c2a53da3cd0f6c2",
+  "dataset_sha256": "824c14f91e571c5a7974233e4fb628ea2168d37d00dae63faf30289d68ac8d8d",
+  "suite_sha256": "5c262492215696a94a9db5b9424ddd93711e549d044d409b184fec7ff4087ab4",
+  "development_report_sha256": "388c58d05caf7812b6fc4e0cc67cc8877ac8ba55663970cab9e59049387b778a"
+}

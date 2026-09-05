@@ -1,0 +1,13 @@
+{
+  "decision": "retain",
+  "freeze": "2026-09-05-jina-round3-freeze.json",
+  "holdout_acceptance_passed": true,
+  "development": "Anyhow top1 16/20 to 18/20; no per-question ranking or recall regressions across five development repositories",
+  "holdout": "Requests top1 unchanged 17/20; NDCG 0.9315464876785728 to 0.9380929753571458; no per-question ranking or recall regressions",
+  "total_questions": 128,
+  "remaining_first_result_misses": 15,
+  "remaining_top_five_misses": [
+    "chi-10"
+  ],
+  "installed_or_deployed": false
+}

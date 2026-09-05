@@ -1,0 +1,500 @@
+{
+  "scope": "Observed failure analysis after candidate freeze and holdout; not another fresh evaluation",
+  "misses": [
+    {
+      "repository": "openclaw",
+      "id": "auth-mode-policy-1",
+      "query": "Where does configuring both a gateway password and token without choosing an auth mode raise an error?",
+      "gold": {
+        "src/gateway/auth-mode-policy.ts": 3
+      },
+      "top_five": [
+        "src/gateway/auth.ts",
+        "src/gateway/auth-mode-policy.ts",
+        "src/gateway/auth-config-utils.ts",
+        "src/gateway/auth-resolve.ts",
+        "src/gateway/call.ts"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.5,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.6309297535714575
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "src/gateway/auth-mode-policy.ts",
+          "lexical_rank": null,
+          "semantic_rank": 1,
+          "semantic_score": 0.7270058393478394,
+          "source": "local_openpuffer_ann",
+          "line_start": 18,
+          "line_end": 26
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/openclaw.json"
+    },
+    {
+      "repository": "openclaw",
+      "id": "auth-resolve-1",
+      "query": "Where is the gateway authentication mode chosen with override, configured mode, password, then token precedence?",
+      "gold": {
+        "src/gateway/auth-resolve.ts": 3
+      },
+      "top_five": [
+        "src/gateway/auth.ts",
+        "src/gateway/auth-resolve.ts",
+        "src/gateway/auth-mode-policy.ts",
+        "src/gateway/auth-surface-resolution.ts",
+        "src/gateway/call.ts"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.5,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.6309297535714575
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "src/gateway/auth-resolve.ts",
+          "lexical_rank": 0,
+          "semantic_rank": 2,
+          "semantic_score": 0.6715607047080994,
+          "source": "local_openpuffer_ann",
+          "line_start": 72,
+          "line_end": 106
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/openclaw.json"
+    },
+    {
+      "repository": "express",
+      "id": "express-00",
+      "query": "Where does the Express application connect request and response objects, install their prototypes, then dispatch into the router?",
+      "gold": {
+        "lib/application.js": 3
+      },
+      "top_five": [
+        "lib/express.js",
+        "lib/application.js",
+        "lib/response.js",
+        "test/exports.js",
+        "test/app.response.js"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.5,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.6309297535714575
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "lib/application.js",
+          "lexical_rank": 0,
+          "semantic_rank": 1,
+          "semantic_score": 0.6526732444763184,
+          "source": "local_openpuffer_ann",
+          "line_start": 217,
+          "line_end": 250
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/express.json"
+    },
+    {
+      "repository": "express",
+      "id": "express-01",
+      "query": "Where does mounting a child application restore the parent request and response prototypes after the child finishes?",
+      "gold": {
+        "lib/application.js": 3
+      },
+      "top_five": [
+        "lib/express.js",
+        "lib/application.js",
+        "test/app.response.js",
+        "lib/response.js",
+        "test/app.request.js"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.5,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.6309297535714575
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "lib/application.js",
+          "lexical_rank": 1,
+          "semantic_rank": 3,
+          "semantic_score": 0.4580061435699463,
+          "source": "local_openpuffer_ann",
+          "line_start": 217,
+          "line_end": 250
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/express.json"
+    },
+    {
+      "repository": "express",
+      "id": "express-07",
+      "query": "Where are trust-proxy settings converted from hop counts or comma-separated addresses into a predicate?",
+      "gold": {
+        "lib/utils.js": 3
+      },
+      "top_five": [
+        "lib/request.js",
+        "lib/response.js",
+        "lib/utils.js",
+        "lib/application.js",
+        "test/req.protocol.js"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.3333333333333333,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.5
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "lib/utils.js",
+          "lexical_rank": 4,
+          "semantic_rank": 3,
+          "semantic_score": 0.45228421688079834,
+          "source": "local_openpuffer_ann",
+          "line_start": 203,
+          "line_end": 244
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/express.json"
+    },
+    {
+      "repository": "express",
+      "id": "express-12",
+      "query": "Find the tests for mounting a sub-application with app.use.",
+      "gold": {
+        "test/app.use.js": 3
+      },
+      "top_five": [
+        "test/app.js",
+        "test/app.response.js",
+        "test/app.request.js",
+        "test/app.use.js",
+        "test/app.options.js"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.25,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.43067655807339306
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "test/app.use.js",
+          "lexical_rank": null,
+          "semantic_rank": 3,
+          "semantic_score": 0.6225835084915161,
+          "source": "local_openpuffer_ann",
+          "line_start": 1,
+          "line_end": 39
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/express.json"
+    },
+    {
+      "repository": "flask",
+      "id": "flask-08",
+      "query": "Where are signals emitted immediately before and after rendering a template?",
+      "gold": {
+        "src/flask/templating.py": 3
+      },
+      "top_five": [
+        "src/flask/signals.py",
+        "src/flask/__init__.py",
+        "src/flask/templating.py",
+        "tests/test_signals.py",
+        "src/flask/sansio/scaffold.py"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.3333333333333333,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.5
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "src/flask/templating.py",
+          "lexical_rank": 3,
+          "semantic_rank": 2,
+          "semantic_score": 0.4000362157821655,
+          "source": "local_openpuffer_ann",
+          "line_start": 167,
+          "line_end": 189
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/flask.json"
+    },
+    {
+      "repository": "chi",
+      "id": "chi-07",
+      "query": "Where are repeated slashes cleaned from the request path before the next handler?",
+      "gold": {
+        "middleware/clean_path.go": 3
+      },
+      "top_five": [
+        "middleware/strip.go",
+        "middleware/clean_path.go",
+        "middleware/strip_test.go",
+        "mux.go",
+        "chi.go"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.5,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.6309297535714575
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "middleware/clean_path.go",
+          "lexical_rank": null,
+          "semantic_rank": 1,
+          "semantic_score": 0.6552219986915588,
+          "source": "local_openpuffer_ann",
+          "line_start": 1,
+          "line_end": 28
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/chi.json"
+    },
+    {
+      "repository": "chi",
+      "id": "chi-10",
+      "query": "Where is the combined route pattern cleaned of wildcard segments and trailing slashes?",
+      "gold": {
+        "context.go": 3
+      },
+      "top_five": [
+        "tree.go",
+        "middleware/strip.go",
+        "mux.go",
+        "middleware/strip_test.go",
+        "mux_test.go"
+      ],
+      "metrics": {
+        "hit_at_5": 0,
+        "mrr_at_5": 0,
+        "recall_at_5": 0.0,
+        "ndcg_at_5": 0.0
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "context.go",
+          "lexical_rank": null,
+          "semantic_rank": 15,
+          "semantic_score": 0.409248948097229,
+          "source": "local_openpuffer_ann",
+          "line_start": 135,
+          "line_end": 159
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/chi.json"
+    },
+    {
+      "repository": "chi",
+      "id": "chi-19",
+      "query": "Find tests for cleaning doubled slashes in URL paths.",
+      "gold": {
+        "middleware/clean_path_test.go": 3
+      },
+      "top_five": [
+        "middleware/strip_test.go",
+        "middleware/strip.go",
+        "middleware/clean_path_test.go",
+        "middleware/url_format_test.go",
+        "middleware/clean_path.go"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.3333333333333333,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.5
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "middleware/clean_path_test.go",
+          "lexical_rank": null,
+          "semantic_rank": 3,
+          "semantic_score": 0.5283746719360352,
+          "source": "local_openpuffer_ann",
+          "line_start": 1,
+          "line_end": 23
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/chi.json"
+    },
+    {
+      "repository": "anyhow",
+      "id": "anyhow-02",
+      "query": "Where does error-chain iteration follow each source error?",
+      "gold": {
+        "src/chain.rs": 3
+      },
+      "top_five": [
+        "src/lib.rs",
+        "src/chain.rs",
+        "src/error.rs",
+        "src/fmt.rs",
+        "src/context.rs"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.5,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.6309297535714575
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "src/chain.rs",
+          "lexical_rank": 1,
+          "semantic_rank": 1,
+          "semantic_score": 0.7039958834648132,
+          "source": "local_openpuffer_ann",
+          "line_start": 36,
+          "line_end": 61
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/anyhow.json"
+    },
+    {
+      "repository": "anyhow",
+      "id": "anyhow-14",
+      "query": "Locate the implementation that reconstructs an owned Box from a raw pointer.",
+      "gold": {
+        "src/ptr.rs": 3
+      },
+      "top_five": [
+        "src/error.rs",
+        "src/ptr.rs",
+        "src/kind.rs",
+        "src/macros.rs",
+        "src/lib.rs"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.5,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.6309297535714575
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "src/ptr.rs",
+          "lexical_rank": null,
+          "semantic_rank": 0,
+          "semantic_score": 0.56150883436203,
+          "source": "local_openpuffer_ann",
+          "line_start": 1,
+          "line_end": 48
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-intent-development/anyhow.json"
+    },
+    {
+      "repository": "requests",
+      "id": "requests-02",
+      "query": "Where are redirect response codes used to change a POST into a GET?",
+      "gold": {
+        "src/requests/sessions.py": 3
+      },
+      "top_five": [
+        "src/requests/models.py",
+        "src/requests/sessions.py",
+        "src/requests/status_codes.py",
+        "src/requests/utils.py",
+        "tests/test_requests.py"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.5,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.6309297535714575
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "src/requests/sessions.py",
+          "lexical_rank": 0,
+          "semantic_rank": 2,
+          "semantic_score": 0.5848665237426758,
+          "source": "local_openpuffer_ann",
+          "line_start": 371,
+          "line_end": 389
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-requests-heldout/requests.json"
+    },
+    {
+      "repository": "requests",
+      "id": "requests-17",
+      "query": "Find tests for proxy request URLs with leading path separators.",
+      "gold": {
+        "tests/test_adapters.py": 3
+      },
+      "top_five": [
+        "tests/test_utils.py",
+        "tests/test_adapters.py",
+        "tests/test_requests.py",
+        "src/requests/utils.py",
+        "tests/test_lowlevel.py"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.5,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.6309297535714575
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "tests/test_adapters.py",
+          "lexical_rank": 1,
+          "semantic_rank": 3,
+          "semantic_score": 0.5779183506965637,
+          "source": "local_openpuffer_ann",
+          "line_start": 1,
+          "line_end": 8
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-requests-heldout/requests.json"
+    },
+    {
+      "repository": "requests",
+      "id": "requests-19",
+      "query": "Find the tests for case-insensitive dictionary access and equality.",
+      "gold": {
+        "tests/test_structures.py": 3
+      },
+      "top_five": [
+        "tests/test_requests.py",
+        "src/requests/structures.py",
+        "tests/test_structures.py",
+        "tests/test_utils.py",
+        "tests/test_packages.py"
+      ],
+      "metrics": {
+        "hit_at_5": 1,
+        "mrr_at_5": 0.3333333333333333,
+        "recall_at_5": 1.0,
+        "ndcg_at_5": 0.5
+      },
+      "gold_ann_evidence": [
+        {
+          "path": "tests/test_structures.py",
+          "lexical_rank": 6,
+          "semantic_rank": 2,
+          "semantic_score": 0.6533880233764648,
+          "source": "local_openpuffer_ann",
+          "line_start": 29,
+          "line_end": 56
+        }
+      ],
+      "raw_report": "2026-09-05-jina-round3-requests-heldout/requests.json"
+    }
+  ]
+}

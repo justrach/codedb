@@ -35,12 +35,11 @@ pub const max_index_embedding_attempts: usize = 3;
 pub const index_embedding_retry_base_ms: u32 = 250;
 pub const default_rrf_k: f32 = 60;
 pub const default_semantic_weight: f32 = 0.05;
-// React production-source hill climb (12 queries, 8 train / 4 held out):
-// k=20 and weight=1.5 improved held-out MRR 0.15 -> 1.0 and NDCG@5
-// 0.226 -> 0.738 without a recall@5 regression. Keep these separate from
-// exact-fallback RRF so an ANN policy change cannot weaken the lexical floor.
-pub const default_ann_rrf_k: f32 = 20;
-pub const default_ann_semantic_weight: f32 = 1.5;
+// Accuracy-oriented Jina hybrid policy; see ADR 0008 for live-service
+// experiments and cross-repository validation. Keep ANN fusion separate
+// from the exact fallback's lexical-authoritative policy.
+pub const default_ann_rrf_k: f32 = 1;
+pub const default_ann_semantic_weight: f32 = 2.5;
 pub const qwen_query_encoding_version = "qwen3-query-instruct-v1";
 pub const jina_query_encoding_version = "jina-v2-code-symmetric-raw-v1";
 pub const document_card_version = "codedb-code-chunk-v2";

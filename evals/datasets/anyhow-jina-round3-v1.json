@@ -1,0 +1,257 @@
+{
+  "schema_version": 1,
+  "id": "anyhow-jina-round3-v1",
+  "description": "Source-checked file-level questions authored before baseline collection. Includes 16 behavior/identifier lookups and 4 explicit test requests, varied phrasings. Correlated hand-labeled targets, not exhaustive judgments.",
+  "source_url": "https://github.com/dtolnay/anyhow",
+  "source_revision": "c63b279f3f4af2b02ca6267d9eb47d6d10497f69",
+  "corpus_files": {
+    "src/backtrace.rs": "621ec5d9e2f31883d0384ae00fc536d1ea359da989d2e0d1be1ba03482c8f920",
+    "src/chain.rs": "85af447405f075633fab186b7f1c94d7f33a36474f239c50a961b2d6197d5426",
+    "src/context.rs": "8b106e43df7a66fbc3e85b87a4d7f8a780d43d3ee0cd1ae86c571950ecf07d13",
+    "src/ensure.rs": "709524741c8f9365e01cb36fc2349a8724513de02cf9e253809a93af8d6a7b6e",
+    "src/error.rs": "2a78ee4e5f8d6b4476c761f77473362b9ed12f5402e4701001e7d04d628ba030",
+    "src/fmt.rs": "2cca8c7f3cab636fdb17433ca2b1fda0e8d28bb20d4647b87c991dacd8f06cdf",
+    "src/kind.rs": "ddcabf15b3b47a4ef16ed361c45cc0cc82e7be90622995ff6c04b3fec78bb04f",
+    "src/lib.rs": "ea7f436f6bf4b356ff30ec922b50b40ead0ade28b123341a8de7f310311fd44c",
+    "src/macros.rs": "696e6a8aac614525a29697aedc7561e98beccf3d43aed3ada1cc93daa99da8ba",
+    "src/nightly.rs": "1c0aeadfcdbe22f8f807b185dec1a7448c378bddb37689714944b60473b58049",
+    "src/ptr.rs": "16d2ce2757037b899af01f03f1e126903edaaa167d1fcb5fb1b32ace111523ae",
+    "src/wrapper.rs": "079218e1d8c9374f52311b1c7971f7fbdeba4d7af1b0749c0d535010f1232697",
+    "tests/compiletest.rs": "4e381aa8ca3eabb7ac14d1e0c3700b3223e47640547a6988cfa13ad68255f60f",
+    "tests/test_autotrait.rs": "ba9bc18416115cb48fd08675a3e7fc89584de7926dad6b2be6645dc13d5931df",
+    "tests/test_backtrace.rs": "60afdd7ee5850dc22625ff486fe41c47fd322db874a93c4871ddfed2bf603930",
+    "tests/test_boxed.rs": "6b26db0e2eb72afe9af7352ea820837aab90f8d486294616dd5dc34c1b94038c",
+    "tests/test_chain.rs": "3a8a8d7569913bd98c0e27c69d0bda35101e7fde7c056ed57cdd8ed018e4cbcb",
+    "tests/test_context.rs": "a4cb7d9a6d488d902eb5ac516d2b5e4135f46caaa2d151580ed9ba83c2a90b57",
+    "tests/test_convert.rs": "7e7a8b4772a427a911014ac4d1083f9519000e786177f898808980dd9bdfde61",
+    "tests/test_downcast.rs": "797e69a72d125758c4c4897e5dc776d549d52cc9a6a633e0a33193f588a62b88",
+    "tests/test_ensure.rs": "6ef8823153d6aba31dda8438b9e51984e6b7377d585addbaf87162b39d733cd9",
+    "tests/test_ffi.rs": "c6e6bf39e6b2cf9aacea12e3e4da4e1e1edb7fc906d231e5baf45812a08de3c4",
+    "tests/test_fmt.rs": "0e49b48f08e4faaf03e2f202e1efc5250018876c4e1b01b8379d7a38ae8df870",
+    "tests/test_macros.rs": "3eb6ec9024cf8812da48de35b733d5a69ed942907fb4e6c67ec471cd4bcef562",
+    "tests/test_repr.rs": "034dee888abd08741e11ac2e95ef4fcb2ab3943d0a76e8e976db404658e1a252",
+    "tests/test_source.rs": "b80723cf635a4f8c4df21891b34bfab9ed2b2aa407e7a2f826d24e334cd5f88e"
+  },
+  "queries": [
+    {
+      "id": "anyhow-00",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where does adding lazy context to a Result evaluate the closure only on an error?",
+      "gold": {
+        "src/context.rs": 3
+      },
+      "source_anchor": "Err(error) => Err(error.ext_context(context()))",
+      "source_line": 65
+    },
+    {
+      "id": "anyhow-01",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Which implementation turns an empty Option into an error with a supplied context message?",
+      "gold": {
+        "src/context.rs": 3
+      },
+      "source_anchor": "None => Err(Error::construct_from_display(context, backtrace!()))",
+      "source_line": 99
+    },
+    {
+      "id": "anyhow-02",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where does error-chain iteration follow each source error?",
+      "gold": {
+        "src/chain.rs": 3
+      },
+      "source_anchor": "*next = error.source();",
+      "source_line": 42
+    },
+    {
+      "id": "anyhow-03",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Which component buffers the linked error chain when iterating backwards?",
+      "gold": {
+        "src/chain.rs": 3
+      },
+      "source_anchor": "self.state = Buffered { rest };",
+      "source_line": 68
+    },
+    {
+      "id": "anyhow-04",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where does alternate Display formatting append the full cause chain?",
+      "gold": {
+        "src/fmt.rs": 3
+      },
+      "source_anchor": "pub(crate) unsafe fn display",
+      "source_line": 7
+    },
+    {
+      "id": "anyhow-05",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Locate the implementation that prints numbered causes and a captured backtrace for Debug output.",
+      "gold": {
+        "src/fmt.rs": 3
+      },
+      "source_anchor": "pub(crate) unsafe fn debug",
+      "source_line": 20
+    },
+    {
+      "id": "anyhow-06",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where is a failed consuming downcast returned as the original error rather than discarded?",
+      "gold": {
+        "src/error.rs": 3
+      },
+      "source_anchor": "None => return Err(self)",
+      "source_line": 483
+    },
+    {
+      "id": "anyhow-07",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where does a successful consuming downcast drop the surrounding context without dropping the extracted value?",
+      "gold": {
+        "src/error.rs": 3
+      },
+      "source_anchor": "object_drop_rest)(outer.inner, target)",
+      "source_line": 494
+    },
+    {
+      "id": "anyhow-08",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Find the implementation of downcast_ref.",
+      "gold": {
+        "src/error.rs": 3
+      },
+      "source_anchor": "pub fn downcast_ref",
+      "source_line": 536
+    },
+    {
+      "id": "anyhow-09",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where is the root cause obtained by taking the last entry in the error chain?",
+      "gold": {
+        "src/error.rs": 3
+      },
+      "source_anchor": "pub fn root_cause",
+      "source_line": 452
+    },
+    {
+      "id": "anyhow-10",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Which macro returns early with a constructed error?",
+      "gold": {
+        "src/macros.rs": 3
+      },
+      "source_anchor": "macro_rules! bail",
+      "source_line": 58
+    },
+    {
+      "id": "anyhow-11",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where is the ensure macro defined for returning an error when a condition is false?",
+      "gold": {
+        "src/macros.rs": 3
+      },
+      "source_anchor": "macro_rules! ensure",
+      "source_line": 129
+    },
+    {
+      "id": "anyhow-12",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where are short Debug operands formatted into a comparison failure message?",
+      "gold": {
+        "src/ensure.rs": 3
+      },
+      "source_anchor": "fn render(msg:",
+      "source_line": 81
+    },
+    {
+      "id": "anyhow-13",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where does the small formatting buffer reject spaces, newlines, or values exceeding its capacity?",
+      "gold": {
+        "src/ensure.rs": 3
+      },
+      "source_anchor": "s.bytes().any(|b| b == b' ' || b == b'\\n')",
+      "source_line": 60
+    },
+    {
+      "id": "anyhow-14",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Locate the implementation that reconstructs an owned Box from a raw pointer.",
+      "gold": {
+        "src/ptr.rs": 3
+      },
+      "source_anchor": "Box::from_raw(self.ptr.as_ptr())",
+      "source_line": 45
+    },
+    {
+      "id": "anyhow-15",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Where does attaching context capture a backtrace only when the underlying error lacks one?",
+      "gold": {
+        "src/context.rs": 3
+      },
+      "source_anchor": "let backtrace = backtrace_if_absent!(&self);",
+      "source_line": 27
+    },
+    {
+      "id": "anyhow-16",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Find tests covering unsuccessful downcasts and ownership of the original error.",
+      "gold": {
+        "tests/test_downcast.rs": 3
+      },
+      "source_anchor": "fn test_unsuccessful_downcast()",
+      "source_line": 118
+    },
+    {
+      "id": "anyhow-17",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Find tests for reversing the iterator over an error cause chain.",
+      "gold": {
+        "tests/test_chain.rs": 3
+      },
+      "source_anchor": "fn test_rev()",
+      "source_line": 20
+    },
+    {
+      "id": "anyhow-18",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Find tests comparing ordinary and alternate Display output.",
+      "gold": {
+        "tests/test_fmt.rs": 3
+      },
+      "source_anchor": "fn test_altdisplay()",
+      "source_line": 75
+    },
+    {
+      "id": "anyhow-19",
+      "kind": "relevant",
+      "split": "train",
+      "query": "Find tests for downcasting through several layers of added context.",
+      "gold": {
+        "tests/test_context.rs": 3
+      },
+      "source_anchor": "fn test_downcast_mid()",
+      "source_line": 133
+    }
+  ]
+}

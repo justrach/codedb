@@ -1,0 +1,13 @@
+repository	arm	questions	top1_rate	ndcg_at_5	recall_at_5	raw_report
+openclaw	baseline	32	0.9375	0.9769331095982161	1.0	2026-09-05-jina-round3-intent-development/openclaw.json
+openclaw	candidate	32	0.9375	0.9769331095982161	1.0	2026-09-05-jina-round3-intent-development/openclaw.json
+express	baseline	16	0.75	0.8870335040760192	1.0	2026-09-05-jina-round3-intent-development/express.json
+express	candidate	16	0.75	0.8870335040760192	1.0	2026-09-05-jina-round3-intent-development/express.json
+flask	baseline	20	0.95	0.975	1.0	2026-09-05-jina-round3-intent-development/flask.json
+flask	candidate	20	0.95	0.975	1.0	2026-09-05-jina-round3-intent-development/flask.json
+chi	baseline	20	0.85	0.9030803155822426	0.95	2026-09-05-jina-round3-intent-development/chi.json
+chi	candidate	20	0.85	0.9065464876785729	0.95	2026-09-05-jina-round3-intent-development/chi.json
+anyhow	baseline	20	0.8	0.9196394630357186	1.0	2026-09-05-jina-round3-intent-development/anyhow.json
+anyhow	candidate	20	0.9	0.9630929753571458	1.0	2026-09-05-jina-round3-intent-development/anyhow.json
+requests	baseline	20	0.85	0.9315464876785728	1.0	2026-09-05-jina-round3-requests-heldout/requests.json
+requests	candidate	20	0.85	0.9380929753571458	1.0	2026-09-05-jina-round3-requests-heldout/requests.json

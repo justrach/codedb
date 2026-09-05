@@ -1,0 +1,19 @@
+{
+  "frozen_at": "2026-09-05T01:38:56.186406+00:00",
+  "policy": {
+    "ann_rrf_k": 1,
+    "ann_semantic_weight": 2,
+    "implementation_test_weight": 0.75,
+    "unique_explicit_definition_priority": true,
+    "ann_oversampling": 4
+  },
+  "development": {
+    "questions": 32,
+    "top1": 0.96875,
+    "recall_at_5": 1,
+    "ndcg_at_5": 0.988466554799108
+  },
+  "candidate_sha256": "d4731455e2c20d94dc9f341eb3a006f766a7e3f1d4a68833fbe6bd3887f94bce",
+  "baseline_sha256": "765675b9a8fc1d2fbff2fa4801655990d0b9a968e6a502a8b499d258e2e9c2f9",
+  "dataset_sha256": "5a4fa75b2fe2ab965c6c8bb0065becb2b6229f80b56f368bb38ec22e5269de44"
+}

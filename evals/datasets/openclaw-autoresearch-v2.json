@@ -1,0 +1,633 @@
+{
+  "schema_version": 1,
+  "id": "openclaw-autoresearch-v2",
+  "description": "Source-reviewed implementation-target retrieval: train and held_out use disjoint primary target files; one repository, hand-written queries, not a release-wide benchmark. Adds explicit test-finding queries before any held-out evaluation to challenge test suppression.",
+  "source_revision": "850b6d2d4616a875c8dbc9823f8f834c2e77ef6e",
+  "corpus_files": {
+    "src/agents/bash-tools.exec-host-gateway.ts": "a559ea66ba6b959374f022cebea81a160f5bffc7454ace70ed4d70e27bcf24d3",
+    "src/gateway/agent-event-assistant-text.ts": "9ee7bff3dd9dd5a597d1aaf16bf4d891dffb7cc3aaa678655df76240f0141fa5",
+    "src/gateway/agent-list.ts": "5c72807cbf05a53154408700dcd6335cbed253e8bdcad8af1304e7aac880a3fe",
+    "src/gateway/agent-prompt.test.ts": "ee03b5a6d5348bbb9658d7b720dceb669711cd8f6f7c12fdb1cc5a84bfedb560",
+    "src/gateway/agent-prompt.ts": "a463146f6f997d97ab2bf70e42295a25681c1d6b5e10af1309bff5f7a047cb58",
+    "src/gateway/android-node.capabilities.live.test.ts": "ed52e250195cbb98a098958e0d536a7f2211542032b775d8fc0fadeb16f8dc58",
+    "src/gateway/android-node.capabilities.policy-config.test.ts": "deac64dc058d04b5eda7d3677d6df68edb1861838617a67087bd140294f4c616",
+    "src/gateway/android-node.capabilities.policy-source.test.ts": "a6d7378619820adcd267d3bc79b19600a146a33edba1757abfd655e961e17909",
+    "src/gateway/assistant-identity.test.ts": "b5bd7a83f4fc90cf5b000ba11f0ebf672b6db6fd826d298c418bddc872b6c103",
+    "src/gateway/assistant-identity.ts": "a05639c7c6478857eb8b1e5b6322d4234ac2ed4733e64cc1583c644eeb2f0274",
+    "src/gateway/auth-config-utils.ts": "fbfda83b7f34bc525d43791c153d65455f8e165779988fe4bc43d80731cd1642",
+    "src/gateway/auth-install-policy.ts": "66c2fa33863a95a6b0635e48e63ad82f7cf48e05773ed49bf52762fbaf6efa27",
+    "src/gateway/auth-mode-policy.test.ts": "816eb5f6b24fb4e2619c05d4cc019e3af73933d6a4d95c84df2a00d28fc1e5ba",
+    "src/gateway/auth-mode-policy.ts": "65d95fbaa5936efaaaadfe0d11bc959f4b1637971462941949c03410977c8bde",
+    "src/gateway/auth-rate-limit.test.ts": "05aeeab2071d0b97be51e2c2c54c5ad1f6fea7392313c3c9765b588d45fc61a4",
+    "src/gateway/auth-rate-limit.ts": "4fec4f2b06d9794e886e2354646a796920ec7532098b4d359b57566350aee6ba",
+    "src/gateway/auth-resolve.ts": "8749f62a2a595499bb64233e8ee31c9862b83785b1e3cd4452ff371f2a6e4137",
+    "src/gateway/auth-surface-resolution.ts": "45fd32ca98ea6bb6baa9b9bf6ec4d00e5de25d4b1ef554c6567ec3a4eba9136f",
+    "src/gateway/auth-token-resolution.ts": "f145e1b6985b9024affd7655d85eff039bc4a05b7564f40468d773bf2c483ba9",
+    "src/gateway/auth.test.ts": "bbf4594d78078360f7231660df7f21a61ed1a06ac8e3baba3a82f3ce788de178",
+    "src/gateway/auth.ts": "fb7a093c112a59162c66ef471fbf4910c2126fd044a47c48d8bfb0c6e1ec7d5f",
+    "src/gateway/boot.test.ts": "852439c25bd13588f5cfc442a9642a2e42c6f618a690609383a71904b596b808",
+    "src/gateway/boot.ts": "955e8a5191880b5bd951dedd2df8f8f63a52250fa3ad765dcfa42c4555a6c5fa",
+    "src/gateway/call.runtime.ts": "3d0da3cb31966ede2903971a7a853dc57477ae18bc70d3376ac5eaed90654496",
+    "src/gateway/call.test.ts": "f77def3927fe438b017ff5ec744740e70742b5877fdd479487dc792c068fdb3c",
+    "src/gateway/call.ts": "e30908be1aedca733543df65d26438a1cb009ec494546a56fdb63d20a5cf2ecc",
+    "src/gateway/canvas-capability.ts": "c675e7d5840c762ad14f172a4ed955ab579d8dc07d296817985549f40becdc4f",
+    "src/gateway/canvas-documents.test.ts": "377a21b25c44b7295ad149cdfdb9fb8d90ecde2cb9978613374f042a2674b514",
+    "src/gateway/canvas-documents.ts": "8b5af6598fd77d012dfb038d9ff9fedf8bec39ad316b9dbcd88f401dcaee17f2",
+    "src/gateway/channel-health-monitor.test.ts": "0b71cefc7f587bb55871abc1d29ec549cfee5d8189585b648edd68d38d2250ba",
+    "src/gateway/channel-health-monitor.ts": "13e62431cab212395eff9dd7bc8af6d691bac371b51960ee9dd7620a5fbf094f",
+    "src/gateway/server/ws-connection/message-handler.ts": "50f923174919648e599e0bb7b0a83d435314b8ab64665a3ab60b0d24736166dc",
+    "src/infra/exec-approvals-analysis.ts": "66e5ca2ac3d1d91d04570d210f3ea95c5a9eb8b64aad1f765d03eaa3361c6611",
+    "src/plugin-sdk/infra-runtime.ts": "00ca2e4178bdb833f3933b6d2ebf90a22a5ec99e79c14eaf1942432681a5039f"
+  },
+  "queries": [
+    {
+      "id": "boot-0",
+      "query": "Find the implementation of runBootOnce.",
+      "gold": {
+        "src/gateway/boot.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "boot",
+      "evidence": {
+        "path": "src/gateway/boot.ts",
+        "symbol": "runBootOnce"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "boot-1",
+      "query": "Where does the startup checklist save and then restore the main conversation mapping?",
+      "gold": {
+        "src/gateway/boot.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "boot",
+      "evidence": {
+        "path": "src/gateway/boot.ts",
+        "symbol": "runBootOnce"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "auth-rate-limit-0",
+      "query": "Find createAuthRateLimiter and its lockout logic.",
+      "gold": {
+        "src/gateway/auth-rate-limit.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "auth-rate-limit",
+      "evidence": {
+        "path": "src/gateway/auth-rate-limit.ts",
+        "symbol": "createAuthRateLimiter"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "auth-rate-limit-1",
+      "query": "Where are repeated login failures grouped by client address and expired from a sliding window?",
+      "gold": {
+        "src/gateway/auth-rate-limit.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "auth-rate-limit",
+      "evidence": {
+        "path": "src/gateway/auth-rate-limit.ts",
+        "symbol": "createAuthRateLimiter"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "canvas-documents-0",
+      "query": "Locate createCanvasDocument and its asset manifest writer.",
+      "gold": {
+        "src/gateway/canvas-documents.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "canvas-documents",
+      "evidence": {
+        "path": "src/gateway/canvas-documents.ts",
+        "symbol": "createCanvasDocument"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "canvas-documents-1",
+      "query": "Where is a PDF URL turned into a browser preview with an object and iframe fallback?",
+      "gold": {
+        "src/gateway/canvas-documents.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "canvas-documents",
+      "evidence": {
+        "path": "src/gateway/canvas-documents.ts",
+        "symbol": "createCanvasDocument"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "agent-prompt-0",
+      "query": "Find buildAgentMessageFromConversationEntries.",
+      "gold": {
+        "src/gateway/agent-prompt.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "agent-prompt",
+      "evidence": {
+        "path": "src/gateway/agent-prompt.ts",
+        "symbol": "buildAgentMessageFromConversationEntries"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "agent-prompt-1",
+      "query": "Where is the most recent user or tool reply chosen as the current message instead of an assistant reply?",
+      "gold": {
+        "src/gateway/agent-prompt.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "agent-prompt",
+      "evidence": {
+        "path": "src/gateway/agent-prompt.ts",
+        "symbol": "buildAgentMessageFromConversationEntries"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "assistant-identity-0",
+      "query": "Find resolveAssistantIdentity.",
+      "gold": {
+        "src/gateway/assistant-identity.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "assistant-identity",
+      "evidence": {
+        "path": "src/gateway/assistant-identity.ts",
+        "symbol": "resolveAssistantIdentity"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "assistant-identity-1",
+      "query": "Where are the assistant display name, avatar and emoji selected from configuration and workspace identity?",
+      "gold": {
+        "src/gateway/assistant-identity.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "assistant-identity",
+      "evidence": {
+        "path": "src/gateway/assistant-identity.ts",
+        "symbol": "resolveAssistantIdentity"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "canvas-capability-0",
+      "query": "Where is normalizeCanvasScopedUrl implemented?",
+      "gold": {
+        "src/gateway/canvas-capability.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "canvas-capability",
+      "evidence": {
+        "path": "src/gateway/canvas-capability.ts",
+        "symbol": "normalizeCanvasScopedUrl"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "canvas-capability-1",
+      "query": "Where is a canvas access capability moved from a scoped URL path into a query parameter?",
+      "gold": {
+        "src/gateway/canvas-capability.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "canvas-capability",
+      "evidence": {
+        "path": "src/gateway/canvas-capability.ts",
+        "symbol": "normalizeCanvasScopedUrl"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "auth-mode-policy-0",
+      "query": "Find hasAmbiguousGatewayAuthModeConfig.",
+      "gold": {
+        "src/gateway/auth-mode-policy.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "auth-mode-policy",
+      "evidence": {
+        "path": "src/gateway/auth-mode-policy.ts",
+        "symbol": "hasAmbiguousGatewayAuthModeConfig"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "auth-mode-policy-1",
+      "query": "Where does configuring both a gateway password and token without choosing an auth mode raise an error?",
+      "gold": {
+        "src/gateway/auth-mode-policy.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "auth-mode-policy",
+      "evidence": {
+        "path": "src/gateway/auth-mode-policy.ts",
+        "symbol": "hasAmbiguousGatewayAuthModeConfig"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "auth-install-policy-0",
+      "query": "Find shouldRequireGatewayTokenForInstall.",
+      "gold": {
+        "src/gateway/auth-install-policy.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "auth-install-policy",
+      "evidence": {
+        "path": "src/gateway/auth-install-policy.ts",
+        "symbol": "shouldRequireGatewayTokenForInstall"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "auth-install-policy-1",
+      "query": "Where does service installation ignore a temporary shell password and consider only durable environment settings?",
+      "gold": {
+        "src/gateway/auth-install-policy.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "auth-install-policy",
+      "evidence": {
+        "path": "src/gateway/auth-install-policy.ts",
+        "symbol": "shouldRequireGatewayTokenForInstall"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "auth-resolve-0",
+      "query": "Find the implementation of resolveEffectiveSharedGatewayAuth.",
+      "gold": {
+        "src/gateway/auth-resolve.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "auth-resolve",
+      "evidence": {
+        "path": "src/gateway/auth-resolve.ts",
+        "symbol": "resolveEffectiveSharedGatewayAuth"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "auth-resolve-1",
+      "query": "Where is the gateway authentication mode chosen with override, configured mode, password, then token precedence?",
+      "gold": {
+        "src/gateway/auth-resolve.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "auth-resolve",
+      "evidence": {
+        "path": "src/gateway/auth-resolve.ts",
+        "symbol": "resolveEffectiveSharedGatewayAuth"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "auth-surface-resolution-0",
+      "query": "Find resolveGatewayProbeSurfaceAuth.",
+      "gold": {
+        "src/gateway/auth-surface-resolution.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "auth-surface-resolution",
+      "evidence": {
+        "path": "src/gateway/auth-surface-resolution.ts",
+        "symbol": "resolveGatewayProbeSurfaceAuth"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "auth-surface-resolution-1",
+      "query": "Where can interactive authentication suppress environment fallback while selecting local or remote credentials?",
+      "gold": {
+        "src/gateway/auth-surface-resolution.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "auth-surface-resolution",
+      "evidence": {
+        "path": "src/gateway/auth-surface-resolution.ts",
+        "symbol": "resolveGatewayProbeSurfaceAuth"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "auth-token-resolution-0",
+      "query": "Find resolveGatewayAuthToken.",
+      "gold": {
+        "src/gateway/auth-token-resolution.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "auth-token-resolution",
+      "evidence": {
+        "path": "src/gateway/auth-token-resolution.ts",
+        "symbol": "resolveGatewayAuthToken"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "auth-token-resolution-1",
+      "query": "Where can an unresolved secret reference fall back to an environment token depending on an always or never policy?",
+      "gold": {
+        "src/gateway/auth-token-resolution.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "auth-token-resolution",
+      "evidence": {
+        "path": "src/gateway/auth-token-resolution.ts",
+        "symbol": "resolveGatewayAuthToken"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "channel-health-monitor-0",
+      "query": "Find startChannelHealthMonitor.",
+      "gold": {
+        "src/gateway/channel-health-monitor.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "channel-health-monitor",
+      "evidence": {
+        "path": "src/gateway/channel-health-monitor.ts",
+        "symbol": "startChannelHealthMonitor"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "channel-health-monitor-1",
+      "query": "Where are unhealthy messaging accounts restarted subject to a cooldown and an hourly restart cap?",
+      "gold": {
+        "src/gateway/channel-health-monitor.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "channel-health-monitor",
+      "evidence": {
+        "path": "src/gateway/channel-health-monitor.ts",
+        "symbol": "startChannelHealthMonitor"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "agent-list-0",
+      "query": "Find listGatewayAgentsBasic.",
+      "gold": {
+        "src/gateway/agent-list.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "agent-list",
+      "evidence": {
+        "path": "src/gateway/agent-list.ts",
+        "symbol": "listGatewayAgentsBasic"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "agent-list-1",
+      "query": "Where are agent directories on disk combined with configured agents and filtered by an explicit allowlist?",
+      "gold": {
+        "src/gateway/agent-list.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "agent-list",
+      "evidence": {
+        "path": "src/gateway/agent-list.ts",
+        "symbol": "listGatewayAgentsBasic"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "agent-event-assistant-text-0",
+      "query": "Find resolveAssistantStreamDeltaText.",
+      "gold": {
+        "src/gateway/agent-event-assistant-text.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "agent-event-assistant-text",
+      "evidence": {
+        "path": "src/gateway/agent-event-assistant-text.ts",
+        "symbol": "resolveAssistantStreamDeltaText"
+      },
+      "query_style": "identifier"
+    },
+    {
+      "id": "agent-event-assistant-text-1",
+      "query": "Where does streamed assistant output prefer a delta string, fall back to the full text string, then return empty?",
+      "gold": {
+        "src/gateway/agent-event-assistant-text.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "agent-event-assistant-text",
+      "evidence": {
+        "path": "src/gateway/agent-event-assistant-text.ts",
+        "symbol": "resolveAssistantStreamDeltaText"
+      },
+      "query_style": "behavior"
+    },
+    {
+      "id": "train-unrelated-0",
+      "query": "What is the recipe for sourdough bread?",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "train",
+      "family": "train-negative-0",
+      "query_style": "general"
+    },
+    {
+      "id": "train-unrelated-1",
+      "query": "Explain Saturn ring formation.",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "train",
+      "family": "train-negative-1",
+      "query_style": "general"
+    },
+    {
+      "id": "train-unrelated-2",
+      "query": "Who composed the opera Carmen?",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "train",
+      "family": "train-negative-2",
+      "query_style": "general"
+    },
+    {
+      "id": "train-unrelated-3",
+      "query": "Where is the PostgreSQL schema migration rollback engine?",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "train",
+      "family": "train-negative-3",
+      "query_style": "absent_code_feature"
+    },
+    {
+      "id": "train-unrelated-4",
+      "query": "Locate the CUDA matrix multiplication kernel.",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "train",
+      "family": "train-negative-4",
+      "query_style": "absent_code_feature"
+    },
+    {
+      "id": "train-unrelated-5",
+      "query": "Where is the shopping cart sales tax calculation?",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "train",
+      "family": "train-negative-5",
+      "query_style": "absent_code_feature"
+    },
+    {
+      "id": "held_out-unrelated-0",
+      "query": "How do I grow tomatoes indoors?",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "held_out",
+      "family": "held_out-negative-0",
+      "query_style": "general"
+    },
+    {
+      "id": "held_out-unrelated-1",
+      "query": "Describe the rules of cricket.",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "held_out",
+      "family": "held_out-negative-1",
+      "query_style": "general"
+    },
+    {
+      "id": "held_out-unrelated-2",
+      "query": "What is the plot of the novel Moby Dick?",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "held_out",
+      "family": "held_out-negative-2",
+      "query_style": "general"
+    },
+    {
+      "id": "held_out-unrelated-3",
+      "query": "Where is the Vulkan shader compiler implemented?",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "held_out",
+      "family": "held_out-negative-3",
+      "query_style": "absent_code_feature"
+    },
+    {
+      "id": "held_out-unrelated-4",
+      "query": "Find the JPEG image compression encoder.",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "held_out",
+      "family": "held_out-negative-4",
+      "query_style": "absent_code_feature"
+    },
+    {
+      "id": "held_out-unrelated-5",
+      "query": "Where is the mortgage amortization payment formula?",
+      "gold": {},
+      "kind": "unrelated",
+      "split": "held_out",
+      "family": "held_out-negative-5",
+      "query_style": "absent_code_feature"
+    },
+    {
+      "id": "test-intent-boot.test.ts",
+      "query": "Find tests verifying runBootOnce restores the main session mapping.",
+      "gold": {
+        "src/gateway/boot.test.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "boot",
+      "query_style": "test_intent",
+      "evidence": {
+        "path": "src/gateway/boot.test.ts",
+        "anchor": "runBootOnce"
+      }
+    },
+    {
+      "id": "test-intent-agent-prompt.test.ts",
+      "query": "Find the tests that ensure content-array chat bodies are extracted as text.",
+      "gold": {
+        "src/gateway/agent-prompt.test.ts": 3
+      },
+      "kind": "relevant",
+      "split": "train",
+      "family": "agent-prompt",
+      "query_style": "test_intent",
+      "evidence": {
+        "path": "src/gateway/agent-prompt.test.ts",
+        "anchor": "extracts text from content-array body"
+      }
+    },
+    {
+      "id": "test-intent-channel-health-monitor.test.ts",
+      "query": "Find tests asserting the channel health monitor respects the restart cooldown.",
+      "gold": {
+        "src/gateway/channel-health-monitor.test.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "channel-health-monitor",
+      "query_style": "test_intent",
+      "evidence": {
+        "path": "src/gateway/channel-health-monitor.test.ts",
+        "anchor": "applies cooldown"
+      }
+    },
+    {
+      "id": "test-intent-android-node.capabilities.policy-config.test.ts",
+      "query": "Find tests for wrapped and legacy remote configuration snapshot payloads.",
+      "gold": {
+        "src/gateway/android-node.capabilities.policy-config.test.ts": 3
+      },
+      "kind": "relevant",
+      "split": "held_out",
+      "family": "android-node.capabilities.policy-config",
+      "query_style": "test_intent",
+      "evidence": {
+        "path": "src/gateway/android-node.capabilities.policy-config.test.ts",
+        "anchor": "unwrapRemoteConfigSnapshot"
+      }
+    }
+  ],
+  "label_policy": "Gold is the requested implementation file, not every caller or test. Two queries per target are correlated; report family count and query count separately. Negative queries request content absent from this 34-file corpus."
+}

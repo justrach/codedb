@@ -1,0 +1,253 @@
+{
+  "schema_version": 1,
+  "id": "express-jina-accuracy-heldout-v1",
+  "description": "Fresh cross-repository accuracy holdout, authored before collecting results. Source-reviewed implementation and test-finding questions; correlated targets, not an exhaustive relevance annotation.",
+  "source_revision": "023767fe9872e029271df1418f73401bff20ff40",
+  "corpus_files": {
+    "lib/application.js": "6d7e08355025786982d17042fc0355b6a5e9339545dc27e2782b3aaa28a7bc04",
+    "lib/express.js": "4f35e8273a5e78c35e778d14e4a8c80a81ca3e1fc8047dc87d2077b860404572",
+    "lib/request.js": "43f31d579af68cceab547849dad40726cbd570e16f4c3f447c238c3e8c7048c8",
+    "lib/response.js": "969ca139deb9d33c144ee08050c16f4af5d5cfde60988d8f767b0763e1206f9a",
+    "lib/utils.js": "4bd3bf9c911e086d1911954708de7a6c384ed924360e3fd1d4a43c98bd68b112",
+    "lib/view.js": "74f4171b66263e22481820bc5975708f7dd8a61484f570aac7c5b4ab77ecbd79",
+    "test/Route.js": "4607c2b70f5b897c1cb85f8a2bc1067944c4b36828bc73d140732851acc9782e",
+    "test/Router.js": "721ffc840d1c4aad931d859a661c98f07eb56389f1c3a1902cb06fae4d4c0c32",
+    "test/app.all.js": "ae892a75df019ae2eda9cbd79dde06b6fc5a408e8aeaed4384f61311452e7262",
+    "test/app.engine.js": "30d1606056440d76ffef7b74ee7ccfca94adbf85ae456ee58bcd66ad9e4fd3c9",
+    "test/app.head.js": "1826481948a30b17ebefa94d235711230e2548f9f22a6064065dbbe953f7a656",
+    "test/app.js": "826034bcb123e71507dc0070cc7d6223c6944eb72c0f76fce47d931a577e96dc",
+    "test/app.listen.js": "cf6de481a11d1ec873c4d6d08182720021e9f7848353edd471d9a44cfd6449cb",
+    "test/app.locals.js": "740de98086b2f9b8d72c5d3c20711c5dd2ff4b421065a779b299a9e4d22dab15",
+    "test/app.options.js": "d4af092f1014bec6d66bc2da3cc29bf65648610c489f717c434bd4fc2ad58057",
+    "test/app.param.js": "5d214dfa424f0e87766fb58655f188fb24536afccf3f4a426c6bab7eb8a9d60e",
+    "test/app.render.js": "65cedddf807447609b5f8cbc381c03ca814e70d6d76c870dd8ec46d1c8d5a66c",
+    "test/app.request.js": "b7cdf42087d8f693c2c3a73741df9bc41cfbce555e30fcd1d2d19832a4d0f649",
+    "test/app.response.js": "fa825e21a28538d00ae9877198e7644090447fa3660b842aa43b4a32e16f6869",
+    "test/app.route.js": "18ddd7005789c9455a09a88c2339223c41fbcbe75d5a6168b61f61bb38814be6",
+    "test/app.router.js": "b0561e5e39046b594519e6e61e1b4d57ee4dcdcdb97772d2884cced3617b023d",
+    "test/app.routes.error.js": "69379b4852515e5ab9f010390eb2eaa1d18250c1ac1ffb8c1ecc6fbabab2190a",
+    "test/app.use.js": "5bd9a8b9464ddd5b3c0fd49b21a822ca8afa5d89263e482d53adb36282305ef0",
+    "test/config.js": "4208ea05427049016181ef7a0e2ad6a3388cbe53bcb60281c625ee42e1d1aa8c",
+    "test/exports.js": "4d8389207f6b4693dc5792f79f61f719a70389fe1900c04c83ff31ef06b07001",
+    "test/express.json.js": "143f7bd2d26d94725227629f0f32723471da6bd9f299c44b0191400a0c990820",
+    "test/express.raw.js": "453ae81d1de129ae902fbb91dbd9492897bee37e183eb93e8b2059c6d17d279b",
+    "test/express.static.js": "edbd3ac4ffd15ac2b57a9e7a0e107e68a493563de4a4c25ecb48663e85a2c5b1",
+    "test/express.text.js": "2e9244502a31ae1ce18d0c16e4ee79980b25c9e8006e280351e1bfd5ecf079ce",
+    "test/express.urlencoded.js": "dd635b20f32b600c73094695e6176cd75c59e3f8e51362a5e9245228740ed47e",
+    "test/middleware.basic.js": "eb08ba656fa64c5a428879b6487dce31f7e4c993529a1b660a208d4f80ca13cc",
+    "test/regression.js": "030464330427a72e495502b7d28e4192f8c364348ccccb4c3ea82f5dc4e64383",
+    "test/req.protocol.js": "95ade060958d64c6981c1a138f33628040293acaee094d93728fe84eaa9a8a3d",
+    "test/res.format.js": "bfc02443c7ebc62e716dfc9e121613e27507d63382db8ce3ea430b9019c37c8d",
+    "test/utils.js": "022f171575ba38ed5f595ec8080da0bb4578130d280942a0d4aea019a172711e"
+  },
+  "queries": [
+    {
+      "id": "express-00",
+      "query": "Where does the Express application connect request and response objects, install their prototypes, then dispatch into the router?",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/application.js": 3
+      },
+      "evidence": {
+        "path": "lib/application.js",
+        "anchor": "app.handle"
+      }
+    },
+    {
+      "id": "express-01",
+      "query": "Where does mounting a child application restore the parent request and response prototypes after the child finishes?",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/application.js": 3
+      },
+      "evidence": {
+        "path": "lib/application.js",
+        "anchor": "app.use"
+      }
+    },
+    {
+      "id": "express-02",
+      "query": "Where is the request protocol derived from the encrypted socket and forwarded protocol only when the proxy is trusted?",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/request.js": 3
+      },
+      "evidence": {
+        "path": "lib/request.js",
+        "anchor": "defineGetter(req, 'protocol'"
+      }
+    },
+    {
+      "id": "express-03",
+      "query": "Where does the request freshness check reject unsafe methods and non-success response status codes?",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/request.js": 3
+      },
+      "evidence": {
+        "path": "lib/request.js",
+        "anchor": "defineGetter(req, 'fresh'"
+      }
+    },
+    {
+      "id": "express-04",
+      "query": "Where does Express sendFile reject a relative filename unless a root option was supplied?",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/response.js": 3
+      },
+      "evidence": {
+        "path": "lib/response.js",
+        "anchor": "res.sendFile"
+      }
+    },
+    {
+      "id": "express-05",
+      "query": "Where does response content negotiation choose an Accept handler or call a default handler before returning not acceptable?",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/response.js": 3
+      },
+      "evidence": {
+        "path": "lib/response.js",
+        "anchor": "res.format"
+      }
+    },
+    {
+      "id": "express-06",
+      "query": "Where is an ETag setting compiled from a custom function, weak mode, or strong mode into a generator?",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/utils.js": 3
+      },
+      "evidence": {
+        "path": "lib/utils.js",
+        "anchor": "exports.compileETag"
+      }
+    },
+    {
+      "id": "express-07",
+      "query": "Where are trust-proxy settings converted from hop counts or comma-separated addresses into a predicate?",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/utils.js": 3
+      },
+      "evidence": {
+        "path": "lib/utils.js",
+        "anchor": "exports.compileTrust"
+      }
+    },
+    {
+      "id": "express-08",
+      "query": "Where does template lookup try multiple root directories to find a view?",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/view.js": 3
+      },
+      "evidence": {
+        "path": "lib/view.js",
+        "anchor": "View.prototype.lookup"
+      }
+    },
+    {
+      "id": "express-09",
+      "query": "Where is a synchronously completed template-engine callback deferred to the next tick?",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/view.js": 3
+      },
+      "evidence": {
+        "path": "lib/view.js",
+        "anchor": "View.prototype.render"
+      }
+    },
+    {
+      "id": "express-10",
+      "query": "Find createApplication where event-emitter methods and application methods are mixed into the callable Express function.",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/express.js": 3
+      },
+      "evidence": {
+        "path": "lib/express.js",
+        "anchor": "function createApplication"
+      }
+    },
+    {
+      "id": "express-11",
+      "query": "Where does the public Express entry point export JSON, text, raw and URL-encoded body-parser middleware?",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "lib/express.js": 3
+      },
+      "evidence": {
+        "path": "lib/express.js",
+        "anchor": "exports.json = bodyParser.json"
+      }
+    },
+    {
+      "id": "express-12",
+      "query": "Find the tests for mounting a sub-application with app.use.",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "test/app.use.js": 3
+      },
+      "evidence": {
+        "path": "test/app.use.js",
+        "anchor": "describe"
+      }
+    },
+    {
+      "id": "express-13",
+      "query": "Find the tests covering response format content negotiation and its default callback.",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "test/res.format.js": 3
+      },
+      "evidence": {
+        "path": "test/res.format.js",
+        "anchor": "describe"
+      }
+    },
+    {
+      "id": "express-14",
+      "query": "Find the tests for request protocol and trusted forwarded headers.",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "test/req.protocol.js": 3
+      },
+      "evidence": {
+        "path": "test/req.protocol.js",
+        "anchor": "describe"
+      }
+    },
+    {
+      "id": "express-15",
+      "query": "Find the compileETag unit tests for weak and strong entity tag generators.",
+      "kind": "relevant",
+      "split": "held_out",
+      "gold": {
+        "test/utils.js": 3
+      },
+      "evidence": {
+        "path": "test/utils.js",
+        "anchor": "compileETag"
+      }
+    }
+  ]
+}

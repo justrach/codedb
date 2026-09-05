@@ -1,0 +1,13 @@
+{
+  "candidate_sha256": "8eb516f09e7593a48a2c49a09b669d2767f4ae1255751cd31c2a53da3cd0f6c2",
+  "release_fast_build": "passed; restored after unit suite debug build, byte-identical to frozen copy",
+  "unit_tests": "31/31 steps; 1089/1093 executed tests passed; 4 skipped, other steps cached",
+  "frozen_binary_mcp_e2e": "76/76 passed",
+  "python_compilation": "passed",
+  "suite_holdout_and_repository_guards": "missing freeze and invalid repository rejected before execution",
+  "baseline_source_reconstruction": "ADR 0009 patch reproduces saved source byte-for-byte",
+  "comparison_calls": 632,
+  "live_path_failures": 0,
+  "ranking_regressions_across_six_repositories": 0,
+  "diff_check": "passed"
+}

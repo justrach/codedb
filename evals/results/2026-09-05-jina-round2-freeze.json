@@ -1,0 +1,15 @@
+{
+  "frozen_at": "2026-09-05T02:09:55.294882+00:00",
+  "policy": {
+    "ann_rrf_k": 1,
+    "ann_semantic_weight": 2.5,
+    "implementation_test_weight": 0.5,
+    "ann_oversampling": 4,
+    "unique_explicit_definition_priority": true
+  },
+  "selection": "Higher macro-average top1 and NDCG on the two observed repositories, without per-query top-five recall regressions. Express gains four first results; OpenClaw loses one.",
+  "holdout_acceptance": "No per-query recall@5 regressions; aggregate top1 and NDCG@5 must not decline versus ADR 0008 incumbent. Reject on execution/provider failures. No tuning after holdout.",
+  "candidate_sha256": "b331831a54f6be30e2a9c3ac71c911d596b4103b592c58c77a6643f8ea9371c8",
+  "baseline_sha256": "d4731455e2c20d94dc9f341eb3a006f766a7e3f1d4a68833fbe6bd3887f94bce",
+  "dataset_sha256": "d7bc0f775aedf4947f4982cb2d5ef7f8df1c9158449fe4eaace38ce0f5705b60"
+}
