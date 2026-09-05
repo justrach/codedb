@@ -56,6 +56,7 @@ Preserve calibration, hosted exact fallback, and the 4× ANN pool. Do not run lo
 models or exchange retrieval breadth for speed. Release integration: 0.2.5853, based on the validated 0.2.5852 experiments. Old main Qwen experiments
 are obsolete and do not govern this integration.
 
+Before changing intent, read [ADR 0011](docs/adr/0011-release-intent-guards.md) for release review fixes.
 Read [ADR 0010](docs/adr/0010-multilingual-datasets-and-test-intent.md),
 [CLOUD.md](CLOUD.md), and [evals/](evals/README.md). The suite now has 128 questions
 across six repositories. The latest native change recognizes whole-word test

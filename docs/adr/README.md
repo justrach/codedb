@@ -1,5 +1,7 @@
 # Retrieval decisions
 
+- [ADR 0011](0011-release-intent-guards.md): release hardening for testing-infrastructure and call/use intent.
+
 - [ADR 0010](0010-multilingual-datasets-and-test-intent.md): current multilingual suite, native test-intent improvement, and frozen Requests results.
 
 - [ADR 0009](0009-jina-implementation-accuracy.md): current two-value accuracy improvement, explicit development tradeoff, and frozen Flask validation.

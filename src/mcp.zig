@@ -3660,17 +3660,59 @@ fn isExplicitContextIdentifier(word: []const u8) bool {
 
 fn contextRequestsTests(task: []const u8) bool {
     var words = std.mem.tokenizeAny(u8, task, " \t\r\n.,;:!?()[]{}\"'`/\\-");
+    var seeking = false;
     while (words.next()) |word| {
-        if (std.ascii.eqlIgnoreCase(word, "test") or std.ascii.eqlIgnoreCase(word, "tests")) return true;
+        if (!seeking) {
+            const verbs = [_][]const u8{ "find", "locate", "show", "list", "identify", "where" };
+            for (verbs) |verb| {
+                if (std.ascii.eqlIgnoreCase(word, verb)) seeking = true;
+            }
+            if (seeking) continue;
+            const prefixes = [_][]const u8{ "please", "can", "could", "you" };
+            var prefix = false;
+            for (prefixes) |allowed| {
+                if (std.ascii.eqlIgnoreCase(word, allowed)) prefix = true;
+            }
+            if (!prefix) return false;
+            continue;
+        }
+        if (std.ascii.eqlIgnoreCase(word, "how") or std.ascii.eqlIgnoreCase(word, "why")) return false;
+        if (std.ascii.eqlIgnoreCase(word, "tests")) {
+            const next = words.next() orelse return true;
+            const infrastructure = [_][]const u8{ "runner", "discovery", "framework", "infrastructure", "generation", "implementation" };
+            for (infrastructure) |noun| {
+                if (std.ascii.eqlIgnoreCase(next, noun)) return false;
+            }
+            return true;
+        }
+        if (std.ascii.eqlIgnoreCase(word, "test")) {
+            const next = words.next() orelse return true;
+            const relations = [_][]const u8{ "for", "of", "that", "which", "covering", "verifying", "case", "cases" };
+            for (relations) |relation| {
+                if (std.ascii.eqlIgnoreCase(next, relation)) return true;
+            }
+            return false;
+        }
     }
     return false;
 }
 
 fn contextWantsDefinitionPriority(task: []const u8) bool {
-    return !contextRequestsTests(task) and
-        !containsAsciiIgnoreCase(task, "caller") and
-        !containsAsciiIgnoreCase(task, "usage") and
-        !containsAsciiIgnoreCase(task, "reference");
+    if (contextRequestsTests(task)) return false;
+    var words = std.mem.tokenizeAny(u8, task, " \t\r\n.,;:!?()[]{}\"'`/\\-");
+    const references = [_][]const u8{
+        "call", "calls", "called", "calling", "caller", "callers",
+        "use", "uses", "used", "using", "usage", "usages",
+        "reference", "references", "referenced", "referencing",
+        "invoke", "invokes", "invoked", "invoking", "invocation", "invocations",
+        "consumer", "consumers", "dependent", "dependents",
+    };
+    while (words.next()) |word| {
+        for (references) |reference| {
+            if (std.ascii.eqlIgnoreCase(word, reference)) return false;
+        }
+    }
+    return true;
 }
 
 test "context definition priority requires a code-shaped name and compatible intent" {
@@ -3709,6 +3751,21 @@ test "ANN test intent recognizes whole words and respects test exclusions" {
     try testing.expect(!contextRequestsTests("Find the latest contest results"));
     try testing.expect(contextWantsDefinitionPriority("Find the latest parse_request implementation"));
     try testing.expectEqual(@as(f32, 1), contextAnnIntentWeight("src/chain.rs", "Where is iteration implemented? Exclude tests."));
+}
+
+test "release intent guards distinguish infrastructure and dependency questions" {
+    try testing.expect(!contextRequestsTests("Where is the test runner implemented?"));
+    try testing.expect(!contextRequestsTests("How does test discovery work?"));
+    try testing.expect(!contextRequestsTests("Find how tests are discovered"));
+    try testing.expect(!contextRequestsTests("Find the test runner"));
+    try testing.expect(contextRequestsTests("Find tests for the test runner"));
+    try testing.expect(contextRequestsTests("Could you find a test for parse_request?"));
+    try testing.expectEqual(@as(f32, 1), contextAnnIntentWeight("src/runner.zig", "Where is the test runner implemented?"));
+    try testing.expect(!contextWantsDefinitionPriority("What calls parse_request?"));
+    try testing.expect(!contextWantsDefinitionPriority("Which functions use resolveGatewayAuthToken?"));
+    try testing.expect(!contextWantsDefinitionPriority("Where is parse_request used?"));
+    try testing.expect(!contextWantsDefinitionPriority("Find functions invoking parse_request"));
+    try testing.expect(contextWantsDefinitionPriority("Find the implementation of useGatewayAuth"));
 }
 
 const ContextPathIntent = struct {
