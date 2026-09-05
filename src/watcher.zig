@@ -94,7 +94,9 @@ pub const DirState = struct {
     inode: std.posix.ino_t,
 };
 pub const DirMap = std.StringHashMap(DirState);
-pub const DirtySet = std.StringHashMap(void);
+/// Native events must force a read even if metadata happens to match. Paths
+/// outside the watch budget only need a metadata check on each poll.
+pub const DirtySet = std.StringHashMap(enum { event, poll });
 pub var debug_unchanged_full_scans: usize = 0;
 pub var debug_unchanged_file_stats: usize = 0;
 
@@ -1591,9 +1593,13 @@ const FileChangeWatch = struct {
 
     fn addUnwatched(self: *const FileChangeWatch, dirty: *DirtySet) void {
         for (self.unwatched.items) |path| {
-            dirty.put(path, {}) catch {};
+            const entry = dirty.getOrPut(path) catch continue;
+            if (!entry.found_existing) entry.value_ptr.* = .poll;
         }
-        for (self.unwatched_dirs.items) |path| dirty.put(path, {}) catch {};
+        for (self.unwatched_dirs.items) |path| {
+            const entry = dirty.getOrPut(path) catch continue;
+            if (!entry.found_existing) entry.value_ptr.* = .poll;
+        }
     }
 
     fn arm(self: *FileChangeWatch, io: std.Io, root_dir: std.Io.Dir, known: *const FileMap, dirs: *const DirMap) void {
@@ -1993,11 +1999,11 @@ const FileChangeWatch = struct {
         while (i < @as(usize, @intCast(n))) : (i += 1) {
             if (self.ident_to_path.get(events[i].ident)) |path| {
                 const copy = dirty.allocator.dupe(u8, path) catch continue;
-                dirty.put(copy, {}) catch {};
+                dirty.put(copy, .event) catch {};
             }
             if (self.ident_to_dir.get(events[i].ident)) |path| {
                 const copy = dirty.allocator.dupe(u8, path) catch continue;
-                dirty.put(copy, {}) catch {};
+                dirty.put(copy, .event) catch {};
             }
         }
     }
@@ -2007,13 +2013,13 @@ const FileChangeWatch = struct {
             var it = self.ident_to_dir.iterator();
             while (it.next()) |entry| {
                 const copy = dirty.allocator.dupe(u8, entry.value_ptr.*) catch continue;
-                dirty.put(copy, {}) catch {};
+                dirty.put(copy, .event) catch {};
             }
         } else if (comptime watch_inotify) {
             var it = self.wd_to_dir.iterator();
             while (it.next()) |entry| {
                 const copy = dirty.allocator.dupe(u8, entry.value_ptr.*) catch continue;
-                dirty.put(copy, {}) catch {};
+                dirty.put(copy, .event) catch {};
             }
         }
     }
@@ -2049,7 +2055,7 @@ const FileChangeWatch = struct {
                         offset += ev_size;
                         continue;
                     };
-                    dirty.put(copy, {}) catch {};
+                    dirty.put(copy, .event) catch {};
                 }
                 if (ev.getName()) |name| {
                     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -2061,7 +2067,7 @@ const FileChangeWatch = struct {
                         offset += ev_size;
                         continue;
                     };
-                    dirty.put(copy, {}) catch {};
+                    dirty.put(copy, .event) catch {};
                 }
             }
             offset += ev_size;
@@ -2718,7 +2724,7 @@ fn dirtyForcesDirectoryScan(dirty: ?*const DirtySet, known: *const FileMap, pref
 
 fn dirtyForcesFileRead(dirty: ?*const DirtySet, prefix: []const u8, path: []const u8) bool {
     const set = dirty orelse return false;
-    return set.get(prefix) != null or set.get(path) != null;
+    return set.get(prefix) == .event or set.get(path) == .event;
 }
 
 fn walkRel(
@@ -3203,6 +3209,98 @@ test "issue-685: watcher diff updates document edges for modify add and delete" 
     const links = explorer.document_graph.getForwardDeps("docs/a.md") orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(usize, 1), links.len);
     try testing.expectEqualStrings("docs/c.md", links[0]);
+}
+
+test "watch budget fallback does not reread unchanged files" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "src");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/a.py", .data = "def original():\n    return 1\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.setRoot(io, root);
+    var known = FileMap.init(testing.allocator);
+    defer {
+        var it = known.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    var dirs = DirMap.init(testing.allocator);
+    defer {
+        var it = dirs.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+    const queue = try testing.allocator.create(EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = .{};
+    // Establish exact metadata, as the startup arm/reconcile does.
+    for (0..2) |_| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try incrementalDiffInner(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator());
+    }
+    const first_seq = store.currentSeq();
+    var watch = FileChangeWatch.init(testing.allocator, 0);
+    defer watch.deinit(io);
+    // Exercise both an unwatched file and an unwatched directory, independent
+    // of which native notification backend is available on the test host.
+    watch.rememberUnwatched("src/a.py");
+    watch.rememberUnwatchedDir("src");
+    for (0..3) |_| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var dirty = DirtySet.init(arena.allocator());
+        watch.addUnwatched(&dirty);
+        try incrementalDiffDirty(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+        // Startup left hash=0. Rehashing an unchanged file would produce a
+        // spurious version on the first fallback cycle and replace that hash.
+        try testing.expectEqual(first_seq, store.currentSeq());
+        try testing.expectEqual(@as(u64, 0), known.get("src/a.py").?.hash);
+    }
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var dirty = DirtySet.init(arena.allocator());
+        try dirty.put("src/a.py", .event);
+        watch.addUnwatched(&dirty);
+        // A native event takes precedence over fallback polling and still
+        // forces a content read when the metadata is unchanged.
+        try incrementalDiffDirty(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+        try testing.expect(known.get("src/a.py").?.hash != 0);
+        try testing.expect(store.currentSeq() > first_seq);
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/a.py", .data = "def modified():\n    return 2\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/b.py", .data = "def sibling():\n    return 3\n" });
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var dirty = DirtySet.init(arena.allocator());
+        watch.addUnwatched(&dirty);
+        try incrementalDiffDirty(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+    }
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try testing.expect(try explorer.renderOutline("src/a.py", testing.allocator, &out, false));
+    try testing.expect(std.mem.indexOf(u8, out.items, "modified") != null);
+    try testing.expect(explorer.outlines.contains("src/b.py"));
+    try tmp.dir.deleteFile(io, "src/a.py");
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var dirty = DirtySet.init(arena.allocator());
+        watch.addUnwatched(&dirty);
+        try incrementalDiffDirty(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+    }
+    try testing.expect(!explorer.outlines.contains("src/a.py"));
 }
 
 test "dir-mtime prune still stats known files and notices new siblings" {

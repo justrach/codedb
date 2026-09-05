@@ -92,6 +92,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "test-core", .path = "src/test_core.zig", .needs_nanoregex = false },
         .{ .name = "test-explore", .path = "src/test_explore.zig", .needs_nanoregex = true },
         .{ .name = "test-index", .path = "src/test_index.zig", .needs_nanoregex = true },
+        .{ .name = "test-watcher", .path = "src/watcher.zig", .needs_nanoregex = true },
         .{ .name = "test-parser", .path = "src/test_parser.zig", .needs_nanoregex = true },
         .{ .name = "test-search", .path = "src/test_search.zig", .needs_nanoregex = true },
         .{ .name = "test-snapshot", .path = "src/test_snapshot.zig", .needs_nanoregex = true },

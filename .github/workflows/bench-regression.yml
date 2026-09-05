@@ -52,7 +52,7 @@ jobs:
 
       - name: Run macOS watcher unit and process gates
         run: |
-          zig build test-index -Dtest-filter=issue-709
+          zig build test-watcher
           zig build -Doptimize=ReleaseFast
           python3 scripts/fd_regression_test.py --binary zig-out/bin/codedb
 
