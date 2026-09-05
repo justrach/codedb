@@ -64,4 +64,3 @@ def context(binary, root, environment, query):
     paths = next((list(dict.fromkeys(item["path"] for item in section.get("items", [])))
                   for section in payload.get("sections", []) if section["id"] == "most_relevant_files"), [])
     return {"paths": paths, "wall_ms": duration, "retrieval": payload["retrieval"]}
-
