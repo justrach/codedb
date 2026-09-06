@@ -1,0 +1,323 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "zig": "0.17.0-dev.813+2153f8143",
+  "optimization": "ReleaseFast",
+  "baseline_production_commit": "4eaca89",
+  "candidate_change": "Swap pure predicate evaluation order in FileChangeWatch.affectedByDirtyDirectory; retain all hashing and registrations.",
+  "fixed_work": {
+    "files": 512,
+    "watch_budget": 256,
+    "measured_cycles": 20,
+    "warmup_cycles": 3,
+    "pairs": 8,
+    "order": "AB then BA, alternating",
+    "test_seed": "0x747",
+    "notes": "Both filtered test binaries contain the same opt-in fixture. Startup, arming and sleeping are excluded from phase timings.",
+    "observations": [
+      {
+        "pair": 0,
+        "label": "baseline",
+        "false": {
+          "diff_ns": 131425000,
+          "rearm_ns": 2000,
+          "total_ns": 131427000
+        },
+        "true": {
+          "diff_ns": 142538000,
+          "rearm_ns": 194941000,
+          "total_ns": 337479000
+        }
+      },
+      {
+        "pair": 0,
+        "label": "candidate",
+        "false": {
+          "diff_ns": 122573000,
+          "rearm_ns": 3000,
+          "total_ns": 122576000
+        },
+        "true": {
+          "diff_ns": 125463000,
+          "rearm_ns": 2915000,
+          "total_ns": 128378000
+        }
+      },
+      {
+        "pair": 1,
+        "label": "candidate",
+        "false": {
+          "diff_ns": 126970000,
+          "rearm_ns": 3000,
+          "total_ns": 126973000
+        },
+        "true": {
+          "diff_ns": 170376000,
+          "rearm_ns": 3053000,
+          "total_ns": 173429000
+        }
+      },
+      {
+        "pair": 1,
+        "label": "baseline",
+        "false": {
+          "diff_ns": 121379000,
+          "rearm_ns": 3000,
+          "total_ns": 121382000
+        },
+        "true": {
+          "diff_ns": 155088000,
+          "rearm_ns": 199471000,
+          "total_ns": 354559000
+        }
+      },
+      {
+        "pair": 2,
+        "label": "baseline",
+        "false": {
+          "diff_ns": 125495000,
+          "rearm_ns": 1000,
+          "total_ns": 125496000
+        },
+        "true": {
+          "diff_ns": 148007000,
+          "rearm_ns": 195638000,
+          "total_ns": 343645000
+        }
+      },
+      {
+        "pair": 2,
+        "label": "candidate",
+        "false": {
+          "diff_ns": 118327000,
+          "rearm_ns": 1000,
+          "total_ns": 118328000
+        },
+        "true": {
+          "diff_ns": 120798000,
+          "rearm_ns": 2876000,
+          "total_ns": 123674000
+        }
+      },
+      {
+        "pair": 3,
+        "label": "candidate",
+        "false": {
+          "diff_ns": 118605000,
+          "rearm_ns": 0,
+          "total_ns": 118605000
+        },
+        "true": {
+          "diff_ns": 145635000,
+          "rearm_ns": 2976000,
+          "total_ns": 148611000
+        }
+      },
+      {
+        "pair": 3,
+        "label": "baseline",
+        "false": {
+          "diff_ns": 118712000,
+          "rearm_ns": 1000,
+          "total_ns": 118713000
+        },
+        "true": {
+          "diff_ns": 143471000,
+          "rearm_ns": 195444000,
+          "total_ns": 338915000
+        }
+      },
+      {
+        "pair": 4,
+        "label": "baseline",
+        "false": {
+          "diff_ns": 202009000,
+          "rearm_ns": 2000,
+          "total_ns": 202011000
+        },
+        "true": {
+          "diff_ns": 156005000,
+          "rearm_ns": 195085000,
+          "total_ns": 351090000
+        }
+      },
+      {
+        "pair": 4,
+        "label": "candidate",
+        "false": {
+          "diff_ns": 120097000,
+          "rearm_ns": 2000,
+          "total_ns": 120099000
+        },
+        "true": {
+          "diff_ns": 119138000,
+          "rearm_ns": 2875000,
+          "total_ns": 122013000
+        }
+      },
+      {
+        "pair": 5,
+        "label": "candidate",
+        "false": {
+          "diff_ns": 120634000,
+          "rearm_ns": 1000,
+          "total_ns": 120635000
+        },
+        "true": {
+          "diff_ns": 146870000,
+          "rearm_ns": 2963000,
+          "total_ns": 149833000
+        }
+      },
+      {
+        "pair": 5,
+        "label": "baseline",
+        "false": {
+          "diff_ns": 118304000,
+          "rearm_ns": 2000,
+          "total_ns": 118306000
+        },
+        "true": {
+          "diff_ns": 130002000,
+          "rearm_ns": 195093000,
+          "total_ns": 325095000
+        }
+      },
+      {
+        "pair": 6,
+        "label": "baseline",
+        "false": {
+          "diff_ns": 158223000,
+          "rearm_ns": 0,
+          "total_ns": 158223000
+        },
+        "true": {
+          "diff_ns": 217392000,
+          "rearm_ns": 214170000,
+          "total_ns": 431562000
+        }
+      },
+      {
+        "pair": 6,
+        "label": "candidate",
+        "false": {
+          "diff_ns": 119733000,
+          "rearm_ns": 0,
+          "total_ns": 119733000
+        },
+        "true": {
+          "diff_ns": 123764000,
+          "rearm_ns": 3032000,
+          "total_ns": 126796000
+        }
+      },
+      {
+        "pair": 7,
+        "label": "candidate",
+        "false": {
+          "diff_ns": 124118000,
+          "rearm_ns": 18000,
+          "total_ns": 124136000
+        },
+        "true": {
+          "diff_ns": 141560000,
+          "rearm_ns": 2959000,
+          "total_ns": 144519000
+        }
+      },
+      {
+        "pair": 7,
+        "label": "baseline",
+        "false": {
+          "diff_ns": 121690000,
+          "rearm_ns": 1000,
+          "total_ns": 121691000
+        },
+        "true": {
+          "diff_ns": 139868000,
+          "rearm_ns": 197811000,
+          "total_ns": 337679000
+        }
+      }
+    ],
+    "summary": {
+      "baseline": {
+        "false": {
+          "diff_ns": 123592500.0,
+          "rearm_ns": 1500.0,
+          "total_ns": 123593500.0
+        },
+        "true": {
+          "diff_ns": 145739000.0,
+          "rearm_ns": 195541000.0,
+          "total_ns": 341280000.0
+        }
+      },
+      "candidate": {
+        "false": {
+          "diff_ns": 120365500.0,
+          "rearm_ns": 1500.0,
+          "total_ns": 120367000.0
+        },
+        "true": {
+          "diff_ns": 133511500.0,
+          "rearm_ns": 2961000.0,
+          "total_ns": 136448500.0
+        }
+      }
+    },
+    "leaf_directories": 64
+  },
+  "mcp_activity": {
+    "watch_budget": 256,
+    "noise_cycles": 40,
+    "noise_action": "Create and delete an ignored root file with 125ms between actions; wait 1s after last action.",
+    "startup": "An untimed MCP run prebuilds the snapshot. Each measured process then loads it and settles for 3s.",
+    "verification": "An in-place source edit after CPU measurement must become visible via codedb_symbol.",
+    "observations": [
+      {
+        "cycles": 40,
+        "cpu_seconds": 1.5799999999999998,
+        "elapsed_seconds": 11.316017334000207,
+        "cpu_percent": 13.962509541698186,
+        "rss_kib": 7488,
+        "visible_edit_ms": 880.7354159653187,
+        "label": "baseline",
+        "order": "AB"
+      },
+      {
+        "cycles": 40,
+        "cpu_seconds": 0.8200000000000001,
+        "elapsed_seconds": 11.28853916702792,
+        "cpu_percent": 7.264004561326176,
+        "rss_kib": 15632,
+        "visible_edit_ms": 945.3400420024991,
+        "label": "candidate",
+        "order": "AB"
+      },
+      {
+        "cycles": 40,
+        "cpu_seconds": 0.94,
+        "elapsed_seconds": 11.290244958014227,
+        "cpu_percent": 8.325771526620011,
+        "rss_kib": 15424,
+        "visible_edit_ms": 930.9809160185978,
+        "label": "candidate",
+        "order": "BA"
+      },
+      {
+        "cycles": 40,
+        "cpu_seconds": 1.56,
+        "elapsed_seconds": 11.204701166017912,
+        "cpu_percent": 13.922727405985922,
+        "rss_kib": 15600,
+        "visible_edit_ms": 930.447708000429,
+        "label": "baseline",
+        "order": "BA"
+      }
+    ],
+    "leaf_directories": 64,
+    "generated_source_files": 512,
+    "additional_files": "probe.py, .codedbrc and .codedbignore"
+  },
+  "limits": "Fixture results measure active-event overhead, not universal CPU savings or improvements in quiet polling. RSS is a single resident-memory sample, not a peak or physical-footprint measure."
+}

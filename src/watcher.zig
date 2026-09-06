@@ -1733,8 +1733,10 @@ const FileChangeWatch = struct {
     fn affectedByDirtyDirectory(self: *const FileChangeWatch, dirty: *const DirtySet, path: []const u8) bool {
         var it = dirty.keyIterator();
         while (it.next()) |dirty_path| {
-            if (!self.hasWatchedDir(dirty_path.*)) continue;
-            if (std.mem.eql(u8, path, dirty_path.*) or pathWithinNonRootDir(path, dirty_path.*)) return true;
+            // Overflow polling adds many file paths. Reject unrelated paths
+            // before the linear search through watched directories.
+            if (!std.mem.eql(u8, path, dirty_path.*) and !pathWithinNonRootDir(path, dirty_path.*)) continue;
+            if (self.hasWatchedDir(dirty_path.*)) return true;
         }
         return false;
     }
@@ -2093,6 +2095,37 @@ fn armAndCloseGap(
         if (known.count() == watch.armed_files and dirs.count() == watch.armed_dirs) return;
     }
     watch.arm(io, root_dir, known, dirs);
+}
+
+test "rearm directory matching excludes fallback files and unrelated prefixes" {
+    if (!(comptime watch_kqueue or watch_inotify)) return error.SkipZigTest;
+    const testing = std.testing;
+    var watch = FileChangeWatch.init(testing.allocator, 0);
+    defer watch.deinit(testing.io);
+    // The predicate only consults these maps; no native descriptors are opened.
+    for ([_][]const u8{ "", "src", "src/nested" }, 0..) |path, id| {
+        const owned = try testing.allocator.dupe(u8, path);
+        if (watch_kqueue) try watch.ident_to_dir.put(id, owned) else try watch.wd_to_dir.put(@intCast(id), owned);
+    }
+    var dirty = DirtySet.init(testing.allocator);
+    defer dirty.deinit();
+    const Case = struct { dirty: []const u8, target: []const u8, affected: bool };
+    for ([_]Case{
+        .{ .dirty = "src", .target = "src", .affected = true },
+        .{ .dirty = "src", .target = "src/nested/value.py", .affected = true },
+        .{ .dirty = "src", .target = "src2/value.py", .affected = false },
+        .{ .dirty = "src/nested", .target = "src", .affected = false },
+        .{ .dirty = "src/file.py", .target = "src/file.py", .affected = false },
+        .{ .dirty = "src/file.py", .target = "src/file.py/child", .affected = false },
+        .{ .dirty = "unwatched", .target = "unwatched/child", .affected = false },
+        .{ .dirty = "", .target = "", .affected = true },
+        .{ .dirty = "", .target = "src/value.py", .affected = false },
+    }) |case| {
+        dirty.clearRetainingCapacity();
+        try dirty.put(case.dirty, {});
+        try dirty.put("unrelated/fallback.py", {});
+        try testing.expectEqual(case.affected, watch.affectedByDirtyDirectory(&dirty, case.target));
+    }
 }
 
 test "file watcher remains pinned to opened root after pathname retarget" {
@@ -3205,6 +3238,77 @@ test "issue-685: watcher diff updates document edges for modify add and delete" 
     try testing.expectEqualStrings("docs/c.md", links[0]);
 }
 
+test "watch budget fallback detects same-metadata rewrites" {
+    const testing = std.testing;
+    const io = testing.io;
+    // Exercise per-file budget overflow and directory-level fallback separately.
+    for ([_]bool{ false, true }) |poll_directory| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try tmp.dir.createDirPath(io, "src");
+        const before = "def original():\n    return 1\n";
+        const after = "def modified():\n    return 2\n";
+        try testing.expectEqual(before.len, after.len);
+        try tmp.dir.writeFile(io, .{ .sub_path = "src/a.py", .data = before });
+        var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+        const root = root_buf[0..root_len];
+        var store = Store.init(testing.allocator);
+        defer store.deinit();
+        var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+        defer explorer.deinit();
+        try explorer.setRoot(io, root);
+        var known = FileMap.init(testing.allocator);
+        defer {
+            var it = known.keyIterator();
+            while (it.next()) |path| testing.allocator.free(path.*);
+            known.deinit();
+        }
+        var dirs = DirMap.init(testing.allocator);
+        defer {
+            var it = dirs.keyIterator();
+            while (it.next()) |path| testing.allocator.free(path.*);
+            dirs.deinit();
+        }
+        const queue = try testing.allocator.create(EventQueue);
+        defer testing.allocator.destroy(queue);
+        queue.* = .{};
+        {
+            var arena = std.heap.ArenaAllocator.init(testing.allocator);
+            defer arena.deinit();
+            try incrementalDiffInner(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator());
+        }
+        try tmp.dir.writeFile(io, .{ .sub_path = "src/a.py", .data = after });
+        const root_dir = explorer.root_dir orelse return error.TestUnexpectedResult;
+        const stat = try root_dir.statFile(io, "src/a.py", .{ .follow_symlinks = false });
+        const old = known.getPtr("src/a.py").?;
+        // Model a same-size write whose timestamps and identity collide with
+        // the previously indexed metadata, without needing a special mount.
+        old.mtime = @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_ms));
+        old.mtime_ns = stat.mtime.nanoseconds;
+        old.ctime_ns = stat.ctime.nanoseconds;
+        old.inode = stat.inode;
+        old.size = stat.size;
+        old.hash = std.hash.Wyhash.hash(0, before);
+        var watch = FileChangeWatch.init(testing.allocator, 0);
+        defer watch.deinit(io);
+        if (poll_directory) watch.rememberUnwatchedDir("src") else watch.rememberUnwatched("src/a.py");
+        {
+            var arena = std.heap.ArenaAllocator.init(testing.allocator);
+            defer arena.deinit();
+            var dirty = DirtySet.init(arena.allocator());
+            watch.addUnwatched(&dirty);
+            try incrementalDiffDirty(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+        }
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(testing.allocator);
+        try testing.expect(try explorer.renderOutline("src/a.py", testing.allocator, &out, false));
+        try testing.expect(std.mem.indexOf(u8, out.items, "modified") != null);
+        try testing.expect(std.mem.indexOf(u8, out.items, "original") == null);
+        try testing.expectEqual(std.hash.Wyhash.hash(0, after), known.get("src/a.py").?.hash);
+    }
+}
+
 test "dir-mtime prune still stats known files and notices new siblings" {
     const testing = std.testing;
     const io = testing.io;
@@ -3299,4 +3403,89 @@ test "security: notify channel refuses symlinks and accepts owner regular files"
     const content = try tmp.dir.readFileAlloc(io, "owned", t.allocator, .limited(1024));
     defer t.allocator.free(content);
     try t.expectEqualStrings("notification", content);
+}
+
+// Opt in with CODEDB_BENCH_WATCHER=1 zig build test-watcher
+// -Dtest-filter='benchmark watcher fixed cycles' -Doptimize=ReleaseFast.
+// Fixed cycle counts exclude sleeps, startup and snapshot-loading differences.
+test "benchmark watcher fixed cycles" {
+    if (cio.posixGetenv("CODEDB_BENCH_WATCHER") == null) return error.SkipZigTest;
+    if (!(comptime watch_kqueue or watch_inotify)) return error.SkipZigTest;
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file_count = 512;
+    const directory_count = 64;
+    const budget = 256;
+    const cycles = 20;
+    for (0..file_count) |i| {
+        var dir_buf: [32]u8 = undefined;
+        const dir = try std.fmt.bufPrint(&dir_buf, "src/d{d}", .{i % directory_count});
+        try tmp.dir.createDirPath(io, dir);
+        var path_buf: [64]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "{s}/f{d}.py", .{ dir, i });
+        try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "def value():\n    return 1\n" });
+    }
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.setRoot(io, root);
+    var known = FileMap.init(testing.allocator);
+    defer {
+        var it = known.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    var dirs = DirMap.init(testing.allocator);
+    defer {
+        var it = dirs.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+    const queue = try testing.allocator.create(EventQueue);
+    defer testing.allocator.destroy(queue);
+    queue.* = .{};
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try incrementalDiffInner(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator());
+    }
+    var watch = FileChangeWatch.init(testing.allocator, budget);
+    defer watch.deinit(io);
+    const root_dir = explorer.root_dir.?;
+    armAndCloseGap(io, &watch, root_dir, &store, &explorer, queue, &known, &dirs, root, testing.allocator);
+    // A watched-file event plus the overflow paths is the set passed by
+    // incrementalLoop to both reconciliation and rearming.
+    var file_it = watch.ident_to_path.valueIterator();
+    const event_path = try testing.allocator.dupe(u8, if (watch_kqueue) file_it.next().?.* else "src/d0/f0.py");
+    defer testing.allocator.free(event_path);
+    var timer = try cio.Timer.start();
+    for ([_]bool{ false, true }) |with_event| {
+        var diff_ns: u64 = 0;
+        var rearm_ns: u64 = 0;
+        for (0..cycles + 3) |cycle| {
+            var arena = std.heap.ArenaAllocator.init(testing.allocator);
+            defer arena.deinit();
+            var dirty = DirtySet.init(arena.allocator());
+            if (with_event) try dirty.put(event_path, {});
+            watch.addUnwatched(&dirty);
+            _ = timer.lap();
+            try incrementalDiffDirty(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+            const diff_elapsed = timer.lap();
+            if (with_event) watch.rearmDirty(io, root_dir, &dirty);
+            const rearm_elapsed = timer.lap();
+            while (queue.pop() != null) {}
+            if (cycle >= 3) {
+                diff_ns += diff_elapsed;
+                rearm_ns += rearm_elapsed;
+            }
+        }
+        try testing.expectEqual(@as(u32, file_count), known.count());
+        std.debug.print("\nwatcher_fixed_cycles event={} files={d} dirs={d} budget={d} cycles={d} diff_ns={d} rearm_ns={d}\n", .{ with_event, file_count, directory_count, budget, cycles, diff_ns, rearm_ns });
+    }
 }
