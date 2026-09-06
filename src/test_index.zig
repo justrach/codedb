@@ -3811,7 +3811,7 @@ test "issue-694: dirty-set skips stats on unchanged dirs but reindexes dirty fil
 
     cio.sleepMs(10);
     try tmp.dir.writeFile(io, .{ .sub_path = "src/a.py", .data = "def a_changed():\n    return 2\n" });
-    try dirty.put("src/a.py", .event);
+    try dirty.put("src/a.py", {});
     watcher.debug_unchanged_file_stats = 0;
     {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -3874,7 +3874,7 @@ test "watcher directory event defeats stale mtime probe for atomic rename" {
     stale_file.size = file_stat.size;
     var dirty = watcher.DirtySet.init(testing.allocator);
     defer dirty.deinit();
-    try dirty.put("", .event);
+    try dirty.put("", {});
     {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
@@ -3937,9 +3937,9 @@ test "unknown dirty child forces parent listing without admitting sensitive file
     };
     var dirty = watcher.DirtySet.init(testing.allocator);
     defer dirty.deinit();
-    try dirty.put("src/new.py", .event);
-    try dirty.put(".env", .event);
-    try dirty.put("PRIVATE_KEY.PEM", .event);
+    try dirty.put("src/new.py", {});
+    try dirty.put(".env", {});
+    try dirty.put("PRIVATE_KEY.PEM", {});
     {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
@@ -4098,7 +4098,7 @@ test "experiment-694: quiet dirty cycle is cheaper than stat-all" {
 
     cio.sleepMs(10);
     try tmp.dir.writeFile(io, .{ .sub_path = "d0/f0.py", .data = "def f0_0_changed():\n    return 2\n" });
-    try dirty.put("d0/f0.py", .event);
+    try dirty.put("d0/f0.py", {});
     watcher.debug_unchanged_file_stats = 0;
     _ = timer.lap();
     {
