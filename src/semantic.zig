@@ -407,7 +407,8 @@ fn waitForEmbeddingTimeout(io: std.Io, timeout_ms: u32) std.Io.Cancelable!void {
 
 fn transientEmbeddingTransportError(err: anyerror) bool {
     return err == error.UnknownHostName or err == error.TemporaryNameServerFailure or
-        err == error.ConnectionResetByPeer or err == error.ConnectionRefused;
+        err == error.ConnectionResetByPeer or err == error.ConnectionRefused or
+        err == error.HttpConnectionClosing;
 }
 
 // Retry only a transient transport failure, once, inside the existing request
@@ -432,7 +433,7 @@ fn fetchEmbeddingResponseRetry(io: std.Io, allocator: std.mem.Allocator, config:
     return fetchEmbeddingWithRetry(fetchEmbeddingResponseOnce, io, allocator, config, body);
 }
 
-test "interactive embeddings retry transient DNS once and preserve failures" {
+test "interactive embeddings retry transient DNS and closed connections once" {
     const Fake = struct {
         var calls: usize = 0;
         var failure: anyerror = error.UnknownHostName;
@@ -444,18 +445,25 @@ test "interactive embeddings retry transient DNS once and preserve failures" {
         }
     };
     const t = std.testing;
-    const result = try fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}");
-    defer t.allocator.free(result);
-    try t.expectEqualStrings("response", result);
-    try t.expectEqual(@as(usize, 2), Fake.calls);
-    Fake.calls = 0;
-    Fake.recover = false;
-    try t.expectError(error.UnknownHostName, fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}"));
-    try t.expectEqual(@as(usize, 2), Fake.calls);
-    Fake.calls = 0;
-    Fake.failure = error.EmbeddingRateLimited;
-    try t.expectError(error.EmbeddingRateLimited, fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}"));
-    try t.expectEqual(@as(usize, 1), Fake.calls);
+    for ([_]anyerror{ error.UnknownHostName, error.HttpConnectionClosing }) |failure| {
+        Fake.calls = 0;
+        Fake.failure = failure;
+        Fake.recover = true;
+        const result = try fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}");
+        defer t.allocator.free(result);
+        try t.expectEqualStrings("response", result);
+        try t.expectEqual(@as(usize, 2), Fake.calls);
+        Fake.calls = 0;
+        Fake.recover = false;
+        try t.expectError(failure, fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}"));
+        try t.expectEqual(@as(usize, 2), Fake.calls);
+    }
+    for ([_]anyerror{ error.EmbeddingRateLimited, error.EmbeddingProviderRejected, error.InvalidEmbeddingResponse, error.TlsAlert }) |failure| {
+        Fake.calls = 0;
+        Fake.failure = failure;
+        try t.expectError(failure, fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}"));
+        try t.expectEqual(@as(usize, 1), Fake.calls);
+    }
 }
 
 const EmbeddingRace = union(enum) {

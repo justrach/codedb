@@ -152,3 +152,52 @@ The [portable receipt](../evals/results/2026-09-11-out-of-box.json) records hash
 query outcomes, limits and validation. The initial lifecycle attempts exposed a
 test wait that matched a not-found message and then the missing-graph defect;
 both failures are retained in the raw evidence, and neither counts as a pass.
+
+## Repeatable failure injection
+
+`scripts/test_semantic_faults.py` adds 24 checks using a loopback HTTP fixture.
+It runs without credentials or an external embedding service. Its synthetic
+vectors exercise transport and index lifecycle contracts, not relevance.
+
+| Failure or lifecycle event | Required behavior |
+| --- | --- |
+| HTTP 401, 429 and 503 | Keep local results and recover in the same session when the provider recovers. |
+| Invalid JSON, dimensions, duplicate rows, model identity, non-finite or zero vectors | Reject the response; preserve local search. |
+| Slow response or a slow retry | Finish within the bounded request budget, with scheduling tolerance in the test. |
+| One dropped connection; repeated dropped connections | Recover with one retry; stop after two attempts if both fail. |
+| Exhausted chunk-embedding retries | Leave the existing metadata and graph byte-for-byte unchanged and searchable. |
+| A transient build rate limit | Complete the build after a bounded retry. |
+| Three MCP clients querying during a paused rebuild | Serve the previous valid generation, then validate and adopt the replacement. |
+| A killed build during embedding | Keep the prior generation usable. |
+| Source content changes during embedding | Reject publication, preserve prior bytes, and allow a subsequent fresh build. |
+| Sensitive fixture files | Never include their marker in any captured query or build request. |
+| Explicit local mode | Send zero embedding requests. |
+
+The suite found that a connection closed before its response could produce
+`HttpConnectionClosing`, bypassing the existing transient retry. That error now
+receives the same single retry inside the original deadline. The unchanged
+before-fix binary fails the new dropped-connection case; the fixed binary passes
+it. Authentication rejection, rate limiting, malformed vectors and TLS failures
+are not added to the interactive retry list. No ranking policy changes here.
+
+Run it with new paths (the validated fixture root included spaces and Unicode):
+
+```bash
+python3 scripts/test_semantic_faults.py \
+  --binary /absolute/path/to/stable/codedb \
+  --root "$HOME/tmp/new-semantic-fault-fixture" \
+  --out /absolute/path/to/semantic-faults.json
+```
+
+The macOS PR workflow runs this suite and uploads its JSON report. The
+[local verification receipt](../evals/results/2026-09-11-semantic-faults.json)
+keeps the failing before-fix result, final checks, binary hashes and validation.
+A local pass does not establish that the GitHub-hosted run has passed.
+
+Further coverage should prioritize fresh-account enrollment and expired-device
+authentication in a disposable account, Linux/native Windows runtime behavior,
+disk-full or permission failures at the metadata commit point, and interruption
+during slab writing. The current kill test interrupts embedding before file
+publication; it does not simulate power loss. Large repositories need sustained
+memory/descriptor and concurrent-change tests. Future relevance changes need a
+new frozen holdout; the loopback vectors provide no evidence of ranking quality.
