@@ -1,5 +1,7 @@
 # Retrieval decisions
 
+- [ADR 0012](0012-followup-retrieval-and-transport.md): follow-up lexical/semantic fusion candidate, bounded transport retry, fresh ItsDangerous validation, and remaining misses.
+
 - [ADR 0011](0011-release-intent-guards.md): release hardening for testing-infrastructure and call/use intent.
 
 - [ADR 0010](0010-multilingual-datasets-and-test-intent.md): current multilingual suite, native test-intent improvement, and frozen Requests results.
