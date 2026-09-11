@@ -122,3 +122,68 @@ Validation on Apple Silicon macOS:
 Whitespace checks passed. `zig fmt --check` passes changed Zig files except the
 pre-existing reference-array formatting in `src/mcp.zig`, unchanged from the
 base; ranking code was left untouched. No installed client binary was replaced.
+
+## Follow-up candidate after 0.2.5855
+
+The release still hashes overflow files periodically. Profiling the larger
+9,600-file fixture found approximately 40% churn CPU and 14% quiet CPU. Three
+independent clients can multiply that work. This follow-up uses recursive
+FSEvents on local APFS/HFS volumes, avoiding per-file overflow polling when the
+stream covers the entire admitted tree. It uses the macOS system frameworks;
+there is no additional package dependency.
+
+The callback only copies bounded path notifications into a private queue.
+Coalesced or dropped history triggers a full content audit. Root/mount changes,
+directory aliases, foreign volumes, unsupported filesystems or an unavailable
+stream use the existing bounded kqueue/polling path. Set
+`CODEDB_NO_FSEVENTS=1` to force that fallback. Directory and ignore-policy audits
+still run about every two seconds. Each MCP process still owns its watcher.
+
+Reconciliation also reuses bounded content scratch storage and retains unchanged
+subtrees when their identities and inherited ignore-policy metadata agree.
+Root and nested policy edits invalidate descendants, including when an ignore
+rule is later removed. A regression test uncovered an existing use-after-free
+in deletion bookkeeping; the mtime entry is now removed before its borrowed
+path is freed. Safe project-handle reads and sensitive-path exclusions remain
+in place.
+
+Use the stronger mutation harness alongside the CPU reproducer:
+
+```sh
+python3 scripts/stress_watcher_748.py \
+  --binary /absolute/path/to/stable/codedb \
+  --out "$HOME/tmp/watcher-events.json" --seconds 20
+CODEDB_NO_FSEVENTS=1 python3 scripts/stress_watcher_748.py \
+  --binary /absolute/path/to/stable/codedb \
+  --out "$HOME/tmp/watcher-fallback.json" --seconds 20
+```
+
+The harness uses 4,800 source files in 1,200 directories, then checks same-size
+edits with restored mtime, removal of old symbols, creation, rename, deletion
+and discovery of new nested directories under continuous excluded-file churn.
+The unit suite separately covers complete metadata collisions. Output paths
+must be new; the runner records the immutable binary hash.
+
+Final ARM64 candidate measurements (20-second windows, one core = 100%):
+
+| Clients / watch budget | Quiet CPU | Churn CPU | Mutation checks |
+| --- | ---: | ---: | ---: |
+| Three / 32 | 2.00%, 1.50%, 1.35% | 1.80%, 1.70%, 1.75% | 61/61 across all three |
+| One / 1,024 | 1.25% | 3.40% | 61/61 |
+
+Index counts and sequences stayed unchanged under excluded churn. All clients
+remained alive. These are short synthetic measurements, not general CPU or
+memory guarantees. The earlier 9,600-file recursive-event prototype measured
+3.15% churn / 2.65% quiet, but the table above is the final candidate's fixture.
+
+Receipts: [recursive events](measurements/watcher-748-followup-final.json) and
+[forced fallback](measurements/watcher-748-followup-fallback-final.json).
+
+The final candidate passes the unit suite, 76/76 MCP scenarios and six lazy
+startup scenarios. Descriptor counts are 23 at both 128 and 2,048 files with a
+budget of 32. The Intel macOS build also starts its recursive stream and detects
+an edit under Rosetta. Forcing the fallback also passes all 122 mutation checks
+with stable counters (10-second CPU windows: three-client churn 13.19%, 13.09%,
+11.79%; single-client churn 13.79%). Linux and Windows cross-builds succeed; they have not
+been runtime-tested in this macOS session. This follow-up has not been released,
+notarized or installed over a client binary.
