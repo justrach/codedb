@@ -3994,6 +3994,7 @@ const ContextRetrievalProvenance = struct {
     ann_records: usize = 0,
     ann_index_bytes: usize = 0,
     ann_load_ns: u64 = 0,
+    ann_embed_ns: u64 = 0,
     ann_search_ns: u64 = 0,
     ann_mmap_backed: bool = false,
     ann_cache_hit: bool = false,
@@ -4535,6 +4536,7 @@ fn handleContext(
             retrieval.ann_records = ann_result.records;
             retrieval.ann_index_bytes = ann_result.index_bytes;
             retrieval.ann_load_ns = ann_result.load_ns;
+            retrieval.ann_embed_ns = ann_result.embed_ns;
             retrieval.ann_search_ns = ann_result.search_ns;
             retrieval.ann_mmap_backed = ann_result.mmap_backed;
             retrieval.ann_cache_hit = ann_result.cache_hit;
