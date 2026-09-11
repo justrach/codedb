@@ -933,7 +933,10 @@ fn loadMetadata(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8) 
 
     const slab_path = try slabPath(allocator, data_dir, slab_name);
     errdefer allocator.free(slab_path);
-    const slab_bytes = try fileSize(io, slab_path);
+    const slab_bytes = fileSize(io, slab_path) catch |err| switch (err) {
+        error.FileNotFound => return error.InvalidAnnSidecar,
+        else => return err,
+    };
     if (slab_bytes == 0 or slab_bytes > max_slab_bytes) return error.AnnSlabTooLarge;
     var index = ann.Index.init(allocator, dimensions, .{});
     errdefer index.deinit();
@@ -1176,7 +1179,13 @@ fn loadValidatedGeneration(
 ) !CachedLoaded {
     const metadata_path = try sidecarPath(temporary, data_dir);
     defer temporary.free(metadata_path);
-    const metadata_before = try fileIdentity(io, metadata_path);
+    // A fresh MCP session uses this cached path before loadMetadata gets a
+    // chance to translate FileNotFound. Preserve the missing-index contract
+    // so callers can use hosted exact fallback on an unprepared project.
+    const metadata_before = fileIdentity(io, metadata_path) catch |err| switch (err) {
+        error.FileNotFound => return error.AnnIndexMissing,
+        else => return err,
+    };
 
     var loaded = try loadMetadata(io, persistent, data_dir);
     errdefer loaded.deinit();
@@ -1188,7 +1197,10 @@ fn loadValidatedGeneration(
     try validateRecordLineRanges(explorer, loaded.records);
     if (store.currentSeq() != seq_before) return error.StaleAnnManifest;
 
-    const slab_before = try fileIdentity(io, loaded.slab_path);
+    const slab_before = fileIdentity(io, loaded.slab_path) catch |err| switch (err) {
+        error.FileNotFound => return error.InvalidAnnSidecar,
+        else => return err,
+    };
     try loaded.loadGraph();
     const metadata_after = try fileIdentity(io, metadata_path);
     const slab_after = try fileIdentity(io, loaded.slab_path);
@@ -1399,6 +1411,28 @@ test "semantic ANN sidecar accepts Jina 512D and rejects a legacy Qwen vector sp
             scheduleLegacyHostedMigration(io, &cache, &explorer, &store, dir_path, dir_path),
         );
         try testing.expect(cache.migration_thread == null);
+    }
+}
+
+test "semantic cold cache reports a missing sidecar consistently with uncached search" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = path_buf[0..try tmp.dir.realPathFile(io, ".", &path_buf)];
+    var explorer = Explorer.init(testing.allocator, 1024);
+    defer explorer.deinit();
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var cache = SearchCache.init(testing.allocator);
+    defer cache.deinit();
+    const missing_dir = try std.fmt.allocPrint(testing.allocator, "{s}/not-created", .{root});
+    defer testing.allocator.free(missing_dir);
+    for ([_][]const u8{ root, missing_dir }) |data_dir| {
+        try testing.expectError(error.AnnIndexMissing, search(io, testing.allocator, &explorer, &store, root, data_dir, "find request handler", 24));
+        try testing.expectError(error.AnnIndexMissing, searchCached(io, testing.allocator, &cache, &explorer, &store, root, data_dir, "find request handler", 24));
+        try testing.expect(cache.cached == null);
     }
 }
 
@@ -1801,6 +1835,16 @@ test "semantic ANN warm generation invalidates on repository sequence and sideca
     // Failed replacement is transactional: the previously validated mapping
     // remains owned and can be retired safely on cache destruction.
     try testing.expect(cache.cached != null);
+    try testing.expect(cache.cached.?.loaded.index.isMmapBacked());
+
+    // A removed graph or metadata file must take the same recoverable path as
+    // an invalid generation, while the old mapping stays owned until teardown.
+    try metadata_file.writePositionalAll(io, "C", 0);
+    try metadata_file.sync(io);
+    try std.Io.Dir.cwd().deleteFile(io, slab_path);
+    try testing.expectError(error.InvalidAnnSidecar, searchCached(io, testing.allocator, &cache, &explorer, &store, dir_path, dir_path, "find alpha", 1));
+    try std.Io.Dir.cwd().deleteFile(io, metadata_path);
+    try testing.expectError(error.AnnIndexMissing, searchCached(io, testing.allocator, &cache, &explorer, &store, dir_path, dir_path, "find alpha", 1));
     try testing.expect(cache.cached.?.loaded.index.isMmapBacked());
 }
 
