@@ -405,6 +405,59 @@ fn waitForEmbeddingTimeout(io: std.Io, timeout_ms: u32) std.Io.Cancelable!void {
     try io.sleep(.fromMilliseconds(timeout_ms), .awake);
 }
 
+fn transientEmbeddingTransportError(err: anyerror) bool {
+    return err == error.UnknownHostName or err == error.TemporaryNameServerFailure or
+        err == error.ConnectionResetByPeer or err == error.ConnectionRefused;
+}
+
+// Retry only a transient transport failure, once, inside the existing request
+// deadline. Re-entering the signed request path creates a fresh nonce/proof.
+// Provider rejection, TLS errors, malformed vectors and calibration failures
+// remain failures; a retry never extends the caller's latency budget.
+fn fetchEmbeddingWithRetry(
+    comptime fetch: anytype,
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    config: Config,
+    body: []const u8,
+) ![]u8 {
+    return fetch(io, allocator, config, body) catch |err| {
+        if (!transientEmbeddingTransportError(err)) return err;
+        try io.sleep(.fromMilliseconds(100), .awake);
+        return fetch(io, allocator, config, body);
+    };
+}
+
+fn fetchEmbeddingResponseRetry(io: std.Io, allocator: std.mem.Allocator, config: Config, body: []const u8) ![]u8 {
+    return fetchEmbeddingWithRetry(fetchEmbeddingResponseOnce, io, allocator, config, body);
+}
+
+test "interactive embeddings retry transient DNS once and preserve failures" {
+    const Fake = struct {
+        var calls: usize = 0;
+        var failure: anyerror = error.UnknownHostName;
+        var recover: bool = true;
+        fn fetch(_: std.Io, alloc: std.mem.Allocator, _: Config, _: []const u8) ![]u8 {
+            calls += 1;
+            if (calls == 1 or !recover) return failure;
+            return alloc.dupe(u8, "response");
+        }
+    };
+    const t = std.testing;
+    const result = try fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}");
+    defer t.allocator.free(result);
+    try t.expectEqualStrings("response", result);
+    try t.expectEqual(@as(usize, 2), Fake.calls);
+    Fake.calls = 0;
+    Fake.recover = false;
+    try t.expectError(error.UnknownHostName, fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}"));
+    try t.expectEqual(@as(usize, 2), Fake.calls);
+    Fake.calls = 0;
+    Fake.failure = error.EmbeddingRateLimited;
+    try t.expectError(error.EmbeddingRateLimited, fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}"));
+    try t.expectEqual(@as(usize, 1), Fake.calls);
+}
+
 const EmbeddingRace = union(enum) {
     fetch: anyerror![]u8,
     timeout: std.Io.Cancelable!void,
@@ -429,7 +482,7 @@ fn fetchEmbeddingResponse(
 ) ![]u8 {
     var completed: [2]EmbeddingRace = undefined;
     var select = std.Io.Select(EmbeddingRace).init(io, &completed);
-    select.async(.fetch, fetchEmbeddingResponseOnce, .{ io, allocator, config, body });
+    select.async(.fetch, fetchEmbeddingResponseRetry, .{ io, allocator, config, body });
     select.async(.timeout, waitForEmbeddingTimeout, .{ io, config.timeout_ms });
 
     const first = try select.await();
@@ -480,7 +533,8 @@ pub fn embedRemoteTexts(
 
 /// Index builds are explicit, long-running operations, so transient hosted
 /// lane pressure gets a small bounded retry budget. Interactive context calls
-/// intentionally use `embedRemoteTexts` directly and fail fast to lexical.
+/// use `embedRemoteTexts` directly: only one transient transport retry within
+/// the existing deadline, with no provider-pressure backoff before lexical.
 pub fn embedIndexRemoteTexts(
     io: std.Io,
     allocator: std.mem.Allocator,
