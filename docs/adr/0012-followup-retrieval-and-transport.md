@@ -99,3 +99,88 @@ contain per-question top-five paths, both binary hashes, frozen source hashes,
 the new holdout freeze, raw-report hashes and the rejected-trial ledger.
 The full raw reports remain under `/Users/blackfloofie/tmp/codedb-followup-evidence`.
 No release, installed-client replacement or deployment happened here.
+
+## Observable latency and an inspectable failure catalog
+
+The ANN layer already measures remote embedding time, but the MCP retrieval
+receipt omitted it. The follow-up now exposes that measurement as
+`ann_embed_ns`, alongside `ann_load_ns` and `ann_search_ns`. This is an additive
+diagnostic field. Ranking, candidate breadth and provider deadlines are unchanged.
+Zero on a non-ANN result is not a measured provider duration.
+
+Both the released source and the frozen candidate were rebuilt with the same
+two-line field/assignment instrumentation. Stable ReleaseFast copies were used
+for a new 148-question diagnostic with three alternating repeats: 888 calls,
+all using the calibrated hosted-Jina mmap path, with no failed/fallback samples
+and no rank changes from the frozen run. All seven repositories were already
+observed. This run does not create a new holdout or replace the accuracy freeze.
+
+The [portable dashboard receipt](../../evals/results/2026-09-11-followup-dashboard.json)
+contains the new binary hashes, raw report hashes, warm sample counts, stage
+distributions and every threshold flag. Cold generation validation is excluded
+from the following timing comparison; each arm has 95 warm OpenClaw calls,
+47 Express calls and 59 calls for each other repository.
+
+| Repository | Candidate median embedding share of wall time | Median wall minus embedding, release → candidate |
+| --- | ---: | ---: |
+| OpenClaw | 98.07% | 13.95 → 12.42 ms |
+| Express | 97.57% | 14.44 → 13.42 ms |
+| Flask | 97.98% | 13.73 → 11.85 ms |
+| Chi | 97.90% | 11.11 → 12.08 ms |
+| Anyhow | 97.64% | 11.90 → 15.16 ms |
+| Requests | 98.17% | 11.73 → 14.06 ms |
+| ItsDangerous | 97.99% | 14.05 → 14.81 ms |
+
+Embedding includes transport, service execution, decoding and bounded retry.
+The remainder includes local computation, process scheduling and MCP overhead;
+it is not a CPU measurement. We subtract each call's embedding duration before
+computing remainder percentiles, rather than subtracting unrelated percentiles.
+
+Warm wall-time p95 remains flagged for Anyhow (+16.2%), Requests (+185.9%) and
+ItsDangerous (+10.4%). Their embedding p95 moves in the same direction. Requests'
+p95 is 1,585 → 4,533 ms in the warm subset. These small-sample tail estimates are
+sensitive to individual slow calls and to removing the cold observation; retain
+the warm sample counts when comparing them with the earlier all-call results.
+The evidence supports a large hosted-operation contribution, but does not
+identify a specific DNS, network or server cause. No claim is made that the
+transient retry repairs provider reliability.
+
+The >10% local/overhead review flags also remain: Anyhow's median remainder rises
+3.26 ms, Requests' rises 2.33 ms, Anyhow's ANN p95 rises 0.088 ms, and Flask and
+Requests have load-check increases below 0.05 ms. This is still not a passed
+performance gate. Use exact local stage profiling and more independent timing
+windows before attributing the remainder to a ranking-code regression.
+
+The data exporter verifies hashes, validates all repetitions, rejects fallback
+samples, and keeps unique-question counts separate from repeated calls. Its
+interactive view filters by repository, cohort and outcome, expands expected
+versus returned paths, and shows lexical/semantic lane evidence. It also exports
+11 comparison cases for further investigation:
+
+- Four expected files are lexical rank zero but lose after fusion: the two
+  OpenClaw auth behavior queries, Express dispatch, and Requests redirect methods.
+- Seven other misses retrieve the expected file through ANN but favor related
+  files. This is a diagnostic grouping, not proof of one common root cause.
+  The Requests adapter-test regression is the first priority in this group.
+
+Source spot-checks confirmed that the OpenClaw auth-mode assertion and mode
+precedence live in the expected files; Flask's expected file emits the signals
+while the competing file declares them; Requests' adapter test contains the
+requested leading-separator assertion. The gold labels were not changed.
+
+Use these observed comparisons to test general behavior/call-site and test-symbol
+evidence, with the six existing first-result improvements as regression guards.
+Do not patch individual query IDs or repository paths, train a local model, or
+claim these cases as unseen validation. Any next ranking candidate needs a new
+frozen holdout before promotion. The nine original first-result misses, two later
+holdout misses, and Requests' second-to-third regression are still unresolved.
+
+Validation of the timing-field change: `zig build test --summary all` succeeded
+on all 33 build steps (1,137 tests passed, nine skipped in the rerun groups;
+other groups cached); MCP end-to-end checks passed 76/76. The exporter passed
+four tests covering rejected fallback/incomplete/hash-mismatched reports,
+missing timing instrumentation, warm-only samples, per-call remainders and
+invalid numeric values. JavaScript syntax, Zig formatting and whitespace checks
+passed. The watcher mutation and cross-platform evidence above belongs to the
+previous frozen runtime; this follow-up did not repeat those measurements or
+ship a new release.
