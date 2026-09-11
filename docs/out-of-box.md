@@ -201,3 +201,24 @@ during slab writing. The current kill test interrupts embedding before file
 publication; it does not simulate power loss. Large repositories need sustained
 memory/descriptor and concurrent-change tests. Future relevance changes need a
 new frozen holdout; the loopback vectors provide no evidence of ranking quality.
+
+## Publication permission failures
+
+The suite now adds three publication checks, bringing the macOS run to 27:
+
+- Remove directory write permission while a build is paused after embedding
+  begins. Slab creation fails with `AccessDenied`; the previous metadata and
+  graph retain their hashes, search remains available, and no new index files
+  remain.
+- Mark the existing metadata immutable on macOS. The builder embeds source and
+  reaches metadata replacement, which fails with `PermissionDenied`. The old
+  generation stays intact, and the unpublished slab and metadata temporary file
+  are removed.
+- Restore the original permissions/flags and rebuild successfully.
+
+The test changes permissions only on its generated project's index directory
+and restores them in `finally` blocks. The immutable-file case is explicitly
+skipped on platforms without `os.chflags`. These are real operating-system
+permission failures, not a simulation of a full disk or power loss. All 27
+checks passed; no additional runtime change was needed for these cases. See
+[publication evidence](../evals/results/2026-09-11-semantic-publication.json).

@@ -238,6 +238,49 @@ def main():
         build()
         assert provider.count() == 3  # calibration + rejected chunk + successful retry
         check('transient build rate limit recovers', chunk_attempts=2)
+        # Deny writes only after the builder has opened/scanned its fixture.
+        # Otherwise secureDataDir deliberately repairs the directory mode.
+        provider.reset()
+        before = generation(metadata)
+        files_before = {x.name for x in metadata.parent.glob('semantic-chunks-v3*')}
+        provider.reset('pause_chunks')
+        building = build_start()
+        assert provider.entered.wait(5)
+        previous_mode = metadata.parent.stat().st_mode & 0o777
+        try:
+            metadata.parent.chmod(0o500)
+            provider.release.set()
+            denied_stdout, denied_stderr = build_finish(building, expected=1)
+        finally:
+            metadata.parent.chmod(previous_mode)
+        assert generation(metadata) == before
+        assert {x.name for x in metadata.parent.glob('semantic-chunks-v3*')} == files_before
+        provider.reset()
+        query(p, 'ann_applied')
+        check('denied slab writes preserve prior generation and leave no new files', error=(denied_stdout + denied_stderr).strip()[-500:])
+        if hasattr(os, 'chflags'):
+            import stat
+            before = generation(metadata)
+            files_before = {x.name for x in metadata.parent.glob('semantic-chunks-v3*')}
+            prior_flags = metadata.stat().st_flags
+            try:
+                os.chflags(metadata, prior_flags | stat.UF_IMMUTABLE)
+                provider.reset()
+                denied_stdout, denied_stderr = build_finish(build_start(), expected=1)
+                assert provider.count() >= 2, 'Failure did not reach document embedding'
+            finally:
+                os.chflags(metadata, prior_flags)
+            assert generation(metadata) == before
+            assert {x.name for x in metadata.parent.glob('semantic-chunks-v3*')} == files_before
+            provider.reset()
+            query(p, 'ann_applied')
+            check('denied metadata replacement preserves prior generation and cleans new slab', error=(denied_stdout + denied_stderr).strip()[-500:])
+        else:
+            report.setdefault('skips', []).append('Immutable metadata replacement requires os.chflags')
+        provider.reset()
+        build()
+        query(p, 'ann_applied')
+        check('rebuild succeeds after write restrictions are removed')
         provider.reset()
         peers = [p, start(), start()]
         before = generation(metadata)
