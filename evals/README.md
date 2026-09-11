@@ -104,6 +104,21 @@ freeze those copies, and use them for all MCP processes. Do not evaluate a path
 that another build may replace. The runner checks binary hashes again at exit
 and marks an intervening replacement as a failed run.
 
+## Graff repair comparison
+
+The [48-attempt study](graff-comparison/STUDY.md) compares CodeDB,
+Graphify and workspace-only Graff on eight Python task families using Grok 4.6.
+It includes strict grader results, a specification-ambiguity sensitivity check,
+token accounting and model API cost equivalents. It is a diagnostic study of
+small fixtures, not a large-repository benchmark or a first-install test.
+
+The [frozen bundle and replay instructions](graff-comparison/README.md) include
+every input, external grader and saved repair. Run the helper checks with:
+
+```bash
+python3 -m unittest discover -s evals -p 'test_graff_comparison*.py'
+```
+
 ## Six-repository batch suite
 
 See the [dataset inventory](datasets/README.md), [suite manifest](suites/jina-accuracy-round3.json),

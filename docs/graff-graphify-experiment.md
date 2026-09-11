@@ -1,5 +1,10 @@
 # Graff + CodeDB versus Graff + Graphify
 
+Follow-up: the [broader repair study](graff-retrieval-study.md) adds eight task
+families, a workspace-only baseline, repeated attempts and portable graders.
+Its controls differ from this source-understanding pilot; compare each round
+within its own protocol.
+
 On 2026-09-11, Grok 4.6 answered the same six source-understanding questions
 using each retrieval system. Both produced six correct answers, each with a
 source range containing the pre-recorded evidence and independently verified
