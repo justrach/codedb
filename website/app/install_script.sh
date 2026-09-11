@@ -381,7 +381,7 @@ STRIPPED=$(echo "$STRIPPED" | sed -E 's/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[^[:
 FIRST=$(echo "$STRIPPED" | awk '{print $1}')
 
 case "$FIRST" in
-  grep|rg|egrep|fgrep|cat|head|tail|sed|awk|find) ;;
+  grep|rg|egrep|fgrep|cat|head|tail|find) ;;
   *) exit 0 ;;
 esac
 
@@ -419,7 +419,6 @@ case "$FIRST" in
   grep|rg|egrep|fgrep) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_search \"<text>\" (codedb_word for an exact identifier, codedb_callers for call sites) instead of $FIRST — ranked + fewer tokens. Native $FIRST is allowed outside this repo or with CODEDB_NO_HOOKS=1." >&2; exit 2 ;;
   cat) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_read path=<file> (codedb_outline first for a map) instead of cat. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
   head|tail) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_read path=<file> line_start=.. line_end=.. instead of $FIRST. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
-  sed|awk) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_edit (op=str_replace) instead of $FIRST for edits. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
   find) echo "BLOCKED in indexed repo ($REPO_ROOT): use codedb_find (fuzzy names) or codedb_glob (patterns) instead of find. CODEDB_NO_HOOKS=1 to disable." >&2; exit 2 ;;
 esac
 exit 0
@@ -550,22 +549,24 @@ main() {
   local dest="$INSTALL_DIR/codedb${ext}"
 
   printf "  ${D}│${N} %-12s " "codedb"
-  local tmp="/tmp/codedb.tmp.$$"
+  local tmp
+  tmp="$(mktemp "$INSTALL_DIR/.codedb-download.XXXXXX")"
+  trap 'rm -f "$tmp"' EXIT
   if curl -fsSL -A 'codedb-installer' "$url" -o "$tmp" 2>/dev/null; then
-    # Verify checksum when the release publishes a checksum manifest.
-    local checksum_text expected_hash checksum_notice="" actual_hash=""
+    # Keep any existing binary until the downloaded bytes are verified.
+    local checksum_text expected_hash actual_hash=""
     checksum_text="$(curl -fsSL -A 'codedb-installer' "$checksum_url" 2>/dev/null || true)"
-    expected_hash="$(printf '%s\n' "$checksum_text" | awk "/codedb-${platform}${ext}\$/ { print \$1 }")"
-    if [ -n "$expected_hash" ]; then
+    expected_hash="$(printf '%s\n' "$checksum_text" | awk -v asset="codedb-${platform}${ext}" '$2 == asset { count++; hash=$1 } END { if (count == 1) print hash }')"
+    if [[ "$expected_hash" =~ ^[0-9a-f]{64}$ ]]; then
       if command -v sha256sum >/dev/null 2>&1; then
         actual_hash="$(sha256sum "$tmp" | awk '{print $1}')"
       elif command -v shasum >/dev/null 2>&1; then
         actual_hash="$(shasum -a 256 "$tmp" | awk '{print $1}')"
       fi
       if [ -z "$actual_hash" ]; then
-        # No hashing tool on PATH. Never silently install an unverified
-        # binary — say so in the same place the skipped-manifest case does.
-        checksum_notice="  ${Y}warning:${N} checksum NOT verified — neither sha256sum nor shasum is on PATH\n"
+        printf "${R}failed${N}\n"
+        printf "\n  ${R}error: cannot verify download — install sha256sum or shasum first. Existing binary unchanged.${N}\n" >&2
+        exit 1
       elif [ "$actual_hash" != "$expected_hash" ]; then
         rm -f "$tmp"
         printf "${R}failed${N}\n"
@@ -575,10 +576,13 @@ main() {
         exit 1
       fi
     else
-      checksum_notice="  ${Y}warning:${N} checksum verification skipped (checksums.sha256 unavailable)\n"
+      printf "${R}failed${N}\n"
+      printf "\n  ${R}error: no unique valid checksum for this platform. Existing binary unchanged; retry when release checksums are available.${N}\n" >&2
+      exit 1
     fi
     xattr -c "$tmp" 2>/dev/null || true
     mv -f "$tmp" "$dest"
+    trap - EXIT
     chmod +x "$dest"
     printf "${G}✓${N}\n"
   else
@@ -590,23 +594,24 @@ main() {
 
   echo ""
   printf "  ${G}installed${N} ${D}→ $dest${N}\n"
-  if [ -n "$checksum_notice" ]; then
-    printf "$checksum_notice"
-  fi
   printf "  ${D}claude hook opt-out: CODEDB_NO_HOOKS=1 skips this run; CODEDB_PERSIST_NO_HOOKS=1 or touch ~/.codedb/no-hooks makes it permanent (rm ~/.codedb/no-hooks re-enables)${N}\n"
 
   # Register MCP server in coding tools
   echo ""
   printf "  ${W}registering integrations${N}\n"
   echo ""
-  register_claude "$dest"
-  register_codex "$dest"
-  register_codex_policy "$dest"
-  register_gemini "$dest"
-  register_cursor "$dest"
-  register_windsurf_devin "$dest"
-  register_deepwiki
-  register_hooks
+  if [ -z "${CODEDB_NO_INTEGRATIONS:-}" ]; then
+    register_claude "$dest"
+    register_codex "$dest"
+    register_codex_policy "$dest"
+    register_gemini "$dest"
+    register_cursor "$dest"
+    register_windsurf_devin "$dest"
+    register_deepwiki
+    register_hooks
+  else
+    printf "  ${D}skipped (CODEDB_NO_INTEGRATIONS)${N}\n"
+  fi
   print_hook_notes "$dest"
 
   # Check PATH
