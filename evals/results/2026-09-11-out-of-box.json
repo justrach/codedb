@@ -1,0 +1,5960 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-11",
+  "status": "unreleased draft PR 750",
+  "base_commit": "cbb47eb87c7863aa1e61c638b312129ce60e1099",
+  "scope": "Full pinned Express, Requests and Chi clones on Apple Silicon macOS. 56 previously observed questions; existing machine enrollment. No local models, ranking constants, gold labels or ANN breadth changes in this investigation.",
+  "limits": [
+    "Not a fresh-account enrollment test or a new holdout.",
+    "No native Windows runtime validation.",
+    "Initial diagnostic runs use a 12000-token budget; final no-setup runs use the default budget. JSON is used for measurement.",
+    "Full ANN comparison reuses identical explicitly built indexes. It predates the final missing-graph size-check fix, which changes recovery only; final default and lifecycle runs use the combined runtime.",
+    "Repository-wide ANN setup and refresh remain explicit; automatic background builds are not implemented.",
+    "Ranking gains belong to the previously committed candidate; restoring fallback alone does not change these ranks.",
+    "No release, notarization, deployment or installed-client replacement."
+  ],
+  "final_binary_sha256": "015928b295b8ac385e34b5dd9a5221917a32183813a4af4f698490fbbf5acf9e",
+  "source_sha256": {
+    "src/semantic_index.zig": "d071536636b3e69de5879d24f4668613d85689141ea80796fcb3d12dc85345a4",
+    "install/install.sh": "53d10d9e669a99e731e820a766d61c48c18d0e41df20bdfe479a049bc61e63a5",
+    "website/app/install_script.sh": "53d10d9e669a99e731e820a766d61c48c18d0e41df20bdfe479a049bc61e63a5",
+    "website/dist/install.sh": "53d10d9e669a99e731e820a766d61c48c18d0e41df20bdfe479a049bc61e63a5",
+    "evals/fresh_project_probe.py": "5ad9c959dc1c01af84e4884269b38535422bda66cd58b29962621234d971900f",
+    "scripts/test_semantic_lifecycle.py": "dcd7320213d4dd18e9feabd8bec7e87cf6ab267d69f336262470c2534e9175a8",
+    "scripts/test_installer_safety.py": "f35ed0db782bc65c61697be66e35d45285e2448166fef1cde255b9bf0af0b3fa"
+  },
+  "repositories": {
+    "express": {
+      "revision": "023767fe9872e029271df1418f73401bff20ff40",
+      "dataset_sha256": "5a4fa75b2fe2ab965c6c8bb0065becb2b6229f80b56f368bb38ec22e5269de44"
+    },
+    "requests": {
+      "revision": "dae7ef63b4df6eded86637f251fc4e3a06c3b479",
+      "dataset_sha256": "824c14f91e571c5a7974233e4fb628ea2168d37d00dae63faf30289d68ac8d8d"
+    },
+    "chi": {
+      "revision": "ae6be7469132cf471ca099d8c7bda4010c4ff7b2",
+      "dataset_sha256": "5f1427a5cd23012047ef19ff5a2caea32e6412f2c89b840aed7e1063b0c4682a"
+    }
+  },
+  "query_catalog": {
+    "express-00": {
+      "query": "Where does the Express application connect request and response objects, install their prototypes, then dispatch into the router?",
+      "gold": {
+        "lib/application.js": 3
+      }
+    },
+    "express-01": {
+      "query": "Where does mounting a child application restore the parent request and response prototypes after the child finishes?",
+      "gold": {
+        "lib/application.js": 3
+      }
+    },
+    "express-02": {
+      "query": "Where is the request protocol derived from the encrypted socket and forwarded protocol only when the proxy is trusted?",
+      "gold": {
+        "lib/request.js": 3
+      }
+    },
+    "express-03": {
+      "query": "Where does the request freshness check reject unsafe methods and non-success response status codes?",
+      "gold": {
+        "lib/request.js": 3
+      }
+    },
+    "express-04": {
+      "query": "Where does Express sendFile reject a relative filename unless a root option was supplied?",
+      "gold": {
+        "lib/response.js": 3
+      }
+    },
+    "express-05": {
+      "query": "Where does response content negotiation choose an Accept handler or call a default handler before returning not acceptable?",
+      "gold": {
+        "lib/response.js": 3
+      }
+    },
+    "express-06": {
+      "query": "Where is an ETag setting compiled from a custom function, weak mode, or strong mode into a generator?",
+      "gold": {
+        "lib/utils.js": 3
+      }
+    },
+    "express-07": {
+      "query": "Where are trust-proxy settings converted from hop counts or comma-separated addresses into a predicate?",
+      "gold": {
+        "lib/utils.js": 3
+      }
+    },
+    "express-08": {
+      "query": "Where does template lookup try multiple root directories to find a view?",
+      "gold": {
+        "lib/view.js": 3
+      }
+    },
+    "express-09": {
+      "query": "Where is a synchronously completed template-engine callback deferred to the next tick?",
+      "gold": {
+        "lib/view.js": 3
+      }
+    },
+    "express-10": {
+      "query": "Find createApplication where event-emitter methods and application methods are mixed into the callable Express function.",
+      "gold": {
+        "lib/express.js": 3
+      }
+    },
+    "express-11": {
+      "query": "Where does the public Express entry point export JSON, text, raw and URL-encoded body-parser middleware?",
+      "gold": {
+        "lib/express.js": 3
+      }
+    },
+    "express-12": {
+      "query": "Find the tests for mounting a sub-application with app.use.",
+      "gold": {
+        "test/app.use.js": 3
+      }
+    },
+    "express-13": {
+      "query": "Find the tests covering response format content negotiation and its default callback.",
+      "gold": {
+        "test/res.format.js": 3
+      }
+    },
+    "express-14": {
+      "query": "Find the tests for request protocol and trusted forwarded headers.",
+      "gold": {
+        "test/req.protocol.js": 3
+      }
+    },
+    "express-15": {
+      "query": "Find the compileETag unit tests for weak and strong entity tag generators.",
+      "gold": {
+        "test/utils.js": 3
+      }
+    },
+    "requests-00": {
+      "query": "Where are request-level and session-level dictionaries merged while removing keys assigned None?",
+      "gold": {
+        "src/requests/sessions.py": 3
+      }
+    },
+    "requests-01": {
+      "query": "Which implementation strips authorization when a redirect changes the destination host?",
+      "gold": {
+        "src/requests/sessions.py": 3
+      }
+    },
+    "requests-02": {
+      "query": "Where are redirect response codes used to change a POST into a GET?",
+      "gold": {
+        "src/requests/sessions.py": 3
+      }
+    },
+    "requests-03": {
+      "query": "Where are redirects followed while recording response history and preserving fragments?",
+      "gold": {
+        "src/requests/sessions.py": 3
+      }
+    },
+    "requests-04": {
+      "query": "Where is a JSON request body serialized and assigned its content type?",
+      "gold": {
+        "src/requests/models.py": 3
+      }
+    },
+    "requests-05": {
+      "query": "Which component detects Unicode encoding before decoding a JSON response?",
+      "gold": {
+        "src/requests/models.py": 3
+      }
+    },
+    "requests-06": {
+      "query": "Where are partial lines buffered across successive streamed response chunks?",
+      "gold": {
+        "src/requests/models.py": 3
+      }
+    },
+    "requests-07": {
+      "query": "Locate the implementation that turns HTTP error status codes into exceptions with a decoded reason.",
+      "gold": {
+        "src/requests/models.py": 3
+      }
+    },
+    "requests-08": {
+      "query": "Where does HTTP digest authentication select a hash algorithm from the server challenge?",
+      "gold": {
+        "src/requests/auth.py": 3
+      }
+    },
+    "requests-09": {
+      "query": "Where does digest authentication rewind the request body before retrying a challenge?",
+      "gold": {
+        "src/requests/auth.py": 3
+      }
+    },
+    "requests-10": {
+      "query": "Where does the adapter decide whether a proxy request needs an absolute URL or a relative path?",
+      "gold": {
+        "src/requests/adapters.py": 3
+      }
+    },
+    "requests-11": {
+      "query": "Which implementation raises an error when multiple cookies match the same name without a disambiguating domain?",
+      "gold": {
+        "src/requests/cookies.py": 3
+      }
+    },
+    "requests-12": {
+      "query": "Where is the cookie jar lock omitted from its serialized pickle state?",
+      "gold": {
+        "src/requests/cookies.py": 3
+      }
+    },
+    "requests-13": {
+      "query": "Where are dictionary keys normalized for lookup while retaining the originally supplied spelling?",
+      "gold": {
+        "src/requests/structures.py": 3
+      }
+    },
+    "requests-14": {
+      "query": "Which component allows each response hook to replace the data passed to subsequent hooks?",
+      "gold": {
+        "src/requests/hooks.py": 3
+      }
+    },
+    "requests-15": {
+      "query": "Where does rewinding a streamed request fail when the original body position cannot be restored?",
+      "gold": {
+        "src/requests/utils.py": 3
+      }
+    },
+    "requests-16": {
+      "query": "Find tests for the default response hooks and hook replacement results.",
+      "gold": {
+        "tests/test_hooks.py": 3
+      }
+    },
+    "requests-17": {
+      "query": "Find tests for proxy request URLs with leading path separators.",
+      "gold": {
+        "tests/test_adapters.py": 3
+      }
+    },
+    "requests-18": {
+      "query": "Find tests for calculating the remaining length of a partially read file.",
+      "gold": {
+        "tests/test_utils.py": 3
+      }
+    },
+    "requests-19": {
+      "query": "Find the tests for case-insensitive dictionary access and equality.",
+      "gold": {
+        "tests/test_structures.py": 3
+      }
+    },
+    "chi-00": {
+      "query": "Where are concurrent requests limited by processing tokens and a bounded backlog?",
+      "gold": {
+        "middleware/throttle.go": 3
+      }
+    },
+    "chi-01": {
+      "query": "Which middleware returns a gateway timeout after the request context deadline expires?",
+      "gold": {
+        "middleware/timeout.go": 3
+      }
+    },
+    "chi-02": {
+      "query": "Where is an incoming request ID reused or a new ID generated and placed in the context?",
+      "gold": {
+        "middleware/request_id.go": 3
+      }
+    },
+    "chi-03": {
+      "query": "Locate the implementation that derives the remote client address from forwarded headers.",
+      "gold": {
+        "middleware/realip.go": 3,
+        "middleware/client_ip.go": 3
+      }
+    },
+    "chi-04": {
+      "query": "Where is response compression selected from the accepted encoding header?",
+      "gold": {
+        "middleware/compress.go": 3
+      }
+    },
+    "chi-05": {
+      "query": "Where are handler panics recovered while the special abort-handler panic is rethrown?",
+      "gold": {
+        "middleware/recoverer.go": 3
+      }
+    },
+    "chi-06": {
+      "query": "Locate the implementation that checks basic authentication passwords using constant-time comparison.",
+      "gold": {
+        "middleware/basic_auth.go": 3
+      }
+    },
+    "chi-07": {
+      "query": "Where are repeated slashes cleaned from the request path before the next handler?",
+      "gold": {
+        "middleware/clean_path.go": 3
+      }
+    },
+    "chi-08": {
+      "query": "Which component redirects a trailing-slash request to a slash-free URL?",
+      "gold": {
+        "middleware/strip.go": 3
+      }
+    },
+    "chi-09": {
+      "query": "Where is a configured heartbeat URL intercepted without calling the application handler?",
+      "gold": {
+        "middleware/heartbeat.go": 3
+      }
+    },
+    "chi-10": {
+      "query": "Where is the combined route pattern cleaned of wildcard segments and trailing slashes?",
+      "gold": {
+        "context.go": 3
+      }
+    },
+    "chi-11": {
+      "query": "How are middleware handlers wrapped in reverse order around the final endpoint?",
+      "gold": {
+        "chain.go": 3
+      }
+    },
+    "chi-12": {
+      "query": "Where does mounting a subrouter reject duplicate mount patterns?",
+      "gold": {
+        "mux.go": 3
+      }
+    },
+    "chi-13": {
+      "query": "Where does route dispatch choose between not-found and method-not-allowed responses?",
+      "gold": {
+        "mux.go": 3
+      }
+    },
+    "chi-14": {
+      "query": "Find the implementation of URLParamFromCtx.",
+      "gold": {
+        "context.go": 3
+      }
+    },
+    "chi-15": {
+      "query": "Find the implementation of StripPrefix.",
+      "gold": {
+        "middleware/strip.go": 3
+      }
+    },
+    "chi-16": {
+      "query": "Find tests for limiting requests with a backlog and cancelling waiting clients.",
+      "gold": {
+        "middleware/throttle_test.go": 3
+      }
+    },
+    "chi-17": {
+      "query": "Find the tests for wildcard response compression content types.",
+      "gold": {
+        "middleware/compress_test.go": 3
+      }
+    },
+    "chi-18": {
+      "query": "Find tests that verify request ID propagation.",
+      "gold": {
+        "middleware/request_id_test.go": 3
+      }
+    },
+    "chi-19": {
+      "query": "Find tests for cleaning doubled slashes in URL paths.",
+      "gold": {
+        "middleware/clean_path_test.go": 3
+      }
+    }
+  },
+  "modes": {
+    "fresh-projects-released": {
+      "binary_sha256": "fc45213d1157802bd46a5751a0f6181a873b0bd8dc44f99ff3595897aa0e938d",
+      "repositories": {
+        "express": {
+          "first": 2,
+          "top5": 11,
+          "total": 16,
+          "queries": [
+            {
+              "id": "express-00",
+              "rank": 2,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "test/app.response.js",
+                "test/Route.js",
+                "lib/response.js"
+              ],
+              "wall_ms": 100.24462500587106,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-01",
+              "rank": 2,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "test/app.response.js",
+                "lib/response.js",
+                "examples/static-files/index.js"
+              ],
+              "wall_ms": 25.20108292810619,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-02",
+              "rank": 2,
+              "top5": [
+                "test/req.protocol.js",
+                "lib/request.js",
+                "test/req.secure.js",
+                "test/req.hostname.js",
+                "test/req.ips.js"
+              ],
+              "wall_ms": 25.237958878278732,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-03",
+              "rank": null,
+              "top5": [
+                "test/Route.js",
+                "lib/application.js",
+                "lib/response.js",
+                "test/Router.js",
+                "test/app.router.js"
+              ],
+              "wall_ms": 25.20875004120171,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-04",
+              "rank": 2,
+              "top5": [
+                "test/res.sendFile.js",
+                "lib/response.js",
+                "test/res.download.js",
+                "examples/search/index.js",
+                "test/res.attachment.js"
+              ],
+              "wall_ms": 25.210834108293056,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-05",
+              "rank": 2,
+              "top5": [
+                "test/acceptance/content-negotiation.js",
+                "lib/response.js",
+                "lib/request.js",
+                "test/res.format.js",
+                "test/app.response.js"
+              ],
+              "wall_ms": 25.20429203286767,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-06",
+              "rank": 3,
+              "top5": [
+                ".github/workflows/codeql.yml",
+                "examples/view-constructor/github-view.js",
+                "lib/utils.js",
+                "lib/application.js",
+                "test/req.query.js"
+              ],
+              "wall_ms": 25.167333893477917,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-07",
+              "rank": null,
+              "top5": [
+                "test/app.locals.js",
+                "lib/response.js",
+                "lib/request.js",
+                "lib/application.js",
+                "examples/error-pages/views/500.ejs"
+              ],
+              "wall_ms": 24.64183303527534,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-08",
+              "rank": 2,
+              "top5": [
+                "test/app.render.js",
+                "lib/view.js",
+                "lib/application.js",
+                "examples/static-files/index.js",
+                "test/res.render.js"
+              ],
+              "wall_ms": 25.169583968818188,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-09",
+              "rank": 2,
+              "top5": [
+                "lib/application.js",
+                "lib/view.js",
+                "test/app.engine.js",
+                "lib/response.js",
+                "test/res.jsonp.js"
+              ],
+              "wall_ms": 25.174375157803297,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-10",
+              "rank": 1,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "test/express.urlencoded.js",
+                "test/express.json.js",
+                "test/express.raw.js"
+              ],
+              "wall_ms": 25.00716713257134,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-11",
+              "rank": null,
+              "top5": [
+                "test/res.redirect.js",
+                "test/express.json.js",
+                "examples/error-pages/index.js",
+                "test/app.use.js",
+                "test/res.location.js"
+              ],
+              "wall_ms": 25.156541960313916,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-12",
+              "rank": null,
+              "top5": [
+                "examples/static-files/index.js",
+                "test/support/utils.js",
+                "test/acceptance/params.js",
+                "examples/error-pages/views/404.ejs",
+                ".github/workflows/legacy.yml"
+              ],
+              "wall_ms": 29.060499975457788,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-13",
+              "rank": null,
+              "top5": [
+                "lib/response.js",
+                "test/acceptance/content-negotiation.js",
+                "test/res.jsonp.js",
+                "test/app.response.js",
+                "test/support/tmpl.js"
+              ],
+              "wall_ms": 20.363750169053674,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-14",
+              "rank": 1,
+              "top5": [
+                "test/req.protocol.js",
+                "lib/request.js",
+                "test/req.ip.js",
+                "test/req.host.js",
+                "test/req.hostname.js"
+              ],
+              "wall_ms": 25.185833917930722,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "express-15",
+              "rank": 2,
+              "top5": [
+                "lib/application.js",
+                "test/utils.js",
+                "lib/utils.js",
+                "test/res.send.js",
+                ".github/workflows/legacy.yml"
+              ],
+              "wall_ms": 25.186083046719432,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            }
+          ]
+        },
+        "requests": {
+          "first": 11,
+          "top5": 17,
+          "total": 20,
+          "queries": [
+            {
+              "id": "requests-00",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "src/requests/api.py",
+                "docs/user/advanced.rst",
+                "tests/test_requests.py",
+                "docs/api.rst"
+              ],
+              "wall_ms": 50.18354207277298,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-01",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "src/requests/auth.py",
+                "docs/api.rst",
+                "src/requests/help.py",
+                "src/requests/models.py"
+              ],
+              "wall_ms": 25.16949991695583,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-02",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "src/requests/models.py",
+                "src/requests/status_codes.py",
+                "src/requests/api.py",
+                "docs/user/quickstart.rst"
+              ],
+              "wall_ms": 23.131957976147532,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-03",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "docs/community/release-process.rst",
+                "docs/dev/contributing.rst",
+                "src/requests/api.py",
+                "src/requests/__init__.py"
+              ],
+              "wall_ms": 25.171916000545025,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-04",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/api.py",
+                "src/requests/exceptions.py",
+                "src/requests/_types.py",
+                "docs/user/quickstart.rst"
+              ],
+              "wall_ms": 25.18970798701048,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-05",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/exceptions.py",
+                "docs/user/quickstart.rst",
+                "src/requests/_internal_utils.py",
+                "src/requests/api.py"
+              ],
+              "wall_ms": 25.163291953504086,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-06",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "docs/user/quickstart.rst",
+                "docs/user/advanced.rst",
+                "src/requests/status_codes.py",
+                "src/requests/utils.py"
+              ],
+              "wall_ms": 25.154749862849712,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-07",
+              "rank": 2,
+              "top5": [
+                "docs/user/quickstart.rst",
+                "src/requests/models.py",
+                "docs/user/advanced.rst",
+                "src/requests/help.py",
+                "docs/user/authentication.rst"
+              ],
+              "wall_ms": 25.17695794813335,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-08",
+              "rank": 1,
+              "top5": [
+                "src/requests/auth.py",
+                "docs/user/authentication.rst",
+                "docs/index.rst",
+                "docs/api.rst",
+                "tests/test_lowlevel.py"
+              ],
+              "wall_ms": 25.163084035739303,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-09",
+              "rank": 2,
+              "top5": [
+                "docs/user/authentication.rst",
+                "src/requests/auth.py",
+                "src/requests/sessions.py",
+                "src/requests/api.py",
+                "tests/test_lowlevel.py"
+              ],
+              "wall_ms": 25.27495799586177,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-10",
+              "rank": 2,
+              "top5": [
+                "src/requests/sessions.py",
+                "src/requests/adapters.py",
+                "docs/conf.py",
+                "src/requests/api.py",
+                "src/requests/models.py"
+              ],
+              "wall_ms": 21.97729190811515,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-11",
+              "rank": 2,
+              "top5": [
+                "docs/user/advanced.rst",
+                "src/requests/cookies.py",
+                "docs/user/quickstart.rst",
+                "src/requests/help.py",
+                "docs/api.rst"
+              ],
+              "wall_ms": 25.1372919883579,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-12",
+              "rank": 1,
+              "top5": [
+                "src/requests/cookies.py",
+                "src/requests/auth.py",
+                "src/requests/sessions.py",
+                "docs/Makefile",
+                "docs/make.bat"
+              ],
+              "wall_ms": 25.15395893715322,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-13",
+              "rank": 1,
+              "top5": [
+                "src/requests/structures.py",
+                "src/requests/api.py",
+                "src/requests/sessions.py",
+                "src/requests/hooks.py",
+                "docs/user/quickstart.rst"
+              ],
+              "wall_ms": 25.16499999910593,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-14",
+              "rank": null,
+              "top5": [
+                "src/requests/models.py",
+                "docs/user/advanced.rst",
+                "docs/user/quickstart.rst",
+                "src/requests/sessions.py",
+                "src/requests/utils.py"
+              ],
+              "wall_ms": 25.15583299100399,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-15",
+              "rank": 1,
+              "top5": [
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "src/requests/auth.py",
+                "src/requests/sessions.py",
+                "tests/test_requests.py"
+              ],
+              "wall_ms": 21.217667032033205,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-16",
+              "rank": null,
+              "top5": [
+                "src/requests/hooks.py",
+                "src/requests/sessions.py",
+                "docs/conf.py",
+                "src/requests/models.py",
+                "docs/user/advanced.rst"
+              ],
+              "wall_ms": 23.09791697189212,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-17",
+              "rank": 2,
+              "top5": [
+                "src/requests/sessions.py",
+                "tests/test_adapters.py",
+                "src/requests/utils.py",
+                ".github/workflows/run-tests.yml",
+                "tests/conftest.py"
+              ],
+              "wall_ms": 25.20862501114607,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-18",
+              "rank": null,
+              "top5": [
+                ".github/workflows/run-tests.yml",
+                "docs/user/advanced.rst",
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "Makefile"
+              ],
+              "wall_ms": 25.21991590037942,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "requests-19",
+              "rank": 5,
+              "top5": [
+                "src/requests/structures.py",
+                "docs/user/quickstart.rst",
+                ".github/workflows/run-tests.yml",
+                "src/requests/sessions.py",
+                "tests/test_structures.py"
+              ],
+              "wall_ms": 25.16108308918774,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            }
+          ]
+        },
+        "chi": {
+          "first": 11,
+          "top5": 15,
+          "total": 20,
+          "queries": [
+            {
+              "id": "chi-00",
+              "rank": 1,
+              "top5": [
+                "middleware/throttle.go",
+                "_examples/limits/main.go",
+                "middleware/supress_notfound.go",
+                "middleware/throttle_test.go",
+                "README.md"
+              ],
+              "wall_ms": 50.233792047947645,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-01",
+              "rank": 1,
+              "top5": [
+                "middleware/timeout.go",
+                "_examples/limits/main.go",
+                "middleware/nocache.go",
+                "context.go",
+                "middleware/middleware.go"
+              ],
+              "wall_ms": 25.177417090162635,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-02",
+              "rank": 1,
+              "top5": [
+                "middleware/request_id.go",
+                "context.go",
+                "middleware/client_ip.go",
+                "_examples/rest/main.go",
+                "middleware/wrap_writer.go"
+              ],
+              "wall_ms": 25.147832930088043,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-03",
+              "rank": 1,
+              "top5": [
+                "middleware/client_ip.go",
+                "middleware/realip.go",
+                "middleware/client_ip_test.go",
+                "middleware/route_headers.go",
+                "middleware/client_ip_example_test.go"
+              ],
+              "wall_ms": 25.207957951352,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-04",
+              "rank": 1,
+              "top5": [
+                "middleware/compress.go",
+                "middleware/content_encoding.go",
+                "middleware/compress_test.go",
+                "middleware/content_encoding_test.go",
+                "middleware/content_charset.go"
+              ],
+              "wall_ms": 23.030666867271066,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-05",
+              "rank": 2,
+              "top5": [
+                "chi.go",
+                "middleware/recoverer.go",
+                "middleware/recoverer_test.go",
+                "context_test.go",
+                "middleware/client_ip.go"
+              ],
+              "wall_ms": 24.426665855571628,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-06",
+              "rank": 1,
+              "top5": [
+                "middleware/basic_auth.go",
+                "tree.go",
+                "middleware/logger.go",
+                "middleware/basic_auth_test.go",
+                "README.md"
+              ],
+              "wall_ms": 25.159083073958755,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-07",
+              "rank": null,
+              "top5": [
+                "middleware/strip.go",
+                "chi.go",
+                "middleware/strip_test.go",
+                "README.md",
+                "CHANGELOG.md"
+              ],
+              "wall_ms": 25.164791848510504,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-08",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "chi.go",
+                "middleware/url_format.go",
+                "context.go",
+                "context_test.go"
+              ],
+              "wall_ms": 25.20979195833206,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-09",
+              "rank": 1,
+              "top5": [
+                "middleware/heartbeat.go",
+                "middleware/heartbeat_test.go",
+                "middleware/compress.go",
+                "middleware/url_format.go",
+                "middleware/content_type_test.go"
+              ],
+              "wall_ms": 25.01570899039507,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-10",
+              "rank": null,
+              "top5": [
+                "tree.go",
+                "middleware/strip.go",
+                "context_test.go",
+                "chi.go",
+                "middleware/route_headers.go"
+              ],
+              "wall_ms": 25.149625027552247,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-11",
+              "rank": 2,
+              "top5": [
+                "tree.go",
+                "chain.go",
+                "mux.go",
+                "middleware/compress.go",
+                "_examples/rest/routes.json"
+              ],
+              "wall_ms": 25.191708002239466,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-12",
+              "rank": 3,
+              "top5": [
+                "_examples/todos-resource/main.go",
+                "middleware/profiler.go",
+                "mux.go",
+                "mux_test.go",
+                "tree.go"
+              ],
+              "wall_ms": 24.69604113139212,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-13",
+              "rank": 1,
+              "top5": [
+                "mux.go",
+                "middleware/compress.go",
+                "chi.go",
+                "context.go",
+                "middleware/content_encoding.go"
+              ],
+              "wall_ms": 25.166790932416916,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-14",
+              "rank": 1,
+              "top5": [
+                "context.go",
+                "mux.go",
+                "tree.go",
+                "middleware/url_format.go",
+                "_examples/versions/main.go"
+              ],
+              "wall_ms": 24.860207922756672,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-15",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "middleware/strip_test.go",
+                "_examples/fileserver/main.go",
+                "tree.go",
+                "mux.go"
+              ],
+              "wall_ms": 21.78620803169906,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-16",
+              "rank": 3,
+              "top5": [
+                "middleware/throttle.go",
+                "_examples/limits/main.go",
+                "middleware/throttle_test.go",
+                "middleware/nocache.go",
+                "middleware/strip.go"
+              ],
+              "wall_ms": 25.142709026113153,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-17",
+              "rank": null,
+              "top5": [
+                "middleware/compress.go",
+                "middleware/content_type_test.go",
+                "middleware/content_charset_test.go",
+                "middleware/content_type.go",
+                "middleware/content_charset.go"
+              ],
+              "wall_ms": 22.835500072687864,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-18",
+              "rank": null,
+              "top5": [
+                "mux.go",
+                "tree.go",
+                "tree_test.go",
+                "middleware/client_ip.go",
+                "middleware/get_head.go"
+              ],
+              "wall_ms": 21.872249897569418,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            },
+            {
+              "id": "chi-19",
+              "rank": null,
+              "top5": [
+                "middleware/strip.go",
+                "middleware/url_format.go",
+                "middleware/content_charset.go",
+                "chi.go",
+                "middleware/strip_test.go"
+              ],
+              "wall_ms": 22.36808300949633,
+              "semantic": "unavailable",
+              "detail": "FileNotFound",
+              "documents_sent": 0
+            }
+          ]
+        }
+      },
+      "summary": {
+        "first": 24,
+        "top5": 43,
+        "total": 56,
+        "semantic_states": {
+          "unavailable": 56
+        }
+      }
+    },
+    "fresh-projects-fixed-release": {
+      "binary_sha256": "344a5f3a58558ac6f9f7d88674b6141d1d1cddfef68e94d9b0ce6cb20e3101dc",
+      "repositories": {
+        "express": {
+          "first": 2,
+          "top5": 11,
+          "total": 16,
+          "queries": [
+            {
+              "id": "express-00",
+              "rank": 2,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "test/app.response.js",
+                "test/Route.js",
+                "lib/response.js"
+              ],
+              "wall_ms": 1499.1264999844134,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-01",
+              "rank": 2,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "test/app.response.js",
+                "lib/response.js",
+                "examples/static-files/index.js"
+              ],
+              "wall_ms": 1304.1645830962807,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 19
+            },
+            {
+              "id": "express-02",
+              "rank": 2,
+              "top5": [
+                "test/req.protocol.js",
+                "lib/request.js",
+                "test/req.secure.js",
+                "test/req.hostname.js",
+                "test/req.ips.js"
+              ],
+              "wall_ms": 1347.8478328324854,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 17
+            },
+            {
+              "id": "express-03",
+              "rank": null,
+              "top5": [
+                "test/Route.js",
+                "lib/application.js",
+                "lib/response.js",
+                "test/Router.js",
+                "test/app.router.js"
+              ],
+              "wall_ms": 301.9304999615997,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-04",
+              "rank": 2,
+              "top5": [
+                "test/res.sendFile.js",
+                "lib/response.js",
+                "test/res.download.js",
+                "examples/search/index.js",
+                "test/res.attachment.js"
+              ],
+              "wall_ms": 1108.6535840295255,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-05",
+              "rank": 2,
+              "top5": [
+                "test/acceptance/content-negotiation.js",
+                "lib/response.js",
+                "lib/request.js",
+                "test/res.format.js",
+                "test/app.response.js"
+              ],
+              "wall_ms": 250.15533296391368,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-06",
+              "rank": 3,
+              "top5": [
+                ".github/workflows/codeql.yml",
+                "examples/view-constructor/github-view.js",
+                "lib/utils.js",
+                "lib/application.js",
+                "test/req.query.js"
+              ],
+              "wall_ms": 258.14108294434845,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-07",
+              "rank": null,
+              "top5": [
+                "test/app.locals.js",
+                "lib/response.js",
+                "lib/request.js",
+                "lib/application.js",
+                "examples/error-pages/views/500.ejs"
+              ],
+              "wall_ms": 2771.629292052239,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 9
+            },
+            {
+              "id": "express-08",
+              "rank": 2,
+              "top5": [
+                "test/app.render.js",
+                "lib/view.js",
+                "lib/application.js",
+                "examples/static-files/index.js",
+                "test/res.render.js"
+              ],
+              "wall_ms": 226.70904081314802,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-09",
+              "rank": 2,
+              "top5": [
+                "lib/application.js",
+                "lib/view.js",
+                "test/app.engine.js",
+                "lib/response.js",
+                "test/res.jsonp.js"
+              ],
+              "wall_ms": 344.2059578374028,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 13
+            },
+            {
+              "id": "express-10",
+              "rank": 1,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "test/express.urlencoded.js",
+                "test/express.json.js",
+                "test/express.raw.js"
+              ],
+              "wall_ms": 307.81183298677206,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 22
+            },
+            {
+              "id": "express-11",
+              "rank": null,
+              "top5": [
+                "test/res.redirect.js",
+                "test/express.json.js",
+                "examples/error-pages/index.js",
+                "test/app.use.js",
+                "test/res.location.js"
+              ],
+              "wall_ms": 274.5387910399586,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-12",
+              "rank": null,
+              "top5": [
+                "examples/static-files/index.js",
+                "test/support/utils.js",
+                "test/acceptance/params.js",
+                "examples/error-pages/views/404.ejs",
+                ".github/workflows/legacy.yml"
+              ],
+              "wall_ms": 889.1322501003742,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 23
+            },
+            {
+              "id": "express-13",
+              "rank": null,
+              "top5": [
+                "lib/response.js",
+                "test/acceptance/content-negotiation.js",
+                "test/res.jsonp.js",
+                "test/app.response.js",
+                "test/support/tmpl.js"
+              ],
+              "wall_ms": 812.6234579831362,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-14",
+              "rank": 1,
+              "top5": [
+                "test/req.protocol.js",
+                "lib/request.js",
+                "test/req.ip.js",
+                "test/req.host.js",
+                "test/req.hostname.js"
+              ],
+              "wall_ms": 265.0273749604821,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-15",
+              "rank": 2,
+              "top5": [
+                "lib/application.js",
+                "test/utils.js",
+                "lib/utils.js",
+                "test/res.send.js",
+                ".github/workflows/legacy.yml"
+              ],
+              "wall_ms": 221.67062503285706,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 19
+            }
+          ]
+        },
+        "requests": {
+          "first": 11,
+          "top5": 17,
+          "total": 20,
+          "queries": [
+            {
+              "id": "requests-00",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "src/requests/api.py",
+                "docs/user/advanced.rst",
+                "tests/test_requests.py",
+                "docs/api.rst"
+              ],
+              "wall_ms": 394.36479192227125,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 15
+            },
+            {
+              "id": "requests-01",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "src/requests/auth.py",
+                "docs/api.rst",
+                "src/requests/help.py",
+                "src/requests/models.py"
+              ],
+              "wall_ms": 249.64604107663035,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 21
+            },
+            {
+              "id": "requests-02",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "src/requests/models.py",
+                "src/requests/status_codes.py",
+                "src/requests/api.py",
+                "docs/user/quickstart.rst"
+              ],
+              "wall_ms": 266.65833313018084,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 19
+            },
+            {
+              "id": "requests-03",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "docs/community/release-process.rst",
+                "docs/dev/contributing.rst",
+                "src/requests/api.py",
+                "src/requests/__init__.py"
+              ],
+              "wall_ms": 307.09933396428823,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 12
+            },
+            {
+              "id": "requests-04",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/api.py",
+                "src/requests/exceptions.py",
+                "src/requests/_types.py",
+                "docs/user/quickstart.rst"
+              ],
+              "wall_ms": 193.27604211866856,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 15
+            },
+            {
+              "id": "requests-05",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/exceptions.py",
+                "docs/user/quickstart.rst",
+                "src/requests/_internal_utils.py",
+                "src/requests/api.py"
+              ],
+              "wall_ms": 266.28645812161267,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 18
+            },
+            {
+              "id": "requests-06",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "docs/user/quickstart.rst",
+                "docs/user/advanced.rst",
+                "src/requests/status_codes.py",
+                "src/requests/utils.py"
+              ],
+              "wall_ms": 174.97858381830156,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 14
+            },
+            {
+              "id": "requests-07",
+              "rank": 2,
+              "top5": [
+                "docs/user/quickstart.rst",
+                "src/requests/models.py",
+                "docs/user/advanced.rst",
+                "src/requests/help.py",
+                "docs/user/authentication.rst"
+              ],
+              "wall_ms": 1248.0859998613596,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 15
+            },
+            {
+              "id": "requests-08",
+              "rank": 1,
+              "top5": [
+                "src/requests/auth.py",
+                "docs/user/authentication.rst",
+                "docs/index.rst",
+                "docs/api.rst",
+                "tests/test_lowlevel.py"
+              ],
+              "wall_ms": 268.61962489783764,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 16
+            },
+            {
+              "id": "requests-09",
+              "rank": 2,
+              "top5": [
+                "docs/user/authentication.rst",
+                "src/requests/auth.py",
+                "src/requests/sessions.py",
+                "src/requests/api.py",
+                "tests/test_lowlevel.py"
+              ],
+              "wall_ms": 185.0037919357419,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 16
+            },
+            {
+              "id": "requests-10",
+              "rank": 2,
+              "top5": [
+                "src/requests/sessions.py",
+                "src/requests/adapters.py",
+                "docs/conf.py",
+                "src/requests/api.py",
+                "src/requests/models.py"
+              ],
+              "wall_ms": 173.44975005835295,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 16
+            },
+            {
+              "id": "requests-11",
+              "rank": 2,
+              "top5": [
+                "docs/user/advanced.rst",
+                "src/requests/cookies.py",
+                "docs/user/quickstart.rst",
+                "src/requests/help.py",
+                "docs/api.rst"
+              ],
+              "wall_ms": 186.53200007975101,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 21
+            },
+            {
+              "id": "requests-12",
+              "rank": 1,
+              "top5": [
+                "src/requests/cookies.py",
+                "src/requests/auth.py",
+                "src/requests/sessions.py",
+                "docs/Makefile",
+                "docs/make.bat"
+              ],
+              "wall_ms": 1040.18274997361,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 15
+            },
+            {
+              "id": "requests-13",
+              "rank": 1,
+              "top5": [
+                "src/requests/structures.py",
+                "src/requests/api.py",
+                "src/requests/sessions.py",
+                "src/requests/hooks.py",
+                "docs/user/quickstart.rst"
+              ],
+              "wall_ms": 157.39862504415214,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 11
+            },
+            {
+              "id": "requests-14",
+              "rank": null,
+              "top5": [
+                "src/requests/models.py",
+                "docs/user/advanced.rst",
+                "docs/user/quickstart.rst",
+                "src/requests/sessions.py",
+                "src/requests/utils.py"
+              ],
+              "wall_ms": 209.04554100707173,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 19
+            },
+            {
+              "id": "requests-15",
+              "rank": 1,
+              "top5": [
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "src/requests/auth.py",
+                "src/requests/sessions.py",
+                "tests/test_requests.py"
+              ],
+              "wall_ms": 170.33237498253584,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 16
+            },
+            {
+              "id": "requests-16",
+              "rank": null,
+              "top5": [
+                "src/requests/hooks.py",
+                "src/requests/sessions.py",
+                "docs/conf.py",
+                "src/requests/models.py",
+                "docs/user/advanced.rst"
+              ],
+              "wall_ms": 209.66537506319582,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-17",
+              "rank": 2,
+              "top5": [
+                "src/requests/sessions.py",
+                "tests/test_adapters.py",
+                "src/requests/utils.py",
+                ".github/workflows/run-tests.yml",
+                "tests/conftest.py"
+              ],
+              "wall_ms": 169.7644169908017,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 23
+            },
+            {
+              "id": "requests-18",
+              "rank": null,
+              "top5": [
+                ".github/workflows/run-tests.yml",
+                "docs/user/advanced.rst",
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "Makefile"
+              ],
+              "wall_ms": 1015.2799168135971,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 19
+            },
+            {
+              "id": "requests-19",
+              "rank": 5,
+              "top5": [
+                "src/requests/structures.py",
+                "docs/user/quickstart.rst",
+                ".github/workflows/run-tests.yml",
+                "src/requests/sessions.py",
+                "tests/test_structures.py"
+              ],
+              "wall_ms": 435.99866703152657,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            }
+          ]
+        },
+        "chi": {
+          "first": 11,
+          "top5": 15,
+          "total": 20,
+          "queries": [
+            {
+              "id": "chi-00",
+              "rank": 1,
+              "top5": [
+                "middleware/throttle.go",
+                "_examples/limits/main.go",
+                "middleware/supress_notfound.go",
+                "middleware/throttle_test.go",
+                "README.md"
+              ],
+              "wall_ms": 262.7217499539256,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 12
+            },
+            {
+              "id": "chi-01",
+              "rank": 1,
+              "top5": [
+                "middleware/timeout.go",
+                "_examples/limits/main.go",
+                "middleware/nocache.go",
+                "context.go",
+                "middleware/middleware.go"
+              ],
+              "wall_ms": 208.2392501179129,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 17
+            },
+            {
+              "id": "chi-02",
+              "rank": 1,
+              "top5": [
+                "middleware/request_id.go",
+                "context.go",
+                "middleware/client_ip.go",
+                "_examples/rest/main.go",
+                "middleware/wrap_writer.go"
+              ],
+              "wall_ms": 188.3701670449227,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 17
+            },
+            {
+              "id": "chi-03",
+              "rank": 1,
+              "top5": [
+                "middleware/client_ip.go",
+                "middleware/realip.go",
+                "middleware/client_ip_test.go",
+                "middleware/route_headers.go",
+                "middleware/client_ip_example_test.go"
+              ],
+              "wall_ms": 167.11737494915724,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 15
+            },
+            {
+              "id": "chi-04",
+              "rank": 1,
+              "top5": [
+                "middleware/compress.go",
+                "middleware/content_encoding.go",
+                "middleware/compress_test.go",
+                "middleware/content_encoding_test.go",
+                "middleware/content_charset.go"
+              ],
+              "wall_ms": 152.12337509728968,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 19
+            },
+            {
+              "id": "chi-05",
+              "rank": 2,
+              "top5": [
+                "chi.go",
+                "middleware/recoverer.go",
+                "middleware/recoverer_test.go",
+                "context_test.go",
+                "middleware/client_ip.go"
+              ],
+              "wall_ms": 6912.518041906878,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 19
+            },
+            {
+              "id": "chi-06",
+              "rank": 1,
+              "top5": [
+                "middleware/basic_auth.go",
+                "tree.go",
+                "middleware/logger.go",
+                "middleware/basic_auth_test.go",
+                "README.md"
+              ],
+              "wall_ms": 538.5672082193196,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 9
+            },
+            {
+              "id": "chi-07",
+              "rank": null,
+              "top5": [
+                "middleware/strip.go",
+                "chi.go",
+                "middleware/strip_test.go",
+                "README.md",
+                "CHANGELOG.md"
+              ],
+              "wall_ms": 1340.287792030722,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 22
+            },
+            {
+              "id": "chi-08",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "chi.go",
+                "middleware/url_format.go",
+                "context.go",
+                "context_test.go"
+              ],
+              "wall_ms": 226.37087502516806,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 20
+            },
+            {
+              "id": "chi-09",
+              "rank": 1,
+              "top5": [
+                "middleware/heartbeat.go",
+                "middleware/heartbeat_test.go",
+                "middleware/compress.go",
+                "middleware/url_format.go",
+                "middleware/content_type_test.go"
+              ],
+              "wall_ms": 183.04816586896777,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 18
+            },
+            {
+              "id": "chi-10",
+              "rank": null,
+              "top5": [
+                "tree.go",
+                "middleware/strip.go",
+                "context_test.go",
+                "chi.go",
+                "middleware/route_headers.go"
+              ],
+              "wall_ms": 334.0335001703352,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 13
+            },
+            {
+              "id": "chi-11",
+              "rank": 2,
+              "top5": [
+                "tree.go",
+                "chain.go",
+                "mux.go",
+                "middleware/compress.go",
+                "_examples/rest/routes.json"
+              ],
+              "wall_ms": 324.8753338120878,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 21
+            },
+            {
+              "id": "chi-12",
+              "rank": 3,
+              "top5": [
+                "_examples/todos-resource/main.go",
+                "middleware/profiler.go",
+                "mux.go",
+                "mux_test.go",
+                "tree.go"
+              ],
+              "wall_ms": 165.91137484647334,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 15
+            },
+            {
+              "id": "chi-13",
+              "rank": 1,
+              "top5": [
+                "mux.go",
+                "middleware/compress.go",
+                "chi.go",
+                "context.go",
+                "middleware/content_encoding.go"
+              ],
+              "wall_ms": 175.81691686064005,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 17
+            },
+            {
+              "id": "chi-14",
+              "rank": 1,
+              "top5": [
+                "context.go",
+                "mux.go",
+                "tree.go",
+                "middleware/url_format.go",
+                "_examples/versions/main.go"
+              ],
+              "wall_ms": 1341.267375042662,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 18
+            },
+            {
+              "id": "chi-15",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "middleware/strip_test.go",
+                "_examples/fileserver/main.go",
+                "tree.go",
+                "mux.go"
+              ],
+              "wall_ms": 1380.6244591251016,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 17
+            },
+            {
+              "id": "chi-16",
+              "rank": 3,
+              "top5": [
+                "middleware/throttle.go",
+                "_examples/limits/main.go",
+                "middleware/throttle_test.go",
+                "middleware/nocache.go",
+                "middleware/strip.go"
+              ],
+              "wall_ms": 182.37862503156066,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 14
+            },
+            {
+              "id": "chi-17",
+              "rank": null,
+              "top5": [
+                "middleware/compress.go",
+                "middleware/content_type_test.go",
+                "middleware/content_charset_test.go",
+                "middleware/content_type.go",
+                "middleware/content_charset.go"
+              ],
+              "wall_ms": 188.4137080051005,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-18",
+              "rank": null,
+              "top5": [
+                "mux.go",
+                "tree.go",
+                "tree_test.go",
+                "middleware/client_ip.go",
+                "middleware/get_head.go"
+              ],
+              "wall_ms": 1913.6823329608887,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 23
+            },
+            {
+              "id": "chi-19",
+              "rank": null,
+              "top5": [
+                "middleware/strip.go",
+                "middleware/url_format.go",
+                "middleware/content_charset.go",
+                "chi.go",
+                "middleware/strip_test.go"
+              ],
+              "wall_ms": 314.5391661673784,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 18
+            }
+          ]
+        }
+      },
+      "summary": {
+        "first": 24,
+        "top5": 43,
+        "total": 56,
+        "semantic_states": {
+          "applied_exact_fallback": 56
+        }
+      }
+    },
+    "fresh-projects-fixed-candidate": {
+      "binary_sha256": "7dae14af7843ad19c6a6b085905cc5857e9c844d4a7827a3f86f1b1c956c326f",
+      "repositories": {
+        "express": {
+          "first": 8,
+          "top5": 15,
+          "total": 16,
+          "queries": [
+            {
+              "id": "express-00",
+              "rank": 1,
+              "top5": [
+                "lib/application.js",
+                "lib/response.js",
+                "lib/express.js",
+                "lib/request.js",
+                "test/app.router.js"
+              ],
+              "wall_ms": 390.2380841318518,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-01",
+              "rank": 1,
+              "top5": [
+                "lib/application.js",
+                "lib/response.js",
+                "test/app.response.js",
+                "lib/request.js",
+                "test/app.request.js"
+              ],
+              "wall_ms": 1170.8230420481414,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-02",
+              "rank": 1,
+              "top5": [
+                "lib/request.js",
+                "test/req.protocol.js",
+                "test/req.host.js",
+                "test/req.hostname.js",
+                "test/req.ip.js"
+              ],
+              "wall_ms": 252.78833392076194,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-03",
+              "rank": 4,
+              "top5": [
+                "lib/response.js",
+                "lib/application.js",
+                "test/res.status.js",
+                "lib/request.js",
+                "test/res.send.js"
+              ],
+              "wall_ms": 283.1523329950869,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-04",
+              "rank": 3,
+              "top5": [
+                "test/res.sendFile.js",
+                "test/express.static.js",
+                "lib/response.js",
+                "test/res.download.js",
+                "lib/view.js"
+              ],
+              "wall_ms": 222.61312510818243,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-05",
+              "rank": 1,
+              "top5": [
+                "lib/response.js",
+                "lib/request.js",
+                "test/res.format.js",
+                "test/express.static.js",
+                "test/express.text.js"
+              ],
+              "wall_ms": 211.4771669730544,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-06",
+              "rank": 1,
+              "top5": [
+                "lib/utils.js",
+                "test/res.send.js",
+                "lib/request.js",
+                "lib/application.js",
+                "test/utils.js"
+              ],
+              "wall_ms": 1294.1353330388665,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-07",
+              "rank": 3,
+              "top5": [
+                "lib/application.js",
+                "lib/request.js",
+                "lib/utils.js",
+                "History.md",
+                "test/req.ips.js"
+              ],
+              "wall_ms": 187.6452500000596,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-08",
+              "rank": 1,
+              "top5": [
+                "lib/view.js",
+                "test/app.render.js",
+                "lib/application.js",
+                "test/res.render.js",
+                "examples/downloads/index.js"
+              ],
+              "wall_ms": 200.20162500441074,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-09",
+              "rank": 3,
+              "top5": [
+                "test/app.engine.js",
+                "lib/response.js",
+                "lib/view.js",
+                "lib/application.js",
+                "test/res.render.js"
+              ],
+              "wall_ms": 736.5627910476178,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-10",
+              "rank": 1,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "lib/request.js",
+                "test/app.js",
+                "lib/response.js"
+              ],
+              "wall_ms": 252.30629090219736,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-11",
+              "rank": 1,
+              "top5": [
+                "lib/express.js",
+                "lib/response.js",
+                "test/express.static.js",
+                "test/exports.js",
+                "lib/request.js"
+              ],
+              "wall_ms": 289.5116249565035,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-12",
+              "rank": null,
+              "top5": [
+                "test/req.subdomains.js",
+                "lib/application.js",
+                "test/res.format.js",
+                "test/app.response.js",
+                "test/app.request.js"
+              ],
+              "wall_ms": 185.16337499022484,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-13",
+              "rank": 2,
+              "top5": [
+                "lib/response.js",
+                "test/res.format.js",
+                "lib/application.js",
+                "test/acceptance/content-negotiation.js",
+                "examples/content-negotiation/index.js"
+              ],
+              "wall_ms": 2177.347250049934,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-14",
+              "rank": 2,
+              "top5": [
+                "lib/request.js",
+                "test/req.protocol.js",
+                "test/req.host.js",
+                "test/req.ip.js",
+                "test/req.hostname.js"
+              ],
+              "wall_ms": 264.8001660127193,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "express-15",
+              "rank": 2,
+              "top5": [
+                "lib/application.js",
+                "test/utils.js",
+                "lib/utils.js",
+                "test/res.send.js",
+                ".github/workflows/legacy.yml"
+              ],
+              "wall_ms": 2362.4350829049945,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            }
+          ]
+        },
+        "requests": {
+          "first": 9,
+          "top5": 20,
+          "total": 20,
+          "queries": [
+            {
+              "id": "requests-00",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "tests/test_requests.py",
+                "src/requests/cookies.py",
+                "src/requests/api.py",
+                "docs/user/advanced.rst"
+              ],
+              "wall_ms": 302.46004182845354,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-01",
+              "rank": 2,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/sessions.py",
+                "HISTORY.md",
+                "src/requests/models.py",
+                "src/requests/adapters.py"
+              ],
+              "wall_ms": 322.3067501094192,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-02",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "tests/test_requests.py",
+                "src/requests/utils.py",
+                "tests/test_lowlevel.py",
+                "src/requests/status_codes.py"
+              ],
+              "wall_ms": 529.8413340933621,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-03",
+              "rank": 2,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/sessions.py",
+                "HISTORY.md",
+                "docs/user/quickstart.rst",
+                "src/requests/exceptions.py"
+              ],
+              "wall_ms": 512.686959002167,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-04",
+              "rank": 3,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "src/requests/api.py",
+                "src/requests/sessions.py"
+              ],
+              "wall_ms": 1344.101166119799,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-05",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/utils.py",
+                "tests/test_requests.py",
+                "docs/api.rst",
+                "docs/user/quickstart.rst"
+              ],
+              "wall_ms": 291.9735419563949,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-06",
+              "rank": 3,
+              "top5": [
+                "tests/test_requests.py",
+                "docs/user/advanced.rst",
+                "src/requests/models.py",
+                "HISTORY.md",
+                "src/requests/auth.py"
+              ],
+              "wall_ms": 237.1852919459343,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-07",
+              "rank": 4,
+              "top5": [
+                "src/requests/exceptions.py",
+                "src/requests/adapters.py",
+                "tests/test_requests.py",
+                "src/requests/models.py",
+                "docs/user/advanced.rst"
+              ],
+              "wall_ms": 222.99387492239475,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-08",
+              "rank": 1,
+              "top5": [
+                "src/requests/auth.py",
+                "docs/user/authentication.rst",
+                "tests/test_requests.py",
+                "tests/conftest.py",
+                "src/requests/adapters.py"
+              ],
+              "wall_ms": 1278.1618749722838,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-09",
+              "rank": 5,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/sessions.py",
+                "src/requests/api.py",
+                "src/requests/utils.py",
+                "src/requests/auth.py"
+              ],
+              "wall_ms": 203.67079181596637,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-10",
+              "rank": 1,
+              "top5": [
+                "src/requests/adapters.py",
+                "tests/test_requests.py",
+                "src/requests/sessions.py",
+                "src/requests/models.py",
+                "src/requests/api.py"
+              ],
+              "wall_ms": 1446.3515419047326,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-11",
+              "rank": 1,
+              "top5": [
+                "src/requests/cookies.py",
+                "tests/test_requests.py",
+                "docs/user/quickstart.rst",
+                "docs/user/advanced.rst",
+                "docs/api.rst"
+              ],
+              "wall_ms": 424.9086668714881,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-12",
+              "rank": 1,
+              "top5": [
+                "src/requests/cookies.py",
+                "src/requests/models.py",
+                "src/requests/_types.py",
+                "tests/test_requests.py",
+                "src/requests/auth.py"
+              ],
+              "wall_ms": 178.5154170356691,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-13",
+              "rank": 1,
+              "top5": [
+                "src/requests/structures.py",
+                "src/requests/models.py",
+                "src/requests/cookies.py",
+                "docs/user/advanced.rst",
+                "docs/api.rst"
+              ],
+              "wall_ms": 171.14408314228058,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-14",
+              "rank": 2,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/hooks.py",
+                "docs/user/advanced.rst",
+                "src/requests/sessions.py",
+                "tests/test_hooks.py"
+              ],
+              "wall_ms": 222.99333312548697,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-15",
+              "rank": 3,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/sessions.py",
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "docs/user/advanced.rst"
+              ],
+              "wall_ms": 213.70104211382568,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-16",
+              "rank": 2,
+              "top5": [
+                "src/requests/hooks.py",
+                "tests/test_hooks.py",
+                "tests/test_requests.py",
+                "src/requests/models.py",
+                "src/requests/sessions.py"
+              ],
+              "wall_ms": 1152.1887078415602,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-17",
+              "rank": 3,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/adapters.py",
+                "tests/test_adapters.py",
+                "src/requests/utils.py",
+                "src/requests/sessions.py"
+              ],
+              "wall_ms": 224.7943750116974,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-18",
+              "rank": 1,
+              "top5": [
+                "tests/test_utils.py",
+                "tests/test_requests.py",
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "docs/user/advanced.rst"
+              ],
+              "wall_ms": 1278.4221251495183,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "requests-19",
+              "rank": 3,
+              "top5": [
+                "src/requests/structures.py",
+                "tests/test_requests.py",
+                "tests/test_structures.py",
+                "docs/user/quickstart.rst",
+                "src/requests/utils.py"
+              ],
+              "wall_ms": 1358.5763750597835,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            }
+          ]
+        },
+        "chi": {
+          "first": 11,
+          "top5": 17,
+          "total": 20,
+          "queries": [
+            {
+              "id": "chi-00",
+              "rank": 1,
+              "top5": [
+                "middleware/throttle.go",
+                "_examples/limits/main.go",
+                "middleware/supress_notfound.go",
+                "README.md",
+                "_examples/rest/main.go"
+              ],
+              "wall_ms": 215.74037498794496,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-01",
+              "rank": 1,
+              "top5": [
+                "middleware/timeout.go",
+                "_examples/limits/main.go",
+                "context.go",
+                "middleware/throttle_test.go",
+                "middleware/request_id.go"
+              ],
+              "wall_ms": 186.91608402878046,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-02",
+              "rank": 1,
+              "top5": [
+                "middleware/request_id.go",
+                "context.go",
+                "_examples/rest/main.go",
+                "mux.go",
+                "middleware/logger.go"
+              ],
+              "wall_ms": 219.86666577868164,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-03",
+              "rank": 1,
+              "top5": [
+                "middleware/client_ip.go",
+                "middleware/client_ip_test.go",
+                "middleware/client_ip_example_test.go",
+                "middleware/realip.go",
+                "middleware/logger.go"
+              ],
+              "wall_ms": 442.34029087238014,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-04",
+              "rank": 1,
+              "top5": [
+                "middleware/compress.go",
+                "middleware/client_ip_test.go",
+                "middleware/client_ip.go",
+                "middleware/request_id.go",
+                "middleware/content_encoding.go"
+              ],
+              "wall_ms": 309.7153340931982,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-05",
+              "rank": 2,
+              "top5": [
+                "middleware/recoverer_test.go",
+                "middleware/recoverer.go",
+                "middleware/throttle.go",
+                "middleware/compress.go",
+                "middleware/client_ip.go"
+              ],
+              "wall_ms": 779.2270830832422,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-06",
+              "rank": 1,
+              "top5": [
+                "middleware/basic_auth.go",
+                "middleware/logger.go",
+                "middleware/basic_auth_test.go",
+                "middleware/timeout.go",
+                "middleware/throttle.go"
+              ],
+              "wall_ms": 189.09987504594028,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-07",
+              "rank": null,
+              "top5": [
+                "middleware/request_id.go",
+                "mux.go",
+                "middleware/strip.go",
+                "chi.go",
+                "middleware/compress.go"
+              ],
+              "wall_ms": 243.68462478742003,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-08",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "chi.go",
+                "mux_test.go",
+                "middleware/request_id.go",
+                "middleware/clean_path.go"
+              ],
+              "wall_ms": 220.58716602623463,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-09",
+              "rank": 1,
+              "top5": [
+                "middleware/heartbeat.go",
+                "middleware/compress.go",
+                "context.go",
+                "mux.go",
+                "middleware/url_format.go"
+              ],
+              "wall_ms": 220.30816599726677,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-10",
+              "rank": 2,
+              "top5": [
+                "middleware/route_headers.go",
+                "context.go",
+                "context_test.go",
+                "mux.go",
+                "mux_test.go"
+              ],
+              "wall_ms": 229.87875016406178,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-11",
+              "rank": 2,
+              "top5": [
+                "tree.go",
+                "chain.go",
+                "middleware/compress.go",
+                "middleware/client_ip.go",
+                "middleware/wrap_writer.go"
+              ],
+              "wall_ms": 258.89491685666144,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-12",
+              "rank": 2,
+              "top5": [
+                "_examples/todos-resource/main.go",
+                "mux.go",
+                "middleware/profiler.go",
+                "mux_test.go",
+                "middleware/route_headers.go"
+              ],
+              "wall_ms": 240.39075011387467,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 23
+            },
+            {
+              "id": "chi-13",
+              "rank": 1,
+              "top5": [
+                "mux.go",
+                "middleware/supress_notfound.go",
+                "mux_test.go",
+                "middleware/route_headers.go",
+                "_examples/rest/main.go"
+              ],
+              "wall_ms": 178.57862496748567,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-14",
+              "rank": 1,
+              "top5": [
+                "context.go",
+                "mux.go",
+                "tree.go",
+                "middleware/url_format.go",
+                "mux_test.go"
+              ],
+              "wall_ms": 689.0709579456598,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-15",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "middleware/strip_test.go",
+                "_examples/fileserver/main.go",
+                "tree.go",
+                "mux.go"
+              ],
+              "wall_ms": 240.6971249729395,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-16",
+              "rank": 3,
+              "top5": [
+                "middleware/throttle.go",
+                "tree_test.go",
+                "middleware/throttle_test.go",
+                "mux.go",
+                "_examples/limits/main.go"
+              ],
+              "wall_ms": 257.4944170191884,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-17",
+              "rank": null,
+              "top5": [
+                "middleware/compress.go",
+                "middleware/content_type_test.go",
+                "middleware/content_type.go",
+                "middleware/route_headers.go",
+                "mux.go"
+              ],
+              "wall_ms": 218.17787480540574,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-18",
+              "rank": 2,
+              "top5": [
+                "middleware/request_id.go",
+                "middleware/request_id_test.go",
+                "mux.go",
+                "tree.go",
+                "tree_test.go"
+              ],
+              "wall_ms": 220.49812506884336,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            },
+            {
+              "id": "chi-19",
+              "rank": null,
+              "top5": [
+                "middleware/strip_test.go",
+                "chi.go",
+                "mux.go",
+                "middleware/strip.go",
+                "middleware/url_format.go"
+              ],
+              "wall_ms": 454.3096669949591,
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24
+            }
+          ]
+        }
+      },
+      "summary": {
+        "first": 28,
+        "top5": 52,
+        "total": 56,
+        "semantic_states": {
+          "applied_exact_fallback": 56
+        }
+      }
+    },
+    "full-repository-ann": {
+      "binary_sha256": "344a5f3a58558ac6f9f7d88674b6141d1d1cddfef68e94d9b0ce6cb20e3101dc",
+      "repositories": {
+        "express": {
+          "first": 13,
+          "top5": 15,
+          "total": 16,
+          "queries": [
+            {
+              "id": "express-00",
+              "rank": 2,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "lib/response.js",
+                "test/exports.js",
+                "test/app.response.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": false,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-01",
+              "rank": 1,
+              "top5": [
+                "lib/application.js",
+                "lib/express.js",
+                "test/app.response.js",
+                "lib/response.js",
+                "test/app.request.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-02",
+              "rank": 1,
+              "top5": [
+                "lib/request.js",
+                "test/req.protocol.js",
+                "test/req.secure.js",
+                "History.md",
+                "test/req.ip.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-03",
+              "rank": 1,
+              "top5": [
+                "lib/request.js",
+                "History.md",
+                "lib/application.js",
+                "lib/response.js",
+                "test/req.stale.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-04",
+              "rank": 1,
+              "top5": [
+                "lib/response.js",
+                "test/res.sendFile.js",
+                "test/res.download.js",
+                "History.md",
+                "examples/downloads/index.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-05",
+              "rank": 1,
+              "top5": [
+                "lib/response.js",
+                "lib/request.js",
+                "test/acceptance/content-negotiation.js",
+                "test/req.accepts.js",
+                "test/res.format.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-06",
+              "rank": 1,
+              "top5": [
+                "lib/utils.js",
+                "lib/request.js",
+                ".github/workflows/codeql.yml",
+                "lib/application.js",
+                "History.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-07",
+              "rank": 3,
+              "top5": [
+                "lib/request.js",
+                "test/req.protocol.js",
+                "lib/utils.js",
+                "lib/response.js",
+                "History.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-08",
+              "rank": 1,
+              "top5": [
+                "lib/view.js",
+                "test/app.render.js",
+                "lib/application.js",
+                "test/res.render.js",
+                "History.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-09",
+              "rank": 1,
+              "top5": [
+                "lib/view.js",
+                "lib/application.js",
+                "test/app.render.js",
+                "lib/response.js",
+                "test/app.engine.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-10",
+              "rank": 1,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "test/app.js",
+                "test/app.response.js",
+                "test/exports.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-11",
+              "rank": 1,
+              "top5": [
+                "lib/express.js",
+                "test/express.text.js",
+                "lib/application.js",
+                "Readme.md",
+                "History.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-12",
+              "rank": null,
+              "top5": [
+                "test/app.js",
+                "test/app.response.js",
+                "test/app.request.js",
+                "test/acceptance/multi-router.js",
+                "examples/static-files/index.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-13",
+              "rank": 1,
+              "top5": [
+                "test/res.format.js",
+                "test/acceptance/content-negotiation.js",
+                "test/req.accepts.js",
+                "test/req.acceptsEncodings.js",
+                "test/res.jsonp.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-14",
+              "rank": 1,
+              "top5": [
+                "test/req.protocol.js",
+                "test/req.get.js",
+                "test/req.secure.js",
+                "test/req.host.js",
+                "test/req.ip.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-15",
+              "rank": 1,
+              "top5": [
+                "test/utils.js",
+                "test/res.send.js",
+                "test/res.sendFile.js",
+                "lib/utils.js",
+                "test/req.stale.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            }
+          ]
+        },
+        "requests": {
+          "first": 17,
+          "top5": 20,
+          "total": 20,
+          "queries": [
+            {
+              "id": "requests-00",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "docs/user/advanced.rst",
+                "src/requests/api.py",
+                "HISTORY.md",
+                "src/requests/cookies.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": false,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-01",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "src/requests/auth.py",
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "HISTORY.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-02",
+              "rank": 2,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/sessions.py",
+                "HISTORY.md",
+                "tests/test_requests.py",
+                "src/requests/status_codes.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-03",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "docs/user/quickstart.rst",
+                "HISTORY.md",
+                "docs/api.rst",
+                "tests/test_requests.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-04",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/_types.py",
+                "docs/user/quickstart.rst",
+                "src/requests/api.py",
+                "src/requests/utils.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-05",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/utils.py",
+                "tests/test_requests.py",
+                "src/requests/exceptions.py",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-06",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "docs/user/advanced.rst",
+                "src/requests/utils.py",
+                "docs/user/quickstart.rst",
+                "HISTORY.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-07",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/exceptions.py",
+                "docs/user/quickstart.rst",
+                "src/requests/status_codes.py",
+                "src/requests/adapters.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-08",
+              "rank": 1,
+              "top5": [
+                "src/requests/auth.py",
+                "docs/user/authentication.rst",
+                "HISTORY.md",
+                "tests/test_lowlevel.py",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-09",
+              "rank": 1,
+              "top5": [
+                "src/requests/auth.py",
+                "docs/user/authentication.rst",
+                "HISTORY.md",
+                "src/requests/sessions.py",
+                "tests/test_lowlevel.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-10",
+              "rank": 1,
+              "top5": [
+                "src/requests/adapters.py",
+                "src/requests/utils.py",
+                "HISTORY.md",
+                "src/requests/sessions.py",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-11",
+              "rank": 1,
+              "top5": [
+                "src/requests/cookies.py",
+                "HISTORY.md",
+                "src/requests/utils.py",
+                "docs/user/quickstart.rst",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-12",
+              "rank": 1,
+              "top5": [
+                "src/requests/cookies.py",
+                "docs/user/quickstart.rst",
+                "src/requests/models.py",
+                "src/requests/auth.py",
+                "src/requests/sessions.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-13",
+              "rank": 1,
+              "top5": [
+                "src/requests/structures.py",
+                "src/requests/utils.py",
+                "src/requests/sessions.py",
+                "tests/test_requests.py",
+                "src/requests/_internal_utils.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-14",
+              "rank": 1,
+              "top5": [
+                "src/requests/hooks.py",
+                "docs/user/advanced.rst",
+                "HISTORY.md",
+                "src/requests/models.py",
+                "src/requests/sessions.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-15",
+              "rank": 1,
+              "top5": [
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "tests/test_requests.py",
+                "src/requests/sessions.py",
+                "HISTORY.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-16",
+              "rank": 1,
+              "top5": [
+                "tests/test_hooks.py",
+                "tests/test_requests.py",
+                "src/requests/hooks.py",
+                "tests/test_utils.py",
+                "tests/test_testserver.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-17",
+              "rank": 2,
+              "top5": [
+                "tests/test_utils.py",
+                "tests/test_adapters.py",
+                "tests/test_requests.py",
+                "src/requests/utils.py",
+                "tests/conftest.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-18",
+              "rank": 1,
+              "top5": [
+                "tests/test_utils.py",
+                "tests/test_lowlevel.py",
+                "tests/test_requests.py",
+                "src/requests/utils.py",
+                "tests/test_testserver.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-19",
+              "rank": 3,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/structures.py",
+                "tests/test_structures.py",
+                "tests/test_utils.py",
+                "tests/test_packages.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            }
+          ]
+        },
+        "chi": {
+          "first": 17,
+          "top5": 19,
+          "total": 20,
+          "queries": [
+            {
+              "id": "chi-00",
+              "rank": 1,
+              "top5": [
+                "middleware/throttle.go",
+                "_examples/limits/main.go",
+                "README.md",
+                "middleware/throttle_test.go",
+                "middleware/request_id.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": false,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-01",
+              "rank": 1,
+              "top5": [
+                "middleware/timeout.go",
+                "_examples/limits/main.go",
+                "middleware/throttle_test.go",
+                "middleware/throttle.go",
+                "middleware/request_id.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-02",
+              "rank": 1,
+              "top5": [
+                "middleware/request_id.go",
+                "context.go",
+                "README.md",
+                "middleware/logger.go",
+                "_examples/rest/main.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-03",
+              "rank": 1,
+              "top5": [
+                "middleware/client_ip.go",
+                "middleware/realip.go",
+                "README.md",
+                "middleware/client_ip_test.go",
+                "middleware/route_headers.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-04",
+              "rank": 1,
+              "top5": [
+                "middleware/compress.go",
+                "middleware/content_encoding.go",
+                "middleware/compress_test.go",
+                "middleware/content_charset.go",
+                "middleware/content_encoding_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-05",
+              "rank": 1,
+              "top5": [
+                "middleware/recoverer.go",
+                "middleware/supress_notfound.go",
+                "middleware/recoverer_test.go",
+                "chi.go",
+                "_examples/rest/routes.json"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-06",
+              "rank": 1,
+              "top5": [
+                "middleware/basic_auth.go",
+                "middleware/basic_auth_test.go",
+                "mux_test.go",
+                "middleware/client_ip_test.go",
+                "tree.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-07",
+              "rank": 2,
+              "top5": [
+                "middleware/strip.go",
+                "middleware/clean_path.go",
+                "middleware/strip_test.go",
+                "mux.go",
+                "chi.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-08",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "middleware/strip_test.go",
+                "middleware/url_format_test.go",
+                "middleware/clean_path.go",
+                "middleware/url_format.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-09",
+              "rank": 1,
+              "top5": [
+                "middleware/heartbeat.go",
+                "middleware/heartbeat_test.go",
+                "middleware/throttle_test.go",
+                "_examples/graceful/main.go",
+                "_examples/rest/routes.json"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-10",
+              "rank": null,
+              "top5": [
+                "tree.go",
+                "middleware/strip.go",
+                "mux.go",
+                "middleware/strip_test.go",
+                "mux_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-11",
+              "rank": 1,
+              "top5": [
+                "chain.go",
+                "middleware/client_ip_test.go",
+                "mux_test.go",
+                "tree_test.go",
+                "tree.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-12",
+              "rank": 1,
+              "top5": [
+                "mux.go",
+                "_examples/todos-resource/main.go",
+                "mux_test.go",
+                "_examples/rest/routes.md",
+                "tree_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-13",
+              "rank": 1,
+              "top5": [
+                "mux.go",
+                "_examples/rest/routes.md",
+                "mux_test.go",
+                "middleware/supress_notfound.go",
+                "tree.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-14",
+              "rank": 1,
+              "top5": [
+                "context.go",
+                "chi.go",
+                "CHANGELOG.md",
+                "middleware/url_format.go",
+                "tree.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-15",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "middleware/strip_test.go",
+                "middleware/client_ip.go",
+                "middleware/route_headers.go",
+                "tree.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-16",
+              "rank": 1,
+              "top5": [
+                "middleware/throttle_test.go",
+                "_examples/limits/main.go",
+                "middleware/throttle.go",
+                "middleware/client_ip_bench_test.go",
+                "mux_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-17",
+              "rank": 1,
+              "top5": [
+                "middleware/compress_test.go",
+                "middleware/content_type_test.go",
+                "middleware/content_charset_test.go",
+                "middleware/compress.go",
+                "middleware/content_encoding_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-18",
+              "rank": 1,
+              "top5": [
+                "middleware/request_id_test.go",
+                "tree_test.go",
+                "middleware/client_ip_test.go",
+                "mux_test.go",
+                "middleware/realip_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-19",
+              "rank": 3,
+              "top5": [
+                "middleware/strip_test.go",
+                "middleware/strip.go",
+                "middleware/clean_path_test.go",
+                "middleware/url_format_test.go",
+                "middleware/clean_path.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            }
+          ]
+        }
+      },
+      "summary": {
+        "first": 47,
+        "top5": 54,
+        "total": 56,
+        "semantic_states": {
+          "ann_applied": 56
+        }
+      }
+    },
+    "full-repository-ann-candidate": {
+      "binary_sha256": "7dae14af7843ad19c6a6b085905cc5857e9c844d4a7827a3f86f1b1c956c326f",
+      "repositories": {
+        "express": {
+          "first": 14,
+          "top5": 16,
+          "total": 16,
+          "queries": [
+            {
+              "id": "express-00",
+              "rank": 2,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "lib/response.js",
+                "test/exports.js",
+                "History.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": false,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-01",
+              "rank": 1,
+              "top5": [
+                "lib/application.js",
+                "test/app.response.js",
+                "lib/response.js",
+                "test/app.request.js",
+                "lib/express.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-02",
+              "rank": 1,
+              "top5": [
+                "lib/request.js",
+                "test/req.protocol.js",
+                "History.md",
+                "test/req.secure.js",
+                "test/req.ip.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-03",
+              "rank": 1,
+              "top5": [
+                "lib/request.js",
+                "History.md",
+                "lib/response.js",
+                "lib/application.js",
+                "test/req.stale.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-04",
+              "rank": 1,
+              "top5": [
+                "lib/response.js",
+                "test/res.sendFile.js",
+                "test/res.download.js",
+                "test/express.static.js",
+                "History.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-05",
+              "rank": 1,
+              "top5": [
+                "lib/response.js",
+                "lib/request.js",
+                "test/res.format.js",
+                "test/req.accepts.js",
+                "test/acceptance/content-negotiation.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-06",
+              "rank": 1,
+              "top5": [
+                "lib/utils.js",
+                "lib/request.js",
+                "lib/response.js",
+                "History.md",
+                "test/res.send.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-07",
+              "rank": 3,
+              "top5": [
+                "lib/request.js",
+                "lib/application.js",
+                "lib/utils.js",
+                "test/req.protocol.js",
+                "History.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-08",
+              "rank": 1,
+              "top5": [
+                "lib/view.js",
+                "test/app.render.js",
+                "lib/application.js",
+                "test/res.render.js",
+                "History.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-09",
+              "rank": 1,
+              "top5": [
+                "lib/view.js",
+                "lib/application.js",
+                "test/app.render.js",
+                "lib/response.js",
+                "test/app.engine.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-10",
+              "rank": 1,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "test/app.js",
+                "test/app.response.js",
+                "lib/request.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-11",
+              "rank": 1,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "test/express.text.js",
+                "Readme.md",
+                "lib/response.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-12",
+              "rank": 1,
+              "top5": [
+                "test/app.use.js",
+                "test/app.js",
+                "test/app.response.js",
+                "test/app.request.js",
+                "test/req.subdomains.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-13",
+              "rank": 1,
+              "top5": [
+                "test/res.format.js",
+                "test/req.accepts.js",
+                "test/acceptance/content-negotiation.js",
+                "test/req.acceptsEncodings.js",
+                "test/res.json.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-14",
+              "rank": 1,
+              "top5": [
+                "test/req.protocol.js",
+                "test/req.get.js",
+                "test/req.secure.js",
+                "test/req.host.js",
+                "test/req.accepts.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "express-15",
+              "rank": 1,
+              "top5": [
+                "test/utils.js",
+                "test/res.send.js",
+                "test/res.sendFile.js",
+                "lib/utils.js",
+                "test/req.stale.js"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            }
+          ]
+        },
+        "requests": {
+          "first": 17,
+          "top5": 20,
+          "total": 20,
+          "queries": [
+            {
+              "id": "requests-00",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "docs/user/advanced.rst",
+                "src/requests/cookies.py",
+                "HISTORY.md",
+                "tests/test_requests.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": false,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-01",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "src/requests/auth.py",
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "HISTORY.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-02",
+              "rank": 2,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/sessions.py",
+                "tests/test_requests.py",
+                "HISTORY.md",
+                "src/requests/status_codes.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-03",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "docs/user/quickstart.rst",
+                "tests/test_requests.py",
+                "HISTORY.md",
+                "src/requests/models.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-04",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/_types.py",
+                "src/requests/utils.py",
+                "docs/user/quickstart.rst",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-05",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/utils.py",
+                "tests/test_requests.py",
+                "tests/test_utils.py",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-06",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "docs/user/advanced.rst",
+                "tests/test_requests.py",
+                "src/requests/utils.py",
+                "HISTORY.md"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-07",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/exceptions.py",
+                "src/requests/adapters.py",
+                "src/requests/status_codes.py",
+                "docs/user/quickstart.rst"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-08",
+              "rank": 1,
+              "top5": [
+                "src/requests/auth.py",
+                "docs/user/authentication.rst",
+                "HISTORY.md",
+                "tests/test_lowlevel.py",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-09",
+              "rank": 1,
+              "top5": [
+                "src/requests/auth.py",
+                "HISTORY.md",
+                "src/requests/sessions.py",
+                "docs/user/authentication.rst",
+                "src/requests/utils.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-10",
+              "rank": 1,
+              "top5": [
+                "src/requests/adapters.py",
+                "src/requests/utils.py",
+                "HISTORY.md",
+                "docs/user/advanced.rst",
+                "src/requests/sessions.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-11",
+              "rank": 1,
+              "top5": [
+                "src/requests/cookies.py",
+                "HISTORY.md",
+                "src/requests/utils.py",
+                "tests/test_requests.py",
+                "docs/user/quickstart.rst"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-12",
+              "rank": 1,
+              "top5": [
+                "src/requests/cookies.py",
+                "src/requests/models.py",
+                "docs/user/quickstart.rst",
+                "tests/test_requests.py",
+                "src/requests/sessions.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-13",
+              "rank": 1,
+              "top5": [
+                "src/requests/structures.py",
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "tests/test_requests.py",
+                "src/requests/status_codes.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-14",
+              "rank": 1,
+              "top5": [
+                "src/requests/hooks.py",
+                "HISTORY.md",
+                "src/requests/models.py",
+                "docs/user/advanced.rst",
+                "tests/test_requests.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-15",
+              "rank": 1,
+              "top5": [
+                "src/requests/utils.py",
+                "tests/test_requests.py",
+                "src/requests/models.py",
+                "src/requests/sessions.py",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-16",
+              "rank": 1,
+              "top5": [
+                "tests/test_hooks.py",
+                "tests/test_requests.py",
+                "src/requests/hooks.py",
+                "tests/test_utils.py",
+                "tests/test_testserver.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-17",
+              "rank": 3,
+              "top5": [
+                "tests/test_utils.py",
+                "tests/test_requests.py",
+                "tests/test_adapters.py",
+                "tests/test_lowlevel.py",
+                "src/requests/utils.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-18",
+              "rank": 1,
+              "top5": [
+                "tests/test_utils.py",
+                "tests/test_requests.py",
+                "tests/test_lowlevel.py",
+                "src/requests/utils.py",
+                "tests/test_testserver.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "requests-19",
+              "rank": 3,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/structures.py",
+                "tests/test_structures.py",
+                "tests/test_utils.py",
+                "tests/test_packages.py"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            }
+          ]
+        },
+        "chi": {
+          "first": 19,
+          "top5": 20,
+          "total": 20,
+          "queries": [
+            {
+              "id": "chi-00",
+              "rank": 1,
+              "top5": [
+                "middleware/throttle.go",
+                "_examples/limits/main.go",
+                "README.md",
+                "middleware/request_id.go",
+                "middleware/throttle_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": false,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-01",
+              "rank": 1,
+              "top5": [
+                "middleware/timeout.go",
+                "_examples/limits/main.go",
+                "middleware/throttle_test.go",
+                "middleware/throttle.go",
+                "middleware/request_id.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-02",
+              "rank": 1,
+              "top5": [
+                "middleware/request_id.go",
+                "context.go",
+                "README.md",
+                "middleware/logger.go",
+                "_examples/rest/main.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-03",
+              "rank": 1,
+              "top5": [
+                "middleware/client_ip.go",
+                "README.md",
+                "middleware/realip.go",
+                "middleware/client_ip_test.go",
+                "middleware/client_ip_example_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-04",
+              "rank": 1,
+              "top5": [
+                "middleware/compress.go",
+                "middleware/compress_test.go",
+                "middleware/content_encoding.go",
+                "middleware/content_charset.go",
+                "middleware/client_ip.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-05",
+              "rank": 1,
+              "top5": [
+                "middleware/recoverer.go",
+                "middleware/supress_notfound.go",
+                "middleware/recoverer_test.go",
+                "middleware/throttle.go",
+                "_examples/graceful/main.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-06",
+              "rank": 1,
+              "top5": [
+                "middleware/basic_auth.go",
+                "middleware/basic_auth_test.go",
+                "mux_test.go",
+                "context_test.go",
+                "middleware/client_ip_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-07",
+              "rank": 1,
+              "top5": [
+                "middleware/clean_path.go",
+                "middleware/strip.go",
+                "mux.go",
+                "middleware/strip_test.go",
+                "middleware/request_id.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-08",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "middleware/strip_test.go",
+                "middleware/clean_path.go",
+                "middleware/url_format_test.go",
+                "mux_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-09",
+              "rank": 1,
+              "top5": [
+                "middleware/heartbeat.go",
+                "middleware/heartbeat_test.go",
+                "middleware/throttle_test.go",
+                "_examples/graceful/main.go",
+                "_examples/rest/routes.json"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-10",
+              "rank": 1,
+              "top5": [
+                "context.go",
+                "mux.go",
+                "middleware/strip_test.go",
+                "middleware/route_headers.go",
+                "middleware/strip.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-11",
+              "rank": 1,
+              "top5": [
+                "chain.go",
+                "middleware/client_ip_test.go",
+                "mux_test.go",
+                "middleware/wrap_writer.go",
+                "tree_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-12",
+              "rank": 1,
+              "top5": [
+                "mux.go",
+                "_examples/todos-resource/main.go",
+                "mux_test.go",
+                "_examples/rest/routes.md",
+                "tree_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-13",
+              "rank": 1,
+              "top5": [
+                "mux.go",
+                "middleware/supress_notfound.go",
+                "_examples/rest/routes.md",
+                "mux_test.go",
+                "middleware/route_headers.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-14",
+              "rank": 1,
+              "top5": [
+                "context.go",
+                "chi.go",
+                "CHANGELOG.md",
+                "middleware/url_format.go",
+                "tree.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-15",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "middleware/strip_test.go",
+                "middleware/client_ip.go",
+                "middleware/route_headers.go",
+                "tree.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-16",
+              "rank": 1,
+              "top5": [
+                "middleware/throttle_test.go",
+                "tree_test.go",
+                "middleware/throttle.go",
+                "_examples/limits/main.go",
+                "middleware/client_ip_bench_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-17",
+              "rank": 1,
+              "top5": [
+                "middleware/compress_test.go",
+                "middleware/content_type_test.go",
+                "middleware/content_charset_test.go",
+                "middleware/compress.go",
+                "middleware/content_encoding_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-18",
+              "rank": 1,
+              "top5": [
+                "middleware/request_id_test.go",
+                "tree_test.go",
+                "middleware/client_ip_test.go",
+                "mux_test.go",
+                "middleware/request_id.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            },
+            {
+              "id": "chi-19",
+              "rank": 2,
+              "top5": [
+                "middleware/strip_test.go",
+                "middleware/clean_path_test.go",
+                "middleware/url_format_test.go",
+                "middleware/clean_path.go",
+                "path_value_test.go"
+              ],
+              "semantic": "ann_applied",
+              "detail": null,
+              "ann_cache_hit": true,
+              "ann_mmap_backed": true,
+              "documents_sent": 2
+            }
+          ]
+        }
+      },
+      "summary": {
+        "first": 50,
+        "top5": 56,
+        "total": 56,
+        "semantic_states": {
+          "ann_applied": 56
+        }
+      }
+    },
+    "final-candidate-default-budget": {
+      "binary_sha256": "015928b295b8ac385e34b5dd9a5221917a32183813a4af4f698490fbbf5acf9e",
+      "repositories": {
+        "express": {
+          "first": 8,
+          "top5": 15,
+          "total": 16,
+          "queries": [
+            {
+              "id": "express-00",
+              "rank": 1,
+              "top5": [
+                "lib/application.js",
+                "lib/response.js",
+                "lib/express.js",
+                "lib/request.js",
+                "test/app.router.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 469.5322080515325
+            },
+            {
+              "id": "express-01",
+              "rank": 1,
+              "top5": [
+                "lib/application.js",
+                "lib/response.js",
+                "test/app.response.js",
+                "lib/request.js",
+                "test/app.request.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 221.05433396063745
+            },
+            {
+              "id": "express-02",
+              "rank": 1,
+              "top5": [
+                "lib/request.js",
+                "test/req.protocol.js",
+                "test/req.host.js",
+                "test/req.hostname.js",
+                "test/req.ip.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 258.29383288510144
+            },
+            {
+              "id": "express-03",
+              "rank": 4,
+              "top5": [
+                "lib/response.js",
+                "lib/application.js",
+                "test/res.status.js",
+                "lib/request.js",
+                "test/res.send.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 1361.9297919794917
+            },
+            {
+              "id": "express-04",
+              "rank": 3,
+              "top5": [
+                "test/res.sendFile.js",
+                "test/express.static.js",
+                "lib/response.js",
+                "test/res.download.js",
+                "lib/view.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 220.39845795370638
+            },
+            {
+              "id": "express-05",
+              "rank": 1,
+              "top5": [
+                "lib/response.js",
+                "lib/request.js",
+                "test/res.format.js",
+                "test/express.static.js",
+                "test/express.text.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 191.93225004710257
+            },
+            {
+              "id": "express-06",
+              "rank": 1,
+              "top5": [
+                "lib/utils.js",
+                "test/res.send.js",
+                "lib/request.js",
+                "lib/application.js",
+                "test/utils.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 207.99149991944432
+            },
+            {
+              "id": "express-07",
+              "rank": 3,
+              "top5": [
+                "lib/application.js",
+                "lib/request.js",
+                "lib/utils.js",
+                "History.md",
+                "test/req.ips.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 220.07129178382456
+            },
+            {
+              "id": "express-08",
+              "rank": 1,
+              "top5": [
+                "lib/view.js",
+                "test/app.render.js",
+                "lib/application.js",
+                "test/res.render.js",
+                "examples/downloads/index.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 305.17987511120737
+            },
+            {
+              "id": "express-09",
+              "rank": 3,
+              "top5": [
+                "test/app.engine.js",
+                "lib/response.js",
+                "lib/view.js",
+                "lib/application.js",
+                "test/res.render.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 733.0625411123037
+            },
+            {
+              "id": "express-10",
+              "rank": 1,
+              "top5": [
+                "lib/express.js",
+                "lib/application.js",
+                "lib/request.js",
+                "test/app.js",
+                "lib/response.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 1221.741084009409
+            },
+            {
+              "id": "express-11",
+              "rank": 1,
+              "top5": [
+                "lib/express.js",
+                "lib/response.js",
+                "test/express.static.js",
+                "test/exports.js",
+                "lib/request.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 1573.8034590613097
+            },
+            {
+              "id": "express-12",
+              "rank": null,
+              "top5": [
+                "test/req.subdomains.js",
+                "lib/application.js",
+                "test/res.format.js",
+                "test/app.response.js",
+                "test/app.request.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 237.13187500834465
+            },
+            {
+              "id": "express-13",
+              "rank": 2,
+              "top5": [
+                "lib/response.js",
+                "test/res.format.js",
+                "lib/application.js",
+                "test/acceptance/content-negotiation.js",
+                "examples/content-negotiation/index.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 925.0663749407977
+            },
+            {
+              "id": "express-14",
+              "rank": 2,
+              "top5": [
+                "lib/request.js",
+                "test/req.protocol.js",
+                "test/req.host.js",
+                "test/req.ip.js",
+                "test/req.hostname.js"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 242.3186250962317
+            },
+            {
+              "id": "express-15",
+              "rank": 2,
+              "top5": [
+                "lib/application.js",
+                "test/utils.js",
+                "lib/utils.js",
+                "test/res.send.js",
+                ".github/workflows/legacy.yml"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 196.24329102225602
+            }
+          ]
+        },
+        "requests": {
+          "first": 9,
+          "top5": 20,
+          "total": 20,
+          "queries": [
+            {
+              "id": "requests-00",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "tests/test_requests.py",
+                "src/requests/cookies.py",
+                "src/requests/api.py",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 410.25283304043114
+            },
+            {
+              "id": "requests-01",
+              "rank": 2,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/sessions.py",
+                "HISTORY.md",
+                "src/requests/models.py",
+                "src/requests/adapters.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 1326.1008330155164
+            },
+            {
+              "id": "requests-02",
+              "rank": 1,
+              "top5": [
+                "src/requests/sessions.py",
+                "tests/test_requests.py",
+                "src/requests/utils.py",
+                "tests/test_lowlevel.py",
+                "src/requests/status_codes.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 1411.4532920066267
+            },
+            {
+              "id": "requests-03",
+              "rank": 2,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/sessions.py",
+                "HISTORY.md",
+                "docs/user/quickstart.rst",
+                "src/requests/exceptions.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 1372.4334998987615
+            },
+            {
+              "id": "requests-04",
+              "rank": 3,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "src/requests/api.py",
+                "src/requests/sessions.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 639.4469169899821
+            },
+            {
+              "id": "requests-05",
+              "rank": 1,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/utils.py",
+                "tests/test_requests.py",
+                "docs/api.rst",
+                "docs/user/quickstart.rst"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 291.10587504692376
+            },
+            {
+              "id": "requests-06",
+              "rank": 3,
+              "top5": [
+                "tests/test_requests.py",
+                "docs/user/advanced.rst",
+                "src/requests/models.py",
+                "HISTORY.md",
+                "src/requests/auth.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 242.6394170615822
+            },
+            {
+              "id": "requests-07",
+              "rank": 4,
+              "top5": [
+                "src/requests/exceptions.py",
+                "src/requests/adapters.py",
+                "tests/test_requests.py",
+                "src/requests/models.py",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 193.84349999018013
+            },
+            {
+              "id": "requests-08",
+              "rank": 1,
+              "top5": [
+                "src/requests/auth.py",
+                "docs/user/authentication.rst",
+                "tests/test_requests.py",
+                "tests/conftest.py",
+                "src/requests/adapters.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 233.32054214552045
+            },
+            {
+              "id": "requests-09",
+              "rank": 5,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/sessions.py",
+                "src/requests/api.py",
+                "src/requests/utils.py",
+                "src/requests/auth.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 194.94166714139283
+            },
+            {
+              "id": "requests-10",
+              "rank": 1,
+              "top5": [
+                "src/requests/adapters.py",
+                "tests/test_requests.py",
+                "src/requests/sessions.py",
+                "src/requests/models.py",
+                "src/requests/api.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 200.40770806372166
+            },
+            {
+              "id": "requests-11",
+              "rank": 1,
+              "top5": [
+                "src/requests/cookies.py",
+                "tests/test_requests.py",
+                "docs/user/quickstart.rst",
+                "docs/user/advanced.rst",
+                "docs/api.rst"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 172.46420914307237
+            },
+            {
+              "id": "requests-12",
+              "rank": 1,
+              "top5": [
+                "src/requests/cookies.py",
+                "src/requests/models.py",
+                "src/requests/_types.py",
+                "tests/test_requests.py",
+                "src/requests/auth.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 234.4149579294026
+            },
+            {
+              "id": "requests-13",
+              "rank": 1,
+              "top5": [
+                "src/requests/structures.py",
+                "src/requests/models.py",
+                "src/requests/cookies.py",
+                "docs/user/advanced.rst",
+                "docs/api.rst"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 185.4421249590814
+            },
+            {
+              "id": "requests-14",
+              "rank": 2,
+              "top5": [
+                "src/requests/models.py",
+                "src/requests/hooks.py",
+                "docs/user/advanced.rst",
+                "src/requests/sessions.py",
+                "tests/test_hooks.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 183.4265422075987
+            },
+            {
+              "id": "requests-15",
+              "rank": 3,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/sessions.py",
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 1292.0524580404162
+            },
+            {
+              "id": "requests-16",
+              "rank": 2,
+              "top5": [
+                "src/requests/hooks.py",
+                "tests/test_hooks.py",
+                "tests/test_requests.py",
+                "src/requests/models.py",
+                "src/requests/sessions.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 199.82641702517867
+            },
+            {
+              "id": "requests-17",
+              "rank": 3,
+              "top5": [
+                "tests/test_requests.py",
+                "src/requests/adapters.py",
+                "tests/test_adapters.py",
+                "src/requests/utils.py",
+                "src/requests/sessions.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 199.3712920229882
+            },
+            {
+              "id": "requests-18",
+              "rank": 1,
+              "top5": [
+                "tests/test_utils.py",
+                "tests/test_requests.py",
+                "src/requests/utils.py",
+                "src/requests/models.py",
+                "docs/user/advanced.rst"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 208.1657499074936
+            },
+            {
+              "id": "requests-19",
+              "rank": 3,
+              "top5": [
+                "src/requests/structures.py",
+                "tests/test_requests.py",
+                "tests/test_structures.py",
+                "docs/user/quickstart.rst",
+                "src/requests/utils.py"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 166.873041074723
+            }
+          ]
+        },
+        "chi": {
+          "first": 11,
+          "top5": 17,
+          "total": 20,
+          "queries": [
+            {
+              "id": "chi-00",
+              "rank": 1,
+              "top5": [
+                "middleware/throttle.go",
+                "_examples/limits/main.go",
+                "middleware/supress_notfound.go",
+                "README.md",
+                "_examples/rest/main.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 225.23183398880064
+            },
+            {
+              "id": "chi-01",
+              "rank": 1,
+              "top5": [
+                "middleware/timeout.go",
+                "_examples/limits/main.go",
+                "context.go",
+                "middleware/throttle_test.go",
+                "middleware/request_id.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 299.8780000489205
+            },
+            {
+              "id": "chi-02",
+              "rank": 1,
+              "top5": [
+                "middleware/request_id.go",
+                "context.go",
+                "_examples/rest/main.go",
+                "mux.go",
+                "middleware/logger.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 237.7599999308586
+            },
+            {
+              "id": "chi-03",
+              "rank": 1,
+              "top5": [
+                "middleware/client_ip.go",
+                "middleware/client_ip_test.go",
+                "middleware/client_ip_example_test.go",
+                "middleware/realip.go",
+                "middleware/logger.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 176.9749999511987
+            },
+            {
+              "id": "chi-04",
+              "rank": 1,
+              "top5": [
+                "middleware/compress.go",
+                "middleware/client_ip_test.go",
+                "middleware/client_ip.go",
+                "middleware/request_id.go",
+                "middleware/content_encoding.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 193.61624983139336
+            },
+            {
+              "id": "chi-05",
+              "rank": 2,
+              "top5": [
+                "middleware/recoverer_test.go",
+                "middleware/recoverer.go",
+                "middleware/throttle.go",
+                "middleware/compress.go",
+                "middleware/client_ip.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 1323.781792074442
+            },
+            {
+              "id": "chi-06",
+              "rank": 1,
+              "top5": [
+                "middleware/basic_auth.go",
+                "middleware/logger.go",
+                "middleware/basic_auth_test.go",
+                "middleware/timeout.go",
+                "middleware/throttle.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 190.1860828511417
+            },
+            {
+              "id": "chi-07",
+              "rank": null,
+              "top5": [
+                "middleware/request_id.go",
+                "mux.go",
+                "middleware/strip.go",
+                "chi.go",
+                "middleware/compress.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 169.32820808142424
+            },
+            {
+              "id": "chi-08",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "chi.go",
+                "mux_test.go",
+                "middleware/request_id.go",
+                "middleware/clean_path.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 221.61554195918143
+            },
+            {
+              "id": "chi-09",
+              "rank": 1,
+              "top5": [
+                "middleware/heartbeat.go",
+                "middleware/compress.go",
+                "context.go",
+                "mux.go",
+                "middleware/url_format.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 194.9513340368867
+            },
+            {
+              "id": "chi-10",
+              "rank": 2,
+              "top5": [
+                "middleware/route_headers.go",
+                "context.go",
+                "context_test.go",
+                "mux.go",
+                "mux_test.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 794.8858328163624
+            },
+            {
+              "id": "chi-11",
+              "rank": 2,
+              "top5": [
+                "tree.go",
+                "chain.go",
+                "middleware/compress.go",
+                "middleware/client_ip.go",
+                "middleware/wrap_writer.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 188.71120898984373
+            },
+            {
+              "id": "chi-12",
+              "rank": 2,
+              "top5": [
+                "_examples/todos-resource/main.go",
+                "mux.go",
+                "middleware/profiler.go",
+                "mux_test.go",
+                "middleware/route_headers.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 23,
+              "wall_ms": 216.1749170627445
+            },
+            {
+              "id": "chi-13",
+              "rank": 1,
+              "top5": [
+                "mux.go",
+                "middleware/supress_notfound.go",
+                "mux_test.go",
+                "middleware/route_headers.go",
+                "_examples/rest/main.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 279.2232921347022
+            },
+            {
+              "id": "chi-14",
+              "rank": 1,
+              "top5": [
+                "context.go",
+                "mux.go",
+                "tree.go",
+                "middleware/url_format.go",
+                "mux_test.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 219.36887502670288
+            },
+            {
+              "id": "chi-15",
+              "rank": 1,
+              "top5": [
+                "middleware/strip.go",
+                "middleware/strip_test.go",
+                "_examples/fileserver/main.go",
+                "tree.go",
+                "mux.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 210.17583296634257
+            },
+            {
+              "id": "chi-16",
+              "rank": 3,
+              "top5": [
+                "middleware/throttle.go",
+                "tree_test.go",
+                "middleware/throttle_test.go",
+                "mux.go",
+                "_examples/limits/main.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 191.86374987475574
+            },
+            {
+              "id": "chi-17",
+              "rank": null,
+              "top5": [
+                "middleware/compress.go",
+                "middleware/content_type_test.go",
+                "middleware/content_type.go",
+                "middleware/route_headers.go",
+                "mux.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 1558.8697497732937
+            },
+            {
+              "id": "chi-18",
+              "rank": 2,
+              "top5": [
+                "middleware/request_id.go",
+                "middleware/request_id_test.go",
+                "mux.go",
+                "tree.go",
+                "tree_test.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 186.4769160747528
+            },
+            {
+              "id": "chi-19",
+              "rank": null,
+              "top5": [
+                "middleware/strip_test.go",
+                "chi.go",
+                "mux.go",
+                "middleware/strip.go",
+                "middleware/url_format.go"
+              ],
+              "semantic": "applied_exact_fallback",
+              "detail": "AnnIndexMissing",
+              "documents_sent": 24,
+              "wall_ms": 382.0817500818521
+            }
+          ]
+        }
+      },
+      "summary": {
+        "first": 28,
+        "top5": 52,
+        "total": 56,
+        "semantic_states": {
+          "applied_exact_fallback": 56
+        }
+      }
+    }
+  },
+  "raw_artifacts": {
+    "fresh-projects-released.json": {
+      "sha256": "9c7a11e5cf01c3f04494f18e4329c1303d7961cddde061b7b3176ad806671138",
+      "bytes": 35131
+    },
+    "fresh-projects-fixed-release.json": {
+      "sha256": "3bff45f39b159eb09127e5f6fc5aa1b55cab2d9450df36f881de222beb349ed4",
+      "bytes": 35976
+    },
+    "fresh-projects-fixed-candidate.json": {
+      "sha256": "dfb1c0fcefd53b8ed1fc1b3f4dfbdeff5fd16c0772afb1fb41702f5532c3b54f",
+      "bytes": 35678
+    },
+    "full-repository-ann.json": {
+      "sha256": "e3570bbd30844b982a559b40c2e6c337f8b04db26ee6ca53d59b141b2c68401d",
+      "bytes": 36920
+    },
+    "full-repository-ann-candidate.json": {
+      "sha256": "e37d73908c6da383e8d16acc230d048b6f098785b3a7e4a6a950a6935fcaf5fa",
+      "bytes": 35677
+    },
+    "final-default-express.json": {
+      "sha256": "2b4b64054847c8aac0b3a5c2c172414d10e323ef0faac5e9b9cf6d46046dc286",
+      "bytes": 9350
+    },
+    "final-default-requests.json": {
+      "sha256": "e3a179c8f85f1cf5aaeed8c0b48567acd56a1863af840ae2d4173ecdb45b1bcc",
+      "bytes": 11853
+    },
+    "final-default-chi.json": {
+      "sha256": "b30a37a8961e5393eca8314eee8d7e4da8a7e990a0430144f8305930b72ab3ce",
+      "bytes": 11271
+    },
+    "lifecycle-final.json": {
+      "sha256": "695132fe8078db279cf30e4240401c3091dcd3b64fc17f36b84cd02262932610",
+      "bytes": 3219
+    },
+    "lifecycle.json": {
+      "sha256": "a2f4e73818cd74c1d72746684357310536fc00e959fb3adbe37ecce4789cf8be",
+      "bytes": 1530
+    },
+    "lifecycle-2.json": {
+      "sha256": "7d81bfb4a10b97c84b4718346be911caa7940da56b3681dacdf3d38817258212",
+      "bytes": 2090
+    },
+    "unit-final.log": {
+      "sha256": "6f2f326b094e3b89ff3f571fa075b2169c3cfe530ed6c071aa717c8f7da0f813",
+      "bytes": 1321
+    },
+    "e2e.log": {
+      "sha256": "af9efdf591e632435b6727eb736294bc5c4f2744ca745270555b7eed70302c4d",
+      "bytes": 6162
+    },
+    "installer-tests.log": {
+      "sha256": "28c5de2f3b118afd31ccea9ca1faf2e6f1145070f1c799a8afc0866e17911427",
+      "bytes": 306
+    },
+    "installer-live.log": {
+      "sha256": "f95a1d85a955a297cd301ad897ba94c7799e32b5f57ed6ffec55d7cac96da7d3",
+      "bytes": 952
+    }
+  },
+  "remaining_no_setup_top5_misses": [
+    "express-12",
+    "chi-07",
+    "chi-17",
+    "chi-19"
+  ],
+  "ann_build_seconds": {
+    "express": 20.156619208166376,
+    "requests": 18.389574124943465,
+    "chi": 9.05642233393155
+  },
+  "lifecycle": {
+    "binary_sha256": "015928b295b8ac385e34b5dd9a5221917a32183813a4af4f698490fbbf5acf9e",
+    "checks": [
+      {
+        "name": "fresh roots handshake, no setup",
+        "semantic": "applied_exact_fallback",
+        "detail": "AnnIndexMissing",
+        "wall_ms": 742.346125189215,
+        "paths": [
+          "src/session.py"
+        ],
+        "ann_cache_hit": false
+      },
+      {
+        "name": "explicit index activates ANN in existing MCP session",
+        "semantic": "ann_applied",
+        "detail": null,
+        "wall_ms": 219.6150419767946,
+        "paths": [
+          "src/session.py",
+          "src/format.py"
+        ],
+        "ann_cache_hit": false
+      },
+      {
+        "name": "second ANN query uses cache",
+        "semantic": "ann_applied",
+        "detail": null,
+        "wall_ms": 219.0184579230845,
+        "paths": [
+          "src/session.py",
+          "src/format.py"
+        ],
+        "ann_cache_hit": true
+      },
+      {
+        "name": "edit preserves search through fallback",
+        "semantic": "applied_exact_fallback",
+        "detail": "StaleAnnManifest",
+        "wall_ms": 226.66933410800993,
+        "paths": [
+          "src/session.py"
+        ],
+        "ann_cache_hit": false
+      },
+      {
+        "name": "rebuild replaces stale generation in same session",
+        "semantic": "ann_applied",
+        "detail": null,
+        "wall_ms": 2041.5565420407802,
+        "paths": [
+          "src/session.py",
+          "src/format.py"
+        ],
+        "ann_cache_hit": false
+      },
+      {
+        "name": "missing graph falls back",
+        "semantic": "applied_exact_fallback",
+        "detail": "InvalidAnnSidecar",
+        "wall_ms": 211.98187512345612,
+        "paths": [
+          "src/session.py"
+        ],
+        "ann_cache_hit": false
+      },
+      {
+        "name": "missing metadata falls back after warm use",
+        "semantic": "applied_exact_fallback",
+        "detail": "AnnIndexMissing",
+        "wall_ms": 217.08650002256036,
+        "paths": [
+          "src/session.py"
+        ],
+        "ann_cache_hit": false
+      },
+      {
+        "name": "corrupt metadata falls back",
+        "semantic": "applied_exact_fallback",
+        "detail": "InvalidAnnSidecar",
+        "wall_ms": 213.02862488664687,
+        "paths": [
+          "src/session.py"
+        ],
+        "ann_cache_hit": false
+      },
+      {
+        "name": "restart reuses rebuilt ANN",
+        "semantic": "ann_applied",
+        "detail": null,
+        "wall_ms": 274.29720805957913,
+        "paths": [
+          "src/session.py",
+          "src/format.py"
+        ],
+        "ann_cache_hit": false
+      },
+      {
+        "name": "unreachable provider keeps local result",
+        "semantic": "unavailable",
+        "detail": "ConnectionRefused",
+        "wall_ms": 171.60695791244507,
+        "paths": [
+          "src/session.py"
+        ],
+        "ann_cache_hit": false
+      },
+      {
+        "name": "explicit local mode needs no provider",
+        "semantic": "not_requested",
+        "detail": null,
+        "wall_ms": 24.55162489786744,
+        "paths": [
+          "src/session.py"
+        ],
+        "ann_cache_hit": false
+      }
+    ],
+    "builds": [
+      {
+        "exit_code": 0,
+        "seconds": 2.0550891251768917
+      },
+      {
+        "exit_code": 0,
+        "seconds": 0.4855752501171082
+      },
+      {
+        "exit_code": 0,
+        "seconds": 0.37275570910423994
+      }
+    ],
+    "failures": []
+  },
+  "validation": {
+    "unit": "33/33 build steps succeeded; 283/288 tests passed, 5 skipped in rerun group; other groups cached",
+    "mcp_e2e": {
+      "passed": 76,
+      "total": 76
+    },
+    "installer": {
+      "passed": 14,
+      "total": 14
+    },
+    "lifecycle": {
+      "passed": 11,
+      "total": 11
+    },
+    "initial_failed_lifecycle_attempts": "Retained: first matched a not-found message while awaiting watcher; second exposed missing graph FileNotFound. Neither counted as a pass."
+  }
+}

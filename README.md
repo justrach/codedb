@@ -60,6 +60,11 @@ curl -fsSL https://codedb.codegraff.com/install.sh | bash
 
 Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, and **Devin** — each written directly and additively into that tool's config (only when the tool is present). The installer prints the exact `codedb mcp` command it registered plus hook setup pointers for Codex and Claude Code.
 
+For a binary-only installation, set `CODEDB_NO_INTEGRATIONS=1` on the installer
+process. This skips client configuration, policy and hook registration.
+The installer requires a valid release checksum and a SHA256 tool before
+replacing an existing binary.
+
 On Windows, run this command inside WSL only if you want the Linux binary inside WSL. For the native Windows binary, use PowerShell below.
 
 ### Windows
@@ -166,6 +171,24 @@ For clients that open many unused MCP sessions (for example, one per worktree),
 try experimental [lazy MCP startup](docs/mcp.md#experimental-lazy-startup) with
 `CODEDB_LAZY_MCP=1`. Indexing starts on the first code request; eager startup
 remains the default.
+
+### Enable repository-wide semantic search
+
+Local text and symbol indexing starts automatically. The OpenPuffer semantic
+index currently needs an explicit setup step:
+
+```bash
+codedb /path/to/your/project semantic-index
+```
+
+This sends bounded source chunks to hosted Jina and stores the resulting index
+locally. Without it, hybrid search can rerank only the files already found by
+local search. After indexed files change, run the command again to refresh the
+semantic index; automatic refresh is not implemented. Search continues through
+the bounded fallback meanwhile. If the hosted service is unavailable, CodeDB
+keeps local results. Use `semantic=local` for entirely on-device retrieval.
+
+See the [fresh-project checks and remaining limits](docs/out-of-box.md).
 
 ### As an HTTP server
 
