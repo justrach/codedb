@@ -1,0 +1,312 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-11",
+  "base_commit": "273e8304ff45bd66fa24a5d22a621b53cb2ddae4",
+  "status": "Unreleased follow-up in draft PR 750",
+  "scope": "Synthetic loopback transport and lifecycle checks. No model or live accuracy evaluation.",
+  "fix": "Retry HttpConnectionClosing once within the existing interactive request deadline; provider rejection and malformed responses remain non-retryable.",
+  "before": {
+    "binary_sha256": "015928b295b8ac385e34b5dd9a5221917a32183813a4af4f698490fbbf5acf9e",
+    "scope": "Synthetic loopback transport and lifecycle checks. No model or live accuracy evaluation.",
+    "checks": [
+      {
+        "name": "fresh project uses bounded fallback",
+        "semantic": "applied_exact_fallback",
+        "detail": "AnnIndexMissing",
+        "ann_cache_hit": false,
+        "wall_ms": 75.25
+      },
+      {
+        "name": "local-only query sends no request",
+        "semantic": "not_requested",
+        "detail": null,
+        "ann_cache_hit": false,
+        "wall_ms": 25.17
+      },
+      {
+        "name": "http_401 preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingProviderRejected",
+        "ann_cache_hit": false,
+        "wall_ms": 25.27
+      },
+      {
+        "name": "http_429 preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingRateLimited",
+        "ann_cache_hit": false,
+        "wall_ms": 21.87
+      },
+      {
+        "name": "http_503 preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingProviderUnavailable",
+        "ann_cache_hit": false,
+        "wall_ms": 25.15
+      },
+      {
+        "name": "malformed preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "SyntaxError",
+        "ann_cache_hit": false,
+        "wall_ms": 25.25
+      },
+      {
+        "name": "dimensions preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingDimensions",
+        "ann_cache_hit": false,
+        "wall_ms": 25.15
+      },
+      {
+        "name": "duplicate preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingResponse",
+        "ann_cache_hit": false,
+        "wall_ms": 23.75
+      },
+      {
+        "name": "model preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingModelMismatch",
+        "ann_cache_hit": false,
+        "wall_ms": 24.38
+      },
+      {
+        "name": "nonfinite preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingNumber",
+        "ann_cache_hit": false,
+        "wall_ms": 25.19
+      },
+      {
+        "name": "zero preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingVector",
+        "ann_cache_hit": false,
+        "wall_ms": 21.35
+      },
+      {
+        "name": "slow preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingTimeout",
+        "ann_cache_hit": false,
+        "wall_ms": 321.44
+      }
+    ],
+    "failures": [
+      {
+        "type": "AssertionError",
+        "detail": "('applied_exact_fallback', 'unavailable', 'HttpConnectionClosing')",
+        "site": 159
+      }
+    ]
+  },
+  "after": {
+    "binary_sha256": "046cd89e3037d4e593b9c2d602bd1fccf8fc78eb5849c375ec59012d5e189bd4",
+    "scope": "Synthetic loopback transport and lifecycle checks. No model or live accuracy evaluation.",
+    "checks": [
+      {
+        "name": "fresh project uses bounded fallback",
+        "semantic": "applied_exact_fallback",
+        "detail": "AnnIndexMissing",
+        "ann_cache_hit": false,
+        "wall_ms": 74.67
+      },
+      {
+        "name": "local-only query sends no request",
+        "semantic": "not_requested",
+        "detail": null,
+        "ann_cache_hit": false,
+        "wall_ms": 20.19
+      },
+      {
+        "name": "http_401 preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingProviderRejected",
+        "ann_cache_hit": false,
+        "wall_ms": 25.08
+      },
+      {
+        "name": "http_429 preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingRateLimited",
+        "ann_cache_hit": false,
+        "wall_ms": 25.13
+      },
+      {
+        "name": "http_503 preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingProviderUnavailable",
+        "ann_cache_hit": false,
+        "wall_ms": 25.15
+      },
+      {
+        "name": "malformed preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "SyntaxError",
+        "ann_cache_hit": false,
+        "wall_ms": 25.21
+      },
+      {
+        "name": "dimensions preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingDimensions",
+        "ann_cache_hit": false,
+        "wall_ms": 24.88
+      },
+      {
+        "name": "duplicate preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingResponse",
+        "ann_cache_hit": false,
+        "wall_ms": 21.47
+      },
+      {
+        "name": "model preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingModelMismatch",
+        "ann_cache_hit": false,
+        "wall_ms": 21.14
+      },
+      {
+        "name": "nonfinite preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingNumber",
+        "ann_cache_hit": false,
+        "wall_ms": 25.08
+      },
+      {
+        "name": "zero preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingVector",
+        "ann_cache_hit": false,
+        "wall_ms": 23.55
+      },
+      {
+        "name": "slow preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingTimeout",
+        "ann_cache_hit": false,
+        "wall_ms": 325.04
+      },
+      {
+        "name": "one dropped connection recovers within retry budget",
+        "semantic": "applied_exact_fallback",
+        "detail": "AnnIndexMissing",
+        "ann_cache_hit": false,
+        "wall_ms": 116.37
+      },
+      {
+        "name": "persistent dropped connections stop after two attempts",
+        "semantic": "unavailable",
+        "detail": "HttpConnectionClosing",
+        "ann_cache_hit": false,
+        "wall_ms": 124.81
+      },
+      {
+        "name": "timeout still bounds a retried connection",
+        "semantic": "unavailable",
+        "detail": "EmbeddingTimeout",
+        "ann_cache_hit": false,
+        "wall_ms": 315.24
+      },
+      {
+        "name": "valid fixture index activates ANN",
+        "semantic": "ann_applied",
+        "detail": null,
+        "ann_cache_hit": false,
+        "wall_ms": 25.17
+      },
+      {
+        "name": "exhausted build retries preserve prior index",
+        "attempts": 3
+      },
+      {
+        "name": "transient build rate limit recovers",
+        "chunk_attempts": 2
+      },
+      {
+        "name": "three clients search during rebuild and adopt replacement",
+        "clients": 3
+      },
+      {
+        "name": "killed embedding build preserves prior index"
+      },
+      {
+        "name": "edit during build rejects publication and preserves prior bytes"
+      },
+      {
+        "name": "rebuild after concurrent edit restores ANN",
+        "semantic": "ann_applied",
+        "detail": null,
+        "ann_cache_hit": false,
+        "wall_ms": 69.35
+      },
+      {
+        "name": "no metadata temp files remain after controlled failures"
+      },
+      {
+        "name": "sensitive fixtures excluded from all query and build requests",
+        "request_inputs": 101
+      }
+    ],
+    "failures": []
+  },
+  "source_sha256": {
+    "src/semantic.zig": "e2e494f0ded4d7cd64e6148cefeeeb5d8cb5b100ea0867a3ce1c9ae9a3541916",
+    "scripts/test_semantic_faults.py": "77f1a2e3e94957fca6f65a390034f6aecb04f9578850112949301ed62507800d",
+    ".github/workflows/bench-regression.yml": "78fb8dfb474a3ea46f00e73bbe04728c70a22ccd040ea362fe9e295cdbfb0eae"
+  },
+  "raw_artifacts": {
+    "before.json": {
+      "sha256": "98dafc55ffcfb4bf9a89e99d13f566100ccd69ab486b707d362477c2220b7f62",
+      "bytes": 2883
+    },
+    "receipt.json": {
+      "sha256": "df6768c43185e0312e96b59fed4f3180dbb630fc9c23cee72c95724c45dd756d",
+      "bytes": 4374
+    },
+    "before.log": {
+      "sha256": "9227eb735d2be62d693cd39f1d7273ed49aa6743a285505b8dd47182a6f34f33",
+      "bytes": 822
+    },
+    "receipt.log": {
+      "sha256": "02c0acfbc3cda6176cd796627ecbc546b8901ce007feff9116a0d8b1736d9a49",
+      "bytes": 1360
+    },
+    "unit.log": {
+      "sha256": "5aea0a6e02790539c9b75de5f6ab42464ffb14ae88f47eba5ccdc9dfcca31c3e",
+      "bytes": 1840
+    },
+    "e2e.log": {
+      "sha256": "8a213fe3b737ce79e7d98aa1998527359d8960d258c7f3e8dfe038f7a8917ab3",
+      "bytes": 6151
+    },
+    "build.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  },
+  "validation": {
+    "unit": "33/33 steps succeeded; 1320/1331 tests passed, 11 skipped in rerun groups; other groups cached",
+    "mcp_e2e": {
+      "passed": 76,
+      "total": 76
+    },
+    "fault_checks": {
+      "passed": 24,
+      "total": 24
+    },
+    "formatting": "Zig formatting, Python compile and whitespace checks passed; workflow YAML parsed with Ruby stdlib",
+    "ci": "Added to macOS PR workflow; GitHub-hosted outcome not established by local checks"
+  },
+  "limits": [
+    "Synthetic vectors test failure handling, not ranking accuracy or live hosted service availability.",
+    "Final fixture path included spaces and Unicode on Apple Silicon macOS.",
+    "Killed build is interrupted during embedding, before file publication; disk-full and power-loss behavior not tested.",
+    "Fresh-account authentication, native Linux and Windows execution remain untested here.",
+    "No automatic index setup/refresh, ranking changes, deployment or release in this change.",
+    "Initial harness iterations corrected roots capability handling, error-name expectation and diagnostic-stream assertion; only the closed-connection recovery gap is claimed as a runtime defect."
+  ]
+}

@@ -57,6 +57,21 @@ jobs:
           python3 scripts/fd_regression_test.py --binary zig-out/bin/codedb
           python3 scripts/e2e_lazy_mcp_test.py --binary zig-out/bin/codedb
 
+      - name: Test semantic failure recovery without external services
+        timeout-minutes: 5
+        run: |
+          python3 scripts/test_semantic_faults.py --binary zig-out/bin/codedb \
+            --root "$HOME/tmp/codedb-semantic-faults-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --out semantic-faults.json
+
+      - name: Upload semantic failure report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-faults-macos
+          path: semantic-faults.json
+          if-no-files-found: ignore
+
   bench:
     runs-on: ubuntu-latest
     steps:

@@ -21,6 +21,10 @@
 </p>
 
 <p align="center">
+  <a href="https://trendshift.io/repositories/26207?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-26207" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/26207" alt="justrach/codedb | Trendshift" width="250" height="55" /></a>
+</p>
+
+<p align="center">
   <a href="#-install">Install</a> ·
   <a href="#-quick-start">Quick start</a> ·
   <a href="#-mcp-tools">Tools</a> ·
@@ -59,6 +63,11 @@ curl -fsSL https://codedb.codegraff.com/install.sh | bash
 ```
 
 Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, and **Devin** — each written directly and additively into that tool's config (only when the tool is present). The installer prints the exact `codedb mcp` command it registered plus hook setup pointers for Codex and Claude Code.
+
+For a binary-only installation, set `CODEDB_NO_INTEGRATIONS=1` on the installer
+process. This skips client configuration, policy and hook registration.
+The installer requires a valid release checksum and a SHA256 tool before
+replacing an existing binary.
 
 On Windows, run this command inside WSL only if you want the Linux binary inside WSL. For the native Windows binary, use PowerShell below.
 
@@ -123,7 +132,8 @@ over stdio, with an optional localhost HTTP server.
   HCL, R, Dart/Flutter, and OCaml; more languages have lightweight outlines.
 - **Navigation:** task context, symbol definitions, callers, dependency graphs,
   trigram search, and portable snapshots.
-- **Live updates:** bounded OS watches with periodic content verification for overflow.
+- **Live updates:** recursive macOS events on local APFS/HFS volumes; bounded OS
+  watches and periodic content verification on fallback paths.
   Each MCP process owns its watcher; multiple clients can multiply background work.
 - **Distribution:** macOS, Linux, and Windows binaries; SHA256-verified downloads.
   macOS releases are signed and notarized.
@@ -135,6 +145,7 @@ over stdio, with an optional localhost HTTP server.
 - **[CLI reference](docs/cli.md)** — every command, every flag
 - **[Architecture](docs/architecture.md)** — engine internals, index layout
 - **[Benchmarks](docs/benchmarks.md)** — micro-benchmarks + agentic-eval results vs codegraph, FTS5, lean-ctx
+- **[Graff retrieval study](evals/graff-comparison/STUDY.md)** — 48 repair attempts with CodeDB, Graphify and a workspace-only baseline; correctness, token costs and reproducible fixtures
 - **[Raspberry Pi 4](docs/raspberry-pi.md)** — full-performance ARM64 setup, Cortex-A72 build, and on-device benchmark
 - **[Zig 0.17.0-dev migration guide](docs/zig-0.17-migration.md)** — repeatable zigup workflow and API change recipes
 
@@ -165,6 +176,24 @@ For clients that open many unused MCP sessions (for example, one per worktree),
 try experimental [lazy MCP startup](docs/mcp.md#experimental-lazy-startup) with
 `CODEDB_LAZY_MCP=1`. Indexing starts on the first code request; eager startup
 remains the default.
+
+### Enable repository-wide semantic search
+
+Local text and symbol indexing starts automatically. The OpenPuffer semantic
+index currently needs an explicit setup step:
+
+```bash
+codedb /path/to/your/project semantic-index
+```
+
+This sends bounded source chunks to hosted Jina and stores the resulting index
+locally. Without it, hybrid search can rerank only the files already found by
+local search. After indexed files change, run the command again to refresh the
+semantic index; automatic refresh is not implemented. Search continues through
+the bounded fallback meanwhile. If the hosted service is unavailable, CodeDB
+keeps local results. Use `semantic=local` for entirely on-device retrieval.
+
+See the [fresh-project checks and remaining limits](docs/out-of-box.md).
 
 ### As an HTTP server
 
@@ -425,7 +454,7 @@ The watcher stats `.git/HEAD` mtime before forking `git rev-parse HEAD`. These h
 
 - **Explorer** — structural index engine. Parses Zig, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, and Dart. Maintains outlines, trigram index, inverted word index, content cache, and dependency graph behind a single mutex.
 - **Store** — append-only version log. Every recorded file change (snapshot, modification, deletion) gets a monotonically increasing sequence number. Version history capped at 100 per file.
-- **Watcher** — bounded OS watches, 100ms event coalescing, and content verification for overflow about every 2s. `FilteredWalker` prunes `.git`, `node_modules`, `zig-cache`, `__pycache__`, etc. before descending.
+- **Watcher** — recursive file events on local macOS APFS/HFS volumes, with directory and ignore-policy audits about every 2s. Aliases, other volumes, unavailable streams, and other platforms retain bounded OS watches and periodic overflow content verification. Set `CODEDB_NO_FSEVENTS=1` to exercise the macOS fallback. `FilteredWalker` prunes `.git`, `node_modules`, `zig-cache`, `__pycache__`, etc. before descending. See the [watcher measurements](docs/watcher-748.md).
 - **Agents** — first-class structs with cursors, heartbeats, and exclusive file locks. Stale agents reaped after 30s.
 
 ### Threading Model

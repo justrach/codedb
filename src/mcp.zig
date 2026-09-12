@@ -3687,6 +3687,42 @@ fn isExplicitContextIdentifier(word: []const u8) bool {
     return false;
 }
 
+// Natural-language spelling of a complete compound code name is useful
+// definition evidence too ("route pattern" -> RoutePattern). Require adjacent
+// words, at least two components, and a unique implementation file; ordinary
+// one-word nouns and caller/test requests must never pin a definition.
+fn contextPhraseNamesSymbol(task: []const u8, name: []const u8) bool {
+    var scratch: [2048]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&scratch);
+    var parts: std.ArrayList([]const u8) = .empty;
+    idx.splitIdentifier(name, &parts, fixed.allocator()) catch return false;
+    if (parts.items.len < 2 or parts.items.len > 5) return false;
+    for (parts.items) |part| if (part.len < 3) return false;
+    var words: std.ArrayList([]const u8) = .empty;
+    var tokens = std.mem.tokenizeAny(u8, task, " \t\r\n.,;:!?()[]{}\"'`/\\-");
+    while (tokens.next()) |word| words.append(fixed.allocator(), word) catch return false;
+    if (words.items.len < parts.items.len) return false;
+    for (0..@min(words.items.len - parts.items.len + 1, 7)) |start| {
+        var matches = true;
+        for (parts.items, words.items[start..][0..parts.items.len]) |part, word| {
+            if (!std.ascii.eqlIgnoreCase(part, word)) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) return true;
+    }
+    return false;
+}
+
+test "compound definition phrases require a complete adjacent code name" {
+    try std.testing.expect(contextPhraseNamesSymbol("Where is the retry policy evaluated?", "RetryPolicy"));
+    try std.testing.expect(contextPhraseNamesSymbol("Locate the session token parser", "session_token"));
+    try std.testing.expect(!contextPhraseNamesSymbol("Where is the retry delay policy?", "RetryPolicy"));
+    try std.testing.expect(!contextPhraseNamesSymbol("Where is policy evaluated?", "Policy"));
+    try std.testing.expect(!contextPhraseNamesSymbol("Where is the request?", "RequestContext"));
+}
+
 fn contextRequestsTests(task: []const u8) bool {
     var words = std.mem.tokenizeAny(u8, task, " \t\r\n.,;:!?()[]{}\"'`/\\-");
     var seeking = false;
@@ -3730,11 +3766,11 @@ fn contextWantsDefinitionPriority(task: []const u8) bool {
     if (contextRequestsTests(task)) return false;
     var words = std.mem.tokenizeAny(u8, task, " \t\r\n.,;:!?()[]{}\"'`/\\-");
     const references = [_][]const u8{
-        "call", "calls", "called", "calling", "caller", "callers",
-        "use", "uses", "used", "using", "usage", "usages",
-        "reference", "references", "referenced", "referencing",
-        "invoke", "invokes", "invoked", "invoking", "invocation", "invocations",
-        "consumer", "consumers", "dependent", "dependents",
+        "call",      "calls",      "called",     "calling",     "caller",   "callers",
+        "use",       "uses",       "used",       "using",       "usage",    "usages",
+        "reference", "references", "referenced", "referencing", "invoke",   "invokes",
+        "invoked",   "invoking",   "invocation", "invocations", "consumer", "consumers",
+        "dependent", "dependents",
     };
     while (words.next()) |word| {
         for (references) |reference| {
@@ -3937,6 +3973,8 @@ const ContextReaderProvenance = struct {
 const ContextRetrievalCandidate = struct {
     path: []const u8,
     lexical_rank: ?usize,
+    whole_query_rank: ?usize = null,
+    semantic_documentation: bool = false,
     semantic_rank: ?usize,
     semantic_score: f32,
     source: []const u8 = "bounded_exact_rerank",
@@ -3956,6 +3994,7 @@ const ContextRetrievalProvenance = struct {
     ann_records: usize = 0,
     ann_index_bytes: usize = 0,
     ann_load_ns: u64 = 0,
+    ann_embed_ns: u64 = 0,
     ann_search_ns: u64 = 0,
     ann_mmap_backed: bool = false,
     ann_cache_hit: bool = false,
@@ -3967,6 +4006,71 @@ const ContextRetrievalProvenance = struct {
     detail: ?[]const u8 = null,
     candidates: []const ContextRetrievalCandidate = &.{},
 };
+
+fn contextContainsLiteralName(task: []const u8, name: []const u8) bool {
+    if (name.len == 0 or name.len > task.len) return false;
+    for (0..task.len - name.len + 1) |start| {
+        if (!std.ascii.eqlIgnoreCase(task[start..][0..name.len], name)) continue;
+        const end = start + name.len;
+        const left = start == 0 or (!std.ascii.isAlphanumeric(task[start - 1]) and task[start - 1] != '_' and task[start - 1] != '.');
+        const continues_member = end + 1 < task.len and task[end] == '.' and
+            (std.ascii.isAlphanumeric(task[end + 1]) or task[end + 1] == '_');
+        const right = end == task.len or (!std.ascii.isAlphanumeric(task[end]) and task[end] != '_' and !continues_member);
+        if (left and right) return true;
+    }
+    return false;
+}
+
+test "literal test-file hints match complete names" {
+    try std.testing.expect(contextContainsLiteralName("Find tests for api.send.", "api.send"));
+    try std.testing.expect(contextContainsLiteralName("Find test_parser tests", "test_parser"));
+    try std.testing.expect(!contextContainsLiteralName("Find tests for api.sender", "api.send"));
+    try std.testing.expect(!contextContainsLiteralName("Find tests for other.api.send", "api.send"));
+    try std.testing.expect(!contextContainsLiteralName("Find tests for api.send.more", "api.send"));
+}
+
+fn contextPrefersImplementation(task: []const u8) bool {
+    if (!contextWantsDefinitionPriority(task)) return false;
+    var words = std.mem.tokenizeAny(u8, task, " \t\r\n.,;:!?()[]{}\"'`/\\-");
+    const declarations = [_][]const u8{ "documentation", "docs", "readme", "example", "examples", "type", "types", "struct", "class", "trait", "interface", "enum", "union", "macro", "macros", "constant" };
+    while (words.next()) |word| {
+        for (declarations) |noun| if (std.ascii.eqlIgnoreCase(word, noun)) return false;
+    }
+    return true;
+}
+
+fn commentDominatedChunk(content: []const u8, first: u32, last: u32) bool {
+    var line: u32 = 0;
+    var comments: usize = 0;
+    var nonempty: usize = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        line += 1;
+        if (line < first) continue;
+        if (line > last) break;
+        const text = std.mem.trim(u8, raw, " \t\r");
+        if (text.len == 0) continue;
+        nonempty += 1;
+        if (std.mem.startsWith(u8, text, "//")) comments += 1;
+    }
+    return nonempty > 0 and comments * 4 > nonempty * 3;
+}
+
+fn semanticChunkDocumentation(explorer: *Explorer, allocator: std.mem.Allocator, path: []const u8, first: u32, last: u32) bool {
+    const content = (explorer.getContent(path, allocator) catch null) orelse return false;
+    defer allocator.free(content);
+    return commentDominatedChunk(content, first, last);
+}
+
+test "implementation preference distinguishes documentation-heavy chunks and type requests" {
+    try std.testing.expect(commentDominatedChunk("/// example\n/// usage\n/// explanation\n/// more\nconst x = 1;\n", 1, 5));
+    try std.testing.expect(!commentDominatedChunk("// explanation\nfn run() {\n return;\n}\n", 1, 4));
+    try std.testing.expect(!commentDominatedChunk("", 1, 1));
+    try std.testing.expect(!contextPrefersImplementation("Where is the Error type declared?"));
+    try std.testing.expect(!contextPrefersImplementation("Find examples of retrying requests"));
+    try std.testing.expect(!contextPrefersImplementation("Which macro creates a formatted message?"));
+    try std.testing.expect(contextPrefersImplementation("Where does iteration advance to the next item?"));
+}
 
 fn semanticSourcePreview(explorer: *Explorer, allocator: std.mem.Allocator, path: []const u8, target_line: u32) ?[]const u8 {
     const content = (explorer.getContent(path, allocator) catch null) orelse return null;
@@ -4196,6 +4300,7 @@ fn handleContext(
     const PerFile = struct {
         total: u32 = 0,
         bm25: f32 = 0,
+        whole_query_rank: ?usize = null,
         top: std.ArrayList(PerFileHit) = .empty,
     };
     var by_file = std.StringHashMap(PerFile).init(A);
@@ -4261,6 +4366,28 @@ fn handleContext(
             }
         }
     }
+    // Keyword lookups are useful for navigation, but a five-word truncation
+    // loses relations and identifier components in natural-language requests.
+    // Add the existing multi-term BM25/symbol bridge to the hybrid union.
+    if (semantic_requested and !architecture_intent and std.mem.indexOfScalar(u8, task, ' ') != null) {
+        if (explorer.searchContentRanked(task, A, semantic_index_mod.default_search_results)) |hits| {
+            var rank: usize = 0;
+            for (hits) |h| {
+                const gop = by_file.getOrPut(h.path) catch continue;
+                if (!gop.found_existing) gop.value_ptr.* = .{};
+                if (gop.value_ptr.whole_query_rank == null) {
+                    gop.value_ptr.whole_query_rank = rank;
+                    rank += 1;
+                    // Both views use BM25. Do not count repeated lines or
+                    // overlapping keyword evidence as independent votes.
+                    gop.value_ptr.bm25 = @max(gop.value_ptr.bm25, h.score);
+                }
+                if (gop.value_ptr.top.items.len < CONTEXT_TOP_LINES_PER_FILE) {
+                    gop.value_ptr.top.append(A, .{ .line = h.line_num, .text = h.line_text }) catch {};
+                }
+            }
+        } else |_| {}
+    }
     const pf_kwloop = cio.nanoTimestamp();
 
     // Focus at most three real definitions across the whole task. Previously
@@ -4325,11 +4452,13 @@ fn handleContext(
         lexical_rank: usize = 0,
         semantic_rank: usize = 0,
         semantic_score: f32 = 0,
+        semantic_documentation: bool = false,
         hybrid_score: f32 = 0,
         lexical_present: bool = true,
         semantic_present: bool = false,
         retrieval_rank: usize = 0,
         exact_definition: bool = false,
+        whole_query_rank: ?usize = null,
     };
     var ranked: std.ArrayList(FileRank) = .empty;
     var iter = by_file.iterator();
@@ -4346,6 +4475,8 @@ fn handleContext(
             .hits = entry.value_ptr.total,
             .score = score,
             .top = entry.value_ptr.top.items,
+            .whole_query_rank = entry.value_ptr.whole_query_rank,
+            .lexical_present = entry.value_ptr.bm25 > 0 or symbol_files.contains(path),
         }) catch break;
     }
     std.mem.sort(FileRank, ranked.items, {}, struct {
@@ -4405,6 +4536,7 @@ fn handleContext(
             retrieval.ann_records = ann_result.records;
             retrieval.ann_index_bytes = ann_result.index_bytes;
             retrieval.ann_load_ns = ann_result.load_ns;
+            retrieval.ann_embed_ns = ann_result.embed_ns;
             retrieval.ann_search_ns = ann_result.search_ns;
             retrieval.ann_mmap_backed = ann_result.mmap_backed;
             retrieval.ann_cache_hit = ann_result.cache_hit;
@@ -4424,6 +4556,7 @@ fn handleContext(
                     file.semantic_rank = semantic_rank;
                     file.semantic_score = 1.0 - hit.distance;
                     file.semantic_present = true;
+                    file.semantic_documentation = contextPrefersImplementation(task) and semanticChunkDocumentation(explorer, A, hit.path, hit.line_start, hit.line_end);
                     var include_line = true;
                     for (file.top) |site| {
                         if (site.line >= hit.line_start and site.line <= hit.line_end) include_line = false;
@@ -4458,20 +4591,51 @@ fn handleContext(
                     .semantic_score = 1.0 - hit.distance,
                     .lexical_present = false,
                     .semantic_present = true,
+                    .semantic_documentation = contextPrefersImplementation(task) and semanticChunkDocumentation(explorer, A, hit.path, hit.line_start, hit.line_end),
                 }) catch continue;
                 ranked_by_path.put(hit.path, new_index) catch {};
             }
 
+            var explicit_test_paths = std.StringHashMap(void).init(A);
+            if (contextRequestsTests(task)) {
+                for (ranked.items) |file| {
+                    if (!isTestPath(file.path) or contextPathMultiplier(file.path, path_intent) < 1) continue;
+                    const base = std.fs.path.basename(file.path);
+                    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse continue;
+                    const stem = base[0..dot];
+                    // Compound literal names such as app.use or test_parser
+                    // identify a test file; a generic word like app does not.
+                    if (stem.len < 4 or std.mem.indexOfAny(u8, stem, "._-") == null) continue;
+                    if (contextContainsLiteralName(task, stem)) explicit_test_paths.put(file.path, {}) catch {};
+                }
+            }
+
+            if (exact_definition_paths.count() == 0 and asciiStartsWithIgnoreCase(std.mem.trim(u8, task, " \t\r\n"), "where is ") and contextPrefersImplementation(task)) {
+                explorer.mu.lockShared();
+                defer explorer.mu.unlockShared();
+                for (ranked.items) |file| {
+                    if (contextPathMultiplier(file.path, path_intent) < 1 or isTestPath(file.path)) continue;
+                    const outline = explorer.outlines.get(file.path) orelse continue;
+                    for (outline.symbols.items) |symbol| {
+                        if (symbol.kind != .function and symbol.kind != .method and symbol.kind != .struct_def and symbol.kind != .class_def) continue;
+                        if (contextPhraseNamesSymbol(task, symbol.name)) {
+                            exact_definition_paths.put(file.path, {}) catch {};
+                            break;
+                        }
+                    }
+                }
+            }
+
             for (ranked.items) |*file| {
-                file.hybrid_score = semantic_mod.annRrfScore(
-                    file.lexical_present,
-                    file.lexical_rank,
-                    file.semantic_present,
-                    file.semantic_rank,
-                ) * contextPathMultiplier(file.path, path_intent) * contextAnnIntentWeight(file.path, task);
-                file.exact_definition = exact_definition_paths.count() == 1 and exact_definition_paths.contains(file.path);
+                const lexical_vote = semantic_mod.annRrfScore(file.lexical_present, file.lexical_rank, false, 0);
+                const semantic_vote = semantic_mod.annRrfScore(false, 0, file.semantic_present, file.semantic_rank);
+                file.hybrid_score = (lexical_vote + semantic_vote * @as(f32, if (file.semantic_documentation) 0.5 else 1)) *
+                    contextPathMultiplier(file.path, path_intent) * contextAnnIntentWeight(file.path, task);
+                file.exact_definition = (exact_definition_paths.count() == 1 and exact_definition_paths.contains(file.path)) or
+                    (explicit_test_paths.count() == 1 and explicit_test_paths.contains(file.path));
             }
             if (exact_definition_paths.count() == 1) retrieval.fusion = "definition_aware_union_rrf";
+            if (explicit_test_paths.count() == 1) retrieval.fusion = "explicit_test_file_union_rrf";
 
             if (A.alloc(ContextRetrievalCandidate, ann_result.hits.len) catch null) |provenance| {
                 for (provenance, ann_result.hits, 0..) |*item, hit, semantic_rank| {
@@ -4480,6 +4644,8 @@ fn handleContext(
                     item.* = .{
                         .path = hit.path,
                         .lexical_rank = if (file) |candidate| if (candidate.lexical_present) candidate.lexical_rank else null else null,
+                        .whole_query_rank = if (file) |candidate| candidate.whole_query_rank else null,
+                        .semantic_documentation = if (file) |candidate| candidate.semantic_documentation else false,
                         .semantic_rank = semantic_rank,
                         .semantic_score = 1.0 - hit.distance,
                         .source = "local_openpuffer_ann",

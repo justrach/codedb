@@ -1,0 +1,4248 @@
+{
+  "baseline": "released v0.2.5855 ARM64",
+  "candidate": "local frozen followup ARM64; not released",
+  "runtime_freeze": {
+    "time_utc": "2026-09-11T09:57:12.404933+00:00",
+    "policy": "rank-v8 plus literal member boundary correction; no more ranking tuning before or after new ItsDangerous holdout",
+    "files": {
+      "src/mcp.zig": "e4f27012dc614ef76f915d74aa3a1af65ff385d9a6153cd123e555d8dec25864",
+      "src/semantic.zig": "1e324375f86a292e4ceccab00d48c50bf0bfd08386e09580492193cf612b4cc9",
+      "src/watcher.zig": "7223bdceeee19979b1be6135da05a84b421b0cf53a565f8acfdff07b82c1f302",
+      "src/macos_events.zig": "534039c5c6a71788d6ad3ca3197456dcf12243d1cca10759ae73bcdc9862401a"
+    }
+  },
+  "holdout_freeze": {
+    "time_utc": "2026-09-11T09:58:12.320023+00:00",
+    "candidate_sha256": "c47e0224cce9e505fbb4b4622386890b00b9c904763c1f1aca183c4fbee17415",
+    "baseline_sha256": "fc45213d1157802bd46a5751a0f6181a873b0bd8dc44f99ff3595897aa0e938d",
+    "dataset_sha256": "788aad035f4f203e143b9e0ebf64bb19c8048bf690354459865150224904e964",
+    "policy_freeze_sha256": "189c66d3dd04707d92275d9d519e0934edbe7eadd6e11aebaaf4990580a76588"
+  },
+  "repositories": {
+    "openclaw": {
+      "scope": "development, previously observed",
+      "summary": {
+        "baseline": {
+          "samples": 64,
+          "ndcg_at_5": 0.9769331095982161,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.9375,
+          "median_ms": 316.1368960281834,
+          "p95_ms": 562.6550000160933,
+          "mean_ann_files": 15.3125,
+          "mean_search_ns": 256000,
+          "cache_hits": 63
+        },
+        "candidate": {
+          "samples": 64,
+          "ndcg_at_5": 0.9769331095982161,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.9375,
+          "median_ms": 255.92089595738798,
+          "p95_ms": 868.2358330115676,
+          "mean_ann_files": 15.3125,
+          "mean_search_ns": 244843.75,
+          "cache_hits": 63
+        }
+      },
+      "recall_regressions": [],
+      "ranking_regressions": [],
+      "failures": [],
+      "dataset_sha256": "e55dadb5f479241922b200387e16751c0612b0864e19df2bd20d8729b1373d40",
+      "raw_report_sha256": "167fa49e3042179ebdee3bde5c3dc1533daba47a8df9aae8bcf08950799551bc",
+      "raw_report": "/Users/blackfloofie/tmp/codedb-followup-evidence/final-development/openclaw.json",
+      "baseline_sha256": "fc45213d1157802bd46a5751a0f6181a873b0bd8dc44f99ff3595897aa0e938d",
+      "candidate_sha256": "c47e0224cce9e505fbb4b4622386890b00b9c904763c1f1aca183c4fbee17415",
+      "queries": [
+        {
+          "id": "boot-0",
+          "query": "Find the implementation of runBootOnce.",
+          "gold": {
+            "src/gateway/boot.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/boot.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/boot.test.ts",
+            "src/gateway/channel-health-monitor.ts",
+            "src/plugin-sdk/infra-runtime.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/boot.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/channel-health-monitor.ts",
+            "src/gateway/boot.test.ts",
+            "src/plugin-sdk/infra-runtime.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "boot-1",
+          "query": "Where does the startup checklist save and then restore the main conversation mapping?",
+          "gold": {
+            "src/gateway/boot.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/boot.ts",
+            "src/plugin-sdk/infra-runtime.ts",
+            "src/gateway/channel-health-monitor.ts",
+            "src/gateway/agent-prompt.ts",
+            "src/gateway/agent-list.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/boot.ts",
+            "src/plugin-sdk/infra-runtime.ts",
+            "src/gateway/channel-health-monitor.ts",
+            "src/gateway/boot.test.ts",
+            "src/gateway/agent-list.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-rate-limit-0",
+          "query": "Find createAuthRateLimiter and its lockout logic.",
+          "gold": {
+            "src/gateway/auth-rate-limit.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/auth-rate-limit.ts",
+            "src/gateway/auth-rate-limit.test.ts",
+            "src/gateway/auth.test.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/auth-resolve.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth-rate-limit.ts",
+            "src/gateway/auth-rate-limit.test.ts",
+            "src/gateway/auth.test.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/auth-resolve.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-rate-limit-1",
+          "query": "Where are repeated login failures grouped by client address and expired from a sliding window?",
+          "gold": {
+            "src/gateway/auth-rate-limit.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/auth-rate-limit.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/auth-rate-limit.test.ts",
+            "src/gateway/channel-health-monitor.ts",
+            "src/gateway/auth.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth-rate-limit.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/auth-rate-limit.test.ts",
+            "src/gateway/channel-health-monitor.ts",
+            "src/gateway/auth.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "canvas-documents-0",
+          "query": "Locate createCanvasDocument and its asset manifest writer.",
+          "gold": {
+            "src/gateway/canvas-documents.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/canvas-documents.ts",
+            "src/gateway/canvas-documents.test.ts",
+            "src/gateway/canvas-capability.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/gateway/server/ws-connection/message-handler.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/canvas-documents.ts",
+            "src/gateway/canvas-documents.test.ts",
+            "src/gateway/canvas-capability.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/infra/exec-approvals-analysis.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "canvas-documents-1",
+          "query": "Where is a PDF URL turned into a browser preview with an object and iframe fallback?",
+          "gold": {
+            "src/gateway/canvas-documents.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/canvas-documents.ts",
+            "src/gateway/canvas-capability.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/canvas-documents.test.ts",
+            "src/gateway/call.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/canvas-documents.ts",
+            "src/gateway/canvas-capability.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/canvas-documents.test.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "agent-prompt-0",
+          "query": "Find buildAgentMessageFromConversationEntries.",
+          "gold": {
+            "src/gateway/agent-prompt.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/agent-prompt.ts",
+            "src/gateway/agent-prompt.test.ts",
+            "src/gateway/agent-list.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/boot.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/agent-prompt.ts",
+            "src/gateway/agent-prompt.test.ts",
+            "src/gateway/agent-list.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/boot.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "agent-prompt-1",
+          "query": "Where is the most recent user or tool reply chosen as the current message instead of an assistant reply?",
+          "gold": {
+            "src/gateway/agent-prompt.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/agent-prompt.ts",
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/agent-prompt.test.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/agent-event-assistant-text.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/agent-prompt.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/agent-prompt.test.ts",
+            "src/infra/exec-approvals-analysis.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "assistant-identity-0",
+          "query": "Find resolveAssistantIdentity.",
+          "gold": {
+            "src/gateway/assistant-identity.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/assistant-identity.test.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/call.ts",
+            "src/gateway/auth-surface-resolution.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/assistant-identity.test.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/call.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "assistant-identity-1",
+          "query": "Where are the assistant display name, avatar and emoji selected from configuration and workspace identity?",
+          "gold": {
+            "src/gateway/assistant-identity.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/agent-prompt.ts",
+            "src/gateway/assistant-identity.test.ts",
+            "src/gateway/agent-event-assistant-text.ts",
+            "src/gateway/canvas-documents.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/agent-prompt.ts",
+            "src/gateway/assistant-identity.test.ts",
+            "src/gateway/agent-event-assistant-text.ts",
+            "src/gateway/canvas-documents.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "canvas-capability-0",
+          "query": "Where is normalizeCanvasScopedUrl implemented?",
+          "gold": {
+            "src/gateway/canvas-capability.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/canvas-capability.ts",
+            "src/gateway/canvas-documents.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/call.ts",
+            "src/gateway/auth.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/canvas-capability.ts",
+            "src/gateway/canvas-documents.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/assistant-identity.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "canvas-capability-1",
+          "query": "Where is a canvas access capability moved from a scoped URL path into a query parameter?",
+          "gold": {
+            "src/gateway/canvas-capability.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/canvas-capability.ts",
+            "src/gateway/canvas-documents.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/call.ts",
+            "src/gateway/auth.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/canvas-capability.ts",
+            "src/gateway/canvas-documents.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/call.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-mode-policy-0",
+          "query": "Find hasAmbiguousGatewayAuthModeConfig.",
+          "gold": {
+            "src/gateway/auth-mode-policy.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/auth-mode-policy.ts",
+            "src/gateway/auth-mode-policy.test.ts",
+            "src/gateway/auth-config-utils.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth-install-policy.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth-mode-policy.ts",
+            "src/gateway/auth-mode-policy.test.ts",
+            "src/gateway/auth-config-utils.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth-install-policy.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-mode-policy-1",
+          "query": "Where does configuring both a gateway password and token without choosing an auth mode raise an error?",
+          "gold": {
+            "src/gateway/auth-mode-policy.ts": 3
+          },
+          "baseline_rank": 2,
+          "candidate_rank": 2,
+          "baseline_top5": [
+            "src/gateway/auth.ts",
+            "src/gateway/auth-mode-policy.ts",
+            "src/gateway/auth-config-utils.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/call.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth.ts",
+            "src/gateway/auth-mode-policy.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth-config-utils.ts",
+            "src/gateway/auth-surface-resolution.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-install-policy-0",
+          "query": "Find shouldRequireGatewayTokenForInstall.",
+          "gold": {
+            "src/gateway/auth-install-policy.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/auth-install-policy.ts",
+            "src/gateway/auth-config-utils.ts",
+            "src/gateway/call.ts",
+            "src/gateway/auth.test.ts",
+            "src/gateway/server/ws-connection/message-handler.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth-install-policy.ts",
+            "src/gateway/auth-config-utils.ts",
+            "src/gateway/auth.test.ts",
+            "src/gateway/call.ts",
+            "src/gateway/auth-mode-policy.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-install-policy-1",
+          "query": "Where does service installation ignore a temporary shell password and consider only durable environment settings?",
+          "gold": {
+            "src/gateway/auth-install-policy.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/auth-install-policy.ts",
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/call.ts",
+            "src/gateway/auth.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth-install-policy.ts",
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/call.ts",
+            "src/agents/bash-tools.exec-host-gateway.ts",
+            "src/gateway/auth.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-resolve-0",
+          "query": "Find the implementation of resolveEffectiveSharedGatewayAuth.",
+          "gold": {
+            "src/gateway/auth-resolve.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/auth-config-utils.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/call.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/server/ws-connection/message-handler.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-resolve-1",
+          "query": "Where is the gateway authentication mode chosen with override, configured mode, password, then token precedence?",
+          "gold": {
+            "src/gateway/auth-resolve.ts": 3
+          },
+          "baseline_rank": 2,
+          "candidate_rank": 2,
+          "baseline_top5": [
+            "src/gateway/auth.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth-mode-policy.ts",
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/call.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth-mode-policy.ts",
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/call.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-surface-resolution-0",
+          "query": "Find resolveGatewayProbeSurfaceAuth.",
+          "gold": {
+            "src/gateway/auth-surface-resolution.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/call.ts",
+            "src/gateway/server/ws-connection/message-handler.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/call.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-surface-resolution-1",
+          "query": "Where can interactive authentication suppress environment fallback while selecting local or remote credentials?",
+          "gold": {
+            "src/gateway/auth-surface-resolution.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/call.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/auth-install-policy.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/call.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/auth-install-policy.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-token-resolution-0",
+          "query": "Find resolveGatewayAuthToken.",
+          "gold": {
+            "src/gateway/auth-token-resolution.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/auth-token-resolution.ts",
+            "src/gateway/auth-config-utils.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/call.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth-token-resolution.ts",
+            "src/gateway/auth-config-utils.ts",
+            "src/gateway/auth-resolve.ts",
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/auth.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "auth-token-resolution-1",
+          "query": "Where can an unresolved secret reference fall back to an environment token depending on an always or never policy?",
+          "gold": {
+            "src/gateway/auth-token-resolution.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/auth-token-resolution.ts",
+            "src/gateway/auth-config-utils.ts",
+            "src/gateway/auth.ts",
+            "src/gateway/auth-install-policy.ts",
+            "src/gateway/call.test.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/auth-token-resolution.ts",
+            "src/gateway/auth-config-utils.ts",
+            "src/gateway/call.test.ts",
+            "src/gateway/auth-install-policy.ts",
+            "src/gateway/auth-mode-policy.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "channel-health-monitor-0",
+          "query": "Find startChannelHealthMonitor.",
+          "gold": {
+            "src/gateway/channel-health-monitor.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/channel-health-monitor.ts",
+            "src/gateway/channel-health-monitor.test.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/plugin-sdk/infra-runtime.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/channel-health-monitor.ts",
+            "src/gateway/channel-health-monitor.test.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/gateway/call.test.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "channel-health-monitor-1",
+          "query": "Where are unhealthy messaging accounts restarted subject to a cooldown and an hourly restart cap?",
+          "gold": {
+            "src/gateway/channel-health-monitor.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/channel-health-monitor.ts",
+            "src/gateway/channel-health-monitor.test.ts",
+            "src/gateway/auth-rate-limit.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/plugin-sdk/infra-runtime.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/channel-health-monitor.ts",
+            "src/gateway/auth-rate-limit.ts",
+            "src/gateway/channel-health-monitor.test.ts",
+            "src/gateway/server/ws-connection/message-handler.ts",
+            "src/gateway/boot.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "agent-list-0",
+          "query": "Find listGatewayAgentsBasic.",
+          "gold": {
+            "src/gateway/agent-list.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/agent-list.ts",
+            "src/agents/bash-tools.exec-host-gateway.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/gateway/call.ts",
+            "src/gateway/call.test.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/agent-list.ts",
+            "src/agents/bash-tools.exec-host-gateway.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/gateway/call.ts",
+            "src/gateway/call.test.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "agent-list-1",
+          "query": "Where are agent directories on disk combined with configured agents and filtered by an explicit allowlist?",
+          "gold": {
+            "src/gateway/agent-list.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/agent-list.ts",
+            "src/agents/bash-tools.exec-host-gateway.ts",
+            "src/gateway/auth-mode-policy.test.ts",
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/auth-mode-policy.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/agent-list.ts",
+            "src/agents/bash-tools.exec-host-gateway.ts",
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/auth-mode-policy.ts",
+            "src/infra/exec-approvals-analysis.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "agent-event-assistant-text-0",
+          "query": "Find resolveAssistantStreamDeltaText.",
+          "gold": {
+            "src/gateway/agent-event-assistant-text.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/agent-event-assistant-text.ts",
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/canvas-documents.ts",
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/assistant-identity.test.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/agent-event-assistant-text.ts",
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/auth-surface-resolution.ts",
+            "src/gateway/canvas-documents.ts",
+            "src/gateway/assistant-identity.test.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "agent-event-assistant-text-1",
+          "query": "Where does streamed assistant output prefer a delta string, fall back to the full text string, then return empty?",
+          "gold": {
+            "src/gateway/agent-event-assistant-text.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/agent-event-assistant-text.ts",
+            "src/gateway/agent-prompt.ts",
+            "src/infra/exec-approvals-analysis.ts",
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/canvas-documents.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/agent-event-assistant-text.ts",
+            "src/infra/exec-approvals-analysis.ts",
+            "src/gateway/agent-prompt.ts",
+            "src/gateway/assistant-identity.ts",
+            "src/gateway/boot.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "test-intent-boot.test.ts",
+          "query": "Find tests verifying runBootOnce restores the main session mapping.",
+          "gold": {
+            "src/gateway/boot.test.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/boot.test.ts",
+            "src/gateway/channel-health-monitor.test.ts",
+            "src/gateway/boot.ts",
+            "src/gateway/canvas-documents.test.ts",
+            "src/gateway/android-node.capabilities.live.test.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/boot.test.ts",
+            "src/gateway/channel-health-monitor.test.ts",
+            "src/gateway/boot.ts",
+            "src/gateway/canvas-documents.test.ts",
+            "src/gateway/android-node.capabilities.live.test.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "test-intent-agent-prompt.test.ts",
+          "query": "Find the tests that ensure content-array chat bodies are extracted as text.",
+          "gold": {
+            "src/gateway/agent-prompt.test.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/agent-prompt.test.ts",
+            "src/gateway/boot.test.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/gateway/agent-prompt.ts",
+            "src/gateway/canvas-documents.test.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/agent-prompt.test.ts",
+            "src/gateway/boot.test.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/gateway/agent-prompt.ts",
+            "src/gateway/canvas-documents.test.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "test-intent-channel-health-monitor.test.ts",
+          "query": "Find tests asserting the channel health monitor respects the restart cooldown.",
+          "gold": {
+            "src/gateway/channel-health-monitor.test.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/channel-health-monitor.test.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/gateway/channel-health-monitor.ts",
+            "src/gateway/boot.test.ts",
+            "src/gateway/call.test.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/channel-health-monitor.test.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/gateway/call.test.ts",
+            "src/gateway/channel-health-monitor.ts",
+            "src/gateway/boot.test.ts"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "test-intent-android-node.capabilities.policy-config.test.ts",
+          "query": "Find tests for wrapped and legacy remote configuration snapshot payloads.",
+          "gold": {
+            "src/gateway/android-node.capabilities.policy-config.test.ts": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/gateway/android-node.capabilities.policy-config.test.ts",
+            "src/gateway/channel-health-monitor.test.ts",
+            "src/gateway/call.test.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/gateway/boot.test.ts"
+          ],
+          "candidate_top5": [
+            "src/gateway/android-node.capabilities.policy-config.test.ts",
+            "src/gateway/call.test.ts",
+            "src/gateway/channel-health-monitor.test.ts",
+            "src/gateway/android-node.capabilities.live.test.ts",
+            "src/gateway/boot.test.ts"
+          ],
+          "repeats": 2
+        }
+      ]
+    },
+    "express": {
+      "scope": "development, previously observed",
+      "summary": {
+        "baseline": {
+          "samples": 32,
+          "ndcg_at_5": 0.8870335040760192,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.75,
+          "median_ms": 235.2729164995253,
+          "p95_ms": 1218.9259170554578,
+          "mean_ann_files": 19.125,
+          "mean_search_ns": 283593.75,
+          "cache_hits": 31
+        },
+        "candidate": {
+          "samples": 32,
+          "ndcg_at_5": 0.9456831095982161,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.875,
+          "median_ms": 283.11672958079726,
+          "p95_ms": 631.7998750600964,
+          "mean_ann_files": 19.125,
+          "mean_search_ns": 224031.25,
+          "cache_hits": 31
+        }
+      },
+      "recall_regressions": [],
+      "ranking_regressions": [],
+      "failures": [],
+      "dataset_sha256": "5a4fa75b2fe2ab965c6c8bb0065becb2b6229f80b56f368bb38ec22e5269de44",
+      "raw_report_sha256": "2c91b73ea237874a2a47c81d891158cdea96571ba68423c75e002b9dd92d76da",
+      "raw_report": "/Users/blackfloofie/tmp/codedb-followup-evidence/final-development/express.json",
+      "baseline_sha256": "fc45213d1157802bd46a5751a0f6181a873b0bd8dc44f99ff3595897aa0e938d",
+      "candidate_sha256": "c47e0224cce9e505fbb4b4622386890b00b9c904763c1f1aca183c4fbee17415",
+      "queries": [
+        {
+          "id": "express-00",
+          "query": "Where does the Express application connect request and response objects, install their prototypes, then dispatch into the router?",
+          "gold": {
+            "lib/application.js": 3
+          },
+          "baseline_rank": 2,
+          "candidate_rank": 2,
+          "baseline_top5": [
+            "lib/express.js",
+            "lib/application.js",
+            "lib/response.js",
+            "test/exports.js",
+            "test/app.response.js"
+          ],
+          "candidate_top5": [
+            "lib/express.js",
+            "lib/application.js",
+            "lib/response.js",
+            "lib/request.js",
+            "test/exports.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-01",
+          "query": "Where does mounting a child application restore the parent request and response prototypes after the child finishes?",
+          "gold": {
+            "lib/application.js": 3
+          },
+          "baseline_rank": 2,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "lib/express.js",
+            "lib/application.js",
+            "test/app.response.js",
+            "lib/response.js",
+            "test/app.request.js"
+          ],
+          "candidate_top5": [
+            "lib/application.js",
+            "test/app.response.js",
+            "lib/response.js",
+            "test/app.request.js",
+            "lib/express.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-02",
+          "query": "Where is the request protocol derived from the encrypted socket and forwarded protocol only when the proxy is trusted?",
+          "gold": {
+            "lib/request.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "lib/request.js",
+            "test/req.protocol.js",
+            "lib/application.js",
+            "lib/utils.js",
+            "test/app.request.js"
+          ],
+          "candidate_top5": [
+            "lib/request.js",
+            "lib/application.js",
+            "test/req.protocol.js",
+            "lib/utils.js",
+            "lib/response.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-03",
+          "query": "Where does the request freshness check reject unsafe methods and non-success response status codes?",
+          "gold": {
+            "lib/request.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "lib/request.js",
+            "lib/application.js",
+            "lib/response.js",
+            "test/app.router.js",
+            "test/app.route.js"
+          ],
+          "candidate_top5": [
+            "lib/request.js",
+            "lib/application.js",
+            "lib/response.js",
+            "test/app.router.js",
+            "test/app.route.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-04",
+          "query": "Where does Express sendFile reject a relative filename unless a root option was supplied?",
+          "gold": {
+            "lib/response.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "lib/response.js",
+            "test/express.static.js",
+            "lib/view.js",
+            "test/app.router.js",
+            "test/express.raw.js"
+          ],
+          "candidate_top5": [
+            "lib/response.js",
+            "test/express.static.js",
+            "lib/view.js",
+            "test/app.router.js",
+            "test/express.raw.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-05",
+          "query": "Where does response content negotiation choose an Accept handler or call a default handler before returning not acceptable?",
+          "gold": {
+            "lib/response.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "lib/response.js",
+            "test/res.format.js",
+            "lib/request.js",
+            "test/express.raw.js",
+            "test/express.urlencoded.js"
+          ],
+          "candidate_top5": [
+            "lib/response.js",
+            "lib/request.js",
+            "test/res.format.js",
+            "test/express.raw.js",
+            "test/app.router.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-06",
+          "query": "Where is an ETag setting compiled from a custom function, weak mode, or strong mode into a generator?",
+          "gold": {
+            "lib/utils.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "lib/utils.js",
+            "lib/request.js",
+            "lib/application.js",
+            "lib/response.js",
+            "test/utils.js"
+          ],
+          "candidate_top5": [
+            "lib/utils.js",
+            "lib/request.js",
+            "lib/response.js",
+            "lib/application.js",
+            "test/utils.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-07",
+          "query": "Where are trust-proxy settings converted from hop counts or comma-separated addresses into a predicate?",
+          "gold": {
+            "lib/utils.js": 3
+          },
+          "baseline_rank": 3,
+          "candidate_rank": 3,
+          "baseline_top5": [
+            "lib/request.js",
+            "lib/response.js",
+            "lib/utils.js",
+            "lib/application.js",
+            "test/req.protocol.js"
+          ],
+          "candidate_top5": [
+            "lib/request.js",
+            "lib/application.js",
+            "lib/utils.js",
+            "test/req.protocol.js",
+            "test/config.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-08",
+          "query": "Where does template lookup try multiple root directories to find a view?",
+          "gold": {
+            "lib/view.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "lib/view.js",
+            "lib/application.js",
+            "test/app.render.js",
+            "test/app.engine.js",
+            "test/express.static.js"
+          ],
+          "candidate_top5": [
+            "lib/view.js",
+            "lib/application.js",
+            "test/app.render.js",
+            "test/app.engine.js",
+            "test/express.static.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-09",
+          "query": "Where is a synchronously completed template-engine callback deferred to the next tick?",
+          "gold": {
+            "lib/view.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "lib/view.js",
+            "lib/application.js",
+            "test/app.render.js",
+            "lib/response.js",
+            "lib/request.js"
+          ],
+          "candidate_top5": [
+            "lib/view.js",
+            "lib/application.js",
+            "test/app.render.js",
+            "lib/response.js",
+            "lib/request.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-10",
+          "query": "Find createApplication where event-emitter methods and application methods are mixed into the callable Express function.",
+          "gold": {
+            "lib/express.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "lib/express.js",
+            "lib/application.js",
+            "test/app.js",
+            "test/app.response.js",
+            "test/app.use.js"
+          ],
+          "candidate_top5": [
+            "lib/express.js",
+            "lib/application.js",
+            "test/app.js",
+            "test/app.response.js",
+            "lib/request.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-11",
+          "query": "Where does the public Express entry point export JSON, text, raw and URL-encoded body-parser middleware?",
+          "gold": {
+            "lib/express.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "lib/express.js",
+            "lib/response.js",
+            "lib/application.js",
+            "test/express.text.js",
+            "test/exports.js"
+          ],
+          "candidate_top5": [
+            "lib/express.js",
+            "lib/application.js",
+            "test/express.text.js",
+            "lib/response.js",
+            "lib/request.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-12",
+          "query": "Find the tests for mounting a sub-application with app.use.",
+          "gold": {
+            "test/app.use.js": 3
+          },
+          "baseline_rank": 4,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "test/app.js",
+            "test/app.response.js",
+            "test/app.request.js",
+            "test/app.use.js",
+            "test/app.options.js"
+          ],
+          "candidate_top5": [
+            "test/app.use.js",
+            "test/app.response.js",
+            "test/app.js",
+            "test/app.request.js",
+            "test/app.options.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-13",
+          "query": "Find the tests covering response format content negotiation and its default callback.",
+          "gold": {
+            "test/res.format.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "test/res.format.js",
+            "test/app.router.js",
+            "test/express.static.js",
+            "test/app.response.js",
+            "test/express.text.js"
+          ],
+          "candidate_top5": [
+            "test/res.format.js",
+            "test/app.router.js",
+            "test/express.static.js",
+            "lib/response.js",
+            "test/express.text.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-14",
+          "query": "Find the tests for request protocol and trusted forwarded headers.",
+          "gold": {
+            "test/req.protocol.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "test/req.protocol.js",
+            "test/app.router.js",
+            "test/app.head.js",
+            "test/express.static.js",
+            "lib/request.js"
+          ],
+          "candidate_top5": [
+            "test/req.protocol.js",
+            "test/app.router.js",
+            "test/app.head.js",
+            "lib/request.js",
+            "test/express.static.js"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "express-15",
+          "query": "Find the compileETag unit tests for weak and strong entity tag generators.",
+          "gold": {
+            "test/utils.js": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "test/utils.js",
+            "test/express.static.js",
+            "lib/utils.js",
+            "test/express.json.js",
+            "test/app.head.js"
+          ],
+          "candidate_top5": [
+            "test/utils.js",
+            "test/express.static.js",
+            "lib/utils.js",
+            "test/config.js",
+            "test/app.head.js"
+          ],
+          "repeats": 2
+        }
+      ]
+    },
+    "flask": {
+      "scope": "development, previously observed",
+      "summary": {
+        "baseline": {
+          "samples": 40,
+          "ndcg_at_5": 0.975,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.95,
+          "median_ms": 256.99937460012734,
+          "p95_ms": 630.2762080449611,
+          "mean_ann_files": 19.8,
+          "mean_search_ns": 317475,
+          "cache_hits": 39
+        },
+        "candidate": {
+          "samples": 40,
+          "ndcg_at_5": 0.975,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.95,
+          "median_ms": 264.3031249754131,
+          "p95_ms": 578.1609590630978,
+          "mean_ann_files": 19.8,
+          "mean_search_ns": 356600,
+          "cache_hits": 39
+        }
+      },
+      "recall_regressions": [],
+      "ranking_regressions": [],
+      "failures": [],
+      "dataset_sha256": "d7bc0f775aedf4947f4982cb2d5ef7f8df1c9158449fe4eaace38ce0f5705b60",
+      "raw_report_sha256": "c81bd7f680020a7938d3ab2bab7ac8ffc742746d6c4cd8952ac097fb0879fa0f",
+      "raw_report": "/Users/blackfloofie/tmp/codedb-followup-evidence/final-development/flask.json",
+      "baseline_sha256": "fc45213d1157802bd46a5751a0f6181a873b0bd8dc44f99ff3595897aa0e938d",
+      "candidate_sha256": "c47e0224cce9e505fbb4b4622386890b00b9c904763c1f1aca183c4fbee17415",
+      "queries": [
+        {
+          "id": "flask-00",
+          "query": "Where does request dispatch automatically answer OPTIONS instead of invoking the endpoint?",
+          "gold": {
+            "src/flask/app.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/app.py",
+            "tests/test_basic.py",
+            "src/flask/views.py",
+            "tests/test_views.py",
+            "src/flask/sansio/scaffold.py"
+          ],
+          "candidate_top5": [
+            "src/flask/app.py",
+            "tests/test_basic.py",
+            "src/flask/views.py",
+            "tests/test_views.py",
+            "src/flask/sansio/scaffold.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-01",
+          "query": "Where are view return tuples unpacked into response body, status, and headers?",
+          "gold": {
+            "src/flask/app.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/app.py",
+            "src/flask/helpers.py",
+            "src/flask/typing.py",
+            "src/flask/views.py",
+            "src/flask/json/provider.py"
+          ],
+          "candidate_top5": [
+            "src/flask/app.py",
+            "src/flask/helpers.py",
+            "src/flask/views.py",
+            "src/flask/typing.py",
+            "tests/test_basic.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-02",
+          "query": "Where are coroutine view functions adapted for synchronous WSGI execution?",
+          "gold": {
+            "src/flask/app.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/app.py",
+            "src/flask/ctx.py",
+            "src/flask/helpers.py",
+            "src/flask/cli.py",
+            "src/flask/sansio/app.py"
+          ],
+          "candidate_top5": [
+            "src/flask/app.py",
+            "src/flask/ctx.py",
+            "src/flask/helpers.py",
+            "src/flask/sansio/app.py",
+            "src/flask/views.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-03",
+          "query": "Where are before-request callbacks run before dispatch and user exceptions caught?",
+          "gold": {
+            "src/flask/app.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/app.py",
+            "tests/test_signals.py",
+            "src/flask/sansio/blueprints.py",
+            "src/flask/views.py",
+            "src/flask/ctx.py"
+          ],
+          "candidate_top5": [
+            "src/flask/app.py",
+            "tests/test_signals.py",
+            "src/flask/sansio/blueprints.py",
+            "src/flask/ctx.py",
+            "src/flask/sansio/scaffold.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-04",
+          "query": "Where does an invalid signed session cookie produce an empty session?",
+          "gold": {
+            "src/flask/sessions.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/sessions.py",
+            "src/flask/ctx.py",
+            "src/flask/app.py",
+            "tests/test_basic.py",
+            "src/flask/testing.py"
+          ],
+          "candidate_top5": [
+            "src/flask/sessions.py",
+            "src/flask/app.py",
+            "tests/test_basic.py",
+            "src/flask/testing.py",
+            "src/flask/ctx.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-05",
+          "query": "Where is the session cookie deleted when the session was modified to become empty?",
+          "gold": {
+            "src/flask/sessions.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/sessions.py",
+            "src/flask/app.py",
+            "src/flask/ctx.py",
+            "src/flask/testing.py",
+            "tests/test_basic.py"
+          ],
+          "candidate_top5": [
+            "src/flask/sessions.py",
+            "src/flask/app.py",
+            "src/flask/ctx.py",
+            "src/flask/testing.py",
+            "tests/test_basic.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-06",
+          "query": "Where can a streaming response keep access to the active request context?",
+          "gold": {
+            "src/flask/helpers.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/helpers.py",
+            "src/flask/ctx.py",
+            "src/flask/templating.py",
+            "src/flask/app.py",
+            "tests/test_helpers.py"
+          ],
+          "candidate_top5": [
+            "src/flask/helpers.py",
+            "src/flask/ctx.py",
+            "src/flask/app.py",
+            "src/flask/templating.py",
+            "tests/test_helpers.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-07",
+          "query": "Where are flashed messages cached within the request and filtered by category?",
+          "gold": {
+            "src/flask/helpers.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/helpers.py",
+            "src/flask/app.py",
+            "src/flask/ctx.py",
+            "tests/test_basic.py",
+            "src/flask/__init__.py"
+          ],
+          "candidate_top5": [
+            "src/flask/helpers.py",
+            "src/flask/app.py",
+            "src/flask/ctx.py",
+            "tests/test_basic.py",
+            "src/flask/debughelpers.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-08",
+          "query": "Where are signals emitted immediately before and after rendering a template?",
+          "gold": {
+            "src/flask/templating.py": 3
+          },
+          "baseline_rank": 3,
+          "candidate_rank": 3,
+          "baseline_top5": [
+            "src/flask/signals.py",
+            "src/flask/__init__.py",
+            "src/flask/templating.py",
+            "tests/test_signals.py",
+            "src/flask/sansio/scaffold.py"
+          ],
+          "candidate_top5": [
+            "src/flask/signals.py",
+            "tests/test_signals.py",
+            "src/flask/templating.py",
+            "src/flask/sansio/scaffold.py",
+            "src/flask/__init__.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-09",
+          "query": "Where does template streaming send the rendered signal only after yielding the generated output?",
+          "gold": {
+            "src/flask/templating.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/templating.py",
+            "src/flask/signals.py",
+            "src/flask/helpers.py",
+            "src/flask/views.py",
+            "tests/test_signals.py"
+          ],
+          "candidate_top5": [
+            "src/flask/templating.py",
+            "src/flask/signals.py",
+            "src/flask/helpers.py",
+            "tests/test_signals.py",
+            "src/flask/app.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-10",
+          "query": "Where does a class-based view fall back from HEAD to the GET handler?",
+          "gold": {
+            "src/flask/views.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/views.py",
+            "src/flask/app.py",
+            "src/flask/sansio/blueprints.py",
+            "src/flask/sansio/scaffold.py",
+            "tests/test_views.py"
+          ],
+          "candidate_top5": [
+            "src/flask/views.py",
+            "src/flask/sansio/scaffold.py",
+            "src/flask/app.py",
+            "src/flask/sansio/blueprints.py",
+            "tests/test_views.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-11",
+          "query": "Where is a view instance reused across requests when initialization on every request is disabled?",
+          "gold": {
+            "src/flask/views.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/views.py",
+            "src/flask/sansio/scaffold.py",
+            "src/flask/app.py",
+            "tests/test_views.py",
+            "src/flask/sansio/app.py"
+          ],
+          "candidate_top5": [
+            "src/flask/views.py",
+            "src/flask/sansio/scaffold.py",
+            "src/flask/ctx.py",
+            "src/flask/app.py",
+            "tests/test_views.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-12",
+          "query": "Where are duplicate JSON serialization tag keys rejected unless replacement is forced?",
+          "gold": {
+            "src/flask/json/tag.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/json/tag.py",
+            "src/flask/json/provider.py",
+            "src/flask/sessions.py",
+            "tests/test_json_tag.py",
+            "src/flask/json/__init__.py"
+          ],
+          "candidate_top5": [
+            "src/flask/json/tag.py",
+            "src/flask/json/provider.py",
+            "tests/test_json_tag.py",
+            "src/flask/sessions.py",
+            "src/flask/json/__init__.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-13",
+          "query": "Where does blueprint registration reject a name already assigned to another blueprint?",
+          "gold": {
+            "src/flask/sansio/blueprints.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/sansio/blueprints.py",
+            "src/flask/sansio/app.py",
+            "src/flask/wrappers.py",
+            "tests/test_blueprints.py",
+            "src/flask/blueprints.py"
+          ],
+          "candidate_top5": [
+            "src/flask/sansio/blueprints.py",
+            "src/flask/wrappers.py",
+            "src/flask/sansio/app.py",
+            "tests/test_blueprints.py",
+            "src/flask/blueprints.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-14",
+          "query": "Where are prefixed environment variables decoded as JSON and double underscores used for nested configuration?",
+          "gold": {
+            "src/flask/config.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/config.py",
+            "tests/test_config.py",
+            "src/flask/cli.py",
+            "src/flask/app.py",
+            "src/flask/sansio/app.py"
+          ],
+          "candidate_top5": [
+            "src/flask/config.py",
+            "tests/test_config.py",
+            "src/flask/cli.py",
+            "src/flask/app.py",
+            "tests/test_testing.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-15",
+          "query": "Where can configuration files be opened in binary mode and missing files silently ignored?",
+          "gold": {
+            "src/flask/config.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/flask/config.py",
+            "tests/test_config.py",
+            "src/flask/blueprints.py",
+            "src/flask/app.py",
+            "tests/test_instance_config.py"
+          ],
+          "candidate_top5": [
+            "src/flask/config.py",
+            "tests/test_config.py",
+            "src/flask/app.py",
+            "src/flask/blueprints.py",
+            "src/flask/helpers.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-16",
+          "query": "Find the tests for loading nested configuration from prefixed environment variables.",
+          "gold": {
+            "tests/test_config.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_config.py",
+            "tests/test_cli.py",
+            "src/flask/config.py",
+            "tests/test_testing.py",
+            "tests/test_instance_config.py"
+          ],
+          "candidate_top5": [
+            "tests/test_config.py",
+            "tests/test_cli.py",
+            "src/flask/config.py",
+            "tests/test_testing.py",
+            "tests/test_instance_config.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-17",
+          "query": "Find tests for implicit and explicit HEAD handling in method-based views.",
+          "gold": {
+            "tests/test_views.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_views.py",
+            "tests/test_basic.py",
+            "tests/test_helpers.py",
+            "tests/test_cli.py",
+            "src/flask/views.py"
+          ],
+          "candidate_top5": [
+            "tests/test_views.py",
+            "tests/test_basic.py",
+            "tests/test_helpers.py",
+            "tests/test_cli.py",
+            "src/flask/views.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-18",
+          "query": "Find the tests checking that JSON tag registration order is respected.",
+          "gold": {
+            "tests/test_json_tag.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_json_tag.py",
+            "tests/test_json.py",
+            "tests/test_cli.py",
+            "src/flask/json/tag.py",
+            "tests/test_blueprints.py"
+          ],
+          "candidate_top5": [
+            "tests/test_json_tag.py",
+            "tests/test_json.py",
+            "tests/test_cli.py",
+            "src/flask/json/tag.py",
+            "tests/test_blueprints.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "flask-19",
+          "query": "Find tests for template context processors and the precedence of explicitly supplied context.",
+          "gold": {
+            "tests/test_templating.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_templating.py",
+            "tests/test_blueprints.py",
+            "src/flask/ctx.py",
+            "src/flask/templating.py",
+            "tests/test_reqctx.py"
+          ],
+          "candidate_top5": [
+            "tests/test_templating.py",
+            "tests/test_blueprints.py",
+            "src/flask/ctx.py",
+            "src/flask/app.py",
+            "src/flask/templating.py"
+          ],
+          "repeats": 2
+        }
+      ]
+    },
+    "chi": {
+      "scope": "development, previously observed",
+      "summary": {
+        "baseline": {
+          "samples": 40,
+          "ndcg_at_5": 0.9065464876785729,
+          "recall_at_5": 0.95,
+          "top1_rate": 0.85,
+          "median_ms": 268.3882500277832,
+          "p95_ms": 541.0626670345664,
+          "mean_ann_files": 21,
+          "mean_search_ns": 277275,
+          "cache_hits": 39
+        },
+        "candidate": {
+          "samples": 40,
+          "ndcg_at_5": 0.9815464876785729,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.95,
+          "median_ms": 271.0018125362694,
+          "p95_ms": 560.8382499776781,
+          "mean_ann_files": 21,
+          "mean_search_ns": 275400,
+          "cache_hits": 39
+        }
+      },
+      "recall_regressions": [],
+      "ranking_regressions": [],
+      "failures": [],
+      "dataset_sha256": "5f1427a5cd23012047ef19ff5a2caea32e6412f2c89b840aed7e1063b0c4682a",
+      "raw_report_sha256": "0a3253238643a9fdcac922c2c7c99e9106c03f80e11ff43cbb6c2dea9b5963b1",
+      "raw_report": "/Users/blackfloofie/tmp/codedb-followup-evidence/final-development/chi.json",
+      "baseline_sha256": "fc45213d1157802bd46a5751a0f6181a873b0bd8dc44f99ff3595897aa0e938d",
+      "candidate_sha256": "c47e0224cce9e505fbb4b4622386890b00b9c904763c1f1aca183c4fbee17415",
+      "queries": [
+        {
+          "id": "chi-00",
+          "query": "Where are concurrent requests limited by processing tokens and a bounded backlog?",
+          "gold": {
+            "middleware/throttle.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/throttle.go",
+            "middleware/request_id.go",
+            "middleware/throttle_test.go",
+            "middleware/timeout.go",
+            "middleware/wrap_writer.go"
+          ],
+          "candidate_top5": [
+            "middleware/throttle.go",
+            "middleware/request_id.go",
+            "middleware/throttle_test.go",
+            "middleware/supress_notfound.go",
+            "middleware/wrap_writer.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-01",
+          "query": "Which middleware returns a gateway timeout after the request context deadline expires?",
+          "gold": {
+            "middleware/timeout.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/timeout.go",
+            "middleware/throttle_test.go",
+            "middleware/throttle.go",
+            "middleware/request_id.go",
+            "middleware/nocache.go"
+          ],
+          "candidate_top5": [
+            "middleware/timeout.go",
+            "middleware/throttle_test.go",
+            "middleware/throttle.go",
+            "middleware/request_id.go",
+            "middleware/heartbeat.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-02",
+          "query": "Where is an incoming request ID reused or a new ID generated and placed in the context?",
+          "gold": {
+            "middleware/request_id.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/request_id.go",
+            "context.go",
+            "middleware/logger.go",
+            "middleware/client_ip.go",
+            "middleware/wrap_writer.go"
+          ],
+          "candidate_top5": [
+            "middleware/request_id.go",
+            "context.go",
+            "middleware/logger.go",
+            "middleware/request_id_test.go",
+            "middleware/client_ip.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-03",
+          "query": "Locate the implementation that derives the remote client address from forwarded headers.",
+          "gold": {
+            "middleware/realip.go": 3,
+            "middleware/client_ip.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/client_ip.go",
+            "middleware/realip.go",
+            "middleware/client_ip_test.go",
+            "middleware/route_headers.go",
+            "middleware/client_ip_example_test.go"
+          ],
+          "candidate_top5": [
+            "middleware/client_ip.go",
+            "middleware/realip.go",
+            "middleware/client_ip_test.go",
+            "middleware/client_ip_example_test.go",
+            "middleware/route_headers.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-04",
+          "query": "Where is response compression selected from the accepted encoding header?",
+          "gold": {
+            "middleware/compress.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/compress.go",
+            "middleware/content_encoding.go",
+            "middleware/compress_test.go",
+            "middleware/content_charset.go",
+            "middleware/content_encoding_test.go"
+          ],
+          "candidate_top5": [
+            "middleware/compress.go",
+            "middleware/compress_test.go",
+            "middleware/content_encoding.go",
+            "middleware/content_charset.go",
+            "middleware/content_encoding_test.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-05",
+          "query": "Where are handler panics recovered while the special abort-handler panic is rethrown?",
+          "gold": {
+            "middleware/recoverer.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/recoverer.go",
+            "middleware/supress_notfound.go",
+            "middleware/recoverer_test.go",
+            "chi.go",
+            "middleware/client_ip.go"
+          ],
+          "candidate_top5": [
+            "middleware/recoverer.go",
+            "middleware/supress_notfound.go",
+            "middleware/recoverer_test.go",
+            "middleware/throttle.go",
+            "middleware/client_ip.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-06",
+          "query": "Locate the implementation that checks basic authentication passwords using constant-time comparison.",
+          "gold": {
+            "middleware/basic_auth.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/basic_auth.go",
+            "middleware/basic_auth_test.go",
+            "mux_test.go",
+            "tree.go",
+            "middleware/client_ip_test.go"
+          ],
+          "candidate_top5": [
+            "middleware/basic_auth.go",
+            "middleware/basic_auth_test.go",
+            "mux_test.go",
+            "context_test.go",
+            "middleware/client_ip_test.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-07",
+          "query": "Where are repeated slashes cleaned from the request path before the next handler?",
+          "gold": {
+            "middleware/clean_path.go": 3
+          },
+          "baseline_rank": 2,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/strip.go",
+            "middleware/clean_path.go",
+            "middleware/strip_test.go",
+            "mux.go",
+            "chi.go"
+          ],
+          "candidate_top5": [
+            "middleware/clean_path.go",
+            "middleware/strip.go",
+            "mux.go",
+            "middleware/strip_test.go",
+            "middleware/request_id.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-08",
+          "query": "Which component redirects a trailing-slash request to a slash-free URL?",
+          "gold": {
+            "middleware/strip.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/strip.go",
+            "middleware/strip_test.go",
+            "middleware/url_format_test.go",
+            "middleware/clean_path.go",
+            "middleware/url_format.go"
+          ],
+          "candidate_top5": [
+            "middleware/strip.go",
+            "middleware/strip_test.go",
+            "middleware/url_format_test.go",
+            "middleware/clean_path.go",
+            "mux_test.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-09",
+          "query": "Where is a configured heartbeat URL intercepted without calling the application handler?",
+          "gold": {
+            "middleware/heartbeat.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/heartbeat.go",
+            "middleware/heartbeat_test.go",
+            "middleware/throttle_test.go",
+            "mux_test.go",
+            "middleware/client_ip_test.go"
+          ],
+          "candidate_top5": [
+            "middleware/heartbeat.go",
+            "middleware/heartbeat_test.go",
+            "middleware/throttle_test.go",
+            "mux_test.go",
+            "middleware/supress_notfound.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-10",
+          "query": "Where is the combined route pattern cleaned of wildcard segments and trailing slashes?",
+          "gold": {
+            "context.go": 3
+          },
+          "baseline_rank": null,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tree.go",
+            "middleware/strip.go",
+            "mux.go",
+            "middleware/strip_test.go",
+            "mux_test.go"
+          ],
+          "candidate_top5": [
+            "context.go",
+            "mux.go",
+            "middleware/strip_test.go",
+            "middleware/route_headers.go",
+            "middleware/strip.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-11",
+          "query": "How are middleware handlers wrapped in reverse order around the final endpoint?",
+          "gold": {
+            "chain.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "chain.go",
+            "middleware/client_ip_test.go",
+            "mux_test.go",
+            "tree_test.go",
+            "tree.go"
+          ],
+          "candidate_top5": [
+            "chain.go",
+            "middleware/client_ip_test.go",
+            "mux_test.go",
+            "middleware/wrap_writer.go",
+            "tree_test.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-12",
+          "query": "Where does mounting a subrouter reject duplicate mount patterns?",
+          "gold": {
+            "mux.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "mux.go",
+            "mux_test.go",
+            "middleware/profiler.go",
+            "tree.go",
+            "tree_test.go"
+          ],
+          "candidate_top5": [
+            "mux.go",
+            "mux_test.go",
+            "tree_test.go",
+            "tree.go",
+            "chi.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-13",
+          "query": "Where does route dispatch choose between not-found and method-not-allowed responses?",
+          "gold": {
+            "mux.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "mux.go",
+            "mux_test.go",
+            "middleware/supress_notfound.go",
+            "tree.go",
+            "middleware/route_headers.go"
+          ],
+          "candidate_top5": [
+            "mux.go",
+            "middleware/supress_notfound.go",
+            "mux_test.go",
+            "middleware/route_headers.go",
+            "tree.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-14",
+          "query": "Find the implementation of URLParamFromCtx.",
+          "gold": {
+            "context.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "context.go",
+            "chi.go",
+            "middleware/url_format.go",
+            "tree.go",
+            "mux.go"
+          ],
+          "candidate_top5": [
+            "context.go",
+            "middleware/url_format.go",
+            "tree.go",
+            "chi.go",
+            "mux.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-15",
+          "query": "Find the implementation of StripPrefix.",
+          "gold": {
+            "middleware/strip.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/strip.go",
+            "middleware/strip_test.go",
+            "middleware/client_ip.go",
+            "middleware/route_headers.go",
+            "tree.go"
+          ],
+          "candidate_top5": [
+            "middleware/strip.go",
+            "middleware/strip_test.go",
+            "middleware/client_ip.go",
+            "middleware/route_headers.go",
+            "tree.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-16",
+          "query": "Find tests for limiting requests with a backlog and cancelling waiting clients.",
+          "gold": {
+            "middleware/throttle_test.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/throttle_test.go",
+            "middleware/throttle.go",
+            "middleware/client_ip_bench_test.go",
+            "mux_test.go",
+            "tree_test.go"
+          ],
+          "candidate_top5": [
+            "middleware/throttle_test.go",
+            "tree_test.go",
+            "middleware/throttle.go",
+            "middleware/client_ip_bench_test.go",
+            "mux_test.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-17",
+          "query": "Find the tests for wildcard response compression content types.",
+          "gold": {
+            "middleware/compress_test.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/compress_test.go",
+            "middleware/content_type_test.go",
+            "middleware/content_charset_test.go",
+            "middleware/compress.go",
+            "middleware/content_encoding_test.go"
+          ],
+          "candidate_top5": [
+            "middleware/compress_test.go",
+            "middleware/content_type_test.go",
+            "middleware/content_charset_test.go",
+            "middleware/compress.go",
+            "middleware/content_encoding_test.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-18",
+          "query": "Find tests that verify request ID propagation.",
+          "gold": {
+            "middleware/request_id_test.go": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "middleware/request_id_test.go",
+            "tree_test.go",
+            "middleware/client_ip_test.go",
+            "mux_test.go",
+            "middleware/realip_test.go"
+          ],
+          "candidate_top5": [
+            "middleware/request_id_test.go",
+            "tree_test.go",
+            "middleware/client_ip_test.go",
+            "mux_test.go",
+            "middleware/request_id.go"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "chi-19",
+          "query": "Find tests for cleaning doubled slashes in URL paths.",
+          "gold": {
+            "middleware/clean_path_test.go": 3
+          },
+          "baseline_rank": 3,
+          "candidate_rank": 2,
+          "baseline_top5": [
+            "middleware/strip_test.go",
+            "middleware/strip.go",
+            "middleware/clean_path_test.go",
+            "middleware/url_format_test.go",
+            "middleware/clean_path.go"
+          ],
+          "candidate_top5": [
+            "middleware/strip_test.go",
+            "middleware/clean_path_test.go",
+            "middleware/url_format_test.go",
+            "middleware/clean_path.go",
+            "path_value_test.go"
+          ],
+          "repeats": 2
+        }
+      ]
+    },
+    "anyhow": {
+      "scope": "development, previously observed",
+      "summary": {
+        "baseline": {
+          "samples": 40,
+          "ndcg_at_5": 0.9630929753571458,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.9,
+          "median_ms": 287.877791444771,
+          "p95_ms": 521.4418328832835,
+          "mean_ann_files": 16.65,
+          "mean_search_ns": 208675,
+          "cache_hits": 39
+        },
+        "candidate": {
+          "samples": 40,
+          "ndcg_at_5": 1.0,
+          "recall_at_5": 1.0,
+          "top1_rate": 1,
+          "median_ms": 265.38027089554816,
+          "p95_ms": 630.6337499991059,
+          "mean_ann_files": 16.65,
+          "mean_search_ns": 187350,
+          "cache_hits": 39
+        }
+      },
+      "recall_regressions": [],
+      "ranking_regressions": [],
+      "failures": [],
+      "dataset_sha256": "d861fe6daf3298f80ce27ed4596a061b24ed1cac51bb153ceb7f54eea2300dc8",
+      "raw_report_sha256": "c9c8a78de05322bd17522ab9a640b9e822d0372c010924a0816aeabd894449bc",
+      "raw_report": "/Users/blackfloofie/tmp/codedb-followup-evidence/final-development/anyhow.json",
+      "baseline_sha256": "fc45213d1157802bd46a5751a0f6181a873b0bd8dc44f99ff3595897aa0e938d",
+      "candidate_sha256": "c47e0224cce9e505fbb4b4622386890b00b9c904763c1f1aca183c4fbee17415",
+      "queries": [
+        {
+          "id": "anyhow-00",
+          "query": "Where does adding lazy context to a Result evaluate the closure only on an error?",
+          "gold": {
+            "src/context.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/context.rs",
+            "src/lib.rs",
+            "src/chain.rs",
+            "src/error.rs",
+            "src/macros.rs"
+          ],
+          "candidate_top5": [
+            "src/context.rs",
+            "src/chain.rs",
+            "src/error.rs",
+            "src/lib.rs",
+            "src/macros.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-01",
+          "query": "Which implementation turns an empty Option into an error with a supplied context message?",
+          "gold": {
+            "src/context.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/context.rs",
+            "src/error.rs",
+            "src/lib.rs",
+            "tests/test_context.rs",
+            "src/macros.rs"
+          ],
+          "candidate_top5": [
+            "src/context.rs",
+            "src/error.rs",
+            "src/lib.rs",
+            "tests/test_context.rs",
+            "src/wrapper.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-02",
+          "query": "Where does error-chain iteration follow each source error?",
+          "gold": {
+            "src/chain.rs": 3
+          },
+          "baseline_rank": 2,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/lib.rs",
+            "src/chain.rs",
+            "src/error.rs",
+            "src/fmt.rs",
+            "src/context.rs"
+          ],
+          "candidate_top5": [
+            "src/chain.rs",
+            "src/lib.rs",
+            "src/error.rs",
+            "src/fmt.rs",
+            "src/context.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-03",
+          "query": "Which component buffers the linked error chain when iterating backwards?",
+          "gold": {
+            "src/chain.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/chain.rs",
+            "src/lib.rs",
+            "src/error.rs",
+            "tests/test_chain.rs",
+            "src/fmt.rs"
+          ],
+          "candidate_top5": [
+            "src/chain.rs",
+            "src/error.rs",
+            "src/lib.rs",
+            "tests/test_chain.rs",
+            "src/fmt.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-04",
+          "query": "Where does alternate Display formatting append the full cause chain?",
+          "gold": {
+            "src/fmt.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/fmt.rs",
+            "src/context.rs",
+            "src/wrapper.rs",
+            "src/lib.rs",
+            "src/error.rs"
+          ],
+          "candidate_top5": [
+            "src/fmt.rs",
+            "src/context.rs",
+            "src/error.rs",
+            "src/wrapper.rs",
+            "src/ensure.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-05",
+          "query": "Locate the implementation that prints numbered causes and a captured backtrace for Debug output.",
+          "gold": {
+            "src/fmt.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/fmt.rs",
+            "src/error.rs",
+            "src/backtrace.rs",
+            "src/context.rs",
+            "src/lib.rs"
+          ],
+          "candidate_top5": [
+            "src/fmt.rs",
+            "src/error.rs",
+            "src/backtrace.rs",
+            "src/lib.rs",
+            "src/nightly.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-06",
+          "query": "Where is a failed consuming downcast returned as the original error rather than discarded?",
+          "gold": {
+            "src/error.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/error.rs",
+            "src/lib.rs",
+            "tests/test_downcast.rs",
+            "tests/test_context.rs",
+            "src/chain.rs"
+          ],
+          "candidate_top5": [
+            "src/error.rs",
+            "src/lib.rs",
+            "tests/test_downcast.rs",
+            "src/kind.rs",
+            "tests/test_context.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-07",
+          "query": "Where does a successful consuming downcast drop the surrounding context without dropping the extracted value?",
+          "gold": {
+            "src/error.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/error.rs",
+            "src/lib.rs",
+            "tests/test_context.rs",
+            "src/ptr.rs",
+            "tests/test_downcast.rs"
+          ],
+          "candidate_top5": [
+            "src/error.rs",
+            "tests/test_context.rs",
+            "src/lib.rs",
+            "src/context.rs",
+            "src/ptr.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-08",
+          "query": "Find the implementation of downcast_ref.",
+          "gold": {
+            "src/error.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/error.rs",
+            "src/ptr.rs",
+            "src/lib.rs",
+            "tests/test_downcast.rs",
+            "src/kind.rs"
+          ],
+          "candidate_top5": [
+            "src/error.rs",
+            "src/ptr.rs",
+            "tests/test_downcast.rs",
+            "src/lib.rs",
+            "src/nightly.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-09",
+          "query": "Where is the root cause obtained by taking the last entry in the error chain?",
+          "gold": {
+            "src/error.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/error.rs",
+            "src/lib.rs",
+            "src/chain.rs",
+            "src/fmt.rs",
+            "tests/test_context.rs"
+          ],
+          "candidate_top5": [
+            "src/error.rs",
+            "src/lib.rs",
+            "src/fmt.rs",
+            "src/chain.rs",
+            "tests/test_context.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-10",
+          "query": "Which macro returns early with a constructed error?",
+          "gold": {
+            "src/macros.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/macros.rs",
+            "src/ensure.rs",
+            "src/lib.rs",
+            "src/error.rs",
+            "src/backtrace.rs"
+          ],
+          "candidate_top5": [
+            "src/macros.rs",
+            "src/error.rs",
+            "src/ensure.rs",
+            "src/lib.rs",
+            "tests/test_ensure.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-11",
+          "query": "Where is the ensure macro defined for returning an error when a condition is false?",
+          "gold": {
+            "src/macros.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/macros.rs",
+            "src/ensure.rs",
+            "tests/test_ensure.rs",
+            "tests/test_macros.rs",
+            "src/lib.rs"
+          ],
+          "candidate_top5": [
+            "src/macros.rs",
+            "src/ensure.rs",
+            "src/error.rs",
+            "tests/test_macros.rs",
+            "tests/test_ensure.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-12",
+          "query": "Where are short Debug operands formatted into a comparison failure message?",
+          "gold": {
+            "src/ensure.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/ensure.rs",
+            "tests/test_fmt.rs",
+            "src/wrapper.rs",
+            "tests/test_ensure.rs",
+            "tests/test_macros.rs"
+          ],
+          "candidate_top5": [
+            "src/ensure.rs",
+            "src/error.rs",
+            "tests/test_fmt.rs",
+            "src/fmt.rs",
+            "src/lib.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-13",
+          "query": "Where does the small formatting buffer reject spaces, newlines, or values exceeding its capacity?",
+          "gold": {
+            "src/ensure.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/ensure.rs",
+            "src/fmt.rs",
+            "src/lib.rs",
+            "src/context.rs",
+            "tests/test_ensure.rs"
+          ],
+          "candidate_top5": [
+            "src/ensure.rs",
+            "src/fmt.rs",
+            "src/lib.rs",
+            "src/context.rs",
+            "src/error.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-14",
+          "query": "Locate the implementation that reconstructs an owned Box from a raw pointer.",
+          "gold": {
+            "src/ptr.rs": 3
+          },
+          "baseline_rank": 2,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/error.rs",
+            "src/ptr.rs",
+            "src/kind.rs",
+            "src/macros.rs",
+            "src/lib.rs"
+          ],
+          "candidate_top5": [
+            "src/ptr.rs",
+            "src/error.rs",
+            "src/kind.rs",
+            "src/lib.rs",
+            "src/wrapper.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-15",
+          "query": "Where does attaching context capture a backtrace only when the underlying error lacks one?",
+          "gold": {
+            "src/context.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/context.rs",
+            "src/error.rs",
+            "src/lib.rs",
+            "src/nightly.rs",
+            "src/backtrace.rs"
+          ],
+          "candidate_top5": [
+            "src/context.rs",
+            "src/error.rs",
+            "src/lib.rs",
+            "src/backtrace.rs",
+            "src/nightly.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-16",
+          "query": "Find tests covering unsuccessful downcasts and ownership of the original error.",
+          "gold": {
+            "tests/test_downcast.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_downcast.rs",
+            "tests/test_context.rs",
+            "src/error.rs",
+            "tests/test_repr.rs",
+            "tests/test_convert.rs"
+          ],
+          "candidate_top5": [
+            "tests/test_downcast.rs",
+            "tests/test_context.rs",
+            "src/error.rs",
+            "tests/test_repr.rs",
+            "tests/test_convert.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-17",
+          "query": "Find tests for reversing the iterator over an error cause chain.",
+          "gold": {
+            "tests/test_chain.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_chain.rs",
+            "src/lib.rs",
+            "src/error.rs",
+            "tests/test_context.rs",
+            "tests/test_ensure.rs"
+          ],
+          "candidate_top5": [
+            "tests/test_chain.rs",
+            "src/lib.rs",
+            "src/error.rs",
+            "tests/test_context.rs",
+            "tests/test_ensure.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-18",
+          "query": "Find tests comparing ordinary and alternate Display output.",
+          "gold": {
+            "tests/test_fmt.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_fmt.rs",
+            "src/fmt.rs",
+            "tests/test_macros.rs",
+            "tests/test_source.rs",
+            "tests/test_ensure.rs"
+          ],
+          "candidate_top5": [
+            "tests/test_fmt.rs",
+            "src/fmt.rs",
+            "tests/test_macros.rs",
+            "tests/test_source.rs",
+            "tests/test_ensure.rs"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "anyhow-19",
+          "query": "Find tests for downcasting through several layers of added context.",
+          "gold": {
+            "tests/test_context.rs": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_context.rs",
+            "tests/test_downcast.rs",
+            "src/error.rs",
+            "tests/test_chain.rs",
+            "src/lib.rs"
+          ],
+          "candidate_top5": [
+            "tests/test_context.rs",
+            "tests/test_downcast.rs",
+            "src/error.rs",
+            "src/lib.rs",
+            "tests/test_repr.rs"
+          ],
+          "repeats": 2
+        }
+      ]
+    },
+    "requests": {
+      "scope": "previously observed validation",
+      "summary": {
+        "baseline": {
+          "samples": 40,
+          "ndcg_at_5": 0.9380929753571458,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.85,
+          "median_ms": 254.00204141624272,
+          "p95_ms": 470.8965830504894,
+          "mean_ann_files": 12.15,
+          "mean_search_ns": 207500,
+          "cache_hits": 39
+        },
+        "candidate": {
+          "samples": 40,
+          "ndcg_at_5": 0.9315464876785728,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.85,
+          "median_ms": 256.6322920611128,
+          "p95_ms": 378.07808397337794,
+          "mean_ann_files": 12.15,
+          "mean_search_ns": 61900,
+          "cache_hits": 39
+        }
+      },
+      "recall_regressions": [],
+      "ranking_regressions": [
+        "requests-17"
+      ],
+      "failures": [],
+      "dataset_sha256": "824c14f91e571c5a7974233e4fb628ea2168d37d00dae63faf30289d68ac8d8d",
+      "raw_report_sha256": "ec9a3013631c86b52459922694bc9e087969e3ebb813b2c68033745491c83d22",
+      "raw_report": "/Users/blackfloofie/tmp/codedb-followup-evidence/requests-final.json",
+      "baseline_sha256": "fc45213d1157802bd46a5751a0f6181a873b0bd8dc44f99ff3595897aa0e938d",
+      "candidate_sha256": "c47e0224cce9e505fbb4b4622386890b00b9c904763c1f1aca183c4fbee17415",
+      "queries": [
+        {
+          "id": "requests-00",
+          "query": "Where are request-level and session-level dictionaries merged while removing keys assigned None?",
+          "gold": {
+            "src/requests/sessions.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/sessions.py",
+            "src/requests/cookies.py",
+            "src/requests/api.py",
+            "tests/test_requests.py",
+            "src/requests/utils.py"
+          ],
+          "candidate_top5": [
+            "src/requests/sessions.py",
+            "src/requests/cookies.py",
+            "src/requests/utils.py",
+            "tests/test_requests.py",
+            "src/requests/api.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-01",
+          "query": "Which implementation strips authorization when a redirect changes the destination host?",
+          "gold": {
+            "src/requests/sessions.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/sessions.py",
+            "src/requests/auth.py",
+            "src/requests/utils.py",
+            "src/requests/models.py",
+            "src/requests/help.py"
+          ],
+          "candidate_top5": [
+            "src/requests/sessions.py",
+            "src/requests/auth.py",
+            "src/requests/utils.py",
+            "src/requests/models.py",
+            "tests/test_requests.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-02",
+          "query": "Where are redirect response codes used to change a POST into a GET?",
+          "gold": {
+            "src/requests/sessions.py": 3
+          },
+          "baseline_rank": 2,
+          "candidate_rank": 2,
+          "baseline_top5": [
+            "src/requests/models.py",
+            "src/requests/sessions.py",
+            "tests/test_requests.py",
+            "src/requests/status_codes.py",
+            "src/requests/utils.py"
+          ],
+          "candidate_top5": [
+            "src/requests/models.py",
+            "src/requests/sessions.py",
+            "tests/test_requests.py",
+            "src/requests/utils.py",
+            "src/requests/status_codes.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-03",
+          "query": "Where are redirects followed while recording response history and preserving fragments?",
+          "gold": {
+            "src/requests/sessions.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/sessions.py",
+            "src/requests/models.py",
+            "src/requests/__init__.py",
+            "src/requests/api.py",
+            "tests/test_requests.py"
+          ],
+          "candidate_top5": [
+            "src/requests/sessions.py",
+            "src/requests/models.py",
+            "tests/test_requests.py",
+            "src/requests/utils.py",
+            "src/requests/auth.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-04",
+          "query": "Where is a JSON request body serialized and assigned its content type?",
+          "gold": {
+            "src/requests/models.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/models.py",
+            "src/requests/_types.py",
+            "src/requests/api.py",
+            "src/requests/utils.py",
+            "src/requests/exceptions.py"
+          ],
+          "candidate_top5": [
+            "src/requests/models.py",
+            "src/requests/_types.py",
+            "src/requests/utils.py",
+            "src/requests/api.py",
+            "src/requests/__init__.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-05",
+          "query": "Which component detects Unicode encoding before decoding a JSON response?",
+          "gold": {
+            "src/requests/models.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/models.py",
+            "src/requests/utils.py",
+            "tests/test_requests.py",
+            "src/requests/exceptions.py",
+            "src/requests/_internal_utils.py"
+          ],
+          "candidate_top5": [
+            "src/requests/models.py",
+            "src/requests/utils.py",
+            "tests/test_requests.py",
+            "tests/test_utils.py",
+            "src/requests/_internal_utils.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-06",
+          "query": "Where are partial lines buffered across successive streamed response chunks?",
+          "gold": {
+            "src/requests/models.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/models.py",
+            "src/requests/utils.py",
+            "src/requests/sessions.py",
+            "tests/test_requests.py",
+            "src/requests/auth.py"
+          ],
+          "candidate_top5": [
+            "src/requests/models.py",
+            "src/requests/utils.py",
+            "tests/test_requests.py",
+            "src/requests/sessions.py",
+            "src/requests/__init__.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-07",
+          "query": "Locate the implementation that turns HTTP error status codes into exceptions with a decoded reason.",
+          "gold": {
+            "src/requests/models.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/models.py",
+            "src/requests/exceptions.py",
+            "src/requests/status_codes.py",
+            "src/requests/adapters.py",
+            "src/requests/help.py"
+          ],
+          "candidate_top5": [
+            "src/requests/models.py",
+            "src/requests/exceptions.py",
+            "src/requests/adapters.py",
+            "src/requests/status_codes.py",
+            "src/requests/utils.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-08",
+          "query": "Where does HTTP digest authentication select a hash algorithm from the server challenge?",
+          "gold": {
+            "src/requests/auth.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/auth.py",
+            "src/requests/utils.py",
+            "tests/test_lowlevel.py",
+            "src/requests/models.py",
+            "src/requests/sessions.py"
+          ],
+          "candidate_top5": [
+            "src/requests/auth.py",
+            "src/requests/utils.py",
+            "src/requests/models.py",
+            "tests/test_lowlevel.py",
+            "tests/test_requests.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-09",
+          "query": "Where does digest authentication rewind the request body before retrying a challenge?",
+          "gold": {
+            "src/requests/auth.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/auth.py",
+            "src/requests/sessions.py",
+            "src/requests/utils.py",
+            "tests/test_lowlevel.py",
+            "src/requests/models.py"
+          ],
+          "candidate_top5": [
+            "src/requests/auth.py",
+            "src/requests/sessions.py",
+            "src/requests/utils.py",
+            "tests/test_requests.py",
+            "src/requests/models.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-10",
+          "query": "Where does the adapter decide whether a proxy request needs an absolute URL or a relative path?",
+          "gold": {
+            "src/requests/adapters.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/adapters.py",
+            "src/requests/utils.py",
+            "src/requests/sessions.py",
+            "src/requests/models.py",
+            "tests/test_requests.py"
+          ],
+          "candidate_top5": [
+            "src/requests/adapters.py",
+            "src/requests/utils.py",
+            "src/requests/models.py",
+            "src/requests/sessions.py",
+            "tests/test_requests.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-11",
+          "query": "Which implementation raises an error when multiple cookies match the same name without a disambiguating domain?",
+          "gold": {
+            "src/requests/cookies.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/cookies.py",
+            "src/requests/utils.py",
+            "src/requests/sessions.py",
+            "src/requests/help.py",
+            "tests/test_requests.py"
+          ],
+          "candidate_top5": [
+            "src/requests/cookies.py",
+            "src/requests/utils.py",
+            "src/requests/sessions.py",
+            "tests/test_requests.py",
+            "src/requests/models.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-12",
+          "query": "Where is the cookie jar lock omitted from its serialized pickle state?",
+          "gold": {
+            "src/requests/cookies.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/cookies.py",
+            "src/requests/models.py",
+            "src/requests/sessions.py",
+            "src/requests/auth.py",
+            "src/requests/utils.py"
+          ],
+          "candidate_top5": [
+            "src/requests/cookies.py",
+            "src/requests/models.py",
+            "src/requests/sessions.py",
+            "tests/test_requests.py",
+            "src/requests/utils.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-13",
+          "query": "Where are dictionary keys normalized for lookup while retaining the originally supplied spelling?",
+          "gold": {
+            "src/requests/structures.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/structures.py",
+            "src/requests/utils.py",
+            "src/requests/sessions.py",
+            "src/requests/status_codes.py",
+            "tests/test_requests.py"
+          ],
+          "candidate_top5": [
+            "src/requests/structures.py",
+            "src/requests/utils.py",
+            "src/requests/models.py",
+            "tests/test_requests.py",
+            "src/requests/_internal_utils.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-14",
+          "query": "Which component allows each response hook to replace the data passed to subsequent hooks?",
+          "gold": {
+            "src/requests/hooks.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/hooks.py",
+            "src/requests/models.py",
+            "tests/test_requests.py",
+            "src/requests/sessions.py",
+            "src/requests/utils.py"
+          ],
+          "candidate_top5": [
+            "src/requests/hooks.py",
+            "src/requests/models.py",
+            "tests/test_requests.py",
+            "src/requests/sessions.py",
+            "tests/test_hooks.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-15",
+          "query": "Where does rewinding a streamed request fail when the original body position cannot be restored?",
+          "gold": {
+            "src/requests/utils.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/requests/utils.py",
+            "src/requests/models.py",
+            "tests/test_requests.py",
+            "src/requests/sessions.py",
+            "src/requests/auth.py"
+          ],
+          "candidate_top5": [
+            "src/requests/utils.py",
+            "tests/test_requests.py",
+            "src/requests/models.py",
+            "src/requests/sessions.py",
+            "src/requests/exceptions.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-16",
+          "query": "Find tests for the default response hooks and hook replacement results.",
+          "gold": {
+            "tests/test_hooks.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_hooks.py",
+            "tests/test_requests.py",
+            "src/requests/hooks.py",
+            "tests/test_testserver.py",
+            "tests/test_utils.py"
+          ],
+          "candidate_top5": [
+            "tests/test_hooks.py",
+            "tests/test_requests.py",
+            "src/requests/hooks.py",
+            "tests/test_utils.py",
+            "tests/test_testserver.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-17",
+          "query": "Find tests for proxy request URLs with leading path separators.",
+          "gold": {
+            "tests/test_adapters.py": 3
+          },
+          "baseline_rank": 2,
+          "candidate_rank": 3,
+          "baseline_top5": [
+            "tests/test_utils.py",
+            "tests/test_adapters.py",
+            "tests/test_requests.py",
+            "src/requests/utils.py",
+            "tests/test_lowlevel.py"
+          ],
+          "candidate_top5": [
+            "tests/test_utils.py",
+            "tests/test_requests.py",
+            "tests/test_adapters.py",
+            "tests/test_lowlevel.py",
+            "src/requests/utils.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-18",
+          "query": "Find tests for calculating the remaining length of a partially read file.",
+          "gold": {
+            "tests/test_utils.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_utils.py",
+            "tests/test_lowlevel.py",
+            "tests/test_requests.py",
+            "src/requests/utils.py",
+            "tests/test_testserver.py"
+          ],
+          "candidate_top5": [
+            "tests/test_utils.py",
+            "tests/test_requests.py",
+            "tests/test_lowlevel.py",
+            "src/requests/utils.py",
+            "tests/test_testserver.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "requests-19",
+          "query": "Find the tests for case-insensitive dictionary access and equality.",
+          "gold": {
+            "tests/test_structures.py": 3
+          },
+          "baseline_rank": 3,
+          "candidate_rank": 3,
+          "baseline_top5": [
+            "tests/test_requests.py",
+            "src/requests/structures.py",
+            "tests/test_structures.py",
+            "tests/test_utils.py",
+            "tests/test_packages.py"
+          ],
+          "candidate_top5": [
+            "tests/test_requests.py",
+            "src/requests/structures.py",
+            "tests/test_structures.py",
+            "tests/test_utils.py",
+            "tests/test_packages.py"
+          ],
+          "repeats": 2
+        }
+      ]
+    },
+    "itsdangerous": {
+      "scope": "fresh frozen holdout; now observed",
+      "summary": {
+        "baseline": {
+          "samples": 40,
+          "ndcg_at_5": 0.9630929753571458,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.9,
+          "median_ms": 261.5580630954355,
+          "p95_ms": 508.3202919922769,
+          "mean_ann_files": 13,
+          "mean_search_ns": 25550,
+          "cache_hits": 39
+        },
+        "candidate": {
+          "samples": 40,
+          "ndcg_at_5": 0.9630929753571458,
+          "recall_at_5": 1.0,
+          "top1_rate": 0.9,
+          "median_ms": 267.6457915222272,
+          "p95_ms": 596.4642919134349,
+          "mean_ann_files": 13,
+          "mean_search_ns": 25775,
+          "cache_hits": 39
+        }
+      },
+      "recall_regressions": [],
+      "ranking_regressions": [],
+      "failures": [],
+      "dataset_sha256": "788aad035f4f203e143b9e0ebf64bb19c8048bf690354459865150224904e964",
+      "raw_report_sha256": "cf3cfd381e8e8863a7e00294b9bc3dc36a339c612aaedb9f9073740ae66b791b",
+      "raw_report": "/Users/blackfloofie/tmp/codedb-followup-evidence/itsdangerous-holdout.json",
+      "baseline_sha256": "fc45213d1157802bd46a5751a0f6181a873b0bd8dc44f99ff3595897aa0e938d",
+      "candidate_sha256": "c47e0224cce9e505fbb4b4622386890b00b9c904763c1f1aca183c4fbee17415",
+      "queries": [
+        {
+          "id": "itsdangerous-00",
+          "query": "Where does URL-safe base64 decoding restore missing padding?",
+          "gold": {
+            "src/itsdangerous/encoding.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/encoding.py",
+            "src/itsdangerous/url_safe.py",
+            "src/itsdangerous/__init__.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/signer.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/encoding.py",
+            "src/itsdangerous/url_safe.py",
+            "src/itsdangerous/signer.py",
+            "src/itsdangerous/__init__.py",
+            "src/itsdangerous/timed.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-01",
+          "query": "Where is an integer encoded as big-endian bytes with leading zero bytes removed?",
+          "gold": {
+            "src/itsdangerous/encoding.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/encoding.py",
+            "src/itsdangerous/serializer.py",
+            "tests/test_itsdangerous/test_encoding.py",
+            "src/itsdangerous/timed.py",
+            "tests/test_itsdangerous/test_serializer.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/encoding.py",
+            "src/itsdangerous/serializer.py",
+            "tests/test_itsdangerous/test_encoding.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/signer.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-02",
+          "query": "Where does key derivation choose between concatenation, HMAC, and no derivation?",
+          "gold": {
+            "src/itsdangerous/signer.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/signer.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "src/itsdangerous/__init__.py",
+            "src/itsdangerous/serializer.py",
+            "tests/test_itsdangerous/test_serializer.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/signer.py",
+            "src/itsdangerous/serializer.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/exc.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-03",
+          "query": "Where does signature verification try older secret keys during key rotation?",
+          "gold": {
+            "src/itsdangerous/signer.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/signer.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/exc.py",
+            "tests/test_itsdangerous/test_timed.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/signer.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/exc.py",
+            "tests/test_itsdangerous/test_timed.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-04",
+          "query": "Where does unsigning reject a value with no separator?",
+          "gold": {
+            "src/itsdangerous/signer.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/signer.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/timed.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "src/itsdangerous/exc.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/signer.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/exc.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-05",
+          "query": "Where does a timestamped signature reject a negative age?",
+          "gold": {
+            "src/itsdangerous/timed.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/exc.py",
+            "src/itsdangerous/signer.py",
+            "src/itsdangerous/serializer.py",
+            "tests/test_itsdangerous/test_timed.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/exc.py",
+            "src/itsdangerous/signer.py",
+            "tests/test_itsdangerous/test_timed.py",
+            "src/itsdangerous/serializer.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-06",
+          "query": "Where is a signing timestamp converted into a timezone-aware UTC datetime?",
+          "gold": {
+            "src/itsdangerous/timed.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/exc.py",
+            "src/itsdangerous/serializer.py",
+            "tests/test_itsdangerous/test_timed.py",
+            "src/itsdangerous/__init__.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/exc.py",
+            "tests/test_itsdangerous/test_timed.py",
+            "src/itsdangerous/signer.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-07",
+          "query": "Where does URL-safe payload serialization decide whether compression saves enough space?",
+          "gold": {
+            "src/itsdangerous/url_safe.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/url_safe.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/_json.py",
+            "src/itsdangerous/__init__.py",
+            "src/itsdangerous/timed.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/url_safe.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/_json.py",
+            "src/itsdangerous/__init__.py",
+            "src/itsdangerous/timed.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-08",
+          "query": "Where does payload loading recognize a leading dot and decompress the decoded data?",
+          "gold": {
+            "src/itsdangerous/url_safe.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/url_safe.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/exc.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/encoding.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/url_safe.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/exc.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/encoding.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-09",
+          "query": "Where does the serializer construct fallback signers for each secret key?",
+          "gold": {
+            "src/itsdangerous/serializer.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/serializer.py",
+            "tests/test_itsdangerous/test_serializer.py",
+            "src/itsdangerous/signer.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/url_safe.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/signer.py",
+            "tests/test_itsdangerous/test_serializer.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/exc.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-10",
+          "query": "Where does unsafe deserialization return the payload together with a signature-valid flag?",
+          "gold": {
+            "src/itsdangerous/serializer.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/exc.py",
+            "src/itsdangerous/url_safe.py",
+            "src/itsdangerous/signer.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/exc.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/signer.py",
+            "src/itsdangerous/url_safe.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-11",
+          "query": "Where does compact JSON serialization disable ASCII escaping and remove separator whitespace?",
+          "gold": {
+            "src/itsdangerous/_json.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/_json.py",
+            "src/itsdangerous/url_safe.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/encoding.py",
+            "src/itsdangerous/signer.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/_json.py",
+            "src/itsdangerous/url_safe.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/encoding.py",
+            "src/itsdangerous/signer.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-12",
+          "query": "Where is the BadPayload exception class that retains the original decoding error?",
+          "gold": {
+            "src/itsdangerous/exc.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/exc.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/url_safe.py",
+            "src/itsdangerous/timed.py",
+            "tests/test_itsdangerous/test_serializer.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/exc.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/url_safe.py",
+            "src/itsdangerous/timed.py",
+            "tests/test_itsdangerous/test_serializer.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-13",
+          "query": "Where is the BadTimeSignature type carrying the date the signature was created?",
+          "gold": {
+            "src/itsdangerous/exc.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "src/itsdangerous/exc.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/signer.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/__init__.py"
+          ],
+          "candidate_top5": [
+            "src/itsdangerous/exc.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/signer.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/__init__.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-14",
+          "query": "Find tests that verify older signatures still work after adding a new secret key.",
+          "gold": {
+            "tests/test_itsdangerous/test_signer.py": 3
+          },
+          "baseline_rank": 2,
+          "candidate_rank": 2,
+          "baseline_top5": [
+            "tests/test_itsdangerous/test_timed.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "tests/test_itsdangerous/test_serializer.py",
+            "tests/test_itsdangerous/test_url_safe.py",
+            "src/itsdangerous/signer.py"
+          ],
+          "candidate_top5": [
+            "tests/test_itsdangerous/test_timed.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "tests/test_itsdangerous/test_serializer.py",
+            "tests/test_itsdangerous/test_url_safe.py",
+            "src/itsdangerous/signer.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-15",
+          "query": "Find tests that reject separator characters drawn from the base64 alphabet.",
+          "gold": {
+            "tests/test_itsdangerous/test_signer.py": 3
+          },
+          "baseline_rank": 2,
+          "candidate_rank": 2,
+          "baseline_top5": [
+            "tests/test_itsdangerous/test_encoding.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "src/itsdangerous/encoding.py",
+            "tests/test_itsdangerous/test_serializer.py",
+            "src/itsdangerous/signer.py"
+          ],
+          "candidate_top5": [
+            "tests/test_itsdangerous/test_encoding.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "tests/test_itsdangerous/test_serializer.py",
+            "src/itsdangerous/encoding.py",
+            "tests/test_itsdangerous/test_timed.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-16",
+          "query": "Find tests that advance a frozen clock until a timestamped signature expires.",
+          "gold": {
+            "tests/test_itsdangerous/test_timed.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_itsdangerous/test_timed.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "src/itsdangerous/timed.py",
+            "tests/test_itsdangerous/test_serializer.py",
+            "tests/test_itsdangerous/test_url_safe.py"
+          ],
+          "candidate_top5": [
+            "tests/test_itsdangerous/test_timed.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/signer.py",
+            "tests/test_itsdangerous/test_serializer.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-17",
+          "query": "Find tests for malformed future timestamps in signed values.",
+          "gold": {
+            "tests/test_itsdangerous/test_timed.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_itsdangerous/test_timed.py",
+            "tests/test_itsdangerous/test_serializer.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/signer.py"
+          ],
+          "candidate_top5": [
+            "tests/test_itsdangerous/test_timed.py",
+            "tests/test_itsdangerous/test_serializer.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "src/itsdangerous/timed.py",
+            "src/itsdangerous/signer.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-18",
+          "query": "Find tests that unsafe loading returns false and no payload when both are corrupted.",
+          "gold": {
+            "tests/test_itsdangerous/test_serializer.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_itsdangerous/test_serializer.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/timed.py",
+            "tests/test_itsdangerous/test_encoding.py",
+            "tests/test_itsdangerous/test_timed.py"
+          ],
+          "candidate_top5": [
+            "tests/test_itsdangerous/test_serializer.py",
+            "src/itsdangerous/serializer.py",
+            "src/itsdangerous/timed.py",
+            "tests/test_itsdangerous/test_encoding.py",
+            "tests/test_itsdangerous/test_signer.py"
+          ],
+          "repeats": 2
+        },
+        {
+          "id": "itsdangerous-19",
+          "query": "Find tests for converting zero and the largest unsigned 64-bit integer to bytes and back.",
+          "gold": {
+            "tests/test_itsdangerous/test_encoding.py": 3
+          },
+          "baseline_rank": 1,
+          "candidate_rank": 1,
+          "baseline_top5": [
+            "tests/test_itsdangerous/test_encoding.py",
+            "tests/test_itsdangerous/test_serializer.py",
+            "src/itsdangerous/encoding.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "src/itsdangerous/timed.py"
+          ],
+          "candidate_top5": [
+            "tests/test_itsdangerous/test_encoding.py",
+            "tests/test_itsdangerous/test_serializer.py",
+            "src/itsdangerous/encoding.py",
+            "tests/test_itsdangerous/test_signer.py",
+            "src/itsdangerous/timed.py"
+          ],
+          "repeats": 2
+        }
+      ]
+    }
+  },
+  "remaining_original_queries": [
+    {
+      "repository": "openclaw",
+      "id": "auth-mode-policy-1",
+      "query": "Where does configuring both a gateway password and token without choosing an auth mode raise an error?",
+      "gold": {
+        "src/gateway/auth-mode-policy.ts": 3
+      },
+      "baseline_rank": 2,
+      "candidate_rank": 2,
+      "baseline_top5": [
+        "src/gateway/auth.ts",
+        "src/gateway/auth-mode-policy.ts",
+        "src/gateway/auth-config-utils.ts",
+        "src/gateway/auth-resolve.ts",
+        "src/gateway/call.ts"
+      ],
+      "candidate_top5": [
+        "src/gateway/auth.ts",
+        "src/gateway/auth-mode-policy.ts",
+        "src/gateway/auth-resolve.ts",
+        "src/gateway/auth-config-utils.ts",
+        "src/gateway/auth-surface-resolution.ts"
+      ],
+      "repeats": 2
+    },
+    {
+      "repository": "openclaw",
+      "id": "auth-resolve-1",
+      "query": "Where is the gateway authentication mode chosen with override, configured mode, password, then token precedence?",
+      "gold": {
+        "src/gateway/auth-resolve.ts": 3
+      },
+      "baseline_rank": 2,
+      "candidate_rank": 2,
+      "baseline_top5": [
+        "src/gateway/auth.ts",
+        "src/gateway/auth-resolve.ts",
+        "src/gateway/auth-mode-policy.ts",
+        "src/gateway/auth-surface-resolution.ts",
+        "src/gateway/call.ts"
+      ],
+      "candidate_top5": [
+        "src/gateway/auth.ts",
+        "src/gateway/auth-resolve.ts",
+        "src/gateway/auth-mode-policy.ts",
+        "src/gateway/auth-surface-resolution.ts",
+        "src/gateway/call.ts"
+      ],
+      "repeats": 2
+    },
+    {
+      "repository": "express",
+      "id": "express-00",
+      "query": "Where does the Express application connect request and response objects, install their prototypes, then dispatch into the router?",
+      "gold": {
+        "lib/application.js": 3
+      },
+      "baseline_rank": 2,
+      "candidate_rank": 2,
+      "baseline_top5": [
+        "lib/express.js",
+        "lib/application.js",
+        "lib/response.js",
+        "test/exports.js",
+        "test/app.response.js"
+      ],
+      "candidate_top5": [
+        "lib/express.js",
+        "lib/application.js",
+        "lib/response.js",
+        "lib/request.js",
+        "test/exports.js"
+      ],
+      "repeats": 2
+    },
+    {
+      "repository": "express",
+      "id": "express-07",
+      "query": "Where are trust-proxy settings converted from hop counts or comma-separated addresses into a predicate?",
+      "gold": {
+        "lib/utils.js": 3
+      },
+      "baseline_rank": 3,
+      "candidate_rank": 3,
+      "baseline_top5": [
+        "lib/request.js",
+        "lib/response.js",
+        "lib/utils.js",
+        "lib/application.js",
+        "test/req.protocol.js"
+      ],
+      "candidate_top5": [
+        "lib/request.js",
+        "lib/application.js",
+        "lib/utils.js",
+        "test/req.protocol.js",
+        "test/config.js"
+      ],
+      "repeats": 2
+    },
+    {
+      "repository": "flask",
+      "id": "flask-08",
+      "query": "Where are signals emitted immediately before and after rendering a template?",
+      "gold": {
+        "src/flask/templating.py": 3
+      },
+      "baseline_rank": 3,
+      "candidate_rank": 3,
+      "baseline_top5": [
+        "src/flask/signals.py",
+        "src/flask/__init__.py",
+        "src/flask/templating.py",
+        "tests/test_signals.py",
+        "src/flask/sansio/scaffold.py"
+      ],
+      "candidate_top5": [
+        "src/flask/signals.py",
+        "tests/test_signals.py",
+        "src/flask/templating.py",
+        "src/flask/sansio/scaffold.py",
+        "src/flask/__init__.py"
+      ],
+      "repeats": 2
+    },
+    {
+      "repository": "chi",
+      "id": "chi-19",
+      "query": "Find tests for cleaning doubled slashes in URL paths.",
+      "gold": {
+        "middleware/clean_path_test.go": 3
+      },
+      "baseline_rank": 3,
+      "candidate_rank": 2,
+      "baseline_top5": [
+        "middleware/strip_test.go",
+        "middleware/strip.go",
+        "middleware/clean_path_test.go",
+        "middleware/url_format_test.go",
+        "middleware/clean_path.go"
+      ],
+      "candidate_top5": [
+        "middleware/strip_test.go",
+        "middleware/clean_path_test.go",
+        "middleware/url_format_test.go",
+        "middleware/clean_path.go",
+        "path_value_test.go"
+      ],
+      "repeats": 2
+    },
+    {
+      "repository": "requests",
+      "id": "requests-02",
+      "query": "Where are redirect response codes used to change a POST into a GET?",
+      "gold": {
+        "src/requests/sessions.py": 3
+      },
+      "baseline_rank": 2,
+      "candidate_rank": 2,
+      "baseline_top5": [
+        "src/requests/models.py",
+        "src/requests/sessions.py",
+        "tests/test_requests.py",
+        "src/requests/status_codes.py",
+        "src/requests/utils.py"
+      ],
+      "candidate_top5": [
+        "src/requests/models.py",
+        "src/requests/sessions.py",
+        "tests/test_requests.py",
+        "src/requests/utils.py",
+        "src/requests/status_codes.py"
+      ],
+      "repeats": 2
+    },
+    {
+      "repository": "requests",
+      "id": "requests-17",
+      "query": "Find tests for proxy request URLs with leading path separators.",
+      "gold": {
+        "tests/test_adapters.py": 3
+      },
+      "baseline_rank": 2,
+      "candidate_rank": 3,
+      "baseline_top5": [
+        "tests/test_utils.py",
+        "tests/test_adapters.py",
+        "tests/test_requests.py",
+        "src/requests/utils.py",
+        "tests/test_lowlevel.py"
+      ],
+      "candidate_top5": [
+        "tests/test_utils.py",
+        "tests/test_requests.py",
+        "tests/test_adapters.py",
+        "tests/test_lowlevel.py",
+        "src/requests/utils.py"
+      ],
+      "repeats": 2
+    },
+    {
+      "repository": "requests",
+      "id": "requests-19",
+      "query": "Find the tests for case-insensitive dictionary access and equality.",
+      "gold": {
+        "tests/test_structures.py": 3
+      },
+      "baseline_rank": 3,
+      "candidate_rank": 3,
+      "baseline_top5": [
+        "tests/test_requests.py",
+        "src/requests/structures.py",
+        "tests/test_structures.py",
+        "tests/test_utils.py",
+        "tests/test_packages.py"
+      ],
+      "candidate_top5": [
+        "tests/test_requests.py",
+        "src/requests/structures.py",
+        "tests/test_structures.py",
+        "tests/test_utils.py",
+        "tests/test_packages.py"
+      ],
+      "repeats": 2
+    }
+  ],
+  "remaining_fresh_holdout_queries": [
+    {
+      "repository": "itsdangerous",
+      "id": "itsdangerous-14",
+      "query": "Find tests that verify older signatures still work after adding a new secret key.",
+      "gold": {
+        "tests/test_itsdangerous/test_signer.py": 3
+      },
+      "baseline_rank": 2,
+      "candidate_rank": 2,
+      "baseline_top5": [
+        "tests/test_itsdangerous/test_timed.py",
+        "tests/test_itsdangerous/test_signer.py",
+        "tests/test_itsdangerous/test_serializer.py",
+        "tests/test_itsdangerous/test_url_safe.py",
+        "src/itsdangerous/signer.py"
+      ],
+      "candidate_top5": [
+        "tests/test_itsdangerous/test_timed.py",
+        "tests/test_itsdangerous/test_signer.py",
+        "tests/test_itsdangerous/test_serializer.py",
+        "tests/test_itsdangerous/test_url_safe.py",
+        "src/itsdangerous/signer.py"
+      ],
+      "repeats": 2
+    },
+    {
+      "repository": "itsdangerous",
+      "id": "itsdangerous-15",
+      "query": "Find tests that reject separator characters drawn from the base64 alphabet.",
+      "gold": {
+        "tests/test_itsdangerous/test_signer.py": 3
+      },
+      "baseline_rank": 2,
+      "candidate_rank": 2,
+      "baseline_top5": [
+        "tests/test_itsdangerous/test_encoding.py",
+        "tests/test_itsdangerous/test_signer.py",
+        "src/itsdangerous/encoding.py",
+        "tests/test_itsdangerous/test_serializer.py",
+        "src/itsdangerous/signer.py"
+      ],
+      "candidate_top5": [
+        "tests/test_itsdangerous/test_encoding.py",
+        "tests/test_itsdangerous/test_signer.py",
+        "tests/test_itsdangerous/test_serializer.py",
+        "src/itsdangerous/encoding.py",
+        "tests/test_itsdangerous/test_timed.py"
+      ],
+      "repeats": 2
+    }
+  ],
+  "ranking_regressions": [
+    {
+      "repository": "requests",
+      "id": "requests-17",
+      "query": "Find tests for proxy request URLs with leading path separators.",
+      "gold": {
+        "tests/test_adapters.py": 3
+      },
+      "baseline_rank": 2,
+      "candidate_rank": 3,
+      "baseline_top5": [
+        "tests/test_utils.py",
+        "tests/test_adapters.py",
+        "tests/test_requests.py",
+        "src/requests/utils.py",
+        "tests/test_lowlevel.py"
+      ],
+      "candidate_top5": [
+        "tests/test_utils.py",
+        "tests/test_requests.py",
+        "tests/test_adapters.py",
+        "tests/test_lowlevel.py",
+        "src/requests/utils.py"
+      ],
+      "repeats": 2
+    }
+  ],
+  "timing_flags": [
+    {
+      "repository": "openclaw",
+      "metric": "p95_ms",
+      "increase_percent": 54.31,
+      "interpretation": "live-network observation above 10%; uncontrolled provider variance, not a proven local-code regression or passed performance gate"
+    },
+    {
+      "repository": "express",
+      "metric": "median_ms",
+      "increase_percent": 20.34,
+      "interpretation": "live-network observation above 10%; uncontrolled provider variance, not a proven local-code regression or passed performance gate"
+    },
+    {
+      "repository": "anyhow",
+      "metric": "p95_ms",
+      "increase_percent": 20.94,
+      "interpretation": "live-network observation above 10%; uncontrolled provider variance, not a proven local-code regression or passed performance gate"
+    },
+    {
+      "repository": "itsdangerous",
+      "metric": "p95_ms",
+      "increase_percent": 17.34,
+      "interpretation": "live-network observation above 10%; uncontrolled provider variance, not a proven local-code regression or passed performance gate"
+    }
+  ],
+  "validation": {
+    "unit": "zig build test passed; final summary 33/33 build steps, cached after successful run",
+    "mcp": "76/76 passed",
+    "lazy": "6/6 passed",
+    "stress_recursive": "122/122 mutation check cases passed across budgets 32 and 1024, one and three clients",
+    "stress_fallback": "122/122 mutation check cases passed with CODEDB_NO_FSEVENTS=1",
+    "descriptors": "23 at 128 and 2048 files, budget 32",
+    "intel": "x86_64 recursive stream and edit detection passed under Rosetta",
+    "cross_builds": [
+      "x86_64-macos",
+      "x86_64-linux-musl",
+      "x86_64-windows-gnu"
+    ],
+    "no_runtime_validation": [
+      "Linux",
+      "Windows"
+    ],
+    "no_deployment": true
+  },
+  "trial_ledger": [
+    {
+      "candidate": "rank-v1",
+      "decision": "rejected",
+      "reason": "additive whole-query hits caused an Anyhow ranking regression"
+    },
+    {
+      "candidate": "rank-v2",
+      "decision": "rejected",
+      "reason": "third RRF vote caused Anyhow, Chi and Flask regressions"
+    },
+    {
+      "candidate": "rank-v3/v4",
+      "decision": "rejected",
+      "reason": "broad compound definition priority pinned registration instead of execution"
+    },
+    {
+      "candidate": "rank-v5",
+      "decision": "superseded",
+      "reason": "deduplicated maximum lexical score improved recall; documentation still outranked implementation"
+    },
+    {
+      "candidate": "rank-v6",
+      "decision": "rejected",
+      "reason": "documentation penalty also demoted a macro lookup"
+    },
+    {
+      "candidate": "rank-v8/final",
+      "decision": "review candidate, not promoted",
+      "reason": "preserves declaration/macro requests; explicit compound test names; improves six first-result misses with one second-to-third regression and outstanding live-latency flags"
+    }
+  ],
+  "phase_profile": {
+    "scope": "diagnosis of eight largest OpenClaw live-latency deltas; three alternating repeats; markdown rendering for existing stage profiler; not an accuracy tuning run",
+    "summary_median_ms": {
+      "baseline": {
+        "reader": 0.0035,
+        "cand": 0.007,
+        "kwloop": 0.049,
+        "rank": 278.3645,
+        "render": 0.07650000000000001,
+        "sites": 0.011,
+        "emit": 0.008,
+        "total": 278.502
+      },
+      "candidate": {
+        "reader": 0.0045000000000000005,
+        "cand": 0.0075,
+        "kwloop": 0.07050000000000001,
+        "rank": 248.892,
+        "render": 0.058499999999999996,
+        "sites": 0.012,
+        "emit": 0.008,
+        "total": 249.30700000000002
+      }
+    },
+    "raw_report": "/Users/blackfloofie/tmp/codedb-followup-evidence/context-stage-profile.json",
+    "raw_report_sha256": "8cbc8a5aaaf96d82a29f99767cf241bbc8de5883a0d9faa2192f7d2db1c96377",
+    "interpretation": "Added median keyword stage time is 0.0215 ms in this diagnostic. Rank includes hosted retrieval and local fusion; this does not isolate provider latency or clear all timing flags."
+  }
+}

@@ -50,6 +50,45 @@ queries, relative paths, binary hashes and retrieval provenance are retained.
 ADRs 0001–0006 and older Qwen/offline runners, where present, are historical
 wrong-target work and must not govern the current integration.
 
+## Explore the follow-up data
+
+`followup_report.py` verifies the frozen receipt against its raw report hashes,
+checks every repeated rank, and exports a portable view of all 148 observed
+questions. It retains the original 128-question cohort separately from the
+later 20-question ItsDangerous holdout. It also produces 11 observed comparison
+cases pairing each expected file with the competing first result. These are
+development diagnostics, not new holdout evidence or a trained reranker.
+
+```bash
+python3 evals/followup_report.py \
+  --summary evals/results/2026-09-11-followup-summary.json \
+  --latency-dir /absolute/path/to/latency-diagnostic \
+  --out /absolute/path/to/new-report.json \
+  --dashboard-out /absolute/path/to/new-dashboard.html
+python3 -m unittest discover -s evals -p test_followup_report.py
+```
+
+The optional dashboard is a conversation visualization fragment with local
+filters and expandable query/lane evidence. It contains only the report data;
+it makes no network requests. Both output names must be new. Omit
+`--latency-dir` when only inspecting the frozen accuracy run. Raw report paths
+come from the input receipt and must exist on the machine running the exporter.
+
+For latency diagnosis, both compared binaries must expose `ann_embed_ns` in
+the context retrieval metadata. The value already measured by the ANN layer
+includes the remote embedding operation, transport, decoding and bounded retry.
+Zero on a non-ANN response does not mean a free remote request: the exporter
+rejects fallback samples, and missing timing fields are never treated as zero.
+The diagnostic compares warm samples separately from cold generation loading.
+It computes wall-minus-embedding per sample before taking percentiles; that
+remainder includes scheduling and MCP overhead, so it is not pure local CPU time.
+All >10% increases remain visible with absolute millisecond differences.
+
+The dashboard's accuracy counts remain from the original frozen binaries, even
+when a later timing run is supplied. It separately records timing-run rank
+changes and binary hashes. Another ranking change requires a new frozen holdout;
+none of these seven repositories is fresh anymore.
+
 For round 2, use `flask-jina-accuracy-heldout-v1.json` and the Flask source
 revision pinned in that dataset with the same commands above. Flask was fresh
 only for the saved round-2 freeze; future runs are regressions. To reconstruct
@@ -64,6 +103,21 @@ quality comparisons, copy each ReleaseFast binary outside the build output,
 freeze those copies, and use them for all MCP processes. Do not evaluate a path
 that another build may replace. The runner checks binary hashes again at exit
 and marks an intervening replacement as a failed run.
+
+## Graff repair comparison
+
+The [48-attempt study](graff-comparison/STUDY.md) compares CodeDB,
+Graphify and workspace-only Graff on eight Python task families using Grok 4.6.
+It includes strict grader results, a specification-ambiguity sensitivity check,
+token accounting and model API cost equivalents. It is a diagnostic study of
+small fixtures, not a large-repository benchmark or a first-install test.
+
+The [frozen bundle and replay instructions](graff-comparison/README.md) include
+every input, external grader and saved repair. Run the helper checks with:
+
+```bash
+python3 -m unittest discover -s evals -p 'test_graff_comparison*.py'
+```
 
 ## Six-repository batch suite
 
