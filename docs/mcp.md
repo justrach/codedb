@@ -27,8 +27,10 @@ curl -fsSL https://codedb.codegraff.com/install.sh | bash
 The installer downloads the binary for your platform, drops it in `~/bin`
 (or `$CODEDB_DIR` when set), and auto-registers
 codedb as an MCP server in every client it can find — Claude Code, Codex,
-Gemini CLI, Cursor, Windsurf, and Devin. It prints the exact `codedb mcp` command it
-registered.
+Gemini CLI, Cursor, Windsurf, Devin, oh-my-pi, Hermes, Qwen Code, ZCode,
+Trae, Cline, Copilot CLI, Antigravity, Kiro, and OpenCode. It prints the exact `codedb mcp` command it
+registered. Only clients that already look installed (config dir or CLI on
+`PATH`) are touched.
 
 ### Windows x86_64 (native)
 
@@ -126,10 +128,9 @@ codex mcp add codedb -- /absolute/path/to/codedb mcp
 codex mcp add codedb -- "$env:LOCALAPPDATA\Programs\codedb\codedb.exe" mcp
 ```
 
-### Gemini CLI / opencode
+### Gemini CLI
 
-Both read MCP configuration from `~/.gemini/mcp.json` (Gemini) and
-`~/.config/opencode/mcp.json` (opencode):
+Edit `~/.gemini/settings.json`:
 
 ```json
 {
@@ -137,6 +138,166 @@ Both read MCP configuration from `~/.gemini/mcp.json` (Gemini) and
     "codedb": {
       "command": "/absolute/path/to/codedb",
       "args": ["mcp"]
+    }
+  }
+}
+```
+
+### oh-my-pi
+
+User config is `~/.omp/agent/mcp.json` (or `~/.omp/profiles/<name>/agent/mcp.json`
+when a named profile is active):
+
+```json
+{
+  "mcpServers": {
+    "codedb": {
+      "command": "/absolute/path/to/codedb",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Hermes
+
+Add a stdio server under `mcp_servers` in `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  codedb:
+    command: "/absolute/path/to/codedb"
+    args: ["mcp"]
+```
+
+### Qwen Code
+
+Edit `~/.qwen/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "codedb": {
+      "command": "/absolute/path/to/codedb",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### ZCode
+
+User config is `~/.zcode/cli/config.json` (`mcp.servers`):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "codedb": {
+        "command": "/absolute/path/to/codedb",
+        "args": ["mcp"]
+      }
+    }
+  }
+}
+```
+
+### Trae / TraeCode
+
+User-level: `~/.trae/mcp.json`. Trae IDE also reads
+`~/Library/Application Support/Trae/User/settings/mcp.json` (macOS) or
+`%APPDATA%\Trae\User\settings\mcp.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "codedb": {
+      "command": "/absolute/path/to/codedb",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Cline
+
+CLI/SDK: `~/.cline/data/settings/cline_mcp_settings.json`. The VS Code/Cursor
+extension uses the same `mcpServers` object in its `cline_mcp_settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "codedb": {
+      "command": "/absolute/path/to/codedb",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### GitHub Copilot CLI
+
+Edit `~/.copilot/mcp-config.json`, or run
+`copilot mcp add codedb -- /absolute/path/to/codedb mcp`:
+
+```json
+{
+  "mcpServers": {
+    "codedb": {
+      "type": "local",
+      "command": "/absolute/path/to/codedb",
+      "args": ["mcp"],
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+### Google Antigravity
+
+Global config is `~/.gemini/config/mcp_config.json` (older IDE builds also
+read `~/.gemini/antigravity/mcp_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "codedb": {
+      "command": "/absolute/path/to/codedb",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Kiro
+
+User config is `~/.kiro/settings/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "codedb": {
+      "command": "/absolute/path/to/codedb",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### OpenCode
+
+Edit `~/.config/opencode/opencode.json`. Current OpenCode uses a `mcp` map
+with `type: "local"` and a command array (v2 nested `mcp.servers` is also
+accepted):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "codedb": {
+      "type": "local",
+      "command": ["/absolute/path/to/codedb", "mcp"],
+      "enabled": true
     }
   }
 }

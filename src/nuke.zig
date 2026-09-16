@@ -295,17 +295,45 @@ fn removeRegisteredSnapshots(io: std.Io, allocator: std.mem.Allocator, home: []c
 fn deregisterInstalledIntegrations(io: std.Io, allocator: std.mem.Allocator, home: []const u8) usize {
     var removed: usize = 0;
 
-    const claude_config = std.fmt.allocPrint(allocator, "{s}/.claude.json", .{home}) catch return removed;
-    defer allocator.free(claude_config);
-    if (deregisterJsonIntegrationFile(io, allocator, claude_config) catch false) removed += 1;
+    const json_rel_paths = [_][]const u8{
+        ".claude.json",
+        ".gemini/settings.json",
+        ".cursor/mcp.json",
+        ".codeium/windsurf/mcp_config.json",
+        ".config/devin/config.json",
+        ".omp/agent/mcp.json",
+        ".qwen/settings.json",
+        ".zcode/cli/config.json",
+        ".trae/mcp.json",
+        ".cline/data/settings/cline_mcp_settings.json",
+        ".copilot/mcp-config.json",
+        ".gemini/config/mcp_config.json",
+        ".gemini/antigravity/mcp_config.json",
+        ".kiro/settings/mcp.json",
+        ".config/opencode/opencode.json",
+        ".config/opencode/mcp.json",
+        "Library/Application Support/Trae/User/settings/mcp.json",
+        "Library/Application Support/Trae CN/User/settings/mcp.json",
+        "Library/Application Support/Trae CN/User/mcp.json",
+        "Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+        "Library/Application Support/Cursor/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+        "AppData/Roaming/Trae/User/settings/mcp.json",
+        "AppData/Roaming/Trae CN/User/settings/mcp.json",
+        "AppData/Roaming/Trae CN/User/mcp.json",
+        "AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+        "AppData/Roaming/Cursor/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+        ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+        ".config/Cursor/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+    };
+    for (json_rel_paths) |rel| {
+        const path = std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, rel }) catch return removed;
+        defer allocator.free(path);
+        if (deregisterJsonIntegrationFile(io, allocator, path) catch false) removed += 1;
+    }
 
-    const gemini_config = std.fmt.allocPrint(allocator, "{s}/.gemini/settings.json", .{home}) catch return removed;
-    defer allocator.free(gemini_config);
-    if (deregisterJsonIntegrationFile(io, allocator, gemini_config) catch false) removed += 1;
-
-    const cursor_config = std.fmt.allocPrint(allocator, "{s}/.cursor/mcp.json", .{home}) catch return removed;
-    defer allocator.free(cursor_config);
-    if (deregisterJsonIntegrationFile(io, allocator, cursor_config) catch false) removed += 1;
+    const hermes_config = std.fmt.allocPrint(allocator, "{s}/.hermes/config.yaml", .{home}) catch return removed;
+    defer allocator.free(hermes_config);
+    if (deregisterYamlIntegrationFile(io, allocator, hermes_config) catch false) removed += 1;
 
     const codex_config = std.fmt.allocPrint(allocator, "{s}/.codex/config.toml", .{home}) catch return removed;
     defer allocator.free(codex_config);
@@ -317,16 +345,6 @@ fn deregisterInstalledIntegrations(io: std.Io, allocator: std.mem.Allocator, hom
     const codex_agents = std.fmt.allocPrint(allocator, "{s}/.codex/{s}", .{ home, codex_setup.agents_file_name }) catch return removed;
     defer allocator.free(codex_agents);
     if (codex_setup.deregisterCodexPolicyFile(io, allocator, codex_agents) catch false) removed += 1;
-
-    // Windsurf and Devin are registered via mcpsync; both store servers under a
-    // standard `mcpServers` object, so the JSON deregister handles them too.
-    const windsurf_config = std.fmt.allocPrint(allocator, "{s}/.codeium/windsurf/mcp_config.json", .{home}) catch return removed;
-    defer allocator.free(windsurf_config);
-    if (deregisterJsonIntegrationFile(io, allocator, windsurf_config) catch false) removed += 1;
-
-    const devin_config = std.fmt.allocPrint(allocator, "{s}/.config/devin/config.json", .{home}) catch return removed;
-    defer allocator.free(devin_config);
-    if (deregisterJsonIntegrationFile(io, allocator, devin_config) catch false) removed += 1;
 
     return removed;
 }
@@ -389,6 +407,16 @@ pub fn deregisterCodexIntegrationFile(io: std.Io, allocator: std.mem.Allocator, 
     return true;
 }
 
+pub fn deregisterYamlIntegrationFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !bool {
+    const content = (try readOptionalConfigFile(io, allocator, path)) orelse return false;
+    defer allocator.free(content);
+
+    const rewritten = try removeYamlMcpServerEntry(allocator, content, "codedb") orelse return false;
+    defer allocator.free(rewritten);
+    try rewriteConfigFile(io, allocator, path, rewritten);
+    return true;
+}
+
 fn rewriteConfigFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, content: []const u8) !void {
     if (std.mem.trim(u8, content, " \t\r\n").len == 0) {
         std.Io.Dir.cwd().deleteFile(io, path) catch |err| switch (err) {
@@ -410,17 +438,53 @@ fn rewriteConfigFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8,
     try std.Io.Dir.rename(std.Io.Dir.cwd(), tmp_path, std.Io.Dir.cwd(), path, io);
 }
 
+fn looksLikeMcpServerObject(value: std.json.Value) bool {
+    if (value != .object) return false;
+    return value.object.get("command") != null or value.object.get("type") != null or value.object.get("url") != null or value.object.get("httpUrl") != null or value.object.get("serverUrl") != null;
+}
+
+fn removeNamedServerObject(value: *std.json.Value, server_name: []const u8) bool {
+    if (value.* != .object) return false;
+    const existing = value.object.get(server_name) orelse return false;
+    if (!looksLikeMcpServerObject(existing)) return false;
+    return value.object.swapRemove(server_name);
+}
+
 pub fn removeJsonMcpServerEntry(allocator: std.mem.Allocator, content: []const u8, server_name: []const u8) !?[]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch return null;
     defer parsed.deinit();
 
     if (parsed.value != .object) return null;
-    const servers_value = parsed.value.object.getPtr("mcpServers") orelse return null;
-    if (servers_value.* != .object) return null;
-    if (!servers_value.object.swapRemove(server_name)) return null;
-    if (servers_value.object.count() == 0) {
-        _ = parsed.value.object.swapRemove("mcpServers");
+    var removed = false;
+
+    if (parsed.value.object.getPtr("mcpServers")) |servers_value| {
+        if (removeNamedServerObject(servers_value, server_name)) {
+            removed = true;
+            if (servers_value.object.count() == 0) {
+                _ = parsed.value.object.swapRemove("mcpServers");
+            }
+        }
     }
+
+    if (!removed) {
+        if (parsed.value.object.getPtr("mcp")) |mcp_value| {
+            if (mcp_value.* == .object) {
+                if (mcp_value.object.getPtr("servers")) |servers_value| {
+                    if (removeNamedServerObject(servers_value, server_name)) {
+                        removed = true;
+                        if (servers_value.object.count() == 0) {
+                            _ = mcp_value.object.swapRemove("servers");
+                        }
+                    }
+                }
+                if (!removed and removeNamedServerObject(mcp_value, server_name)) {
+                    removed = true;
+                }
+            }
+        }
+    }
+
+    if (!removed) return null;
 
     const json = try std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 });
     errdefer allocator.free(json);
@@ -430,6 +494,92 @@ pub fn removeJsonMcpServerEntry(allocator: std.mem.Allocator, content: []const u
     try out.appendSlice(allocator, json);
     try out.append(allocator, '\n');
     allocator.free(json);
+    return try out.toOwnedSlice(allocator);
+}
+
+fn yamlLineBody(line: []const u8) []const u8 {
+    const no_cr = std.mem.trimEnd(u8, line, "\r");
+    const comment_start = std.mem.indexOfScalar(u8, no_cr, '#') orelse return no_cr;
+    return std.mem.trimEnd(u8, no_cr[0..comment_start], " \t");
+}
+
+fn yamlIndent(line: []const u8) ?usize {
+    const body = yamlLineBody(line);
+    if (std.mem.trim(u8, body, " \t").len == 0) return null;
+    var indent: usize = 0;
+    for (body) |ch| {
+        if (ch == ' ') {
+            indent += 1;
+        } else {
+            break;
+        }
+    }
+    return indent;
+}
+
+pub fn removeYamlMcpServerEntry(allocator: std.mem.Allocator, content: []const u8, server_name: []const u8) !?[]u8 {
+    const key = try std.fmt.allocPrint(allocator, "{s}:", .{server_name});
+    defer allocator.free(key);
+
+    var line_start: usize = 0;
+    var mcp_start: ?usize = null;
+    var mcp_end: usize = content.len;
+    while (line_start < content.len) {
+        const line_end = std.mem.indexOfScalarPos(u8, content, line_start, '\n') orelse content.len;
+        const line = content[line_start..line_end];
+        const indent = yamlIndent(line);
+        if (indent) |ind| {
+            if (mcp_start == null) {
+                if (ind == 0 and std.mem.eql(u8, std.mem.trim(u8, yamlLineBody(line), " \t"), "mcp_servers:")) {
+                    mcp_start = line_start;
+                }
+            } else if (ind == 0) {
+                mcp_end = line_start;
+                break;
+            }
+        }
+        line_start = if (line_end < content.len) line_end + 1 else content.len;
+    }
+    const section_start = mcp_start orelse return null;
+
+    var child_start: usize = section_start;
+    const first_nl = std.mem.indexOfScalarPos(u8, content, section_start, '\n') orelse return null;
+    child_start = first_nl + 1;
+
+    var remove_start: ?usize = null;
+    var remove_end: usize = 0;
+    var pos = child_start;
+    while (pos < mcp_end) {
+        const line_end = std.mem.indexOfScalarPos(u8, content, pos, '\n') orelse mcp_end;
+        const line = content[pos..line_end];
+        const indent = yamlIndent(line);
+        if (indent) |ind| {
+            if (ind == 2) {
+                const body = std.mem.trim(u8, yamlLineBody(line), " \t");
+                if (std.mem.startsWith(u8, body, key) and (body.len == key.len or body[key.len] == ' ')) {
+                    remove_start = pos;
+                    var scan = if (line_end < mcp_end) line_end + 1 else mcp_end;
+                    while (scan < mcp_end) {
+                        const next_end = std.mem.indexOfScalarPos(u8, content, scan, '\n') orelse mcp_end;
+                        const next_indent = yamlIndent(content[scan..next_end]);
+                        if (next_indent) |next_ind| {
+                            if (next_ind <= 2) break;
+                        }
+                        scan = if (next_end < mcp_end) next_end + 1 else mcp_end;
+                    }
+                    remove_end = scan;
+                    break;
+                }
+            }
+        }
+        pos = if (line_end < mcp_end) line_end + 1 else mcp_end;
+    }
+
+    const start = remove_start orelse return null;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, content[0..start]);
+    try out.appendSlice(allocator, content[remove_end..]);
     return try out.toOwnedSlice(allocator);
 }
 

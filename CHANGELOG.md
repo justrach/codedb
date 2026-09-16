@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Auto-register codedb in additional detected MCP clients: oh-my-pi, Hermes, Qwen Code, ZCode, Trae, Cline, Copilot CLI, Antigravity, Kiro, and OpenCode. `codedb nuke` removes the matching entries. Invalid JSON is left untouched.
+
 ## 0.2.5856 - 2026-09-19
 
 - Skip `.worktrees` during indexing and listing so Git worktree forests cannot exhaust the macOS directory watch budget (#754). A scan root that is itself a worktree checkout is still indexed.

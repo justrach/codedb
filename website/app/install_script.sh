@@ -197,24 +197,249 @@ _register_json_mcp() {
   local config="$1"
   local codedb_bin="$2"
   local label="$3"
-  python3 - "$config" "$codedb_bin" << 'PYEOF'
-import json, sys, os
-config_path, codedb_bin = sys.argv[1], sys.argv[2]
-try:
+  _register_mcp "$config" "$codedb_bin" "$label" "mcpServers"
+}
+
+_client_present() {
+  local dir="$1"
+  shift
+  if [ -n "$dir" ] && [ -d "$dir" ]; then
+    return 0
+  fi
+  local cmd
+  for cmd in "$@"; do
+    [ -n "$cmd" ] && command -v "$cmd" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+# flavor: mcpServers | mcp.servers | opencode | copilot | hermes
+_register_mcp() {
+  local config="$1"
+  local codedb_bin="$2"
+  local label="$3"
+  local flavor="$4"
+  local rc=0
+  python3 - "$config" "$codedb_bin" "$flavor" << 'PYEOF' || rc=$?
+import json, os, re, sys
+
+config_path, codedb_bin, flavor = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def load_json(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        sys.exit(4)
+    return data if isinstance(data, dict) else {}
+
+def save_json(path, data):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+stdio = {"command": codedb_bin, "args": ["mcp"]}
+
+if flavor == "mcpServers":
+    data = load_json(config_path)
+    data.setdefault("mcpServers", {})["codedb"] = stdio
+    save_json(config_path, data)
+elif flavor == "mcp.servers":
+    data = load_json(config_path)
+    data.setdefault("mcp", {}).setdefault("servers", {})["codedb"] = stdio
+    save_json(config_path, data)
+elif flavor == "opencode":
+    data = load_json(config_path)
+    mcp = data.setdefault("mcp", {})
+    if not isinstance(mcp, dict):
+        mcp = {}
+        data["mcp"] = mcp
+    entry = {"type": "local", "command": [codedb_bin, "mcp"], "enabled": True}
+    if isinstance(mcp.get("servers"), dict):
+        mcp["servers"]["codedb"] = entry
+    else:
+        mcp["codedb"] = entry
+    save_json(config_path, data)
+elif flavor == "copilot":
+    data = load_json(config_path)
+    data.setdefault("mcpServers", {})["codedb"] = {
+        "type": "local",
+        "command": codedb_bin,
+        "args": ["mcp"],
+        "tools": ["*"],
+    }
+    save_json(config_path, data)
+elif flavor == "hermes":
+    quoted = json.dumps(codedb_bin)
+    entry = ["  codedb:", f"    command: {quoted}", '    args: ["mcp"]']
+    d = os.path.dirname(config_path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    if not os.path.isfile(config_path) or os.path.getsize(config_path) == 0:
+        with open(config_path, "w") as f:
+            f.write("mcp_servers:\n" + "\n".join(entry) + "\n")
+        sys.exit(0)
     with open(config_path) as f:
-        data = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    data = {}
-servers = data.setdefault("mcpServers", {})
-servers["codedb"] = {"command": codedb_bin, "args": ["mcp"]}
-d = os.path.dirname(config_path)
-if d:
-    os.makedirs(d, exist_ok=True)
-with open(config_path, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
+        raw = f.read()
+    nl = "\r\n" if "\r\n" in raw else "\n"
+    lines = raw.splitlines(keepends=True)
+
+    def body(line):
+        return line.split("#", 1)[0].rstrip("\r\n")
+
+    def indent_of(line):
+        s = body(line)
+        if not s.strip():
+            return None
+        return len(s) - len(s.lstrip(" "))
+
+    mcp_idx = None
+    for i, line in enumerate(lines):
+        if re.match(r"^mcp_servers:\s*$", body(line)):
+            mcp_idx = i
+            break
+    if mcp_idx is None:
+        for i, line in enumerate(lines):
+            if re.match(r"^mcp_servers:\s+\S", body(line)):
+                sys.exit(5)
+        if raw and not raw.endswith(("\n", "\r\n")):
+            raw += nl
+        extra = "" if raw.endswith(nl) else nl
+        with open(config_path, "w") as f:
+            f.write(raw + extra + "mcp_servers:" + nl + nl.join(entry) + nl)
+        sys.exit(0)
+
+    codedb_start = None
+    codedb_end = None
+    i = mcp_idx + 1
+    while i < len(lines):
+        ind = indent_of(lines[i])
+        if ind is None:
+            i += 1
+            continue
+        if ind == 0:
+            break
+        if ind == 2 and re.match(r"^\s{2}codedb:\s*", body(lines[i])):
+            codedb_start = i
+            j = i + 1
+            while j < len(lines):
+                indj = indent_of(lines[j])
+                if indj is None:
+                    j += 1
+                    continue
+                if indj <= 2:
+                    break
+                j += 1
+            codedb_end = j
+            break
+        i += 1
+
+    block = [e + nl for e in entry]
+    if codedb_start is not None:
+        new_lines = lines[:codedb_start] + block + lines[codedb_end:]
+    else:
+        new_lines = lines[: mcp_idx + 1] + block + lines[mcp_idx + 1 :]
+    with open(config_path, "w") as f:
+        f.writelines(new_lines)
+else:
+    sys.exit(2)
 PYEOF
-  printf "  ${G}✓${N} %-12s ${D}→ %s${N}\n" "$label" "$config"
+  case "$rc" in
+    0) printf "  ${G}✓${N} %-12s ${D}→ %s${N}\n" "$label" "$config" ;;
+    4) printf "  ${Y}%-12s skip (invalid JSON) → %s${N}\n" "$label" "$config" ;;
+    5) printf "  ${Y}%-12s skip (inline YAML mcp_servers) → %s${N}\n" "$label" "$config" ;;
+    *) printf "  ${Y}%-12s registration failed → %s${N}\n" "$label" "$config" ;;
+  esac
+  return 0
+}
+
+register_detected_clients() {
+  local codedb_bin="$1"
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf "  ${D}extra clients: skip (python3 not found)${N}\n"
+    return
+  fi
+
+  if _client_present "$HOME/.omp" omp; then
+    _register_mcp "$HOME/.omp/agent/mcp.json" "$codedb_bin" "oh-my-pi" "mcpServers"
+  fi
+  if _client_present "$HOME/.hermes" hermes; then
+    _register_mcp "$HOME/.hermes/config.yaml" "$codedb_bin" "hermes" "hermes"
+  fi
+  if _client_present "$HOME/.qwen" qwen; then
+    _register_mcp "$HOME/.qwen/settings.json" "$codedb_bin" "qwen-code" "mcpServers"
+  fi
+  if _client_present "$HOME/.zcode" zcode; then
+    _register_mcp "$HOME/.zcode/cli/config.json" "$codedb_bin" "zcode" "mcp.servers"
+  fi
+
+  if _client_present "$HOME/.trae" trae traecli; then
+    _register_mcp "$HOME/.trae/mcp.json" "$codedb_bin" "trae" "mcpServers"
+  fi
+  local trae_root trae_cfg
+  for trae_root in \
+    "$HOME/Library/Application Support/Trae" \
+    "$HOME/Library/Application Support/Trae CN" \
+    "$HOME/AppData/Roaming/Trae" \
+    "$HOME/AppData/Roaming/Trae CN"
+  do
+    [ -d "$trae_root" ] || continue
+    if [ -d "$trae_root/User/settings" ] || [ -f "$trae_root/User/settings/mcp.json" ]; then
+      trae_cfg="$trae_root/User/settings/mcp.json"
+    elif [ -d "$trae_root/User" ] || [ -f "$trae_root/User/mcp.json" ]; then
+      trae_cfg="$trae_root/User/mcp.json"
+    else
+      continue
+    fi
+    _register_mcp "$trae_cfg" "$codedb_bin" "trae" "mcpServers"
+  done
+
+  if _client_present "$HOME/.cline" cline; then
+    _register_mcp "$HOME/.cline/data/settings/cline_mcp_settings.json" "$codedb_bin" "cline" "mcpServers"
+  fi
+  local cline_cfg cline_ext
+  for cline_cfg in \
+    "$HOME/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" \
+    "$HOME/Library/Application Support/Cursor/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" \
+    "$HOME/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" \
+    "$HOME/.config/Cursor/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" \
+    "$HOME/AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" \
+    "$HOME/AppData/Roaming/Cursor/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+  do
+    cline_ext="$(dirname "$(dirname "$cline_cfg")")"
+    if [ -d "$cline_ext" ]; then
+      _register_mcp "$cline_cfg" "$codedb_bin" "cline" "mcpServers"
+    fi
+  done
+
+  if _client_present "$HOME/.copilot" copilot; then
+    _register_mcp "$HOME/.copilot/mcp-config.json" "$codedb_bin" "copilot" "copilot"
+  fi
+
+  if _client_present "$HOME/.gemini/antigravity" agy antigravity; then
+    _register_mcp "$HOME/.gemini/config/mcp_config.json" "$codedb_bin" "antigravity" "mcpServers"
+    if [ -d "$HOME/.gemini/antigravity" ]; then
+      _register_mcp "$HOME/.gemini/antigravity/mcp_config.json" "$codedb_bin" "antigravity" "mcpServers"
+    fi
+  fi
+
+  if _client_present "$HOME/.kiro" kiro kiro-cli; then
+    _register_mcp "$HOME/.kiro/settings/mcp.json" "$codedb_bin" "kiro" "mcpServers"
+  fi
+
+  if _client_present "$HOME/.config/opencode" opencode; then
+    if [ -f "$HOME/.config/opencode/opencode.jsonc" ] && [ ! -f "$HOME/.config/opencode/opencode.json" ]; then
+      printf "  ${Y}%-12s skip (opencode.jsonc is not rewritten) → %s${N}\n" \
+        "opencode" "$HOME/.config/opencode/opencode.jsonc"
+    else
+      _register_mcp "$HOME/.config/opencode/opencode.json" "$codedb_bin" "opencode" "opencode"
+    fi
+  fi
 }
 
 DEEPWIKI_URL="https://mcp.deepwiki.com/mcp"
@@ -230,8 +455,12 @@ config_path, entry_json = sys.argv[1], sys.argv[2]
 try:
     with open(config_path) as f:
         data = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
+except FileNotFoundError:
     data = {}
+except json.JSONDecodeError:
+    sys.exit(4)  # never clobber a malformed file
+if not isinstance(data, dict):
+    sys.exit(4)
 servers = data.setdefault("mcpServers", {})
 if "deepwiki" in servers:
     sys.exit(3)  # already configured — never clobber a user's own entry
@@ -246,6 +475,7 @@ PYEOF
   case "$rc" in
     0) printf "  ${G}✓${N} %-12s ${D}→ %s (+deepwiki)${N}\n" "$label" "$config" ;;
     3) printf "  ${D}%-12s deepwiki already configured → %s${N}\n" "$label" "$config" ;;
+    4) printf "  ${Y}%-12s skip deepwiki (invalid JSON) → %s${N}\n" "$label" "$config" ;;
     *) printf "  ${Y}%-12s deepwiki registration failed → %s${N}\n" "$label" "$config" ;;
   esac
   return 0
@@ -287,6 +517,35 @@ register_deepwiki() {
   if [ -d "$HOME/.config/devin" ]; then
     _register_deepwiki_json "$HOME/.config/devin/config.json" "devin" \
       "{\"serverUrl\":\"$DEEPWIKI_URL\"}"
+  fi
+  # Detected extra clients that use a standard mcpServers JSON object.
+  if [ -d "$HOME/.omp" ] || command -v omp >/dev/null 2>&1; then
+    _register_deepwiki_json "$HOME/.omp/agent/mcp.json" "oh-my-pi" \
+      "{\"type\":\"http\",\"url\":\"$DEEPWIKI_URL\"}"
+  fi
+  if [ -d "$HOME/.qwen" ] || command -v qwen >/dev/null 2>&1; then
+    _register_deepwiki_json "$HOME/.qwen/settings.json" "qwen-code" \
+      "{\"httpUrl\":\"$DEEPWIKI_URL\"}"
+  fi
+  if [ -d "$HOME/.trae" ] || command -v trae >/dev/null 2>&1 || command -v traecli >/dev/null 2>&1; then
+    _register_deepwiki_json "$HOME/.trae/mcp.json" "trae" \
+      "{\"url\":\"$DEEPWIKI_URL\"}"
+  fi
+  if [ -d "$HOME/.cline" ] || command -v cline >/dev/null 2>&1; then
+    _register_deepwiki_json "$HOME/.cline/data/settings/cline_mcp_settings.json" "cline" \
+      "{\"type\":\"streamableHttp\",\"url\":\"$DEEPWIKI_URL\"}"
+  fi
+  if [ -d "$HOME/.copilot" ] || command -v copilot >/dev/null 2>&1; then
+    _register_deepwiki_json "$HOME/.copilot/mcp-config.json" "copilot" \
+      "{\"type\":\"http\",\"url\":\"$DEEPWIKI_URL\",\"tools\":[\"*\"]}"
+  fi
+  if [ -d "$HOME/.gemini/antigravity" ] || command -v agy >/dev/null 2>&1; then
+    _register_deepwiki_json "$HOME/.gemini/config/mcp_config.json" "antigravity" \
+      "{\"serverUrl\":\"$DEEPWIKI_URL\"}"
+  fi
+  if [ -d "$HOME/.kiro" ] || command -v kiro >/dev/null 2>&1 || command -v kiro-cli >/dev/null 2>&1; then
+    _register_deepwiki_json "$HOME/.kiro/settings/mcp.json" "kiro" \
+      "{\"url\":\"$DEEPWIKI_URL\"}"
   fi
   # Codex: TOML, url key selects the streamable-HTTP transport.
   local codex_cfg="$HOME/.codex/config.toml"
@@ -605,6 +864,7 @@ main() {
   register_gemini "$dest"
   register_cursor "$dest"
   register_windsurf_devin "$dest"
+  register_detected_clients "$dest"
   register_deepwiki
   register_hooks
   print_hook_notes "$dest"

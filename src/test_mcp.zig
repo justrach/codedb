@@ -634,6 +634,65 @@ test "nuke: removeJsonMcpServerEntry removes empty mcpServers object" {
     try testing.expect(std.mem.indexOf(u8, output, "\"theme\"") != null);
 }
 
+test "nuke: removeJsonMcpServerEntry drops mcp.servers codedb" {
+    const input =
+        \\{
+        \\  "mcp": {
+        \\    "servers": {
+        \\      "codedb": { "command": "/Users/me/bin/codedb", "args": ["mcp"] },
+        \\      "other": { "command": "other", "args": [] }
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    const output = (try nuke_mod.removeJsonMcpServerEntry(testing.allocator, input, "codedb")) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.indexOf(u8, output, "\"codedb\"") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "\"other\"") != null);
+}
+
+test "nuke: removeJsonMcpServerEntry drops opencode mcp.codedb" {
+    const input =
+        \\{
+        \\  "mcp": {
+        \\    "codedb": { "type": "local", "command": ["/Users/me/bin/codedb", "mcp"] },
+        \\    "other": { "type": "local", "command": ["other"] }
+        \\  }
+        \\}
+    ;
+
+    const output = (try nuke_mod.removeJsonMcpServerEntry(testing.allocator, input, "codedb")) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.indexOf(u8, output, "\"codedb\"") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "\"other\"") != null);
+}
+
+test "nuke: removeYamlMcpServerEntry drops hermes codedb only" {
+    const input =
+        \\model: gpt
+        \\mcp_servers:
+        \\  codedb:
+        \\    command: "/Users/me/bin/codedb"
+        \\    args: ["mcp"]
+        \\  other:
+        \\    command: "other"
+        \\
+    ;
+
+    const output = (try nuke_mod.removeYamlMcpServerEntry(testing.allocator, input, "codedb")) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.indexOf(u8, output, "codedb:") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "  other:") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "model: gpt") != null);
+}
+
 test "nuke: removeCodexMcpServerBlock removes codedb block only" {
     const input =
         \\[mcp_servers.codedb]
