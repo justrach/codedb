@@ -422,10 +422,9 @@ register_detected_clients() {
   fi
 
   if _client_present "$HOME/.gemini/antigravity" agy antigravity; then
-    _register_mcp "$HOME/.gemini/config/mcp_config.json" "$codedb_bin" "antigravity" "mcpServers"
-    if [ -d "$HOME/.gemini/antigravity" ]; then
-      _register_mcp "$HOME/.gemini/antigravity/mcp_config.json" "$codedb_bin" "antigravity" "mcpServers"
-    fi
+    # Antigravity's own config — not Gemini CLI's ~/.gemini/settings.json
+    # and not ~/.gemini/config/mcp_config.json.
+    _register_mcp "$HOME/.gemini/antigravity/mcp_config.json" "$codedb_bin" "antigravity" "mcpServers"
   fi
 
   if _client_present "$HOME/.kiro" kiro kiro-cli; then
@@ -539,8 +538,8 @@ register_deepwiki() {
     _register_deepwiki_json "$HOME/.copilot/mcp-config.json" "copilot" \
       "{\"type\":\"http\",\"url\":\"$DEEPWIKI_URL\",\"tools\":[\"*\"]}"
   fi
-  if [ -d "$HOME/.gemini/antigravity" ] || command -v agy >/dev/null 2>&1; then
-    _register_deepwiki_json "$HOME/.gemini/config/mcp_config.json" "antigravity" \
+  if _client_present "$HOME/.gemini/antigravity" agy antigravity; then
+    _register_deepwiki_json "$HOME/.gemini/antigravity/mcp_config.json" "antigravity" \
       "{\"serverUrl\":\"$DEEPWIKI_URL\"}"
   fi
   if [ -d "$HOME/.kiro" ] || command -v kiro >/dev/null 2>&1 || command -v kiro-cli >/dev/null 2>&1; then
