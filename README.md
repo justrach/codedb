@@ -476,19 +476,17 @@ Build a new local ANN explicitly with:
 codedb /path/to/repo semantic-index
 ```
 
-CodeDB 0.2.5851 staged the managed embedding migration without breaking older
-clients. Versions through 0.2.5850 continue to request
-`Qwen/Qwen3-Embedding-0.6B`; 0.2.5851 and later request
-`jinaai/jina-embeddings-v2-base-code`. The service keeps both routes live. An
-existing Qwen ANN sidecar is rejected by the new client's model/vector-space
-check. Starting in 0.2.5852, the first hybrid MCP query still returns through
-the bounded exact Jina reranker, then schedules one background rebuild of that
-exact legacy hosted-Qwen sidecar. The old OpenPuffer generation remains intact
-until the Jina replacement passes source, Git, metadata, and vector-space
-validation and commits atomically. Custom endpoints/model overrides and new
-repositories are never auto-built; set `CODEDB_NO_AUTO_SEMANTIC_MIGRATION=1`
-to disable even this legacy migration. CodeDB never mixes vectors from the two
-models.
+The managed default is now `gemini-embedding-001` at 512 dimensions. Clients
+through 0.2.5850 requested Qwen 0.6B; versions 0.2.5851–0.2.5856 requested
+Jina v2 code. The hosted service keeps those identifiers separate for existing
+clients. Old Qwen and Jina ANN sidecars fail the new model/vector-space check.
+For an exact former hosted-default sidecar, the first hybrid query uses bounded
+exact Gemini reranking and schedules a single background rebuild. The old
+OpenPuffer generation stays intact until its Gemini replacement passes source,
+Git, metadata, and vector-space validation and commits atomically. Custom
+endpoints/model overrides and new repositories are never auto-built; set
+`CODEDB_NO_AUTO_SEMANTIC_MIGRATION=1` to disable even this migration. CodeDB
+never mixes vectors from different models.
 
 It splits already-indexable files into bounded 832-byte source chunks, uses
 four concurrent 25-item requests by default (explicitly configurable from one
@@ -510,8 +508,10 @@ enrolls its public key, and receives a short-lived server-signed certificate.
 Every request proves possession of the installation key; renewal is automatic.
 The private seed stays in a global `~/.codedb/credentials.json` file written
 atomically with mode `0600` on POSIX and is never part of an embedding request.
-The public route exposes only the managed CodeDB lane and enforces enrollment,
-installation, and aggregate network limits. General provider APIs remain authenticated.
+The public route exposes only the managed CodeDB lane, forwards bounded text
+to Gemini 001 under CodeDB's zero-retention service policy, and enforces
+enrollment, installation, and aggregate network limits. General provider APIs
+remain authenticated.
 
 `format=json` exposes this boundary in the `retrieval` object, including vector
 dimensions, bounded byte/document counts, retention policy, and failure

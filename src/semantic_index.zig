@@ -1,8 +1,8 @@
 //! Persistent, local code-chunk ANN index for hybrid codedb retrieval.
 //!
 //! Building is explicit with `codedb <root> semantic-index`, except that a
-//! sidecar produced by the former hosted Qwen default is migrated once in the
-//! background when a hybrid query first encounters it. Safe, bounded file
+//! sidecar produced by a former hosted Qwen or Jina default is migrated once
+//! in the background when a hybrid query first encounters it. Safe, bounded file
 //! chunks are embedded remotely in batches, while the vectors, HNSW graph, and
 //! record mapping are written only to codedb's per-project local data dir.
 //! Querying sends only the user's bounded query and searches OpenPuffer in
@@ -1005,21 +1005,20 @@ fn isLegacyHostedVectorSpace(
     stored_dimensions: u16,
     stored_vector_space_id: u64,
 ) bool {
-    // Automatic repository-wide embedding is deliberately limited to the one
-    // vector space shipped as CodeDB's hosted default before Jina. Custom URLs,
-    // custom model overrides, malformed metadata, and merely similar Qwen
-    // sidecars remain explicit user decisions.
+    // Only exact former hosted-default vector spaces may auto-migrate.
+    // Custom endpoints, model overrides and altered metadata remain explicit.
     if (!std.mem.eql(u8, current.url, semantic.default_url) or
         !std.mem.eql(u8, current.model, semantic.default_model) or
         current.dimensions != semantic.default_dimensions or
-        !std.mem.eql(u8, stored_model, semantic.legacy_qwen_model) or
-        stored_dimensions != semantic.default_dimensions)
+        stored_dimensions != semantic.default_dimensions or
+        (!std.mem.eql(u8, stored_model, semantic.legacy_qwen_model) and
+            !std.mem.eql(u8, stored_model, semantic.jina_model)))
     {
         return false;
     }
     const legacy = semantic.Config{
         .url = semantic.default_url,
-        .model = semantic.legacy_qwen_model,
+        .model = stored_model,
         .token = null,
         .dimensions = semantic.default_dimensions,
         .timeout_ms = semantic.default_timeout_ms,
@@ -1027,7 +1026,7 @@ fn isLegacyHostedVectorSpace(
     return stored_vector_space_id == legacy.vectorSpaceId();
 }
 
-/// Schedule a single transactional Qwen-to-Jina sidecar migration owned by
+/// Schedule a single transactional former-default-to-Gemini sidecar migration owned by
 /// `cache`. The old generation stays referenced until build() atomically
 /// publishes the validated replacement. The exact semantic fallback can serve
 /// the triggering request while this worker runs.
@@ -1284,7 +1283,7 @@ pub fn search(
     return searchLoaded(io, allocator, &loaded, task, k, load_ns, false);
 }
 
-test "semantic ANN sidecar accepts Jina 512D and rejects a legacy Qwen vector space" {
+test "semantic ANN sidecar accepts Gemini 512D and migrates exact prior hosted spaces" {
     const testing = std.testing;
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
@@ -1340,6 +1339,14 @@ test "semantic ANN sidecar accepts Jina 512D and rejects a legacy Qwen vector sp
         semantic.default_dimensions,
         legacy_config.vectorSpaceId(),
     ));
+    var jina_config = config;
+    jina_config.model = semantic.jina_model;
+    try testing.expect(isLegacyHostedVectorSpace(
+        &config,
+        semantic.jina_model,
+        semantic.default_dimensions,
+        jina_config.vectorSpaceId(),
+    ));
     try testing.expect(!isLegacyHostedVectorSpace(
         &config,
         semantic.default_model,
@@ -1375,10 +1382,10 @@ test "semantic ANN sidecar accepts Jina 512D and rejects a legacy Qwen vector sp
             io,
             testing.allocator,
             dir_path,
-            semantic.legacy_qwen_model,
+            semantic.jina_model,
             semantic.default_dimensions,
             1234,
-            legacy_config.vectorSpaceId(),
+            jina_config.vectorSpaceId(),
             &calibration,
             null,
             slab_name,
