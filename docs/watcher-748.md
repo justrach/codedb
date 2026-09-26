@@ -182,8 +182,10 @@ remained alive. These are short synthetic measurements, not general CPU or
 memory guarantees. The earlier 9,600-file recursive-event prototype measured
 3.15% churn / 2.65% quiet, but the table above is the final candidate's fixture.
 
-Receipts: [recursive events](measurements/watcher-748-followup-final.json) and
-[forced fallback](measurements/watcher-748-followup-fallback-final.json).
+Historical receipt summaries: [recursive events](measurements/watcher-748-followup-final.json)
+and [forced fallback](measurements/watcher-748-followup-fallback-final.json).
+They retain CPU, stability, and mutation totals rather than the per-mutation log;
+rerun the harness for raw output.
 
 The final candidate passes the unit suite, 76/76 MCP scenarios and six lazy
 startup scenarios. Descriptor counts are 23 at both 128 and 2,048 files with a
