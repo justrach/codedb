@@ -4139,6 +4139,7 @@ test "issue-748: event reconciliation bounds quiet and skipped-file filesystem w
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
+    try tmp.dir.writeFile(io, .{ .sub_path = ".gitignore", .data = ".gitignore\n*.tmp\n" });
     try tmp.dir.createDirPath(io, "src/deep/nested");
     try tmp.dir.createDirPath(io, "empty/nested");
     try tmp.dir.writeFile(io, .{ .sub_path = "src/deep/nested/a.py", .data = "def a():\n    return 1\n" });
@@ -4201,8 +4202,9 @@ test "issue-748: event reconciliation bounds quiet and skipped-file filesystem w
         defer arena.deinit();
         try watcher.incrementalDiffEvents(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
     }
-    // Root and its immediate children are validated; deep descendants stay closed.
-    try testing.expectEqual(@as(usize, 3), watcher.debug_directory_opens);
+    // Stable child identities retain their indexed data without opening subtrees,
+    // including repositories with ignore rules.
+    try testing.expectEqual(@as(usize, 1), watcher.debug_directory_opens);
     try testing.expect(watcher.debug_content_reads <= 1); // only root's actual invalidation
     try testing.expectEqual(@as(u32, 3), known.count());
     try testing.expect(known.contains("src/deep/nested/a.py"));
@@ -4240,4 +4242,38 @@ test "issue-748: event reconciliation bounds quiet and skipped-file filesystem w
         try watcher.incrementalDiffEvents(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
     }
     try testing.expect(known.contains("empty/nested/first.py"));
+    // Root policy changes must invalidate retained descendants immediately.
+    try tmp.dir.writeFile(io, .{ .sub_path = ".gitignore", .data = ".gitignore\nsrc/\n" });
+    dirty.clearRetainingCapacity();
+    try dirty.put("", {});
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffEvents(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+    }
+    try testing.expect(!known.contains("src/deep/nested/a.py"));
+    try tmp.dir.writeFile(io, .{ .sub_path = ".gitignore", .data = ".gitignore\n*.tmp\n" });
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffEvents(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+    }
+    try testing.expect(known.contains("src/deep/nested/a.py"));
+    // A nested policy also applies to unchanged grandchildren.
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/.gitignore", .data = "deep/\n" });
+    dirty.clearRetainingCapacity();
+    try dirty.put("src", {});
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffEvents(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+    }
+    try testing.expect(!known.contains("src/deep/nested/a.py"));
+    try tmp.dir.deleteFile(io, "src/.gitignore");
+    {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        try watcher.incrementalDiffEvents(io, &store, &explorer, queue, &known, &dirs, root, testing.allocator, arena.allocator(), &dirty);
+    }
+    try testing.expect(known.contains("src/deep/nested/a.py"));
 }
