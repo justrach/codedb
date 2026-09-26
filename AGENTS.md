@@ -1,4 +1,4 @@
-> Current objective: **retrieval accuracy through default hybrid + hosted Jina**.
+> Current objective: **retrieval accuracy through default hybrid + hosted Gemini 001**.
 > Do not trade retrieval breadth or relevance for a speed-only improvement.
 > The smaller ANN candidate pool was discarded; accuracy is the experiment goal.
 
@@ -49,10 +49,10 @@ python3 scripts/e2e_mcp_test.py \
 - `src/snapshot.zig` — sensitive file filtering
 - `install/install.sh` — binary download and config modification
 
-## Jina hybrid accuracy experiments
+## Prior Jina hybrid accuracy experiments
 
-Optimize accuracy through default hybrid, hosted Jina and local OpenPuffer mmap.
-Preserve calibration, hosted exact fallback, and the 4× ANN pool. Do not run local
+The Jina results below are historical baselines; the managed default is now
+Gemini 001. Preserve calibration, hosted exact fallback, and the 4× ANN pool. Do not run local
 models or exchange retrieval breadth for speed. Release integration: 0.2.5853, based on the validated 0.2.5852 experiments. Old main Qwen experiments
 are obsolete and do not govern this integration.
 

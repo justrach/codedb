@@ -14,7 +14,8 @@ const semantic_auth = @import("semantic_auth.zig");
 
 pub const default_url = "https://embeddings.wiki.codes/v1/codedb/embeddings";
 pub const legacy_qwen_model = "Qwen/Qwen3-Embedding-0.6B";
-pub const default_model = "jinaai/jina-embeddings-v2-base-code";
+pub const jina_model = "jinaai/jina-embeddings-v2-base-code";
+pub const default_model = "gemini-embedding-001";
 pub const default_dimensions: u16 = 512;
 pub const default_timeout_ms: u32 = 15_000;
 pub const min_timeout_ms: u32 = 10;
@@ -42,6 +43,7 @@ pub const default_ann_rrf_k: f32 = 1;
 pub const default_ann_semantic_weight: f32 = 2.5;
 pub const qwen_query_encoding_version = "qwen3-query-instruct-v1";
 pub const jina_query_encoding_version = "jina-v2-code-symmetric-raw-v1";
+pub const gemini_query_encoding_version = "gemini001-code-retrieval-query-v1";
 pub const document_card_version = "codedb-code-chunk-v2";
 pub const calibration_text = "codedb vector-space calibration v1: deterministic code retrieval";
 pub const calibration_min_cosine: f32 = 0.9999;
@@ -146,18 +148,16 @@ pub const Config = struct {
 };
 
 fn queryEncodingVersion(model: []const u8) []const u8 {
-    return if (std.mem.eql(u8, model, default_model))
-        jina_query_encoding_version
-    else
-        qwen_query_encoding_version;
+    if (std.mem.eql(u8, model, jina_model)) return jina_query_encoding_version;
+    if (std.mem.eql(u8, model, default_model)) return gemini_query_encoding_version;
+    return qwen_query_encoding_version;
 }
 
-/// Jina v2 code is a symmetric embedding model, so queries and code cards
-/// share one raw-text vector space. Preserve the historical Qwen instruction
-/// for explicit Qwen/custom-model overrides so upgrading CodeDB does not
-/// silently change those deployments.
+/// Jina v2 code is symmetric and keeps raw queries. The hosted Gemini edge
+/// recognizes the existing instruction prefix as a CODE_RETRIEVAL_QUERY task;
+/// preserve that prefix for explicit Qwen/custom-model overrides as well.
 fn formatQueryInput(allocator: std.mem.Allocator, model: []const u8, task: []const u8) ![]u8 {
-    if (std.mem.eql(u8, model, default_model)) return allocator.dupe(u8, task);
+    if (std.mem.eql(u8, model, jina_model)) return allocator.dupe(u8, task);
     return std.fmt.allocPrint(
         allocator,
         "Instruct: Retrieve code relevant to the user request.\nQuery: {s}",
@@ -165,20 +165,22 @@ fn formatQueryInput(allocator: std.mem.Allocator, model: []const u8, task: []con
     );
 }
 
-test "semantic query encoding is raw for Jina and backward compatible for Qwen" {
+test "semantic query encoding distinguishes Gemini, Jina and Qwen" {
     const testing = std.testing;
     const task = "find the authentication middleware";
-    const jina = try formatQueryInput(testing.allocator, default_model, task);
+    const jina = try formatQueryInput(testing.allocator, jina_model, task);
     defer testing.allocator.free(jina);
     try testing.expectEqualStrings(task, jina);
 
+    const gemini = try formatQueryInput(testing.allocator, default_model, task);
+    defer testing.allocator.free(gemini);
     const qwen = try formatQueryInput(testing.allocator, legacy_qwen_model, task);
     defer testing.allocator.free(qwen);
-    try testing.expectEqualStrings(
-        "Instruct: Retrieve code relevant to the user request.\nQuery: find the authentication middleware",
-        qwen,
-    );
-    try testing.expectEqualStrings(jina_query_encoding_version, queryEncodingVersion(default_model));
+    const expected = "Instruct: Retrieve code relevant to the user request.\nQuery: find the authentication middleware";
+    try testing.expectEqualStrings(expected, gemini);
+    try testing.expectEqualStrings(expected, qwen);
+    try testing.expectEqualStrings(gemini_query_encoding_version, queryEncodingVersion(default_model));
+    try testing.expectEqualStrings(jina_query_encoding_version, queryEncodingVersion(jina_model));
     try testing.expectEqualStrings(qwen_query_encoding_version, queryEncodingVersion(legacy_qwen_model));
 }
 

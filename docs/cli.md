@@ -116,23 +116,22 @@ paths cannot enter a batch even from a stale index.
 
 ### Managed model migration
 
-CodeDB 0.2.5851 changes the managed default to
-`jinaai/jina-embeddings-v2-base-code`; clients through 0.2.5850 continue to
-request `Qwen/Qwen3-Embedding-0.6B`, and the hosted service serves both model
-names during the migration. Sidecar metadata includes the model, dimensions,
-query encoding, document-card encoding, and a calibration vector. A new client
-therefore refuses an old Qwen sidecar rather than searching it with Jina
-vectors. In 0.2.5852, the first hybrid MCP query returns via transient exact
-reranking and schedules one background rebuild when—and only when—the sidecar
-exactly matches CodeDB's former hosted-Qwen vector space. You can still replace
-it explicitly:
+The managed default is `gemini-embedding-001` at 512 dimensions. Clients
+through 0.2.5850 used Qwen 0.6B; versions 0.2.5851–0.2.5856 used Jina v2
+code. The hosted service serves distinct model identifiers during migration.
+Sidecar metadata includes the model, dimensions, query encoding, document-card
+encoding, and a calibration vector. A new client rejects an old Qwen or Jina
+sidecar rather than mixing its vectors with Gemini. The first hybrid query
+returns via transient exact Gemini reranking and schedules one background rebuild
+only when the sidecar exactly matches a former hosted-default vector space.
+You can still replace it explicitly:
 
 ```bash
 codedb /path/to/repo semantic-index
 ```
 
 Both paths replace the old generation transactionally. The previous sidecar is
-kept until the new Jina generation has passed source/Git freshness and metadata
+kept until the new Gemini generation has passed source/Git freshness and metadata
 validation. Custom endpoints, model overrides, fresh repositories, Windows
 (until OpenPuffer has native mmap loading there), and
 `CODEDB_NO_AUTO_SEMANTIC_MIGRATION=1` remain explicit-only.
@@ -158,7 +157,7 @@ codedb-cli stop                       # stop daemon
 | `CODEDB_PORT` | `7719` | HTTP port for the daemon |
 | `CODEDB_BINARY` | `codedb` | Path to the codedb binary |
 | `CODEDB_EMBEDDINGS_URL` | `https://embeddings.wiki.codes/v1/codedb/embeddings` | Free bounded hosted lane; may be overridden with another HTTPS endpoint |
-| `CODEDB_EMBEDDINGS_MODEL` | managed | Provider deployment/model identifier; set only with a custom endpoint |
+| `CODEDB_EMBEDDINGS_MODEL` | `gemini-embedding-001` | Managed model identifier; override only when deliberately using another vector space |
 | `CODEDB_EMBEDDINGS_DIMENSIONS` | managed | Requested custom-provider dimensions (64-4096) |
 | `CODEDB_EMBEDDINGS_TOKEN` | unset | Optional legacy bearer token for protected/custom endpoints; the hosted lane enrolls automatically |
 | `CODEDB_EMBEDDINGS_TIMEOUT_MS` | `15000` | Per-request deadline in milliseconds (10-120000) |
