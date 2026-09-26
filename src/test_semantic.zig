@@ -53,6 +53,8 @@ const MockEmbeddingServer = struct {
     response: []const u8,
     status: []const u8 = "200 OK",
     delay_ms: u32 = 0,
+    allow_head_probe: bool = false,
+    ignored_head_probe: bool = false,
     request: [65536]u8 = undefined,
     request_len: usize = 0,
     failure: ?anyerror = null,
@@ -84,6 +86,10 @@ const MockEmbeddingServer = struct {
             if (n == 0) break;
             self.request_len += n;
             const header_end = std.mem.indexOf(u8, self.request[0..self.request_len], "\r\n\r\n") orelse continue;
+            if (self.allow_head_probe and std.mem.startsWith(u8, self.request[0..header_end], "HEAD / HTTP/1.1\r\n")) {
+                self.ignored_head_probe = true;
+                return;
+            }
             const content_len = contentLength(self.request[0..header_end]) catch |err| {
                 self.failure = err;
                 return;
@@ -106,14 +112,26 @@ const RetryEmbeddingServer = struct {
     server: *std.Io.net.Server,
     response: []const u8,
     failure: ?anyerror = null,
+    ignored_head_probes: usize = 0,
 
     fn run(self: *RetryEmbeddingServer) void {
         for ([_][]const u8{ "429 Too Many Requests", "503 Service Unavailable", "200 OK" }) |status| {
-            var one = MockEmbeddingServer{ .server = self.server, .response = self.response, .status = status };
-            one.run();
-            if (one.failure) |err| {
-                self.failure = err;
-                return;
+            while (true) {
+                var one = MockEmbeddingServer{ .server = self.server, .response = self.response, .status = status, .allow_head_probe = true };
+                one.run();
+                if (one.ignored_head_probe) {
+                    self.ignored_head_probes += 1;
+                    if (self.ignored_head_probes > 8) {
+                        self.failure = error.TooManyHeadProbes;
+                        return;
+                    }
+                    continue;
+                }
+                if (one.failure) |err| {
+                    self.failure = err;
+                    return;
+                }
+                break;
             }
         }
     }
@@ -542,9 +560,19 @@ test "semantic: explicit index batches retry bounded 429 and 5xx responses" {
     const addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
     var server = try addr.listen(io, .{ .reuse_address = true, .mode = .stream, .protocol = .tcp });
     defer server.deinit(io);
-    // This case tests retry status handling, not a short deadline. Give the
-    // local mock time to run on a busy test runner.
-    try configureMockEndpoint(&server, "mock-model", 15_000);
+    try configureMockEndpoint(&server, "mock-model", 2_000);
+
+    // An unrelated loopback HEAD probe must not consume one of the three
+    // scripted embedding responses.
+    {
+        const probe_addr = try std.Io.net.IpAddress.parse("127.0.0.1", server.socket.address.getPort());
+        const probe = try probe_addr.connect(io, .{ .mode = .stream });
+        defer probe.close(io);
+        var probe_buffer: [128]u8 = undefined;
+        var probe_writer = probe.writer(io, &probe_buffer);
+        try probe_writer.interface.writeAll("HEAD / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        try probe_writer.interface.flush();
+    }
 
     var mock = RetryEmbeddingServer{ .server = &server, .response = response };
     const thread = try std.Thread.spawn(.{}, RetryEmbeddingServer.run, .{&mock});
@@ -555,6 +583,7 @@ test "semantic: explicit index batches retry bounded 429 and 5xx responses" {
     defer testing.allocator.free(result.vectors);
     thread.join();
     if (mock.failure) |err| return err;
+    try testing.expect(mock.ignored_head_probes >= 1);
     try testing.expectEqual(@as(usize, 1), result.count);
 }
 
