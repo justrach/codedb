@@ -247,6 +247,7 @@ fn readIndexableFile(
 
 const skip_dirs = [_][]const u8{
     ".git",
+    ".worktrees", // git worktree forests; they consume the vnode watch cap
     ".jj",
     ".claude",
     ".codedb",
@@ -358,6 +359,73 @@ test "canonical Windows targets are normalized before sensitive policy checks" {
     try std.testing.expectEqualStrings("safe/.ssh/config", rel);
     try std.testing.expect(shouldSkipFile(rel));
     try std.testing.expect(canonicalTargetRelative("C:\\repo", "C:\\repo-other\\src", &buf) == null);
+}
+
+test "issue-754: .worktrees skip is a child name, not the scan root" {
+    try std.testing.expect(shouldSkip(".worktrees"));
+    try std.testing.expect(shouldSkip(".worktrees/feature/src/app.py"));
+    try std.testing.expect(shouldSkipDir(".worktrees"));
+    // Relative to a worktree checkout, source paths do not contain that name.
+    try std.testing.expect(!shouldSkip("src/app.py"));
+    try std.testing.expect(!shouldSkip("gui/src/main.ts"));
+    try std.testing.expect(!shouldSkipDir("src"));
+    try std.testing.expect(!shouldSkip("worktrees/src/app.py"));
+    try std.testing.expect(!shouldSkipDir("worktrees"));
+    try std.testing.expect(!shouldSkip(".worktrees-backup/src/app.py"));
+    try std.testing.expect(!shouldSkipDir(".worktrees-backup"));
+    try std.testing.expect(!shouldSkipDir(".worktree"));
+}
+
+test "issue-754: reconcile drops previously indexed .worktrees files" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "src");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/keep.py", .data = "KEEP = 1\n" });
+    try tmp.dir.createDirPath(io, ".worktrees/feature/src");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = ".worktrees/feature/src/old.py",
+        .data = "OLD = 1\n",
+    });
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPathFile(io, ".", &root_buf);
+    const root_path = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.setRoot(io, root_path);
+    const root_dir = explorer.root_dir orelse return error.TestUnexpectedResult;
+    try indexFileContent(io, &explorer, root_dir, "src/keep.py", testing.allocator, true);
+    try indexFileContent(io, &explorer, root_dir, ".worktrees/feature/src/old.py", testing.allocator, true);
+    try testing.expect(explorer.contents.contains(".worktrees/feature/src/old.py"));
+
+    var known = FileMap.init(testing.allocator);
+    defer {
+        var it = known.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        known.deinit();
+    }
+    try seedKnownFromExplorer(&store, &explorer, &known, testing.allocator);
+    var dirs = DirMap.init(testing.allocator);
+    defer {
+        var it = dirs.keyIterator();
+        while (it.next()) |path| testing.allocator.free(path.*);
+        dirs.deinit();
+    }
+    var queue = EventQueue{};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try incrementalDiffInner(io, &store, &explorer, &queue, &known, &dirs, root_path, testing.allocator, arena.allocator());
+
+    try testing.expect(known.contains("src/keep.py"));
+    try testing.expect(explorer.contents.contains("src/keep.py"));
+    try testing.expect(!known.contains(".worktrees/feature/src/old.py"));
+    try testing.expect(!explorer.contents.contains(".worktrees/feature/src/old.py"));
+    try testing.expect(!dirs.contains(".worktrees"));
+    try testing.expect(!dirs.contains(".worktrees/feature"));
 }
 
 /// Resolve every candidate under the canonical root and require both its

@@ -2523,6 +2523,135 @@ test "issue-692: .devenv and .jj are not indexed" {
     }
 }
 
+test "issue-754: .worktrees dirs are not indexed" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "src");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "src/app.py", .data = "def hello():\n    return 1\n" });
+    try tmp_dir.dir.createDirPath(io, ".worktrees/feature/src");
+    try tmp_dir.dir.writeFile(io, .{
+        .sub_path = ".worktrees/feature/src/app.py",
+        .data = "def hello():\n    return 2\n",
+    });
+    try tmp_dir.dir.createDirPath(io, ".worktrees/other/gui");
+    try tmp_dir.dir.writeFile(io, .{
+        .sub_path = ".worktrees/other/gui/main.ts",
+        .data = "export const hello = 1;\n",
+    });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    try testing.expect(explorer.contents.contains("src/app.py"));
+    try testing.expect(!explorer.contents.contains(".worktrees/feature/src/app.py"));
+    try testing.expect(!explorer.contents.contains(".worktrees/other/gui/main.ts"));
+
+    var it = explorer.contents.iterator();
+    while (it.next()) |kv| {
+        const p = kv.key_ptr.*;
+        try testing.expect(std.mem.indexOf(u8, p, ".worktrees") == null);
+    }
+}
+
+test "issue-754: scan root inside .worktrees is still indexed" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, ".worktrees/feature/src");
+    try tmp_dir.dir.writeFile(io, .{
+        .sub_path = ".worktrees/feature/src/app.py",
+        .data = "def hello():\n    return 2\n",
+    });
+    try tmp_dir.dir.createDirPath(io, ".worktrees/feature/.worktrees/nested");
+    try tmp_dir.dir.writeFile(io, .{
+        .sub_path = ".worktrees/feature/.worktrees/nested/dup.py",
+        .data = "NESTED = 1\n",
+    });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPathFile(io, ".worktrees/feature", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    try testing.expect(explorer.contents.contains("src/app.py"));
+    try testing.expect(!explorer.contents.contains(".worktrees/nested/dup.py"));
+    var it = explorer.contents.iterator();
+    while (it.next()) |kv| {
+        try testing.expect(std.mem.indexOf(u8, kv.key_ptr.*, ".worktrees") == null);
+    }
+}
+
+test "issue-754: .worktrees-backup prefix is not skipped" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, ".worktrees-backup/src");
+    try tmp_dir.dir.writeFile(io, .{
+        .sub_path = ".worktrees-backup/src/keep.py",
+        .data = "KEEP = 1\n",
+    });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    try testing.expect(explorer.contents.contains(".worktrees-backup/src/keep.py"));
+}
+
+test "issue-754: directory symlink into .worktrees is not indexed" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "src");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "src/app.py", .data = "def hello():\n    return 1\n" });
+    try tmp_dir.dir.createDirPath(io, ".worktrees/feature/src");
+    try tmp_dir.dir.writeFile(io, .{
+        .sub_path = ".worktrees/feature/src/app.py",
+        .data = "def hello():\n    return 2\n",
+    });
+    tmp_dir.dir.symLink(io, ".worktrees/feature", "wt_link", .{}) catch |err| switch (err) {
+        error.Unexpected => return error.SkipZigTest,
+        else => return err,
+    };
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_len = try tmp_dir.dir.realPathFile(io, ".", &root_buf);
+    const root = root_buf[0..root_len];
+
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+    try explorer.setRoot(io, root);
+    try watcher.initialScanWithWorkerCount(io, &store, &explorer, root, testing.allocator, false, 1);
+
+    try testing.expect(explorer.contents.contains("src/app.py"));
+    try testing.expect(!explorer.contents.contains("wt_link/src/app.py"));
+    try testing.expect(!explorer.contents.contains(".worktrees/feature/src/app.py"));
+}
+
 test "issue-405: cleanupStaleTmpFiles deletes in-flight sibling tmp files" {
     // BUG: snapshot.zig:cleanupStaleTmpFiles deletes ANY file matching
     // `<basename>*.tmp` in the snapshot directory with no age guard.

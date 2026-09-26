@@ -116,6 +116,7 @@ fn isCollapseDir(name: []const u8) bool {
         ".turbo",
         ".parcel-cache",
         ".devenv",
+        ".worktrees",
     };
     for (names) |n| if (std.mem.eql(u8, name, n)) return true;
     return false;
@@ -713,6 +714,33 @@ test "collapse .graff without walking it; explicit path still lists inner files"
     const inner = try listUnder(io, a, abs, ".graff");
     try std.testing.expect(std.mem.indexOf(u8, inner, "noise.jsonl") != null);
     try std.testing.expect(std.mem.indexOf(u8, inner, "- behavior/") != null);
+}
+
+test "issue-754: collapse .worktrees; worktree checkout path still lists src" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    tmp.dir.createDirPath(io, "src") catch unreachable;
+    tmp.dir.writeFile(io, .{ .sub_path = "src/keep.zig", .data = "x" }) catch unreachable;
+    tmp.dir.createDirPath(io, ".worktrees/feature/src") catch unreachable;
+    tmp.dir.writeFile(io, .{ .sub_path = ".worktrees/feature/src/app.py", .data = "x" }) catch unreachable;
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs = try tmpAbs(io, &tmp, &buf);
+    const a = arena_state.allocator();
+    const out = try listAbs(io, a, abs, ".");
+    try std.testing.expect(std.mem.indexOf(u8, out, "- src/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "keep.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "- .worktrees/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "app.py") == null);
+
+    const forest = try listUnder(io, a, abs, ".worktrees");
+    try std.testing.expect(std.mem.indexOf(u8, forest, "- feature/") != null);
+
+    const checkout = try listUnder(io, a, abs, ".worktrees/feature");
+    try std.testing.expect(std.mem.indexOf(u8, checkout, "app.py") != null);
 }
 
 test "fat data dir stays collapsed so a source sibling expands" {

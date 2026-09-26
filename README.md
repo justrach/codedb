@@ -39,7 +39,7 @@ the map**: focused source context, symbols, callers, outlines, and dependencies.
 Your coding client uses its own native tools to make the edit.
 
 **A context engine, not an editor.** codedb has no edit capability. Use it with
-Graff, Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Devin, or another MCP client.
+Graff, Claude Code, Codex, Gemini CLI, Cursor, Windsurf, Devin, oh-my-pi, Hermes, Qwen Code, ZCode, Trae, Cline, Copilot CLI, Antigravity, Kiro, OpenCode, or another MCP client.
 
 ## 🧭 Give your agent a compass
 
@@ -62,7 +62,7 @@ embeddings**; choose `semantic=local` for local-only retrieval. See
 curl -fsSL https://codedb.codegraff.com/install.sh | bash
 ```
 
-Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, and **Devin** — each written directly and additively into that tool's config (only when the tool is present). The installer prints the exact `codedb mcp` command it registered plus hook setup pointers for Codex and Claude Code.
+Downloads the binary for your platform and auto-registers codedb as an MCP server in **Claude Code**, **Codex**, **Gemini CLI**, **Cursor**, **Windsurf**, **Devin**, **oh-my-pi**, **Hermes**, **Qwen Code**, **ZCode**, **Trae**, **Cline**, **Copilot CLI**, **Antigravity**, **Kiro**, and **OpenCode** — each written directly and additively into that tool's config (only when the tool is present). The installer prints the exact `codedb mcp` command it registered plus hook setup pointers for Codex and Claude Code.
 
 For a binary-only installation, set `CODEDB_NO_INTEGRATIONS=1` on the installer
 process. This skips client configuration, policy and hook registration.
@@ -140,7 +140,7 @@ over stdio, with an optional localhost HTTP server.
 
 ## Documentation
 
-- **[MCP setup](docs/mcp.md)** — per-client configurations (Claude Desktop, Cursor, VS Code, Claude Code, Codex CLI, Gemini CLI), root resolution, troubleshooting
+- **[MCP setup](docs/mcp.md)** — per-client configurations (Claude Desktop, Cursor, VS Code, Claude Code, Codex CLI, Gemini CLI, oh-my-pi, Hermes, Qwen Code, ZCode, Trae, Cline, Copilot CLI, Antigravity, Kiro, OpenCode), root resolution, troubleshooting
 - **[Skill base & context files](docs/skills.md)** — `agents.md` / `CLAUDE.md` / `GEMINI.md`, `.codedbrc`, per-developer memory
 - **[CLI reference](docs/cli.md)** — every command, every flag
 - **[Architecture](docs/architecture.md)** — engine internals, index layout
