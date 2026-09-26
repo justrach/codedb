@@ -2,7 +2,10 @@
 
 ## Unreleased
 
+## 0.2.5857 - 2026-09-26
+
 - Auto-register codedb in additional detected MCP clients: oh-my-pi, Hermes, Qwen Code, ZCode, Trae, Cline, Copilot CLI, Antigravity, Kiro, and OpenCode. `codedb nuke` removes the matching entries. Invalid JSON is left untouched.
+- Antigravity registers only under `~/.gemini/antigravity/mcp_config.json`, not Gemini CLI's settings file. `codedb nuke` also removes the non-CN Trae `User/mcp.json` path.
 
 ## 0.2.5856 - 2026-09-19
 
