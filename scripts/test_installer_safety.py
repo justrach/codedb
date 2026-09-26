@@ -53,17 +53,29 @@ else:
                 hash_tool.chmod(0o755)
             fixture_home = root / (scenario + ' home')
             fixture_home.mkdir()
+            claude_config = fixture_home / '.claude.json'
+            existing_config = json.dumps({'mcpServers': {'other': {'command': 'other-tool'}}})
+            if scenario == 'mismatch':
+                claude_config.write_text(existing_config)
             env = {k: v for k, v in os.environ.items() if not k.startswith('CODEDB_')}
             env.update(HOME=str(fixture_home), PATH=str(commands), CODEDB_DIR=str(target),
                        CODEDB_VERSION='0.2.5855', CODEDB_NO_INTEGRATIONS='1',
                        INSTALLER_TEST_SCENARIO=scenario, INSTALLER_TEST_DIGEST=digest)
+            if scenario == 'mismatch':
+                # A checksum failure must stop before normal client registration.
+                env.pop('CODEDB_NO_INTEGRATIONS')
+                env['CODEDB_INSTALL_DEEPWIKI'] = '0'
+                env['PATH'] += os.pathsep + os.environ['PATH']
             done = subprocess.run(['/bin/bash', str(installer)], env=env, capture_output=True, text=True, timeout=20)
             success = scenario == 'valid'
             assert (done.returncode == 0) == success, (scenario, done.stdout, done.stderr)
             assert binary.read_bytes() == (payload if success else b'existing installation\n'), scenario
             assert not list(target.glob('.codedb-download.*')), scenario
             assert 'unbound variable' not in done.stderr, done.stderr
-            assert not (fixture_home / '.claude.json').exists(), scenario
+            if scenario == 'mismatch':
+                assert claude_config.read_text() == existing_config, scenario
+            else:
+                assert not claude_config.exists(), scenario
             assert not (fixture_home / '.codex').exists(), scenario
             assert not (fixture_home / '.claude').exists(), scenario
             print('PASS:', scenario)
