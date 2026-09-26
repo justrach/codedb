@@ -33,6 +33,7 @@ if any(a.endswith('checksums.sha256') for a in args):
     if scenario=='unavailable':sys.exit(22)
     if scenario=='missing':print(digest+'  other-platform');sys.exit(0)
     if scenario=='malformed':print('not-a-hash  codedb-darwin-arm64');sys.exit(0)
+    if scenario=='trailing-field':print(digest+'  codedb-darwin-arm64 extra-field');sys.exit(0)
     if scenario=='duplicate':print((digest+'  codedb-darwin-arm64\\n')*2);sys.exit(0)
     print(('0'*64 if scenario=='mismatch' else digest)+'  codedb-darwin-arm64')
 else:
@@ -40,7 +41,7 @@ else:
     Path(args[args.index('-o')+1]).write_bytes(b'#!/bin/sh\\nexit 0\\n')
 ''')
         curl.chmod(0o755)
-        for scenario in ('unavailable', 'missing', 'malformed', 'duplicate', 'mismatch', 'no-hash-tool', 'download-failed', 'valid'):
+        for scenario in ('unavailable', 'missing', 'malformed', 'trailing-field', 'duplicate', 'mismatch', 'no-hash-tool', 'download-failed', 'valid'):
             target = root / (scenario + ' install with spaces')
             target.mkdir()
             binary = target / 'codedb'
@@ -55,13 +56,13 @@ else:
             fixture_home.mkdir()
             claude_config = fixture_home / '.claude.json'
             existing_config = json.dumps({'mcpServers': {'other': {'command': 'other-tool'}}})
-            if scenario == 'mismatch':
+            if scenario in ('mismatch', 'trailing-field'):
                 claude_config.write_text(existing_config)
             env = {k: v for k, v in os.environ.items() if not k.startswith('CODEDB_')}
             env.update(HOME=str(fixture_home), PATH=str(commands), CODEDB_DIR=str(target),
                        CODEDB_VERSION='0.2.5855', CODEDB_NO_INTEGRATIONS='1',
                        INSTALLER_TEST_SCENARIO=scenario, INSTALLER_TEST_DIGEST=digest)
-            if scenario == 'mismatch':
+            if scenario in ('mismatch', 'trailing-field'):
                 # A checksum failure must stop before normal client registration.
                 env.pop('CODEDB_NO_INTEGRATIONS')
                 env['CODEDB_INSTALL_DEEPWIKI'] = '0'
@@ -72,7 +73,7 @@ else:
             assert binary.read_bytes() == (payload if success else b'existing installation\n'), scenario
             assert not list(target.glob('.codedb-download.*')), scenario
             assert 'unbound variable' not in done.stderr, done.stderr
-            if scenario == 'mismatch':
+            if scenario in ('mismatch', 'trailing-field'):
                 assert claude_config.read_text() == existing_config, scenario
             else:
                 assert not claude_config.exists(), scenario

@@ -814,7 +814,7 @@ main() {
     # Keep any existing binary until the downloaded bytes are verified.
     local checksum_text expected_hash actual_hash=""
     checksum_text="$(curl -fsSL -A 'codedb-installer' "$checksum_url" 2>/dev/null || true)"
-    expected_hash="$(printf '%s\n' "$checksum_text" | awk -v asset="codedb-${platform}${ext}" '$2 == asset { count++; hash=$1 } END { if (count == 1) print hash }')"
+    expected_hash="$(printf '%s\n' "$checksum_text" | awk -v asset="codedb-${platform}${ext}" '$2 == asset { count++; if (NF != 2) malformed=1; hash=$1 } END { if (count == 1 && !malformed) print hash }')"
     if [[ "$expected_hash" =~ ^[0-9a-f]{64}$ ]]; then
       if command -v sha256sum >/dev/null 2>&1; then
         actual_hash="$(sha256sum "$tmp" | awk '{print $1}')"
