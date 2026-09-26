@@ -542,7 +542,9 @@ test "semantic: explicit index batches retry bounded 429 and 5xx responses" {
     const addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
     var server = try addr.listen(io, .{ .reuse_address = true, .mode = .stream, .protocol = .tcp });
     defer server.deinit(io);
-    try configureMockEndpoint(&server, "mock-model", 2_000);
+    // This case tests retry classes, not request deadlines (covered above).
+    // Allow the local mock the normal deadline on busy test runners.
+    try configureMockEndpoint(&server, "mock-model", semantic.default_timeout_ms);
 
     var mock = RetryEmbeddingServer{ .server = &server, .response = response };
     const thread = try std.Thread.spawn(.{}, RetryEmbeddingServer.run, .{&mock});
