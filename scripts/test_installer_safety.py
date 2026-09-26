@@ -3,10 +3,8 @@
 import hashlib
 import os
 import json
-import re
 from pathlib import Path
 import shutil
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -53,61 +51,84 @@ else:
             if scenario != 'no-hash-tool':
                 hash_tool.write_text('#!' + sys.executable + '\nimport hashlib,sys\nfrom pathlib import Path\nprint(hashlib.sha256(Path(sys.argv[-1]).read_bytes()).hexdigest()+"  binary")\n')
                 hash_tool.chmod(0o755)
+            fixture_home = root / (scenario + ' home')
+            fixture_home.mkdir()
             env = {k: v for k, v in os.environ.items() if not k.startswith('CODEDB_')}
-            env.update(PATH=str(commands), CODEDB_DIR=str(target), CODEDB_VERSION='0.2.5855',
-                       CODEDB_NO_INTEGRATIONS='1', INSTALLER_TEST_SCENARIO=scenario,
-                       INSTALLER_TEST_DIGEST=digest)
+            env.update(HOME=str(fixture_home), PATH=str(commands), CODEDB_DIR=str(target),
+                       CODEDB_VERSION='0.2.5855', CODEDB_NO_INTEGRATIONS='1',
+                       INSTALLER_TEST_SCENARIO=scenario, INSTALLER_TEST_DIGEST=digest)
             done = subprocess.run(['/bin/bash', str(installer)], env=env, capture_output=True, text=True, timeout=20)
             success = scenario == 'valid'
             assert (done.returncode == 0) == success, (scenario, done.stdout, done.stderr)
             assert binary.read_bytes() == (payload if success else b'existing installation\n'), scenario
             assert not list(target.glob('.codedb-download.*')), scenario
             assert 'unbound variable' not in done.stderr, done.stderr
+            assert not (fixture_home / '.claude.json').exists(), scenario
+            assert not (fixture_home / '.codex').exists(), scenario
+            assert not (fixture_home / '.claude').exists(), scenario
             print('PASS:', scenario)
 
-        # Extract the installed hook verbatim. Relocate its HOME path reference
-        # in the fixture only; never change the process HOME or real settings.
-        hook_source = re.search(r'"codedb-block-legacy.sh": r\x27\x27\x27(.*?)\x27\x27\x27,', installer.read_text(), re.S).group(1)
-        hook = root / 'hook.sh'
-        hook.write_text(hook_source.replace('$HOME', '${CODEDB_INSTALL_TEST_ROOT}'))
+        # Drive the normal main() path inside a disposable HOME. This must
+        # reach detected-client registration and install the hook we exercise.
         fixture_home = root / 'fixture-user'
+        fixture_home.mkdir()
         project = root / 'project'
         project.mkdir()
         project = project.resolve()
         registration = fixture_home / '.codedb/projects/test/project.txt'
         registration.parent.mkdir(parents=True)
         registration.write_text(str(project) + '\n')
+        claude_config = fixture_home / '.claude.json'
+        claude_config.write_text(json.dumps({'mcpServers': {'other': {'command': 'other-tool'}}}))
+        codex_config = fixture_home / '.codex/config.toml'
+        codex_config.parent.mkdir()
+        codex_config.write_text('[mcp_servers.other]\ncommand = "other-tool"\n')
+        qwen_config = fixture_home / '.qwen/settings.json'
+        qwen_config.parent.mkdir()
+        qwen_config.write_text(json.dumps({'mcpServers': {'other': {'command': 'other-tool'}}}))
+        normal_target = root / 'normal install with spaces'
+        normal_target.mkdir()
+        binary = normal_target / 'codedb'
+        binary.write_bytes(b'existing installation\n')
         fake_codedb = commands / 'codedb'
         fake_codedb.write_bytes(payload)
         fake_codedb.chmod(0o755)
-        hook_env = {k: v for k, v in os.environ.items() if not k.startswith('CODEDB_')}
-        hook_env.update(CODEDB_INSTALL_TEST_ROOT=str(fixture_home), PATH=str(commands) + os.pathsep + os.environ['PATH'])
-        for command, expected in [('sed -i s/old/new/ code.py', 0), ('awk "{print}" code.py', 0), ('rg handler .', 2), ('python3 edit.py', 0)]:
-            done = subprocess.run(['/bin/bash', str(hook)], cwd=project, env=hook_env,
+        normal_env = {k: v for k, v in os.environ.items() if not k.startswith('CODEDB_')}
+        normal_env.update(HOME=str(fixture_home), PATH=str(commands) + os.pathsep + os.environ['PATH'],
+                          CODEDB_DIR=str(normal_target), CODEDB_VERSION='0.2.5855',
+                          CODEDB_INSTALL_DEEPWIKI='0', INSTALLER_TEST_SCENARIO='valid',
+                          INSTALLER_TEST_DIGEST=digest)
+        done = subprocess.run(['/bin/bash', str(installer)], env=normal_env,
+                              capture_output=True, text=True, timeout=20)
+        assert done.returncode == 0, (done.stdout, done.stderr)
+        assert binary.read_bytes() == payload
+        assert not list(normal_target.glob('.codedb-download.*'))
+        print('PASS: normal install through main')
+
+        configs = [
+            ('claude', json.loads(claude_config.read_text())['mcpServers']),
+            ('codex', tomllib.loads(codex_config.read_text())['mcp_servers']),
+            ('qwen detected client', json.loads(qwen_config.read_text())['mcpServers']),
+        ]
+        for name, config in configs:
+            assert config['other']['command'] == 'other-tool'
+            assert config['codedb']['command'] == str(binary)
+            assert config['codedb']['args'] == ['mcp']
+            print('PASS: normal', name, 'registration preserves other servers')
+
+        hook = fixture_home / '.claude/hooks/codedb-block-legacy.sh'
+        assert hook.is_file() and os.access(hook, os.X_OK)
+        settings = json.loads((fixture_home / '.claude/settings.json').read_text())
+        assert any('codedb-block-legacy.sh' in entry['hooks'][0]['command']
+                   for entry in settings['hooks']['PreToolUse'])
+        for command, expected in [('sed -i s/old/new/ code.py', 0), ('awk "{print}" code.py', 0),
+                                  ('rg handler .', 2), ('python3 edit.py', 0)]:
+            done = subprocess.run(['/bin/bash', str(hook)], cwd=project, env=normal_env,
                                   input=json.dumps({'tool_input': {'command': command}}),
                                   capture_output=True, text=True, timeout=10)
             assert done.returncode == expected, (command, done.stderr)
             assert 'codedb_edit' not in done.stderr
-            print('PASS: hook', command.split()[0])
-
-        # Exercise fresh client registration against fixture config paths.
-        # Existing unrelated MCP registrations must survive the additive writes.
-        (fixture_home / '.claude.json').write_text(json.dumps({'mcpServers': {'other': {'command': 'other-tool'}}}))
-        (fixture_home / '.codex').mkdir()
-        (fixture_home / '.codex/config.toml').write_text('[mcp_servers.other]\ncommand = "other-tool"\n')
-        definitions = installer.read_text().rsplit('\nmain\n', 1)[0]
-        registration_script = root / 'register.sh'
-        registration_script.write_text(definitions.replace('$HOME', '${CODEDB_INSTALL_TEST_ROOT}') +
-                                       '\nregister_claude ' + shlex.quote(str(fake_codedb)) +
-                                       '\nregister_codex ' + shlex.quote(str(fake_codedb)) + '\n')
-        subprocess.run(['/bin/bash', str(registration_script)], env=hook_env, check=True, capture_output=True, text=True)
-        claude = json.loads((fixture_home / '.claude.json').read_text())['mcpServers']
-        codex = tomllib.loads((fixture_home / '.codex/config.toml').read_text())['mcp_servers']
-        for name, config in [('claude', claude), ('codex', codex)]:
-            assert config['other']['command'] == 'other-tool'
-            assert config['codedb']['command'] == str(fake_codedb)
-            assert config['codedb']['args'] == ['mcp']
-            print('PASS: fresh', name, 'registration preserves other servers')
+            print('PASS: installed hook', command.split()[0])
 
 
 if __name__ == '__main__':
