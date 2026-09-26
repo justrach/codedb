@@ -344,11 +344,12 @@ fn fetchHttpResponseOnce(
         .response_writer = &response_writer,
     });
     if (fetch_result.status != .ok) {
-        return switch (fetch_result.status) {
-            .too_many_requests => error.EmbeddingRateLimited,
-            .internal_server_error, .bad_gateway, .service_unavailable, .gateway_timeout => error.EmbeddingProviderUnavailable,
-            else => error.EmbeddingProviderRejected,
-        };
+        if (fetch_result.status == .too_many_requests) return error.EmbeddingRateLimited;
+        // Gateways can emit non-standard 5xx codes that the status enum does
+        // not name. They are still provider failures, not client rejections.
+        const status_code = @intFromEnum(fetch_result.status);
+        if (status_code >= 500 and status_code < 600) return error.EmbeddingProviderUnavailable;
+        return error.EmbeddingProviderRejected;
     }
     return try allocator.dupe(u8, response_writer.buffer[0..response_writer.end]);
 }
