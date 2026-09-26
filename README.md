@@ -127,7 +127,8 @@ over stdio, with an optional localhost HTTP server.
   HCL, R, Dart/Flutter, and OCaml; more languages have lightweight outlines.
 - **Navigation:** task context, symbol definitions, callers, dependency graphs,
   trigram search, and portable snapshots.
-- **Live updates:** bounded OS watches with periodic content verification for overflow.
+- **Live updates:** recursive macOS events on local APFS/HFS volumes; bounded OS
+  watches and periodic content verification on fallback paths.
   Each MCP process owns its watcher; multiple clients can multiply background work.
 - **Distribution:** macOS, Linux, and Windows binaries; SHA256-verified downloads.
   macOS releases are signed and notarized.
@@ -429,7 +430,7 @@ The watcher stats `.git/HEAD` mtime before forking `git rev-parse HEAD`. These h
 
 - **Explorer** — structural index engine. Parses Zig, Python, TypeScript/JavaScript, Rust, Go, PHP, Ruby, HCL, R, and Dart. Maintains outlines, trigram index, inverted word index, content cache, and dependency graph behind a single mutex.
 - **Store** — append-only version log. Every recorded file change (snapshot, modification, deletion) gets a monotonically increasing sequence number. Version history capped at 100 per file.
-- **Watcher** — bounded OS watches, 100ms event coalescing, and content verification for overflow about every 2s. `FilteredWalker` prunes `.git`, `node_modules`, `zig-cache`, `__pycache__`, etc. before descending.
+- **Watcher** — recursive file events on local macOS APFS/HFS volumes, with bounded content probes about every 2s and a full directory audit every 60s. Ignore-policy events invalidate affected descendants immediately. Aliases, other volumes, unavailable streams, and other platforms retain bounded OS watches and two-second fallback audits. Set `CODEDB_NO_FSEVENTS=1` to exercise the macOS fallback. `FilteredWalker` prunes `.git`, `node_modules`, `zig-cache`, `__pycache__`, etc. before descending. See the [watcher measurements](docs/watcher-748.md).
 - **Agents** — first-class structs with cursors, heartbeats, and exclusive file locks. Stale agents reaped after 30s.
 
 ### Threading Model

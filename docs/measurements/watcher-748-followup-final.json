@@ -1,0 +1,57 @@
+{
+  "mode": "recursive-events",
+  "record_type": "summary_of_historical_stress_receipt",
+  "candidate_sha256": "c47e0224cce9e505fbb4b4622386890b00b9c904763c1f1aca183c4fbee17415",
+  "cases": [
+    {
+      "watch_budget": 32,
+      "clients": 3,
+      "directories": 1200,
+      "source_files": 4800,
+      "phases": [
+        {
+          "phase": "quiet",
+          "cpu_percent_per_client": [1.998991604590459, 1.4992437034428447, 1.34931933309856],
+          "wall_seconds": 20.010089040966704
+        },
+        {
+          "phase": "churn",
+          "cpu_percent_per_client": [1.7990985428938013, 1.6991486238441453, 1.7491235833689731],
+          "wall_seconds": 20.010021208785474
+        }
+      ],
+      "checks_passed": 61,
+      "checks_total": 61,
+      "unchanged_under_excluded_churn": true,
+      "churn_pairs": 12795,
+      "alive": true,
+      "rss_kib": [122896, 82512, 82576],
+      "failures": []
+    },
+    {
+      "watch_budget": 1024,
+      "clients": 1,
+      "directories": 1200,
+      "source_files": 4800,
+      "phases": [
+        {
+          "phase": "quiet",
+          "cpu_percent_per_client": [1.2494694102002888],
+          "wall_seconds": 20.00849304185249
+        },
+        {
+          "phase": "churn",
+          "cpu_percent_per_client": [3.3995172048054183],
+          "wall_seconds": 20.00284037506208
+        }
+      ],
+      "checks_passed": 61,
+      "checks_total": 61,
+      "unchanged_under_excluded_churn": true,
+      "churn_pairs": 10989,
+      "alive": true,
+      "rss_kib": [103728],
+      "failures": []
+    }
+  ]
+}

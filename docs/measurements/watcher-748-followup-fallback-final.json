@@ -1,0 +1,57 @@
+{
+  "mode": "forced-fallback",
+  "record_type": "summary_of_historical_stress_receipt",
+  "candidate_sha256": "c47e0224cce9e505fbb4b4622386890b00b9c904763c1f1aca183c4fbee17415",
+  "cases": [
+    {
+      "watch_budget": 32,
+      "clients": 3,
+      "directories": 1200,
+      "source_files": 4800,
+      "phases": [
+        {
+          "phase": "quiet",
+          "cpu_percent_per_client": [5.496953244966012, 5.397008640512084, 4.997230222696374],
+          "wall_seconds": 10.005542624974623
+        },
+        {
+          "phase": "churn",
+          "cpu_percent_per_client": [13.188560790897144, 13.088647451572166, 11.789774040347444],
+          "wall_seconds": 10.008673584088683
+        }
+      ],
+      "checks_passed": 61,
+      "checks_total": 61,
+      "unchanged_under_excluded_churn": true,
+      "churn_pairs": 11991,
+      "alive": true,
+      "rss_kib": [116592, 76192, 76256],
+      "failures": []
+    },
+    {
+      "watch_budget": 1024,
+      "clients": 1,
+      "directories": 1200,
+      "source_files": 4800,
+      "phases": [
+        {
+          "phase": "quiet",
+          "cpu_percent_per_client": [6.793338084503384],
+          "wall_seconds": 10.009806541958824
+        },
+        {
+          "phase": "churn",
+          "cpu_percent_per_client": [13.789510721876548],
+          "wall_seconds": 10.007606707978994
+        }
+      ],
+      "checks_passed": 61,
+      "checks_total": 61,
+      "unchanged_under_excluded_churn": true,
+      "churn_pairs": 10935,
+      "alive": true,
+      "rss_kib": [117296],
+      "failures": []
+    }
+  ]
+}
