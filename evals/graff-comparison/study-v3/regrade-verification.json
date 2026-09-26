@@ -1,0 +1,245 @@
+{
+  "python": "3.14.5 (main, May 10 2026, 10:21:34) [Clang 21.0.0 (clang-2100.0.123.102)]",
+  "records": [
+    {
+      "attempt": "atomic-symlink-write-r1/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "atomic-symlink-write-r1/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "atomic-symlink-write-r1/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "atomic-symlink-write-r2/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "atomic-symlink-write-r2/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "atomic-symlink-write-r2/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cache-gitroot-r1/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cache-gitroot-r1/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cache-gitroot-r1/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cache-gitroot-r2/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cache-gitroot-r2/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cache-gitroot-r2/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "mcp-first-turn-r1/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "mcp-first-turn-r1/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "mcp-first-turn-r1/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "mcp-first-turn-r2/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "mcp-first-turn-r2/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "mcp-first-turn-r2/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "json-stream-r1/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "json-stream-r1/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "json-stream-r1/graphify",
+      "passed": false,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "json-stream-r2/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "json-stream-r2/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "json-stream-r2/graphify",
+      "passed": false,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "map-conflict-r1/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "map-conflict-r1/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "map-conflict-r1/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "map-conflict-r2/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "map-conflict-r2/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "map-conflict-r2/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "validated-r1/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "validated-r1/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "validated-r1/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "validated-r2/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "validated-r2/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "validated-r2/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "config-parse-r1/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "config-parse-r1/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "config-parse-r1/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "config-parse-r2/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "config-parse-r2/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "config-parse-r2/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cookie-store-r1/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cookie-store-r1/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cookie-store-r1/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cookie-store-r2/baseline",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cookie-store-r2/codedb",
+      "passed": true,
+      "matches_recorded_result": true
+    },
+    {
+      "attempt": "cookie-store-r2/graphify",
+      "passed": true,
+      "matches_recorded_result": true
+    }
+  ]
+}

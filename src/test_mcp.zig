@@ -2899,6 +2899,7 @@ test "issue-688: codedb_context json exposes typed provenance and preserves mark
     const retrieval = structured.value.object.get("retrieval").?.object;
     try testing.expectEqualStrings("local_bm25_and_symbols", retrieval.get("initial").?.string);
     try testing.expectEqualStrings("not_requested", retrieval.get("semantic").?.string);
+    try testing.expectEqual(@as(i64, 0), retrieval.get("ann_embed_ns").?.integer);
     try testing.expectEqualStrings("keep_local_bm25_no_cpu_embedding_fallback", retrieval.get("failure_policy").?.string);
     try testing.expect(structured.value.object.get("omissions").? == .array);
 

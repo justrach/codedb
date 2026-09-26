@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-11",
+  "base_commit": "0730dac1965a054fcc080df2facba92dff68ae16",
+  "result": {
+    "binary_sha256": "046cd89e3037d4e593b9c2d602bd1fccf8fc78eb5849c375ec59012d5e189bd4",
+    "scope": "Synthetic loopback transport and lifecycle checks. No model or live accuracy evaluation.",
+    "checks": [
+      {
+        "name": "fresh project uses bounded fallback",
+        "semantic": "applied_exact_fallback",
+        "detail": "AnnIndexMissing",
+        "ann_cache_hit": false,
+        "wall_ms": 75.02
+      },
+      {
+        "name": "local-only query sends no request",
+        "semantic": "not_requested",
+        "detail": null,
+        "ann_cache_hit": false,
+        "wall_ms": 25.08
+      },
+      {
+        "name": "http_401 preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingProviderRejected",
+        "ann_cache_hit": false,
+        "wall_ms": 20.61
+      },
+      {
+        "name": "http_429 preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingRateLimited",
+        "ann_cache_hit": false,
+        "wall_ms": 25.16
+      },
+      {
+        "name": "http_503 preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingProviderUnavailable",
+        "ann_cache_hit": false,
+        "wall_ms": 25.1
+      },
+      {
+        "name": "malformed preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "SyntaxError",
+        "ann_cache_hit": false,
+        "wall_ms": 21.44
+      },
+      {
+        "name": "dimensions preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingDimensions",
+        "ann_cache_hit": false,
+        "wall_ms": 24.09
+      },
+      {
+        "name": "duplicate preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingResponse",
+        "ann_cache_hit": false,
+        "wall_ms": 22.7
+      },
+      {
+        "name": "model preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingModelMismatch",
+        "ann_cache_hit": false,
+        "wall_ms": 25.15
+      },
+      {
+        "name": "nonfinite preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingNumber",
+        "ann_cache_hit": false,
+        "wall_ms": 25.16
+      },
+      {
+        "name": "zero preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "InvalidEmbeddingVector",
+        "ann_cache_hit": false,
+        "wall_ms": 21.04
+      },
+      {
+        "name": "slow preserves local result and recovers in-session",
+        "semantic": "unavailable",
+        "detail": "EmbeddingTimeout",
+        "ann_cache_hit": false,
+        "wall_ms": 311.99
+      },
+      {
+        "name": "one dropped connection recovers within retry budget",
+        "semantic": "applied_exact_fallback",
+        "detail": "AnnIndexMissing",
+        "ann_cache_hit": false,
+        "wall_ms": 124.53
+      },
+      {
+        "name": "persistent dropped connections stop after two attempts",
+        "semantic": "unavailable",
+        "detail": "HttpConnectionClosing",
+        "ann_cache_hit": false,
+        "wall_ms": 118.16
+      },
+      {
+        "name": "timeout still bounds a retried connection",
+        "semantic": "unavailable",
+        "detail": "EmbeddingTimeout",
+        "ann_cache_hit": false,
+        "wall_ms": 315.49
+      },
+      {
+        "name": "valid fixture index activates ANN",
+        "semantic": "ann_applied",
+        "detail": null,
+        "ann_cache_hit": false,
+        "wall_ms": 25.15
+      },
+      {
+        "name": "exhausted build retries preserve prior index",
+        "attempts": 3
+      },
+      {
+        "name": "transient build rate limit recovers",
+        "chunk_attempts": 2
+      },
+      {
+        "name": "denied slab writes preserve prior generation and leave no new files",
+        "error": "\u2713 indexed  \u26a1 363.0\u00b5s\n\u2717 semantic index failed: AccessDenied"
+      },
+      {
+        "name": "denied metadata replacement preserves prior generation and cleans new slab",
+        "error": "\u2713 indexed  \u26a1 227.0\u00b5s\n\u2717 semantic index failed: PermissionDenied"
+      },
+      {
+        "name": "rebuild succeeds after write restrictions are removed"
+      },
+      {
+        "name": "three clients search during rebuild and adopt replacement",
+        "clients": 3
+      },
+      {
+        "name": "killed embedding build preserves prior index"
+      },
+      {
+        "name": "edit during build rejects publication and preserves prior bytes"
+      },
+      {
+        "name": "rebuild after concurrent edit restores ANN",
+        "semantic": "ann_applied",
+        "detail": null,
+        "ann_cache_hit": false,
+        "wall_ms": 71.18
+      },
+      {
+        "name": "no metadata temp files remain after controlled failures"
+      },
+      {
+        "name": "sensitive fixtures excluded from all query and build requests",
+        "request_inputs": 116
+      }
+    ],
+    "failures": []
+  },
+  "source_sha256": "b39e7ae2043b7f28fcddcaa51b56be0669a2966f7d591242b9ce14c13cf7298b",
+  "raw_artifact_sha256": {
+    "final.json": "b57be86a9dd7551fc82fd5c3de529f6c5f3ba130a5cda2c38878bd5dfe0b994e",
+    "final.log": "d9f2aa10256c93903cf47e71473d539fabcc4dd3fc060c16944bc48c5bcdc2f4",
+    "run1.json": "cae8c9f04bb8909f68816f8335ab79a793d4208db71c95e46c8be4eed01156d4"
+  },
+  "scope": "Apple Silicon macOS; loopback synthetic embedding provider. Denied slab creation and immutable metadata replacement use actual OS permission failures in owned fixtures.",
+  "limits": [
+    "Not ENOSPC, power loss, Windows or Linux validation.",
+    "No ranking quality measured.",
+    "No runtime code change required; existing recovery held.",
+    "Prior unit/MCP result applies to unchanged binary; this turn reran the expanded fault suite."
+  ]
+}

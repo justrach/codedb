@@ -1,0 +1,944 @@
+{
+  "binary": "/Users/blackfloofie/tmp/codedb-followup-evidence/final/bin/codedb",
+  "sha256": "c47e0224cce9e505fbb4b4622386890b00b9c904763c1f1aca183c4fbee17415",
+  "cases": [
+    {
+      "budget": 32,
+      "clients": 3,
+      "directories": 1200,
+      "source_files": 4800,
+      "checks": [
+        {
+          "symbol": "mutation_1190_0",
+          "path": "d1190/f0.py",
+          "present": true,
+          "latency_ms": 1738.77,
+          "passed": true
+        },
+        {
+          "symbol": "original_1190_0",
+          "path": "d1190/f0.py",
+          "present": false,
+          "latency_ms": 80.85,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_0",
+          "path": "d1190/created0.py",
+          "present": true,
+          "latency_ms": 284.73,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_0",
+          "path": "d1190/renamed0.py",
+          "present": true,
+          "latency_ms": 247.1,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_0",
+          "path": "d1190/created0.py",
+          "present": false,
+          "latency_ms": 79.86,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_0",
+          "path": "d1190/renamed0.py",
+          "present": false,
+          "latency_ms": 278.73,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1191_0",
+          "path": "d1191/f0.py",
+          "present": true,
+          "latency_ms": 1199.12,
+          "passed": true
+        },
+        {
+          "symbol": "original_1191_0",
+          "path": "d1191/f0.py",
+          "present": false,
+          "latency_ms": 83.82,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_1",
+          "path": "d1191/created1.py",
+          "present": true,
+          "latency_ms": 242.13,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_1",
+          "path": "d1191/renamed1.py",
+          "present": true,
+          "latency_ms": 269.96,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_1",
+          "path": "d1191/created1.py",
+          "present": false,
+          "latency_ms": 70.35,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_1",
+          "path": "d1191/renamed1.py",
+          "present": false,
+          "latency_ms": 282.5,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1192_0",
+          "path": "d1192/f0.py",
+          "present": true,
+          "latency_ms": 1164.42,
+          "passed": true
+        },
+        {
+          "symbol": "original_1192_0",
+          "path": "d1192/f0.py",
+          "present": false,
+          "latency_ms": 85.53,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_2",
+          "path": "d1192/created2.py",
+          "present": true,
+          "latency_ms": 282.14,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_2",
+          "path": "d1192/renamed2.py",
+          "present": true,
+          "latency_ms": 267.88,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_2",
+          "path": "d1192/created2.py",
+          "present": false,
+          "latency_ms": 79.24,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_2",
+          "path": "d1192/renamed2.py",
+          "present": false,
+          "latency_ms": 273.96,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1193_0",
+          "path": "d1193/f0.py",
+          "present": true,
+          "latency_ms": 1196.33,
+          "passed": true
+        },
+        {
+          "symbol": "original_1193_0",
+          "path": "d1193/f0.py",
+          "present": false,
+          "latency_ms": 79.98,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_3",
+          "path": "d1193/created3.py",
+          "present": true,
+          "latency_ms": 264.32,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_3",
+          "path": "d1193/renamed3.py",
+          "present": true,
+          "latency_ms": 234.8,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_3",
+          "path": "d1193/created3.py",
+          "present": false,
+          "latency_ms": 77.82,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_3",
+          "path": "d1193/renamed3.py",
+          "present": false,
+          "latency_ms": 243.85,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1194_0",
+          "path": "d1194/f0.py",
+          "present": true,
+          "latency_ms": 1218.15,
+          "passed": true
+        },
+        {
+          "symbol": "original_1194_0",
+          "path": "d1194/f0.py",
+          "present": false,
+          "latency_ms": 87.15,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_4",
+          "path": "d1194/created4.py",
+          "present": true,
+          "latency_ms": 221.74,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_4",
+          "path": "d1194/renamed4.py",
+          "present": true,
+          "latency_ms": 286.08,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_4",
+          "path": "d1194/created4.py",
+          "present": false,
+          "latency_ms": 73.28,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_4",
+          "path": "d1194/renamed4.py",
+          "present": false,
+          "latency_ms": 283.75,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1195_0",
+          "path": "d1195/f0.py",
+          "present": true,
+          "latency_ms": 1340.41,
+          "passed": true
+        },
+        {
+          "symbol": "original_1195_0",
+          "path": "d1195/f0.py",
+          "present": false,
+          "latency_ms": 88.77,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_5",
+          "path": "d1195/created5.py",
+          "present": true,
+          "latency_ms": 248.31,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_5",
+          "path": "d1195/renamed5.py",
+          "present": true,
+          "latency_ms": 279.52,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_5",
+          "path": "d1195/created5.py",
+          "present": false,
+          "latency_ms": 78.95,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_5",
+          "path": "d1195/renamed5.py",
+          "present": false,
+          "latency_ms": 270.82,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1196_0",
+          "path": "d1196/f0.py",
+          "present": true,
+          "latency_ms": 1210.03,
+          "passed": true
+        },
+        {
+          "symbol": "original_1196_0",
+          "path": "d1196/f0.py",
+          "present": false,
+          "latency_ms": 77.77,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_6",
+          "path": "d1196/created6.py",
+          "present": true,
+          "latency_ms": 280.13,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_6",
+          "path": "d1196/renamed6.py",
+          "present": true,
+          "latency_ms": 275.49,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_6",
+          "path": "d1196/created6.py",
+          "present": false,
+          "latency_ms": 77.01,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_6",
+          "path": "d1196/renamed6.py",
+          "present": false,
+          "latency_ms": 272.93,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1197_0",
+          "path": "d1197/f0.py",
+          "present": true,
+          "latency_ms": 1206.11,
+          "passed": true
+        },
+        {
+          "symbol": "original_1197_0",
+          "path": "d1197/f0.py",
+          "present": false,
+          "latency_ms": 76.97,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_7",
+          "path": "d1197/created7.py",
+          "present": true,
+          "latency_ms": 213.36,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_7",
+          "path": "d1197/renamed7.py",
+          "present": true,
+          "latency_ms": 285.67,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_7",
+          "path": "d1197/created7.py",
+          "present": false,
+          "latency_ms": 78.43,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_7",
+          "path": "d1197/renamed7.py",
+          "present": false,
+          "latency_ms": 216.76,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1198_0",
+          "path": "d1198/f0.py",
+          "present": true,
+          "latency_ms": 1374.56,
+          "passed": true
+        },
+        {
+          "symbol": "original_1198_0",
+          "path": "d1198/f0.py",
+          "present": false,
+          "latency_ms": 79.96,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_8",
+          "path": "d1198/created8.py",
+          "present": true,
+          "latency_ms": 270.83,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_8",
+          "path": "d1198/renamed8.py",
+          "present": true,
+          "latency_ms": 218.63,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_8",
+          "path": "d1198/created8.py",
+          "present": false,
+          "latency_ms": 88.45,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_8",
+          "path": "d1198/renamed8.py",
+          "present": false,
+          "latency_ms": 246.41,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1199_0",
+          "path": "d1199/f0.py",
+          "present": true,
+          "latency_ms": 276.26,
+          "passed": true
+        },
+        {
+          "symbol": "original_1199_0",
+          "path": "d1199/f0.py",
+          "present": false,
+          "latency_ms": 90.16,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_9",
+          "path": "d1199/created9.py",
+          "present": true,
+          "latency_ms": 282.72,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_9",
+          "path": "d1199/renamed9.py",
+          "present": true,
+          "latency_ms": 264.38,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_9",
+          "path": "d1199/created9.py",
+          "present": false,
+          "latency_ms": 89.44,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_9",
+          "path": "d1199/renamed9.py",
+          "present": false,
+          "latency_ms": 336.28,
+          "passed": true
+        },
+        {
+          "symbol": "nested_created",
+          "path": "fresh/nested/probe.py",
+          "present": true,
+          "latency_ms": 277.97,
+          "passed": true
+        }
+      ],
+      "failures": [],
+      "phases": [
+        {
+          "phase": "quiet",
+          "cpu_percent_per_client": [
+            5.496953244966012,
+            5.397008640512084,
+            4.997230222696374
+          ],
+          "wall_seconds": 10.005542624974623
+        },
+        {
+          "phase": "churn",
+          "cpu_percent_per_client": [
+            13.188560790897144,
+            13.088647451572166,
+            11.789774040347444
+          ],
+          "wall_seconds": 10.008673584088683
+        }
+      ],
+      "unchanged_under_excluded_churn": true,
+      "status_before": [
+        "codedb status:\n  seq: 4801\n  files: 4801\n  outlines: 4801\n  contents_cached: 0\n  trigram_index: mmap (4800 files)\n  index_memory: 22959KB\n  scan: ready\n",
+        "codedb status:\n  seq: 4801\n  files: 4801\n  outlines: 4801\n  contents_cached: 0\n  trigram_index: mmap (4800 files)\n  index_memory: 22725KB\n  scan: ready\n",
+        "codedb status:\n  seq: 4801\n  files: 4801\n  outlines: 4801\n  contents_cached: 0\n  trigram_index: mmap (4800 files)\n  index_memory: 22725KB\n  scan: ready\n"
+      ],
+      "status_after_churn": [
+        "codedb status:\n  seq: 4801\n  files: 4801\n  outlines: 4801\n  contents_cached: 0\n  trigram_index: mmap (4800 files)\n  index_memory: 22959KB\n  scan: ready\n",
+        "codedb status:\n  seq: 4801\n  files: 4801\n  outlines: 4801\n  contents_cached: 0\n  trigram_index: mmap (4800 files)\n  index_memory: 22725KB\n  scan: ready\n",
+        "codedb status:\n  seq: 4801\n  files: 4801\n  outlines: 4801\n  contents_cached: 0\n  trigram_index: mmap (4800 files)\n  index_memory: 22725KB\n  scan: ready\n"
+      ],
+      "churn_pairs": 11991,
+      "alive": true,
+      "rss_kib": [
+        116592,
+        76192,
+        76256
+      ]
+    },
+    {
+      "budget": 1024,
+      "clients": 1,
+      "directories": 1200,
+      "source_files": 4800,
+      "checks": [
+        {
+          "symbol": "mutation_1190_0",
+          "path": "d1190/f0.py",
+          "present": true,
+          "latency_ms": 2032.82,
+          "passed": true
+        },
+        {
+          "symbol": "original_1190_0",
+          "path": "d1190/f0.py",
+          "present": false,
+          "latency_ms": 30.04,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_0",
+          "path": "d1190/created0.py",
+          "present": true,
+          "latency_ms": 170.12,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_0",
+          "path": "d1190/renamed0.py",
+          "present": true,
+          "latency_ms": 161.56,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_0",
+          "path": "d1190/created0.py",
+          "present": false,
+          "latency_ms": 30.08,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_0",
+          "path": "d1190/renamed0.py",
+          "present": false,
+          "latency_ms": 164.11,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1191_0",
+          "path": "d1191/f0.py",
+          "present": true,
+          "latency_ms": 1646.14,
+          "passed": true
+        },
+        {
+          "symbol": "original_1191_0",
+          "path": "d1191/f0.py",
+          "present": false,
+          "latency_ms": 22.89,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_1",
+          "path": "d1191/created1.py",
+          "present": true,
+          "latency_ms": 170.13,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_1",
+          "path": "d1191/renamed1.py",
+          "present": true,
+          "latency_ms": 156.35,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_1",
+          "path": "d1191/created1.py",
+          "present": false,
+          "latency_ms": 30.14,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_1",
+          "path": "d1191/renamed1.py",
+          "present": false,
+          "latency_ms": 158.18,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1192_0",
+          "path": "d1192/f0.py",
+          "present": true,
+          "latency_ms": 1643.91,
+          "passed": true
+        },
+        {
+          "symbol": "original_1192_0",
+          "path": "d1192/f0.py",
+          "present": false,
+          "latency_ms": 29.44,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_2",
+          "path": "d1192/created2.py",
+          "present": true,
+          "latency_ms": 165.19,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_2",
+          "path": "d1192/renamed2.py",
+          "present": true,
+          "latency_ms": 170.16,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_2",
+          "path": "d1192/created2.py",
+          "present": false,
+          "latency_ms": 30.09,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_2",
+          "path": "d1192/renamed2.py",
+          "present": false,
+          "latency_ms": 169.22,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1193_0",
+          "path": "d1193/f0.py",
+          "present": true,
+          "latency_ms": 1488.49,
+          "passed": true
+        },
+        {
+          "symbol": "original_1193_0",
+          "path": "d1193/f0.py",
+          "present": false,
+          "latency_ms": 30.06,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_3",
+          "path": "d1193/created3.py",
+          "present": true,
+          "latency_ms": 169.45,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_3",
+          "path": "d1193/renamed3.py",
+          "present": true,
+          "latency_ms": 170.09,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_3",
+          "path": "d1193/created3.py",
+          "present": false,
+          "latency_ms": 24.71,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_3",
+          "path": "d1193/renamed3.py",
+          "present": false,
+          "latency_ms": 170.27,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1194_0",
+          "path": "d1194/f0.py",
+          "present": true,
+          "latency_ms": 1628.5,
+          "passed": true
+        },
+        {
+          "symbol": "original_1194_0",
+          "path": "d1194/f0.py",
+          "present": false,
+          "latency_ms": 30.08,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_4",
+          "path": "d1194/created4.py",
+          "present": true,
+          "latency_ms": 167.0,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_4",
+          "path": "d1194/renamed4.py",
+          "present": true,
+          "latency_ms": 170.1,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_4",
+          "path": "d1194/created4.py",
+          "present": false,
+          "latency_ms": 30.03,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_4",
+          "path": "d1194/renamed4.py",
+          "present": false,
+          "latency_ms": 170.07,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1195_0",
+          "path": "d1195/f0.py",
+          "present": true,
+          "latency_ms": 1649.39,
+          "passed": true
+        },
+        {
+          "symbol": "original_1195_0",
+          "path": "d1195/f0.py",
+          "present": false,
+          "latency_ms": 30.06,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_5",
+          "path": "d1195/created5.py",
+          "present": true,
+          "latency_ms": 170.14,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_5",
+          "path": "d1195/renamed5.py",
+          "present": true,
+          "latency_ms": 160.02,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_5",
+          "path": "d1195/created5.py",
+          "present": false,
+          "latency_ms": 27.9,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_5",
+          "path": "d1195/renamed5.py",
+          "present": false,
+          "latency_ms": 163.29,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1196_0",
+          "path": "d1196/f0.py",
+          "present": true,
+          "latency_ms": 1611.78,
+          "passed": true
+        },
+        {
+          "symbol": "original_1196_0",
+          "path": "d1196/f0.py",
+          "present": false,
+          "latency_ms": 21.49,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_6",
+          "path": "d1196/created6.py",
+          "present": true,
+          "latency_ms": 159.12,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_6",
+          "path": "d1196/renamed6.py",
+          "present": true,
+          "latency_ms": 165.52,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_6",
+          "path": "d1196/created6.py",
+          "present": false,
+          "latency_ms": 30.13,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_6",
+          "path": "d1196/renamed6.py",
+          "present": false,
+          "latency_ms": 158.5,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1197_0",
+          "path": "d1197/f0.py",
+          "present": true,
+          "latency_ms": 1790.09,
+          "passed": true
+        },
+        {
+          "symbol": "original_1197_0",
+          "path": "d1197/f0.py",
+          "present": false,
+          "latency_ms": 23.9,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_7",
+          "path": "d1197/created7.py",
+          "present": true,
+          "latency_ms": 164.74,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_7",
+          "path": "d1197/renamed7.py",
+          "present": true,
+          "latency_ms": 165.08,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_7",
+          "path": "d1197/created7.py",
+          "present": false,
+          "latency_ms": 27.8,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_7",
+          "path": "d1197/renamed7.py",
+          "present": false,
+          "latency_ms": 164.72,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1198_0",
+          "path": "d1198/f0.py",
+          "present": true,
+          "latency_ms": 163.6,
+          "passed": true
+        },
+        {
+          "symbol": "original_1198_0",
+          "path": "d1198/f0.py",
+          "present": false,
+          "latency_ms": 24.29,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_8",
+          "path": "d1198/created8.py",
+          "present": true,
+          "latency_ms": 165.03,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_8",
+          "path": "d1198/renamed8.py",
+          "present": true,
+          "latency_ms": 168.03,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_8",
+          "path": "d1198/created8.py",
+          "present": false,
+          "latency_ms": 25.03,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_8",
+          "path": "d1198/renamed8.py",
+          "present": false,
+          "latency_ms": 160.05,
+          "passed": true
+        },
+        {
+          "symbol": "mutation_1199_0",
+          "path": "d1199/f0.py",
+          "present": true,
+          "latency_ms": 170.22,
+          "passed": true
+        },
+        {
+          "symbol": "original_1199_0",
+          "path": "d1199/f0.py",
+          "present": false,
+          "latency_ms": 30.06,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_9",
+          "path": "d1199/created9.py",
+          "present": true,
+          "latency_ms": 161.47,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_9",
+          "path": "d1199/renamed9.py",
+          "present": true,
+          "latency_ms": 167.8,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_9",
+          "path": "d1199/created9.py",
+          "present": false,
+          "latency_ms": 30.05,
+          "passed": true
+        },
+        {
+          "symbol": "new_symbol_9",
+          "path": "d1199/renamed9.py",
+          "present": false,
+          "latency_ms": 155.66,
+          "passed": true
+        },
+        {
+          "symbol": "nested_created",
+          "path": "fresh/nested/probe.py",
+          "present": true,
+          "latency_ms": 149.33,
+          "passed": true
+        }
+      ],
+      "failures": [],
+      "phases": [
+        {
+          "phase": "quiet",
+          "cpu_percent_per_client": [
+            6.793338084503384
+          ],
+          "wall_seconds": 10.009806541958824
+        },
+        {
+          "phase": "churn",
+          "cpu_percent_per_client": [
+            13.789510721876548
+          ],
+          "wall_seconds": 10.007606707978994
+        }
+      ],
+      "unchanged_under_excluded_churn": true,
+      "status_before": [
+        "codedb status:\n  seq: 4801\n  files: 4801\n  outlines: 4801\n  contents_cached: 0\n  trigram_index: mmap (4800 files)\n  index_memory: 22959KB\n  scan: ready\n"
+      ],
+      "status_after_churn": [
+        "codedb status:\n  seq: 4801\n  files: 4801\n  outlines: 4801\n  contents_cached: 0\n  trigram_index: mmap (4800 files)\n  index_memory: 22959KB\n  scan: ready\n"
+      ],
+      "churn_pairs": 10935,
+      "alive": true,
+      "rss_kib": [
+        117296
+      ]
+    }
+  ]
+}

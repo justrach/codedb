@@ -1,0 +1,245 @@
+{
+  "schema_version": 1,
+  "id": "itsdangerous-jina-followup-v1",
+  "source_url": "https://github.com/pallets/itsdangerous",
+  "source_revision": "672971d66a2ef9f85151e53283113f33d642dabd",
+  "description": "Fresh cross-repository holdout authored after freezing followup ranking policy; 12 behavior, 2 type-definition and 6 test requests. No ranking tuning after results are opened.",
+  "corpus_files": {
+    "src/itsdangerous/__init__.py": "cd4e17bf6c055e1d4e6fb30c5d51406365ccb0d5e2bb0f65b446a9208996a9a0",
+    "src/itsdangerous/_json.py": "c0f4069a07b6c99f77dbc107285ea069d19ec866022502b1b54fa22ca13a5270",
+    "src/itsdangerous/encoding.py": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453",
+    "src/itsdangerous/exc.py": "46bddec68d0c44511c3d996dc1e7322b5e955756c4d8af7f175f9dfa58dc527e",
+    "src/itsdangerous/serializer.py": "6d6f1687897c7e3ac6eeff5bfd6794df90e299feedcc6aae3faa0e53ffe925e8",
+    "src/itsdangerous/signer.py": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584",
+    "src/itsdangerous/timed.py": "3afbf6050e8b73605931d1e516f374835456979e4319c098bfe5f284f120c6c5",
+    "src/itsdangerous/url_safe.py": "6b3e1ee5f5e2fefb3e61b5a3f186709f8c2254a7de0fef8610a453e547aee0fe",
+    "tests/test_itsdangerous/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tests/test_itsdangerous/test_encoding.py": "af71dbee0825fc8ae947b6c789b05f2331afe60efae2aee5145727446385c3f0",
+    "tests/test_itsdangerous/test_serializer.py": "12a6583952e31a13edf870baf6517a8bf5403c7f072e08d7aaaccce64ab2c00a",
+    "tests/test_itsdangerous/test_signer.py": "219c2a399adc874f14534d1311e950c1e29b2c7d05d037770701b2af258b97a2",
+    "tests/test_itsdangerous/test_timed.py": "b75531b8901d48a6d7a5c4bbbb2342f02f6ef022185840121f7705c1e907979a",
+    "tests/test_itsdangerous/test_url_safe.py": "64d2afc9ab467f209549841f0d87125243d646e011c725818eda8e75ad4d830d"
+  },
+  "queries": [
+    {
+      "id": "itsdangerous-00",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does URL-safe base64 decoding restore missing padding?",
+      "gold": {
+        "src/itsdangerous/encoding.py": 3
+      },
+      "source_anchor": "string += b\"=\" * (-len(string) % 4)",
+      "source_line": 33
+    },
+    {
+      "id": "itsdangerous-01",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where is an integer encoded as big-endian bytes with leading zero bytes removed?",
+      "gold": {
+        "src/itsdangerous/encoding.py": 3
+      },
+      "source_anchor": "def int_to_bytes(",
+      "source_line": 49
+    },
+    {
+      "id": "itsdangerous-02",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does key derivation choose between concatenation, HMAC, and no derivation?",
+      "gold": {
+        "src/itsdangerous/signer.py": 3
+      },
+      "source_anchor": "def derive_key(",
+      "source_line": 182
+    },
+    {
+      "id": "itsdangerous-03",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does signature verification try older secret keys during key rotation?",
+      "gold": {
+        "src/itsdangerous/signer.py": 3
+      },
+      "source_anchor": "for secret_key in reversed(self.secret_keys):",
+      "source_line": 236
+    },
+    {
+      "id": "itsdangerous-04",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does unsigning reject a value with no separator?",
+      "gold": {
+        "src/itsdangerous/signer.py": 3
+      },
+      "source_anchor": "if self.sep not in signed_value:",
+      "source_line": 248
+    },
+    {
+      "id": "itsdangerous-05",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does a timestamped signature reject a negative age?",
+      "gold": {
+        "src/itsdangerous/timed.py": 3
+      },
+      "source_anchor": "if age < 0:",
+      "source_line": 148
+    },
+    {
+      "id": "itsdangerous-06",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where is a signing timestamp converted into a timezone-aware UTC datetime?",
+      "gold": {
+        "src/itsdangerous/timed.py": 3
+      },
+      "source_anchor": "def timestamp_to_datetime(",
+      "source_line": 35
+    },
+    {
+      "id": "itsdangerous-07",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does URL-safe payload serialization decide whether compression saves enough space?",
+      "gold": {
+        "src/itsdangerous/url_safe.py": 3
+      },
+      "source_anchor": "if len(compressed) < (len(json) - 1):",
+      "source_line": 60
+    },
+    {
+      "id": "itsdangerous-08",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does payload loading recognize a leading dot and decompress the decoded data?",
+      "gold": {
+        "src/itsdangerous/url_safe.py": 3
+      },
+      "source_anchor": "if payload.startswith(b\".\"):",
+      "source_line": 32
+    },
+    {
+      "id": "itsdangerous-09",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does the serializer construct fallback signers for each secret key?",
+      "gold": {
+        "src/itsdangerous/serializer.py": 3
+      },
+      "source_anchor": "def iter_unsigners(",
+      "source_line": 287
+    },
+    {
+      "id": "itsdangerous-10",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does unsafe deserialization return the payload together with a signature-valid flag?",
+      "gold": {
+        "src/itsdangerous/serializer.py": 3
+      },
+      "source_anchor": "def _loads_unsafe_impl(",
+      "source_line": 367
+    },
+    {
+      "id": "itsdangerous-11",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where does compact JSON serialization disable ASCII escaping and remove separator whitespace?",
+      "gold": {
+        "src/itsdangerous/_json.py": 3
+      },
+      "source_anchor": "def dumps(",
+      "source_line": 15
+    },
+    {
+      "id": "itsdangerous-12",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where is the BadPayload exception class that retains the original decoding error?",
+      "gold": {
+        "src/itsdangerous/exc.py": 3
+      },
+      "source_anchor": "class BadPayload(",
+      "source_line": 92
+    },
+    {
+      "id": "itsdangerous-13",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Where is the BadTimeSignature type carrying the date the signature was created?",
+      "gold": {
+        "src/itsdangerous/exc.py": 3
+      },
+      "source_anchor": "class BadTimeSignature(",
+      "source_line": 36
+    },
+    {
+      "id": "itsdangerous-14",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find tests that verify older signatures still work after adding a new secret key.",
+      "gold": {
+        "tests/test_itsdangerous/test_signer.py": 3
+      },
+      "source_anchor": "def test_secret_keys(",
+      "source_line": 94
+    },
+    {
+      "id": "itsdangerous-15",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find tests that reject separator characters drawn from the base64 alphabet.",
+      "gold": {
+        "tests/test_itsdangerous/test_signer.py": 3
+      },
+      "source_anchor": "def test_invalid_separator(",
+      "source_line": 61
+    },
+    {
+      "id": "itsdangerous-16",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find tests that advance a frozen clock until a timestamped signature expires.",
+      "gold": {
+        "tests/test_itsdangerous/test_timed.py": 3
+      },
+      "source_anchor": "def test_max_age(",
+      "source_line": 34
+    },
+    {
+      "id": "itsdangerous-17",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find tests for malformed future timestamps in signed values.",
+      "gold": {
+        "tests/test_itsdangerous/test_timed.py": 3
+      },
+      "source_anchor": "def test_malformed_future_timestamp(",
+      "source_line": 69
+    },
+    {
+      "id": "itsdangerous-18",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find tests that unsafe loading returns false and no payload when both are corrupted.",
+      "gold": {
+        "tests/test_itsdangerous/test_serializer.py": 3
+      },
+      "source_anchor": "def test_loads_unsafe(",
+      "source_line": 90
+    },
+    {
+      "id": "itsdangerous-19",
+      "kind": "relevant",
+      "split": "held_out",
+      "query": "Find tests for converting zero and the largest unsigned 64-bit integer to bytes and back.",
+      "gold": {
+        "tests/test_itsdangerous/test_encoding.py": 3
+      },
+      "source_anchor": "def test_int_bytes(",
+      "source_line": 33
+    }
+  ]
+}

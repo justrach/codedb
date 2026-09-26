@@ -1,0 +1,15 @@
+{
+  "font_family": "Gramatika",
+  "font_hashes": {
+    "Gramatika-Regular.ttf": "0fdef26f2e994c5ca8a82cb2fc3656285dca7d966fed52b4056335348cdc5494",
+    "Gramatika-Bold.ttf": "3aeafe293b73a5af4d1dce67a06058ad30fcdd3813ea5ca607a9af118b628550"
+  },
+  "matplotlib": "3.11.0",
+  "receipt_sha256": "5cb240bec9a0f4df7fc054a40eced54d30a2cdadcef6154a93a44bff81f65dc6",
+  "plot_script_sha256": "e40ca0d60a2be99a140d1d0e83d1c7783739b8f63fe895e97abca4dfb9ea55b6",
+  "svg_text": "glyph outlines; viewing does not require installing the font",
+  "artifacts": {
+    "graff-retrieval-study.svg": "f00ca025e2074a79cd58248161fb608c47daf76f3250dad75046d48b212819f1",
+    "graff-retrieval-study.png": "25cb831c0afa41130edcad80a2a550da39d2215c87d24a78a68d3c3702235925"
+  }
+}

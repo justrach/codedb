@@ -1,0 +1,3661 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="936pt" height="633.6pt" viewBox="0 0 936 633.6" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.0, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 633.6
+L 936 633.6
+L 936 0
+L 0 0
+z
+" style="fill: #faf4e9"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 187.2 551.232
+L 519.329032 551.232
+L 519.329032 139.392
+L 187.2 139.392
+z
+" style="fill: #faf4e9"/>
+   </g>
+   <g id="matplotlib.axis_1">
+    <g id="xtick_1">
+     <g id="line2d_1">
+      <path d="M 187.2 551.232
+L 187.2 139.392
+" clip-path="url(#p8f5500f18e)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_2"/>
+     <g id="text_1">
+      <!-- 0 -->
+      <g transform="translate(183.729844 569.858) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-29a" d="M 2029 -77
+Q 1210 -77 749 534
+Q 288 1146 288 2240
+Q 288 3334 745 3945
+Q 1203 4557 2022 4557
+Q 2835 4557 3292 3945
+Q 3750 3334 3750 2240
+Q 3750 1146 3296 534
+Q 2842 -77 2029 -77
+z
+M 2029 454
+Q 2566 454 2857 918
+Q 3149 1382 3149 2240
+Q 3149 3091 2854 3558
+Q 2560 4026 2022 4026
+Q 1478 4026 1184 3558
+Q 890 3091 890 2240
+Q 890 1389 1187 921
+Q 1485 454 2029 454
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-29a"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_2">
+     <g id="line2d_3">
+      <path d="M 230.101349 551.232
+L 230.101349 139.392
+" clip-path="url(#p8f5500f18e)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_4"/>
+     <g id="text_2">
+      <!-- 25 -->
+      <g transform="translate(224.078849 569.858) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-29c" d="M 173 0
+L 173 525
+L 1722 2099
+Q 2106 2502 2310 2771
+Q 2515 3040 2515 3328
+Q 2515 3642 2281 3834
+Q 2048 4026 1677 4026
+Q 1293 4026 1027 3834
+Q 762 3642 678 3309
+L 147 3430
+Q 256 3955 669 4256
+Q 1082 4557 1683 4557
+Q 2112 4557 2435 4409
+Q 2758 4262 2934 3996
+Q 3110 3731 3110 3373
+Q 3110 3008 2899 2656
+Q 2688 2304 2214 1811
+L 960 525
+L 3117 525
+L 3117 0
+L 173 0
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-29f" d="M 1702 -77
+Q 1094 -77 672 236
+Q 250 550 147 1082
+L 678 1203
+Q 762 858 1040 656
+Q 1318 454 1702 454
+Q 2163 454 2432 723
+Q 2701 992 2701 1440
+Q 2701 1894 2432 2169
+Q 2163 2445 1722 2445
+Q 1165 2445 826 2086
+L 288 2086
+L 685 4480
+L 3110 4480
+L 3110 3974
+L 1114 3974
+L 902 2682
+Q 1261 2950 1811 2950
+Q 2253 2950 2589 2761
+Q 2925 2573 3110 2230
+Q 3296 1888 3296 1434
+Q 3296 986 3097 643
+Q 2899 301 2540 112
+Q 2182 -77 1702 -77
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-29c"/>
+       <use xlink:href="#Gramatika-Regular-29f" transform="translate(53.5 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_3">
+     <g id="line2d_5">
+      <path d="M 273.002698 551.232
+L 273.002698 139.392
+" clip-path="url(#p8f5500f18e)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_6"/>
+     <g id="text_3">
+      <!-- 50 -->
+      <g transform="translate(266.452542 569.858) scale(0.11 -0.11)">
+       <use xlink:href="#Gramatika-Regular-29f"/>
+       <use xlink:href="#Gramatika-Regular-29a" transform="translate(56 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_4">
+     <g id="line2d_7">
+      <path d="M 315.904048 551.232
+L 315.904048 139.392
+" clip-path="url(#p8f5500f18e)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_8"/>
+     <g id="text_4">
+      <!-- 75 -->
+      <g transform="translate(309.793891 569.858) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-2a1" d="M 461 0
+L 2566 3974
+L 243 3974
+L 243 4480
+L 3283 4480
+L 3283 4064
+L 1126 0
+L 461 0
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-2a1"/>
+       <use xlink:href="#Gramatika-Regular-29f" transform="translate(55.09375 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_5">
+     <g id="line2d_9">
+      <path d="M 358.805397 551.232
+L 358.805397 139.392
+" clip-path="url(#p8f5500f18e)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_10"/>
+     <g id="text_5">
+      <!-- 100 -->
+      <g transform="translate(349.703756 569.858) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-29b" d="M 1069 0
+L 1069 3904
+L 122 3603
+L 122 4147
+L 1178 4480
+L 1658 4480
+L 1658 0
+L 1069 0
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-29b"/>
+       <use xlink:href="#Gramatika-Regular-29a" transform="translate(39.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-29a" transform="translate(102.390625 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_6">
+     <g id="line2d_11">
+      <path d="M 401.706746 551.232
+L 401.706746 139.392
+" clip-path="url(#p8f5500f18e)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_12"/>
+     <g id="text_6">
+      <!-- 125 -->
+      <g transform="translate(393.522918 569.858) scale(0.11 -0.11)">
+       <use xlink:href="#Gramatika-Regular-29b"/>
+       <use xlink:href="#Gramatika-Regular-29c" transform="translate(39.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-29f" transform="translate(92.796875 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_7">
+     <g id="line2d_13">
+      <path d="M 444.608095 551.232
+L 444.608095 139.392
+" clip-path="url(#p8f5500f18e)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_14"/>
+     <g id="text_7">
+      <!-- 150 -->
+      <g transform="translate(435.896611 569.858) scale(0.11 -0.11)">
+       <use xlink:href="#Gramatika-Regular-29b"/>
+       <use xlink:href="#Gramatika-Regular-29f" transform="translate(39.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-29a" transform="translate(95.296875 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_8">
+     <g id="line2d_15">
+      <path d="M 487.509445 551.232
+L 487.509445 139.392
+" clip-path="url(#p8f5500f18e)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_16"/>
+     <g id="text_8">
+      <!-- 175 -->
+      <g transform="translate(479.23796 569.858) scale(0.11 -0.11)">
+       <use xlink:href="#Gramatika-Regular-29b"/>
+       <use xlink:href="#Gramatika-Regular-2a1" transform="translate(39.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-29f" transform="translate(94.390625 0)"/>
+      </g>
+     </g>
+    </g>
+   </g>
+   <g id="matplotlib.axis_2">
+    <g id="ytick_1">
+     <g id="line2d_17"/>
+     <g id="text_9">
+      <!-- atomic-symlink-write -->
+      <g transform="translate(69.091719 179.554504) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-d6" d="M 1306 -77
+Q 813 -77 512 176
+Q 211 429 211 838
+Q 211 1210 473 1466
+Q 736 1722 1222 1792
+L 2349 1965
+L 2349 2080
+Q 2349 2362 2141 2544
+Q 1933 2726 1600 2726
+Q 1286 2726 1052 2563
+Q 819 2400 736 2131
+L 211 2266
+Q 333 2694 707 2950
+Q 1082 3206 1600 3206
+Q 1990 3206 2288 3062
+Q 2586 2918 2755 2665
+Q 2925 2413 2925 2080
+L 2925 0
+L 2381 0
+L 2381 422
+Q 2208 186 1929 54
+Q 1651 -77 1306 -77
+z
+M 1446 384
+Q 1843 384 2096 627
+Q 2349 870 2349 1248
+L 2349 1542
+L 1350 1382
+Q 1101 1344 953 1200
+Q 806 1056 806 858
+Q 806 640 979 512
+Q 1152 384 1446 384
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-16e" d="M 1683 -38
+Q 1248 -38 969 202
+Q 691 442 691 915
+L 691 2650
+L 102 2650
+L 102 3130
+L 358 3130
+Q 691 3130 691 3494
+L 691 3968
+L 1267 3968
+L 1267 3130
+L 2138 3130
+L 2138 2650
+L 1267 2650
+L 1267 947
+Q 1267 704 1401 573
+Q 1536 442 1754 442
+Q 1971 442 2176 518
+L 2253 58
+Q 1971 -38 1683 -38
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-143" d="M 1907 -77
+Q 1434 -77 1059 134
+Q 685 346 473 717
+Q 262 1088 262 1568
+Q 262 2042 473 2413
+Q 685 2784 1059 2995
+Q 1434 3206 1907 3206
+Q 2387 3206 2758 2995
+Q 3130 2784 3341 2413
+Q 3552 2042 3552 1568
+Q 3552 1088 3341 717
+Q 3130 346 2758 134
+Q 2387 -77 1907 -77
+z
+M 1907 442
+Q 2214 442 2454 586
+Q 2694 730 2828 982
+Q 2963 1235 2963 1568
+Q 2963 1894 2828 2147
+Q 2694 2400 2454 2544
+Q 2214 2688 1907 2688
+Q 1600 2688 1363 2544
+Q 1126 2400 988 2147
+Q 851 1894 851 1568
+Q 851 1235 988 982
+Q 1126 730 1363 586
+Q 1600 442 1907 442
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-138" d="M 435 0
+L 435 3130
+L 986 3130
+L 986 2682
+Q 1126 2931 1376 3068
+Q 1626 3206 1946 3206
+Q 2291 3206 2553 3040
+Q 2816 2874 2950 2579
+Q 3104 2893 3385 3049
+Q 3667 3206 4006 3206
+Q 4346 3206 4598 3052
+Q 4851 2899 4995 2624
+Q 5139 2349 5139 1978
+L 5139 0
+L 4563 0
+L 4563 1894
+Q 4563 2253 4368 2470
+Q 4173 2688 3840 2688
+Q 3501 2688 3289 2470
+Q 3078 2253 3078 1894
+L 3078 0
+L 2502 0
+L 2502 1894
+Q 2502 2253 2307 2470
+Q 2112 2688 1773 2688
+Q 1434 2688 1222 2470
+Q 1011 2253 1011 1894
+L 1011 0
+L 435 0
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-11d" d="M 723 3795
+Q 550 3795 435 3913
+Q 320 4032 320 4198
+Q 320 4365 435 4483
+Q 550 4602 723 4602
+Q 890 4602 1008 4483
+Q 1126 4365 1126 4198
+Q 1126 4032 1008 3913
+Q 890 3795 723 3795
+z
+M 435 0
+L 435 3130
+L 1011 3130
+L 1011 0
+L 435 0
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-f0" d="M 1907 -77
+Q 1427 -77 1056 134
+Q 685 346 473 717
+Q 262 1088 262 1568
+Q 262 2042 473 2413
+Q 685 2784 1056 2995
+Q 1427 3206 1907 3206
+Q 2445 3206 2841 2944
+Q 3238 2682 3360 2240
+L 2829 2099
+Q 2746 2362 2490 2525
+Q 2234 2688 1914 2688
+Q 1600 2688 1363 2544
+Q 1126 2400 988 2147
+Q 851 1894 851 1568
+Q 851 1235 988 982
+Q 1126 730 1363 586
+Q 1600 442 1914 442
+Q 2234 442 2490 605
+Q 2746 768 2829 1030
+L 3360 890
+Q 3238 448 2841 185
+Q 2445 -77 1907 -77
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-304" d="M 486 1376
+L 486 1869
+L 3174 1869
+L 3174 1376
+L 486 1376
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-165" d="M 1581 -77
+Q 1082 -77 726 166
+Q 371 410 262 819
+L 742 947
+Q 819 678 1049 524
+Q 1280 371 1587 371
+Q 1882 371 2054 502
+Q 2227 634 2227 851
+Q 2227 1030 2102 1126
+Q 1978 1222 1734 1280
+L 1293 1389
+Q 877 1491 633 1683
+Q 390 1875 390 2291
+Q 390 2701 704 2953
+Q 1018 3206 1523 3206
+Q 1978 3206 2301 2985
+Q 2624 2765 2726 2394
+L 2240 2266
+Q 2176 2490 1977 2624
+Q 1779 2758 1523 2758
+Q 1261 2758 1097 2636
+Q 934 2515 934 2310
+Q 934 2131 1056 2025
+Q 1178 1920 1408 1862
+L 1824 1760
+Q 2278 1651 2528 1465
+Q 2778 1280 2778 870
+Q 2778 448 2448 185
+Q 2118 -77 1581 -77
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-194" d="M 762 -1408
+Q 480 -1408 262 -1331
+L 339 -870
+Q 518 -928 698 -928
+Q 870 -928 1024 -841
+Q 1178 -755 1274 -538
+L 1504 -26
+L 173 3130
+L 781 3130
+L 1805 646
+L 2822 3130
+L 3430 3130
+L 1830 -614
+Q 1645 -1005 1385 -1206
+Q 1126 -1408 762 -1408
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-12f" d="M 435 0
+L 435 4480
+L 1011 4480
+L 1011 0
+L 435 0
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-13a" d="M 435 0
+L 435 3130
+L 986 3130
+L 986 2682
+Q 1133 2931 1385 3068
+Q 1638 3206 1952 3206
+Q 2483 3206 2806 2867
+Q 3130 2528 3130 1978
+L 3130 0
+L 2554 0
+L 2554 1894
+Q 2554 2253 2346 2470
+Q 2138 2688 1798 2688
+Q 1440 2688 1225 2470
+Q 1011 2253 1011 1894
+L 1011 0
+L 435 0
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-12c" d="M 435 0
+L 435 4480
+L 1011 4480
+L 1011 1747
+L 2432 3130
+L 3155 3130
+L 1926 1907
+L 3270 0
+L 2598 0
+L 1491 1549
+L 1011 1062
+L 1011 0
+L 435 0
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-18e" d="M 1248 0
+L 173 3130
+L 768 3130
+L 1594 640
+L 2458 3130
+L 2989 3130
+L 3853 640
+L 4685 3130
+L 5280 3130
+L 4205 0
+L 3571 0
+L 2726 2426
+L 1875 0
+L 1248 0
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-15e" d="M 435 0
+L 435 3130
+L 986 3130
+L 986 2669
+Q 1120 2918 1357 3062
+Q 1594 3206 1888 3206
+Q 2061 3206 2202 3174
+L 2202 2669
+Q 2067 2701 1894 2701
+Q 1491 2701 1251 2435
+Q 1011 2170 1011 1741
+L 1011 0
+L 435 0
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-fc" d="M 1888 -77
+Q 1414 -77 1046 134
+Q 678 346 470 717
+Q 262 1088 262 1568
+Q 262 2042 470 2413
+Q 678 2784 1040 2995
+Q 1402 3206 1869 3206
+Q 2317 3206 2662 3008
+Q 3008 2810 3203 2461
+Q 3398 2112 3398 1664
+Q 3398 1613 3398 1555
+Q 3398 1498 3386 1427
+L 851 1427
+Q 858 1114 995 880
+Q 1133 646 1363 515
+Q 1594 384 1888 384
+Q 2246 384 2496 547
+Q 2746 710 2829 986
+L 3360 845
+Q 3238 422 2841 172
+Q 2445 -77 1888 -77
+z
+M 864 1875
+L 864 1850
+L 2790 1850
+Q 2790 2099 2675 2304
+Q 2560 2509 2352 2627
+Q 2144 2746 1869 2746
+Q 1472 2746 1200 2515
+Q 928 2285 864 1875
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-d6"/>
+       <use xlink:href="#Gramatika-Regular-16e" transform="translate(51.40625 0)"/>
+       <use xlink:href="#Gramatika-Regular-143" transform="translate(86.3125 0)"/>
+       <use xlink:href="#Gramatika-Regular-138" transform="translate(145.90625 0)"/>
+       <use xlink:href="#Gramatika-Regular-11d" transform="translate(231.90625 0)"/>
+       <use xlink:href="#Gramatika-Regular-f0" transform="translate(254.5 0)"/>
+       <use xlink:href="#Gramatika-Regular-304" transform="translate(310.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-165" transform="translate(367.5 0)"/>
+       <use xlink:href="#Gramatika-Regular-194" transform="translate(415 0)"/>
+       <use xlink:href="#Gramatika-Regular-138" transform="translate(471.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-12f" transform="translate(557.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-11d" transform="translate(579.890625 0)"/>
+       <use xlink:href="#Gramatika-Regular-13a" transform="translate(602.484375 0)"/>
+       <use xlink:href="#Gramatika-Regular-12c" transform="translate(657.078125 0)"/>
+       <use xlink:href="#Gramatika-Regular-304" transform="translate(709.484375 0)"/>
+       <use xlink:href="#Gramatika-Regular-18e" transform="translate(764.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-15e" transform="translate(849.890625 0)"/>
+       <use xlink:href="#Gramatika-Regular-11d" transform="translate(885.484375 0)"/>
+       <use xlink:href="#Gramatika-Regular-16e" transform="translate(908.078125 0)"/>
+       <use xlink:href="#Gramatika-Regular-fc" transform="translate(944.578125 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="ytick_2">
+     <g id="line2d_18"/>
+     <g id="text_10">
+      <!-- cache-gitroot -->
+      <g transform="translate(108.418438 228.431789) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-118" d="M 435 0
+L 435 4480
+L 1011 4480
+L 1011 2726
+Q 1165 2957 1411 3081
+Q 1658 3206 1952 3206
+Q 2483 3206 2806 2867
+Q 3130 2528 3130 1978
+L 3130 0
+L 2554 0
+L 2554 1894
+Q 2554 2253 2346 2470
+Q 2138 2688 1798 2688
+Q 1440 2688 1225 2470
+Q 1011 2253 1011 1894
+L 1011 0
+L 435 0
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-110" d="M 1907 -1408
+Q 1299 -1408 864 -1129
+Q 429 -851 288 -371
+L 806 -205
+Q 909 -538 1206 -730
+Q 1504 -922 1914 -922
+Q 2221 -922 2461 -790
+Q 2701 -659 2835 -432
+Q 2970 -205 2970 90
+L 2970 589
+Q 2790 333 2496 192
+Q 2202 51 1837 51
+Q 1382 51 1030 252
+Q 678 454 476 809
+Q 275 1165 275 1613
+Q 275 2074 476 2432
+Q 678 2790 1030 2998
+Q 1382 3206 1837 3206
+Q 2214 3206 2521 3046
+Q 2829 2886 3002 2605
+L 3002 3130
+L 3546 3130
+L 3546 90
+Q 3546 -346 3338 -685
+Q 3130 -1024 2758 -1216
+Q 2387 -1408 1907 -1408
+z
+M 1907 538
+Q 2221 538 2457 678
+Q 2694 819 2832 1059
+Q 2970 1299 2970 1613
+Q 2970 1926 2832 2169
+Q 2694 2413 2457 2550
+Q 2221 2688 1907 2688
+Q 1606 2688 1369 2550
+Q 1133 2413 998 2169
+Q 864 1926 864 1613
+Q 864 1299 998 1056
+Q 1133 813 1369 675
+Q 1606 538 1907 538
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-f0"/>
+       <use xlink:href="#Gramatika-Regular-d6" transform="translate(57.09375 0)"/>
+       <use xlink:href="#Gramatika-Regular-f0" transform="translate(108.5 0)"/>
+       <use xlink:href="#Gramatika-Regular-118" transform="translate(164.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-fc" transform="translate(218.890625 0)"/>
+       <use xlink:href="#Gramatika-Regular-304" transform="translate(275.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-110" transform="translate(332.5 0)"/>
+       <use xlink:href="#Gramatika-Regular-11d" transform="translate(394.703125 0)"/>
+       <use xlink:href="#Gramatika-Regular-16e" transform="translate(417.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-15e" transform="translate(453.796875 0)"/>
+       <use xlink:href="#Gramatika-Regular-143" transform="translate(488.484375 0)"/>
+       <use xlink:href="#Gramatika-Regular-143" transform="translate(548.078125 0)"/>
+       <use xlink:href="#Gramatika-Regular-16e" transform="translate(606.96875 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="ytick_3">
+     <g id="line2d_19"/>
+     <g id="text_11">
+      <!-- mcp-first-turn -->
+      <g transform="translate(104.711094 277.309073) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-15b" d="M 435 -1408
+L 435 3130
+L 986 3130
+L 986 2605
+Q 1158 2886 1462 3046
+Q 1766 3206 2144 3206
+Q 2598 3206 2953 2995
+Q 3309 2784 3510 2413
+Q 3712 2042 3712 1568
+Q 3712 1088 3510 717
+Q 3309 346 2953 134
+Q 2598 -77 2144 -77
+Q 1786 -77 1488 67
+Q 1190 211 1011 467
+L 1011 -1408
+L 435 -1408
+z
+M 2074 442
+Q 2381 442 2617 586
+Q 2854 730 2988 982
+Q 3123 1235 3123 1568
+Q 3123 1894 2988 2147
+Q 2854 2400 2617 2544
+Q 2381 2688 2074 2688
+Q 1766 2688 1526 2544
+Q 1286 2400 1148 2147
+Q 1011 1894 1011 1568
+Q 1011 1235 1148 982
+Q 1286 730 1526 586
+Q 1766 442 2074 442
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-1e7" d="M 691 0
+L 691 2650
+L 102 2650
+L 102 3130
+L 691 3130
+L 691 3520
+Q 691 3834 835 4067
+Q 979 4301 1232 4429
+Q 1485 4557 1798 4557
+Q 1958 4557 2115 4525
+Q 2272 4493 2413 4422
+L 2330 3968
+Q 2214 4019 2102 4048
+Q 1990 4077 1869 4077
+Q 1613 4077 1440 3913
+Q 1267 3750 1267 3488
+L 1267 3130
+L 2362 3130
+L 2362 2650
+L 1267 2650
+L 1267 0
+L 691 0
+z
+M 3181 3795
+Q 3008 3795 2893 3913
+Q 2778 4032 2778 4198
+Q 2778 4365 2893 4483
+Q 3008 4602 3181 4602
+Q 3348 4602 3466 4483
+Q 3584 4365 3584 4198
+Q 3584 4032 3466 3913
+Q 3348 3795 3181 3795
+z
+M 2893 0
+L 2893 3130
+L 3469 3130
+L 3469 0
+L 2893 0
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-175" d="M 1542 -77
+Q 1018 -77 691 214
+Q 365 506 365 1056
+L 365 3130
+L 941 3130
+L 941 1203
+Q 941 851 1149 646
+Q 1357 442 1696 442
+Q 2054 442 2268 659
+Q 2483 877 2483 1242
+L 2483 3130
+L 3059 3130
+L 3059 0
+L 2509 0
+L 2509 448
+Q 2362 198 2106 60
+Q 1850 -77 1542 -77
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-138"/>
+       <use xlink:href="#Gramatika-Regular-f0" transform="translate(86 0)"/>
+       <use xlink:href="#Gramatika-Regular-15b" transform="translate(141.796875 0)"/>
+       <use xlink:href="#Gramatika-Regular-304" transform="translate(203.890625 0)"/>
+       <use xlink:href="#Gramatika-Regular-1e7" transform="translate(260.59375 0)"/>
+       <use xlink:href="#Gramatika-Regular-15e" transform="translate(321.59375 0)"/>
+       <use xlink:href="#Gramatika-Regular-165" transform="translate(356.484375 0)"/>
+       <use xlink:href="#Gramatika-Regular-16e" transform="translate(403.984375 0)"/>
+       <use xlink:href="#Gramatika-Regular-304" transform="translate(440.484375 0)"/>
+       <use xlink:href="#Gramatika-Regular-16e" transform="translate(495.890625 0)"/>
+       <use xlink:href="#Gramatika-Regular-175" transform="translate(532.390625 0)"/>
+       <use xlink:href="#Gramatika-Regular-15e" transform="translate(586.984375 0)"/>
+       <use xlink:href="#Gramatika-Regular-13a" transform="translate(622.578125 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="ytick_4">
+     <g id="line2d_20"/>
+     <g id="text_12">
+      <!-- json-stream -->
+      <g transform="translate(118.141406 326.186358) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-129" d="M 730 3795
+Q 557 3795 441 3913
+Q 326 4032 326 4198
+Q 326 4365 441 4483
+Q 557 4602 730 4602
+Q 902 4602 1017 4483
+Q 1133 4365 1133 4198
+Q 1133 4032 1017 3913
+Q 902 3795 730 3795
+z
+M 70 -1408
+Q -192 -1408 -429 -1331
+L -346 -870
+Q -160 -928 6 -928
+Q 192 -928 313 -809
+Q 435 -691 435 -454
+L 435 3130
+L 1011 3130
+L 1011 -486
+Q 1011 -915 748 -1161
+Q 486 -1408 70 -1408
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-129"/>
+       <use xlink:href="#Gramatika-Regular-165" transform="translate(22.59375 0)"/>
+       <use xlink:href="#Gramatika-Regular-143" transform="translate(70.09375 0)"/>
+       <use xlink:href="#Gramatika-Regular-13a" transform="translate(129.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-304" transform="translate(184.28125 0)"/>
+       <use xlink:href="#Gramatika-Regular-165" transform="translate(241.484375 0)"/>
+       <use xlink:href="#Gramatika-Regular-16e" transform="translate(288.984375 0)"/>
+       <use xlink:href="#Gramatika-Regular-15e" transform="translate(325.484375 0)"/>
+       <use xlink:href="#Gramatika-Regular-fc" transform="translate(360.171875 0)"/>
+       <use xlink:href="#Gramatika-Regular-d6" transform="translate(417.671875 0)"/>
+       <use xlink:href="#Gramatika-Regular-138" transform="translate(469.078125 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="ytick_5">
+     <g id="line2d_21"/>
+     <g id="text_13">
+      <!-- map-conflict -->
+      <g transform="translate(112.851094 375.063642) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-1e8" d="M 691 0
+L 691 2650
+L 102 2650
+L 102 3130
+L 691 3130
+L 691 3520
+Q 691 3834 835 4067
+Q 979 4301 1232 4429
+Q 1485 4557 1798 4557
+Q 1958 4557 2115 4525
+Q 2272 4493 2413 4422
+L 2330 3968
+Q 2214 4019 2102 4048
+Q 1990 4077 1869 4077
+Q 1613 4077 1440 3913
+Q 1267 3750 1267 3488
+L 1267 3130
+L 2362 3130
+L 2362 2650
+L 1267 2650
+L 1267 0
+L 691 0
+z
+M 2931 0
+L 2931 4480
+L 3507 4480
+L 3507 0
+L 2931 0
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-138"/>
+       <use xlink:href="#Gramatika-Regular-d6" transform="translate(86 0)"/>
+       <use xlink:href="#Gramatika-Regular-15b" transform="translate(137.40625 0)"/>
+       <use xlink:href="#Gramatika-Regular-304" transform="translate(199.5 0)"/>
+       <use xlink:href="#Gramatika-Regular-f0" transform="translate(256.703125 0)"/>
+       <use xlink:href="#Gramatika-Regular-143" transform="translate(312.5 0)"/>
+       <use xlink:href="#Gramatika-Regular-13a" transform="translate(372.09375 0)"/>
+       <use xlink:href="#Gramatika-Regular-1e8" transform="translate(426.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-11d" transform="translate(488.28125 0)"/>
+       <use xlink:href="#Gramatika-Regular-f0" transform="translate(510.875 0)"/>
+       <use xlink:href="#Gramatika-Regular-16e" transform="translate(566.671875 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="ytick_6">
+     <g id="line2d_22"/>
+     <g id="text_14">
+      <!-- validated -->
+      <g transform="translate(132.989688 423.940927) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-18d" d="M 1498 0
+L 173 3130
+L 781 3130
+L 1805 634
+L 2822 3130
+L 3430 3130
+L 2106 0
+L 1498 0
+z
+" transform="scale(0.015625)"/>
+        <path id="Gramatika-Regular-f6" d="M 1830 -77
+Q 1376 -77 1021 134
+Q 666 346 464 717
+Q 262 1088 262 1568
+Q 262 2042 464 2413
+Q 666 2784 1021 2995
+Q 1376 3206 1830 3206
+Q 2189 3206 2486 3059
+Q 2784 2912 2963 2650
+L 2963 4480
+L 3539 4480
+L 3539 0
+L 2989 0
+L 2989 512
+Q 2816 237 2509 80
+Q 2202 -77 1830 -77
+z
+M 1901 442
+Q 2214 442 2451 586
+Q 2688 730 2825 982
+Q 2963 1235 2963 1568
+Q 2963 1894 2825 2147
+Q 2688 2400 2451 2544
+Q 2214 2688 1901 2688
+Q 1594 2688 1357 2544
+Q 1120 2400 985 2147
+Q 851 1894 851 1568
+Q 851 1235 985 982
+Q 1120 730 1357 586
+Q 1594 442 1901 442
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-18d"/>
+       <use xlink:href="#Gramatika-Regular-d6" transform="translate(55 0)"/>
+       <use xlink:href="#Gramatika-Regular-12f" transform="translate(106.40625 0)"/>
+       <use xlink:href="#Gramatika-Regular-11d" transform="translate(129 0)"/>
+       <use xlink:href="#Gramatika-Regular-f6" transform="translate(151.59375 0)"/>
+       <use xlink:href="#Gramatika-Regular-d6" transform="translate(213.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-16e" transform="translate(265.09375 0)"/>
+       <use xlink:href="#Gramatika-Regular-fc" transform="translate(301.59375 0)"/>
+       <use xlink:href="#Gramatika-Regular-f6" transform="translate(358 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="ytick_7">
+     <g id="line2d_23"/>
+     <g id="text_15">
+      <!-- config-parse -->
+      <g transform="translate(113.201719 472.818211) scale(0.11 -0.11)">
+       <use xlink:href="#Gramatika-Regular-f0"/>
+       <use xlink:href="#Gramatika-Regular-143" transform="translate(55.796875 0)"/>
+       <use xlink:href="#Gramatika-Regular-13a" transform="translate(115.390625 0)"/>
+       <use xlink:href="#Gramatika-Regular-1e7" transform="translate(169.984375 0)"/>
+       <use xlink:href="#Gramatika-Regular-110" transform="translate(230.984375 0)"/>
+       <use xlink:href="#Gramatika-Regular-304" transform="translate(291.390625 0)"/>
+       <use xlink:href="#Gramatika-Regular-15b" transform="translate(347.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-d6" transform="translate(409.78125 0)"/>
+       <use xlink:href="#Gramatika-Regular-15e" transform="translate(461.1875 0)"/>
+       <use xlink:href="#Gramatika-Regular-165" transform="translate(496.078125 0)"/>
+       <use xlink:href="#Gramatika-Regular-fc" transform="translate(543.578125 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="ytick_8">
+     <g id="line2d_24"/>
+     <g id="text_16">
+      <!-- cookie-store -->
+      <g transform="translate(113.464688 521.695496) scale(0.11 -0.11)">
+       <use xlink:href="#Gramatika-Regular-f0"/>
+       <use xlink:href="#Gramatika-Regular-143" transform="translate(55.796875 0)"/>
+       <use xlink:href="#Gramatika-Regular-143" transform="translate(115.390625 0)"/>
+       <use xlink:href="#Gramatika-Regular-12c" transform="translate(174.984375 0)"/>
+       <use xlink:href="#Gramatika-Regular-11d" transform="translate(228.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-fc" transform="translate(250.890625 0)"/>
+       <use xlink:href="#Gramatika-Regular-304" transform="translate(307.296875 0)"/>
+       <use xlink:href="#Gramatika-Regular-165" transform="translate(364.5 0)"/>
+       <use xlink:href="#Gramatika-Regular-16e" transform="translate(412 0)"/>
+       <use xlink:href="#Gramatika-Regular-143" transform="translate(446.90625 0)"/>
+       <use xlink:href="#Gramatika-Regular-15e" transform="translate(506.5 0)"/>
+       <use xlink:href="#Gramatika-Regular-fc" transform="translate(541.1875 0)"/>
+      </g>
+     </g>
+    </g>
+   </g>
+   <g id="patch_3">
+    <path d="M 187.2 158.112
+L 503.513364 158.112
+L 503.513364 167.887457
+L 187.2 167.887457
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 187.2 206.989285
+L 419.320324 206.989285
+L 419.320324 216.764742
+L 187.2 216.764742
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 187.2 255.866569
+L 393.473119 255.866569
+L 393.473119 265.642026
+L 187.2 265.642026
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 187.2 304.743854
+L 390.940224 304.743854
+L 390.940224 314.519311
+L 187.2 314.519311
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 187.2 353.621138
+L 316.410284 353.621138
+L 316.410284 363.396595
+L 187.2 363.396595
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 187.2 402.498423
+L 418.863854 402.498423
+L 418.863854 412.27388
+L 187.2 412.27388
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 187.2 451.375708
+L 445.599975 451.375708
+L 445.599975 461.151164
+L 187.2 461.151164
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 187.2 500.252992
+L 308.118311 500.252992
+L 308.118311 510.028449
+L 187.2 510.028449
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_11">
+    <path d="M 187.2 169.353775
+L 418.74373 169.353775
+L 418.74373 179.129232
+L 187.2 179.129232
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_12">
+    <path d="M 187.2 218.23106
+L 309.743414 218.23106
+L 309.743414 228.006517
+L 187.2 228.006517
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_13">
+    <path d="M 187.2 267.108345
+L 330.958989 267.108345
+L 330.958989 276.883802
+L 187.2 276.883802
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_14">
+    <path d="M 187.2 315.985629
+L 349.715459 315.985629
+L 349.715459 325.761086
+L 187.2 325.761086
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_15">
+    <path d="M 187.2 364.862914
+L 317.263162 364.862914
+L 317.263162 374.638371
+L 187.2 374.638371
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_16">
+    <path d="M 187.2 413.740198
+L 333.436971 413.740198
+L 333.436971 423.515655
+L 187.2 423.515655
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_17">
+    <path d="M 187.2 462.617483
+L 332.96334 462.617483
+L 332.96334 472.39294
+L 187.2 472.39294
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_18">
+    <path d="M 187.2 511.494768
+L 382.250126 511.494768
+L 382.250126 521.270225
+L 187.2 521.270225
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_19">
+    <path d="M 187.2 180.595551
+L 404.529655 180.595551
+L 404.529655 190.371008
+L 187.2 190.371008
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_20">
+    <path d="M 187.2 229.472836
+L 417.820493 229.472836
+L 417.820493 239.248292
+L 187.2 239.248292
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_21">
+    <path d="M 187.2 278.35012
+L 347.378194 278.35012
+L 347.378194 288.125577
+L 187.2 288.125577
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_22">
+    <path d="M 187.2 327.227405
+L 365.20971 327.227405
+L 365.20971 337.002862
+L 187.2 337.002862
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_23">
+    <path d="M 187.2 376.104689
+L 349.686286 376.104689
+L 349.686286 385.880146
+L 187.2 385.880146
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_24">
+    <path d="M 187.2 424.981974
+L 336.086558 424.981974
+L 336.086558 434.757431
+L 187.2 434.757431
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_25">
+    <path d="M 187.2 473.859258
+L 360.054684 473.859258
+L 360.054684 483.634715
+L 187.2 483.634715
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_26">
+    <path d="M 187.2 522.736543
+L 368.743066 522.736543
+L 368.743066 532.512
+L 187.2 532.512
+z
+" clip-path="url(#p8f5500f18e)" style="fill: #c4432a"/>
+   </g>
+   <g id="text_17">
+    <!-- Model tokens · thousands -->
+    <g transform="translate(187.2 121.392) scale(0.132 -0.132)">
+     <defs>
+      <path id="Gramatika-Bold-5f" d="M 384 0
+L 384 4480
+L 1830 4480
+L 2829 1382
+L 3814 4480
+L 5261 4480
+L 5261 0
+L 4365 0
+L 4365 3430
+L 3206 0
+L 2445 0
+L 1286 3430
+L 1286 0
+L 384 0
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-143" d="M 1926 -77
+Q 1427 -77 1036 140
+Q 646 358 425 732
+Q 205 1107 205 1587
+Q 205 2074 425 2448
+Q 646 2822 1036 3040
+Q 1427 3258 1926 3258
+Q 2426 3258 2813 3040
+Q 3200 2822 3424 2448
+Q 3648 2074 3648 1587
+Q 3648 1107 3424 732
+Q 3200 358 2813 140
+Q 2426 -77 1926 -77
+z
+M 1926 710
+Q 2285 710 2521 960
+Q 2758 1210 2758 1587
+Q 2758 1971 2521 2217
+Q 2285 2464 1926 2464
+Q 1568 2464 1331 2217
+Q 1094 1971 1094 1587
+Q 1094 1210 1331 960
+Q 1568 710 1926 710
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-f6" d="M 1811 -77
+Q 1344 -77 982 140
+Q 621 358 413 732
+Q 205 1107 205 1587
+Q 205 2074 413 2448
+Q 621 2822 982 3040
+Q 1344 3258 1811 3258
+Q 2118 3258 2377 3152
+Q 2637 3046 2810 2854
+L 2810 4480
+L 3693 4480
+L 3693 0
+L 2867 0
+L 2867 378
+Q 2688 160 2416 41
+Q 2144 -77 1811 -77
+z
+M 1946 710
+Q 2323 710 2566 960
+Q 2810 1210 2810 1587
+Q 2810 1971 2566 2217
+Q 2323 2464 1946 2464
+Q 1574 2464 1334 2217
+Q 1094 1971 1094 1587
+Q 1094 1210 1334 960
+Q 1574 710 1946 710
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-fc" d="M 1894 -77
+Q 1395 -77 1014 140
+Q 634 358 419 732
+Q 205 1107 205 1587
+Q 205 2067 419 2444
+Q 634 2822 1008 3040
+Q 1382 3258 1862 3258
+Q 2336 3258 2704 3053
+Q 3072 2848 3283 2493
+Q 3494 2138 3494 1683
+Q 3494 1626 3491 1546
+Q 3488 1466 3475 1370
+L 1088 1370
+Q 1107 1018 1337 813
+Q 1568 608 1894 608
+Q 2189 608 2387 745
+Q 2586 883 2656 1114
+L 3456 902
+Q 3334 454 2912 188
+Q 2490 -77 1894 -77
+z
+M 1107 1990
+L 1107 1971
+L 2573 1971
+Q 2566 2227 2368 2400
+Q 2170 2573 1862 2573
+Q 1568 2573 1366 2422
+Q 1165 2272 1107 1990
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-12f" d="M 333 0
+L 333 4480
+L 1216 4480
+L 1216 0
+L 333 0
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-2e7" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-16e" d="M 1805 -38
+Q 1293 -38 969 227
+Q 646 493 646 1037
+L 646 2458
+L 77 2458
+L 77 3181
+L 326 3181
+Q 646 3181 646 3533
+L 646 3968
+L 1530 3968
+L 1530 3181
+L 2291 3181
+L 2291 2458
+L 1530 2458
+L 1530 1094
+Q 1530 909 1632 797
+Q 1734 685 1920 685
+Q 2131 685 2330 749
+L 2445 64
+Q 2138 -38 1805 -38
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-12c" d="M 333 0
+L 333 4480
+L 1216 4480
+L 1216 2035
+L 2272 3181
+L 3347 3181
+L 2266 1997
+L 3462 0
+L 2470 0
+L 1619 1408
+L 1216 960
+L 1216 0
+L 333 0
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-13a" d="M 333 0
+L 333 3181
+L 1158 3181
+L 1158 2758
+Q 1312 2995 1561 3126
+Q 1811 3258 2112 3258
+Q 2464 3258 2729 3098
+Q 2995 2938 3148 2653
+Q 3302 2368 3302 2003
+L 3302 0
+L 2419 0
+L 2419 1837
+Q 2419 2118 2252 2291
+Q 2086 2464 1818 2464
+Q 1555 2464 1385 2291
+Q 1216 2118 1216 1837
+L 1216 0
+L 333 0
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-165" d="M 1606 -77
+Q 1069 -77 691 176
+Q 314 429 205 858
+L 915 1050
+Q 986 838 1174 710
+Q 1363 582 1606 582
+Q 1824 582 1949 665
+Q 2074 749 2074 896
+Q 2074 1011 1990 1078
+Q 1907 1146 1754 1190
+L 1286 1306
+Q 1005 1376 787 1488
+Q 570 1600 448 1785
+Q 326 1971 326 2272
+Q 326 2714 662 2986
+Q 998 3258 1549 3258
+Q 2035 3258 2380 3021
+Q 2726 2784 2829 2387
+L 2118 2202
+Q 2061 2381 1904 2489
+Q 1747 2598 1542 2598
+Q 1370 2598 1261 2518
+Q 1152 2438 1152 2304
+Q 1152 2086 1485 2003
+L 1914 1888
+Q 2227 1811 2448 1702
+Q 2669 1594 2784 1411
+Q 2899 1229 2899 934
+Q 2899 480 2544 201
+Q 2189 -77 1606 -77
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-2f7" d="M 915 1062
+Q 685 1062 534 1212
+Q 384 1363 384 1587
+Q 384 1818 534 1968
+Q 685 2118 915 2118
+Q 1146 2118 1296 1968
+Q 1446 1818 1446 1587
+Q 1446 1363 1296 1212
+Q 1146 1062 915 1062
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-118" d="M 333 0
+L 333 4480
+L 1216 4480
+L 1216 2835
+Q 1370 3034 1603 3146
+Q 1837 3258 2112 3258
+Q 2464 3258 2729 3098
+Q 2995 2938 3148 2653
+Q 3302 2368 3302 2003
+L 3302 0
+L 2419 0
+L 2419 1837
+Q 2419 2118 2252 2291
+Q 2086 2464 1818 2464
+Q 1555 2464 1385 2291
+Q 1216 2118 1216 1837
+L 1216 0
+L 333 0
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-175" d="M 1466 -77
+Q 954 -77 618 211
+Q 282 499 282 1062
+L 282 3181
+L 1165 3181
+L 1165 1331
+Q 1165 1056 1331 883
+Q 1498 710 1760 710
+Q 2029 710 2198 886
+Q 2368 1062 2368 1344
+L 2368 3181
+L 3251 3181
+L 3251 0
+L 2419 0
+L 2419 422
+Q 2266 186 2016 54
+Q 1766 -77 1466 -77
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-d6" d="M 1293 -77
+Q 787 -77 473 185
+Q 160 448 160 883
+Q 160 1267 425 1520
+Q 691 1773 1216 1843
+L 2240 1990
+L 2240 2074
+Q 2240 2278 2080 2406
+Q 1920 2534 1664 2534
+Q 1408 2534 1216 2406
+Q 1024 2278 954 2061
+L 166 2266
+Q 294 2720 700 2989
+Q 1107 3258 1664 3258
+Q 2099 3258 2425 3110
+Q 2752 2963 2934 2697
+Q 3117 2432 3117 2074
+L 3117 0
+L 2298 0
+L 2298 314
+Q 1926 -77 1293 -77
+z
+M 1530 608
+Q 1843 608 2041 771
+Q 2240 934 2240 1197
+L 2240 1382
+L 1446 1261
+Q 1267 1235 1164 1139
+Q 1062 1043 1062 915
+Q 1062 768 1187 688
+Q 1312 608 1530 608
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#Gramatika-Bold-5f"/>
+     <use xlink:href="#Gramatika-Bold-143" transform="translate(88.296875 0)"/>
+     <use xlink:href="#Gramatika-Bold-f6" transform="translate(148.5 0)"/>
+     <use xlink:href="#Gramatika-Bold-fc" transform="translate(211.40625 0)"/>
+     <use xlink:href="#Gramatika-Bold-12f" transform="translate(268.5 0)"/>
+     <use xlink:href="#Gramatika-Bold-2e7" transform="translate(292.703125 0)"/>
+     <use xlink:href="#Gramatika-Bold-16e" transform="translate(314.703125 0)"/>
+     <use xlink:href="#Gramatika-Bold-143" transform="translate(352.3125 0)"/>
+     <use xlink:href="#Gramatika-Bold-12c" transform="translate(412.515625 0)"/>
+     <use xlink:href="#Gramatika-Bold-fc" transform="translate(464.203125 0)"/>
+     <use xlink:href="#Gramatika-Bold-13a" transform="translate(521.296875 0)"/>
+     <use xlink:href="#Gramatika-Bold-165" transform="translate(577.296875 0)"/>
+     <use xlink:href="#Gramatika-Bold-2e7" transform="translate(625.796875 0)"/>
+     <use xlink:href="#Gramatika-Bold-2f7" transform="translate(647.796875 0)"/>
+     <use xlink:href="#Gramatika-Bold-2e7" transform="translate(676.390625 0)"/>
+     <use xlink:href="#Gramatika-Bold-16e" transform="translate(698.390625 0)"/>
+     <use xlink:href="#Gramatika-Bold-118" transform="translate(737.59375 0)"/>
+     <use xlink:href="#Gramatika-Bold-143" transform="translate(793.59375 0)"/>
+     <use xlink:href="#Gramatika-Bold-175" transform="translate(853.796875 0)"/>
+     <use xlink:href="#Gramatika-Bold-165" transform="translate(909.796875 0)"/>
+     <use xlink:href="#Gramatika-Bold-d6" transform="translate(958.59375 0)"/>
+     <use xlink:href="#Gramatika-Bold-13a" transform="translate(1011.6875 0)"/>
+     <use xlink:href="#Gramatika-Bold-f6" transform="translate(1067.6875 0)"/>
+     <use xlink:href="#Gramatika-Bold-165" transform="translate(1130.59375 0)"/>
+    </g>
+   </g>
+  </g>
+  <g id="axes_2">
+   <g id="patch_27">
+    <path d="M 575.790968 551.232
+L 907.92 551.232
+L 907.92 139.392
+L 575.790968 139.392
+z
+" style="fill: #faf4e9"/>
+   </g>
+   <g id="matplotlib.axis_3">
+    <g id="xtick_9">
+     <g id="line2d_25">
+      <path d="M 575.790968 551.232
+L 575.790968 139.392
+" clip-path="url(#pcd65f6f758)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_26"/>
+     <g id="text_18">
+      <!-- 0.00 -->
+      <g transform="translate(563.862843 569.858) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-2ee" d="M 883 -38
+Q 710 -38 598 74
+Q 486 186 486 358
+Q 486 531 598 643
+Q 710 755 883 755
+Q 1056 755 1168 643
+Q 1280 531 1280 358
+Q 1280 186 1168 74
+Q 1056 -38 883 -38
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-29a"/>
+       <use xlink:href="#Gramatika-Regular-2ee" transform="translate(63.09375 0)"/>
+       <use xlink:href="#Gramatika-Regular-29a" transform="translate(90.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-29a" transform="translate(153.78125 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_10">
+     <g id="line2d_27">
+      <path d="M 627.241436 551.232
+L 627.241436 139.392
+" clip-path="url(#pcd65f6f758)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_28"/>
+     <g id="text_19">
+      <!-- 0.05 -->
+      <g transform="translate(615.703467 569.858) scale(0.11 -0.11)">
+       <use xlink:href="#Gramatika-Regular-29a"/>
+       <use xlink:href="#Gramatika-Regular-2ee" transform="translate(63.09375 0)"/>
+       <use xlink:href="#Gramatika-Regular-29a" transform="translate(90.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-29f" transform="translate(153.78125 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_11">
+     <g id="line2d_29">
+      <path d="M 678.691905 551.232
+L 678.691905 139.392
+" clip-path="url(#pcd65f6f758)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_30"/>
+     <g id="text_20">
+      <!-- 0.10 -->
+      <g transform="translate(668.072608 569.858) scale(0.11 -0.11)">
+       <use xlink:href="#Gramatika-Regular-29a"/>
+       <use xlink:href="#Gramatika-Regular-2ee" transform="translate(63.09375 0)"/>
+       <use xlink:href="#Gramatika-Regular-29b" transform="translate(90.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-29a" transform="translate(129.984375 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_12">
+     <g id="line2d_31">
+      <path d="M 730.142373 551.232
+L 730.142373 139.392
+" clip-path="url(#pcd65f6f758)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_32"/>
+     <g id="text_21">
+      <!-- 0.15 -->
+      <g transform="translate(719.913232 569.858) scale(0.11 -0.11)">
+       <use xlink:href="#Gramatika-Regular-29a"/>
+       <use xlink:href="#Gramatika-Regular-2ee" transform="translate(63.09375 0)"/>
+       <use xlink:href="#Gramatika-Regular-29b" transform="translate(90.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-29f" transform="translate(129.984375 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_13">
+     <g id="line2d_33">
+      <path d="M 781.592842 551.232
+L 781.592842 139.392
+" clip-path="url(#pcd65f6f758)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_34"/>
+     <g id="text_22">
+      <!-- 0.20 -->
+      <g transform="translate(770.192373 569.858) scale(0.11 -0.11)">
+       <use xlink:href="#Gramatika-Regular-29a"/>
+       <use xlink:href="#Gramatika-Regular-2ee" transform="translate(63.09375 0)"/>
+       <use xlink:href="#Gramatika-Regular-29c" transform="translate(90.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-29a" transform="translate(144.1875 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_14">
+     <g id="line2d_35">
+      <path d="M 833.04331 551.232
+L 833.04331 139.392
+" clip-path="url(#pcd65f6f758)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_36"/>
+     <g id="text_23">
+      <!-- 0.25 -->
+      <g transform="translate(822.032998 569.858) scale(0.11 -0.11)">
+       <use xlink:href="#Gramatika-Regular-29a"/>
+       <use xlink:href="#Gramatika-Regular-2ee" transform="translate(63.09375 0)"/>
+       <use xlink:href="#Gramatika-Regular-29c" transform="translate(90.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-29f" transform="translate(144.1875 0)"/>
+      </g>
+     </g>
+    </g>
+    <g id="xtick_15">
+     <g id="line2d_37">
+      <path d="M 884.493779 551.232
+L 884.493779 139.392
+" clip-path="url(#pcd65f6f758)" style="fill: none; stroke: #ded5c5; stroke-width: 0.8; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_38"/>
+     <g id="text_24">
+      <!-- 0.30 -->
+      <g transform="translate(872.95581 569.858) scale(0.11 -0.11)">
+       <defs>
+        <path id="Gramatika-Regular-29d" d="M 1741 -77
+Q 1107 -77 681 230
+Q 256 538 147 1082
+L 678 1203
+Q 762 851 1040 652
+Q 1318 454 1734 454
+Q 2176 454 2438 697
+Q 2701 941 2701 1357
+Q 2701 1786 2432 2035
+Q 2163 2285 1709 2285
+Q 1549 2285 1382 2253
+L 1382 2701
+L 2470 3955
+L 403 3955
+L 403 4480
+L 3245 4480
+L 3245 4077
+L 2067 2707
+Q 2618 2688 2957 2326
+Q 3296 1965 3296 1363
+Q 3296 698 2877 310
+Q 2458 -77 1741 -77
+z
+" transform="scale(0.015625)"/>
+       </defs>
+       <use xlink:href="#Gramatika-Regular-29a"/>
+       <use xlink:href="#Gramatika-Regular-2ee" transform="translate(63.09375 0)"/>
+       <use xlink:href="#Gramatika-Regular-29d" transform="translate(90.6875 0)"/>
+       <use xlink:href="#Gramatika-Regular-29a" transform="translate(146.6875 0)"/>
+      </g>
+     </g>
+    </g>
+   </g>
+   <g id="matplotlib.axis_4">
+    <g id="ytick_9">
+     <g id="line2d_39"/>
+    </g>
+    <g id="ytick_10">
+     <g id="line2d_40"/>
+    </g>
+    <g id="ytick_11">
+     <g id="line2d_41"/>
+    </g>
+    <g id="ytick_12">
+     <g id="line2d_42"/>
+    </g>
+    <g id="ytick_13">
+     <g id="line2d_43"/>
+    </g>
+    <g id="ytick_14">
+     <g id="line2d_44"/>
+    </g>
+    <g id="ytick_15">
+     <g id="line2d_45"/>
+    </g>
+    <g id="ytick_16">
+     <g id="line2d_46"/>
+    </g>
+   </g>
+   <g id="patch_28">
+    <path d="M 575.790968 158.112
+L 892.104332 158.112
+L 892.104332 167.887457
+L 575.790968 167.887457
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_29">
+    <path d="M 575.790968 206.989285
+L 770.726503 206.989285
+L 770.726503 216.764742
+L 575.790968 216.764742
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_30">
+    <path d="M 575.790968 255.866569
+L 697.506312 255.866569
+L 697.506312 265.642026
+L 575.790968 265.642026
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_31">
+    <path d="M 575.790968 304.743854
+L 731.570638 304.743854
+L 731.570638 314.519311
+L 575.790968 314.519311
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_32">
+    <path d="M 575.790968 353.621138
+L 662.15984 353.621138
+L 662.15984 363.396595
+L 575.790968 363.396595
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_33">
+    <path d="M 575.790968 402.498423
+L 742.428745 402.498423
+L 742.428745 412.27388
+L 575.790968 412.27388
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_34">
+    <path d="M 575.790968 451.375708
+L 740.012631 451.375708
+L 740.012631 461.151164
+L 575.790968 461.151164
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_35">
+    <path d="M 575.790968 500.252992
+L 679.035594 500.252992
+L 679.035594 510.028449
+L 575.790968 510.028449
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #827b72"/>
+   </g>
+   <g id="patch_36">
+    <path d="M 575.790968 169.353775
+L 816.75615 169.353775
+L 816.75615 179.129232
+L 575.790968 179.129232
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_37">
+    <path d="M 575.790968 218.23106
+L 669.039797 218.23106
+L 669.039797 228.006517
+L 575.790968 228.006517
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_38">
+    <path d="M 575.790968 267.108345
+L 669.066551 267.108345
+L 669.066551 276.883802
+L 575.790968 276.883802
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_39">
+    <path d="M 575.790968 315.985629
+L 704.641463 315.985629
+L 704.641463 325.761086
+L 575.790968 325.761086
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_40">
+    <path d="M 575.790968 364.862914
+L 685.783837 364.862914
+L 685.783837 374.638371
+L 575.790968 374.638371
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_41">
+    <path d="M 575.790968 413.740198
+L 674.796075 413.740198
+L 674.796075 423.515655
+L 575.790968 423.515655
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_42">
+    <path d="M 575.790968 462.617483
+L 682.921133 462.617483
+L 682.921133 472.39294
+L 575.790968 472.39294
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_43">
+    <path d="M 575.790968 511.494768
+L 760.119474 511.494768
+L 760.119474 521.270225
+L 575.790968 521.270225
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #2851e4"/>
+   </g>
+   <g id="patch_44">
+    <path d="M 575.790968 180.595551
+L 820.549078 180.595551
+L 820.549078 190.371008
+L 575.790968 190.371008
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_45">
+    <path d="M 575.790968 229.472836
+L 743.474219 229.472836
+L 743.474219 239.248292
+L 575.790968 239.248292
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_46">
+    <path d="M 575.790968 278.35012
+L 694.388414 278.35012
+L 694.388414 288.125577
+L 575.790968 288.125577
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_47">
+    <path d="M 575.790968 327.227405
+L 737.328975 327.227405
+L 737.328975 337.002862
+L 575.790968 337.002862
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_48">
+    <path d="M 575.790968 376.104689
+L 684.178583 376.104689
+L 684.178583 385.880146
+L 575.790968 385.880146
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_49">
+    <path d="M 575.790968 424.981974
+L 705.098343 424.981974
+L 705.098343 434.757431
+L 575.790968 434.757431
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_50">
+    <path d="M 575.790968 473.859258
+L 717.263292 473.859258
+L 717.263292 483.634715
+L 575.790968 483.634715
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #c4432a"/>
+   </g>
+   <g id="patch_51">
+    <path d="M 575.790968 522.736543
+L 733.350824 522.736543
+L 733.350824 532.512
+L 575.790968 532.512
+z
+" clip-path="url(#pcd65f6f758)" style="fill: #c4432a"/>
+   </g>
+   <g id="text_25">
+    <!-- Model API equivalent · USD -->
+    <g transform="translate(575.790968 121.392) scale(0.132 -0.132)">
+     <defs>
+      <path id="Gramatika-Bold-1" d="M 154 0
+L 1901 4480
+L 3021 4480
+L 4762 0
+L 3795 0
+L 3411 1011
+L 1504 1011
+L 1126 0
+L 154 0
+z
+M 1805 1805
+L 3117 1805
+L 2458 3558
+L 1805 1805
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-82" d="M 384 0
+L 384 4480
+L 2144 4480
+Q 2637 4480 3008 4291
+Q 3379 4102 3587 3763
+Q 3795 3424 3795 2976
+Q 3795 2528 3587 2189
+Q 3379 1850 3008 1658
+Q 2637 1466 2144 1466
+L 1286 1466
+L 1286 0
+L 384 0
+z
+M 2163 3686
+L 1286 3686
+L 1286 2259
+L 2163 2259
+Q 2477 2259 2678 2460
+Q 2880 2662 2880 2976
+Q 2880 3290 2678 3488
+Q 2477 3686 2163 3686
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-46" d="M 384 0
+L 384 4480
+L 1286 4480
+L 1286 0
+L 384 0
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-15d" d="M 2810 -1408
+L 2810 314
+Q 2630 128 2374 25
+Q 2118 -77 1811 -77
+Q 1344 -77 982 140
+Q 621 358 413 732
+Q 205 1107 205 1587
+Q 205 2074 413 2448
+Q 621 2822 982 3040
+Q 1344 3258 1811 3258
+Q 2144 3258 2419 3133
+Q 2694 3008 2867 2790
+L 2867 3181
+L 3693 3181
+L 3693 -1408
+L 2810 -1408
+z
+M 1946 710
+Q 2323 710 2566 960
+Q 2810 1210 2810 1587
+Q 2810 1971 2566 2217
+Q 2323 2464 1946 2464
+Q 1574 2464 1334 2217
+Q 1094 1971 1094 1587
+Q 1094 1210 1334 960
+Q 1574 710 1946 710
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-11d" d="M 768 3642
+Q 544 3642 390 3802
+Q 237 3962 237 4173
+Q 237 4390 390 4550
+Q 544 4710 768 4710
+Q 992 4710 1145 4550
+Q 1299 4390 1299 4173
+Q 1299 3962 1145 3802
+Q 992 3642 768 3642
+z
+M 333 0
+L 333 3181
+L 1216 3181
+L 1216 0
+L 333 0
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-18d" d="M 1421 0
+L 128 3181
+L 1069 3181
+L 1888 992
+L 2707 3181
+L 3642 3181
+L 2355 0
+L 1421 0
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-9b" d="M 2093 -77
+Q 1574 -77 1177 144
+Q 781 365 553 761
+Q 326 1158 326 1677
+L 326 4480
+L 1229 4480
+L 1229 1632
+Q 1229 1222 1472 972
+Q 1715 723 2106 723
+Q 2483 723 2723 972
+Q 2963 1222 2963 1632
+L 2963 4480
+L 3866 4480
+L 3866 1664
+Q 3866 1146 3638 755
+Q 3411 365 3011 144
+Q 2611 -77 2093 -77
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-8c" d="M 1984 -77
+Q 1267 -77 796 272
+Q 326 621 230 1242
+L 1030 1414
+Q 1088 1069 1334 867
+Q 1581 666 1952 666
+Q 2298 666 2518 819
+Q 2739 973 2739 1229
+Q 2739 1427 2611 1548
+Q 2483 1670 2195 1754
+L 1491 1965
+Q 941 2138 656 2416
+Q 371 2694 371 3174
+Q 371 3597 566 3907
+Q 762 4218 1114 4387
+Q 1466 4557 1939 4557
+Q 2573 4557 3001 4240
+Q 3430 3923 3526 3379
+L 2726 3206
+Q 2669 3482 2457 3648
+Q 2246 3814 1939 3814
+Q 1638 3814 1459 3670
+Q 1280 3526 1280 3290
+Q 1280 2925 1754 2778
+L 2394 2579
+Q 2854 2438 3126 2278
+Q 3398 2118 3523 1878
+Q 3648 1638 3648 1267
+Q 3648 870 3433 569
+Q 3219 269 2844 96
+Q 2470 -77 1984 -77
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Bold-20" d="M 384 0
+L 384 4480
+L 2131 4480
+Q 2784 4480 3286 4195
+Q 3789 3910 4073 3408
+Q 4358 2906 4358 2253
+Q 4358 1594 4073 1085
+Q 3789 576 3286 288
+Q 2784 0 2131 0
+L 384 0
+z
+M 1286 794
+L 2067 794
+Q 2470 794 2784 979
+Q 3098 1165 3270 1491
+Q 3443 1818 3443 2253
+Q 3443 2675 3270 2998
+Q 3098 3322 2784 3504
+Q 2470 3686 2067 3686
+L 1286 3686
+L 1286 794
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#Gramatika-Bold-5f"/>
+     <use xlink:href="#Gramatika-Bold-143" transform="translate(88.296875 0)"/>
+     <use xlink:href="#Gramatika-Bold-f6" transform="translate(148.5 0)"/>
+     <use xlink:href="#Gramatika-Bold-fc" transform="translate(211.40625 0)"/>
+     <use xlink:href="#Gramatika-Bold-12f" transform="translate(268.5 0)"/>
+     <use xlink:href="#Gramatika-Bold-2e7" transform="translate(292.703125 0)"/>
+     <use xlink:href="#Gramatika-Bold-1" transform="translate(314.703125 0)"/>
+     <use xlink:href="#Gramatika-Bold-82" transform="translate(391.609375 0)"/>
+     <use xlink:href="#Gramatika-Bold-46" transform="translate(453.21875 0)"/>
+     <use xlink:href="#Gramatika-Bold-2e7" transform="translate(479.3125 0)"/>
+     <use xlink:href="#Gramatika-Bold-fc" transform="translate(501.3125 0)"/>
+     <use xlink:href="#Gramatika-Bold-15d" transform="translate(558.40625 0)"/>
+     <use xlink:href="#Gramatika-Bold-175" transform="translate(621.3125 0)"/>
+     <use xlink:href="#Gramatika-Bold-11d" transform="translate(677.3125 0)"/>
+     <use xlink:href="#Gramatika-Bold-18d" transform="translate(701.3125 0)"/>
+     <use xlink:href="#Gramatika-Bold-d6" transform="translate(757.90625 0)"/>
+     <use xlink:href="#Gramatika-Bold-12f" transform="translate(811 0)"/>
+     <use xlink:href="#Gramatika-Bold-fc" transform="translate(835.203125 0)"/>
+     <use xlink:href="#Gramatika-Bold-13a" transform="translate(892.296875 0)"/>
+     <use xlink:href="#Gramatika-Bold-16e" transform="translate(948.203125 0)"/>
+     <use xlink:href="#Gramatika-Bold-2e7" transform="translate(987.40625 0)"/>
+     <use xlink:href="#Gramatika-Bold-2f7" transform="translate(1009.40625 0)"/>
+     <use xlink:href="#Gramatika-Bold-2e7" transform="translate(1038 0)"/>
+     <use xlink:href="#Gramatika-Bold-9b" transform="translate(1060 0)"/>
+     <use xlink:href="#Gramatika-Bold-8c" transform="translate(1125.5 0)"/>
+     <use xlink:href="#Gramatika-Bold-20" transform="translate(1186 0)"/>
+    </g>
+   </g>
+  </g>
+  <g id="text_26">
+   <!-- CodeDB, Graphify and workspace-only Graff -->
+   <g style="fill: #201b16" transform="translate(56.16 37.092) scale(0.22 -0.22)">
+    <defs>
+     <path id="Gramatika-Bold-1a" d="M 2560 -77
+Q 1875 -77 1350 217
+Q 826 512 528 1037
+Q 230 1562 230 2240
+Q 230 2918 528 3443
+Q 826 3968 1350 4262
+Q 1875 4557 2560 4557
+Q 3104 4557 3542 4374
+Q 3981 4192 4275 3856
+Q 4570 3520 4678 3059
+L 3821 2822
+Q 3725 3232 3385 3475
+Q 3046 3718 2560 3718
+Q 2144 3718 1824 3529
+Q 1504 3341 1325 3008
+Q 1146 2675 1146 2240
+Q 1146 1805 1325 1472
+Q 1504 1139 1824 950
+Q 2144 762 2560 762
+Q 3046 762 3385 1005
+Q 3725 1248 3821 1658
+L 4678 1421
+Q 4570 960 4275 624
+Q 3981 288 3542 105
+Q 3104 -77 2560 -77
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Bold-19" d="M 384 0
+L 384 4480
+L 2362 4480
+Q 3008 4480 3385 4150
+Q 3763 3821 3763 3264
+Q 3763 2688 3219 2400
+Q 3885 2054 3885 1338
+Q 3885 698 3491 349
+Q 3098 0 2362 0
+L 384 0
+z
+M 1286 2714
+L 2259 2714
+Q 2534 2714 2697 2848
+Q 2861 2982 2861 3206
+Q 2861 3443 2701 3577
+Q 2541 3712 2266 3712
+L 1286 3712
+L 1286 2714
+z
+M 1286 768
+L 2285 768
+Q 2598 768 2787 931
+Q 2976 1094 2976 1363
+Q 2976 1638 2784 1804
+Q 2592 1971 2278 1971
+L 1286 1971
+L 1286 768
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Bold-2ef" d="M 736 -845
+L 358 -634
+L 749 -6
+Q 602 45 493 173
+Q 384 301 384 493
+Q 384 717 534 870
+Q 685 1024 915 1024
+Q 1146 1024 1296 873
+Q 1446 723 1446 506
+Q 1446 294 1306 70
+L 736 -845
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Bold-3a" d="M 2509 -77
+Q 1830 -77 1318 217
+Q 806 512 518 1037
+Q 230 1562 230 2240
+Q 230 2918 528 3443
+Q 826 3968 1350 4262
+Q 1875 4557 2560 4557
+Q 3104 4557 3542 4374
+Q 3981 4192 4275 3856
+Q 4570 3520 4678 3059
+L 3821 2822
+Q 3725 3232 3385 3475
+Q 3046 3718 2560 3718
+Q 2144 3718 1824 3529
+Q 1504 3341 1325 3008
+Q 1146 2675 1146 2240
+Q 1146 1805 1328 1472
+Q 1510 1139 1836 950
+Q 2163 762 2592 762
+Q 3085 762 3433 992
+Q 3782 1222 3885 1626
+L 2554 1626
+L 2554 2419
+L 4672 2419
+L 4672 0
+L 3878 0
+L 3878 435
+Q 3635 186 3276 54
+Q 2918 -77 2509 -77
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Bold-15e" d="M 333 0
+L 333 3181
+L 1158 3181
+L 1158 2771
+Q 1299 2995 1520 3126
+Q 1741 3258 2029 3258
+Q 2170 3258 2304 3232
+L 2304 2464
+Q 2176 2490 2035 2490
+Q 1645 2490 1430 2269
+Q 1216 2048 1216 1696
+L 1216 0
+L 333 0
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Bold-15b" d="M 333 -1408
+L 333 3181
+L 1158 3181
+L 1158 2790
+Q 1331 3008 1606 3133
+Q 1882 3258 2214 3258
+Q 2682 3258 3043 3040
+Q 3405 2822 3613 2448
+Q 3821 2074 3821 1587
+Q 3821 1107 3613 732
+Q 3405 358 3043 140
+Q 2682 -77 2214 -77
+Q 1907 -77 1651 25
+Q 1395 128 1216 314
+L 1216 -1408
+L 333 -1408
+z
+M 2080 710
+Q 2451 710 2691 960
+Q 2931 1210 2931 1587
+Q 2931 1971 2691 2217
+Q 2451 2464 2080 2464
+Q 1702 2464 1459 2217
+Q 1216 1971 1216 1587
+Q 1216 1210 1459 960
+Q 1702 710 2080 710
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Bold-10f" d="M 646 0
+L 646 2458
+L 77 2458
+L 77 3181
+L 646 3181
+L 646 3450
+Q 646 3789 812 4038
+Q 979 4288 1257 4422
+Q 1536 4557 1882 4557
+Q 2074 4557 2262 4521
+Q 2451 4486 2624 4397
+L 2509 3712
+Q 2387 3763 2262 3798
+Q 2138 3834 2010 3834
+Q 1805 3834 1667 3709
+Q 1530 3584 1530 3379
+L 1530 3181
+L 2554 3181
+L 2554 2458
+L 1530 2458
+L 1530 0
+L 646 0
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Bold-194" d="M 858 -1408
+Q 518 -1408 237 -1312
+L 352 -621
+Q 550 -685 742 -685
+Q 902 -685 1049 -621
+Q 1197 -557 1306 -320
+L 1434 -45
+L 128 3181
+L 1069 3181
+L 1888 998
+L 2707 3181
+L 3642 3181
+L 2131 -461
+Q 1901 -941 1609 -1174
+Q 1318 -1408 858 -1408
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Bold-18e" d="M 1139 0
+L 128 3181
+L 1050 3181
+L 1690 1005
+L 2387 3181
+L 3206 3181
+L 3910 1005
+L 4544 3181
+L 5466 3181
+L 4461 0
+L 3475 0
+L 2797 2093
+L 2118 0
+L 1139 0
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Bold-f0" d="M 1926 -77
+Q 1427 -77 1036 137
+Q 646 352 425 729
+Q 205 1107 205 1587
+Q 205 2074 425 2451
+Q 646 2829 1036 3043
+Q 1427 3258 1926 3258
+Q 2502 3258 2918 2976
+Q 3334 2694 3456 2214
+L 2656 2010
+Q 2579 2214 2384 2339
+Q 2189 2464 1933 2464
+Q 1568 2464 1331 2217
+Q 1094 1971 1094 1587
+Q 1094 1210 1331 960
+Q 1568 710 1933 710
+Q 2189 710 2387 838
+Q 2586 966 2656 1171
+L 3456 966
+Q 3334 486 2918 204
+Q 2502 -77 1926 -77
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Bold-304" d="M 384 1318
+L 384 2067
+L 3347 2067
+L 3347 1318
+L 384 1318
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Bold-1e4" d="M 646 0
+L 646 2458
+L 77 2458
+L 77 3181
+L 646 3181
+L 646 3450
+Q 646 3789 812 4038
+Q 979 4288 1257 4422
+Q 1536 4557 1882 4557
+Q 2074 4557 2262 4521
+Q 2451 4486 2624 4397
+L 2509 3712
+Q 2387 3763 2262 3798
+Q 2138 3834 2010 3834
+Q 1805 3834 1667 3709
+Q 1530 3584 1530 3379
+L 1530 3181
+L 2554 3181
+L 2554 2458
+L 1530 2458
+L 1530 0
+L 646 0
+z
+M 3366 0
+L 3366 2458
+L 2797 2458
+L 2797 3181
+L 3366 3181
+L 3366 3450
+Q 3366 3789 3532 4038
+Q 3699 4288 3977 4422
+Q 4256 4557 4602 4557
+Q 4794 4557 4982 4521
+Q 5171 4486 5344 4397
+L 5229 3712
+Q 5107 3763 4982 3798
+Q 4858 3834 4730 3834
+Q 4525 3834 4387 3709
+Q 4250 3584 4250 3379
+L 4250 3181
+L 5274 3181
+L 5274 2458
+L 4250 2458
+L 4250 0
+L 3366 0
+z
+" transform="scale(0.015625)"/>
+    </defs>
+    <use xlink:href="#Gramatika-Bold-1a"/>
+    <use xlink:href="#Gramatika-Bold-143" transform="translate(76 0)"/>
+    <use xlink:href="#Gramatika-Bold-f6" transform="translate(136.203125 0)"/>
+    <use xlink:href="#Gramatika-Bold-fc" transform="translate(199.109375 0)"/>
+    <use xlink:href="#Gramatika-Bold-20" transform="translate(256.203125 0)"/>
+    <use xlink:href="#Gramatika-Bold-19" transform="translate(327.90625 0)"/>
+    <use xlink:href="#Gramatika-Bold-2ef" transform="translate(388.203125 0)"/>
+    <use xlink:href="#Gramatika-Bold-2e7" transform="translate(416.796875 0)"/>
+    <use xlink:href="#Gramatika-Bold-3a" transform="translate(438.796875 0)"/>
+    <use xlink:href="#Gramatika-Bold-15e" transform="translate(516.796875 0)"/>
+    <use xlink:href="#Gramatika-Bold-d6" transform="translate(553.796875 0)"/>
+    <use xlink:href="#Gramatika-Bold-15b" transform="translate(606.890625 0)"/>
+    <use xlink:href="#Gramatika-Bold-118" transform="translate(669.796875 0)"/>
+    <use xlink:href="#Gramatika-Bold-11d" transform="translate(725.796875 0)"/>
+    <use xlink:href="#Gramatika-Bold-10f" transform="translate(750 0)"/>
+    <use xlink:href="#Gramatika-Bold-194" transform="translate(792 0)"/>
+    <use xlink:href="#Gramatika-Bold-2e7" transform="translate(851 0)"/>
+    <use xlink:href="#Gramatika-Bold-d6" transform="translate(873 0)"/>
+    <use xlink:href="#Gramatika-Bold-13a" transform="translate(926.09375 0)"/>
+    <use xlink:href="#Gramatika-Bold-f6" transform="translate(982.09375 0)"/>
+    <use xlink:href="#Gramatika-Bold-2e7" transform="translate(1045 0)"/>
+    <use xlink:href="#Gramatika-Bold-18e" transform="translate(1067 0)"/>
+    <use xlink:href="#Gramatika-Bold-143" transform="translate(1150.90625 0)"/>
+    <use xlink:href="#Gramatika-Bold-15e" transform="translate(1211.109375 0)"/>
+    <use xlink:href="#Gramatika-Bold-12c" transform="translate(1248.109375 0)"/>
+    <use xlink:href="#Gramatika-Bold-165" transform="translate(1300.703125 0)"/>
+    <use xlink:href="#Gramatika-Bold-15b" transform="translate(1349.203125 0)"/>
+    <use xlink:href="#Gramatika-Bold-d6" transform="translate(1412.109375 0)"/>
+    <use xlink:href="#Gramatika-Bold-f0" transform="translate(1465.203125 0)"/>
+    <use xlink:href="#Gramatika-Bold-fc" transform="translate(1521.703125 0)"/>
+    <use xlink:href="#Gramatika-Bold-304" transform="translate(1578.796875 0)"/>
+    <use xlink:href="#Gramatika-Bold-143" transform="translate(1637.09375 0)"/>
+    <use xlink:href="#Gramatika-Bold-13a" transform="translate(1697.296875 0)"/>
+    <use xlink:href="#Gramatika-Bold-12f" transform="translate(1753.296875 0)"/>
+    <use xlink:href="#Gramatika-Bold-194" transform="translate(1777.5 0)"/>
+    <use xlink:href="#Gramatika-Bold-2e7" transform="translate(1836.5 0)"/>
+    <use xlink:href="#Gramatika-Bold-3a" transform="translate(1858.5 0)"/>
+    <use xlink:href="#Gramatika-Bold-15e" transform="translate(1936.5 0)"/>
+    <use xlink:href="#Gramatika-Bold-d6" transform="translate(1973.5 0)"/>
+    <use xlink:href="#Gramatika-Bold-1e4" transform="translate(2026.59375 0)"/>
+   </g>
+  </g>
+  <g id="text_27">
+   <!-- 48 attempts · 8 small Python task families · Grok 4.6 · two repeats per arm -->
+   <g transform="translate(56.16 55.7568) scale(0.12 -0.12)">
+    <defs>
+     <path id="Gramatika-Regular-29e" d="M 2515 0
+L 2515 1203
+L 243 1203
+L 243 1830
+L 2413 4480
+L 3104 4480
+L 3104 1709
+L 3725 1709
+L 3725 1203
+L 3104 1203
+L 3104 0
+L 2515 0
+z
+M 768 1709
+L 2515 1709
+L 2515 3840
+L 768 1709
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-2a2" d="M 1862 -77
+Q 1402 -77 1046 86
+Q 691 250 489 538
+Q 288 826 288 1197
+Q 288 1574 512 1865
+Q 736 2157 1107 2278
+Q 794 2406 608 2675
+Q 422 2944 422 3283
+Q 422 3654 604 3942
+Q 787 4230 1113 4393
+Q 1440 4557 1862 4557
+Q 2285 4557 2611 4393
+Q 2938 4230 3123 3942
+Q 3309 3654 3309 3283
+Q 3309 2944 3123 2675
+Q 2938 2406 2624 2278
+Q 2995 2157 3219 1865
+Q 3443 1574 3443 1197
+Q 3443 826 3241 538
+Q 3040 250 2685 86
+Q 2330 -77 1862 -77
+z
+M 1862 2515
+Q 2240 2515 2477 2726
+Q 2714 2938 2714 3264
+Q 2714 3597 2477 3811
+Q 2240 4026 1862 4026
+Q 1491 4026 1254 3811
+Q 1018 3597 1018 3264
+Q 1018 2938 1254 2726
+Q 1491 2515 1862 2515
+z
+M 1862 454
+Q 2298 454 2573 672
+Q 2848 890 2848 1235
+Q 2848 1581 2573 1795
+Q 2298 2010 1862 2010
+Q 1427 2010 1155 1795
+Q 883 1581 883 1235
+Q 883 890 1158 672
+Q 1434 454 1862 454
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-2e7" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-2f7" d="M 883 1171
+Q 710 1171 598 1283
+Q 486 1395 486 1568
+Q 486 1734 598 1846
+Q 710 1958 883 1958
+Q 1056 1958 1168 1846
+Q 1280 1734 1280 1568
+Q 1280 1395 1168 1283
+Q 1056 1171 883 1171
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-82" d="M 486 0
+L 486 4480
+L 2214 4480
+Q 2669 4480 3014 4297
+Q 3360 4115 3555 3788
+Q 3750 3462 3750 3034
+Q 3750 2611 3555 2284
+Q 3360 1958 3014 1772
+Q 2669 1587 2214 1587
+L 1075 1587
+L 1075 0
+L 486 0
+z
+M 2208 3955
+L 1075 3955
+L 1075 2112
+L 2208 2112
+Q 2618 2112 2883 2371
+Q 3149 2630 3149 3034
+Q 3149 3437 2883 3696
+Q 2618 3955 2208 3955
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-10f" d="M 691 0
+L 691 2650
+L 102 2650
+L 102 3130
+L 691 3130
+L 691 3520
+Q 691 3834 835 4067
+Q 979 4301 1232 4429
+Q 1485 4557 1798 4557
+Q 1958 4557 2115 4525
+Q 2272 4493 2413 4422
+L 2330 3968
+Q 2214 4019 2102 4048
+Q 1990 4077 1869 4077
+Q 1613 4077 1440 3913
+Q 1267 3750 1267 3488
+L 1267 3130
+L 2362 3130
+L 2362 2650
+L 1267 2650
+L 1267 0
+L 691 0
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-3a" d="M 2554 -77
+Q 1888 -77 1379 220
+Q 870 518 579 1040
+Q 288 1562 288 2240
+Q 288 2918 582 3440
+Q 877 3962 1395 4259
+Q 1914 4557 2579 4557
+Q 3110 4557 3539 4384
+Q 3968 4211 4256 3894
+Q 4544 3578 4659 3142
+L 4096 2982
+Q 3968 3450 3561 3725
+Q 3155 4000 2579 4000
+Q 2086 4000 1705 3776
+Q 1325 3552 1107 3155
+Q 890 2758 890 2240
+Q 890 1722 1107 1325
+Q 1325 928 1712 704
+Q 2099 480 2598 480
+Q 3206 480 3632 809
+Q 4058 1139 4154 1709
+L 2573 1709
+L 2573 2234
+L 4672 2234
+L 4672 0
+L 4141 0
+L 4141 672
+Q 3898 320 3482 121
+Q 3066 -77 2554 -77
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-2a0" d="M 1901 -77
+Q 1434 -77 1069 121
+Q 704 320 496 665
+Q 288 1011 288 1453
+Q 288 1850 457 2221
+Q 627 2592 986 3027
+L 2170 4480
+L 2886 4480
+L 1658 2970
+Q 1811 3002 1965 3002
+Q 2413 3002 2765 2803
+Q 3117 2605 3318 2259
+Q 3520 1914 3520 1466
+Q 3520 1018 3309 669
+Q 3098 320 2733 121
+Q 2368 -77 1901 -77
+z
+M 1901 448
+Q 2202 448 2432 579
+Q 2662 710 2790 940
+Q 2918 1171 2918 1466
+Q 2918 1766 2787 2000
+Q 2656 2234 2425 2368
+Q 2195 2502 1901 2502
+Q 1606 2502 1376 2368
+Q 1146 2234 1014 2000
+Q 883 1766 883 1466
+Q 883 1171 1014 940
+Q 1146 710 1376 579
+Q 1606 448 1901 448
+z
+" transform="scale(0.015625)"/>
+    </defs>
+    <use xlink:href="#Gramatika-Regular-29e"/>
+    <use xlink:href="#Gramatika-Regular-2a2" transform="translate(61.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(120.203125 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(142.203125 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(193.609375 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(231.609375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(268.109375 0)"/>
+    <use xlink:href="#Gramatika-Regular-138" transform="translate(324.515625 0)"/>
+    <use xlink:href="#Gramatika-Regular-15b" transform="translate(410.515625 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(471.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(508.40625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(555.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2f7" transform="translate(577.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(605.5 0)"/>
+    <use xlink:href="#Gramatika-Regular-2a2" transform="translate(627.5 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(685.796875 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(707.796875 0)"/>
+    <use xlink:href="#Gramatika-Regular-138" transform="translate(755.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(841.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(892.703125 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(915.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(937.890625 0)"/>
+    <use xlink:href="#Gramatika-Regular-82" transform="translate(959.890625 0)"/>
+    <use xlink:href="#Gramatika-Regular-194" transform="translate(1021.1875 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(1077.484375 0)"/>
+    <use xlink:href="#Gramatika-Regular-118" transform="translate(1113.984375 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(1168.578125 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(1228.171875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1282.765625 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(1304.765625 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(1341.265625 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(1392.671875 0)"/>
+    <use xlink:href="#Gramatika-Regular-12c" transform="translate(1440.171875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1492.578125 0)"/>
+    <use xlink:href="#Gramatika-Regular-10f" transform="translate(1514.578125 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(1553.578125 0)"/>
+    <use xlink:href="#Gramatika-Regular-138" transform="translate(1604.984375 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(1690.984375 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(1713.578125 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(1736.171875 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(1758.765625 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(1815.171875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1862.671875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2f7" transform="translate(1884.671875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1912.265625 0)"/>
+    <use xlink:href="#Gramatika-Regular-3a" transform="translate(1934.265625 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(2013.359375 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(2048.046875 0)"/>
+    <use xlink:href="#Gramatika-Regular-12c" transform="translate(2107.640625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2160.046875 0)"/>
+    <use xlink:href="#Gramatika-Regular-29e" transform="translate(2182.046875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2ee" transform="translate(2243.953125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2a0" transform="translate(2271.546875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2331.046875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2f7" transform="translate(2353.046875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2380.640625 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(2402.640625 0)"/>
+    <use xlink:href="#Gramatika-Regular-18e" transform="translate(2439.140625 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(2521.34375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2580.9375 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(2602.9375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(2637.625 0)"/>
+    <use xlink:href="#Gramatika-Regular-15b" transform="translate(2694.03125 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(2756.125 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(2813.625 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(2865.03125 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(2901.53125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2949.03125 0)"/>
+    <use xlink:href="#Gramatika-Regular-15b" transform="translate(2971.03125 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(3033.125 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(3089.53125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(3125.125 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(3147.125 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(3198.53125 0)"/>
+    <use xlink:href="#Gramatika-Regular-138" transform="translate(3234.125 0)"/>
+   </g>
+  </g>
+  <g id="text_28">
+   <!-- Each bar sums both attempts, including failures. API equivalents are estimates; subscription model charges were $0. -->
+   <g transform="translate(56.16 589.248) scale(0.1 -0.1)">
+    <defs>
+     <path id="Gramatika-Regular-26" d="M 486 0
+L 486 4480
+L 3411 4480
+L 3411 3955
+L 1075 3955
+L 1075 2502
+L 3251 2502
+L 3251 1984
+L 1075 1984
+L 1075 525
+L 3443 525
+L 3443 0
+L 486 0
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-ef" d="M 2144 -77
+Q 1773 -77 1465 80
+Q 1158 237 986 512
+L 986 0
+L 435 0
+L 435 4480
+L 1011 4480
+L 1011 2650
+Q 1190 2912 1488 3059
+Q 1786 3206 2144 3206
+Q 2598 3206 2953 2995
+Q 3309 2784 3510 2413
+Q 3712 2042 3712 1568
+Q 3712 1088 3510 717
+Q 3309 346 2953 134
+Q 2598 -77 2144 -77
+z
+M 2074 442
+Q 2381 442 2617 586
+Q 2854 730 2988 982
+Q 3123 1235 3123 1568
+Q 3123 1894 2988 2147
+Q 2854 2400 2617 2544
+Q 2381 2688 2074 2688
+Q 1766 2688 1526 2544
+Q 1286 2400 1148 2147
+Q 1011 1894 1011 1568
+Q 1011 1235 1148 982
+Q 1286 730 1526 586
+Q 1766 442 2074 442
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-2ef" d="M 691 -787
+L 410 -640
+L 768 -19
+Q 653 13 569 112
+Q 486 211 486 358
+Q 486 531 598 643
+Q 710 755 883 755
+Q 1056 755 1168 643
+Q 1280 531 1280 365
+Q 1280 211 1178 45
+L 691 -787
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-1" d="M 198 0
+L 2029 4480
+L 2752 4480
+L 4589 0
+L 3955 0
+L 3501 1120
+L 1280 1120
+L 832 0
+L 198 0
+z
+M 1491 1645
+L 3290 1645
+L 2387 3872
+L 1491 1645
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-46" d="M 486 0
+L 486 4480
+L 1075 4480
+L 1075 0
+L 486 0
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-15d" d="M 2963 -1408
+L 2963 467
+Q 2784 211 2486 67
+Q 2189 -77 1830 -77
+Q 1376 -77 1021 134
+Q 666 346 464 717
+Q 262 1088 262 1568
+Q 262 2042 464 2413
+Q 666 2784 1021 2995
+Q 1376 3206 1830 3206
+Q 2208 3206 2512 3046
+Q 2816 2886 2989 2605
+L 2989 3130
+L 3539 3130
+L 3539 -1408
+L 2963 -1408
+z
+M 1901 442
+Q 2214 442 2451 586
+Q 2688 730 2825 982
+Q 2963 1235 2963 1568
+Q 2963 1894 2825 2147
+Q 2688 2400 2451 2544
+Q 2214 2688 1901 2688
+Q 1594 2688 1357 2544
+Q 1120 2400 985 2147
+Q 851 1894 851 1568
+Q 851 1235 985 982
+Q 1120 730 1357 586
+Q 1594 442 1901 442
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-2f1" d="M 691 -787
+L 410 -640
+L 768 -19
+Q 653 13 569 112
+Q 486 211 486 358
+Q 486 531 598 643
+Q 710 755 883 755
+Q 1056 755 1168 643
+Q 1280 531 1280 365
+Q 1280 211 1178 45
+L 691 -787
+z
+M 883 1882
+Q 710 1882 598 1994
+Q 486 2106 486 2278
+Q 486 2451 598 2563
+Q 710 2675 883 2675
+Q 1056 2675 1168 2563
+Q 1280 2451 1280 2278
+Q 1280 2106 1168 1994
+Q 1056 1882 883 1882
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-34c" d="M 1792 -768
+L 1792 -70
+Q 1197 -19 797 313
+Q 397 646 288 1184
+L 826 1306
+Q 902 947 1161 716
+Q 1421 486 1792 435
+L 1792 2035
+L 1555 2099
+Q 1005 2259 733 2531
+Q 461 2803 461 3270
+Q 461 3827 822 4172
+Q 1184 4518 1792 4550
+L 1792 5248
+L 2182 5248
+L 2182 4544
+Q 2688 4480 3030 4195
+Q 3373 3910 3469 3462
+L 2931 3341
+Q 2867 3610 2665 3792
+Q 2464 3974 2182 4032
+L 2182 2509
+L 2355 2464
+Q 2790 2336 3059 2179
+Q 3328 2022 3453 1792
+Q 3578 1562 3578 1210
+Q 3578 858 3402 579
+Q 3226 301 2912 131
+Q 2598 -38 2182 -70
+L 2182 -768
+L 1792 -768
+z
+M 1702 2650
+L 1792 2624
+L 1792 4045
+Q 1459 4013 1257 3821
+Q 1056 3629 1056 3334
+Q 1056 3072 1216 2909
+Q 1376 2746 1702 2650
+z
+M 2234 1914
+L 2182 1926
+L 2182 435
+Q 2547 486 2764 688
+Q 2982 890 2982 1190
+Q 2982 1478 2803 1641
+Q 2624 1805 2234 1914
+z
+" transform="scale(0.015625)"/>
+    </defs>
+    <use xlink:href="#Gramatika-Regular-26"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(57.59375 0)"/>
+    <use xlink:href="#Gramatika-Regular-f0" transform="translate(109 0)"/>
+    <use xlink:href="#Gramatika-Regular-118" transform="translate(164.796875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(219.390625 0)"/>
+    <use xlink:href="#Gramatika-Regular-ef" transform="translate(241.390625 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(303.484375 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(354.890625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(390.484375 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(412.484375 0)"/>
+    <use xlink:href="#Gramatika-Regular-175" transform="translate(459.984375 0)"/>
+    <use xlink:href="#Gramatika-Regular-138" transform="translate(514.578125 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(600.578125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(648.078125 0)"/>
+    <use xlink:href="#Gramatika-Regular-ef" transform="translate(670.078125 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(732.171875 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(791.0625 0)"/>
+    <use xlink:href="#Gramatika-Regular-118" transform="translate(827.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(882.15625 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(904.15625 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(955.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(993.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(1030.0625 0)"/>
+    <use xlink:href="#Gramatika-Regular-138" transform="translate(1086.46875 0)"/>
+    <use xlink:href="#Gramatika-Regular-15b" transform="translate(1172.46875 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(1233.859375 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(1270.359375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2ef" transform="translate(1317.859375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1345.453125 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(1367.453125 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(1390.046875 0)"/>
+    <use xlink:href="#Gramatika-Regular-f0" transform="translate(1444.640625 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(1500.4375 0)"/>
+    <use xlink:href="#Gramatika-Regular-175" transform="translate(1523.03125 0)"/>
+    <use xlink:href="#Gramatika-Regular-f6" transform="translate(1577.625 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(1639.71875 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(1662.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-110" transform="translate(1716.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1779.109375 0)"/>
+    <use xlink:href="#Gramatika-Regular-10f" transform="translate(1801.109375 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(1840.109375 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(1891.515625 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(1914.109375 0)"/>
+    <use xlink:href="#Gramatika-Regular-175" transform="translate(1936.703125 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(1991.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(2025.984375 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(2082.390625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2ee" transform="translate(2129.890625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2157.484375 0)"/>
+    <use xlink:href="#Gramatika-Regular-1" transform="translate(2179.484375 0)"/>
+    <use xlink:href="#Gramatika-Regular-82" transform="translate(2254.28125 0)"/>
+    <use xlink:href="#Gramatika-Regular-46" transform="translate(2316.484375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2340.890625 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(2362.890625 0)"/>
+    <use xlink:href="#Gramatika-Regular-15d" transform="translate(2419.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-175" transform="translate(2481.390625 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(2535.984375 0)"/>
+    <use xlink:href="#Gramatika-Regular-18d" transform="translate(2557.875 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(2612.875 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(2664.28125 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(2686.875 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(2743.28125 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(2797.46875 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(2833.96875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2881.46875 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(2903.46875 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(2954.875 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(2989.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(3045.96875 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(3067.96875 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(3124.375 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(3171.875 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(3208.375 0)"/>
+    <use xlink:href="#Gramatika-Regular-138" transform="translate(3230.96875 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(3316.96875 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(3368.375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(3404.875 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(3461.28125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2f1" transform="translate(3508.78125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(3536.375 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(3558.375 0)"/>
+    <use xlink:href="#Gramatika-Regular-175" transform="translate(3605.875 0)"/>
+    <use xlink:href="#Gramatika-Regular-ef" transform="translate(3660.46875 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(3722.0625 0)"/>
+    <use xlink:href="#Gramatika-Regular-f0" transform="translate(3769.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(3825.359375 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(3860.953125 0)"/>
+    <use xlink:href="#Gramatika-Regular-15b" transform="translate(3883.546875 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(3944.9375 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(3981.4375 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(4004.03125 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(4063.625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(4118.21875 0)"/>
+    <use xlink:href="#Gramatika-Regular-138" transform="translate(4140.21875 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(4226.21875 0)"/>
+    <use xlink:href="#Gramatika-Regular-f6" transform="translate(4285.8125 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(4347.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(4404.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(4426.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-f0" transform="translate(4448.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-118" transform="translate(4504.703125 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(4559.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(4610.703125 0)"/>
+    <use xlink:href="#Gramatika-Regular-110" transform="translate(4645.390625 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(4707.59375 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(4764 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(4811.5 0)"/>
+    <use xlink:href="#Gramatika-Regular-18e" transform="translate(4833.5 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(4915.703125 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(4972.109375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(5006.796875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(5063.203125 0)"/>
+    <use xlink:href="#Gramatika-Regular-34c" transform="translate(5085.203125 0)"/>
+    <use xlink:href="#Gramatika-Regular-29a" transform="translate(5145.609375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2ee" transform="translate(5208.703125 0)"/>
+   </g>
+  </g>
+  <g id="text_29">
+   <!-- Graphify's JSON-stream failures depend on an underspecified whitespace-only check. This is a diagnostic study, not a ranking. -->
+   <g transform="translate(56.16 606.9888) scale(0.1 -0.1)">
+    <defs>
+     <path id="Gramatika-Regular-32c" d="M 243 3008
+L 243 4480
+L 800 4480
+L 685 3008
+L 243 3008
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-52" d="M 1850 -77
+Q 1427 -77 1104 89
+Q 781 256 598 553
+Q 416 851 416 1254
+L 416 1466
+L 1005 1466
+L 1005 1254
+Q 1005 883 1241 665
+Q 1478 448 1850 448
+Q 2221 448 2457 688
+Q 2694 928 2694 1331
+L 2694 4480
+L 3283 4480
+L 3283 1338
+Q 3283 915 3100 595
+Q 2918 275 2595 99
+Q 2272 -77 1850 -77
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-8c" d="M 1997 -77
+Q 1325 -77 864 262
+Q 403 602 288 1184
+L 826 1306
+Q 909 902 1222 662
+Q 1536 422 1984 422
+Q 2426 422 2704 633
+Q 2982 845 2982 1190
+Q 2982 1478 2803 1641
+Q 2624 1805 2234 1914
+L 1555 2099
+Q 1005 2259 733 2531
+Q 461 2803 461 3270
+Q 461 3661 643 3952
+Q 826 4243 1155 4400
+Q 1485 4557 1933 4557
+Q 2534 4557 2947 4259
+Q 3360 3962 3469 3462
+L 2931 3341
+Q 2848 3667 2579 3862
+Q 2310 4058 1933 4058
+Q 1536 4058 1296 3856
+Q 1056 3654 1056 3334
+Q 1056 3072 1216 2909
+Q 1376 2746 1702 2650
+L 2355 2464
+Q 2790 2336 3059 2179
+Q 3328 2022 3453 1792
+Q 3578 1562 3578 1210
+Q 3578 832 3376 541
+Q 3174 250 2819 86
+Q 2464 -77 1997 -77
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-6a" d="M 2579 -77
+Q 1914 -77 1395 220
+Q 877 518 582 1040
+Q 288 1562 288 2240
+Q 288 2918 582 3440
+Q 877 3962 1395 4259
+Q 1914 4557 2579 4557
+Q 3251 4557 3769 4259
+Q 4288 3962 4582 3440
+Q 4877 2918 4877 2240
+Q 4877 1562 4582 1040
+Q 4288 518 3769 220
+Q 3251 -77 2579 -77
+z
+M 2579 480
+Q 3078 480 3459 704
+Q 3840 928 4057 1325
+Q 4275 1722 4275 2240
+Q 4275 2758 4057 3155
+Q 3840 3552 3459 3776
+Q 3078 4000 2579 4000
+Q 2086 4000 1705 3776
+Q 1325 3552 1107 3155
+Q 890 2758 890 2240
+Q 890 1722 1107 1325
+Q 1325 928 1705 704
+Q 2086 480 2579 480
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-61" d="M 486 0
+L 486 4480
+L 1158 4480
+L 3558 1056
+L 3558 4480
+L 4147 4480
+L 4147 0
+L 3590 0
+L 1075 3590
+L 1075 0
+L 486 0
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-95" d="M 1626 0
+L 1626 3955
+L 243 3955
+L 243 4480
+L 3603 4480
+L 3603 3955
+L 2214 3955
+L 2214 0
+L 1626 0
+z
+" transform="scale(0.015625)"/>
+    </defs>
+    <use xlink:href="#Gramatika-Regular-3a"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(79.09375 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(114.6875 0)"/>
+    <use xlink:href="#Gramatika-Regular-15b" transform="translate(166.09375 0)"/>
+    <use xlink:href="#Gramatika-Regular-118" transform="translate(228.1875 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(282.78125 0)"/>
+    <use xlink:href="#Gramatika-Regular-10f" transform="translate(305.375 0)"/>
+    <use xlink:href="#Gramatika-Regular-194" transform="translate(344.375 0)"/>
+    <use xlink:href="#Gramatika-Regular-32c" transform="translate(402.875 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(417.765625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(465.265625 0)"/>
+    <use xlink:href="#Gramatika-Regular-52" transform="translate(487.265625 0)"/>
+    <use xlink:href="#Gramatika-Regular-8c" transform="translate(545.0625 0)"/>
+    <use xlink:href="#Gramatika-Regular-6a" transform="translate(606.171875 0)"/>
+    <use xlink:href="#Gramatika-Regular-61" transform="translate(686.875 0)"/>
+    <use xlink:href="#Gramatika-Regular-304" transform="translate(759.28125 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(816.484375 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(863.984375 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(900.484375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(935.171875 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(992.671875 0)"/>
+    <use xlink:href="#Gramatika-Regular-138" transform="translate(1044.078125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1130.078125 0)"/>
+    <use xlink:href="#Gramatika-Regular-10f" transform="translate(1152.078125 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(1191.078125 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(1242.484375 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(1265.078125 0)"/>
+    <use xlink:href="#Gramatika-Regular-175" transform="translate(1287.671875 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(1342.265625 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(1376.953125 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(1433.359375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1480.859375 0)"/>
+    <use xlink:href="#Gramatika-Regular-f6" transform="translate(1502.859375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(1564.953125 0)"/>
+    <use xlink:href="#Gramatika-Regular-15b" transform="translate(1621.359375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(1683.453125 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(1739.859375 0)"/>
+    <use xlink:href="#Gramatika-Regular-f6" transform="translate(1794.453125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1856.546875 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(1878.546875 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(1938.140625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1992.734375 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(2014.734375 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(2066.140625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2120.734375 0)"/>
+    <use xlink:href="#Gramatika-Regular-175" transform="translate(2142.734375 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(2197.328125 0)"/>
+    <use xlink:href="#Gramatika-Regular-f6" transform="translate(2251.921875 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(2314.015625 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(2370.421875 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(2405.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-15b" transform="translate(2452.8125 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(2514.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-f0" transform="translate(2571.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(2627.109375 0)"/>
+    <use xlink:href="#Gramatika-Regular-1e7" transform="translate(2649.703125 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(2710.703125 0)"/>
+    <use xlink:href="#Gramatika-Regular-f6" transform="translate(2767.109375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2829.203125 0)"/>
+    <use xlink:href="#Gramatika-Regular-18e" transform="translate(2851.203125 0)"/>
+    <use xlink:href="#Gramatika-Regular-118" transform="translate(2936 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(2990.59375 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(3013.1875 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(3049.6875 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(3106.09375 0)"/>
+    <use xlink:href="#Gramatika-Regular-15b" transform="translate(3153.59375 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(3215.6875 0)"/>
+    <use xlink:href="#Gramatika-Regular-f0" transform="translate(3267.09375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(3322.890625 0)"/>
+    <use xlink:href="#Gramatika-Regular-304" transform="translate(3379.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(3436.5 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(3496.09375 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(3550.6875 0)"/>
+    <use xlink:href="#Gramatika-Regular-194" transform="translate(3573.28125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(3629.578125 0)"/>
+    <use xlink:href="#Gramatika-Regular-f0" transform="translate(3651.578125 0)"/>
+    <use xlink:href="#Gramatika-Regular-118" transform="translate(3707.375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(3761.96875 0)"/>
+    <use xlink:href="#Gramatika-Regular-f0" transform="translate(3818.375 0)"/>
+    <use xlink:href="#Gramatika-Regular-12c" transform="translate(3874.171875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2ee" transform="translate(3923.375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(3950.96875 0)"/>
+    <use xlink:href="#Gramatika-Regular-95" transform="translate(3972.96875 0)"/>
+    <use xlink:href="#Gramatika-Regular-118" transform="translate(4031.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(4086.15625 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(4108.75 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(4156.25 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(4178.25 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(4200.84375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(4248.34375 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(4270.34375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(4321.75 0)"/>
+    <use xlink:href="#Gramatika-Regular-f6" transform="translate(4343.75 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(4405.84375 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(4429.140625 0)"/>
+    <use xlink:href="#Gramatika-Regular-110" transform="translate(4480.546875 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(4542.75 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(4597.34375 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(4656.4375 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(4703.9375 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(4740.4375 0)"/>
+    <use xlink:href="#Gramatika-Regular-f0" transform="translate(4763.03125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(4818.828125 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(4840.828125 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(4888.328125 0)"/>
+    <use xlink:href="#Gramatika-Regular-175" transform="translate(4924.828125 0)"/>
+    <use xlink:href="#Gramatika-Regular-f6" transform="translate(4979.421875 0)"/>
+    <use xlink:href="#Gramatika-Regular-194" transform="translate(5041.515625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2ef" transform="translate(5087.71875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(5115.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(5137.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(5191.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(5250.796875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(5287.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(5309.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(5360.703125 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(5382.703125 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(5418.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(5469.703125 0)"/>
+    <use xlink:href="#Gramatika-Regular-12c" transform="translate(5524.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(5577.609375 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(5600.203125 0)"/>
+    <use xlink:href="#Gramatika-Regular-110" transform="translate(5654.796875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2ee" transform="translate(5713.703125 0)"/>
+   </g>
+  </g>
+  <g id="text_30">
+   <!-- Retrieval was available in both retrieval arms; Graphify was used in 14/16 attempts and CodeDB in 16/16. -->
+   <g transform="translate(56.16 622.8288) scale(0.1 -0.1)">
+    <defs>
+     <path id="Gramatika-Regular-85" d="M 486 0
+L 486 4480
+L 2240 4480
+Q 2688 4480 3027 4307
+Q 3366 4134 3558 3827
+Q 3750 3520 3750 3123
+Q 3750 2784 3571 2499
+Q 3392 2214 3085 2042
+Q 3328 1926 3491 1705
+Q 3654 1485 3654 1152
+L 3654 0
+L 3066 0
+L 3066 1146
+Q 3066 1421 2874 1593
+Q 2682 1766 2374 1766
+L 1075 1766
+L 1075 0
+L 486 0
+z
+M 1075 2291
+L 2317 2291
+Q 2682 2291 2915 2528
+Q 3149 2765 3149 3123
+Q 3149 3488 2893 3721
+Q 2637 3955 2234 3955
+L 1075 3955
+L 1075 2291
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-2fb" d="M 128 -896
+L 2048 4557
+L 2611 4557
+L 691 -896
+L 128 -896
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-1a" d="M 2579 -77
+Q 1914 -77 1395 220
+Q 877 518 582 1040
+Q 288 1562 288 2240
+Q 288 2918 582 3440
+Q 877 3962 1395 4259
+Q 1914 4557 2579 4557
+Q 3104 4557 3533 4384
+Q 3962 4211 4253 3894
+Q 4544 3578 4659 3142
+L 4096 2982
+Q 3968 3450 3561 3725
+Q 3155 4000 2579 4000
+Q 2086 4000 1705 3776
+Q 1325 3552 1107 3155
+Q 890 2758 890 2240
+Q 890 1722 1107 1325
+Q 1325 928 1705 704
+Q 2086 480 2579 480
+Q 3155 480 3561 755
+Q 3968 1030 4096 1498
+L 4659 1338
+Q 4544 902 4253 585
+Q 3962 269 3533 96
+Q 3104 -77 2579 -77
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-20" d="M 486 0
+L 486 4480
+L 2176 4480
+Q 2816 4480 3312 4192
+Q 3808 3904 4089 3401
+Q 4371 2899 4371 2246
+Q 4371 1594 4089 1085
+Q 3808 576 3312 288
+Q 2816 0 2176 0
+L 486 0
+z
+M 1075 525
+L 2112 525
+Q 2598 525 2969 745
+Q 3341 966 3555 1353
+Q 3770 1741 3770 2246
+Q 3770 2746 3555 3133
+Q 3341 3520 2969 3737
+Q 2598 3955 2112 3955
+L 1075 3955
+L 1075 525
+z
+" transform="scale(0.015625)"/>
+     <path id="Gramatika-Regular-19" d="M 486 0
+L 486 4480
+L 2374 4480
+Q 2982 4480 3353 4157
+Q 3725 3834 3725 3309
+Q 3725 3002 3558 2758
+Q 3392 2515 3085 2374
+Q 3437 2221 3632 1936
+Q 3827 1651 3827 1280
+Q 3827 691 3440 345
+Q 3053 0 2381 0
+L 486 0
+z
+M 1075 2592
+L 2272 2592
+Q 2656 2592 2893 2777
+Q 3130 2963 3130 3277
+Q 3130 3590 2902 3779
+Q 2675 3968 2304 3968
+L 1075 3968
+L 1075 2592
+z
+M 1075 512
+L 2330 512
+Q 2733 512 2982 729
+Q 3232 947 3232 1299
+Q 3232 1658 2973 1875
+Q 2714 2093 2291 2093
+L 1075 2093
+L 1075 512
+z
+" transform="scale(0.015625)"/>
+    </defs>
+    <use xlink:href="#Gramatika-Regular-85"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(63.09375 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(119.5 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(156 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(191.59375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(214.1875 0)"/>
+    <use xlink:href="#Gramatika-Regular-18d" transform="translate(268.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(323.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(374.703125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(397.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-18e" transform="translate(419.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(503.203125 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(554.609375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(602.109375 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(624.109375 0)"/>
+    <use xlink:href="#Gramatika-Regular-18d" transform="translate(673.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(728.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(779.71875 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(802.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(824.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-ef" transform="translate(876.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(938.40625 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(961 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1017.40625 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(1039.40625 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(1062 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1116.59375 0)"/>
+    <use xlink:href="#Gramatika-Regular-ef" transform="translate(1138.59375 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(1200.6875 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(1259.578125 0)"/>
+    <use xlink:href="#Gramatika-Regular-118" transform="translate(1296.078125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1350.671875 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(1372.671875 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(1407.359375 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(1463.765625 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(1500.265625 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(1535.859375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(1558.453125 0)"/>
+    <use xlink:href="#Gramatika-Regular-18d" transform="translate(1612.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(1667.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-12f" transform="translate(1718.96875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1741.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(1763.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(1814.96875 0)"/>
+    <use xlink:href="#Gramatika-Regular-138" transform="translate(1850.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(1936.5625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2f1" transform="translate(1984.0625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2011.65625 0)"/>
+    <use xlink:href="#Gramatika-Regular-3a" transform="translate(2033.65625 0)"/>
+    <use xlink:href="#Gramatika-Regular-15e" transform="translate(2112.75 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(2148.34375 0)"/>
+    <use xlink:href="#Gramatika-Regular-15b" transform="translate(2199.75 0)"/>
+    <use xlink:href="#Gramatika-Regular-118" transform="translate(2261.84375 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(2316.4375 0)"/>
+    <use xlink:href="#Gramatika-Regular-10f" transform="translate(2339.03125 0)"/>
+    <use xlink:href="#Gramatika-Regular-194" transform="translate(2378.03125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2434.328125 0)"/>
+    <use xlink:href="#Gramatika-Regular-18e" transform="translate(2456.328125 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(2540.234375 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(2591.640625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2639.140625 0)"/>
+    <use xlink:href="#Gramatika-Regular-175" transform="translate(2661.140625 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(2715.734375 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(2763.234375 0)"/>
+    <use xlink:href="#Gramatika-Regular-f6" transform="translate(2819.640625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2881.734375 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(2903.734375 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(2926.328125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(2980.921875 0)"/>
+    <use xlink:href="#Gramatika-Regular-29b" transform="translate(3002.921875 0)"/>
+    <use xlink:href="#Gramatika-Regular-29e" transform="translate(3042.21875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2fb" transform="translate(3104.125 0)"/>
+    <use xlink:href="#Gramatika-Regular-29b" transform="translate(3146.921875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2a0" transform="translate(3186.21875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(3245.71875 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(3267.71875 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(3319.125 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(3357.125 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(3393.625 0)"/>
+    <use xlink:href="#Gramatika-Regular-138" transform="translate(3450.03125 0)"/>
+    <use xlink:href="#Gramatika-Regular-15b" transform="translate(3536.03125 0)"/>
+    <use xlink:href="#Gramatika-Regular-16e" transform="translate(3597.421875 0)"/>
+    <use xlink:href="#Gramatika-Regular-165" transform="translate(3633.921875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(3681.421875 0)"/>
+    <use xlink:href="#Gramatika-Regular-d6" transform="translate(3703.421875 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(3754.828125 0)"/>
+    <use xlink:href="#Gramatika-Regular-f6" transform="translate(3809.421875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(3871.515625 0)"/>
+    <use xlink:href="#Gramatika-Regular-1a" transform="translate(3893.515625 0)"/>
+    <use xlink:href="#Gramatika-Regular-143" transform="translate(3969.921875 0)"/>
+    <use xlink:href="#Gramatika-Regular-f6" transform="translate(4029.515625 0)"/>
+    <use xlink:href="#Gramatika-Regular-fc" transform="translate(4091.609375 0)"/>
+    <use xlink:href="#Gramatika-Regular-20" transform="translate(4148.015625 0)"/>
+    <use xlink:href="#Gramatika-Regular-19" transform="translate(4220.8125 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(4283.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-11d" transform="translate(4305.3125 0)"/>
+    <use xlink:href="#Gramatika-Regular-13a" transform="translate(4327.90625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2e7" transform="translate(4382.5 0)"/>
+    <use xlink:href="#Gramatika-Regular-29b" transform="translate(4404.5 0)"/>
+    <use xlink:href="#Gramatika-Regular-2a0" transform="translate(4443.796875 0)"/>
+    <use xlink:href="#Gramatika-Regular-2fb" transform="translate(4503.296875 0)"/>
+    <use xlink:href="#Gramatika-Regular-29b" transform="translate(4546.09375 0)"/>
+    <use xlink:href="#Gramatika-Regular-2a0" transform="translate(4585.390625 0)"/>
+    <use xlink:href="#Gramatika-Regular-2ee" transform="translate(4644.890625 0)"/>
+   </g>
+  </g>
+  <g id="legend_1">
+   <g id="patch_52">
+    <path d="M 58.572 99.0924
+L 80.572 99.0924
+L 80.572 91.3924
+L 58.572 91.3924
+z
+" style="fill: #827b72"/>
+   </g>
+   <g id="text_31">
+    <!-- Workspace-only (16/16 strict passes) -->
+    <g transform="translate(89.372 99.0924) scale(0.11 -0.11)">
+     <defs>
+      <path id="Gramatika-Regular-b4" d="M 1677 0
+L 198 4480
+L 806 4480
+L 2048 730
+L 3270 4480
+L 3962 4480
+L 5184 730
+L 6426 4480
+L 7040 4480
+L 5555 0
+L 4851 0
+L 3616 3782
+L 2381 0
+L 1677 0
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Regular-313" d="M 1600 -1152
+Q 486 -38 486 1856
+Q 486 3750 1600 4864
+L 2182 4864
+Q 1638 4326 1356 3577
+Q 1075 2829 1075 1856
+Q 1075 890 1356 138
+Q 1638 -614 2182 -1152
+L 1600 -1152
+z
+" transform="scale(0.015625)"/>
+      <path id="Gramatika-Regular-314" d="M 288 -1152
+Q 832 -614 1113 138
+Q 1395 890 1395 1856
+Q 1395 2829 1113 3577
+Q 832 4326 288 4864
+L 870 4864
+Q 1984 3750 1984 1856
+Q 1984 -38 870 -1152
+L 288 -1152
+z
+" transform="scale(0.015625)"/>
+     </defs>
+     <use xlink:href="#Gramatika-Regular-b4"/>
+     <use xlink:href="#Gramatika-Regular-143" transform="translate(108.5 0)"/>
+     <use xlink:href="#Gramatika-Regular-15e" transform="translate(168.09375 0)"/>
+     <use xlink:href="#Gramatika-Regular-12c" transform="translate(203.6875 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(254.796875 0)"/>
+     <use xlink:href="#Gramatika-Regular-15b" transform="translate(302.296875 0)"/>
+     <use xlink:href="#Gramatika-Regular-d6" transform="translate(364.390625 0)"/>
+     <use xlink:href="#Gramatika-Regular-f0" transform="translate(415.796875 0)"/>
+     <use xlink:href="#Gramatika-Regular-fc" transform="translate(471.59375 0)"/>
+     <use xlink:href="#Gramatika-Regular-304" transform="translate(528 0)"/>
+     <use xlink:href="#Gramatika-Regular-143" transform="translate(585.203125 0)"/>
+     <use xlink:href="#Gramatika-Regular-13a" transform="translate(644.796875 0)"/>
+     <use xlink:href="#Gramatika-Regular-12f" transform="translate(699.390625 0)"/>
+     <use xlink:href="#Gramatika-Regular-194" transform="translate(721.984375 0)"/>
+     <use xlink:href="#Gramatika-Regular-2e7" transform="translate(778.28125 0)"/>
+     <use xlink:href="#Gramatika-Regular-313" transform="translate(800.28125 0)"/>
+     <use xlink:href="#Gramatika-Regular-29b" transform="translate(838.875 0)"/>
+     <use xlink:href="#Gramatika-Regular-2a0" transform="translate(878.171875 0)"/>
+     <use xlink:href="#Gramatika-Regular-2fb" transform="translate(937.671875 0)"/>
+     <use xlink:href="#Gramatika-Regular-29b" transform="translate(980.46875 0)"/>
+     <use xlink:href="#Gramatika-Regular-2a0" transform="translate(1019.765625 0)"/>
+     <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1079.265625 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(1101.265625 0)"/>
+     <use xlink:href="#Gramatika-Regular-16e" transform="translate(1148.765625 0)"/>
+     <use xlink:href="#Gramatika-Regular-15e" transform="translate(1185.265625 0)"/>
+     <use xlink:href="#Gramatika-Regular-11d" transform="translate(1220.859375 0)"/>
+     <use xlink:href="#Gramatika-Regular-f0" transform="translate(1243.453125 0)"/>
+     <use xlink:href="#Gramatika-Regular-16e" transform="translate(1299.25 0)"/>
+     <use xlink:href="#Gramatika-Regular-2e7" transform="translate(1335.75 0)"/>
+     <use xlink:href="#Gramatika-Regular-15b" transform="translate(1357.75 0)"/>
+     <use xlink:href="#Gramatika-Regular-d6" transform="translate(1419.84375 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(1471.25 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(1518.75 0)"/>
+     <use xlink:href="#Gramatika-Regular-fc" transform="translate(1566.25 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(1622.65625 0)"/>
+     <use xlink:href="#Gramatika-Regular-314" transform="translate(1670.15625 0)"/>
+    </g>
+   </g>
+   <g id="patch_53">
+    <path d="M 299.3345 99.0924
+L 321.3345 99.0924
+L 321.3345 91.3924
+L 299.3345 91.3924
+z
+" style="fill: #2851e4"/>
+   </g>
+   <g id="text_32">
+    <!-- CodeDB (16/16 strict passes) -->
+    <g transform="translate(330.1345 99.0924) scale(0.11 -0.11)">
+     <use xlink:href="#Gramatika-Regular-1a"/>
+     <use xlink:href="#Gramatika-Regular-143" transform="translate(76.40625 0)"/>
+     <use xlink:href="#Gramatika-Regular-f6" transform="translate(136 0)"/>
+     <use xlink:href="#Gramatika-Regular-fc" transform="translate(198.09375 0)"/>
+     <use xlink:href="#Gramatika-Regular-20" transform="translate(254.5 0)"/>
+     <use xlink:href="#Gramatika-Regular-19" transform="translate(327.296875 0)"/>
+     <use xlink:href="#Gramatika-Regular-2e7" transform="translate(389.796875 0)"/>
+     <use xlink:href="#Gramatika-Regular-313" transform="translate(411.796875 0)"/>
+     <use xlink:href="#Gramatika-Regular-29b" transform="translate(450.390625 0)"/>
+     <use xlink:href="#Gramatika-Regular-2a0" transform="translate(489.6875 0)"/>
+     <use xlink:href="#Gramatika-Regular-2fb" transform="translate(549.1875 0)"/>
+     <use xlink:href="#Gramatika-Regular-29b" transform="translate(591.984375 0)"/>
+     <use xlink:href="#Gramatika-Regular-2a0" transform="translate(631.28125 0)"/>
+     <use xlink:href="#Gramatika-Regular-2e7" transform="translate(690.78125 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(712.78125 0)"/>
+     <use xlink:href="#Gramatika-Regular-16e" transform="translate(760.28125 0)"/>
+     <use xlink:href="#Gramatika-Regular-15e" transform="translate(796.78125 0)"/>
+     <use xlink:href="#Gramatika-Regular-11d" transform="translate(832.375 0)"/>
+     <use xlink:href="#Gramatika-Regular-f0" transform="translate(854.96875 0)"/>
+     <use xlink:href="#Gramatika-Regular-16e" transform="translate(910.765625 0)"/>
+     <use xlink:href="#Gramatika-Regular-2e7" transform="translate(947.265625 0)"/>
+     <use xlink:href="#Gramatika-Regular-15b" transform="translate(969.265625 0)"/>
+     <use xlink:href="#Gramatika-Regular-d6" transform="translate(1031.359375 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(1082.765625 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(1130.265625 0)"/>
+     <use xlink:href="#Gramatika-Regular-fc" transform="translate(1177.765625 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(1234.171875 0)"/>
+     <use xlink:href="#Gramatika-Regular-314" transform="translate(1281.671875 0)"/>
+    </g>
+   </g>
+   <g id="patch_54">
+    <path d="M 497.363719 99.0924
+L 519.363719 99.0924
+L 519.363719 91.3924
+L 497.363719 91.3924
+z
+" style="fill: #c4432a"/>
+   </g>
+   <g id="text_33">
+    <!-- Graphify (14/16 strict passes) -->
+    <g transform="translate(528.163719 99.0924) scale(0.11 -0.11)">
+     <use xlink:href="#Gramatika-Regular-3a"/>
+     <use xlink:href="#Gramatika-Regular-15e" transform="translate(79.09375 0)"/>
+     <use xlink:href="#Gramatika-Regular-d6" transform="translate(114.6875 0)"/>
+     <use xlink:href="#Gramatika-Regular-15b" transform="translate(166.09375 0)"/>
+     <use xlink:href="#Gramatika-Regular-118" transform="translate(228.1875 0)"/>
+     <use xlink:href="#Gramatika-Regular-11d" transform="translate(282.78125 0)"/>
+     <use xlink:href="#Gramatika-Regular-10f" transform="translate(305.375 0)"/>
+     <use xlink:href="#Gramatika-Regular-194" transform="translate(344.375 0)"/>
+     <use xlink:href="#Gramatika-Regular-2e7" transform="translate(400.671875 0)"/>
+     <use xlink:href="#Gramatika-Regular-313" transform="translate(422.671875 0)"/>
+     <use xlink:href="#Gramatika-Regular-29b" transform="translate(461.265625 0)"/>
+     <use xlink:href="#Gramatika-Regular-29e" transform="translate(500.5625 0)"/>
+     <use xlink:href="#Gramatika-Regular-2fb" transform="translate(562.46875 0)"/>
+     <use xlink:href="#Gramatika-Regular-29b" transform="translate(605.265625 0)"/>
+     <use xlink:href="#Gramatika-Regular-2a0" transform="translate(644.5625 0)"/>
+     <use xlink:href="#Gramatika-Regular-2e7" transform="translate(704.0625 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(726.0625 0)"/>
+     <use xlink:href="#Gramatika-Regular-16e" transform="translate(773.5625 0)"/>
+     <use xlink:href="#Gramatika-Regular-15e" transform="translate(810.0625 0)"/>
+     <use xlink:href="#Gramatika-Regular-11d" transform="translate(845.65625 0)"/>
+     <use xlink:href="#Gramatika-Regular-f0" transform="translate(868.25 0)"/>
+     <use xlink:href="#Gramatika-Regular-16e" transform="translate(924.046875 0)"/>
+     <use xlink:href="#Gramatika-Regular-2e7" transform="translate(960.546875 0)"/>
+     <use xlink:href="#Gramatika-Regular-15b" transform="translate(982.546875 0)"/>
+     <use xlink:href="#Gramatika-Regular-d6" transform="translate(1044.640625 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(1096.046875 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(1143.546875 0)"/>
+     <use xlink:href="#Gramatika-Regular-fc" transform="translate(1191.046875 0)"/>
+     <use xlink:href="#Gramatika-Regular-165" transform="translate(1247.453125 0)"/>
+     <use xlink:href="#Gramatika-Regular-314" transform="translate(1294.953125 0)"/>
+    </g>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p8f5500f18e">
+   <rect x="187.2" y="139.392" width="332.129032" height="411.84"/>
+  </clipPath>
+  <clipPath id="pcd65f6f758">
+   <rect x="575.790968" y="139.392" width="332.129032" height="411.84"/>
+  </clipPath>
+ </defs>
+</svg>

@@ -1,0 +1,139 @@
+<div id="codedb-results">
+  <h2>CodeDB · retrieval lab</h2>
+  <div class="viz-row"><span class="viz-badge">Unreleased candidate</span><span class="text-small">Frozen accuracy · September 11, 2026</span></div>
+  <div class="nav nav-pills" role="tablist" aria-label="Results view">
+    <button class="nav-link active" type="button" id="cdb-accuracy-tab" role="tab" aria-controls="cdb-accuracy" aria-selected="true">Accuracy &amp; misses</button>
+    <button class="nav-link" type="button" id="cdb-latency-tab" role="tab" aria-controls="cdb-latency" aria-selected="false">Latency breakdown</button>
+  </div>
+  <div id="cdb-accuracy" role="tabpanel" aria-labelledby="cdb-accuracy-tab">
+    <div class="viz-controls">
+      <label class="form-label">Question set<select class="form-select" id="cdb-cohort"><option value="original">Original 128 questions</option><option value="new">Later 20-question holdout</option><option value="all">All 148 observed questions</option></select></label>
+      <label class="form-label">Repository<select class="form-select" id="cdb-repo"><option value="all">All in selected set</option></select></label>
+    </div>
+    <div class="viz-grid" id="cdb-stats" aria-live="polite"></div>
+    <div class="viz-controls">
+      <label class="form-label">Show<select class="form-select" id="cdb-outcome"><option value="misses">Remaining first-result misses</option><option value="regressed">Ranking regressions</option><option value="improved">Ranking improvements</option><option value="all">Every question</option></select></label>
+    </div>
+    <div class="text-small" id="cdb-count" aria-live="polite"></div>
+    <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Query · expand for evidence</th><th class="text-end">Release rank</th><th class="text-end">Candidate rank</th></tr></thead><tbody id="cdb-rows"></tbody></table></div>
+    <div class="viz-row"><button class="btn" type="button" id="cdb-prev">Previous</button><span id="cdb-page" class="text-small"></span><button class="btn" type="button" id="cdb-next">Next</button></div>
+    <div class="text-small">Two repetitions per question. Later holdout frozen before results; all seven repositories are now observed.</div>
+  </div>
+  <div id="cdb-latency" role="tabpanel" aria-labelledby="cdb-latency-tab" hidden>
+    <h3>Hosted embedding and local ANN</h3>
+    <div class="text-small">New diagnostic · three alternating repeats · warm calls only · all questions previously observed</div>
+    <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Repository · expand for stages</th><th class="text-end">Release median / p95 (ms)</th><th class="text-end">Candidate median / p95 (ms)</th></tr></thead><tbody id="cdb-timings"></tbody></table></div>
+    <details><summary>Earlier live-latency flags</summary><div id="cdb-old-flags"></div></details>
+    <div class="text-small">Embedding includes network, service, decoding and retry. Wall minus embedding includes local work, scheduling and MCP overhead; it is not CPU time. Review threshold: &gt;10%.</div>
+  </div>
+  <details><summary>Evidence &amp; experiment boundaries</summary><div id="cdb-receipt"></div></details>
+</div>
+<style>
+  #codedb-results { display: grid; gap: 12px; overflow-wrap: anywhere; }
+  #codedb-results [role="tabpanel"] { display: grid; gap: 12px; }
+  #codedb-results [hidden] { display: none; }
+  #codedb-results details { padding-block: 6px; }
+  #codedb-results summary { cursor: pointer; overflow-wrap: anywhere; }
+  #codedb-results code { overflow-wrap: anywhere; white-space: normal; }
+  #codedb-results .result-detail { display: grid; gap: 8px; padding-block: 10px; }
+  #codedb-results .rank-list { margin-block: 4px; padding-inline-start: 22px; }
+</style>
+<script type="application/json" id="cdb-data">__CODEDB_REPORT_JSON__</script>
+<script>
+(() => {
+  const root = document.getElementById('codedb-results');
+  const data = JSON.parse(document.getElementById('cdb-data').textContent);
+  const get = id => root.querySelector('#' + id);
+  const element = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
+  const clear = el => el.replaceChildren();
+  const number = value => value == null ? 'Outside top 5' : String(value);
+  const fmt = n => n < .1 ? n.toFixed(3) : n.toFixed(2);
+  const cohort = get('cdb-cohort'), repo = get('cdb-repo'), outcome = get('cdb-outcome');
+  let page = 0;
+  const inCohort = q => cohort.value === 'all' || (q.repository === 'itsdangerous') === (cohort.value === 'new');
+  function repositories() {
+    const previous = repo.value;
+    clear(repo); repo.add(new Option('All in selected set', 'all'));
+    for (const name of Object.keys(data.repositories)) {
+      if (data.queries.some(q => q.repository === name && inCohort(q))) repo.add(new Option(name, name));
+    }
+    if ([...repo.options].some(o => o.value === previous)) repo.value = previous;
+  }
+  function stat(label, value, note) {
+    const el = element('div', undefined, 'card viz-stat');
+    el.append(element('div', label), element('div', value, 'viz-stat-value'), element('div', note, 'text-small'));
+    get('cdb-stats').append(el);
+  }
+  function pathList(label, paths, gold) {
+    const part = element('div'); part.append(element('div', label));
+    const list = element('ol', undefined, 'rank-list');
+    for (const path of paths) { const li = element('li'); li.append(element('code', path)); if (gold[path] > 0) li.append(element('span', ' · expected')); list.append(li); }
+    part.append(list); return part;
+  }
+  function details(q) {
+    const box = element('div', undefined, 'result-detail');
+    box.append(element('div', q.status + ' · ' + q.diagnosis), element('div', 'Expected: ' + Object.keys(q.gold).filter(p => q.gold[p] > 0).join(', ')));
+    box.append(pathList('Release v0.2.5855', q.baseline_top5, q.gold), pathList('Frozen candidate', q.candidate_top5, q.gold));
+    const lane = element('div'); lane.append(element('div', 'Lane evidence · zero-based ranks'));
+    const evidence = q.candidate_evidence.filter(c => q.gold[c.path] > 0 || c.path === q.candidate_top5[0]);
+    for (const c of evidence) lane.append(element('div', c.path + ' — lexical ' + (c.lexical_rank ?? 'absent') + ', semantic ' + (c.semantic_rank ?? 'absent') + ', similarity ' + (c.semantic_score == null ? 'unavailable' : c.semantic_score.toFixed(3)), 'text-small'));
+    box.append(lane);
+    if (window.openai?.sendFollowUpMessage) {
+      const investigate = element('button', 'Investigate this case', 'btn'); investigate.type = 'button';
+      investigate.addEventListener('click', async () => {
+        await window.openai.sendFollowUpMessage({ title: 'Investigate retrieval case', prompt: 'Investigate CodeDB retrieval case ' + q.repository + '/' + q.id + ': ' + q.query + '. Expected paths: ' + Object.keys(q.gold).join(', ') + '. Candidate top result: ' + q.candidate_top5[0] + '. Use the saved follow-up evidence on codex/watcher-retrieval-followup. Preserve hosted Jina, calibration and the 4x ANN pool. Treat this as observed development data and require a new frozen holdout before promoting ranking changes.' });
+      }); box.append(investigate);
+    }
+    return box;
+  }
+  function render() {
+    const selected = data.queries.filter(q => inCohort(q) && (repo.value === 'all' || q.repository === repo.value));
+    clear(get('cdb-stats'));
+    stat('Correct first result', selected.filter(q => q.baseline_rank === 1).length + ' → ' + selected.filter(q => q.candidate_rank === 1).length, 'Release → candidate · ' + selected.length + ' unique questions');
+    stat('Expected file in top five', selected.filter(q => q.baseline_rank != null).length + ' → ' + selected.filter(q => q.candidate_rank != null).length, 'Same selected questions');
+    stat('Ranking regressions', String(selected.filter(q => q.status === 'regressed').length), 'Includes changes within the top five');
+    const rows = selected.filter(q => outcome.value === 'all' || (outcome.value === 'misses' ? q.candidate_rank !== 1 : q.status === outcome.value));
+    const pages = Math.max(1, Math.ceil(rows.length / 12)); page = Math.min(page, pages - 1);
+    get('cdb-count').textContent = rows.length + ' matching questions';
+    clear(get('cdb-rows'));
+    for (const q of rows.slice(page * 12, page * 12 + 12)) {
+      const tr = element('tr'), td = element('td'), disclosure = element('details');
+      disclosure.append(element('summary', q.repository + ' · ' + q.id + ' — ' + q.query), details(q)); td.append(disclosure);
+      tr.append(td, element('td', number(q.baseline_rank), 'text-end'), element('td', number(q.candidate_rank), 'text-end'));
+      get('cdb-rows').append(tr);
+    }
+    get('cdb-page').textContent = 'Page ' + (page + 1) + ' / ' + pages;
+    get('cdb-prev').disabled = page === 0; get('cdb-next').disabled = page + 1 >= pages;
+  }
+  cohort.addEventListener('change', () => { page = 0; repositories(); render(); });
+  for (const control of [repo, outcome]) control.addEventListener('change', () => { page = 0; render(); });
+  get('cdb-prev').addEventListener('click', () => { page--; render(); });
+  get('cdb-next').addEventListener('click', () => { page++; render(); });
+  for (const [name, r] of Object.entries(data.latency)) {
+    const tr = element('tr'), td = element('td'), d = element('details');
+    d.append(element('summary', name));
+    const detail = element('div', undefined, 'result-detail');
+    detail.append(element('div', 'Warm calls: ' + r.baseline.wall_ms.samples + ' release / ' + r.candidate.wall_ms.samples + ' candidate', 'text-small'));
+    detail.append(element('div', 'Rank changes versus frozen accuracy run: ' + r.ranking_changes_from_frozen.length, 'text-small'));
+    for (const [stage, label] of Object.entries({embed_ms: 'Embedding', load_ms: 'ANN validation / load', ann_ms: 'OpenPuffer search', wall_minus_embed_ms: 'Wall minus embedding'})) {
+      detail.append(element('div', label + ' — median ' + fmt(r.baseline[stage].median) + ' → ' + fmt(r.candidate[stage].median) + ' ms; p95 ' + fmt(r.baseline[stage].p95) + ' → ' + fmt(r.candidate[stage].p95) + ' ms', 'text-small'));
+    }
+    detail.append(element('div', 'Candidate median embedding share: ' + r.candidate.embed_share_percent.median.toFixed(1) + '%', 'text-small'));
+    detail.append(element('div', r.flags.length ? 'Threshold flags: ' + r.flags.map(f => f.stage + ' ' + f.statistic + ' +' + f.increase_percent.toFixed(1) + '% (+' + fmt(f.increase_ms) + ' ms)').join('; ') : 'No >10% flags in this warm diagnostic', 'text-small'));
+    d.append(detail); td.append(d);
+    tr.append(td, element('td', fmt(r.baseline.wall_ms.median) + ' / ' + fmt(r.baseline.wall_ms.p95), 'text-end'), element('td', fmt(r.candidate.wall_ms.median) + ' / ' + fmt(r.candidate.wall_ms.p95), 'text-end'));
+    get('cdb-timings').append(tr);
+  }
+  if (!Object.keys(data.latency).length) get('cdb-timings').append(element('tr', 'Separate timing diagnostic pending'));
+  for (const [name, r] of Object.entries(data.repositories)) {
+    const before = r.original_timings.baseline, after = r.original_timings.candidate;
+    const flags = ['median_ms', 'p95_ms'].filter(k => after[k] > before[k] * 1.1);
+    if (flags.length) get('cdb-old-flags').append(element('div', name + ': ' + flags.map(k => k.replace('_ms','') + ' +' + ((after[k] / before[k] - 1) * 100).toFixed(1) + '%').join(', '), 'text-small'));
+  }
+  get('cdb-receipt').append(element('div', 'Source summary SHA-256: ' + data.summary_sha256, 'text-small'), element('div', data.comparison_case_scope, 'text-small'));
+  const receipt = element('details'); receipt.append(element('summary', 'Raw report hashes'));
+  for (const source of data.sources) receipt.append(element('div', source.repository + ' · ' + source.kind + ' · ' + source.sha256, 'text-small'));
+  get('cdb-receipt').append(receipt);
+  repositories(); render();
+})();
+</script>
