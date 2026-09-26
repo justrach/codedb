@@ -516,8 +516,10 @@ test "semantic: provider 4xx and 5xx responses fail closed with retryable classe
     defer guards.deinit();
 
     for ([_]struct { status: []const u8, expected: anyerror }{
+        .{ .status = "403 Forbidden", .expected = error.EmbeddingProviderRejected },
         .{ .status = "429 Too Many Requests", .expected = error.EmbeddingRateLimited },
         .{ .status = "500 Internal Server Error", .expected = error.EmbeddingProviderUnavailable },
+        .{ .status = "530 Unknown Server Error", .expected = error.EmbeddingProviderUnavailable },
     }) |case| {
         const addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
         var server = try addr.listen(io, .{ .reuse_address = true, .mode = .stream, .protocol = .tcp });
