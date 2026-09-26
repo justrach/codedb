@@ -69,10 +69,11 @@ pub const Stream = struct {
     root: [:0]u8,
     mu: cio.Mutex = .{},
     pending: std.StringHashMap(void),
+    exclude_path: ?*const fn ([]const u8, bool) bool = null,
     rescan: bool = false,
     fallback: bool = false,
 
-    pub fn create(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !?*Stream {
+    pub fn create(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, exclude_path: *const fn ([]const u8, bool) bool) !?*Stream {
         if (comptime builtin.os.tag != .macos) return null;
         if (cio.posixGetenv("CODEDB_NO_FSEVENTS") != null) return null;
         var stat: Statfs = undefined;
@@ -101,7 +102,7 @@ pub const Stream = struct {
         errdefer dispatch_release(queue);
         const self = try alloc.create(Stream);
         errdefer alloc.destroy(self);
-        self.* = .{ .alloc = alloc, .cf = cf, .fs = fs, .api = api, .stream = undefined, .dispatch = queue, .root_string = string, .roots = roots, .root = root, .pending = .init(alloc) };
+        self.* = .{ .alloc = alloc, .cf = cf, .fs = fs, .api = api, .stream = undefined, .dispatch = queue, .root_string = string, .roots = roots, .root = root, .pending = .init(alloc), .exclude_path = exclude_path };
         errdefer {
             var keys = self.pending.keyIterator();
             while (keys.next()) |key| alloc.free(key.*);
@@ -163,6 +164,12 @@ pub const Stream = struct {
                 continue;
             }
             const rel = std.mem.trim(u8, suffix, "/");
+            if (self.exclude_path) |excluded| {
+                // FileEvents reports item type. Unknown types and symlinks may
+                // be directories, so never filter them by file extension.
+                const is_file = flags[i] & 0x00010000 != 0 and flags[i] & 0x00060000 == 0;
+                if (excluded(rel, is_file)) continue;
+            }
             if (self.pending.contains(rel)) continue;
             if (self.pending.count() >= 2048) {
                 self.rescan = true;
@@ -214,6 +221,7 @@ test "recursive events coalesce paths and surface dropped history and root chang
     stream.root = @constCast("/project");
     stream.mu = .{};
     stream.pending = .init(t.allocator);
+    stream.exclude_path = null;
     stream.rescan = false;
     stream.fallback = false;
     defer {
@@ -243,4 +251,43 @@ test "recursive events coalesce paths and surface dropped history and root chang
     Stream.receive(undefined, &stream, 1, @ptrCast(@constCast(&outside)), &.{0}, &.{5});
     try t.expect(stream.drain(&dirty).rescan);
     try t.expectEqual(@as(u32, 1), dirty.count());
+}
+
+test "recursive events exclude ignored bursts before the pending cap" {
+    const t = std.testing;
+    var stream: Stream = undefined;
+    stream.alloc = t.allocator;
+    stream.root = @constCast("/project");
+    stream.mu = .{};
+    stream.pending = .init(t.allocator);
+    stream.exclude_path = &struct {
+        fn check(path: []const u8, is_file: bool) bool {
+            return std.mem.startsWith(u8, path, "node_modules/") or
+                (is_file and std.mem.endsWith(u8, path, ".lock"));
+        }
+    }.check;
+    stream.rescan = false;
+    stream.fallback = false;
+    defer {
+        var it = stream.pending.keyIterator();
+        while (it.next()) |key| t.allocator.free(key.*);
+        stream.pending.deinit();
+    }
+
+    for (0..2050) |i| {
+        var path_buf: [80]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "/project/node_modules/file-{d}.js", .{i});
+        path_buf[path.len] = 0;
+        const path_z: [:0]u8 = path_buf[0..path.len :0];
+        const one = [_][*:0]const u8{path_z.ptr};
+        Stream.receive(undefined, &stream, 1, @ptrCast(@constCast(&one)), &.{0}, &.{0});
+    }
+    try t.expectEqual(@as(u32, 0), stream.pending.count());
+    try t.expect(!stream.rescan);
+    const relevant = [_][*:0]const u8{ "/project/src/main.zig", "/project/generated.lock", "/project/ignored.lock", "/project/ambiguous.lock" };
+    Stream.receive(undefined, &stream, relevant.len, @ptrCast(@constCast(&relevant)), &.{ 0x00010000, 0x00020000, 0x00010000, 0 }, &.{ 0, 0, 0, 0 });
+    try t.expect(stream.pending.contains("src/main.zig"));
+    try t.expect(stream.pending.contains("generated.lock"));
+    try t.expect(!stream.pending.contains("ignored.lock"));
+    try t.expect(stream.pending.contains("ambiguous.lock"));
 }

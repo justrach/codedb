@@ -136,8 +136,14 @@ The callback only copies bounded path notifications into a private queue.
 Coalesced or dropped history triggers a full content audit. Root/mount changes,
 directory aliases, foreign volumes, unsupported filesystems or an unavailable
 stream use the existing bounded kqueue/polling path. Set
-`CODEDB_NO_FSEVENTS=1` to force that fallback. Directory and ignore-policy audits
-still run about every two seconds. Each MCP process still owns its watcher.
+`CODEDB_NO_FSEVENTS=1` to force that fallback. A healthy recursive stream
+verifies up to 64 known files every two seconds and runs a full directory audit
+every 60 seconds; explicit policy events invalidate affected descendants
+immediately. The fallback keeps its two-second directory audit and overflow-file
+verification. Missed metadata changes may wait for the audit; exact-metadata
+collisions rely on rotating probes and can take longer in large trees. Dropped
+event history still forces immediate recovery. Each MCP process still owns its
+watcher.
 
 Reconciliation also reuses bounded content scratch storage and retains unchanged
 subtrees when their identities and inherited ignore-policy metadata agree.
