@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.5858 - 2026-09-27
+
+- Hosted semantic retrieval now uses `gemini-embedding-001` (512D) by default. Queries carry a distinct Gemini query identity. Existing sidecars built with the former hosted Jina or Qwen defaults migrate once in the background; custom endpoints and model overrides are unchanged. Set `CODEDB_EMBEDDINGS_MODEL=jinaai/jina-embeddings-v2-base-code` to keep Jina explicitly.
+
 ## 0.2.5857 - 2026-09-26
 
 - Auto-register codedb in additional detected MCP clients: oh-my-pi, Hermes, Qwen Code, ZCode, Trae, Cline, Copilot CLI, Antigravity, Kiro, and OpenCode. `codedb nuke` removes the matching entries. Invalid JSON is left untouched.
