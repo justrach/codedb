@@ -1,0 +1,3 @@
+numpy>=1.26
+# optional; harness degrades if missing
+fastembed>=0.4.0

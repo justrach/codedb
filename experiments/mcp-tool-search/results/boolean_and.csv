@@ -1,0 +1,151 @@
+id,query,kind,hit1,recall@1,recall@3,recall@5,mrr@10,ndcg@10,ranking
+q001,Create a GitHub issue,verb_product,github.create_issue,1.0,1.0,1.0,1.0000,1.0000,github.create_issue github.issue_write
+q002,Create a Jira ticket,verb_product,jira.jira_create_issue,1.0,1.0,1.0,1.0000,1.0000,jira.jira_create_issue
+q003,Send a Slack message,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q004,List open pull requests,resource,,0.0,0.0,0.0,0.0000,0.0000,
+q005,Open a pull request on GitHub,verb_product,github.create_pull_request,1.0,1.0,1.0,1.0000,1.0000,github.create_pull_request
+q006,Run a SQL query against postgres,verb_product,postgres.query,1.0,1.0,1.0,1.0000,1.0000,postgres.query
+q007,Read a local file from disk,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q008,What files are in this folder,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q009,Remember this fact in the knowledge graph,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q010,Search the web with Brave,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q011,Fetch the contents of a URL,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q012,Show git status,identifier,git.git_status,1.0,1.0,1.0,1.0000,1.0000,git.git_status
+q013,Commit staged changes,paraphrase,git.git_commit,1.0,1.0,1.0,1.0000,1.0000,git.git_commit
+q014,Create a Linear issue,verb_product,linear.linear_create_issue,1.0,1.0,1.0,1.0000,1.0000,linear.linear_create_issue linear.linear_create_comment
+q015,Make a task in my project tracker Linear,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q016,Post a comment on a GitHub issue,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q017,Merge the pull request,ambiguous,,0.0,0.0,0.0,0.0000,0.0000,
+q018,Trigger a GitHub Actions workflow,verb_product,github.actions_run_trigger,1.0,1.0,1.0,1.0000,1.0000,github.actions_run_trigger
+q019,Get Dependabot alerts,resource,,0.0,0.0,0.0,0.0000,0.0000,
+q020,List Sentry issues,verb_product,sentry.sentry_list_issues,1.0,1.0,1.0,1.0000,1.0000,sentry.sentry_list_issues
+q021,Create a Stripe customer,verb_product,stripe.stripe_create_customer,1.0,1.0,1.0,1.0000,1.0000,stripe.stripe_create_customer stripe.stripe_create_payment_intent stripe.stripe_create_invoice
+q022,Refund a Stripe payment,paraphrase,stripe.stripe_create_refund,1.0,1.0,1.0,1.0000,1.0000,stripe.stripe_create_refund
+q023,Send an email with Gmail,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q024,Search my Gmail inbox,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q025,Upload a file to Google Drive,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q026,Create a calendar event,resource,google_calendar.gcal_create_event,1.0,1.0,1.0,1.0000,1.0000,google_calendar.gcal_create_event
+q027,List Kubernetes pods,verb_product,kubernetes.k8s_list_pods,1.0,1.0,1.0,1.0000,1.0000,kubernetes.k8s_list_pods
+q028,Get logs from a k8s pod,verb_product,kubernetes.k8s_pod_logs,1.0,1.0,1.0,1.0000,1.0000,kubernetes.k8s_pod_logs
+q029,Run a docker container,verb_product,docker.docker_run,1.0,1.0,1.0,1.0000,1.0000,docker.docker_run docker.docker_exec
+q030,Show docker container logs,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q031,Navigate the browser to a URL,ambiguous,playwright.browser_navigate,1.0,1.0,1.0,1.0000,0.7602,playwright.browser_navigate
+q032,Take a screenshot of the page,ambiguous,playwright.browser_take_screenshot,1.0,1.0,1.0,1.0000,0.7602,playwright.browser_take_screenshot
+q033,Create a GitLab merge request,verb_product,gitlab.gitlab_create_merge_request,1.0,1.0,1.0,1.0000,1.0000,gitlab.gitlab_create_merge_request
+q034,Search Notion pages,verb_product,notion.notion_search,1.0,1.0,1.0,1.0000,1.0000,notion.notion_search
+q035,Create a Notion page,verb_product,notion.notion_create_page,1.0,1.0,1.0,1.0000,1.0000,notion.notion_create_page
+q036,Query a Notion database,verb_product,notion.notion_query_database,1.0,1.0,1.0,1.0000,1.0000,notion.notion_query_database
+q037,Create a Zendesk ticket,verb_product,zendesk.zendesk_create_ticket,1.0,1.0,1.0,1.0000,1.0000,zendesk.zendesk_create_ticket
+q038,Create a HubSpot contact,verb_product,hubspot.hubspot_create_contact,1.0,1.0,1.0,1.0000,1.0000,hubspot.hubspot_create_contact
+q039,Create a Salesforce lead,verb_product,salesforce.salesforce_create_lead,1.0,1.0,1.0,1.0000,1.0000,salesforce.salesforce_create_lead
+q040,Run a SOQL query,identifier,salesforce.salesforce_query,1.0,1.0,1.0,1.0000,1.0000,salesforce.salesforce_query
+q041,List Shopify orders,verb_product,shopify.shopify_list_orders,1.0,1.0,1.0,1.0000,1.0000,shopify.shopify_list_orders
+q042,Create a PagerDuty incident,verb_product,pagerduty.pagerduty_create_incident,1.0,1.0,1.0,1.0000,1.0000,pagerduty.pagerduty_create_incident
+q043,Who is on call in PagerDuty,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q044,Query Datadog metrics,verb_product,datadog.datadog_query_metrics,1.0,1.0,1.0,1.0000,1.0000,datadog.datadog_query_metrics
+q045,Search Datadog logs,verb_product,datadog.datadog_list_logs,1.0,1.0,1.0,1.0000,1.0000,datadog.datadog_list_logs
+q046,List S3 buckets,verb_product,aws_s3.s3_list_buckets,1.0,1.0,1.0,1.0000,1.0000,aws_s3.s3_list_buckets
+q047,Upload an object to S3,paraphrase,aws_s3.s3_put_object,1.0,1.0,1.0,1.0000,1.0000,aws_s3.s3_put_object
+q048,Purge Cloudflare cache,verb_product,cloudflare.cf_purge_cache,1.0,1.0,1.0,1.0000,1.0000,cloudflare.cf_purge_cache
+q049,Create a Cloudflare DNS record,verb_product,cloudflare.cf_create_dns,1.0,1.0,1.0,1.0000,1.0000,cloudflare.cf_create_dns
+q050,List Vercel deployments,verb_product,vercel.vercel_list_deployments,1.0,1.0,1.0,1.0000,1.0000,vercel.vercel_list_deployments
+q051,Insert a row into Supabase,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q052,Export images from Figma,paraphrase,figma.figma_get_images,1.0,1.0,1.0,1.0000,1.0000,figma.figma_get_images
+q053,Send an SMS with Twilio,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q054,Create an Okta user,verb_product,okta.okta_create_user,1.0,1.0,1.0,1.0000,1.0000,okta.okta_create_user
+q055,Instant query Prometheus,verb_product,prometheus.prom_query,1.0,1.0,1.0,1.0000,1.0000,prometheus.prom_query
+q056,Search Grafana dashboards,verb_product,grafana.grafana_search_dashboards,1.0,1.0,1.0,1.0000,1.0000,grafana.grafana_search_dashboards
+q057,Trigger a CircleCI pipeline,verb_product,circleci.circleci_trigger_pipeline,1.0,1.0,1.0,1.0000,1.0000,circleci.circleci_trigger_pipeline
+q058,Run terraform plan,identifier,terraform.tf_plan,1.0,1.0,1.0,1.0000,1.0000,terraform.tf_plan
+q059,Create an Asana task,verb_product,asana.asana_create_task,1.0,1.0,1.0,1.0000,1.0000,asana.asana_create_task
+q060,Create a Trello card,verb_product,trello.trello_create_card,1.0,1.0,1.0,1.0000,1.0000,trello.trello_create_card
+q061,Create a ClickUp task,verb_product,clickup.clickup_create_task,1.0,1.0,1.0,1.0000,1.0000,clickup.clickup_create_task
+q062,Create a Confluence page,verb_product,confluence.confluence_create_page,1.0,1.0,1.0,1.0000,1.0000,confluence.confluence_create_page
+q063,Send a Discord message,verb_product,discord.discord_send_message,1.0,1.0,1.0,1.0000,1.0000,discord.discord_send_message
+q064,Search Elasticsearch,verb_product,elasticsearch.es_search,1.0,1.0,1.0,1.0000,1.0000,elasticsearch.es_search
+q065,Get a Redis key,verb_product,redis.redis_get,1.0,1.0,1.0,1.0000,1.0000,redis.redis_get
+q066,Find MongoDB documents,verb_product,mongodb.mongo_find,1.0,1.0,1.0,1.0000,1.0000,mongodb.mongo_find
+q067,List SQLite tables,verb_product,sqlite.sqlite_list_tables,1.0,1.0,1.0,1.0000,1.0000,sqlite.sqlite_list_tables
+q068,Describe a postgres table,verb_product,postgres.describe_table,1.0,1.0,1.0,1.0000,1.0000,postgres.describe_table
+q069,github_create_issue,identifier,github.create_issue,1.0,1.0,1.0,1.0000,1.0000,github.create_issue github.issue_write
+q070,createIssue,identifier,github.create_issue,1.0,1.0,1.0,1.0000,0.9220,github.create_issue github.issue_write linear.linear_create_issue linear.linear_create_comment jira.jira_create_issue gitlab.gitlab_create_issue bitbucket.bitbucket_create_issue
+q071,list-directory,identifier,filesystem.list_directory,1.0,1.0,1.0,1.0000,1.0000,filesystem.list_directory filesystem.list_directory_with_sizes
+q072,sequential thinking next thought,paraphrase,sequential_thinking.sequentialthinking,1.0,1.0,1.0,1.0000,1.0000,sequential_thinking.sequentialthinking
+q073,What time is it in Tokyo,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q074,Convert time between timezones,verb_product,time.convert_time,1.0,1.0,1.0,1.0000,1.0000,time.convert_time
+q075,Star a GitHub repo,verb_product,github.star_repository,1.0,1.0,1.0,1.0000,1.0000,github.star_repository
+q076,Fork a repository,resource,github.fork_repository,1.0,1.0,1.0,1.0000,1.0000,github.fork_repository
+q077,Get the latest GitHub release,verb_product,github.get_latest_release,1.0,1.0,1.0,1.0000,1.0000,github.get_latest_release
+q078,Create a gist,resource,github.create_gist,1.0,1.0,1.0,1.0000,1.0000,github.create_gist
+q079,Search GitHub code,verb_product,github.search_code,1.0,1.0,1.0,1.0000,1.0000,github.search_code
+q080,List GitHub notifications,verb_product,github.list_notifications,1.0,1.0,1.0,1.0000,1.0000,github.list_notifications
+q081,Assign Copilot to an issue,verb_product,github.assign_copilot_to_issue,1.0,1.0,1.0,1.0000,1.0000,github.assign_copilot_to_issue
+q082,Get secret scanning alerts,resource,,0.0,0.0,0.0,0.0000,0.0000,
+q083,Create or update a file on GitHub,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q084,List collaborators on a repo,resource,github.list_repository_collaborators,1.0,1.0,1.0,1.0000,1.0000,github.list_repository_collaborators
+q085,Reply in a Slack thread,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q086,Add an emoji reaction on Slack,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q087,Search Slack messages,verb_product,slack.slack_search_messages,1.0,1.0,1.0,1.0000,1.0000,slack.slack_search_messages
+q088,Create a Slack channel,verb_product,slack.slack_create_channel,1.0,1.0,1.0,1.0000,1.0000,slack.slack_create_channel
+q089,Transition a Jira issue,verb_product,jira.jira_transition_issue,1.0,1.0,1.0,1.0000,1.0000,jira.jira_transition_issue
+q090,Search Jira with JQL,identifier,jira.jira_search_issues,1.0,1.0,1.0,1.0000,1.0000,jira.jira_search_issues
+q091,Add a worklog to Jira,verb_product,jira.jira_add_worklog,1.0,1.0,1.0,1.0000,1.0000,jira.jira_add_worklog
+q092,List Linear teams,verb_product,linear.linear_list_teams,1.0,1.0,1.0,1.0000,1.0000,linear.linear_list_teams
+q093,Comment on a Linear issue,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q094,Move a local file,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q095,Recursively search files by pattern,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q096,Edit a file in place with old and new string,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q097,Read the whole knowledge graph,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q098,Search memory nodes,verb_product,memory.search_nodes,1.0,1.0,1.0,1.0000,1.0000,memory.search_nodes
+q099,Show unstaged git diff,verb_product,git.git_diff_unstaged,1.0,1.0,1.0,1.0000,1.0000,git.git_diff_unstaged
+q100,Stage files with git add,identifier,,0.0,0.0,0.0,0.0000,0.0000,
+q101,Create a Shopify product,verb_product,shopify.shopify_create_product,1.0,1.0,1.0,1.0000,1.0000,shopify.shopify_create_product
+q102,Cancel a Stripe subscription,verb_product,stripe.stripe_cancel_subscription,1.0,1.0,1.0,1.0000,1.0000,stripe.stripe_cancel_subscription
+q103,Create a payment intent,resource,stripe.stripe_create_payment_intent,1.0,1.0,1.0,1.0000,1.0000,stripe.stripe_create_payment_intent stripe.stripe_create_refund
+q104,Acknowledge a PagerDuty incident,verb_product,pagerduty.pagerduty_acknowledge_incident,1.0,1.0,1.0,1.0000,1.0000,pagerduty.pagerduty_acknowledge_incident
+q105,Create a Datadog monitor,verb_product,datadog.datadog_create_monitor,1.0,1.0,1.0,1.0000,1.0000,datadog.datadog_create_monitor
+q106,Resolve a Sentry issue,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q107,Scale a Kubernetes deployment,verb_product,kubernetes.k8s_scale_deployment,1.0,1.0,1.0,1.0000,1.0000,kubernetes.k8s_scale_deployment
+q108,Apply a Kubernetes manifest,verb_product,kubernetes.k8s_apply,1.0,1.0,1.0,1.0000,1.0000,kubernetes.k8s_apply
+q109,Stop a docker container,verb_product,docker.docker_stop,1.0,1.0,1.0,1.0000,1.0000,docker.docker_stop
+q110,Build a docker image,verb_product,docker.docker_build,1.0,1.0,1.0,1.0000,1.0000,docker.docker_build
+q111,Click an element in Playwright,verb_product,,0.0,0.0,0.0,0.0000,0.0000,
+q112,Type text into a browser input,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q113,List GitLab projects,verb_product,gitlab.gitlab_list_projects,1.0,1.0,1.0,1.0000,1.0000,gitlab.gitlab_list_projects
+q114,Create a Bitbucket pull request,verb_product,bitbucket.bitbucket_create_pr,1.0,1.0,1.0,1.0000,1.0000,bitbucket.bitbucket_create_pr
+q115,Create a Gmail draft,verb_product,gmail.gmail_create_draft,1.0,1.0,1.0,1.0000,1.0000,gmail.gmail_create_draft
+q116,Share a Google Drive file,verb_product,google_drive.gdrive_share_file,1.0,1.0,1.0,1.0000,1.0000,google_drive.gdrive_share_file
+q117,List Google Calendar events,verb_product,google_calendar.gcal_list_events,1.0,1.0,1.0,1.0000,1.0000,google_calendar.gcal_list_events
+q118,Delete a calendar event,resource,google_calendar.gcal_delete_event,1.0,1.0,1.0,1.0000,1.0000,google_calendar.gcal_delete_event
+q119,List Vercel projects,verb_product,vercel.vercel_list_projects,1.0,1.0,1.0,1.0000,1.0000,vercel.vercel_list_projects
+q120,Select rows from Supabase,verb_product,supabase.supabase_select,1.0,1.0,1.0,1.0000,1.0000,supabase.supabase_select
+q121,Post a Figma comment,verb_product,figma.figma_post_comment,1.0,1.0,1.0,1.0000,1.0000,figma.figma_post_comment
+q122,List Okta users,verb_product,okta.okta_list_users,1.0,1.0,1.0,1.0000,1.0000,okta.okta_list_users
+q123,Range query Prometheus,verb_product,prometheus.prom_query_range,1.0,1.0,1.0,1.0000,1.0000,prometheus.prom_query_range
+q124,Create a Grafana annotation,verb_product,grafana.grafana_create_annotation,1.0,1.0,1.0,1.0000,1.0000,grafana.grafana_create_annotation
+q125,Apply terraform,identifier,terraform.tf_apply,1.0,1.0,1.0,1.0000,1.0000,terraform.tf_apply
+q126,List Asana tasks,verb_product,asana.asana_list_tasks,1.0,1.0,1.0,1.0000,1.0000,asana.asana_list_tasks
+q127,Comment on a Trello card,verb_product,trello.trello_add_comment,1.0,1.0,1.0,1.0000,1.0000,trello.trello_add_comment
+q128,Update a ClickUp task,verb_product,clickup.clickup_update_task,1.0,1.0,1.0,1.0000,1.0000,clickup.clickup_update_task
+q129,Search Confluence,verb_product,confluence.confluence_search,1.0,1.0,1.0,1.0000,1.0000,confluence.confluence_search
+q130,Create a HubSpot deal,verb_product,hubspot.hubspot_create_deal,1.0,1.0,1.0,1.0000,1.0000,hubspot.hubspot_create_deal
+q131,List Zendesk tickets,verb_product,zendesk.zendesk_list_tickets,1.0,1.0,1.0,1.0000,1.0000,zendesk.zendesk_list_tickets
+q132,List Discord channels,verb_product,discord.discord_list_channels,1.0,1.0,1.0,1.0000,1.0000,discord.discord_list_channels
+q133,Set a Redis key,verb_product,redis.redis_set,1.0,1.0,1.0,1.0000,1.0000,redis.redis_set
+q134,Insert MongoDB documents,verb_product,mongodb.mongo_insert,1.0,1.0,1.0,1.0000,1.0000,mongodb.mongo_insert
+q135,Run a MySQL query,verb_product,mysql.mysql_query,1.0,1.0,1.0,1.0000,1.0000,mysql.mysql_query
+q136,Index a document in Elasticsearch,verb_product,elasticsearch.es_index_doc,1.0,1.0,1.0,1.0000,1.0000,elasticsearch.es_index_doc
+q137,Get an S3 object,verb_product,aws_s3.s3_get_object,1.0,1.0,1.0,1.0000,1.0000,aws_s3.s3_get_object
+q138,List Cloudflare zones,verb_product,cloudflare.cf_list_zones,1.0,1.0,1.0,1.0000,1.0000,cloudflare.cf_list_zones
+q139,Create a Stripe invoice,verb_product,stripe.stripe_create_invoice,1.0,1.0,1.0,1.0000,1.0000,stripe.stripe_create_invoice
+q140,List GitHub Actions workflows,verb_product,github.actions_list,1.0,1.0,1.0,1.0000,1.0000,github.actions_list
+q141,Get GitHub Actions job logs,verb_product,github.actions_get_job_logs,1.0,1.0,1.0,1.0000,1.0000,github.actions_get_job_logs
+q142,Create a GitHub repository,verb_product,github.create_or_update_file,0.0,1.0,1.0,0.5000,0.6309,github.create_or_update_file github.create_repository github.create_branch github.create_issue
+q143,Checkout a git branch,verb_product,git.git_checkout,1.0,1.0,1.0,1.0000,1.0000,git.git_checkout
+q144,Show git log,identifier,git.git_log,1.0,1.0,1.0,1.0000,1.0000,git.git_log
+q145,List postgres schemas,verb_product,postgres.list_schemas,1.0,1.0,1.0,1.0000,1.0000,postgres.list_schemas
+q146,Open nodes in the knowledge graph,verb_product,memory.open_nodes,1.0,1.0,1.0,1.0000,1.0000,memory.open_nodes
+q147,Get file metadata from the filesystem,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q148,Write a new local file,paraphrase,,0.0,0.0,0.0,0.0000,0.0000,
+q149,Search GitHub issues,verb_product,github.search_issues,1.0,1.0,1.0,1.0000,1.0000,github.search_issues
+q150,Get the authenticated GitHub user,paraphrase,github.get_me,1.0,1.0,1.0,1.0000,1.0000,github.get_me github.get_teams

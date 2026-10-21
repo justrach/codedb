@@ -1,0 +1,4116 @@
+{
+  "summary": {
+    "n": 150,
+    "index_s": 0.0060391910000134885,
+    "rss_mb": 0.01171875,
+    "p50_ms": 0.5474685000308455,
+    "p95_ms": 0.7852027499495757,
+    "recall@1": 0.92,
+    "recall@1_lo": 0.8733333333333333,
+    "recall@1_hi": 0.96,
+    "recall@3": 0.98,
+    "recall@3_lo": 0.9533333333333334,
+    "recall@3_hi": 1.0,
+    "recall@5": 0.9866666666666667,
+    "recall@5_lo": 0.9666666666666667,
+    "recall@5_hi": 1.0,
+    "mrr@10": 0.9487407407407407,
+    "mrr@10_lo": 0.9192592592592592,
+    "mrr@10_hi": 0.9768888888888889,
+    "ndcg@10": 0.9555953414387945,
+    "ndcg@10_lo": 0.9313536952974558,
+    "ndcg@10_hi": 0.9782977920782063
+  },
+  "meta": {
+    "name": "hybrid_rrf_bm25_trigram",
+    "needs_model": false,
+    "needs_api": false,
+    "notes": "RRF of BM25 + char trigram"
+  },
+  "rows": [
+    {
+      "id": "q001",
+      "query": "Create a GitHub issue",
+      "kind": "verb_product",
+      "gold": [
+        "github.create_issue"
+      ],
+      "alts": [
+        "github.issue_write"
+      ],
+      "ranking": [
+        "github.create_issue",
+        "github.issue_write",
+        "gitlab.gitlab_create_issue",
+        "github.issue_read",
+        "github.create_gist",
+        "github.update_issue_comment",
+        "github.create_repository",
+        "github.create_branch",
+        "bitbucket.bitbucket_create_issue",
+        "github.add_issue_comment"
+      ],
+      "hit1": "github.create_issue",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q002",
+      "query": "Create a Jira ticket",
+      "kind": "verb_product",
+      "gold": [
+        "jira.jira_create_issue"
+      ],
+      "alts": [],
+      "ranking": [
+        "jira.jira_create_issue",
+        "zendesk.zendesk_create_ticket",
+        "jira.create_board",
+        "jira.create_sprint",
+        "jira.create_filter",
+        "jira.create_version",
+        "jira.create_webhook",
+        "zendesk.zendesk_update_ticket",
+        "jira.create_attachment",
+        "jira.jira_create_sprint"
+      ],
+      "hit1": "jira.jira_create_issue",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q003",
+      "query": "Send a Slack message",
+      "kind": "verb_product",
+      "gold": [
+        "slack.slack_post_message"
+      ],
+      "alts": [],
+      "ranking": [
+        "slack.slack_post_message",
+        "discord.discord_send_message",
+        "slack.slack_add_reaction",
+        "slack.slack_search_messages",
+        "slack.slack_join_channel",
+        "slack.slack_leave_channel",
+        "slack.slack_create_channel",
+        "slack.slack_get_user_profile",
+        "slack.slack_get_channel_history",
+        "slack.get_pin"
+      ],
+      "hit1": "slack.slack_post_message",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q004",
+      "query": "List open pull requests",
+      "kind": "resource",
+      "gold": [
+        "github.list_pull_requests"
+      ],
+      "alts": [
+        "github.search_pull_requests"
+      ],
+      "ranking": [
+        "github.list_pull_requests",
+        "bitbucket.bitbucket_list_prs",
+        "github.search_pull_requests",
+        "github.create_pull_request",
+        "gitlab.gitlab_list_merge_requests",
+        "github.pull_request_read",
+        "github.merge_pull_request",
+        "playwright.browser_tab_list",
+        "github.request_copilot_review",
+        "github.update_pull_request_branch"
+      ],
+      "hit1": "github.list_pull_requests",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 0.9502344167898356
+    },
+    {
+      "id": "q005",
+      "query": "Open a pull request on GitHub",
+      "kind": "verb_product",
+      "gold": [
+        "github.create_pull_request"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.create_pull_request",
+        "github.request_copilot_review",
+        "github.pull_request_read",
+        "github.merge_pull_request",
+        "github.search_pull_requests",
+        "github.update_pull_request_branch",
+        "github.pull_request_review_write",
+        "github.list_pull_requests",
+        "github.update_pull_request",
+        "github.add_comment_to_pending_review"
+      ],
+      "hit1": "github.create_pull_request",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q006",
+      "query": "Run a SQL query against postgres",
+      "kind": "verb_product",
+      "gold": [
+        "postgres.query"
+      ],
+      "alts": [],
+      "ranking": [
+        "postgres.query",
+        "mysql.mysql_query",
+        "sqlite.sqlite_query",
+        "postgres.explain_query",
+        "salesforce.salesforce_query",
+        "postgres.list_schemas",
+        "postgres.list_tables",
+        "postgres.describe_table",
+        "docker.docker_run",
+        "prometheus.prom_query"
+      ],
+      "hit1": "postgres.query",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q007",
+      "query": "Read a local file from disk",
+      "kind": "paraphrase",
+      "gold": [
+        "filesystem.read_file"
+      ],
+      "alts": [
+        "filesystem.read_text_file"
+      ],
+      "ranking": [
+        "filesystem.read_file",
+        "filesystem.read_text_file",
+        "filesystem.read_media_file",
+        "gitlab.gitlab_get_file",
+        "figma.figma_get_file_nodes",
+        "github.delete_file",
+        "figma.figma_get_images",
+        "github.get_file_contents",
+        "figma.figma_get_file",
+        "slack.get_file"
+      ],
+      "hit1": "filesystem.read_file",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q008",
+      "query": "What files are in this folder",
+      "kind": "paraphrase",
+      "gold": [
+        "filesystem.list_directory"
+      ],
+      "alts": [
+        "filesystem.list_directory_with_sizes",
+        "filesystem.directory_tree"
+      ],
+      "ranking": [
+        "google_drive.gdrive_list_folder",
+        "slack.list_files",
+        "google_drive.gdrive_search",
+        "cloudflare.cf_purge_cache",
+        "github.push_files",
+        "git.git_add",
+        "filesystem.search_files",
+        "github.get_milestone",
+        "filesystem.list_directory",
+        "github.delete_milestone"
+      ],
+      "hit1": "google_drive.gdrive_list_folder",
+      "recall@1": 0.0,
+      "recall@3": 0.0,
+      "recall@5": 0.0,
+      "mrr@10": 0.1111111111111111,
+      "ndcg@10": 0.1922943146971571
+    },
+    {
+      "id": "q009",
+      "query": "Remember this fact in the knowledge graph",
+      "kind": "paraphrase",
+      "gold": [
+        "memory.add_observations"
+      ],
+      "alts": [
+        "memory.create_entities"
+      ],
+      "ranking": [
+        "memory.read_graph",
+        "memory.create_entities",
+        "memory.delete_relations",
+        "memory.open_nodes",
+        "memory.create_relations",
+        "memory.add_observations",
+        "memory.search_nodes",
+        "memory.delete_entities",
+        "time.get_current_time",
+        "postgres.list_schemas"
+      ],
+      "hit1": "memory.read_graph",
+      "recall@1": 0.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 0.5,
+      "ndcg@10": 0.5105967295264829
+    },
+    {
+      "id": "q010",
+      "query": "Search the web with Brave",
+      "kind": "verb_product",
+      "gold": [
+        "brave_search.brave_web_search"
+      ],
+      "alts": [],
+      "ranking": [
+        "brave_search.brave_web_search",
+        "brave_search.brave_local_search",
+        "jira.jira_search_issues",
+        "github.update_pull_request_branch",
+        "memory.search_nodes",
+        "github.search_users",
+        "github.search_orgs",
+        "github.search_commits",
+        "confluence.confluence_search",
+        "slack.slack_search_messages"
+      ],
+      "hit1": "brave_search.brave_web_search",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q011",
+      "query": "Fetch the contents of a URL",
+      "kind": "verb_product",
+      "gold": [
+        "fetch.fetch"
+      ],
+      "alts": [],
+      "ranking": [
+        "fetch.fetch",
+        "filesystem.read_file",
+        "git.git_add",
+        "playwright.browser_navigate",
+        "docker.docker_logs",
+        "github.get_me",
+        "github.get_file_contents",
+        "git.git_status",
+        "slack.slack_set_channel_topic",
+        "playwright.browser_snapshot"
+      ],
+      "hit1": "fetch.fetch",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q012",
+      "query": "Show git status",
+      "kind": "identifier",
+      "gold": [
+        "git.git_status"
+      ],
+      "alts": [],
+      "ranking": [
+        "git.git_status",
+        "git.git_diff_staged",
+        "shopify.shopify_list_orders",
+        "git.git_diff_unstaged",
+        "github.list_hooks",
+        "git.git_show",
+        "gitlab.list_jobs",
+        "gitlab.list_snippets",
+        "git.git_log",
+        "github.list_packages"
+      ],
+      "hit1": "git.git_status",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q013",
+      "query": "Commit staged changes",
+      "kind": "paraphrase",
+      "gold": [
+        "git.git_commit"
+      ],
+      "alts": [],
+      "ranking": [
+        "git.git_commit",
+        "git.git_reset",
+        "git.git_diff_staged",
+        "git.git_show",
+        "git.git_log",
+        "github.get_commit",
+        "github.push_files",
+        "linear.list_comments",
+        "notion.list_comments",
+        "github.list_packages"
+      ],
+      "hit1": "git.git_commit",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q014",
+      "query": "Create a Linear issue",
+      "kind": "verb_product",
+      "gold": [
+        "linear.linear_create_issue"
+      ],
+      "alts": [],
+      "ranking": [
+        "linear.linear_create_comment",
+        "linear.linear_create_issue",
+        "linear.linear_update_issue",
+        "linear.linear_assign_issue",
+        "linear.linear_get_issue",
+        "linear.linear_create_project",
+        "linear.create_user",
+        "linear.create_label",
+        "linear.create_cycle",
+        "bitbucket.bitbucket_create_issue"
+      ],
+      "hit1": "linear.linear_create_comment",
+      "recall@1": 0.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 0.5,
+      "ndcg@10": 0.6309297535714575
+    },
+    {
+      "id": "q015",
+      "query": "Make a task in my project tracker Linear",
+      "kind": "paraphrase",
+      "gold": [
+        "linear.linear_create_issue"
+      ],
+      "alts": [],
+      "ranking": [
+        "linear.linear_create_project",
+        "linear.delete_user",
+        "linear.get_user",
+        "linear.delete_cycle",
+        "asana.asana_create_task",
+        "linear.get_cycle",
+        "linear.delete_label",
+        "linear.get_label",
+        "linear.delete_comment",
+        "linear.linear_list_projects"
+      ],
+      "hit1": "linear.linear_create_project",
+      "recall@1": 0.0,
+      "recall@3": 0.0,
+      "recall@5": 0.0,
+      "mrr@10": 0.0,
+      "ndcg@10": 0.0
+    },
+    {
+      "id": "q016",
+      "query": "Post a comment on a GitHub issue",
+      "kind": "verb_product",
+      "gold": [
+        "github.add_issue_comment"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.update_issue_comment",
+        "figma.figma_post_comment",
+        "github.add_issue_comment",
+        "jira.jira_add_comment",
+        "linear.linear_create_comment",
+        "github.issue_read",
+        "github.assign_copilot_to_issue",
+        "github.get_discussion_comments",
+        "trello.trello_add_comment",
+        "github.list_commits"
+      ],
+      "hit1": "github.update_issue_comment",
+      "recall@1": 0.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 0.3333333333333333,
+      "ndcg@10": 0.5
+    },
+    {
+      "id": "q017",
+      "query": "Merge the pull request",
+      "kind": "ambiguous",
+      "gold": [
+        "github.merge_pull_request"
+      ],
+      "alts": [
+        "gitlab.gitlab_merge_merge_request"
+      ],
+      "ranking": [
+        "github.merge_pull_request",
+        "gitlab.gitlab_merge_merge_request",
+        "github.update_pull_request_branch",
+        "gitlab.gitlab_get_merge_request",
+        "github.pull_request_read",
+        "github.request_copilot_review",
+        "github.search_pull_requests",
+        "gitlab.gitlab_create_merge_request",
+        "github.update_pull_request",
+        "bitbucket.bitbucket_list_prs"
+      ],
+      "hit1": "github.merge_pull_request",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q018",
+      "query": "Trigger a GitHub Actions workflow",
+      "kind": "verb_product",
+      "gold": [
+        "github.actions_run_trigger"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.actions_run_trigger",
+        "github.actions_get",
+        "github.actions_list",
+        "github.actions_get_job_logs",
+        "github.star_repository",
+        "github.fork_repository",
+        "github.unstar_repository",
+        "github.search_orgs",
+        "github.delete_repository",
+        "github.list_tags"
+      ],
+      "hit1": "github.actions_run_trigger",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q019",
+      "query": "Get Dependabot alerts",
+      "kind": "resource",
+      "gold": [
+        "github.list_dependabot_alerts"
+      ],
+      "alts": [
+        "github.get_dependabot_alert"
+      ],
+      "ranking": [
+        "github.list_dependabot_alerts",
+        "github.get_dependabot_alert",
+        "github.list_secret_scanning_alerts",
+        "github.list_code_scanning_alerts",
+        "vercel.vercel_get_deployment",
+        "github.get_hook",
+        "zendesk.zendesk_get_ticket",
+        "gitlab.get_job",
+        "redis.redis_get",
+        "gitlab.get_wiki"
+      ],
+      "hit1": "github.list_dependabot_alerts",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q020",
+      "query": "List Sentry issues",
+      "kind": "verb_product",
+      "gold": [
+        "sentry.sentry_list_issues"
+      ],
+      "alts": [],
+      "ranking": [
+        "sentry.sentry_list_issues",
+        "sentry.sentry_list_projects",
+        "sentry.sentry_list_events",
+        "gitlab.gitlab_list_issues",
+        "sentry.sentry_get_issue",
+        "linear.linear_list_issues",
+        "linear.linear_search_issues",
+        "sentry.sentry_update_issue",
+        "github.list_issues",
+        "github.search_issues"
+      ],
+      "hit1": "sentry.sentry_list_issues",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q021",
+      "query": "Create a Stripe customer",
+      "kind": "verb_product",
+      "gold": [
+        "stripe.stripe_create_customer"
+      ],
+      "alts": [],
+      "ranking": [
+        "stripe.stripe_create_customer",
+        "stripe.stripe_create_invoice",
+        "stripe.stripe_get_customer",
+        "stripe.stripe_create_payment_intent",
+        "stripe.stripe_list_invoices",
+        "stripe.stripe_create_price",
+        "stripe.stripe_create_product",
+        "stripe.stripe_list_subscriptions",
+        "stripe.stripe_list_customers",
+        "stripe.stripe_create_refund"
+      ],
+      "hit1": "stripe.stripe_create_customer",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q022",
+      "query": "Refund a Stripe payment",
+      "kind": "paraphrase",
+      "gold": [
+        "stripe.stripe_create_refund"
+      ],
+      "alts": [],
+      "ranking": [
+        "stripe.stripe_create_refund",
+        "stripe.stripe_get_payment_intent",
+        "stripe.stripe_create_payment_intent",
+        "stripe.stripe_get_customer",
+        "stripe.stripe_create_invoice",
+        "stripe.stripe_list_invoices",
+        "stripe.stripe_create_customer",
+        "stripe.stripe_create_product",
+        "stripe.stripe_create_price",
+        "stripe.stripe_cancel_subscription"
+      ],
+      "hit1": "stripe.stripe_create_refund",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q023",
+      "query": "Send an email with Gmail",
+      "kind": "verb_product",
+      "gold": [
+        "gmail.gmail_send_email"
+      ],
+      "alts": [],
+      "ranking": [
+        "gmail.gmail_send_email",
+        "gmail.gmail_get_email",
+        "twilio.twilio_send_sms",
+        "puppeteer.puppeteer_click",
+        "gmail.gmail_trash_email",
+        "gmail.gmail_search_emails",
+        "gmail.gmail_list_labels",
+        "puppeteer.puppeteer_fill",
+        "gmail.gmail_modify_email",
+        "gmail.gmail_create_draft"
+      ],
+      "hit1": "gmail.gmail_send_email",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q024",
+      "query": "Search my Gmail inbox",
+      "kind": "verb_product",
+      "gold": [
+        "gmail.gmail_search_emails"
+      ],
+      "alts": [],
+      "ranking": [
+        "gmail.gmail_search_emails",
+        "gmail.gmail_list_labels",
+        "github.search_users",
+        "confluence.confluence_search",
+        "elasticsearch.es_search",
+        "slack.slack_search_messages",
+        "gmail.gmail_get_email",
+        "github.search_orgs",
+        "gmail.gmail_send_email",
+        "github.search_commits"
+      ],
+      "hit1": "gmail.gmail_search_emails",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q025",
+      "query": "Upload a file to Google Drive",
+      "kind": "paraphrase",
+      "gold": [
+        "google_drive.gdrive_create_file"
+      ],
+      "alts": [],
+      "ranking": [
+        "google_drive.gdrive_update_file",
+        "google_drive.gdrive_share_file",
+        "google_drive.gdrive_search",
+        "google_drive.gdrive_get_file",
+        "google_drive.gdrive_create_file",
+        "slack.slack_upload_file",
+        "google_drive.gdrive_list_folder",
+        "aws_s3.s3_put_object",
+        "figma.figma_get_file",
+        "google_calendar.gcal_list_calendars"
+      ],
+      "hit1": "google_drive.gdrive_update_file",
+      "recall@1": 0.0,
+      "recall@3": 0.0,
+      "recall@5": 1.0,
+      "mrr@10": 0.2,
+      "ndcg@10": 0.38685280723454163
+    },
+    {
+      "id": "q026",
+      "query": "Create a calendar event",
+      "kind": "resource",
+      "gold": [
+        "google_calendar.gcal_create_event"
+      ],
+      "alts": [],
+      "ranking": [
+        "google_calendar.gcal_create_event",
+        "google_calendar.gcal_delete_event",
+        "google_calendar.gcal_update_event",
+        "google_calendar.gcal_list_events",
+        "trello.trello_create_board",
+        "google_calendar.gcal_list_calendars",
+        "stripe.stripe_create_refund",
+        "vercel.vercel_create_project",
+        "github.pull_request_review_write",
+        "notion.notion_create_database"
+      ],
+      "hit1": "google_calendar.gcal_create_event",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q027",
+      "query": "List Kubernetes pods",
+      "kind": "verb_product",
+      "gold": [
+        "kubernetes.k8s_list_pods"
+      ],
+      "alts": [],
+      "ranking": [
+        "kubernetes.k8s_list_pods",
+        "kubernetes.k8s_list_services",
+        "kubernetes.k8s_list_deployments",
+        "kubernetes.k8s_get_events",
+        "kubernetes.k8s_get_pod",
+        "kubernetes.k8s_apply",
+        "kubernetes.k8s_pod_logs",
+        "kubernetes.k8s_delete",
+        "kubernetes.k8s_scale_deployment",
+        "linear.linear_list_teams"
+      ],
+      "hit1": "kubernetes.k8s_list_pods",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q028",
+      "query": "Get logs from a k8s pod",
+      "kind": "verb_product",
+      "gold": [
+        "kubernetes.k8s_pod_logs"
+      ],
+      "alts": [],
+      "ranking": [
+        "kubernetes.k8s_pod_logs",
+        "kubernetes.k8s_get_pod",
+        "docker.docker_logs",
+        "github.actions_get_job_logs",
+        "github.get_tag",
+        "figma.figma_get_file_nodes",
+        "elasticsearch.es_get_doc",
+        "datadog.datadog_list_logs",
+        "aws_s3.s3_get_object",
+        "slack.slack_get_channel_history"
+      ],
+      "hit1": "kubernetes.k8s_pod_logs",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q029",
+      "query": "Run a docker container",
+      "kind": "verb_product",
+      "gold": [
+        "docker.docker_run"
+      ],
+      "alts": [],
+      "ranking": [
+        "docker.docker_run",
+        "docker.docker_stop",
+        "docker.docker_exec",
+        "docker.docker_rm",
+        "docker.docker_logs",
+        "docker.docker_ps",
+        "docker.docker_images",
+        "docker.docker_build",
+        "kubernetes.k8s_pod_logs",
+        "salesforce.salesforce_query"
+      ],
+      "hit1": "docker.docker_run",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q030",
+      "query": "Show docker container logs",
+      "kind": "verb_product",
+      "gold": [
+        "docker.docker_logs"
+      ],
+      "alts": [],
+      "ranking": [
+        "docker.docker_logs",
+        "docker.docker_stop",
+        "docker.docker_rm",
+        "docker.docker_exec",
+        "docker.docker_run",
+        "docker.docker_ps",
+        "kubernetes.k8s_pod_logs",
+        "git.git_log",
+        "docker.docker_images",
+        "docker.docker_build"
+      ],
+      "hit1": "docker.docker_logs",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q031",
+      "query": "Navigate the browser to a URL",
+      "kind": "ambiguous",
+      "gold": [
+        "playwright.browser_navigate"
+      ],
+      "alts": [
+        "puppeteer.puppeteer_navigate"
+      ],
+      "ranking": [
+        "playwright.browser_navigate",
+        "puppeteer.puppeteer_navigate",
+        "playwright.browser_tab_new",
+        "playwright.browser_press_key",
+        "playwright.browser_evaluate",
+        "playwright.browser_wait_for",
+        "playwright.browser_click",
+        "playwright.browser_tab_close",
+        "playwright.browser_tab_list",
+        "playwright.browser_snapshot"
+      ],
+      "hit1": "playwright.browser_navigate",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q032",
+      "query": "Take a screenshot of the page",
+      "kind": "ambiguous",
+      "gold": [
+        "playwright.browser_take_screenshot"
+      ],
+      "alts": [
+        "puppeteer.puppeteer_screenshot"
+      ],
+      "ranking": [
+        "playwright.browser_take_screenshot",
+        "puppeteer.puppeteer_screenshot",
+        "playwright.browser_snapshot",
+        "playwright.browser_evaluate",
+        "playwright.browser_press_key",
+        "playwright.browser_click",
+        "git.git_status",
+        "filesystem.read_file",
+        "notion.notion_update_page",
+        "confluence.confluence_get_page"
+      ],
+      "hit1": "playwright.browser_take_screenshot",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q033",
+      "query": "Create a GitLab merge request",
+      "kind": "verb_product",
+      "gold": [
+        "gitlab.gitlab_create_merge_request"
+      ],
+      "alts": [],
+      "ranking": [
+        "gitlab.gitlab_merge_merge_request",
+        "gitlab.gitlab_create_merge_request",
+        "gitlab.gitlab_get_merge_request",
+        "github.merge_pull_request",
+        "gitlab.gitlab_list_merge_requests",
+        "gitlab.gitlab_create_pipeline",
+        "gitlab.gitlab_create_issue",
+        "bitbucket.bitbucket_create_pr",
+        "github.pull_request_review_write",
+        "github.create_pull_request"
+      ],
+      "hit1": "gitlab.gitlab_merge_merge_request",
+      "recall@1": 0.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 0.5,
+      "ndcg@10": 0.6309297535714575
+    },
+    {
+      "id": "q034",
+      "query": "Search Notion pages",
+      "kind": "verb_product",
+      "gold": [
+        "notion.notion_search"
+      ],
+      "alts": [],
+      "ranking": [
+        "notion.notion_search",
+        "notion.notion_get_page",
+        "notion.notion_update_page",
+        "notion.notion_get_comments",
+        "notion.notion_get_block",
+        "github.search_orgs",
+        "notion.notion_create_database",
+        "slack.slack_search_messages",
+        "notion.notion_list_users",
+        "github.search_users"
+      ],
+      "hit1": "notion.notion_search",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q035",
+      "query": "Create a Notion page",
+      "kind": "verb_product",
+      "gold": [
+        "notion.notion_create_page"
+      ],
+      "alts": [],
+      "ranking": [
+        "notion.notion_create_page",
+        "notion.notion_get_page",
+        "notion.notion_update_page",
+        "notion.notion_create_database",
+        "notion.notion_get_comments",
+        "notion.create_comment",
+        "confluence.confluence_create_page",
+        "notion.create_users_token",
+        "notion.create_data_source",
+        "notion.update_comment"
+      ],
+      "hit1": "notion.notion_create_page",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q036",
+      "query": "Query a Notion database",
+      "kind": "verb_product",
+      "gold": [
+        "notion.notion_query_database"
+      ],
+      "alts": [],
+      "ranking": [
+        "notion.notion_query_database",
+        "notion.notion_create_database",
+        "notion.notion_search",
+        "notion.notion_create_page",
+        "notion.notion_get_block",
+        "notion.notion_get_page",
+        "notion.notion_update_page",
+        "notion.delete_data_source",
+        "notion.get_data_source",
+        "notion.delete_comment"
+      ],
+      "hit1": "notion.notion_query_database",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q037",
+      "query": "Create a Zendesk ticket",
+      "kind": "verb_product",
+      "gold": [
+        "zendesk.zendesk_create_ticket"
+      ],
+      "alts": [],
+      "ranking": [
+        "zendesk.zendesk_create_ticket",
+        "zendesk.zendesk_get_ticket",
+        "zendesk.zendesk_update_ticket",
+        "zendesk.zendesk_list_tickets",
+        "zendesk.zendesk_search",
+        "jira.jira_create_issue",
+        "trello.trello_create_board",
+        "bitbucket.bitbucket_create_issue",
+        "vercel.vercel_create_project",
+        "confluence.confluence_create_page"
+      ],
+      "hit1": "zendesk.zendesk_create_ticket",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q038",
+      "query": "Create a HubSpot contact",
+      "kind": "verb_product",
+      "gold": [
+        "hubspot.hubspot_create_contact"
+      ],
+      "alts": [],
+      "ranking": [
+        "hubspot.hubspot_create_contact",
+        "hubspot.hubspot_get_contact",
+        "hubspot.hubspot_list_contacts",
+        "hubspot.hubspot_create_deal",
+        "hubspot.hubspot_search_contacts",
+        "github.create_gist",
+        "vercel.vercel_create_project",
+        "stripe.stripe_create_product",
+        "trello.trello_create_board",
+        "github.projects_write"
+      ],
+      "hit1": "hubspot.hubspot_create_contact",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q039",
+      "query": "Create a Salesforce lead",
+      "kind": "verb_product",
+      "gold": [
+        "salesforce.salesforce_create_lead"
+      ],
+      "alts": [],
+      "ranking": [
+        "salesforce.salesforce_convert_lead",
+        "salesforce.salesforce_create_lead",
+        "salesforce.salesforce_create_record",
+        "salesforce.salesforce_update_record",
+        "salesforce.salesforce_query",
+        "salesforce.salesforce_delete_record",
+        "salesforce.salesforce_list_opportunities",
+        "salesforce.salesforce_get_record",
+        "stripe.stripe_create_invoice",
+        "vercel.vercel_create_project"
+      ],
+      "hit1": "salesforce.salesforce_convert_lead",
+      "recall@1": 0.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 0.5,
+      "ndcg@10": 0.6309297535714575
+    },
+    {
+      "id": "q040",
+      "query": "Run a SOQL query",
+      "kind": "identifier",
+      "gold": [
+        "salesforce.salesforce_query"
+      ],
+      "alts": [],
+      "ranking": [
+        "salesforce.salesforce_query",
+        "sqlite.sqlite_query",
+        "mysql.mysql_query",
+        "postgres.query",
+        "prometheus.prom_query",
+        "postgres.explain_query",
+        "notion.notion_query_database",
+        "memory.search_nodes",
+        "github.search_users",
+        "confluence.confluence_search"
+      ],
+      "hit1": "salesforce.salesforce_query",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q041",
+      "query": "List Shopify orders",
+      "kind": "verb_product",
+      "gold": [
+        "shopify.shopify_list_orders"
+      ],
+      "alts": [],
+      "ranking": [
+        "shopify.shopify_list_orders",
+        "shopify.shopify_list_customers",
+        "shopify.shopify_list_products",
+        "shopify.shopify_get_order",
+        "shopify.shopify_get_product",
+        "shopify.shopify_create_order",
+        "shopify.shopify_update_product",
+        "shopify.shopify_create_product",
+        "okta.okta_list_users",
+        "linear.linear_list_teams"
+      ],
+      "hit1": "shopify.shopify_list_orders",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q042",
+      "query": "Create a PagerDuty incident",
+      "kind": "verb_product",
+      "gold": [
+        "pagerduty.pagerduty_create_incident"
+      ],
+      "alts": [],
+      "ranking": [
+        "pagerduty.pagerduty_create_incident",
+        "pagerduty.pagerduty_get_incident",
+        "pagerduty.pagerduty_acknowledge_incident",
+        "pagerduty.pagerduty_resolve_incident",
+        "pagerduty.pagerduty_list_incidents",
+        "stripe.stripe_create_invoice",
+        "stripe.stripe_create_refund",
+        "notion.notion_create_database",
+        "trello.trello_create_board",
+        "vercel.vercel_create_project"
+      ],
+      "hit1": "pagerduty.pagerduty_create_incident",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q043",
+      "query": "Who is on call in PagerDuty",
+      "kind": "paraphrase",
+      "gold": [
+        "pagerduty.pagerduty_list_oncalls"
+      ],
+      "alts": [],
+      "ranking": [
+        "pagerduty.pagerduty_list_oncalls",
+        "pagerduty.pagerduty_get_incident",
+        "pagerduty.pagerduty_acknowledge_incident",
+        "pagerduty.pagerduty_resolve_incident",
+        "pagerduty.pagerduty_list_incidents",
+        "pagerduty.pagerduty_create_incident",
+        "notion.notion_get_comments",
+        "playwright.browser_press_key",
+        "playwright.browser_evaluate",
+        "github.list_commits"
+      ],
+      "hit1": "pagerduty.pagerduty_list_oncalls",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q044",
+      "query": "Query Datadog metrics",
+      "kind": "verb_product",
+      "gold": [
+        "datadog.datadog_query_metrics"
+      ],
+      "alts": [],
+      "ranking": [
+        "datadog.datadog_query_metrics",
+        "datadog.datadog_list_monitors",
+        "datadog.datadog_create_monitor",
+        "datadog.datadog_list_logs",
+        "datadog.datadog_get_monitor",
+        "prometheus.prom_list_metrics",
+        "prometheus.prom_query",
+        "notion.notion_query_database",
+        "prometheus.prom_query_range",
+        "postgres.explain_query"
+      ],
+      "hit1": "datadog.datadog_query_metrics",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q045",
+      "query": "Search Datadog logs",
+      "kind": "verb_product",
+      "gold": [
+        "datadog.datadog_list_logs"
+      ],
+      "alts": [],
+      "ranking": [
+        "datadog.datadog_list_logs",
+        "datadog.datadog_list_monitors",
+        "datadog.datadog_get_monitor",
+        "github.search_orgs",
+        "datadog.datadog_query_metrics",
+        "grafana.grafana_search_dashboards",
+        "github.search_users",
+        "confluence.confluence_search",
+        "datadog.datadog_create_monitor",
+        "notion.notion_search"
+      ],
+      "hit1": "datadog.datadog_list_logs",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q046",
+      "query": "List S3 buckets",
+      "kind": "verb_product",
+      "gold": [
+        "aws_s3.s3_list_buckets"
+      ],
+      "alts": [],
+      "ranking": [
+        "aws_s3.s3_list_buckets",
+        "linear.linear_list_teams",
+        "jira.jira_list_projects",
+        "linear.linear_list_projects",
+        "zendesk.zendesk_list_tickets",
+        "bitbucket.bitbucket_list_repos",
+        "vercel.vercel_list_projects",
+        "sentry.sentry_list_projects",
+        "aws_s3.s3_list_objects",
+        "gmail.gmail_list_labels"
+      ],
+      "hit1": "aws_s3.s3_list_buckets",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q047",
+      "query": "Upload an object to S3",
+      "kind": "paraphrase",
+      "gold": [
+        "aws_s3.s3_put_object"
+      ],
+      "alts": [],
+      "ranking": [
+        "aws_s3.s3_put_object",
+        "aws_s3.s3_delete_object",
+        "aws_s3.s3_get_object",
+        "slack.slack_upload_file",
+        "gmail.gmail_send_email",
+        "twilio.twilio_send_sms",
+        "aws_s3.s3_list_objects",
+        "github.assign_copilot_to_issue",
+        "slack.slack_add_reaction",
+        "asana.asana_create_project"
+      ],
+      "hit1": "aws_s3.s3_put_object",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q048",
+      "query": "Purge Cloudflare cache",
+      "kind": "verb_product",
+      "gold": [
+        "cloudflare.cf_purge_cache"
+      ],
+      "alts": [],
+      "ranking": [
+        "cloudflare.cf_purge_cache",
+        "cloudflare.cf_list_zones",
+        "cloudflare.cf_list_dns",
+        "cloudflare.cf_create_dns",
+        "playwright.browser_tab_close",
+        "playwright.browser_snapshot",
+        "postgres.list_tables",
+        "memory.read_graph",
+        "postgres.list_schemas",
+        "puppeteer.puppeteer_click"
+      ],
+      "hit1": "cloudflare.cf_purge_cache",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q049",
+      "query": "Create a Cloudflare DNS record",
+      "kind": "verb_product",
+      "gold": [
+        "cloudflare.cf_create_dns"
+      ],
+      "alts": [],
+      "ranking": [
+        "cloudflare.cf_create_dns",
+        "cloudflare.cf_list_dns",
+        "salesforce.salesforce_create_record",
+        "cloudflare.cf_list_zones",
+        "cloudflare.cf_purge_cache",
+        "salesforce.salesforce_update_record",
+        "trello.trello_create_board",
+        "salesforce.salesforce_delete_record",
+        "vercel.vercel_create_project",
+        "stripe.stripe_create_product"
+      ],
+      "hit1": "cloudflare.cf_create_dns",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q050",
+      "query": "List Vercel deployments",
+      "kind": "verb_product",
+      "gold": [
+        "vercel.vercel_list_deployments"
+      ],
+      "alts": [],
+      "ranking": [
+        "vercel.vercel_list_deployments",
+        "vercel.vercel_list_projects",
+        "vercel.vercel_get_deployment",
+        "kubernetes.k8s_list_deployments",
+        "vercel.vercel_create_project",
+        "linear.linear_list_teams",
+        "linear.linear_list_projects",
+        "jira.jira_list_projects",
+        "aws_s3.s3_list_buckets",
+        "sentry.sentry_list_projects"
+      ],
+      "hit1": "vercel.vercel_list_deployments",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q051",
+      "query": "Insert a row into Supabase",
+      "kind": "verb_product",
+      "gold": [
+        "supabase.supabase_insert"
+      ],
+      "alts": [],
+      "ranking": [
+        "supabase.supabase_insert",
+        "mongodb.mongo_insert",
+        "supabase.supabase_list_tables",
+        "supabase.supabase_select",
+        "supabase.supabase_update",
+        "supabase.supabase_invoke_fn",
+        "playwright.browser_type",
+        "gitlab.get_release",
+        "slack.get_canvase",
+        "gitlab.delete_release"
+      ],
+      "hit1": "supabase.supabase_insert",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q052",
+      "query": "Export images from Figma",
+      "kind": "paraphrase",
+      "gold": [
+        "figma.figma_get_images"
+      ],
+      "alts": [],
+      "ranking": [
+        "figma.figma_get_images",
+        "figma.figma_get_file_nodes",
+        "docker.docker_images",
+        "figma.figma_get_file",
+        "figma.figma_get_comments",
+        "figma.figma_post_comment",
+        "supabase.supabase_select",
+        "docker.docker_logs",
+        "mongodb.mongo_delete",
+        "kubernetes.k8s_pod_logs"
+      ],
+      "hit1": "figma.figma_get_images",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q053",
+      "query": "Send an SMS with Twilio",
+      "kind": "verb_product",
+      "gold": [
+        "twilio.twilio_send_sms"
+      ],
+      "alts": [],
+      "ranking": [
+        "twilio.twilio_send_sms",
+        "twilio.twilio_list_messages",
+        "gmail.gmail_send_email",
+        "puppeteer.puppeteer_click",
+        "puppeteer.puppeteer_fill",
+        "twilio.twilio_make_call",
+        "filesystem.list_directory_with_sizes",
+        "discord.discord_send_message",
+        "jira.jira_search_issues",
+        "puppeteer.puppeteer_screenshot"
+      ],
+      "hit1": "twilio.twilio_send_sms",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q054",
+      "query": "Create an Okta user",
+      "kind": "verb_product",
+      "gold": [
+        "okta.okta_create_user"
+      ],
+      "alts": [],
+      "ranking": [
+        "okta.okta_create_user",
+        "okta.okta_get_user",
+        "okta.okta_deactivate_user",
+        "okta.okta_list_users",
+        "linear.create_user",
+        "asana.asana_create_project",
+        "linear.update_user",
+        "linear.delete_user",
+        "asana.asana_create_task",
+        "github.create_issue"
+      ],
+      "hit1": "okta.okta_create_user",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q055",
+      "query": "Instant query Prometheus",
+      "kind": "verb_product",
+      "gold": [
+        "prometheus.prom_query"
+      ],
+      "alts": [],
+      "ranking": [
+        "prometheus.prom_query",
+        "prometheus.prom_query_range",
+        "prometheus.prom_list_metrics",
+        "mysql.mysql_query",
+        "salesforce.salesforce_query",
+        "sqlite.sqlite_query",
+        "postgres.explain_query",
+        "datadog.datadog_query_metrics",
+        "postgres.query",
+        "shopify.shopify_list_products"
+      ],
+      "hit1": "prometheus.prom_query",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q056",
+      "query": "Search Grafana dashboards",
+      "kind": "verb_product",
+      "gold": [
+        "grafana.grafana_search_dashboards"
+      ],
+      "alts": [],
+      "ranking": [
+        "grafana.grafana_search_dashboards",
+        "grafana.grafana_get_dashboard",
+        "github.search_users",
+        "github.search_orgs",
+        "confluence.confluence_search",
+        "grafana.grafana_create_annotation",
+        "slack.slack_search_messages",
+        "github.search_pull_requests",
+        "github.search_issues",
+        "brave_search.brave_web_search"
+      ],
+      "hit1": "grafana.grafana_search_dashboards",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q057",
+      "query": "Trigger a CircleCI pipeline",
+      "kind": "verb_product",
+      "gold": [
+        "circleci.circleci_trigger_pipeline"
+      ],
+      "alts": [],
+      "ranking": [
+        "circleci.circleci_trigger_pipeline",
+        "circleci.circleci_get_pipeline",
+        "gitlab.gitlab_create_pipeline",
+        "circleci.circleci_list_pipelines",
+        "gitlab.get_pipeline",
+        "gitlab.delete_pipeline",
+        "github.actions_run_trigger",
+        "gitlab.update_pipeline",
+        "hubspot.hubspot_create_deal",
+        "gitlab.create_pipeline"
+      ],
+      "hit1": "circleci.circleci_trigger_pipeline",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q058",
+      "query": "Run terraform plan",
+      "kind": "identifier",
+      "gold": [
+        "terraform.tf_plan"
+      ],
+      "alts": [],
+      "ranking": [
+        "terraform.tf_plan",
+        "terraform.tf_apply",
+        "terraform.tf_state_list",
+        "salesforce.salesforce_query",
+        "postgres.explain_query",
+        "github.get_check_run",
+        "github.delete_check_run",
+        "mysql.mysql_query",
+        "sqlite.sqlite_query",
+        "docker.docker_run"
+      ],
+      "hit1": "terraform.tf_plan",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q059",
+      "query": "Create an Asana task",
+      "kind": "verb_product",
+      "gold": [
+        "asana.asana_create_task"
+      ],
+      "alts": [],
+      "ranking": [
+        "asana.asana_create_task",
+        "asana.asana_get_task",
+        "asana.asana_update_task",
+        "asana.asana_create_project",
+        "clickup.clickup_create_task",
+        "asana.asana_list_tasks",
+        "okta.okta_create_user",
+        "clickup.clickup_update_task",
+        "github.create_issue",
+        "filesystem.write_file"
+      ],
+      "hit1": "asana.asana_create_task",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q060",
+      "query": "Create a Trello card",
+      "kind": "verb_product",
+      "gold": [
+        "trello.trello_create_card"
+      ],
+      "alts": [],
+      "ranking": [
+        "trello.trello_create_card",
+        "trello.trello_add_comment",
+        "trello.trello_create_board",
+        "trello.trello_list_cards",
+        "vercel.vercel_create_project",
+        "stripe.stripe_create_invoice",
+        "salesforce.salesforce_create_record",
+        "stripe.stripe_create_customer",
+        "slack.slack_create_channel",
+        "stripe.stripe_create_product"
+      ],
+      "hit1": "trello.trello_create_card",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q061",
+      "query": "Create a ClickUp task",
+      "kind": "verb_product",
+      "gold": [
+        "clickup.clickup_create_task"
+      ],
+      "alts": [],
+      "ranking": [
+        "clickup.clickup_create_task",
+        "clickup.clickup_get_task",
+        "clickup.clickup_update_task",
+        "clickup.clickup_list_tasks",
+        "asana.asana_create_task",
+        "trello.trello_create_board",
+        "vercel.vercel_create_project",
+        "stripe.stripe_create_invoice",
+        "github.create_gist",
+        "stripe.stripe_create_customer"
+      ],
+      "hit1": "clickup.clickup_create_task",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q062",
+      "query": "Create a Confluence page",
+      "kind": "verb_product",
+      "gold": [
+        "confluence.confluence_create_page"
+      ],
+      "alts": [],
+      "ranking": [
+        "confluence.confluence_create_page",
+        "confluence.confluence_get_page",
+        "confluence.confluence_update_page",
+        "confluence.confluence_search",
+        "notion.notion_create_page",
+        "notion.notion_update_page",
+        "stripe.stripe_create_invoice",
+        "trello.trello_create_board",
+        "stripe.stripe_create_price",
+        "vercel.vercel_create_project"
+      ],
+      "hit1": "confluence.confluence_create_page",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q063",
+      "query": "Send a Discord message",
+      "kind": "verb_product",
+      "gold": [
+        "discord.discord_send_message"
+      ],
+      "alts": [],
+      "ranking": [
+        "discord.discord_send_message",
+        "discord.discord_add_reaction",
+        "discord.discord_get_channel",
+        "discord.discord_list_members",
+        "gmail.gmail_get_email",
+        "slack.slack_post_message",
+        "discord.discord_list_channels",
+        "gmail.gmail_trash_email",
+        "git.git_commit",
+        "datadog.datadog_create_monitor"
+      ],
+      "hit1": "discord.discord_send_message",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q064",
+      "query": "Search Elasticsearch",
+      "kind": "verb_product",
+      "gold": [
+        "elasticsearch.es_search"
+      ],
+      "alts": [],
+      "ranking": [
+        "elasticsearch.es_search",
+        "elasticsearch.es_get_doc",
+        "elasticsearch.es_index_doc",
+        "github.search_users",
+        "confluence.confluence_search",
+        "slack.slack_search_messages",
+        "github.search_orgs",
+        "zendesk.zendesk_search",
+        "grafana.grafana_search_dashboards",
+        "github.search_commits"
+      ],
+      "hit1": "elasticsearch.es_search",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q065",
+      "query": "Get a Redis key",
+      "kind": "verb_product",
+      "gold": [
+        "redis.redis_get"
+      ],
+      "alts": [],
+      "ranking": [
+        "redis.redis_get",
+        "redis.redis_set",
+        "redis.redis_delete",
+        "redis.redis_keys",
+        "jira.jira_get_issue",
+        "figma.figma_get_file",
+        "aws_s3.s3_get_object",
+        "github.get_runner",
+        "gitlab.get_release",
+        "figma.figma_get_comments"
+      ],
+      "hit1": "redis.redis_get",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q066",
+      "query": "Find MongoDB documents",
+      "kind": "verb_product",
+      "gold": [
+        "mongodb.mongo_find"
+      ],
+      "alts": [],
+      "ranking": [
+        "mongodb.mongo_find",
+        "mongodb.mongo_insert",
+        "mongodb.mongo_update",
+        "mongodb.mongo_delete",
+        "mongodb.mongo_list_collections",
+        "elasticsearch.es_index_doc",
+        "elasticsearch.es_get_doc",
+        "figma.figma_get_comments",
+        "github.get_discussion_comments",
+        "filesystem.read_file"
+      ],
+      "hit1": "mongodb.mongo_find",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q067",
+      "query": "List SQLite tables",
+      "kind": "verb_product",
+      "gold": [
+        "sqlite.sqlite_list_tables"
+      ],
+      "alts": [],
+      "ranking": [
+        "sqlite.sqlite_list_tables",
+        "sqlite.sqlite_describe_table",
+        "mysql.mysql_list_tables",
+        "sqlite.sqlite_query",
+        "supabase.supabase_list_tables",
+        "postgres.list_tables",
+        "linear.linear_list_teams",
+        "clickup.clickup_list_tasks",
+        "salesforce.salesforce_list_opportunities",
+        "stripe.stripe_list_invoices"
+      ],
+      "hit1": "sqlite.sqlite_list_tables",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q068",
+      "query": "Describe a postgres table",
+      "kind": "verb_product",
+      "gold": [
+        "postgres.describe_table"
+      ],
+      "alts": [],
+      "ranking": [
+        "postgres.describe_table",
+        "sqlite.sqlite_describe_table",
+        "postgres.explain_query",
+        "postgres.list_schemas",
+        "postgres.list_tables",
+        "postgres.query",
+        "supabase.supabase_insert",
+        "supabase.supabase_update",
+        "supabase.supabase_select",
+        "slack.create_pin"
+      ],
+      "hit1": "postgres.describe_table",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q069",
+      "query": "github_create_issue",
+      "kind": "identifier",
+      "gold": [
+        "github.create_issue"
+      ],
+      "alts": [
+        "github.issue_write"
+      ],
+      "ranking": [
+        "github.create_issue",
+        "gitlab.gitlab_create_issue",
+        "bitbucket.bitbucket_create_issue",
+        "github.issue_write",
+        "github.issue_read",
+        "github.update_issue_comment",
+        "linear.linear_create_issue",
+        "github.add_issue_comment",
+        "jira.jira_create_issue",
+        "github.create_hook"
+      ],
+      "hit1": "github.create_issue",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 0.9238850086262381
+    },
+    {
+      "id": "q070",
+      "query": "createIssue",
+      "kind": "identifier",
+      "gold": [
+        "github.create_issue"
+      ],
+      "alts": [
+        "jira.jira_create_issue",
+        "linear.linear_create_issue"
+      ],
+      "ranking": [
+        "bitbucket.bitbucket_create_issue",
+        "gitlab.gitlab_create_issue",
+        "github.create_issue",
+        "linear.linear_create_issue",
+        "jira.jira_create_issue",
+        "linear.linear_create_comment",
+        "github.issue_write",
+        "trello.trello_create_board",
+        "jira.jira_update_issue",
+        "vercel.vercel_create_project"
+      ],
+      "hit1": "bitbucket.bitbucket_create_issue",
+      "recall@1": 0.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 0.3333333333333333,
+      "ndcg@10": 0.5805078709398304
+    },
+    {
+      "id": "q071",
+      "query": "list-directory",
+      "kind": "identifier",
+      "gold": [
+        "filesystem.list_directory"
+      ],
+      "alts": [],
+      "ranking": [
+        "filesystem.list_directory",
+        "filesystem.create_directory",
+        "filesystem.list_directory_with_sizes",
+        "filesystem.directory_tree",
+        "github.get_file_contents",
+        "filesystem.get_file_info",
+        "linear.linear_list_teams",
+        "jira.jira_list_projects",
+        "linear.linear_list_projects",
+        "datadog.datadog_list_monitors"
+      ],
+      "hit1": "filesystem.list_directory",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q072",
+      "query": "sequential thinking next thought",
+      "kind": "paraphrase",
+      "gold": [
+        "sequential_thinking.sequentialthinking"
+      ],
+      "alts": [],
+      "ranking": [
+        "sequential_thinking.sequentialthinking",
+        "filesystem.edit_file",
+        "confluence.confluence_search",
+        "playwright.browser_wait_for",
+        "brave_search.brave_web_search",
+        "playwright.browser_type",
+        "brave_search.brave_local_search",
+        "github.add_comment_to_pending_review",
+        "github.list_notifications",
+        "memory.add_observations"
+      ],
+      "hit1": "sequential_thinking.sequentialthinking",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q073",
+      "query": "What time is it in Tokyo",
+      "kind": "paraphrase",
+      "gold": [
+        "time.get_current_time"
+      ],
+      "alts": [
+        "time.convert_time"
+      ],
+      "ranking": [
+        "time.get_current_time",
+        "time.convert_time",
+        "playwright.browser_wait_for",
+        "grafana.grafana_create_annotation",
+        "google_calendar.gcal_list_events",
+        "jira.jira_add_worklog",
+        "notion.list_users_tokens",
+        "slack.slack_create_channel",
+        "sqlite.sqlite_list_tables",
+        "filesystem.list_allowed_directories"
+      ],
+      "hit1": "time.get_current_time",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q074",
+      "query": "Convert time between timezones",
+      "kind": "verb_product",
+      "gold": [
+        "time.convert_time"
+      ],
+      "alts": [],
+      "ranking": [
+        "time.convert_time",
+        "time.get_current_time",
+        "salesforce.salesforce_convert_lead",
+        "git.git_diff",
+        "memory.create_relations",
+        "playwright.browser_wait_for",
+        "grafana.grafana_create_annotation",
+        "google_calendar.gcal_list_events",
+        "jira.jira_add_worklog",
+        "cloudflare.cf_list_zones"
+      ],
+      "hit1": "time.convert_time",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q075",
+      "query": "Star a GitHub repo",
+      "kind": "verb_product",
+      "gold": [
+        "github.star_repository"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.star_repository",
+        "github.unstar_repository",
+        "github.delete_repository",
+        "github.list_tags",
+        "github.get_tag",
+        "github.get_label",
+        "github.fork_repository",
+        "github.list_labels",
+        "github.list_branches",
+        "github.list_releases"
+      ],
+      "hit1": "github.star_repository",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q076",
+      "query": "Fork a repository",
+      "kind": "resource",
+      "gold": [
+        "github.fork_repository"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.fork_repository",
+        "github.delete_repository",
+        "github.star_repository",
+        "github.unstar_repository",
+        "github.list_releases",
+        "github.list_dependabot_alerts",
+        "github.create_repository",
+        "github.list_discussions",
+        "github.list_branches",
+        "github.list_tags"
+      ],
+      "hit1": "github.fork_repository",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q077",
+      "query": "Get the latest GitHub release",
+      "kind": "verb_product",
+      "gold": [
+        "github.get_latest_release"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.get_latest_release",
+        "github.get_release_by_tag",
+        "gitlab.get_release",
+        "github.get_teams",
+        "github.get_repository_tree",
+        "github.get_tag",
+        "github.get_gist",
+        "github.get_label",
+        "gitlab.delete_release",
+        "github.projects_get"
+      ],
+      "hit1": "github.get_latest_release",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q078",
+      "query": "Create a gist",
+      "kind": "resource",
+      "gold": [
+        "github.create_gist"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.create_gist",
+        "trello.trello_create_board",
+        "github.update_gist",
+        "vercel.vercel_create_project",
+        "stripe.stripe_create_invoice",
+        "gmail.gmail_create_draft",
+        "trello.trello_create_card",
+        "stripe.stripe_create_customer",
+        "grafana.grafana_create_annotation",
+        "slack.slack_create_channel"
+      ],
+      "hit1": "github.create_gist",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q079",
+      "query": "Search GitHub code",
+      "kind": "verb_product",
+      "gold": [
+        "github.search_code"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.search_code",
+        "github.search_users",
+        "github.search_commits",
+        "github.search_orgs",
+        "github.list_code_scanning_alerts",
+        "github.get_code_scanning_alert",
+        "github.search_pull_requests",
+        "github.search_issues",
+        "github.search_repositories",
+        "hubspot.hubspot_search_contacts"
+      ],
+      "hit1": "github.search_code",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q080",
+      "query": "List GitHub notifications",
+      "kind": "verb_product",
+      "gold": [
+        "github.list_notifications"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.list_notifications",
+        "github.mark_all_notifications_read",
+        "github.actions_list",
+        "github.list_tags",
+        "github.list_gists",
+        "github.projects_list",
+        "github.list_discussions",
+        "github.list_releases",
+        "github.list_labels",
+        "github.list_branches"
+      ],
+      "hit1": "github.list_notifications",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q081",
+      "query": "Assign Copilot to an issue",
+      "kind": "verb_product",
+      "gold": [
+        "github.assign_copilot_to_issue"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.assign_copilot_to_issue",
+        "linear.linear_assign_issue",
+        "jira.jira_assign_issue",
+        "jira.jira_transition_issue",
+        "jira.jira_add_comment",
+        "github.add_issue_comment",
+        "linear.linear_create_comment",
+        "github.create_issue",
+        "jira.jira_update_issue",
+        "jira.jira_add_worklog"
+      ],
+      "hit1": "github.assign_copilot_to_issue",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q082",
+      "query": "Get secret scanning alerts",
+      "kind": "resource",
+      "gold": [
+        "github.list_secret_scanning_alerts"
+      ],
+      "alts": [
+        "github.get_secret_scanning_alert"
+      ],
+      "ranking": [
+        "github.list_secret_scanning_alerts",
+        "github.get_secret_scanning_alert",
+        "github.list_code_scanning_alerts",
+        "github.get_code_scanning_alert",
+        "github.list_dependabot_alerts",
+        "github.get_hook",
+        "gitlab.get_job",
+        "gitlab.get_wiki",
+        "github.get_runner",
+        "github.get_package"
+      ],
+      "hit1": "github.list_secret_scanning_alerts",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q083",
+      "query": "Create or update a file on GitHub",
+      "kind": "verb_product",
+      "gold": [
+        "github.create_or_update_file"
+      ],
+      "alts": [
+        "github.push_files"
+      ],
+      "ranking": [
+        "github.create_or_update_file",
+        "github.projects_write",
+        "github.label_write",
+        "github.issue_write",
+        "github.update_gist",
+        "github.update_issue_comment",
+        "github.create_gist",
+        "slack.update_file",
+        "filesystem.write_file",
+        "github.update_pull_request"
+      ],
+      "hit1": "github.create_or_update_file",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 0.7601875334318685
+    },
+    {
+      "id": "q084",
+      "query": "List collaborators on a repo",
+      "kind": "resource",
+      "gold": [
+        "github.list_repository_collaborators"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.list_repository_collaborators",
+        "github.list_commits",
+        "trello.trello_list_cards",
+        "github.get_discussion_comments",
+        "github.list_branches",
+        "github.list_labels",
+        "github.list_discussions",
+        "github.list_releases",
+        "github.request_copilot_review",
+        "github.list_tags"
+      ],
+      "hit1": "github.list_repository_collaborators",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q085",
+      "query": "Reply in a Slack thread",
+      "kind": "verb_product",
+      "gold": [
+        "slack.slack_reply_to_thread"
+      ],
+      "alts": [],
+      "ranking": [
+        "slack.slack_reply_to_thread",
+        "slack.slack_get_thread_replies",
+        "slack.get_reminder",
+        "slack.delete_reminder",
+        "slack.get_canvase",
+        "slack.get_pin",
+        "slack.get_bookmark",
+        "slack.get_file",
+        "slack.delete_canvase",
+        "slack.delete_pin"
+      ],
+      "hit1": "slack.slack_reply_to_thread",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q086",
+      "query": "Add an emoji reaction on Slack",
+      "kind": "verb_product",
+      "gold": [
+        "slack.slack_add_reaction"
+      ],
+      "alts": [
+        "discord.discord_add_reaction"
+      ],
+      "ranking": [
+        "slack.slack_add_reaction",
+        "discord.discord_add_reaction",
+        "gmail.gmail_modify_email",
+        "playwright.browser_click",
+        "slack.get_reminder",
+        "slack.delete_reminder",
+        "slack.get_canvase",
+        "slack.get_file",
+        "slack.get_pin",
+        "slack.get_bookmark"
+      ],
+      "hit1": "slack.slack_add_reaction",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q087",
+      "query": "Search Slack messages",
+      "kind": "verb_product",
+      "gold": [
+        "slack.slack_search_messages"
+      ],
+      "alts": [],
+      "ranking": [
+        "slack.slack_search_messages",
+        "gmail.gmail_search_emails",
+        "slack.slack_get_channel_history",
+        "twilio.twilio_list_messages",
+        "confluence.confluence_search",
+        "brave_search.brave_local_search",
+        "github.search_users",
+        "notion.notion_search",
+        "elasticsearch.es_search",
+        "google_drive.gdrive_search"
+      ],
+      "hit1": "slack.slack_search_messages",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q088",
+      "query": "Create a Slack channel",
+      "kind": "verb_product",
+      "gold": [
+        "slack.slack_create_channel"
+      ],
+      "alts": [],
+      "ranking": [
+        "slack.slack_create_channel",
+        "slack.slack_join_channel",
+        "slack.slack_leave_channel",
+        "slack.slack_set_channel_topic",
+        "slack.slack_post_message",
+        "slack.slack_get_thread_replies",
+        "slack.slack_reply_to_thread",
+        "slack.slack_get_channel_history",
+        "slack.create_pin",
+        "slack.slack_upload_file"
+      ],
+      "hit1": "slack.slack_create_channel",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q089",
+      "query": "Transition a Jira issue",
+      "kind": "verb_product",
+      "gold": [
+        "jira.jira_transition_issue"
+      ],
+      "alts": [],
+      "ranking": [
+        "jira.jira_transition_issue",
+        "jira.jira_get_issue",
+        "jira.jira_assign_issue",
+        "jira.jira_update_issue",
+        "jira.jira_add_comment",
+        "jira.jira_create_issue",
+        "jira.jira_add_worklog",
+        "sentry.sentry_get_issue",
+        "sentry.sentry_update_issue",
+        "jira.jira_search_issues"
+      ],
+      "hit1": "jira.jira_transition_issue",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q090",
+      "query": "Search Jira with JQL",
+      "kind": "identifier",
+      "gold": [
+        "jira.jira_search_issues"
+      ],
+      "alts": [],
+      "ranking": [
+        "jira.jira_search_issues",
+        "github.search_users",
+        "github.search_orgs",
+        "confluence.confluence_search",
+        "github.search_commits",
+        "slack.slack_search_messages",
+        "grafana.grafana_search_dashboards",
+        "github.search_pull_requests",
+        "github.search_issues",
+        "elasticsearch.es_search"
+      ],
+      "hit1": "jira.jira_search_issues",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q091",
+      "query": "Add a worklog to Jira",
+      "kind": "verb_product",
+      "gold": [
+        "jira.jira_add_worklog"
+      ],
+      "alts": [],
+      "ranking": [
+        "jira.jira_add_worklog",
+        "jira.jira_add_comment",
+        "linear.linear_create_comment",
+        "jira.jira_transition_issue",
+        "discord.discord_add_reaction",
+        "github.add_issue_comment",
+        "jira.get_webhook",
+        "jira.get_board",
+        "slack.slack_add_reaction",
+        "jira.delete_webhook"
+      ],
+      "hit1": "jira.jira_add_worklog",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q092",
+      "query": "List Linear teams",
+      "kind": "verb_product",
+      "gold": [
+        "linear.linear_list_teams"
+      ],
+      "alts": [],
+      "ranking": [
+        "linear.linear_list_teams",
+        "linear.linear_list_projects",
+        "linear.linear_list_issues",
+        "linear.list_labels",
+        "linear.list_cycles",
+        "linear.list_users",
+        "linear.list_comments",
+        "linear.list_attachments",
+        "linear.linear_create_project",
+        "linear.linear_search_issues"
+      ],
+      "hit1": "linear.linear_list_teams",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q093",
+      "query": "Comment on a Linear issue",
+      "kind": "verb_product",
+      "gold": [
+        "linear.linear_create_comment"
+      ],
+      "alts": [],
+      "ranking": [
+        "linear.linear_create_comment",
+        "linear.get_comment",
+        "linear.delete_comment",
+        "github.update_issue_comment",
+        "linear.update_comment",
+        "linear.linear_get_issue",
+        "linear.linear_assign_issue",
+        "linear.linear_update_issue",
+        "jira.jira_add_comment",
+        "linear.create_comment"
+      ],
+      "hit1": "linear.linear_create_comment",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q094",
+      "query": "Move a local file",
+      "kind": "paraphrase",
+      "gold": [
+        "filesystem.move_file"
+      ],
+      "alts": [],
+      "ranking": [
+        "filesystem.read_text_file",
+        "filesystem.read_file",
+        "filesystem.move_file",
+        "filesystem.read_media_file",
+        "gmail.gmail_trash_email",
+        "slack.delete_file",
+        "google_drive.gdrive_share_file",
+        "figma.figma_get_file",
+        "google_drive.gdrive_update_file",
+        "slack.get_file"
+      ],
+      "hit1": "filesystem.read_text_file",
+      "recall@1": 0.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 0.3333333333333333,
+      "ndcg@10": 0.5
+    },
+    {
+      "id": "q095",
+      "query": "Recursively search files by pattern",
+      "kind": "paraphrase",
+      "gold": [
+        "filesystem.search_files"
+      ],
+      "alts": [],
+      "ranking": [
+        "filesystem.search_files",
+        "google_drive.gdrive_search",
+        "linear.linear_search_issues",
+        "redis.redis_keys",
+        "github.search_repositories",
+        "slack.list_files",
+        "github.search_users",
+        "confluence.confluence_search",
+        "notion.notion_search",
+        "slack.slack_search_messages"
+      ],
+      "hit1": "filesystem.search_files",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q096",
+      "query": "Edit a file in place with old and new string",
+      "kind": "paraphrase",
+      "gold": [
+        "filesystem.edit_file"
+      ],
+      "alts": [],
+      "ranking": [
+        "filesystem.edit_file",
+        "filesystem.list_directory_with_sizes",
+        "slack.get_file",
+        "slack.delete_file",
+        "filesystem.write_file",
+        "slack.update_file",
+        "slack.create_file",
+        "figma.figma_get_file",
+        "github.get_file_blame",
+        "filesystem.move_file"
+      ],
+      "hit1": "filesystem.edit_file",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q097",
+      "query": "Read the whole knowledge graph",
+      "kind": "paraphrase",
+      "gold": [
+        "memory.read_graph"
+      ],
+      "alts": [],
+      "ranking": [
+        "memory.read_graph",
+        "memory.delete_relations",
+        "memory.create_entities",
+        "memory.create_relations",
+        "memory.open_nodes",
+        "memory.add_observations",
+        "memory.search_nodes",
+        "memory.delete_entities",
+        "filesystem.read_file",
+        "filesystem.read_text_file"
+      ],
+      "hit1": "memory.read_graph",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q098",
+      "query": "Search memory nodes",
+      "kind": "verb_product",
+      "gold": [
+        "memory.search_nodes"
+      ],
+      "alts": [],
+      "ranking": [
+        "memory.search_nodes",
+        "memory.open_nodes",
+        "github.search_users",
+        "slack.slack_search_messages",
+        "confluence.confluence_search",
+        "notion.notion_search",
+        "zendesk.zendesk_search",
+        "linear.linear_search_issues",
+        "github.search_orgs",
+        "github.search_issues"
+      ],
+      "hit1": "memory.search_nodes",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q099",
+      "query": "Show unstaged git diff",
+      "kind": "verb_product",
+      "gold": [
+        "git.git_diff_unstaged"
+      ],
+      "alts": [],
+      "ranking": [
+        "git.git_diff_unstaged",
+        "git.git_diff_staged",
+        "git.git_diff",
+        "git.git_show",
+        "git.git_log",
+        "git.git_status",
+        "git.git_reset",
+        "git.git_commit",
+        "git.git_add",
+        "github.unstar_repository"
+      ],
+      "hit1": "git.git_diff_unstaged",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q100",
+      "query": "Stage files with git add",
+      "kind": "identifier",
+      "gold": [
+        "git.git_add"
+      ],
+      "alts": [],
+      "ranking": [
+        "git.git_add",
+        "filesystem.list_directory_with_sizes",
+        "slack.list_files",
+        "salesforce.salesforce_list_opportunities",
+        "github.push_files",
+        "github.create_gist",
+        "github.update_gist",
+        "github.add_issue_comment",
+        "git.git_reset",
+        "git.git_commit"
+      ],
+      "hit1": "git.git_add",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q101",
+      "query": "Create a Shopify product",
+      "kind": "verb_product",
+      "gold": [
+        "shopify.shopify_create_product"
+      ],
+      "alts": [],
+      "ranking": [
+        "shopify.shopify_create_product",
+        "shopify.shopify_get_product",
+        "shopify.shopify_update_product",
+        "shopify.shopify_create_order",
+        "stripe.stripe_create_product",
+        "shopify.shopify_list_products",
+        "shopify.shopify_get_order",
+        "stripe.stripe_create_price",
+        "vercel.vercel_create_project",
+        "stripe.stripe_create_invoice"
+      ],
+      "hit1": "shopify.shopify_create_product",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q102",
+      "query": "Cancel a Stripe subscription",
+      "kind": "verb_product",
+      "gold": [
+        "stripe.stripe_cancel_subscription"
+      ],
+      "alts": [],
+      "ranking": [
+        "stripe.stripe_cancel_subscription",
+        "stripe.stripe_create_invoice",
+        "stripe.stripe_list_subscriptions",
+        "stripe.stripe_create_product",
+        "stripe.stripe_get_customer",
+        "stripe.stripe_create_customer",
+        "stripe.stripe_get_payment_intent",
+        "stripe.stripe_create_refund",
+        "stripe.stripe_create_price",
+        "stripe.stripe_create_payment_intent"
+      ],
+      "hit1": "stripe.stripe_cancel_subscription",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q103",
+      "query": "Create a payment intent",
+      "kind": "resource",
+      "gold": [
+        "stripe.stripe_create_payment_intent"
+      ],
+      "alts": [],
+      "ranking": [
+        "stripe.stripe_create_payment_intent",
+        "stripe.stripe_create_refund",
+        "stripe.stripe_get_payment_intent",
+        "stripe.stripe_create_invoice",
+        "trello.trello_create_board",
+        "notion.notion_create_database",
+        "vercel.vercel_create_project",
+        "github.create_environment",
+        "stripe.stripe_create_customer",
+        "confluence.confluence_create_page"
+      ],
+      "hit1": "stripe.stripe_create_payment_intent",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q104",
+      "query": "Acknowledge a PagerDuty incident",
+      "kind": "verb_product",
+      "gold": [
+        "pagerduty.pagerduty_acknowledge_incident"
+      ],
+      "alts": [],
+      "ranking": [
+        "pagerduty.pagerduty_acknowledge_incident",
+        "pagerduty.pagerduty_get_incident",
+        "pagerduty.pagerduty_resolve_incident",
+        "pagerduty.pagerduty_create_incident",
+        "pagerduty.pagerduty_list_incidents",
+        "pagerduty.pagerduty_list_oncalls",
+        "memory.read_graph",
+        "github.delete_package",
+        "memory.create_entities",
+        "github.update_package"
+      ],
+      "hit1": "pagerduty.pagerduty_acknowledge_incident",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q105",
+      "query": "Create a Datadog monitor",
+      "kind": "verb_product",
+      "gold": [
+        "datadog.datadog_create_monitor"
+      ],
+      "alts": [],
+      "ranking": [
+        "datadog.datadog_create_monitor",
+        "datadog.datadog_get_monitor",
+        "datadog.datadog_list_monitors",
+        "trello.trello_create_board",
+        "vercel.vercel_create_project",
+        "stripe.stripe_create_invoice",
+        "notion.notion_create_database",
+        "stripe.stripe_create_customer",
+        "filesystem.create_directory",
+        "github.create_repository"
+      ],
+      "hit1": "datadog.datadog_create_monitor",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q106",
+      "query": "Resolve a Sentry issue",
+      "kind": "paraphrase",
+      "gold": [
+        "sentry.sentry_update_issue"
+      ],
+      "alts": [],
+      "ranking": [
+        "sentry.sentry_get_issue",
+        "sentry.sentry_update_issue",
+        "sentry.sentry_list_events",
+        "pagerduty.pagerduty_resolve_incident",
+        "sentry.sentry_list_issues",
+        "jira.jira_assign_issue",
+        "jira.jira_get_issue",
+        "sentry.sentry_list_projects",
+        "bitbucket.bitbucket_create_issue",
+        "linear.linear_get_issue"
+      ],
+      "hit1": "sentry.sentry_get_issue",
+      "recall@1": 0.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 0.5,
+      "ndcg@10": 0.6309297535714575
+    },
+    {
+      "id": "q107",
+      "query": "Scale a Kubernetes deployment",
+      "kind": "verb_product",
+      "gold": [
+        "kubernetes.k8s_scale_deployment"
+      ],
+      "alts": [],
+      "ranking": [
+        "kubernetes.k8s_scale_deployment",
+        "vercel.vercel_get_deployment",
+        "kubernetes.k8s_list_deployments",
+        "kubernetes.k8s_apply",
+        "kubernetes.k8s_delete",
+        "kubernetes.k8s_get_pod",
+        "kubernetes.k8s_get_events",
+        "kubernetes.k8s_list_services",
+        "kubernetes.k8s_list_pods",
+        "kubernetes.k8s_pod_logs"
+      ],
+      "hit1": "kubernetes.k8s_scale_deployment",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q108",
+      "query": "Apply a Kubernetes manifest",
+      "kind": "verb_product",
+      "gold": [
+        "kubernetes.k8s_apply"
+      ],
+      "alts": [],
+      "ranking": [
+        "kubernetes.k8s_apply",
+        "kubernetes.k8s_get_pod",
+        "kubernetes.k8s_list_services",
+        "kubernetes.k8s_list_deployments",
+        "kubernetes.k8s_list_pods",
+        "kubernetes.k8s_delete",
+        "kubernetes.k8s_get_events",
+        "terraform.tf_apply",
+        "kubernetes.k8s_scale_deployment",
+        "kubernetes.k8s_pod_logs"
+      ],
+      "hit1": "kubernetes.k8s_apply",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q109",
+      "query": "Stop a docker container",
+      "kind": "verb_product",
+      "gold": [
+        "docker.docker_stop"
+      ],
+      "alts": [],
+      "ranking": [
+        "docker.docker_stop",
+        "docker.docker_rm",
+        "docker.docker_logs",
+        "docker.docker_run",
+        "docker.docker_exec",
+        "docker.docker_ps",
+        "docker.docker_images",
+        "docker.docker_build",
+        "kubernetes.k8s_pod_logs",
+        "stripe.stripe_create_customer"
+      ],
+      "hit1": "docker.docker_stop",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q110",
+      "query": "Build a docker image",
+      "kind": "verb_product",
+      "gold": [
+        "docker.docker_build"
+      ],
+      "alts": [],
+      "ranking": [
+        "docker.docker_build",
+        "docker.docker_run",
+        "docker.docker_images",
+        "docker.docker_stop",
+        "docker.docker_rm",
+        "docker.docker_ps",
+        "docker.docker_logs",
+        "docker.docker_exec",
+        "filesystem.read_media_file",
+        "jira.delete_filter"
+      ],
+      "hit1": "docker.docker_build",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q111",
+      "query": "Click an element in Playwright",
+      "kind": "verb_product",
+      "gold": [
+        "playwright.browser_click"
+      ],
+      "alts": [],
+      "ranking": [
+        "playwright.browser_click",
+        "puppeteer.puppeteer_click",
+        "playwright.browser_type",
+        "playwright.browser_take_screenshot",
+        "playwright.browser_snapshot",
+        "playwright.browser_tab_close",
+        "playwright.browser_tab_list",
+        "playwright.browser_navigate",
+        "playwright.browser_tab_new",
+        "playwright.browser_fill_form"
+      ],
+      "hit1": "playwright.browser_click",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q112",
+      "query": "Type text into a browser input",
+      "kind": "paraphrase",
+      "gold": [
+        "playwright.browser_type"
+      ],
+      "alts": [
+        "puppeteer.puppeteer_fill"
+      ],
+      "ranking": [
+        "playwright.browser_type",
+        "playwright.browser_wait_for",
+        "playwright.browser_navigate",
+        "playwright.browser_tab_close",
+        "supabase.supabase_insert",
+        "playwright.browser_tab_list",
+        "playwright.browser_tab_new",
+        "puppeteer.puppeteer_fill",
+        "slack.slack_post_message",
+        "playwright.browser_press_key"
+      ],
+      "hit1": "playwright.browser_type",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 0.8800937667159342
+    },
+    {
+      "id": "q113",
+      "query": "List GitLab projects",
+      "kind": "verb_product",
+      "gold": [
+        "gitlab.gitlab_list_projects"
+      ],
+      "alts": [],
+      "ranking": [
+        "gitlab.gitlab_list_projects",
+        "github.projects_list",
+        "gitlab.gitlab_list_issues",
+        "jira.jira_list_projects",
+        "linear.linear_list_projects",
+        "vercel.vercel_list_projects",
+        "gitlab.gitlab_list_merge_requests",
+        "sentry.sentry_list_projects",
+        "gitlab.gitlab_get_merge_request",
+        "github.projects_get"
+      ],
+      "hit1": "gitlab.gitlab_list_projects",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q114",
+      "query": "Create a Bitbucket pull request",
+      "kind": "verb_product",
+      "gold": [
+        "bitbucket.bitbucket_create_pr"
+      ],
+      "alts": [],
+      "ranking": [
+        "bitbucket.bitbucket_create_pr",
+        "bitbucket.bitbucket_list_prs",
+        "bitbucket.bitbucket_create_issue",
+        "github.pull_request_review_write",
+        "github.pull_request_read",
+        "github.create_pull_request",
+        "github.merge_pull_request",
+        "github.update_pull_request_branch",
+        "github.list_pull_requests",
+        "github.request_copilot_review"
+      ],
+      "hit1": "bitbucket.bitbucket_create_pr",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q115",
+      "query": "Create a Gmail draft",
+      "kind": "verb_product",
+      "gold": [
+        "gmail.gmail_create_draft"
+      ],
+      "alts": [],
+      "ranking": [
+        "gmail.gmail_create_draft",
+        "stripe.stripe_create_customer",
+        "gmail.gmail_trash_email",
+        "trello.trello_create_board",
+        "vercel.vercel_create_project",
+        "github.create_pull_request",
+        "shopify.shopify_create_order",
+        "stripe.stripe_create_invoice",
+        "gmail.gmail_get_email",
+        "github.create_gist"
+      ],
+      "hit1": "gmail.gmail_create_draft",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q116",
+      "query": "Share a Google Drive file",
+      "kind": "verb_product",
+      "gold": [
+        "google_drive.gdrive_share_file"
+      ],
+      "alts": [],
+      "ranking": [
+        "google_drive.gdrive_share_file",
+        "google_drive.gdrive_update_file",
+        "google_drive.gdrive_get_file",
+        "google_drive.gdrive_list_folder",
+        "google_drive.gdrive_create_file",
+        "google_drive.gdrive_search",
+        "google_calendar.gcal_delete_event",
+        "google_calendar.gcal_update_event",
+        "slack.delete_file",
+        "google_calendar.gcal_list_calendars"
+      ],
+      "hit1": "google_drive.gdrive_share_file",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q117",
+      "query": "List Google Calendar events",
+      "kind": "verb_product",
+      "gold": [
+        "google_calendar.gcal_list_events"
+      ],
+      "alts": [],
+      "ranking": [
+        "google_calendar.gcal_list_events",
+        "google_calendar.gcal_list_calendars",
+        "google_calendar.gcal_delete_event",
+        "google_calendar.gcal_update_event",
+        "google_calendar.gcal_create_event",
+        "kubernetes.k8s_get_events",
+        "sentry.sentry_list_events",
+        "google_drive.gdrive_list_folder",
+        "google_drive.gdrive_get_file",
+        "linear.linear_list_teams"
+      ],
+      "hit1": "google_calendar.gcal_list_events",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q118",
+      "query": "Delete a calendar event",
+      "kind": "resource",
+      "gold": [
+        "google_calendar.gcal_delete_event"
+      ],
+      "alts": [],
+      "ranking": [
+        "google_calendar.gcal_delete_event",
+        "google_calendar.gcal_update_event",
+        "google_calendar.gcal_create_event",
+        "google_calendar.gcal_list_events",
+        "github.delete_environment",
+        "linear.delete_comment",
+        "github.delete_hook",
+        "gitlab.delete_job",
+        "linear.delete_cycle",
+        "google_calendar.gcal_list_calendars"
+      ],
+      "hit1": "google_calendar.gcal_delete_event",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q119",
+      "query": "List Vercel projects",
+      "kind": "verb_product",
+      "gold": [
+        "vercel.vercel_list_projects"
+      ],
+      "alts": [],
+      "ranking": [
+        "vercel.vercel_list_projects",
+        "vercel.vercel_list_deployments",
+        "jira.jira_list_projects",
+        "linear.linear_list_projects",
+        "sentry.sentry_list_projects",
+        "vercel.vercel_create_project",
+        "gitlab.gitlab_list_projects",
+        "github.projects_list",
+        "github.projects_get",
+        "vercel.vercel_get_deployment"
+      ],
+      "hit1": "vercel.vercel_list_projects",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q120",
+      "query": "Select rows from Supabase",
+      "kind": "verb_product",
+      "gold": [
+        "supabase.supabase_select"
+      ],
+      "alts": [],
+      "ranking": [
+        "supabase.supabase_select",
+        "supabase.supabase_insert",
+        "supabase.supabase_update",
+        "supabase.supabase_list_tables",
+        "supabase.supabase_invoke_fn",
+        "aws_s3.s3_get_object",
+        "mongodb.mongo_delete",
+        "memory.delete_observations",
+        "memory.delete_relations",
+        "docker.docker_logs"
+      ],
+      "hit1": "supabase.supabase_select",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q121",
+      "query": "Post a Figma comment",
+      "kind": "verb_product",
+      "gold": [
+        "figma.figma_post_comment"
+      ],
+      "alts": [],
+      "ranking": [
+        "figma.figma_post_comment",
+        "figma.figma_get_comments",
+        "linear.get_comment",
+        "figma.figma_get_file",
+        "notion.get_comment",
+        "linear.delete_comment",
+        "linear.update_comment",
+        "notion.delete_comment",
+        "notion.update_comment",
+        "github.update_issue_comment"
+      ],
+      "hit1": "figma.figma_post_comment",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q122",
+      "query": "List Okta users",
+      "kind": "verb_product",
+      "gold": [
+        "okta.okta_list_users"
+      ],
+      "alts": [],
+      "ranking": [
+        "okta.okta_list_users",
+        "okta.okta_create_user",
+        "okta.okta_get_user",
+        "linear.list_users",
+        "notion.notion_list_users",
+        "slack.slack_get_users",
+        "okta.okta_deactivate_user",
+        "slack.slack_list_users",
+        "notion.list_users_tokens",
+        "pagerduty.pagerduty_list_oncalls"
+      ],
+      "hit1": "okta.okta_list_users",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q123",
+      "query": "Range query Prometheus",
+      "kind": "verb_product",
+      "gold": [
+        "prometheus.prom_query_range"
+      ],
+      "alts": [],
+      "ranking": [
+        "prometheus.prom_query_range",
+        "prometheus.prom_query",
+        "prometheus.prom_list_metrics",
+        "datadog.datadog_query_metrics",
+        "postgres.explain_query",
+        "shopify.shopify_list_products",
+        "mysql.mysql_query",
+        "sqlite.sqlite_query",
+        "github.search_users",
+        "memory.search_nodes"
+      ],
+      "hit1": "prometheus.prom_query_range",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q124",
+      "query": "Create a Grafana annotation",
+      "kind": "verb_product",
+      "gold": [
+        "grafana.grafana_create_annotation"
+      ],
+      "alts": [],
+      "ranking": [
+        "grafana.grafana_create_annotation",
+        "github.create_gist",
+        "stripe.stripe_create_product",
+        "grafana.grafana_get_dashboard",
+        "notion.notion_create_database",
+        "asana.asana_create_project",
+        "linear.linear_create_project",
+        "gmail.gmail_create_draft",
+        "github.create_artifact",
+        "trello.trello_create_board"
+      ],
+      "hit1": "grafana.grafana_create_annotation",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q125",
+      "query": "Apply terraform",
+      "kind": "identifier",
+      "gold": [
+        "terraform.tf_apply"
+      ],
+      "alts": [],
+      "ranking": [
+        "terraform.tf_apply",
+        "terraform.tf_plan",
+        "kubernetes.k8s_apply",
+        "terraform.tf_state_list",
+        "slack.slack_reply_to_thread",
+        "playwright.browser_fill_form",
+        "filesystem.search_files",
+        "linear.linear_list_issues",
+        "docker.docker_rm",
+        "linear.linear_search_issues"
+      ],
+      "hit1": "terraform.tf_apply",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q126",
+      "query": "List Asana tasks",
+      "kind": "verb_product",
+      "gold": [
+        "asana.asana_list_tasks"
+      ],
+      "alts": [],
+      "ranking": [
+        "asana.asana_list_tasks",
+        "clickup.clickup_list_tasks",
+        "asana.asana_get_task",
+        "asana.asana_update_task",
+        "asana.asana_create_task",
+        "linear.linear_list_teams",
+        "aws_s3.s3_list_buckets",
+        "linear.linear_list_projects",
+        "asana.asana_create_project",
+        "jira.jira_list_projects"
+      ],
+      "hit1": "asana.asana_list_tasks",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q127",
+      "query": "Comment on a Trello card",
+      "kind": "verb_product",
+      "gold": [
+        "trello.trello_add_comment"
+      ],
+      "alts": [],
+      "ranking": [
+        "trello.trello_add_comment",
+        "trello.trello_create_card",
+        "trello.trello_list_cards",
+        "trello.trello_create_board",
+        "figma.figma_post_comment",
+        "github.update_issue_comment",
+        "notion.get_comment",
+        "linear.get_comment",
+        "notion.delete_comment",
+        "linear.delete_comment"
+      ],
+      "hit1": "trello.trello_add_comment",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q128",
+      "query": "Update a ClickUp task",
+      "kind": "verb_product",
+      "gold": [
+        "clickup.clickup_update_task"
+      ],
+      "alts": [],
+      "ranking": [
+        "clickup.clickup_update_task",
+        "clickup.clickup_get_task",
+        "clickup.clickup_create_task",
+        "asana.asana_update_task",
+        "clickup.clickup_list_tasks",
+        "github.update_hook",
+        "linear.update_cycle",
+        "gitlab.update_job",
+        "shopify.shopify_update_product",
+        "linear.update_comment"
+      ],
+      "hit1": "clickup.clickup_update_task",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q129",
+      "query": "Search Confluence",
+      "kind": "verb_product",
+      "gold": [
+        "confluence.confluence_search"
+      ],
+      "alts": [],
+      "ranking": [
+        "confluence.confluence_search",
+        "confluence.confluence_get_page",
+        "confluence.confluence_update_page",
+        "confluence.confluence_create_page",
+        "github.search_users",
+        "github.search_commits",
+        "hubspot.hubspot_search_contacts",
+        "slack.slack_search_messages",
+        "brave_search.brave_web_search",
+        "github.search_orgs"
+      ],
+      "hit1": "confluence.confluence_search",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q130",
+      "query": "Create a HubSpot deal",
+      "kind": "verb_product",
+      "gold": [
+        "hubspot.hubspot_create_deal"
+      ],
+      "alts": [],
+      "ranking": [
+        "hubspot.hubspot_create_deal",
+        "hubspot.hubspot_create_contact",
+        "hubspot.hubspot_get_contact",
+        "github.create_gist",
+        "github.create_repository",
+        "trello.trello_create_board",
+        "vercel.vercel_create_project",
+        "stripe.stripe_create_product",
+        "stripe.stripe_create_invoice",
+        "hubspot.hubspot_list_contacts"
+      ],
+      "hit1": "hubspot.hubspot_create_deal",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q131",
+      "query": "List Zendesk tickets",
+      "kind": "verb_product",
+      "gold": [
+        "zendesk.zendesk_list_tickets"
+      ],
+      "alts": [],
+      "ranking": [
+        "zendesk.zendesk_list_tickets",
+        "zendesk.zendesk_search",
+        "zendesk.zendesk_get_ticket",
+        "zendesk.zendesk_update_ticket",
+        "zendesk.zendesk_create_ticket",
+        "aws_s3.s3_list_buckets",
+        "linear.linear_list_teams",
+        "clickup.clickup_list_tasks",
+        "jira.jira_list_projects",
+        "linear.linear_list_projects"
+      ],
+      "hit1": "zendesk.zendesk_list_tickets",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q132",
+      "query": "List Discord channels",
+      "kind": "verb_product",
+      "gold": [
+        "discord.discord_list_channels"
+      ],
+      "alts": [],
+      "ranking": [
+        "discord.discord_list_channels",
+        "discord.discord_list_members",
+        "discord.discord_get_channel",
+        "discord.discord_send_message",
+        "slack.slack_list_channels",
+        "discord.discord_add_reaction",
+        "gmail.gmail_list_labels",
+        "linear.linear_list_teams",
+        "linear.linear_list_projects",
+        "trello.trello_list_cards"
+      ],
+      "hit1": "discord.discord_list_channels",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q133",
+      "query": "Set a Redis key",
+      "kind": "verb_product",
+      "gold": [
+        "redis.redis_set"
+      ],
+      "alts": [],
+      "ranking": [
+        "redis.redis_set",
+        "redis.redis_get",
+        "redis.redis_delete",
+        "redis.redis_keys",
+        "jira.jira_get_issue",
+        "figma.figma_get_file",
+        "slack.slack_set_channel_topic",
+        "aws_s3.s3_get_object",
+        "aws_s3.s3_delete_object",
+        "playwright.browser_press_key"
+      ],
+      "hit1": "redis.redis_set",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q134",
+      "query": "Insert MongoDB documents",
+      "kind": "verb_product",
+      "gold": [
+        "mongodb.mongo_insert"
+      ],
+      "alts": [],
+      "ranking": [
+        "mongodb.mongo_insert",
+        "mongodb.mongo_find",
+        "mongodb.mongo_delete",
+        "mongodb.mongo_update",
+        "mongodb.mongo_list_collections",
+        "supabase.supabase_insert",
+        "elasticsearch.es_index_doc",
+        "elasticsearch.es_get_doc",
+        "linear.list_comments",
+        "notion.list_comments"
+      ],
+      "hit1": "mongodb.mongo_insert",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q135",
+      "query": "Run a MySQL query",
+      "kind": "verb_product",
+      "gold": [
+        "mysql.mysql_query"
+      ],
+      "alts": [],
+      "ranking": [
+        "mysql.mysql_query",
+        "postgres.query",
+        "sqlite.sqlite_query",
+        "postgres.explain_query",
+        "salesforce.salesforce_query",
+        "mysql.mysql_list_tables",
+        "prometheus.prom_query",
+        "github.search_users",
+        "notion.notion_query_database",
+        "memory.search_nodes"
+      ],
+      "hit1": "mysql.mysql_query",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q136",
+      "query": "Index a document in Elasticsearch",
+      "kind": "verb_product",
+      "gold": [
+        "elasticsearch.es_index_doc"
+      ],
+      "alts": [],
+      "ranking": [
+        "elasticsearch.es_index_doc",
+        "elasticsearch.es_get_doc",
+        "elasticsearch.es_search",
+        "github.get_environment",
+        "github.delete_environment",
+        "playwright.browser_tab_close",
+        "jira.delete_attachment",
+        "linear.get_comment",
+        "linear.delete_comment",
+        "jira.get_attachment"
+      ],
+      "hit1": "elasticsearch.es_index_doc",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q137",
+      "query": "Get an S3 object",
+      "kind": "verb_product",
+      "gold": [
+        "aws_s3.s3_get_object"
+      ],
+      "alts": [],
+      "ranking": [
+        "aws_s3.s3_get_object",
+        "aws_s3.s3_delete_object",
+        "aws_s3.s3_put_object",
+        "okta.okta_get_user",
+        "aws_s3.s3_list_objects",
+        "asana.asana_get_task",
+        "gmail.gmail_send_email",
+        "github.get_artifact",
+        "github.get_hook",
+        "gitlab.get_job"
+      ],
+      "hit1": "aws_s3.s3_get_object",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q138",
+      "query": "List Cloudflare zones",
+      "kind": "verb_product",
+      "gold": [
+        "cloudflare.cf_list_zones"
+      ],
+      "alts": [],
+      "ranking": [
+        "cloudflare.cf_list_zones",
+        "cloudflare.cf_list_dns",
+        "cloudflare.cf_purge_cache",
+        "cloudflare.cf_create_dns",
+        "clickup.clickup_list_tasks",
+        "linear.linear_list_teams",
+        "linear.linear_list_projects",
+        "okta.okta_list_users",
+        "kubernetes.k8s_list_services",
+        "gmail.gmail_list_labels"
+      ],
+      "hit1": "cloudflare.cf_list_zones",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q139",
+      "query": "Create a Stripe invoice",
+      "kind": "verb_product",
+      "gold": [
+        "stripe.stripe_create_invoice"
+      ],
+      "alts": [],
+      "ranking": [
+        "stripe.stripe_create_invoice",
+        "stripe.stripe_create_customer",
+        "stripe.stripe_create_product",
+        "stripe.stripe_create_price",
+        "stripe.stripe_create_refund",
+        "stripe.stripe_create_payment_intent",
+        "stripe.stripe_list_invoices",
+        "stripe.stripe_get_customer",
+        "slack.slack_create_channel",
+        "salesforce.salesforce_create_record"
+      ],
+      "hit1": "stripe.stripe_create_invoice",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q140",
+      "query": "List GitHub Actions workflows",
+      "kind": "verb_product",
+      "gold": [
+        "github.actions_list"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.actions_list",
+        "github.actions_get",
+        "github.actions_run_trigger",
+        "github.actions_get_job_logs",
+        "github.list_gists",
+        "github.list_discussions",
+        "github.list_tags",
+        "github.projects_list",
+        "github.list_releases",
+        "github.list_notifications"
+      ],
+      "hit1": "github.actions_list",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q141",
+      "query": "Get GitHub Actions job logs",
+      "kind": "verb_product",
+      "gold": [
+        "github.actions_get_job_logs"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.actions_get_job_logs",
+        "github.actions_get",
+        "github.actions_list",
+        "github.actions_run_trigger",
+        "gitlab.get_job",
+        "github.get_gist",
+        "github.projects_get",
+        "github.get_label",
+        "github.get_discussion",
+        "github.get_latest_release"
+      ],
+      "hit1": "github.actions_get_job_logs",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q142",
+      "query": "Create a GitHub repository",
+      "kind": "verb_product",
+      "gold": [
+        "github.create_repository"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.create_repository",
+        "github.delete_repository",
+        "github.create_branch",
+        "github.star_repository",
+        "github.unstar_repository",
+        "github.fork_repository",
+        "github.create_issue",
+        "github.list_tags",
+        "github.get_tag",
+        "github.list_repository_collaborators"
+      ],
+      "hit1": "github.create_repository",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q143",
+      "query": "Checkout a git branch",
+      "kind": "verb_product",
+      "gold": [
+        "git.git_checkout"
+      ],
+      "alts": [],
+      "ranking": [
+        "git.git_checkout",
+        "git.git_create_branch",
+        "git.git_branch",
+        "github.create_branch",
+        "github.update_pull_request_branch",
+        "github.delete_file",
+        "github.list_commits",
+        "gitlab.gitlab_create_merge_request",
+        "github.push_files",
+        "circleci.circleci_trigger_pipeline"
+      ],
+      "hit1": "git.git_checkout",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q144",
+      "query": "Show git log",
+      "kind": "identifier",
+      "gold": [
+        "git.git_log"
+      ],
+      "alts": [],
+      "ranking": [
+        "git.git_log",
+        "git.git_show",
+        "git.git_diff_unstaged",
+        "git.git_diff_staged",
+        "git.git_status",
+        "git.git_diff",
+        "git.git_branch",
+        "git.git_create_branch",
+        "git.git_checkout",
+        "git.git_reset"
+      ],
+      "hit1": "git.git_log",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q145",
+      "query": "List postgres schemas",
+      "kind": "verb_product",
+      "gold": [
+        "postgres.list_schemas"
+      ],
+      "alts": [],
+      "ranking": [
+        "postgres.list_schemas",
+        "postgres.list_tables",
+        "postgres.explain_query",
+        "postgres.query",
+        "postgres.describe_table",
+        "linear.linear_list_teams",
+        "aws_s3.s3_list_buckets",
+        "kubernetes.k8s_list_services",
+        "mysql.mysql_list_tables",
+        "cloudflare.cf_list_zones"
+      ],
+      "hit1": "postgres.list_schemas",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q146",
+      "query": "Open nodes in the knowledge graph",
+      "kind": "verb_product",
+      "gold": [
+        "memory.open_nodes"
+      ],
+      "alts": [],
+      "ranking": [
+        "memory.open_nodes",
+        "memory.search_nodes",
+        "memory.create_entities",
+        "memory.read_graph",
+        "memory.create_relations",
+        "memory.delete_relations",
+        "memory.add_observations",
+        "memory.delete_entities",
+        "postgres.list_schemas",
+        "sqlite.sqlite_list_tables"
+      ],
+      "hit1": "memory.open_nodes",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q147",
+      "query": "Get file metadata from the filesystem",
+      "kind": "paraphrase",
+      "gold": [
+        "filesystem.get_file_info"
+      ],
+      "alts": [],
+      "ranking": [
+        "filesystem.get_file_info",
+        "filesystem.read_file",
+        "filesystem.read_text_file",
+        "filesystem.read_media_file",
+        "google_drive.gdrive_get_file",
+        "gitlab.gitlab_get_file",
+        "figma.figma_get_file_nodes",
+        "filesystem.list_allowed_directories",
+        "github.get_file_contents",
+        "filesystem.move_file"
+      ],
+      "hit1": "filesystem.get_file_info",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q148",
+      "query": "Write a new local file",
+      "kind": "paraphrase",
+      "gold": [
+        "filesystem.write_file"
+      ],
+      "alts": [],
+      "ranking": [
+        "filesystem.write_file",
+        "filesystem.read_file",
+        "filesystem.read_text_file",
+        "filesystem.read_media_file",
+        "filesystem.edit_file",
+        "slack.delete_file",
+        "playwright.browser_tab_new",
+        "figma.figma_get_file",
+        "google_drive.gdrive_update_file",
+        "slack.update_file"
+      ],
+      "hit1": "filesystem.write_file",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q149",
+      "query": "Search GitHub issues",
+      "kind": "verb_product",
+      "gold": [
+        "github.search_issues"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.search_issues",
+        "github.search_users",
+        "jira.jira_search_issues",
+        "linear.linear_search_issues",
+        "github.search_orgs",
+        "github.search_pull_requests",
+        "github.search_commits",
+        "github.list_issues",
+        "github.search_code",
+        "github.search_repositories"
+      ],
+      "hit1": "github.search_issues",
+      "recall@1": 1.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "id": "q150",
+      "query": "Get the authenticated GitHub user",
+      "kind": "paraphrase",
+      "gold": [
+        "github.get_me"
+      ],
+      "alts": [],
+      "ranking": [
+        "github.get_teams",
+        "github.get_me",
+        "github.list_notifications",
+        "github.get_latest_release",
+        "github.get_repository_tree",
+        "github.projects_get",
+        "github.get_gist",
+        "github.get_tag",
+        "github.get_label",
+        "github.list_gists"
+      ],
+      "hit1": "github.get_teams",
+      "recall@1": 0.0,
+      "recall@3": 1.0,
+      "recall@5": 1.0,
+      "mrr@10": 0.5,
+      "ndcg@10": 0.6309297535714575
+    }
+  ]
+}
