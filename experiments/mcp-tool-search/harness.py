@@ -213,6 +213,10 @@ def write_results_md(
         "Metrics are means over 150 queries with 2000-resample bootstrap 95% CIs.",
         "Differences of a few points are usually noise.",
         "",
+        "<!-- COST_BEGIN -->",
+        "Cost tables are produced by `cost_eval.py` after this file is written.",
+        "<!-- COST_END -->",
+        "",
         "## Headline table (n=536 tools, 150 queries)",
         "",
         "| Approach | R@1 | R@3 | R@5 | MRR@10 | nDCG@10 | p50 ms | p95 ms | index s | model/API |",
@@ -333,7 +337,7 @@ def write_results_md(
         "## Raw outputs",
         "",
         "Per-approach JSON/CSV lives in `results/`. Combined table:",
-        "`results/summary.json`.",
+        "`results/summary.json`. Cost: `results/cost.json`. Live: `results/live_agent.json`.",
         "",
     ]
     (ROOT / "results.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

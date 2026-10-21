@@ -30,8 +30,9 @@ See [`GAPS.md`](GAPS.md) for everything that is not public or was not run.
 ```
 
 That creates a venv, optionally installs `fastembed` (bge-small),
-downloads a codedb release binary if needed, freezes the catalog, and
-writes `results.md` plus per-approach JSON/CSV under `results/`.
+downloads a codedb release binary if needed, freezes the catalog, runs
+the recall harness, then the offline agent-cost model (`cost_eval.py`)
+and the live-agent loop (`live_agent.py`, skipped if no LLM key).
 
 Useful flags (passed through to `harness.py`):
 
@@ -39,6 +40,13 @@ Useful flags (passed through to `harness.py`):
 ./run.sh --skip-dense
 ./run.sh --skip-codedb
 ./run.sh --skip-scaling
+```
+
+Cost-only (reuses saved rankings, no search rerun):
+
+```bash
+python cost_eval.py
+OPENAI_API_KEY=... python live_agent.py   # skipped without a key
 ```
 
 ## Approaches
@@ -75,3 +83,9 @@ cross-encoder rerankers, API embedding models, Zed's exact 25 list.
 Recall@1/3/5, MRR@10, nDCG@10, p50/p95 query latency, index build time,
 RSS where available, model/API need. Bootstrap 95% CIs (2000 resamples).
 Scaling: 536, ~2k, ~5k tools by adding verb-heavy distractors.
+
+Agent cost (the metric that matters for a tool-using model): search-call
+count and o200k_base tokens returned as full MCP schemas, paging at
+k ∈ {3, 5, 10}, plus an all-536-schemas baseline. Approaches are ranked
+by tokens burned per successful query. Live loop records real API usage
+when `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is set.

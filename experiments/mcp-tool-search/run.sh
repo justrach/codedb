@@ -27,4 +27,6 @@ fi
 
 python "$ROOT/lib/catalog.py"
 python "$ROOT/harness.py" --codedb-bin "$CODEDB_BIN" "$@"
-echo "done. see results.md and results/"
+python "$ROOT/cost_eval.py"
+python "$ROOT/live_agent.py"
+echo "done. see results.md, results/cost.json, results/live_agent.json"

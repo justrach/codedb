@@ -61,6 +61,7 @@ every class they named that can be done locally, plus codedb.
 | Approach | Why |
 |---|---|
 | LLM tool router / LLM query rewrite | No API key in this environment; Zed's prompt and model unknown |
+| Live agent loop (`live_agent.py`) | Harness shipped; skipped — no OPENAI_API_KEY / ANTHROPIC_API_KEY / other common LLM keys. Command: `OPENAI_API_KEY=... python live_agent.py` |
 | Trained decision model (LightGBM / classifier) | No Zed training labels; a 20KB LightGBM was mentioned only in a reply, not by Zed |
 | Cross-encoder reranker (ms-marco MiniLM, bge-reranker, Jev) | Not installed; would need a second model download and a candidate generator we do not know they used |
 | API embedding (`text-embedding-3-small`, Voyage, Jina, …) | No provider key |
@@ -134,6 +135,29 @@ If codedb wanted to be the thing Zed shipped:
 - Bootstrap CIs (2000 resamples) on 150 queries: a 4–5 point R@1 gap is
   often inside the interval (`bm25_plain` 86–95%, `bm25_weighted` 79–91%).
 - No Zed number can be confirmed or refuted from this run.
+
+## Agent cost model caveats
+
+Recall@k is not the agent metric. The follow-up measures search-call
+count and tokens burned to surface the right tool schema.
+
+| Item | Status |
+|---|---|
+| Offline paging | Deterministic offset slices of the **saved top-10 ranking**. Call *n* returns ranks `[(n-1)k : nk]` as compact MCP tool schemas (name, description, synthesized `inputSchema`, `_meta.server`). |
+| Miss tail | Tools not in the saved top-10 are appended in **catalog order**. That is pessimistic: a real re-search with a rewritten query could do better; this harness does not re-rank. |
+| Always-found | Because the tail includes every catalog id, gold is always found. `tokens_per_successful_query` equals mean tokens. A ranker that misses the top-10 still "succeeds" after many pages. |
+| Tokeniser | `tiktoken` `o200k_base` over the compact JSON payload only. No chat-template, no system prompt, no tool-call envelope. Live-loop tokens (when a key exists) come from the API usage fields and *do* include those wrappers. |
+| Input schemas | Synthesized from the catalog `params` list (`type: string` + a short description). Zed's unpublished schemas may be larger or smaller. |
+| Mean vs p95 | A few deep-tail misses pull the mean above p95. p95 calls = 1.0 on most good rankers because 95%+ finish on page 1. |
+| Live agent | **Not run.** No `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / other common LLM keys in this environment. `live_agent.py` is ready: `OPENAI_API_KEY=... python live_agent.py`. |
+| Live rewrite | If the model rewrites the query, the harness still pages the **original** saved ranking (documented limitation; keeps the loop cheap and deterministic). A production loop would re-run the chosen index. |
+| All-schemas baseline | 536 compact schemas, one JSON array. 38,003 o200k tokens / 170,223 bytes. Real MCP `tools/list` payloads with vendor JSON Schema are often larger. |
+
+Cost ranking ≠ recall ranking. `boolean_or` is first on R@1 and 19th on
+tokens/success at k=5: first-page hit rate is already 99.3% for several
+methods, so leftover cost is payload fat plus the rare catalog-tail miss.
+Weighted / RRF methods that park gold at rank 2–5 look worse on R@1 and
+cheaper to an agent that reads a page of five.
 
 ## Sources checked
 
