@@ -1,0 +1,17 @@
+{
+  "skipped": true,
+  "reason": "No LLM API key in the environment (checked OPENAI_API_KEY, ANTHROPIC_API_KEY, AZURE_OPENAI_API_KEY, GOOGLE_API_KEY, GEMINI_API_KEY, COHERE_API_KEY, TOGETHER_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, OPENROUTER_API_KEY). Offline cost model still ran. To execute the live loop: OPENAI_API_KEY=... python live_agent.py",
+  "checked_keys": [
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "COHERE_API_KEY",
+    "TOGETHER_API_KEY",
+    "GROQ_API_KEY",
+    "MISTRAL_API_KEY",
+    "OPENROUTER_API_KEY"
+  ],
+  "command": "OPENAI_API_KEY=... python live_agent.py"
+}

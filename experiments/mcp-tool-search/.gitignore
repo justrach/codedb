@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+bin/codedb
+catalog_index/
+.codedb/
+*.snapshot
