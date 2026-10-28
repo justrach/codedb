@@ -205,6 +205,52 @@ const WorkerParsedResults = struct {
     }
 };
 
+fn mergeWordShard(index: *WordIndex, shard: *WordIndex, worker: *WorkerParsedResults, backing: std.mem.Allocator) !void {
+    try index.mergeShard(shard);
+    worker.deinit(backing);
+}
+
+test "parallel word shard merge releases source memory" {
+    const testing = std.testing;
+    var tracking = std.heap.DebugAllocator(.{ .enable_memory_limit = true }).init;
+    defer std.debug.assert(tracking.deinit() == .ok);
+    var worker = WorkerParsedResults.init(tracking.allocator());
+    var worker_live = true;
+    defer if (worker_live) worker.deinit(tracking.allocator());
+
+    var shard = WordIndex.init(worker.arena.allocator());
+    shard.skip_file_words = true;
+    try shard.indexFile("src/example.ts", "alpha beta\nalpha gamma\n");
+    var merged = WordIndex.init(testing.allocator);
+    defer merged.deinit();
+
+    try testing.expect(tracking.total_requested_bytes > 0);
+    try mergeWordShard(&merged, &shard, &worker, tracking.allocator());
+    try testing.expectEqual(@as(usize, 0), tracking.total_requested_bytes);
+    worker_live = false;
+    try testing.expectEqual(@as(usize, 2), merged.search("alpha").len);
+    try testing.expectEqual(@as(usize, 1), merged.search("beta").len);
+}
+
+test "parallel word shard merge failure leaves worker available for cleanup" {
+    const testing = std.testing;
+    var tracking = std.heap.DebugAllocator(.{ .enable_memory_limit = true }).init;
+    defer std.debug.assert(tracking.deinit() == .ok);
+    var worker = WorkerParsedResults.init(tracking.allocator());
+    defer worker.deinit(tracking.allocator());
+
+    var shard = WordIndex.init(worker.arena.allocator());
+    shard.skip_file_words = true;
+    try shard.indexFile("src/example.ts", "alpha beta\n");
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    var merged = WordIndex.init(failing.allocator());
+    defer merged.deinit();
+
+    try testing.expectError(error.OutOfMemory, mergeWordShard(&merged, &shard, &worker, tracking.allocator()));
+    try testing.expect(tracking.total_requested_bytes > 0);
+    try testing.expectEqual(@as(usize, 1), shard.search("alpha").len);
+}
+
 /// #635: max file size codedb will read + index (outline/symbol/word). Files up
 /// to 1MB also get trigram coverage; 1MB..this cap get outline+word but skip
 /// trigram (see effective_skip_trigram); past this cap the file is skipped.
@@ -1132,9 +1178,12 @@ pub fn initialScanWithWorkerCount(io: std.Io, store: *Store, explorer: *Explorer
         // hash-map reallocations or a partially merged document range.
         explorer.mu.lock();
         defer explorer.mu.unlock();
-        for (sh) |*shard| try explorer.word_index.mergeShard(shard);
+        for (sh, 0..) |*shard, i| {
+            try mergeWordShard(&explorer.word_index, shard, &workers[i], allocator);
+            workers_committed += 1;
+        }
     }
-    for (workers) |*worker| {
+    for (workers[workers_committed..]) |*worker| {
         worker.deinit(allocator);
         workers_committed += 1;
     }
