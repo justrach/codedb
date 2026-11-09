@@ -44,6 +44,10 @@ jobs:
           curl --fail --show-error --location --retry 3 \
             "https://ziglang.org/builds/${archive}" -o zig-macos.tar.xz || \
           curl --fail --show-error --location --retry 3 \
+            "https://zig.squirl.dev/${archive}" -o zig-macos.tar.xz || \
+          curl --fail --show-error --location --retry 3 \
+            "https://zigmirror.com/${archive}" -o zig-macos.tar.xz || \
+          curl --fail --show-error --location --retry 3 \
             "https://pkg.machengine.org/zig/${archive}" -o zig-macos.tar.xz
           echo "${zig_sha}  zig-macos.tar.xz" | shasum -a 256 --check
           tar -xf zig-macos.tar.xz
@@ -78,6 +82,10 @@ jobs:
           # The pinned sha256 below is verified regardless of source.
           curl --fail --show-error --location --retry 3 \
             "https://ziglang.org/builds/${head_archive}" -o zig-head.tar.xz || \
+          curl --fail --show-error --location --retry 3 \
+            "https://zig.squirl.dev/${head_archive}" -o zig-head.tar.xz || \
+          curl --fail --show-error --location --retry 3 \
+            "https://zigmirror.com/${head_archive}" -o zig-head.tar.xz || \
           curl --fail --show-error --location --retry 3 \
             "https://pkg.machengine.org/zig/${head_archive}" -o zig-head.tar.xz
           echo "${ZIG_SHA256}  zig-head.tar.xz" | sha256sum --check
