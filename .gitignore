@@ -1,5 +1,7 @@
 # Zig build artifacts
 .zig-cache/
+.zig-cache*/
+.zig-global-cache/
 zig-out/
 
 # Local/dev files
@@ -20,7 +22,7 @@ install/.wrangler/
 
 # Generated snapshot (machine-specific)
 codedb.snapshot
-release/
+codedb.snapshot.*
 release/
 socials/
 

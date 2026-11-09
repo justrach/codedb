@@ -22,6 +22,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Reject tracked build caches or snapshots
+        run: |
+          set -euo pipefail
+          bad="$(git ls-files | grep -E '^(\.zig-cache|\.zig-global-cache|zig-out/|codedb\.snapshot)' || true)"
+          if [[ -n "$bad" ]]; then
+            echo "tracked build cache or snapshot artifacts are forbidden:" >&2
+            echo "$bad" >&2
+            exit 1
+          fi
+
       - name: Install pinned Zig toolchain
         run: |
           set -euo pipefail
