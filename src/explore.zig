@@ -1783,7 +1783,36 @@ const OutlineRenderCache = struct {
 /// Fingerprint of the env kill-switches that change ranking/search output —
 /// part of the SearchResultCache key so toggling one (tests do this
 /// mid-process) can never serve results computed under the other setting.
-fn rankingEnvFingerprint() u64 {
+/// Memoized against `cio.envEpoch()` (Lean 4 `CodeDB.SearchCache`) so hot
+/// cache lookups avoid 10 `getenv` scans per query when the process
+/// environment has not mutated.
+var ranking_env_cache_mu: cio.Mutex = .{};
+var ranking_env_cached_epoch: std.atomic.Value(u64) = .init(0);
+var ranking_env_cached_fp: u64 = 0;
+var ranking_env_cached_no_cache: bool = false;
+
+const RankingEnvSnapshot = struct {
+    fp: u64,
+    no_search_cache: bool,
+};
+
+fn rankingEnvSnapshot() RankingEnvSnapshot {
+    const live_epoch = cio.envEpoch();
+    if (ranking_env_cached_epoch.load(.acquire) == live_epoch) {
+        return .{
+            .fp = @atomicLoad(u64, &ranking_env_cached_fp, .monotonic),
+            .no_search_cache = @atomicLoad(bool, &ranking_env_cached_no_cache, .monotonic),
+        };
+    }
+    ranking_env_cache_mu.lock();
+    defer ranking_env_cache_mu.unlock();
+    const epoch_now = cio.envEpoch();
+    if (ranking_env_cached_epoch.load(.monotonic) == epoch_now) {
+        return .{
+            .fp = ranking_env_cached_fp,
+            .no_search_cache = ranking_env_cached_no_cache,
+        };
+    }
     var h = std.hash.Wyhash.init(0x5eed);
     inline for ([_][]const u8{
         "CODEDB_NO_CENTRALITY",
@@ -1799,7 +1828,16 @@ fn rankingEnvFingerprint() u64 {
         h.update(name);
         if (cio.posixGetenv(name)) |v| h.update(v) else h.update(&[_]u8{0});
     }
-    return h.final();
+    const fp = h.final();
+    const no_cache = cio.posixGetenv("CODEDB_NO_SEARCH_CACHE") != null;
+    @atomicStore(u64, &ranking_env_cached_fp, fp, .monotonic);
+    @atomicStore(bool, &ranking_env_cached_no_cache, no_cache, .monotonic);
+    ranking_env_cached_epoch.store(epoch_now, .release);
+    return .{ .fp = fp, .no_search_cache = no_cache };
+}
+
+fn rankingEnvFingerprint() u64 {
+    return rankingEnvSnapshot().fp;
 }
 
 pub const Explorer = struct {
@@ -2946,6 +2984,7 @@ pub const Explorer = struct {
         self.mu.lock();
         defer self.mu.unlock();
         self.symbol_index_complete = false;
+        self.def_token_gen = null;
     }
 
     /// Build the global symbol index from outlines if a snapshot fast-load
@@ -2961,6 +3000,7 @@ pub const Explorer = struct {
         defer self.mu.unlock();
         if (self.symbol_index_complete) return;
         self.bumpSearchGen();
+        self.def_token_gen = null;
         // Rebuild from scratch: entries indexed BEFORE the index was marked
         // incomplete would otherwise be duplicated by the loop below (it
         // passes had_prior=false, which skips per-file eviction). The index
@@ -2994,20 +3034,20 @@ pub const Explorer = struct {
     }
 
     /// Build the inverted split-name token index for the NL→symbol bridge if
-    /// it is missing or from an older search generation. Cheap when fresh
-    /// (one gen check). Call BEFORE taking the shared lock — this takes the
-    /// exclusive lock itself (after ensureSymbolIndex). On mid-build OOM the
-    /// generation stays unset and the bridge falls back to its direct sweep.
+    /// it is missing or invalidated by a symbol_index mutation. Cheap when
+    /// fresh (one null check). Call BEFORE taking the shared lock — this takes
+    /// the exclusive lock itself (after ensureSymbolIndex). On mid-build OOM
+    /// the generation stays unset and the bridge falls back to its direct sweep.
     pub fn ensureDefTokenIndex(self: *Explorer) void {
         self.ensureSymbolIndex();
         self.mu.lockShared();
-        const fresh = self.def_token_gen != null and self.def_token_gen.? == self.search_gen.load(.acquire);
+        const fresh = self.def_token_gen != null;
         self.mu.unlockShared();
         if (fresh) return;
         self.mu.lock();
         defer self.mu.unlock();
+        if (self.def_token_gen != null) return;
         const gen = self.search_gen.load(.acquire);
-        if (self.def_token_gen != null and self.def_token_gen.? == gen) return;
         self.clearDefTokenIndexLocked();
         var split_arena = std.heap.ArenaAllocator.init(self.allocator);
         defer split_arena.deinit();
@@ -3767,10 +3807,14 @@ pub const Explorer = struct {
                         }
                     }
                 }
+                errdefer if (detail) |d| allocator.free(d);
+                const path_copy = try allocator.dupe(u8, loc.path);
+                errdefer allocator.free(path_copy);
+                const name_copy = try allocator.dupe(u8, name);
                 return .{
-                    .path = try allocator.dupe(u8, loc.path),
+                    .path = path_copy,
                     .symbol = .{
-                        .name = try allocator.dupe(u8, name),
+                        .name = name_copy,
                         .kind = loc.kind,
                         .line_start = loc.line_start,
                         .line_end = loc.line_end,
@@ -3789,14 +3833,19 @@ pub const Explorer = struct {
             while (iter.next()) |entry| {
                 for (entry.value_ptr.symbols.items) |sym| {
                     if (std.mem.eql(u8, sym.name, name)) {
+                        const path_copy = try allocator.dupe(u8, entry.key_ptr.*);
+                        errdefer allocator.free(path_copy);
+                        const name_copy = try allocator.dupe(u8, sym.name);
+                        errdefer allocator.free(name_copy);
+                        const detail_copy = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
                         return .{
-                            .path = try allocator.dupe(u8, entry.key_ptr.*),
+                            .path = path_copy,
                             .symbol = .{
-                                .name = try allocator.dupe(u8, sym.name),
+                                .name = name_copy,
                                 .kind = sym.kind,
                                 .line_start = sym.line_start,
                                 .line_end = sym.line_end,
-                                .detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null,
+                                .detail = detail_copy,
                             },
                         };
                     }
@@ -3812,7 +3861,14 @@ pub const Explorer = struct {
         defer self.mu.unlockShared();
 
         var result_list: std.ArrayList(SymbolResult) = .empty;
-        errdefer result_list.deinit(allocator);
+        errdefer {
+            for (result_list.items) |r| {
+                allocator.free(r.path);
+                allocator.free(r.symbol.name);
+                if (r.symbol.detail) |d| allocator.free(d);
+            }
+            result_list.deinit(allocator);
+        }
 
         const indexed_locs: []const SymbolLocation = if (self.symbol_index.get(name)) |locs| locs.items else &.{};
 
@@ -3826,10 +3882,15 @@ pub const Explorer = struct {
                     }
                 }
             }
+            errdefer if (detail) |d| allocator.free(d);
+            const path_copy = try allocator.dupe(u8, loc.path);
+            errdefer allocator.free(path_copy);
+            const name_copy = try allocator.dupe(u8, name);
+            errdefer allocator.free(name_copy);
             try result_list.append(allocator, .{
-                .path = try allocator.dupe(u8, loc.path),
+                .path = path_copy,
                 .symbol = .{
-                    .name = try allocator.dupe(u8, name),
+                    .name = name_copy,
                     .kind = loc.kind,
                     .line_start = loc.line_start,
                     .line_end = loc.line_end,
@@ -3858,14 +3919,20 @@ pub const Explorer = struct {
                 for (entry.value_ptr.symbols.items) |sym| {
                     if (!std.mem.eql(u8, sym.name, name)) continue;
                     if (LocLookup.contains(indexed_locs, entry.key_ptr.*, sym.line_start)) continue;
+                    const path_copy = try allocator.dupe(u8, entry.key_ptr.*);
+                    errdefer allocator.free(path_copy);
+                    const name_copy = try allocator.dupe(u8, sym.name);
+                    errdefer allocator.free(name_copy);
+                    const detail_copy = if (sym.detail) |d| try allocator.dupe(u8, d) else null;
+                    errdefer if (detail_copy) |d| allocator.free(d);
                     try result_list.append(allocator, .{
-                        .path = try allocator.dupe(u8, entry.key_ptr.*),
+                        .path = path_copy,
                         .symbol = .{
-                            .name = try allocator.dupe(u8, sym.name),
+                            .name = name_copy,
                             .kind = sym.kind,
                             .line_start = sym.line_start,
                             .line_end = sym.line_end,
-                            .detail = if (sym.detail) |d| try allocator.dupe(u8, d) else null,
+                            .detail = detail_copy,
                         },
                     });
                 }
@@ -4278,9 +4345,27 @@ pub const Explorer = struct {
     ) ![]CalleeRef {
         if (max == 0 or line_end < line_start) return &.{};
         self.ensureSymbolIndex();
-        const content = (self.getContent(path, allocator) catch return &.{}) orelse return &.{};
-        const body = sliceLineRange(content, line_start, line_end);
-        if (body.len == 0) return &.{};
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
+
+        const content_ref = self.readContentForSearch(path, allocator) orelse return &.{};
+        defer content_ref.deinit();
+        const raw_body = blk: {
+            if (!content_ref.owned) {
+                var lines2 = [2]u32{ line_start, line_end };
+                var spans2: [2]LineSpan = undefined;
+                if (self.line_offsets.lineSpans(path, content_ref.data, lines2[0..], spans2[0..])) |n| {
+                    if (n > 0 and spans2[0].line == line_start) {
+                        const start_off = spans2[0].start;
+                        const end_off = if (n == 2) spans2[1].end else content_ref.data.len;
+                        break :blk content_ref.data[start_off..end_off];
+                    }
+                }
+            }
+            break :blk sliceLineRange(content_ref.data, line_start, line_end);
+        };
+        if (raw_body.len == 0) return &.{};
+        const body = allocator.dupe(u8, raw_body) catch return &.{};
         const callees = codegraph.extractCallees(allocator, body) catch return &.{};
 
         var refs: std.ArrayList(CalleeRef) = .empty;
@@ -4291,8 +4376,6 @@ pub const Explorer = struct {
         // ~18 such scans per codedb_context made it ~20% slower on a multi-thousand-
         // file repo (the #524 bench regression). The index is rebuilt on every
         // commit, so for this high-precision/best-effort feature it is authoritative.
-        self.mu.lockShared();
-        defer self.mu.unlockShared();
         for (callees) |callee| {
             const name = callee.name;
             if (refs.items.len >= max) break;
@@ -4451,26 +4534,105 @@ pub const Explorer = struct {
         return true;
     }
 
+    /// Zero-allocation symbol definition nudge for `codedb_search` (Lean 4
+    /// `CodeDB.SearchLifecycle.verifiedDirectSymbolNudge`). Reads `symbol_index`
+    /// directly under the shared lock when complete, avoiding `findAllSymbols`'s
+    /// outline-detail scan and per-symbol heap allocations on every search call.
+    pub fn renderSymbolNudge(self: *Explorer, name: []const u8, alloc: std.mem.Allocator, out: *std.ArrayList(u8)) void {
+        self.mu.lockShared();
+        const complete = self.symbol_index_complete;
+        if (complete) {
+            defer self.mu.unlockShared();
+            const locs = self.symbol_index.get(name) orelse return;
+            if (locs.items.len == 0) return;
+
+            var has_def = false;
+            for (locs.items) |loc| {
+                if (loc.kind != .import and loc.kind != .comment_block) {
+                    has_def = true;
+                    break;
+                }
+            }
+            var total_defs: usize = 0;
+            for (locs.items) |loc| {
+                const is_def = loc.kind != .import and loc.kind != .comment_block;
+                if (!has_def or is_def) total_defs += 1;
+            }
+            const w = cio.listWriter(out, alloc);
+            const cap: usize = 3;
+            var shown: usize = 0;
+            for (locs.items) |loc| {
+                if (shown >= cap) break;
+                const is_def = loc.kind != .import and loc.kind != .comment_block;
+                if (has_def and !is_def) continue;
+                if (shown == 0) w.print("↪ '{s}' is defined at (codedb_symbol for bodies):\n", .{name}) catch {};
+                w.print("  {s}:{d} ({s})\n", .{ loc.path, loc.line_start, @tagName(loc.kind) }) catch {};
+                shown += 1;
+            }
+            if (shown == 0) return;
+            if (total_defs > shown) w.print("  (+{d} more — codedb_symbol '{s}')\n", .{ total_defs - shown, name }) catch {};
+            return;
+        }
+        self.mu.unlockShared();
+
+        const results = self.findAllSymbols(name, alloc) catch return;
+        defer {
+            for (results) |r| {
+                alloc.free(r.path);
+                alloc.free(r.symbol.name);
+                if (r.symbol.detail) |d| alloc.free(d);
+            }
+            alloc.free(results);
+        }
+        if (results.len == 0) return;
+        var has_def = false;
+        for (results) |r| {
+            if (r.symbol.kind != .import and r.symbol.kind != .comment_block) {
+                has_def = true;
+                break;
+            }
+        }
+        var total_defs: usize = 0;
+        for (results) |r| {
+            const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+            if (!has_def or is_def) total_defs += 1;
+        }
+        const w = cio.listWriter(out, alloc);
+        const cap: usize = 3;
+        var shown: usize = 0;
+        for (results) |r| {
+            if (shown >= cap) break;
+            const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
+            if (has_def and !is_def) continue;
+            if (shown == 0) w.print("↪ '{s}' is defined at (codedb_symbol for bodies):\n", .{name}) catch {};
+            w.print("  {s}:{d} ({s})\n", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind) }) catch {};
+            shown += 1;
+        }
+        if (shown == 0) return;
+        if (total_defs > shown) w.print("  (+{d} more — codedb_symbol '{s}')\n", .{ total_defs - shown, name }) catch {};
+    }
+
     pub fn searchContent(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const SearchResult {
         // Result-cache front door: a hit copies the cached results into the
         // caller's allocator (same ownership contract as a fresh search).
-        // The generation is read BEFORE the search runs, so any concurrent
-        // mutation makes the stored entry stale immediately — conservative
-        // in the safe direction. Lazy builds during a query's FIRST run bump
-        // the generation mid-search; that entry just never hits and the next
-        // run stores a valid one.
-        const cacheable = max_results > 0 and query.len > 0 and query.len <= 1024 and
-            cio.posixGetenv("CODEDB_NO_SEARCH_CACHE") == null;
-        if (!cacheable) return self.searchContentUncached(query, allocator, max_results);
+        // `settled_gen` is captured inside `searchContentUncached` while
+        // holding `self.mu.lockShared()` AFTER any lazy index builds complete
+        // (Lean 4 `CodeDB.SearchCache.post_lazy_gen_capture_hits_without_stale_reads`),
+        // so lazy builds on Call 1 do not self-invalidate Call 1's cache entry,
+        // while any external mutation after unlock bumps `search_gen` past `settled_gen`.
+        const env_snap = rankingEnvSnapshot();
+        const cacheable = max_results > 0 and query.len > 0 and query.len <= 1024 and !env_snap.no_search_cache;
+        if (!cacheable) return self.searchContentUncached(query, allocator, max_results, null);
         const gen = self.search_gen.load(.acquire);
-        const env_fp = rankingEnvFingerprint();
+        const env_fp = env_snap.fp;
         if (self.search_cache.get(query, max_results, gen, env_fp, allocator, &self.last_search_breakdown)) |hit| return hit;
-        const res = try self.searchContentUncached(query, allocator, max_results);
-        self.search_cache.put(query, max_results, gen, env_fp, res, self.last_search_breakdown);
+        var settled_gen: SearchGeneration = gen;
+        const res = try self.searchContentUncached(query, allocator, max_results, &settled_gen);
+        self.search_cache.put(query, max_results, settled_gen, env_fp, res, self.last_search_breakdown);
         return res;
     }
 
-    fn searchContentUncached(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const SearchResult {
+    fn searchContentUncached(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize, out_gen: ?*SearchGeneration) ![]const SearchResult {
         // #539: ensure the word index — Tier 0's recall source — is populated.
         // After a snapshot fast-load it is built lazily (see issue-220); without
         // this, searchContent's recall collapses to the trigram/skip_trigram tiers
@@ -4498,6 +4660,9 @@ pub const Explorer = struct {
         }
         self.mu.lockShared();
         defer self.mu.unlockShared();
+        defer if (out_gen) |g| {
+            g.* = self.search_gen.load(.acquire);
+        };
 
         if (max_results == 0) return try allocator.alloc(SearchResult, 0);
 
@@ -4505,7 +4670,13 @@ pub const Explorer = struct {
         defer self.last_search_breakdown = breakdown;
 
         var result_list: std.ArrayList(SearchResult) = .empty;
-        errdefer result_list.deinit(allocator);
+        errdefer {
+            for (result_list.items) |r| {
+                allocator.free(r.line_text);
+                allocator.free(r.path);
+            }
+            result_list.deinit(allocator);
+        }
         try result_list.ensureTotalCapacity(allocator, @min(max_results, 64));
 
         // searched tracks which paths have been scanned — shared across all tiers.
@@ -4926,28 +5097,44 @@ pub const Explorer = struct {
     }
 
     pub fn renderPlainSearch(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(u8), max_results: usize, paths_only: bool) !bool {
-        // Rendered-output cache front door — same generation discipline as
-        // searchContent's cache (see that wrapper for the staleness
-        // reasoning). Only successful renders (rendered == true) are stored;
+        // Rendered-output cache front door — same post-lazy-init generation
+        // discipline as searchContent's cache (Lean 4
+        // `CodeDB.SearchCache.post_lazy_gen_capture_hits_without_stale_reads`).
+        // Only successful renders (rendered == true) are stored;
         // a false return falls through to searchContentAuto, which caches
         // through searchContent itself.
-        const cacheable = max_results > 0 and query.len > 0 and query.len <= 1024 and
-            cio.posixGetenv("CODEDB_NO_SEARCH_CACHE") == null;
+        const env_snap = rankingEnvSnapshot();
+        const cacheable = max_results > 0 and query.len > 0 and query.len <= 1024 and !env_snap.no_search_cache;
         const cache_gen = self.search_gen.load(.acquire);
-        const cache_fp = if (cacheable) rankingEnvFingerprint() else 0;
+        const cache_fp = env_snap.fp;
         if (cacheable and self.plain_render_cache.render(query, max_results, paths_only, cache_gen, cache_fp, allocator, out, &self.last_search_breakdown)) return true;
         const out_start = out.items.len;
+        var settled_gen: SearchGeneration = cache_gen;
 
-        const rendered = try self.renderPlainSearchUncached(query, allocator, out, max_results, paths_only);
-        if (rendered and cacheable) {
-            self.plain_render_cache.put(query, max_results, paths_only, cache_gen, cache_fp, out.items[out_start..], self.last_search_breakdown);
+        const rendered = try self.renderPlainSearchUncached(query, allocator, out, max_results, paths_only, &settled_gen);
+        if (!rendered) {
+            out.shrinkRetainingCapacity(out_start);
+            return false;
         }
-        return rendered;
+        if (cacheable) {
+            self.plain_render_cache.put(query, max_results, paths_only, settled_gen, cache_fp, out.items[out_start..], self.last_search_breakdown);
+        }
+        return true;
     }
 
-    fn renderPlainSearchUncached(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(u8), max_results: usize, paths_only: bool) !bool {
+    fn renderPlainSearchUncached(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, out: *std.ArrayList(u8), max_results: usize, paths_only: bool, out_gen: ?*SearchGeneration) !bool {
+        if (max_results > 0) {
+            self.mu.lockShared();
+            const needs_rebuild = !self.word_index_complete and
+                (self.contents.len() > 0 or (self.io != null and self.root_dir != null));
+            self.mu.unlockShared();
+            if (needs_rebuild) try self.rebuildWordIndex();
+        }
         self.mu.lockShared();
         defer self.mu.unlockShared();
+        defer if (out_gen) |g| {
+            g.* = self.search_gen.load(.acquire);
+        };
 
         if (max_results == 0) return false;
 
@@ -4972,13 +5159,25 @@ pub const Explorer = struct {
 
         var tier0_files_buf: [512]Tier0File = undefined;
         var tier0_files_len: usize = 0;
+        // Fresh and persisted indexes keep postings in nondecreasing doc-id
+        // order, which guarantees one contiguous run per document. Avoid
+        // allocating and zeroing `slots` on that common path.
+        var postings_grouped = true;
+        var previous_doc = word_hits[0].doc_id;
+        for (word_hits[1..]) |hit| {
+            if (hit.doc_id < previous_doc) {
+                postings_grouped = false;
+                break;
+            }
+            previous_doc = hit.doc_id;
+        }
         // Direct-address doc_id → entry-index slots replace the linear rescan
         // (O(unique files²) on high-frequency words). Same gating as
         // searchContent's grouping; when the table is too big to amortize the
         // memset, the rescan path below still handles dedup.
         const SLOT_NONE = std.math.maxInt(u32);
         const ndocs = self.word_index.id_to_path.items.len;
-        const use_slots = ndocs > 0 and (ndocs <= 4096 or (ndocs <= 65536 and word_hits.len >= 512));
+        const use_slots = !postings_grouped and ndocs > 0 and (ndocs <= 4096 or (ndocs <= 65536 and word_hits.len >= 512));
         var slots: []u32 = &.{};
         defer if (slots.len > 0) allocator.free(slots);
         if (use_slots) {
@@ -5000,13 +5199,15 @@ pub const Explorer = struct {
             if (hit_path.len == 0) continue;
 
             var found_i: ?usize = null;
-            if (slots.len > 0) {
-                if (doc_id < slots.len and slots[doc_id] != SLOT_NONE) found_i = slots[doc_id];
-            } else {
-                for (tier0_files_buf[0..tier0_files_len], 0..) |stats, i| {
-                    if (stats.doc_id == doc_id) {
-                        found_i = i;
-                        break;
+            if (!postings_grouped) {
+                if (slots.len > 0) {
+                    if (doc_id < slots.len and slots[doc_id] != SLOT_NONE) found_i = slots[doc_id];
+                } else {
+                    for (tier0_files_buf[0..tier0_files_len], 0..) |stats, i| {
+                        if (stats.doc_id == doc_id) {
+                            found_i = i;
+                            break;
+                        }
                     }
                 }
             }
@@ -6403,22 +6604,24 @@ pub const Explorer = struct {
     }
 
     pub fn searchContentRanked(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const SearchResult {
-        // Result-cache front door — same discipline as searchContent's
-        // wrapper (gen read BEFORE the search; see that comment), but a
-        // SEPARATE cache instance: the BM25 ranking returns different
+        // Result-cache front door — same post-lazy-init generation discipline
+        // as searchContent's wrapper (Lean 4
+        // `CodeDB.SearchCache.post_lazy_gen_capture_hits_without_stale_reads`),
+        // but a SEPARATE cache instance: the BM25 ranking returns different
         // results than searchContent for the same (query, max_results) key.
-        const cacheable = max_results > 0 and query.len > 0 and query.len <= 1024 and
-            cio.posixGetenv("CODEDB_NO_SEARCH_CACHE") == null;
-        if (!cacheable) return self.searchContentRankedUncached(query, allocator, max_results);
+        const env_snap = rankingEnvSnapshot();
+        const cacheable = max_results > 0 and query.len > 0 and query.len <= 1024 and !env_snap.no_search_cache;
+        if (!cacheable) return self.searchContentRankedUncached(query, allocator, max_results, null);
         const gen = self.search_gen.load(.acquire);
-        const env_fp = rankingEnvFingerprint();
+        const env_fp = env_snap.fp;
         if (self.ranked_cache.get(query, max_results, gen, env_fp, allocator, &self.last_search_breakdown)) |hit| return hit;
-        const res = try self.searchContentRankedUncached(query, allocator, max_results);
-        self.ranked_cache.put(query, max_results, gen, env_fp, res, .{ .result_count = @intCast(@min(res.len, std.math.maxInt(u32))) });
+        var settled_gen: SearchGeneration = gen;
+        const res = try self.searchContentRankedUncached(query, allocator, max_results, &settled_gen);
+        self.ranked_cache.put(query, max_results, settled_gen, env_fp, res, .{ .result_count = @intCast(@min(res.len, std.math.maxInt(u32))) });
         return res;
     }
 
-    fn searchContentRankedUncached(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const SearchResult {
+    fn searchContentRankedUncached(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize, out_gen: ?*SearchGeneration) ![]const SearchResult {
         // #546: BM25 reads the word index's id_to_path + ranked-doc table, which a
         // mmap/disk-loaded index lacks until rebuilt (word_index_complete = false).
         // The recall readers (searchContent, searchWord, renderWord) already trigger
@@ -6448,6 +6651,9 @@ pub const Explorer = struct {
         }
         self.mu.lockShared();
         defer self.mu.unlockShared();
+        defer if (out_gen) |g| {
+            g.* = self.search_gen.load(.acquire);
+        };
 
         if (max_results == 0) return try allocator.alloc(SearchResult, 0);
 
@@ -6635,7 +6841,7 @@ pub const Explorer = struct {
         const DefOverlap = struct { overlap: u32, line: u32 };
         var def_overlap = std.StringHashMap(DefOverlap).init(ta);
         if (terms_set.count() >= 2 and self.symbol_index_complete) {
-            if (self.def_token_gen != null and self.def_token_gen.? == self.search_gen.load(.acquire)) {
+            if (self.def_token_gen != null) {
                 // Fast path: count per-symbol term overlap through the
                 // inverted token index instead of sweeping every symbol.
                 var counts = std.AutoHashMap(u32, u32).init(ta);
@@ -6797,22 +7003,26 @@ pub const Explorer = struct {
         defer self.mu.unlockShared();
 
         var result_list: std.ArrayList(SearchResult) = .empty;
-        errdefer result_list.deinit(allocator);
+        errdefer {
+            for (result_list.items) |r| {
+                allocator.free(r.line_text);
+                allocator.free(r.path);
+            }
+            result_list.deinit(allocator);
+        }
 
         // Surface invalid patterns as error.InvalidRegex instead of silently
         // returning zero results (#528 item 10). Compile once up front with the
         // real matcher; the per-file scans below reuse the same engine.
-        {
-            var probe = nanoregex.Regex.compile(allocator, pattern) catch return error.InvalidRegex;
-            probe.deinit();
-        }
+        var rx = nanoregex.Regex.compile(allocator, pattern) catch return error.InvalidRegex;
+        defer rx.deinit();
 
         var query = idx.decomposeRegex(pattern, self.allocator) catch {
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try searchInContentRegex(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
             return result_list.toOwnedSlice(allocator);
@@ -6827,7 +7037,7 @@ pub const Explorer = struct {
             for (candidate_paths.?) |path| {
                 const ref = self.readContentForSearch(path, allocator) orelse continue;
                 defer ref.deinit();
-                try searchInContentRegex(path, ref.data, pattern, allocator, max_results, &result_list);
+                try searchInContentRegex(path, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
         } else {
@@ -6835,7 +7045,7 @@ pub const Explorer = struct {
             while (iter.next()) |key_ptr| {
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try searchInContentRegex(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
             return result_list.toOwnedSlice(allocator);
@@ -6847,7 +7057,7 @@ pub const Explorer = struct {
                 if (self.trigram_index.containsFile(key_ptr.*)) continue;
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try searchInContentRegex(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try searchInContentRegex(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
         }
@@ -8576,6 +8786,7 @@ pub const Explorer = struct {
         // outlines on first use. ensureSymbolIndex flips the flag back BEFORE
         // calling this, so its own rebuild passes the guard.
         if (!self.symbol_index_complete) return;
+        self.def_token_gen = null;
         // removeSymbolIndexFor scans the entire global symbol index, so calling
         // it per file makes a cold scan O(files * total_symbols). A brand-new
         // path has no prior entries to evict, so skip the scan entirely — only
@@ -8603,6 +8814,7 @@ pub const Explorer = struct {
     }
 
     fn removeSymbolIndexFor(self: *Explorer, path: []const u8) void {
+        self.def_token_gen = null;
         var to_remove: std.ArrayList([]const u8) = .empty;
         defer to_remove.deinit(self.allocator);
 
@@ -8643,10 +8855,8 @@ pub const Explorer = struct {
         return try extractLines(ref.data, line_start, line_end, true, false, .unknown, allocator);
     }
 
-    /// Find the smallest enclosing symbol for a given line in a file.
-    /// Must be called while holding at least a shared lock.
-    fn findEnclosingSymbolLocked(self: *Explorer, path: []const u8, line_num: u32) ?Symbol {
-        const outline = self.outlines.getPtr(path) orelse return null;
+    /// Find the smallest enclosing symbol for a given line in an outline.
+    fn findEnclosingSymbolInOutline(outline: *const FileOutline, line_num: u32) ?Symbol {
         const symbols = outline.symbols.items;
         if (symbols.len == 0) return null;
 
@@ -8688,6 +8898,13 @@ pub const Explorer = struct {
         return null;
     }
 
+    /// Find the smallest enclosing symbol for a given line in a file.
+    /// Must be called while holding at least a shared lock.
+    fn findEnclosingSymbolLocked(self: *Explorer, path: []const u8, line_num: u32) ?Symbol {
+        const outline = self.outlines.getPtr(path) orelse return null;
+        return findEnclosingSymbolInOutline(outline, line_num);
+    }
+
     pub const ScopedSearchResult = struct {
         path: []const u8,
         line_num: u32,
@@ -8699,10 +8916,14 @@ pub const Explorer = struct {
     };
 
     /// Search content and annotate results with the enclosing symbol scope.
+    /// Transfers `r.path` and `r.line_text` ownership directly from `plain_results`
+    /// into `result_list` (Lean 4 `CodeDB.SearchLifecycle.verified_scoped_search_saves_2n_allocs`),
+    /// avoiding `2 * N` redundant string allocations and frees.
     pub fn searchContentWithScope(self: *Explorer, query: []const u8, allocator: std.mem.Allocator, max_results: usize) ![]const ScopedSearchResult {
         const plain_results = try self.searchContent(query, allocator, max_results);
+        var consumed: usize = 0;
         defer {
-            for (plain_results) |r| {
+            for (plain_results[consumed..]) |r| {
                 allocator.free(r.line_text);
                 allocator.free(r.path);
             }
@@ -8723,25 +8944,29 @@ pub const Explorer = struct {
         self.mu.lockShared();
         defer self.mu.unlockShared();
 
+        var last_path: ?[]const u8 = null;
+        var last_outline: ?*const FileOutline = null;
         for (plain_results) |r| {
-            const line_text = try allocator.dupe(u8, r.line_text);
-            errdefer allocator.free(line_text);
-            const path_copy = try allocator.dupe(u8, r.path);
-            errdefer allocator.free(path_copy);
-
-            const scope = self.findEnclosingSymbolLocked(r.path, r.line_num);
+            const outline = if (last_path != null and std.mem.eql(u8, last_path.?, r.path))
+                last_outline
+            else blk: {
+                last_path = r.path;
+                last_outline = self.outlines.getPtr(r.path);
+                break :blk last_outline;
+            };
+            const scope = if (outline) |o| findEnclosingSymbolInOutline(o, r.line_num) else null;
             const scope_name = if (scope) |s| try allocator.dupe(u8, s.name) else null;
-            errdefer if (scope_name) |n| allocator.free(n);
 
             result_list.appendAssumeCapacity(.{
-                .path = path_copy,
+                .path = r.path,
                 .line_num = r.line_num,
-                .line_text = line_text,
+                .line_text = r.line_text,
                 .scope_name = scope_name,
                 .scope_kind = if (scope) |s| s.kind else null,
                 .scope_start = if (scope) |s| s.line_start else 0,
                 .scope_end = if (scope) |s| s.line_end else 0,
             });
+            consumed += 1;
         }
 
         return result_list.toOwnedSlice(allocator);
@@ -8766,17 +8991,15 @@ pub const Explorer = struct {
         // Surface invalid patterns as error.InvalidRegex instead of silently
         // returning zero results (#528 item 10). Compile once up front with the
         // real matcher; the per-file scans below reuse the same engine.
-        {
-            var probe = nanoregex.Regex.compile(allocator, pattern) catch return error.InvalidRegex;
-            probe.deinit();
-        }
+        var rx = nanoregex.Regex.compile(allocator, pattern) catch return error.InvalidRegex;
+        defer rx.deinit();
 
         var query = idx.decomposeRegex(pattern, self.allocator) catch {
             var iter = self.outlines.keyIterator();
             while (iter.next()) |key_ptr| {
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
             return result_list.toOwnedSlice(allocator);
@@ -8791,7 +9014,7 @@ pub const Explorer = struct {
             for (candidate_paths.?) |path| {
                 const ref = self.readContentForSearch(path, allocator) orelse continue;
                 defer ref.deinit();
-                try self.searchInContentRegexWithScope(path, ref.data, pattern, allocator, max_results, &result_list);
+                try self.searchInContentRegexWithScope(path, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
         } else {
@@ -8799,7 +9022,7 @@ pub const Explorer = struct {
             while (iter.next()) |key_ptr| {
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
             return result_list.toOwnedSlice(allocator);
@@ -8811,7 +9034,7 @@ pub const Explorer = struct {
                 if (self.trigram_index.containsFile(key_ptr.*)) continue;
                 const ref = self.readContentForSearch(key_ptr.*, allocator) orelse continue;
                 defer ref.deinit();
-                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, pattern, allocator, max_results, &result_list);
+                try self.searchInContentRegexWithScope(key_ptr.*, ref.data, &rx, allocator, max_results, &result_list);
                 if (result_list.items.len >= max_results) break;
             }
         }
@@ -8848,9 +9071,7 @@ pub const Explorer = struct {
         }
     }
 
-    fn searchInContentRegexWithScope(self: *Explorer, path: []const u8, content: []const u8, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(ScopedSearchResult)) !void {
-        var rx = nanoregex.Regex.compile(allocator, pattern) catch return;
-        defer rx.deinit();
+    fn searchInContentRegexWithScope(self: *Explorer, path: []const u8, content: []const u8, rx: *nanoregex.Regex, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(ScopedSearchResult)) !void {
         var line_num: u32 = 0;
         var lines = std.mem.splitScalar(u8, content, '\n');
         while (lines.next()) |line| {
@@ -9189,9 +9410,7 @@ fn matchAtCaseInsensitive(content: []const u8, pos: usize, query_lower: []const 
     return true;
 }
 
-fn searchInContentRegex(path: []const u8, content: []const u8, pattern: []const u8, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(SearchResult)) !void {
-    var rx = nanoregex.Regex.compile(allocator, pattern) catch return;
-    defer rx.deinit();
+fn searchInContentRegex(path: []const u8, content: []const u8, rx: *nanoregex.Regex, allocator: std.mem.Allocator, max_results: usize, result_list: *std.ArrayList(SearchResult)) !void {
     var line_num: u32 = 0;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {

@@ -2969,3 +2969,144 @@ test "rank: machine artifact logs rank below source for multi-word queries" {
     try testing.expect(results.len >= 2);
     try testing.expectEqualStrings("src/widget.zig", results[0].path);
 }
+
+test "lean kernel: searchContent, searchContentWithScope, searchContentRegex, and findAllSymbols are leak-free on OOM" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    cio.posixSetenv("CODEDB_NO_SEARCH_CACHE", "1");
+    defer cio.posixUnsetenv("CODEDB_NO_SEARCH_CACHE");
+
+    try explorer.indexFile("src/a.zig", "pub fn alphaTarget(x: u32) u32 {\n    return x + 1; // oomtok\n}\n");
+    try explorer.indexFile("src/b.zig", "pub fn alphaTarget(y: u32) u32 {\n    return y + 2; // oomtok\n}\n");
+    try explorer.indexFile("src/c.zig", "pub fn betaHelper() void {\n    _ = 1; // oomtok\n}\n");
+
+    // 1. searchContent under FailingAllocator
+    var i: usize = 0;
+    while (i < 24) : (i += 1) {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = i });
+        if (explorer.searchContent("oomtok", failing.allocator(), 10)) |res| {
+            for (res) |r| {
+                failing.allocator().free(r.line_text);
+                failing.allocator().free(r.path);
+            }
+            failing.allocator().free(res);
+            break;
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        }
+    }
+
+    // 2. searchContentWithScope zero-copy transfer under FailingAllocator
+    i = 0;
+    while (i < 24) : (i += 1) {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = i });
+        if (explorer.searchContentWithScope("oomtok", failing.allocator(), 10)) |res| {
+            for (res) |r| {
+                failing.allocator().free(r.line_text);
+                failing.allocator().free(r.path);
+                if (r.scope_name) |sn| failing.allocator().free(sn);
+            }
+            failing.allocator().free(res);
+            break;
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        }
+    }
+
+    // 3. findAllSymbols deep-errdefer under FailingAllocator
+    i = 0;
+    while (i < 16) : (i += 1) {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = i });
+        if (explorer.findAllSymbols("alphaTarget", failing.allocator())) |res| {
+            for (res) |r| {
+                failing.allocator().free(r.path);
+                failing.allocator().free(r.symbol.name);
+                if (r.symbol.detail) |d| failing.allocator().free(d);
+            }
+            failing.allocator().free(res);
+            break;
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        }
+    }
+}
+
+test "lean kernel: renderPlainSearch rolls back partial output when same-line hits fall short of max_results" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    // Two word hits ("duptok") on a SINGLE line: stats.count == 2 satisfies
+    // tier0_exact_capacity >= 2, but target_lines deduplicates to 1 line (< 2).
+    // renderPlainSearch must roll back `out` to `out_start` on false return.
+    try explorer.indexFile("src/dup.zig", "const duptok = duptok;\n");
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(testing.allocator);
+    try out.appendSlice(testing.allocator, "PREFIX:");
+    const prefix_len = out.items.len;
+
+    const rendered = try explorer.renderPlainSearch("duptok", testing.allocator, &out, 2, false);
+    try testing.expect(!rendered);
+    try testing.expectEqual(prefix_len, out.items.len);
+    try testing.expectEqualStrings("PREFIX:", out.items);
+}
+
+test "lean kernel: post-lazy-init generation capture hits on second query after lazy word-index and call-graph builds" {
+    var explorer = Explorer.init(testing.allocator, Explorer.DEFAULT_CONTENT_CACHE_CAPACITY);
+    defer explorer.deinit();
+
+    try explorer.indexFile("src/lazy_a.zig", "pub fn lazyTargetAlpha() void {\n    lazyTargetBeta();\n}\n");
+    try explorer.indexFile("src/lazy_b.zig", "pub fn lazyTargetBeta() void {\n    const x = 1; // lazyTargetAlpha\n}\n");
+    // Simulate a cold snapshot fast-load where word_index and symbol_index are deferred.
+    explorer.markWordIndexIncomplete(false);
+    explorer.markSymbolIndexIncomplete();
+
+    // 1. renderPlainSearch rebuilds the word index lazily on Call 1 and stores
+    // under the post-rebuild generation, so Call 2 is an immediate cache hit.
+    var out1: std.ArrayList(u8) = .empty;
+    defer out1.deinit(testing.allocator);
+    try testing.expect(try explorer.renderPlainSearch("lazyTargetAlpha", testing.allocator, &out1, 2, false));
+    try testing.expectEqual(@as(u64, 0), explorer.plain_render_cache.hits);
+
+    var out2: std.ArrayList(u8) = .empty;
+    defer out2.deinit(testing.allocator);
+    try testing.expect(try explorer.renderPlainSearch("lazyTargetAlpha", testing.allocator, &out2, 2, false));
+    try testing.expectEqual(@as(u64, 1), explorer.plain_render_cache.hits);
+    try testing.expectEqualStrings(out1.items, out2.items);
+
+    // 2. searchContentRanked triggers ensureSymbolIndex + ensureDefTokenIndex +
+    // ensureCallCentrality (which builds call_graph and bumps search_gen) on Call 1,
+    // and stores under settled_gen so Call 2 hits ranked_cache immediately.
+    const r1 = try explorer.searchContentRanked("lazy target alpha", testing.allocator, 5);
+    defer freeSearchResults(r1);
+    try testing.expect(r1.len >= 1);
+    try testing.expectEqual(@as(u64, 0), explorer.ranked_cache.hits);
+    try testing.expect(explorer.def_token_gen != null);
+
+    const r2 = try explorer.searchContentRanked("lazy target alpha", testing.allocator, 5);
+    defer freeSearchResults(r2);
+    try testing.expectEqual(@as(u64, 1), explorer.ranked_cache.hits);
+}
+
+test "lean kernel: warmup.topQueries frees all partial allocations on FailingAllocator OOM" {
+    const log =
+        "{\"ev\":\"query\",\"tool\":\"codedb_search\",\"query\":\"alpha\"}\n" ++
+        "{\"ev\":\"query\",\"tool\":\"codedb_search\",\"query\":\"alpha\"}\n" ++
+        "{\"ev\":\"query\",\"tool\":\"codedb_search\",\"query\":\"beta\"}\n" ++
+        "{\"ev\":\"query\",\"tool\":\"codedb_search\",\"query\":\"gamma\"}\n";
+    var i: usize = 0;
+    while (i < 64) : (i += 1) {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = i });
+        if (warmup.topQueries(failing.allocator(), log, 3)) |qs| {
+            warmup.freeQueries(failing.allocator(), qs);
+            break;
+        } else |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        }
+    }
+}

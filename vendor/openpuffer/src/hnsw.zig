@@ -542,25 +542,68 @@ pub fn Hnsw(comptime D: type) type {
             return self.dim;
         }
 
-        fn markVisited(visited: *std.DynamicBitSetUnmanaged, alloc: std.mem.Allocator, id: u32) !void {
+        fn markVisited(
+            visited: *std.DynamicBitSetUnmanaged,
+            alloc: std.mem.Allocator,
+            id: u32,
+            dirty_ids: *[256]u32,
+            dirty_count: *usize,
+            dirty_overflow: *bool,
+        ) !void {
             if (id >= visited.capacity()) {
                 try visited.resize(alloc, @max(@as(usize, id) + 256, visited.capacity() * 2), false);
             }
-            visited.set(id);
+            if (!visited.isSet(id)) {
+                visited.set(id);
+                if (!dirty_overflow.*) {
+                    if (dirty_count.* < dirty_ids.len) {
+                        dirty_ids[dirty_count.*] = id;
+                        dirty_count.* += 1;
+                    } else {
+                        dirty_overflow.* = true;
+                    }
+                }
+            }
         }
 
-        fn alreadyVisited(visited: *std.DynamicBitSetUnmanaged, alloc: std.mem.Allocator, id: u32) !bool {
+        fn alreadyVisited(
+            visited: *std.DynamicBitSetUnmanaged,
+            alloc: std.mem.Allocator,
+            id: u32,
+            dirty_ids: *[256]u32,
+            dirty_count: *usize,
+            dirty_overflow: *bool,
+        ) !bool {
             if (id >= visited.capacity()) {
                 try visited.resize(alloc, @max(@as(usize, id) + 256, visited.capacity() * 2), false);
                 visited.set(id);
+                if (!dirty_overflow.*) {
+                    if (dirty_count.* < dirty_ids.len) {
+                        dirty_ids[dirty_count.*] = id;
+                        dirty_count.* += 1;
+                    } else {
+                        dirty_overflow.* = true;
+                    }
+                }
                 return false;
             }
             if (visited.isSet(id)) return true;
             visited.set(id);
+            if (!dirty_overflow.*) {
+                if (dirty_count.* < dirty_ids.len) {
+                    dirty_ids[dirty_count.*] = id;
+                    dirty_count.* += 1;
+                } else {
+                    dirty_overflow.* = true;
+                }
+            }
             return false;
         }
 
         /// greedy search on a single layer; `ef` bounds result set size.
+        /// Invariant (Lean 4 `CodeDB.OpenPufferSearch`): `visited` is all-zero on
+        /// entry and restored to all-zero on exit via sparse dirty-node clearing
+        /// (falling back to `setRangeValue` only when >256 distinct nodes are visited).
         fn searchLayer(
             self: *const Self,
             dist_ctx: anytype,
@@ -570,9 +613,16 @@ pub fn Hnsw(comptime D: type) type {
             visited: *std.DynamicBitSetUnmanaged,
             alloc: std.mem.Allocator,
         ) !std.ArrayList(Candidate) {
-            // visited state is per-layer: upper-layer expansions must not
-            // suppress re-expansion at lower layers (their adjacency differs).
-            visited.setRangeValue(.{ .start = 0, .end = visited.capacity() }, false);
+            var dirty_ids: [256]u32 = undefined;
+            var dirty_count: usize = 0;
+            var dirty_overflow: bool = false;
+            defer {
+                if (dirty_overflow) {
+                    visited.setRangeValue(.{ .start = 0, .end = visited.capacity() }, false);
+                } else {
+                    for (dirty_ids[0..dirty_count]) |id| visited.unset(id);
+                }
+            }
             // candidates: min-heap by distance (use PriorityQueue)
             const CandCtx = struct {
                 pub fn compare(_: void, a: Candidate, b: Candidate) std.math.Order {
@@ -591,9 +641,10 @@ pub fn Hnsw(comptime D: type) type {
             };
             var results = std.PriorityQueue(Candidate, void, RevCtx.compare).initContext({});
             defer results.deinit(alloc);
+            try results.ensureTotalCapacity(alloc, ef + 1);
 
             for (entry_points) |c| {
-                try markVisited(visited, alloc, c.id);
+                try markVisited(visited, alloc, c.id, &dirty_ids, &dirty_count, &dirty_overflow);
                 try candidates.push(alloc, c);
                 try results.push(alloc, c);
             }
@@ -631,7 +682,7 @@ pub fn Hnsw(comptime D: type) type {
                             });
                         }
                     }
-                    if (try alreadyVisited(visited, alloc, nid)) continue;
+                    if (try alreadyVisited(visited, alloc, nid, &dirty_ids, &dirty_count, &dirty_overflow)) continue;
                     const d = dist_ctx.dist(nid);
                     const w = if (results.count() > 0) results.peek().?.d else std.math.floatMax(f32);
                     if (results.count() < ef or d < w) {
@@ -749,8 +800,36 @@ pub fn Hnsw(comptime D: type) type {
 
         fn appendRecord(self: *Self, copy: []const f32, q8: []const i8, scale: f32, level: u32) !u32 {
             if (level > 64) return error.InvalidLevel;
+            const neighbor_slots = if (level > 0)
+                std.math.mul(usize, @as(usize, level), self.hiStride()) catch return error.InvalidSlabLayout
+            else
+                0;
             const alloc = self.allocator;
             const id: u32 = @intCast(self.mappedCount() + self.qscales.items.len);
+            const orig_vectors_len = self.vectors_flat.items.len;
+            const orig_qvecs_len = self.qvecs_flat.items.len;
+            const orig_qscales_len = self.qscales.items.len;
+            const orig_levels_len = self.levels.items.len;
+            const orig_l0_deg_len = self.l0_deg.items.len;
+            const orig_l0_nbrs_len = self.l0_nbrs.items.len;
+            const orig_hi_start_len = self.hi_start.items.len;
+            const orig_nbr_gen_len = self.nbr_gen.items.len;
+            const orig_vec_gen_len = self.vec_gen.items.len;
+            const orig_hi_deg_len = self.hi_deg.items.len;
+            const orig_hi_nbrs_len = self.hi_nbrs.items.len;
+            errdefer {
+                self.vectors_flat.shrinkRetainingCapacity(orig_vectors_len);
+                self.qvecs_flat.shrinkRetainingCapacity(orig_qvecs_len);
+                self.qscales.shrinkRetainingCapacity(orig_qscales_len);
+                self.levels.shrinkRetainingCapacity(orig_levels_len);
+                self.l0_deg.shrinkRetainingCapacity(orig_l0_deg_len);
+                self.l0_nbrs.shrinkRetainingCapacity(orig_l0_nbrs_len);
+                self.hi_start.shrinkRetainingCapacity(orig_hi_start_len);
+                self.nbr_gen.shrinkRetainingCapacity(orig_nbr_gen_len);
+                self.vec_gen.shrinkRetainingCapacity(orig_vec_gen_len);
+                self.hi_deg.shrinkRetainingCapacity(orig_hi_deg_len);
+                self.hi_nbrs.shrinkRetainingCapacity(orig_hi_nbrs_len);
+            }
             if (self.opts.store_f32) {
                 try self.vectors_flat.appendSlice(alloc, copy);
             }
@@ -760,14 +839,13 @@ pub fn Hnsw(comptime D: type) type {
             try self.l0_deg.append(alloc, 0);
             const l0_pad = try self.l0_nbrs.addManyAsSlice(alloc, self.l0Stride());
             @memset(l0_pad, 0);
-            try self.hi_start.append(alloc, @intCast(self.hi_deg.items.len));
+            try self.hi_start.append(alloc, @intCast(orig_hi_deg_len));
             try self.nbr_gen.append(alloc, 0);
             try self.vec_gen.append(alloc, 0);
             if (level > 0) {
                 const slots: usize = level;
                 const degs = try self.hi_deg.addManyAsSlice(alloc, slots);
                 @memset(degs, 0);
-                const neighbor_slots = std.math.mul(usize, slots, self.hiStride()) catch return error.InvalidSlabLayout;
                 const nbrs = try self.hi_nbrs.addManyAsSlice(alloc, neighbor_slots);
                 @memset(nbrs, 0);
             }
@@ -787,8 +865,11 @@ pub fn Hnsw(comptime D: type) type {
             }
             const n_layers: usize = @as(usize, @min(level, self.getMaxLevel())) + 1;
             const layers = try scratch.alloc([]u32, n_layers);
-            errdefer scratch.free(layers);
             for (layers) |*slot| slot.* = &.{};
+            errdefer {
+                for (layers) |ids| if (ids.len != 0) scratch.free(ids);
+                scratch.free(layers);
+            }
 
             if (self.entryPoint() == null) {
                 return .{ .copy = q.copy, .q8 = q.q8, .scale = q.scale, .level = level, .layers = layers, .scratch = scratch };
@@ -833,11 +914,13 @@ pub fn Hnsw(comptime D: type) type {
         /// `plan.layers` for `spliceBackEdges`.
         pub fn publishInsert(self: *Self, plan: *InsertPlan) !u32 {
             const alloc = self.allocator;
+            defer {
+                if (plan.copy.len != 0) alloc.free(plan.copy);
+                if (plan.q8.len != 0) alloc.free(plan.q8);
+                plan.copy = &.{};
+                plan.q8 = &.{};
+            }
             const id = try self.appendRecord(plan.copy, plan.q8, plan.scale, plan.level);
-            alloc.free(plan.copy);
-            alloc.free(plan.q8);
-            plan.copy = &.{};
-            plan.q8 = &.{};
 
             const connect_n = @min(plan.layers.len, self.layerCount(id));
             var layer: u32 = 0;
@@ -864,7 +947,7 @@ pub fn Hnsw(comptime D: type) type {
         /// Always frees `plan.layers`.
         pub fn spliceBackEdges(self: *Self, plan: *InsertPlan, id: u32) !void {
             defer {
-                for (plan.layers) |ids| plan.scratch.free(ids);
+                for (plan.layers) |ids| if (ids.len != 0) plan.scratch.free(ids);
                 if (plan.layers.len != 0) plan.scratch.free(plan.layers);
                 plan.layers = &.{};
             }
@@ -907,6 +990,7 @@ pub fn Hnsw(comptime D: type) type {
         /// Single-threaded / exclusive-lock callers (tests, `insert`).
         pub fn commitInsert(self: *Self, plan: InsertPlan) !u32 {
             var p = plan;
+            errdefer p.discard(self.allocator);
             const id = try self.publishInsert(&p);
             self.publishEntry(id, p.level);
             try self.spliceBackEdges(&p, id);
@@ -947,7 +1031,7 @@ pub fn Hnsw(comptime D: type) type {
         ) ![]SearchResult {
             if (query.len != self.dim) return error.DimensionMismatch;
             const ep_id = self.entryPoint() orelse return alloc.alloc(SearchResult, 0);
-            var norm_buf: [512]f32 = undefined;
+            var norm_buf: [2048]f32 = undefined;
             var heap_nq: ?[]f32 = null;
             defer if (heap_nq) |h| alloc.free(h);
             const nq: []const f32 = if (query.len <= norm_buf.len) blk: {
@@ -962,7 +1046,7 @@ pub fn Hnsw(comptime D: type) type {
             };
 
             // quantize the normalized query once; reuse the amax scan for qs
-            var qbuf: [512]i8 = undefined;
+            var qbuf: [2048]i8 = undefined;
             var amax: f32 = 0;
             for (nq) |x| amax = @max(amax, @abs(x));
             const scale = amax / 127.0;
@@ -2500,4 +2584,89 @@ test "publishInsert then spliceBackEdges matches commitInsert" {
         try std.testing.expectEqual(x.id, y.id);
         try std.testing.expectApproxEqAbs(x.distance, y.distance, 1e-6);
     }
+}
+
+test "lean kernel: planInsert, appendRecord, and commitInsert are leak-free under OOM fault injection" {
+    const dim = 16;
+    var base = Hnsw(void).init(std.testing.allocator, dim, .{ .m = 4, .ef_construction = 16, .seed = 7 });
+    defer base.deinit();
+
+    var rng = std.Random.DefaultPrng.init(1234);
+    var v: [dim]f32 = undefined;
+    for (0..24) |_| {
+        for (&v) |*x| x.* = rng.random().floatNorm(f32);
+        _ = try base.insert(&v);
+    }
+    const base_len = base.len();
+
+    // 1. Fault-inject every scratch allocation step in `planInsert` at a multi-layer level (level = 3).
+    for (&v) |*x| x.* = rng.random().floatNorm(f32);
+    var fail_index: usize = 0;
+    while (fail_index < 32) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        if (base.planInsert(&v, 3, failing.allocator())) |plan| {
+            plan.discard(std.testing.allocator);
+            break;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expectEqual( failing.allocated_bytes, failing.freed_bytes );
+        }
+    }
+    try std.testing.expect(fail_index > 1);
+
+    // 2. Fault-inject every index allocation step in `insert` (covering `quantizeOwned`,
+    //    `planInsert` inner layers, `appendRecord` 11-slab rollback, and `commitInsert`).
+    var insert_fail_idx: usize = 0;
+    while (insert_fail_idx < 64) : (insert_fail_idx += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = insert_fail_idx });
+        var idx = Hnsw(void).init(failing.allocator(), dim, .{ .m = 4, .ef_construction = 16, .seed = 7 });
+        defer idx.deinit();
+
+        var local_rng = std.Random.DefaultPrng.init(99);
+        var completed_all = true;
+        for (0..6) |step| {
+            for (&v) |*x| x.* = local_rng.random().floatNorm(f32);
+            const before_n = idx.len();
+            const plan = idx.planInsert(&v, @intCast(step % 4), failing.allocator()) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                completed_all = false;
+                break;
+            };
+            _ = idx.commitInsert(plan) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                // Verify 11-slab atomic rollback invariant: all slab row counts stay synchronized.
+                try std.testing.expectEqual(before_n, idx.len());
+                try std.testing.expectEqual(before_n, idx.qscales.items.len);
+                try std.testing.expectEqual(before_n, idx.levels.items.len);
+                try std.testing.expectEqual(before_n, idx.l0_deg.items.len);
+                try std.testing.expectEqual(before_n, idx.hi_start.items.len);
+                try std.testing.expectEqual(before_n, idx.nbr_gen.items.len);
+                try std.testing.expectEqual(before_n, idx.vec_gen.items.len);
+                completed_all = false;
+                break;
+            };
+        }
+        if (completed_all) break;
+    }
+    try std.testing.expectEqual(base_len, base.len());
+}
+
+test "lean kernel: 1536D search uses stack buffers and preserves multi-layer visited invariant" {
+    const dim = 1536;
+    var idx = Hnsw(void).init(std.testing.allocator, dim, .{ .m = 8, .ef_construction = 32, .seed = 42 });
+    defer idx.deinit();
+
+    var rng = std.Random.DefaultPrng.init(2026);
+    var vec: [dim]f32 = undefined;
+    for (0..16) |i| {
+        for (&vec) |*x| x.* = rng.random().floatNorm(f32);
+        const plan = try idx.planInsert(&vec, @intCast(i % 4), std.testing.allocator);
+        _ = try idx.commitInsert(plan);
+    }
+
+    const res = try idx.search(&vec, 5, 32, std.testing.allocator);
+    defer std.testing.allocator.free(res);
+    try std.testing.expectEqual(@as(usize, 5), res.len);
+    try std.testing.expectEqual(@as(u32, 15), res[0].id);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), res[0].distance, 1e-5);
 }

@@ -70,14 +70,17 @@ pub fn topQueries(allocator: std.mem.Allocator, log_bytes: []const u8, max: usiz
 
     const n = @min(keys.items.len, max);
     const out = try allocator.alloc([]u8, n);
-    errdefer allocator.free(out);
+    var filled: usize = 0;
+    errdefer {
+        for (out[0..filled]) |s| allocator.free(s);
+        allocator.free(out);
+    }
     // Insertion order (keys) breaks count ties; selection by max count keeps
     // it simple — the candidate set is tiny.
     var remaining = std.ArrayList(u32).empty;
     defer remaining.deinit(allocator);
     try remaining.ensureTotalCapacity(allocator, keys.items.len);
     for (keys.items) |k| remaining.appendAssumeCapacity(counts.get(k).?);
-    var filled: usize = 0;
     while (filled < n) : (filled += 1) {
         var best: usize = 0;
         var best_count: u32 = 0;

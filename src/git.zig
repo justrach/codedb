@@ -1,7 +1,36 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const cio = @import("cio.zig");
 
 const disabled_hooks_config = "core.hooksPath=/codedb-hooks-disabled-do-not-exist";
+
+const posix_libc = struct {
+    extern "c" fn access(path: [*:0]const u8, amode: c_int) c_int;
+};
+
+/// Fast in-process check for whether `root` or any of its parent directories
+/// contains a `.git` entry (directory or worktree/submodule gitfile). Avoids a
+/// ~14ms `fork+exec` of `/usr/bin/git` when `root` is outside any git repository
+/// (e.g. benchmark temp dirs or extracted tarballs). Returns `true`
+/// conservatively on Windows, when `GIT_DIR` is set, or for relative paths.
+fn hasGitAncestor(root: []const u8) bool {
+    if (builtin.os.tag == .windows or builtin.os.tag == .freestanding) return true;
+    if (cio.posixGetenv("GIT_DIR") != null) return true;
+    if (root.len == 0 or root[0] != '/') return true;
+    var cur: []const u8 = root;
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const z = if (std.mem.eql(u8, cur, "/"))
+            cio.bufPrintZ(&buf, "/.git", .{}) catch return true
+        else
+            cio.bufPrintZ(&buf, "{s}/.git", .{cur}) catch return true;
+        if (posix_libc.access(z.ptr, 0) == 0) return true;
+        const parent = std.fs.path.dirname(cur) orelse break;
+        if (std.mem.eql(u8, parent, cur)) break;
+        cur = parent;
+    }
+    return false;
+}
 
 fn parseGitHead(stdout: []const u8) ?[40]u8 {
     const trimmed = std.mem.trim(u8, stdout, &std.ascii.whitespace);
@@ -16,6 +45,7 @@ fn parseGitHead(stdout: []const u8) ?[40]u8 {
 /// Returns null if `root` is not a git repo, git is unavailable, or HEAD
 /// has no commit yet (fresh repo).
 pub fn getGitHead(root: []const u8, allocator: std.mem.Allocator) !?[40]u8 {
+    if (!hasGitAncestor(root)) return null;
     const result = cio.runCapture(.{
         .allocator = allocator,
         .argv = &.{ "git", "-c", "core.fsmonitor=false", "-c", disabled_hooks_config, "rev-parse", "HEAD" },
@@ -169,6 +199,7 @@ pub fn buildCoChange(
     max_files_per_commit: usize,
     max_partners: usize,
 ) ?std.StringHashMap([]CoChangePartner) {
+    if (!hasGitAncestor(root)) return null;
     var nbuf: [16]u8 = undefined;
     const nstr = std.fmt.bufPrint(&nbuf, "{d}", .{max_commits}) catch return null;
     const result = cio.runCapture(.{

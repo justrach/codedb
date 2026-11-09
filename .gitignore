@@ -32,3 +32,5 @@ logs/
 # Dependency / tooling caches
 zig-pkg/
 __pycache__/
+*.olean
+.lake/

@@ -415,6 +415,16 @@ pub fn homeDir() ?[]const u8 {
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
+/// Monotonic process-wide environment epoch bumped on every in-process
+/// `posixSetenv` / `posixUnsetenv`. Allows hot-path environment snapshots
+/// (e.g., `rankingEnvFingerprint`) to skip repeated `getenv` table scans
+/// unless the process environment has actually been mutated.
+var env_epoch: std.atomic.Value(u64) = .init(1);
+
+pub inline fn envEpoch() u64 {
+    return env_epoch.load(.acquire);
+}
+
 /// Set an environment variable (libc setenv), visible to subsequent posixGetenv
 /// reads in this process. Names ≥256 / values ≥4096 bytes are ignored. Used by
 /// CLI opt-in switches that flip in-process policy — e.g. `--allow-temp` sets
@@ -432,6 +442,7 @@ pub fn posixSetenv(name: []const u8, value: []const u8) void {
     } else {
         _ = setenv(@ptrCast(&nbuf), @ptrCast(&vbuf), 1);
     }
+    _ = env_epoch.fetchAdd(1, .release);
 }
 
 /// Remove an environment variable (libc unsetenv).
@@ -446,6 +457,7 @@ pub fn posixUnsetenv(name: []const u8) void {
     } else {
         _ = unsetenv(@ptrCast(&nbuf));
     }
+    _ = env_epoch.fetchAdd(1, .release);
 }
 
 /// Read one line from stdin (fd 0) into `buf`, trimming trailing CR/LF. Returns

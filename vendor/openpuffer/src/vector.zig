@@ -4,14 +4,25 @@ const std = @import("std");
 
 pub fn dot(a: []const f32, b: []const f32) f64 {
     const lane = 16;
-    var acc: @Vector(lane, f32) = @splat(0);
+    const step2 = lane * 2;
+    var acc0: @Vector(lane, f32) = @splat(0);
+    var acc1: @Vector(lane, f32) = @splat(0);
     var i: usize = 0;
-    while (i + lane <= a.len) : (i += lane) {
+    while (i + step2 <= a.len) : (i += step2) {
+        const va0: @Vector(lane, f32) = a[i..][0..lane].*;
+        const vb0: @Vector(lane, f32) = b[i..][0..lane].*;
+        const va1: @Vector(lane, f32) = a[i + lane ..][0..lane].*;
+        const vb1: @Vector(lane, f32) = b[i + lane ..][0..lane].*;
+        acc0 = @mulAdd(@Vector(lane, f32), va0, vb0, acc0);
+        acc1 = @mulAdd(@Vector(lane, f32), va1, vb1, acc1);
+    }
+    if (i + lane <= a.len) {
         const va: @Vector(lane, f32) = a[i..][0..lane].*;
         const vb: @Vector(lane, f32) = b[i..][0..lane].*;
-        acc += va * vb;
+        acc0 = @mulAdd(@Vector(lane, f32), va, vb, acc0);
+        i += lane;
     }
-    var sum: f32 = @reduce(.Add, acc);
+    var sum: f32 = @reduce(.Add, acc0 + acc1);
     while (i < a.len) : (i += 1) sum += a[i] * b[i];
     return @floatCast(sum);
 }

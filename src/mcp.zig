@@ -2188,46 +2188,7 @@ pub fn isBareIdentifier(s: []const u8) bool {
 
 fn appendSearchSymbolNudge(alloc: std.mem.Allocator, explorer: *Explorer, query: []const u8, out: *std.ArrayList(u8)) void {
     if (!isBareIdentifier(query)) return;
-    const results = explorer.findAllSymbols(query, alloc) catch return;
-    defer {
-        for (results) |r| {
-            alloc.free(r.path);
-            alloc.free(r.symbol.name);
-            if (r.symbol.detail) |d| alloc.free(d);
-        }
-        alloc.free(results);
-    }
-    if (results.len == 0) return;
-
-    // Fewer round-trips: `query` is an indexed symbol, so instead of nudging the
-    // agent to make a *second* codedb_symbol call, surface the definition site(s)
-    // inline. Prefer real definitions over import/comment matches (same filter as
-    // renderSymbolDefsFast). One call now answers "where is X defined?".
-    var has_def = false;
-    for (results) |r| {
-        if (r.symbol.kind != .import and r.symbol.kind != .comment_block) {
-            has_def = true;
-            break;
-        }
-    }
-    var total_defs: usize = 0;
-    for (results) |r| {
-        const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
-        if (!has_def or is_def) total_defs += 1;
-    }
-    const w = cio.listWriter(out, alloc);
-    const cap: usize = 3;
-    var shown: usize = 0;
-    for (results) |r| {
-        if (shown >= cap) break;
-        const is_def = r.symbol.kind != .import and r.symbol.kind != .comment_block;
-        if (has_def and !is_def) continue;
-        if (shown == 0) w.print("↪ '{s}' is defined at (codedb_symbol for bodies):\n", .{query}) catch {};
-        w.print("  {s}:{d} ({s})\n", .{ r.path, r.symbol.line_start, @tagName(r.symbol.kind) }) catch {};
-        shown += 1;
-    }
-    if (shown == 0) return;
-    if (total_defs > shown) w.print("  (+{d} more — codedb_symbol '{s}')\n", .{ total_defs - shown, query }) catch {};
+    explorer.renderSymbolNudge(query, alloc, out);
 }
 
 // Issue #626 follow-up: codedb_deps is the one structural tool nothing points

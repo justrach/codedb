@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.5864 - 2026-11-10
+
+- Add a Lean 4 formal verification suite (`lean-proofs/`) modeling OpenPuffer HNSW insertion/search kernels and CodeDB search/cache/ownership state machines across 373 finite state-cube checks and universal theorems (`./lean-proofs/verify.sh`).
+- Fix mid-operation OOM memory leaks and partial-mutation rollback in `vendor/openpuffer` (`planInsert` descending layer-slice cleanup, `appendRecord` 11-slab rollback, `publishInsert`/`commitInsert` ownership cleanup) and `codedb` (`findSymbol`, `findAllSymbols`, `searchContentUncached`, `searchContentRegex`, `warmup.topQueries`, and `renderPlainSearch` partial-output rollback), verified under `std.testing.FailingAllocator`.
+- Accelerate `codedb_search` (**13.6µs → 8.1µs**, +67.8% ops/s) and `codedb_context` (**384.8µs → 161.8µs**, +137.8% ops/s) via epoch-memoized ranking environment snapshots (`cio.envEpoch` + `rankingEnvSnapshot`), zero-allocation `symbol_index` nudges (`Explorer.renderSymbolNudge`), post-lazy-init cache generation capture under `mu.lockShared()`, lazy word-index rebuild in `renderPlainSearchUncached`, orthogonal `def_token_index` invalidation, zero-copy `searchContentWithScope` / `resolveCallees`, and fast in-process `.git` ancestor checks (`hasGitAncestor`).
+- Accelerate `vendor/openpuffer` ANN search via sparse dirty-node `visited` bitset clearing in `searchLayer`, 2048-dim stack buffers in `searchAdvanced` (0 heap allocations for 768D/1024D/1536D models), and dual-16-lane SIMD dot products in `vector.dot`.
+
 ## 0.2.5863 - 2026-11-09
 
 - Reuse chunk embeddings across `codedb semantic-index` builds via a local binary cache (`semantic-embeddings-v1.cache`) keyed by `(path, line_start, line_end, card_text)` and gated on live calibration cosine (`>= 0.9999`), persisting the cache before source revalidation so interrupted builds retain embedded vectors (#775).
