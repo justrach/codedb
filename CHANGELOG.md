@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.5863 - 2026-11-09
+
+- Reuse chunk embeddings across `codedb semantic-index` builds via a local binary cache (`semantic-embeddings-v1.cache`) keyed by `(path, line_start, line_end, card_text)` and gated on live calibration cosine (`>= 0.9999`), persisting the cache before source revalidation so interrupted builds retain embedded vectors (#775).
+- Tolerate stale ANN sidecars across commits and working-tree edits: exclude HNSW hits from modified or deleted files, embed bounded chunks from changed or newly added safe files in the same single HTTP request as query + calibration, and merge exact-scored delta chunks with HNSW results (#775).
+- Make `Config.vectorSpaceId()` URL-independent while preserving legacy URL-hashed sidecar compatibility, add `CODEDB_EMBEDDINGS_SPACE_ID` and `CODEDB_SEMANTIC_NO_EXACT_FALLBACK=1` overrides, classify gateway `5xx` responses (`500..599`) as `EmbeddingProviderUnavailable`, and retry transient transport errors once within the request deadline (#750, #760, #761, #775).
+- Skip `codedb.snapshot` and `codedb.snapshot.*.tmp` during live indexing and recursive file events, and finish snapshot writes and index compaction before signaling background scan readiness (#766).
+
 ## 0.2.5862 - 2026-10-27
 
 - Enable the Zig bbtree inline-key dictionary by default for warm mmap word indexes. Keep postings zero-copy and preserve exact/prefix results, ranking, hosted fallback, and ANN candidate breadth (#772).

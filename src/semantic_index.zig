@@ -39,14 +39,21 @@ pub const max_records: usize = 250_000;
 /// the 650-700 MiB query RSS profile that mmap is meant to avoid.
 pub const max_metadata_bytes: usize = 64 * 1024 * 1024;
 pub const max_slab_bytes: usize = 1024 * 1024 * 1024;
+pub const max_embedding_cache_bytes: usize = 512 * 1024 * 1024;
+pub const embedding_cache_name = "semantic-embeddings-v1.cache";
 pub const auto_migration_opt_out_env = "CODEDB_NO_AUTO_SEMANTIC_MIGRATION";
 
 const magic = [8]u8{ 'C', 'D', 'B', 'A', 'N', 'N', '0', '3' };
 const format_version: u16 = 3;
 const header_bytes: usize = 48;
 
+const cache_magic = [8]u8{ 'C', 'D', 'B', 'E', 'M', 'C', '0', '1' };
+const cache_format_version: u16 = 1;
+const cache_header_bytes: usize = 48;
+
 pub const BuildStats = struct {
     records: usize,
+    reused_records: usize = 0,
     files_indexed: usize,
     dimensions: u16,
     model: []const u8,
@@ -79,6 +86,7 @@ pub const SearchOutput = struct {
     records: usize,
     index_bytes: usize,
     text_bytes_sent: usize,
+    documents_sent: usize = 2,
     retention: enum { none_by_codedb_policy, custom_endpoint_unverified },
     load_ns: u64,
     embed_ns: u64,
@@ -86,6 +94,13 @@ pub const SearchOutput = struct {
     mmap_backed: bool,
     cache_hit: bool,
     vector_space_id: u64,
+
+    pub fn deinit(self: *SearchOutput, allocator: std.mem.Allocator) void {
+        for (self.hits) |hit| allocator.free(hit.path);
+        allocator.free(self.hits);
+        allocator.free(self.model);
+        self.* = undefined;
+    }
 };
 
 const Record = struct {
@@ -93,6 +108,25 @@ const Record = struct {
     line_start: u32,
     line_end: u32,
 };
+
+const CachedFileState = struct {
+    path: []const u8,
+    content_hash: u64,
+    size: u64,
+    line_count: u32,
+};
+
+const CardKey = struct {
+    lo: u64,
+    hi: u64,
+};
+
+fn hashChunkCard(card: []const u8) CardKey {
+    return .{
+        .lo = std.hash.Wyhash.hash(0x4344_4243_484b_3031, card),
+        .hi = std.hash.Wyhash.hash(0x4344_4243_484b_3032, card),
+    };
+}
 
 const Loaded = struct {
     allocator: std.mem.Allocator,
@@ -107,6 +141,8 @@ const Loaded = struct {
     calibration: []f32,
     git_head: ?[40]u8,
     index: ann.Index,
+    build_files_storage: ?[]u8 = null,
+    build_files: ?[]CachedFileState = null,
 
     fn loadGraph(self: *Loaded) !void {
         // No copy-in fallback: native Windows mmap is tracked upstream as
@@ -122,6 +158,8 @@ const Loaded = struct {
 
     fn deinit(self: *Loaded) void {
         self.index.deinit();
+        if (self.build_files) |files| self.allocator.free(files);
+        if (self.build_files_storage) |buf| self.allocator.free(buf);
         self.allocator.free(self.calibration);
         self.allocator.free(self.slab_path);
         self.allocator.free(self.records);
@@ -524,22 +562,337 @@ fn embeddingBatchCount(card_count: usize) usize {
     return (card_count + semantic.max_index_documents - 1) / semantic.max_index_documents;
 }
 
-fn flushWave(
+fn embeddingCachePath(allocator: std.mem.Allocator, data_dir: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ data_dir, embedding_cache_name });
+}
+
+fn findBuildFile(files: []const CachedFileState, path: []const u8) ?CachedFileState {
+    var lo: usize = 0;
+    var hi: usize = files.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        switch (std.mem.order(u8, files[mid].path, path)) {
+            .eq => return files[mid],
+            .lt => lo = mid + 1,
+            .gt => hi = mid,
+        }
+    }
+    return null;
+}
+
+fn isFileUnchanged(explorer: *Explorer, store: *Store, bf: CachedFileState) bool {
+    const line_count = explorer.outlineLineCount(bf.path) orelse return false;
+    if (line_count != bf.line_count) return false;
+    const latest = store.getLatest(bf.path) orelse return false;
+    if (latest.op == .tombstone) return false;
+    return latest.hash == bf.content_hash and latest.size == bf.size;
+}
+
+fn writeEmbeddingCache(
     io: std.Io,
     allocator: std.mem.Allocator,
-    index: *ann.Index,
+    data_dir: []const u8,
+    model: []const u8,
+    dimensions: u16,
+    manifest: u64,
+    vector_space_id: u64,
+    calibration: []const f32,
+    files: []const CachedFileState,
+    keys: []const CardKey,
+    vectors: []const f32,
+) !void {
+    if (model.len == 0 or model.len > std.math.maxInt(u16)) return error.InvalidEmbeddingModel;
+    if (dimensions < 64 or dimensions > 4096 or calibration.len != dimensions) return error.InvalidEmbeddingDimensions;
+    if (keys.len > max_records or files.len > max_records) return error.InvalidAnnRecordCount;
+    const expected_floats = try std.math.mul(usize, keys.len, dimensions);
+    if (vectors.len != expected_floats) return error.InvalidEmbeddingBatchShape;
+
+    var files_byte_len: usize = 0;
+    for (files) |f| {
+        if (f.path.len == 0 or f.path.len > std.math.maxInt(u16) or !semantic.isRemoteCandidatePathAllowed(f.path)) {
+            return error.InvalidAnnRecordPath;
+        }
+        files_byte_len = try std.math.add(usize, files_byte_len, 22 + f.path.len);
+    }
+    if (files_byte_len > std.math.maxInt(u32)) return error.AnnMetadataTooLarge;
+
+    const final_path = try embeddingCachePath(allocator, data_dir);
+    defer allocator.free(final_path);
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.{x}.tmp", .{ final_path, cio.randU64() });
+    defer allocator.free(tmp_path);
+    errdefer std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
+
+    var file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{ .permissions = privateFilePermissions() });
+    var file_open = true;
+    defer if (file_open) file.close(io);
+    var file_buffer: [256 * 1024]u8 = undefined;
+    var writer = file.writer(io, &file_buffer);
+
+    var header: [cache_header_bytes]u8 = @splat(0);
+    @memcpy(header[0..8], &cache_magic);
+    std.mem.writeInt(u16, header[8..10], cache_format_version, .little);
+    std.mem.writeInt(u16, header[10..12], dimensions, .little);
+    std.mem.writeInt(u32, header[12..16], @intCast(keys.len), .little);
+    std.mem.writeInt(u64, header[16..24], manifest, .little);
+    std.mem.writeInt(u64, header[24..32], vector_space_id, .little);
+    std.mem.writeInt(u16, header[32..34], @intCast(model.len), .little);
+    std.mem.writeInt(u32, header[34..38], @intCast(files.len), .little);
+    std.mem.writeInt(u32, header[38..42], @intCast(files_byte_len), .little);
+    try writer.interface.writeAll(&header);
+    try writer.interface.writeAll(model);
+    for (calibration) |value| {
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bytes, @bitCast(value), .little);
+        try writer.interface.writeAll(&bytes);
+    }
+    for (files) |f| {
+        var len_bytes: [2]u8 = undefined;
+        std.mem.writeInt(u16, &len_bytes, @intCast(f.path.len), .little);
+        try writer.interface.writeAll(&len_bytes);
+        try writer.interface.writeAll(f.path);
+        var meta_bytes: [20]u8 = undefined;
+        std.mem.writeInt(u64, meta_bytes[0..8], f.content_hash, .little);
+        std.mem.writeInt(u64, meta_bytes[8..16], f.size, .little);
+        std.mem.writeInt(u32, meta_bytes[16..20], f.line_count, .little);
+        try writer.interface.writeAll(&meta_bytes);
+    }
+    for (keys, 0..) |key, row_index| {
+        var key_bytes: [16]u8 = undefined;
+        std.mem.writeInt(u64, key_bytes[0..8], key.lo, .little);
+        std.mem.writeInt(u64, key_bytes[8..16], key.hi, .little);
+        try writer.interface.writeAll(&key_bytes);
+        const row = vectors[row_index * @as(usize, dimensions) ..][0..dimensions];
+        for (row) |value| {
+            var bytes: [4]u8 = undefined;
+            std.mem.writeInt(u32, &bytes, @bitCast(value), .little);
+            try writer.interface.writeAll(&bytes);
+        }
+    }
+    try writer.interface.flush();
+    try file.sync(io);
+    file.close(io);
+    file_open = false;
+    try std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), final_path, io);
+}
+
+fn loadEmbeddingCache(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    data_dir: []const u8,
+    config: *const semantic.Config,
+    live_calibration: []const f32,
+    vec_map: *std.AutoHashMap(CardKey, u32),
+    cached_keys: *std.ArrayList(CardKey),
+    cached_vectors: *std.ArrayList(f32),
+) void {
+    const path = embeddingCachePath(allocator, data_dir) catch return;
+    defer allocator.free(path);
+    const storage = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_embedding_cache_bytes)) catch return;
+    defer allocator.free(storage);
+    if (storage.len < cache_header_bytes or !std.mem.eql(u8, storage[0..8], &cache_magic)) return;
+    var pos: usize = 8;
+    const version = take(u16, storage, &pos) catch return;
+    if (version != cache_format_version) return;
+    const dimensions = take(u16, storage, &pos) catch return;
+    const entry_count = take(u32, storage, &pos) catch return;
+    _ = take(u64, storage, &pos) catch return; // manifest
+    const stored_space_id = take(u64, storage, &pos) catch return;
+    const model_len = take(u16, storage, &pos) catch return;
+    const file_count = take(u32, storage, &pos) catch return;
+    const files_byte_len = take(u32, storage, &pos) catch return;
+    pos += 6; // reserved
+    if (dimensions != config.dimensions or entry_count == 0 or entry_count > max_records or
+        file_count > max_records or !config.matchesVectorSpaceId(stored_space_id)) return;
+    const cal_bytes = std.math.mul(usize, dimensions, @sizeOf(f32)) catch return;
+    const prefix_needed = std.math.add(usize, model_len, std.math.add(usize, cal_bytes, files_byte_len) catch return) catch return;
+    if (pos > storage.len or prefix_needed > storage.len - pos) return;
+    const model = storage[pos .. pos + model_len];
+    if (!std.mem.eql(u8, model, config.model)) return;
+    pos += model_len;
+
+    const stored_cal = allocator.alloc(f32, dimensions) catch return;
+    defer allocator.free(stored_cal);
+    for (stored_cal) |*val| {
+        const bits = take(u32, storage, &pos) catch return;
+        val.* = @bitCast(bits);
+        if (!std.math.isFinite(val.*)) return;
+    }
+    const cal_cos = semantic.cosineF32(live_calibration, stored_cal) catch return;
+    if (cal_cos < semantic.calibration_min_cosine) return;
+    pos += files_byte_len;
+
+    const entry_bytes = std.math.add(usize, 16, cal_bytes) catch return;
+    const total_entries_bytes = std.math.mul(usize, entry_count, entry_bytes) catch return;
+    if (pos > storage.len or total_entries_bytes != storage.len - pos) return;
+
+    vec_map.ensureTotalCapacity(@intCast(entry_count)) catch return;
+    cached_keys.ensureTotalCapacity(allocator, entry_count) catch return;
+    cached_vectors.ensureTotalCapacity(allocator, @as(usize, entry_count) * dimensions) catch return;
+
+    const row_buf = allocator.alloc(f32, dimensions) catch return;
+    defer allocator.free(row_buf);
+    for (0..entry_count) |_| {
+        const lo = take(u64, storage, &pos) catch return;
+        const hi = take(u64, storage, &pos) catch return;
+        var valid_row = true;
+        for (row_buf) |*val| {
+            const bits = take(u32, storage, &pos) catch return;
+            val.* = @bitCast(bits);
+            if (!std.math.isFinite(val.*)) valid_row = false;
+        }
+        if (!valid_row) continue;
+        const key = CardKey{ .lo = lo, .hi = hi };
+        if (vec_map.contains(key)) continue;
+        const idx: u32 = @intCast(cached_keys.items.len);
+        cached_keys.append(allocator, key) catch return;
+        cached_vectors.appendSlice(allocator, row_buf) catch {
+            _ = cached_keys.pop();
+            return;
+        };
+        vec_map.putAssumeCapacity(key, idx);
+    }
+}
+
+fn loadCacheFilesForManifest(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8, loaded: *Loaded) void {
+    const path = embeddingCachePath(allocator, data_dir) catch return;
+    defer allocator.free(path);
+    var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return;
+    defer file.close(io);
+
+    var header: [cache_header_bytes]u8 = undefined;
+    if ((file.readPositionalAll(io, &header, 0) catch return) != cache_header_bytes) return;
+    if (!std.mem.eql(u8, header[0..8], &cache_magic)) return;
+    if (std.mem.readInt(u16, header[8..10], .little) != cache_format_version) return;
+    const dimensions = std.mem.readInt(u16, header[10..12], .little);
+    const manifest = std.mem.readInt(u64, header[16..24], .little);
+    const model_len: usize = std.mem.readInt(u16, header[32..34], .little);
+    const file_count: usize = std.mem.readInt(u32, header[34..38], .little);
+    const files_byte_len: usize = std.mem.readInt(u32, header[38..42], .little);
+    if (dimensions != loaded.dimensions or manifest == 0 or manifest != loaded.manifest or
+        file_count == 0 or file_count > max_records or files_byte_len == 0) return;
+
+    const cal_bytes = std.math.mul(usize, dimensions, @sizeOf(f32)) catch return;
+    const files_offset = std.math.add(usize, cache_header_bytes, std.math.add(usize, model_len, cal_bytes) catch return) catch return;
+    const prefix_bytes = std.math.add(usize, files_offset, files_byte_len) catch return;
+    if (prefix_bytes > max_metadata_bytes) return;
+
+    const storage = allocator.alloc(u8, files_byte_len) catch return;
+    errdefer allocator.free(storage);
+    const model_buf = allocator.alloc(u8, model_len) catch {
+        allocator.free(storage);
+        return;
+    };
+    defer allocator.free(model_buf);
+    if ((file.readPositionalAll(io, model_buf, cache_header_bytes) catch {
+        allocator.free(storage);
+        return;
+    }) != model_len) {
+        allocator.free(storage);
+        return;
+    }
+    if (!std.mem.eql(u8, model_buf, loaded.model)) {
+        allocator.free(storage);
+        return;
+    }
+    if ((file.readPositionalAll(io, storage, files_offset) catch {
+        allocator.free(storage);
+        return;
+    }) != files_byte_len) {
+        allocator.free(storage);
+        return;
+    }
+
+    const files = allocator.alloc(CachedFileState, file_count) catch {
+        allocator.free(storage);
+        return;
+    };
+    var pos: usize = 0;
+    for (files, 0..) |*f, idx| {
+        const path_len = take(u16, storage, &pos) catch {
+            allocator.free(files);
+            allocator.free(storage);
+            return;
+        };
+        const record_bytes = std.math.add(usize, path_len, 20) catch {
+            allocator.free(files);
+            allocator.free(storage);
+            return;
+        };
+        if (path_len == 0 or pos > storage.len or record_bytes > storage.len - pos) {
+            allocator.free(files);
+            allocator.free(storage);
+            return;
+        }
+        const f_path = storage[pos .. pos + path_len];
+        if (!semantic.isRemoteCandidatePathAllowed(f_path)) {
+            allocator.free(files);
+            allocator.free(storage);
+            return;
+        }
+        if (idx > 0 and std.mem.order(u8, files[idx - 1].path, f_path) != .lt) {
+            allocator.free(files);
+            allocator.free(storage);
+            return;
+        }
+        pos += path_len;
+        const content_hash = take(u64, storage, &pos) catch {
+            allocator.free(files);
+            allocator.free(storage);
+            return;
+        };
+        const size = take(u64, storage, &pos) catch {
+            allocator.free(files);
+            allocator.free(storage);
+            return;
+        };
+        const line_count = take(u32, storage, &pos) catch {
+            allocator.free(files);
+            allocator.free(storage);
+            return;
+        };
+        if (line_count == 0) {
+            allocator.free(files);
+            allocator.free(storage);
+            return;
+        }
+        f.* = .{
+            .path = f_path,
+            .content_hash = content_hash,
+            .size = size,
+            .line_count = line_count,
+        };
+    }
+    if (pos != storage.len) {
+        allocator.free(files);
+        allocator.free(storage);
+        return;
+    }
+    loaded.build_files_storage = storage;
+    loaded.build_files = files;
+}
+
+const EmbedWaveStats = struct {
+    text_bytes: usize,
+    records: usize,
+    embedding_wall_ns: u64,
+};
+
+fn embedMissingWave(
+    io: std.Io,
+    allocator: std.mem.Allocator,
     config: semantic.Config,
     cards: *std.ArrayList([]u8),
-    pending_records: *std.ArrayList(Record),
-    indexed_records: *std.ArrayList(Record),
-) !FlushStats {
+    pending_keys: *std.ArrayList(CardKey),
+    vec_map: *std.AutoHashMap(CardKey, u32),
+    cached_keys: *std.ArrayList(CardKey),
+    cached_vectors: *std.ArrayList(f32),
+) !EmbedWaveStats {
     if (cards.items.len == 0) return .{
         .text_bytes = 0,
         .records = 0,
         .embedding_wall_ns = 0,
-        .insertion_ns = 0,
     };
-    if (cards.items.len != pending_records.items.len) return error.AnnRecordMappingMismatch;
+    if (cards.items.len != pending_keys.items.len) return error.AnnRecordMappingMismatch;
     const batch_count = embeddingBatchCount(cards.items.len);
     if (batch_count > max_parallel_batches) return error.TooManyEmbeddingBatches;
     var input_storage: [max_parallel_batches][semantic.max_index_documents][]const u8 = undefined;
@@ -567,7 +920,6 @@ fn flushWave(
     for (workers[0..batch_count]) |worker| if (worker.failure) |err| return err;
 
     var text_bytes: usize = 0;
-    const insertion_started = cio.nanoTimestamp();
     for (workers[0..batch_count], 0..) |worker, batch_index| {
         const embedded = worker.result orelse return error.MissingEmbeddingBatchResult;
         if (embedded.dimensions != config.dimensions or !std.mem.eql(u8, embedded.model, config.model)) {
@@ -575,23 +927,26 @@ fn flushWave(
         }
         if (embedded.count != worker.inputs.len) return error.InvalidEmbeddingBatchShape;
         text_bytes = try std.math.add(usize, text_bytes, embedded.text_bytes_sent);
-        const record_start = batch_index * semantic.max_index_documents;
-        const first_id = try index.insertEmbeddingBatch(embedded.vectors, embedded.count, embedded.dimensions);
-        if (first_id != indexed_records.items.len) return error.AnnRecordMappingMismatch;
+        const key_start = batch_index * semantic.max_index_documents;
         for (0..embedded.count) |row_index| {
-            try indexed_records.append(allocator, pending_records.items[record_start + row_index]);
+            const key = pending_keys.items[key_start + row_index];
+            if (vec_map.contains(key)) continue;
+            const row = embedded.vectors[row_index * @as(usize, embedded.dimensions) ..][0..embedded.dimensions];
+            const idx: u32 = @intCast(cached_keys.items.len);
+            try cached_keys.append(allocator, key);
+            errdefer _ = cached_keys.pop();
+            try cached_vectors.appendSlice(allocator, row);
+            try vec_map.put(key, idx);
         }
     }
-    const insertion_ns = elapsedNs(insertion_started);
     const records = cards.items.len;
     for (cards.items) |card| allocator.free(card);
     cards.clearRetainingCapacity();
-    pending_records.clearRetainingCapacity();
+    pending_keys.clearRetainingCapacity();
     return .{
         .text_bytes = text_bytes,
         .records = records,
         .embedding_wall_ns = embedding_wall_ns,
-        .insertion_ns = insertion_ns,
     };
 }
 
@@ -676,6 +1031,11 @@ fn writeMetadata(
     return total;
 }
 
+const PlannedChunk = struct {
+    record: Record,
+    key: CardKey,
+};
+
 pub fn build(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -716,21 +1076,37 @@ pub fn build(
     if (calibration_result.count != 1 or calibration_result.dimensions != config.dimensions or
         !std.mem.eql(u8, calibration_result.model, config.model)) return error.InvalidEmbeddingCalibration;
     const calibration = calibration_result.vectors[0..config.dimensions];
+
+    var vec_map = std.AutoHashMap(CardKey, u32).init(allocator);
+    defer vec_map.deinit();
+    var cached_keys: std.ArrayList(CardKey) = .empty;
+    defer cached_keys.deinit(allocator);
+    var cached_vectors: std.ArrayList(f32) = .empty;
+    defer cached_vectors.deinit(allocator);
+    loadEmbeddingCache(io, allocator, data_dir, &config, calibration, &vec_map, &cached_keys, &cached_vectors);
+
     var cards: std.ArrayList([]u8) = .empty;
     defer {
         for (cards.items) |card| allocator.free(card);
         cards.deinit(allocator);
     }
-    var pending_records: std.ArrayList(Record) = .empty;
-    defer pending_records.deinit(allocator);
+    var pending_keys: std.ArrayList(CardKey) = .empty;
+    defer pending_keys.deinit(allocator);
+    var queued_keys = std.AutoHashMap(CardKey, void).init(allocator);
+    defer queued_keys.deinit();
+    var planned_chunks: std.ArrayList(PlannedChunk) = .empty;
+    defer planned_chunks.deinit(allocator);
     var indexed_records: std.ArrayList(Record) = .empty;
     defer indexed_records.deinit(allocator);
+    var build_files: std.ArrayList(CachedFileState) = .empty;
+    defer build_files.deinit(allocator);
 
     const parallel_batches = indexConcurrency();
     const wave_capacity = parallel_batches * semantic.max_index_documents;
     var text_bytes_sent: usize = calibration_result.text_bytes_sent;
     var embedding_wall_ns: u64 = elapsedNs(calibration_started);
-    var insertion_ns: u64 = 0;
+    var reused_records: usize = 0;
+    var newly_embedded_records: usize = 0;
     var blocked: usize = 0;
     var files_indexed: usize = 0;
     for (paths) |path| {
@@ -740,11 +1116,13 @@ pub fn build(
         }
         const content = (try explorer.getContent(path, allocator)) orelse return error.RepositoryChangedDuringAnnBuild;
         defer allocator.free(content);
+        const content_hash = std.hash.Wyhash.hash(0, content);
+        const content_size: u64 = @intCast(content.len);
         Store.updateSemanticContentFingerprint(
             &embedded_content,
             path,
-            std.hash.Wyhash.hash(0, content),
-            @intCast(content.len),
+            content_hash,
+            content_size,
         );
         if (content.len == 0) continue;
         var outline = (try explorer.getOutline(path, allocator)) orelse return error.RepositoryChangedDuringAnnBuild;
@@ -753,28 +1131,93 @@ pub fn build(
         var chunks_for_file: usize = 0;
         while (chunks_for_file < max_chunks_per_file) : (chunks_for_file += 1) {
             const chunk = cursor.next() orelse break;
-            if (indexed_records.items.len + pending_records.items.len >= max_records) return error.AnnRecordBudgetExceeded;
+            if (planned_chunks.items.len >= max_records) return error.AnnRecordBudgetExceeded;
+            const card = try makeChunkCard(allocator, path, @tagName(outline.language), chunk);
+            const key = hashChunkCard(card);
+            try planned_chunks.append(allocator, .{
+                .record = .{
+                    .path = path,
+                    .line_start = chunk.line_start,
+                    .line_end = chunk.line_end,
+                },
+                .key = key,
+            });
+            if (vec_map.contains(key) or queued_keys.contains(key)) {
+                allocator.free(card);
+                reused_records += 1;
+                continue;
+            }
             if (cards.items.len == wave_capacity) {
-                const stats = try flushWave(io, allocator, &index, config, &cards, &pending_records, &indexed_records);
+                const stats = try embedMissingWave(io, allocator, config, &cards, &pending_keys, &vec_map, &cached_keys, &cached_vectors);
+                queued_keys.clearRetainingCapacity();
                 text_bytes_sent = try std.math.add(usize, text_bytes_sent, stats.text_bytes);
                 embedding_wall_ns = try std.math.add(u64, embedding_wall_ns, stats.embedding_wall_ns);
-                insertion_ns = try std.math.add(u64, insertion_ns, stats.insertion_ns);
-                if (try index.slabImageSize() > max_slab_bytes) return error.AnnSlabTooLarge;
+                newly_embedded_records += stats.records;
             }
-            const card = try makeChunkCard(allocator, path, @tagName(outline.language), chunk);
             try cards.append(allocator, card);
-            try pending_records.append(allocator, .{
+            try pending_keys.append(allocator, key);
+            try queued_keys.put(key, {});
+        }
+        if (chunks_for_file > 0) {
+            files_indexed += 1;
+            try build_files.append(allocator, .{
                 .path = path,
-                .line_start = chunk.line_start,
-                .line_end = chunk.line_end,
+                .content_hash = content_hash,
+                .size = content_size,
+                .line_count = @max(1, outline.line_count),
             });
         }
-        if (chunks_for_file > 0) files_indexed += 1;
     }
-    const final_stats = try flushWave(io, allocator, &index, config, &cards, &pending_records, &indexed_records);
+    const final_stats = try embedMissingWave(io, allocator, config, &cards, &pending_keys, &vec_map, &cached_keys, &cached_vectors);
+    queued_keys.clearRetainingCapacity();
     text_bytes_sent = try std.math.add(usize, text_bytes_sent, final_stats.text_bytes);
     embedding_wall_ns = try std.math.add(u64, embedding_wall_ns, final_stats.embedding_wall_ns);
-    insertion_ns = try std.math.add(u64, insertion_ns, final_stats.insertion_ns);
+    newly_embedded_records += final_stats.records;
+    if (planned_chunks.items.len == 0) return error.NoSafeAnnRecords;
+
+    // Persist newly computed chunk vectors before source revalidation so that if
+    // HEAD or working tree files moved during a long build, the next build
+    // reuses all completed embeddings instead of starting from scratch.
+    if (newly_embedded_records > 0) {
+        writeEmbeddingCache(
+            io,
+            allocator,
+            data_dir,
+            config.model,
+            config.dimensions,
+            0,
+            vector_space_id,
+            calibration,
+            &.{},
+            cached_keys.items,
+            cached_vectors.items,
+        ) catch {};
+    }
+
+    const insertion_started = cio.nanoTimestamp();
+    try indexed_records.ensureTotalCapacity(allocator, planned_chunks.items.len);
+    var active_keys: std.ArrayList(CardKey) = .empty;
+    defer active_keys.deinit(allocator);
+    var active_vectors: std.ArrayList(f32) = .empty;
+    defer active_vectors.deinit(allocator);
+    try active_keys.ensureTotalCapacity(allocator, planned_chunks.items.len);
+    try active_vectors.ensureTotalCapacity(allocator, planned_chunks.items.len * @as(usize, config.dimensions));
+    var active_seen = std.AutoHashMap(CardKey, void).init(allocator);
+    defer active_seen.deinit();
+
+    for (planned_chunks.items) |item| {
+        const slot = vec_map.get(item.key) orelse return error.MissingEmbeddingBatchResult;
+        const row = cached_vectors.items[@as(usize, slot) * @as(usize, config.dimensions) ..][0..config.dimensions];
+        const id = try index.insert(row);
+        if (id != indexed_records.items.len) return error.AnnRecordMappingMismatch;
+        indexed_records.appendAssumeCapacity(item.record);
+        if (!active_seen.contains(item.key)) {
+            try active_seen.put(item.key, {});
+            active_keys.appendAssumeCapacity(item.key);
+            active_vectors.appendSliceAssumeCapacity(row);
+        }
+    }
+    const insertion_ns = elapsedNs(insertion_started);
     if (index.len() == 0) return error.NoSafeAnnRecords;
     if (try index.slabImageSize() > max_slab_bytes) return error.AnnSlabTooLarge;
 
@@ -810,6 +1253,20 @@ pub fn build(
     defer slab_file.close(io);
     try slab_file.setPermissions(io, privateFilePermissions());
 
+    writeEmbeddingCache(
+        io,
+        allocator,
+        data_dir,
+        config.model,
+        config.dimensions,
+        manifest_after,
+        vector_space_id,
+        calibration,
+        build_files.items,
+        active_keys.items,
+        active_vectors.items,
+    ) catch {};
+
     const metadata_bytes = try writeMetadata(
         io,
         allocator,
@@ -835,6 +1292,7 @@ pub fn build(
     const file_bytes = try std.math.add(usize, metadata_bytes, slab_bytes);
     return .{
         .records = index.len(),
+        .reused_records = reused_records,
         .files_indexed = files_indexed,
         .dimensions = config.dimensions,
         .model = config.model,
@@ -931,11 +1389,14 @@ fn loadMetadata(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8) 
 
     const slab_path = try slabPath(allocator, data_dir, slab_name);
     errdefer allocator.free(slab_path);
-    const slab_bytes = try fileSize(io, slab_path);
+    const slab_bytes = fileSize(io, slab_path) catch |err| switch (err) {
+        error.FileNotFound => return error.InvalidAnnSidecar,
+        else => return err,
+    };
     if (slab_bytes == 0 or slab_bytes > max_slab_bytes) return error.AnnSlabTooLarge;
     var index = ann.Index.init(allocator, dimensions, .{});
     errdefer index.deinit();
-    return .{
+    var loaded = Loaded{
         .allocator = allocator,
         .storage = storage,
         .records = records,
@@ -949,6 +1410,8 @@ fn loadMetadata(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8) 
         .git_head = git_head,
         .index = index,
     };
+    loadCacheFilesForManifest(io, allocator, data_dir, &loaded);
+    return loaded;
 }
 
 fn load(io: std.Io, allocator: std.mem.Allocator, data_dir: []const u8) !Loaded {
@@ -991,10 +1454,59 @@ fn validateRecordLineRanges(explorer: *Explorer, records: []const Record) !void 
     }
 }
 
+fn validateStaleRecordLineRanges(
+    explorer: *Explorer,
+    store: *Store,
+    records: []const Record,
+    build_files: []const CachedFileState,
+) !void {
+    var previous_path: []const u8 = "";
+    var previous_line_count: u32 = 0;
+    var previous_unchanged = false;
+    var unchanged_records: usize = 0;
+    for (records) |record| {
+        if (!std.mem.eql(u8, record.path, previous_path)) {
+            const bf = findBuildFile(build_files, record.path) orelse return error.InvalidAnnRecordPath;
+            previous_line_count = bf.line_count;
+            previous_unchanged = isFileUnchanged(explorer, store, bf);
+            previous_path = record.path;
+        }
+        if (record.line_start == 0 or record.line_start > previous_line_count or
+            record.line_end < record.line_start or record.line_end > previous_line_count)
+        {
+            return error.InvalidAnnRecordPath;
+        }
+        if (previous_unchanged) unchanged_records += 1;
+    }
+    if (unchanged_records == 0) return error.StaleAnnManifest;
+}
+
+fn validateGenerationFreshness(
+    temporary: std.mem.Allocator,
+    explorer: *Explorer,
+    store: *Store,
+    current_head: ?[40]u8,
+    loaded: *const Loaded,
+) !void {
+    const current_manifest = try repositoryFingerprint(explorer, store, temporary);
+    if (current_manifest == loaded.manifest) {
+        if (!headsEqual(current_head, loaded.git_head) and loaded.build_files == null) {
+            return error.StaleAnnGitHead;
+        }
+        try validateRecordLineRanges(explorer, loaded.records);
+        return;
+    }
+    const build_files = loaded.build_files orelse {
+        if (!headsEqual(current_head, loaded.git_head)) return error.StaleAnnGitHead;
+        return error.StaleAnnManifest;
+    };
+    try validateStaleRecordLineRanges(explorer, store, loaded.records, build_files);
+}
+
 fn validateLoadedConfig(config: *const semantic.Config, loaded: *const Loaded) !void {
     if (config.dimensions != loaded.dimensions) return error.AnnDimensionsMismatch;
     if (!std.mem.eql(u8, config.model, loaded.model)) return error.AnnModelMismatch;
-    if (config.vectorSpaceId() != loaded.vector_space_id) return error.AnnVectorSpaceMismatch;
+    if (!config.matchesVectorSpaceId(loaded.vector_space_id)) return error.AnnVectorSpaceMismatch;
 }
 
 fn isLegacyHostedVectorSpace(
@@ -1021,7 +1533,7 @@ fn isLegacyHostedVectorSpace(
         .dimensions = semantic.default_dimensions,
         .timeout_ms = semantic.default_timeout_ms,
     };
-    return stored_vector_space_id == legacy.vectorSpaceId();
+    return legacy.matchesVectorSpaceId(stored_vector_space_id);
 }
 
 /// Schedule a single transactional former-default-to-hosted sidecar migration owned by
@@ -1069,20 +1581,108 @@ pub fn scheduleLegacyHostedMigration(
     return .scheduled;
 }
 
+fn collectStaleDeltaChunks(
+    allocator: std.mem.Allocator,
+    explorer: *Explorer,
+    store: *Store,
+    build_files: []const CachedFileState,
+    task_len: usize,
+    delta_cards: *std.ArrayList([]u8),
+    delta_records: *std.ArrayList(Record),
+    owned_paths: *std.ArrayList([]u8),
+) !void {
+    const max_delta_cards = semantic.max_documents - 2;
+    const base_bytes = task_len + semantic.calibration_text.len;
+    var used_bytes = base_bytes;
+
+    const paths = try cloneSortedPaths(explorer, allocator);
+    defer {
+        for (paths) |p| allocator.free(p);
+        allocator.free(paths);
+    }
+    for (paths) |path| {
+        if (delta_cards.items.len >= max_delta_cards) break;
+        if (!semantic.isRemoteCandidatePathAllowed(path)) continue;
+        if (findBuildFile(build_files, path)) |bf| {
+            if (isFileUnchanged(explorer, store, bf)) continue;
+        }
+        const content = (explorer.getContent(path, allocator) catch null) orelse continue;
+        defer allocator.free(content);
+        if (content.len == 0) continue;
+        var outline = (explorer.getOutline(path, allocator) catch null) orelse continue;
+        defer outline.deinit();
+
+        const owned_path = try allocator.dupe(u8, path);
+        errdefer allocator.free(owned_path);
+        try owned_paths.append(allocator, owned_path);
+
+        var cursor = ChunkCursor{ .content = content };
+        var chunks_for_file: usize = 0;
+        while (chunks_for_file < max_chunks_per_file and delta_cards.items.len < max_delta_cards) : (chunks_for_file += 1) {
+            const chunk = cursor.next() orelse break;
+            const card = try makeChunkCard(allocator, owned_path, @tagName(outline.language), chunk);
+            if (used_bytes + card.len > semantic.max_batch_text_bytes) {
+                allocator.free(card);
+                return;
+            }
+            used_bytes += card.len;
+            try delta_cards.append(allocator, card);
+            errdefer _ = delta_cards.pop();
+            try delta_records.append(allocator, .{
+                .path = owned_path,
+                .line_start = chunk.line_start,
+                .line_end = chunk.line_end,
+            });
+        }
+    }
+}
+
 fn searchLoaded(
     io: std.Io,
     allocator: std.mem.Allocator,
+    explorer: *Explorer,
+    store: *Store,
     loaded: *Loaded,
     task: []const u8,
     k: usize,
     load_ns: u64,
     cache_hit: bool,
 ) !SearchOutput {
+    const is_stale = (try repositoryFingerprint(explorer, store, allocator)) != loaded.manifest;
+    var delta_cards: std.ArrayList([]u8) = .empty;
+    defer {
+        for (delta_cards.items) |card| allocator.free(card);
+        delta_cards.deinit(allocator);
+    }
+    var delta_records: std.ArrayList(Record) = .empty;
+    defer delta_records.deinit(allocator);
+    var owned_delta_paths: std.ArrayList([]u8) = .empty;
+    defer {
+        for (owned_delta_paths.items) |p| allocator.free(p);
+        owned_delta_paths.deinit(allocator);
+    }
+
+    if (is_stale) {
+        const build_files = loaded.build_files orelse return error.StaleAnnManifest;
+        try validateStaleRecordLineRanges(explorer, store, loaded.records, build_files);
+        try collectStaleDeltaChunks(
+            allocator,
+            explorer,
+            store,
+            build_files,
+            task.len,
+            &delta_cards,
+            &delta_records,
+            &owned_delta_paths,
+        );
+    }
+
     const embed_started = cio.nanoTimestamp();
-    const query = try semantic.embedQueryAndCalibrationRemote(io, allocator, task);
+    const query = try semantic.embedQueryCalibrationAndCardsRemote(io, allocator, task, delta_cards.items);
     defer allocator.free(query.vectors);
     const embed_ns = elapsedNs(embed_started);
-    if (query.count != 2 or query.dimensions != loaded.dimensions or !std.mem.eql(u8, query.model, loaded.model)) {
+    const expected_count = 2 + delta_cards.items.len;
+    if (query.count != expected_count or query.dimensions != loaded.dimensions or !std.mem.eql(u8, query.model, loaded.model)) {
         return error.AnnQueryEmbeddingMismatch;
     }
     const query_vector = query.vectors[0..loaded.dimensions];
@@ -1096,6 +1696,44 @@ fn searchLoaded(
     const raw = try loaded.index.search(query_vector, @min(@max(k, expanded_k), loaded.records.len), allocator);
     defer allocator.free(raw);
     const search_ns = elapsedNs(search_started);
+
+    var candidates: std.ArrayList(Hit) = .empty;
+    defer candidates.deinit(allocator);
+    for (raw) |result| {
+        if (result.id >= loaded.records.len) return error.AnnRecordMappingMismatch;
+        const record = loaded.records[result.id];
+        if (!semantic.isRemoteCandidatePathAllowed(record.path)) continue;
+        if (is_stale) {
+            const build_files = loaded.build_files orelse continue;
+            const bf = findBuildFile(build_files, record.path) orelse continue;
+            if (!isFileUnchanged(explorer, store, bf)) continue;
+        }
+        try candidates.append(allocator, .{
+            .path = record.path,
+            .line_start = record.line_start,
+            .line_end = record.line_end,
+            .distance = result.distance,
+        });
+    }
+    for (delta_records.items, 0..) |record, idx| {
+        const chunk_vector = query.vectors[(2 + idx) * @as(usize, loaded.dimensions) ..][0..loaded.dimensions];
+        const cosine = try semantic.cosineF32(query_vector, chunk_vector);
+        try candidates.append(allocator, .{
+            .path = record.path,
+            .line_start = record.line_start,
+            .line_end = record.line_end,
+            .distance = 1.0 - cosine,
+        });
+    }
+    if (delta_records.items.len > 0) {
+        std.mem.sort(Hit, candidates.items, {}, struct {
+            fn lt(_: void, a: Hit, b: Hit) bool {
+                if (a.distance != b.distance) return a.distance < b.distance;
+                return std.mem.lessThan(u8, a.path, b.path);
+            }
+        }.lt);
+    }
+
     var hits: std.ArrayList(Hit) = .empty;
     var seen_paths = std.StringHashMap(void).init(allocator);
     defer seen_paths.deinit();
@@ -1103,17 +1741,14 @@ fn searchLoaded(
         for (hits.items) |hit| allocator.free(hit.path);
         hits.deinit(allocator);
     }
-    for (raw) |result| {
-        if (result.id >= loaded.records.len) return error.AnnRecordMappingMismatch;
-        const record = loaded.records[result.id];
-        if (!semantic.isRemoteCandidatePathAllowed(record.path)) continue;
-        if (seen_paths.contains(record.path)) continue;
-        try seen_paths.put(record.path, {});
+    for (candidates.items) |candidate| {
+        if (seen_paths.contains(candidate.path)) continue;
+        try seen_paths.put(candidate.path, {});
         try hits.append(allocator, .{
-            .path = try allocator.dupe(u8, record.path),
-            .line_start = record.line_start,
-            .line_end = record.line_end,
-            .distance = result.distance,
+            .path = try allocator.dupe(u8, candidate.path),
+            .line_start = candidate.line_start,
+            .line_end = candidate.line_end,
+            .distance = candidate.distance,
         });
         if (hits.items.len == k) break;
     }
@@ -1124,6 +1759,7 @@ fn searchLoaded(
         .records = loaded.records.len,
         .index_bytes = try std.math.add(usize, loaded.storage.len, loaded.slab_bytes),
         .text_bytes_sent = query.text_bytes_sent,
+        .documents_sent = expected_count,
         .retention = switch (query.retention) {
             .none_by_codedb_policy => .none_by_codedb_policy,
             .custom_endpoint_unverified => .custom_endpoint_unverified,
@@ -1173,22 +1809,32 @@ fn loadValidatedGeneration(
 ) !CachedLoaded {
     const metadata_path = try sidecarPath(temporary, data_dir);
     defer temporary.free(metadata_path);
-    const metadata_before = try fileIdentity(io, metadata_path);
+    const metadata_before = fileIdentity(io, metadata_path) catch |err| switch (err) {
+        error.FileNotFound => return error.AnnIndexMissing,
+        else => return err,
+    };
 
     var loaded = try loadMetadata(io, persistent, data_dir);
     errdefer loaded.deinit();
     try validateLoadedConfig(config, &loaded);
     const head_before = try git_mod.getGitHead(project_root, temporary);
-    if (!headsEqual(head_before, loaded.git_head)) return error.StaleAnnGitHead;
     const seq_before = store.currentSeq();
-    if (try repositoryFingerprint(explorer, store, temporary) != loaded.manifest) return error.StaleAnnManifest;
-    try validateRecordLineRanges(explorer, loaded.records);
+    try validateGenerationFreshness(temporary, explorer, store, head_before, &loaded);
     if (store.currentSeq() != seq_before) return error.StaleAnnManifest;
 
-    const slab_before = try fileIdentity(io, loaded.slab_path);
+    const slab_before = fileIdentity(io, loaded.slab_path) catch |err| switch (err) {
+        error.FileNotFound => return error.InvalidAnnSidecar,
+        else => return err,
+    };
     try loaded.loadGraph();
-    const metadata_after = try fileIdentity(io, metadata_path);
-    const slab_after = try fileIdentity(io, loaded.slab_path);
+    const metadata_after = fileIdentity(io, metadata_path) catch |err| switch (err) {
+        error.FileNotFound => return error.AnnSidecarChangedDuringLoad,
+        else => return err,
+    };
+    const slab_after = fileIdentity(io, loaded.slab_path) catch |err| switch (err) {
+        error.FileNotFound => return error.AnnSidecarChangedDuringLoad,
+        else => return err,
+    };
     if (!metadata_before.eql(metadata_after) or !slab_before.eql(slab_after)) return error.AnnSidecarChangedDuringLoad;
     const head_after = try git_mod.getGitHead(project_root, temporary);
     if (!headsEqual(head_before, head_after)) return error.StaleAnnGitHead;
@@ -1231,7 +1877,7 @@ pub fn searchCached(
         };
         if (current) {
             defer cache.mu.unlockShared();
-            return searchLoaded(io, allocator, &cached.loaded, task, k, elapsedNs(load_started), true);
+            return searchLoaded(io, allocator, explorer, store, &cached.loaded, task, k, elapsedNs(load_started), true);
         }
     }
     cache.mu.unlockShared();
@@ -1242,14 +1888,14 @@ pub fn searchCached(
     // this request waited for the exclusive lock.
     if (cache.cached) |*cached| {
         if (try cachedGenerationCurrent(io, allocator, cached, &config, store, data_dir)) {
-            return searchLoaded(io, allocator, &cached.loaded, task, k, elapsedNs(load_started), true);
+            return searchLoaded(io, allocator, explorer, store, &cached.loaded, task, k, elapsedNs(load_started), true);
         }
     }
 
     const replacement = try loadValidatedGeneration(io, cache.allocator, allocator, &config, explorer, store, project_root, data_dir);
     if (cache.cached) |*old| old.loaded.deinit();
     cache.cached = replacement;
-    return searchLoaded(io, allocator, &cache.cached.?.loaded, task, k, elapsedNs(load_started), false);
+    return searchLoaded(io, allocator, explorer, store, &cache.cached.?.loaded, task, k, elapsedNs(load_started), false);
 }
 
 pub fn search(
@@ -1270,15 +1916,13 @@ pub fn search(
 
     try validateLoadedConfig(&config, &loaded);
     const current_head = try git_mod.getGitHead(project_root, allocator);
-    if (!headsEqual(current_head, loaded.git_head)) return error.StaleAnnGitHead;
-    if (try repositoryFingerprint(explorer, store, allocator) != loaded.manifest) return error.StaleAnnManifest;
     // Metadata is attacker-controlled local input. Validate the entire mapping
     // while the index is still empty so a failure remains transactional and no
     // forged line can reach rendering arithmetic.
-    try validateRecordLineRanges(explorer, loaded.records);
+    try validateGenerationFreshness(allocator, explorer, store, current_head, &loaded);
     try loaded.loadGraph();
     const load_ns = elapsedNs(load_started);
-    return searchLoaded(io, allocator, &loaded, task, k, load_ns, false);
+    return searchLoaded(io, allocator, explorer, store, &loaded, task, k, load_ns, false);
 }
 
 test "semantic ANN sidecar accepts hosted 512D and migrates exact prior hosted spaces" {
@@ -1846,4 +2490,281 @@ test "semantic build live fingerprint catches unreconciled repository edits" {
     try changed.writeStreamingAll(io, "pub fn after() void {}\n");
     changed.close(io);
     try testing.expect(indexed != try watcher.liveIndexedContentFingerprint(io, explorer.root_dir.?, testing.allocator));
+}
+
+test "issue-775: semantic ANN tolerates stale index on file edits and reuses cached embeddings on rebuild" {
+    const testing = std.testing;
+    const io = testing.io;
+
+    const EnvGuard = struct {
+        name: []const u8,
+        had_prev: bool,
+        prev_len: usize,
+        prev: [1024]u8,
+
+        fn save(name: []const u8) @This() {
+            var g = @This(){ .name = name, .had_prev = false, .prev_len = 0, .prev = undefined };
+            if (cio.posixGetenv(name)) |val| {
+                if (val.len <= g.prev.len) {
+                    @memcpy(g.prev[0..val.len], val);
+                    g.prev_len = val.len;
+                    g.had_prev = true;
+                }
+            }
+            return g;
+        }
+
+        fn restore(self: *const @This()) void {
+            if (self.had_prev) cio.posixSetenv(self.name, self.prev[0..self.prev_len]) else cio.posixUnsetenv(self.name);
+        }
+    };
+
+    const g_url = EnvGuard.save("CODEDB_EMBEDDINGS_URL");
+    defer g_url.restore();
+    const g_model = EnvGuard.save("CODEDB_EMBEDDINGS_MODEL");
+    defer g_model.restore();
+    const g_token = EnvGuard.save("CODEDB_EMBEDDINGS_TOKEN");
+    defer g_token.restore();
+    const g_dims = EnvGuard.save("CODEDB_EMBEDDINGS_DIMENSIONS");
+    defer g_dims.restore();
+    const g_timeout = EnvGuard.save("CODEDB_EMBEDDINGS_TIMEOUT_MS");
+    defer g_timeout.restore();
+    const g_space = EnvGuard.save("CODEDB_EMBEDDINGS_SPACE_ID");
+    defer g_space.restore();
+
+    const SemanticMockServer = struct {
+        server: *std.Io.net.Server,
+        expected_requests: usize,
+        last_batch_inputs: usize = 0,
+        failure: ?anyerror = null,
+
+        fn contentLength(headers: []const u8) !usize {
+            var lines = std.mem.splitSequence(u8, headers, "\r\n");
+            while (lines.next()) |line| {
+                const prefix = "content-length:";
+                if (line.len >= prefix.len and std.ascii.eqlIgnoreCase(line[0..prefix.len], prefix)) {
+                    return std.fmt.parseInt(usize, std.mem.trim(u8, line[prefix.len..], " \t"), 10);
+                }
+            }
+            return error.MissingContentLength;
+        }
+
+        fn activeDimForText(text: []const u8) usize {
+            if (std.mem.eql(u8, text, semantic.calibration_text)) return 0;
+            if (std.mem.indexOf(u8, text, "alpha") != null) return 1;
+            if (std.mem.indexOf(u8, text, "beta_v1") != null) return 2;
+            if (std.mem.indexOf(u8, text, "beta_v2") != null) return 3;
+            if (std.mem.indexOf(u8, text, "gamma") != null) return 4;
+            return 5;
+        }
+
+        fn run(self: *@This()) void {
+            var served: usize = 0;
+            var head_probes: usize = 0;
+            while (served < self.expected_requests) {
+                const stream = self.server.accept(io) catch |err| {
+                    self.failure = err;
+                    return;
+                };
+                defer stream.close(io);
+
+                var req_buf: [65536]u8 = undefined;
+                var req_len: usize = 0;
+                var is_head_probe = false;
+                var body_slice: []const u8 = &.{};
+                while (req_len < req_buf.len) {
+                    var iov = [1][]u8{req_buf[req_len..]};
+                    const n = stream.read(io, &iov) catch |err| {
+                        self.failure = err;
+                        return;
+                    };
+                    if (n == 0) break;
+                    req_len += n;
+                    const header_end = std.mem.indexOf(u8, req_buf[0..req_len], "\r\n\r\n") orelse continue;
+                    if (std.mem.startsWith(u8, req_buf[0..header_end], "HEAD / HTTP/1.1\r\n")) {
+                        is_head_probe = true;
+                        break;
+                    }
+                    const content_len = contentLength(req_buf[0..header_end]) catch |err| {
+                        self.failure = err;
+                        return;
+                    };
+                    if (req_len >= header_end + 4 + content_len) {
+                        body_slice = req_buf[header_end + 4 .. header_end + 4 + content_len];
+                        break;
+                    }
+                }
+                if (is_head_probe) {
+                    head_probes += 1;
+                    if (head_probes > 8) {
+                        self.failure = error.TooManyHeadProbes;
+                        return;
+                    }
+                    continue;
+                }
+
+                var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer arena.deinit();
+                const a = arena.allocator();
+                const Req = struct { input: []const []const u8 };
+                const parsed = std.json.parseFromSliceLeaky(Req, a, body_slice, .{ .ignore_unknown_fields = true }) catch |err| {
+                    self.failure = err;
+                    return;
+                };
+                self.last_batch_inputs = parsed.input.len;
+
+                var resp: std.ArrayList(u8) = .empty;
+                const w = cio.listWriter(&resp, a);
+                w.writeAll("{\"model\":\"mock-model\",\"data\":[") catch return;
+                for (parsed.input, 0..) |inp, idx| {
+                    if (idx > 0) w.writeByte(',') catch return;
+                    w.print("{{\"index\":{d},\"embedding\":[", .{idx}) catch return;
+                    const hot = activeDimForText(inp);
+                    for (0..64) |d| {
+                        if (d > 0) w.writeByte(',') catch return;
+                        w.writeAll(if (d == hot) "1" else "0") catch return;
+                    }
+                    w.writeAll("]}") catch return;
+                }
+                w.writeAll("]}") catch return;
+
+                var writer_buf: [4096]u8 = undefined;
+                var writer = stream.writer(io, &writer_buf);
+                var header_buf: [256]u8 = undefined;
+                const header = std.fmt.bufPrint(
+                    &header_buf,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
+                    .{resp.items.len},
+                ) catch return;
+                writer.interface.writeAll(header) catch return;
+                writer.interface.writeAll(resp.items) catch return;
+                writer.interface.flush() catch return;
+                served += 1;
+            }
+        }
+    };
+
+    const addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try addr.listen(io, .{ .reuse_address = true, .mode = .stream, .protocol = .tcp });
+    defer server.deinit(io);
+    var url_buf: [128]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1/embeddings", .{server.socket.address.getPort()});
+    cio.posixSetenv("CODEDB_EMBEDDINGS_URL", url);
+    cio.posixSetenv("CODEDB_EMBEDDINGS_MODEL", "mock-model");
+    cio.posixSetenv("CODEDB_EMBEDDINGS_TOKEN", "mock-token");
+    cio.posixSetenv("CODEDB_EMBEDDINGS_DIMENSIONS", "64");
+    cio.posixSetenv("CODEDB_EMBEDDINGS_TIMEOUT_MS", "2000");
+    cio.posixUnsetenv("CODEDB_EMBEDDINGS_SPACE_ID");
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "src");
+    try tmp.dir.createDirPath(io, "data");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/alpha.zig", .data = "pub fn alpha() void {}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/beta.zig", .data = "pub fn beta_v1() void {}\n" });
+
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root_path = root_buf[0..try tmp.dir.realPathFile(io, ".", &root_buf)];
+    var data_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const data_path = data_buf[0..try tmp.dir.realPathFile(io, "data", &data_buf)];
+
+    var explorer = Explorer.init(testing.allocator, 1024 * 1024);
+    defer explorer.deinit();
+    try explorer.setRoot(io, root_path);
+    var store = Store.init(testing.allocator);
+    defer store.deinit();
+    try watcher.initialScan(io, &store, &explorer, root_path, testing.allocator, true);
+
+    // 1. Initial build: 1 calibration request + 1 wave request (2 chunks).
+    {
+        var mock = SemanticMockServer{ .server = &server, .expected_requests = 2 };
+        const thread = try std.Thread.spawn(.{}, SemanticMockServer.run, .{&mock});
+        const stats1 = build(io, testing.allocator, &explorer, &store, root_path, data_path) catch |err| {
+            thread.join();
+            return err;
+        };
+        thread.join();
+        if (mock.failure) |err| return err;
+        try testing.expectEqual(@as(usize, 2), stats1.records);
+        try testing.expectEqual(@as(usize, 0), stats1.reused_records);
+        try testing.expectEqual(@as(usize, 2), mock.last_batch_inputs);
+    }
+
+    // 2. Edit src/beta.zig and add src/gamma.zig WITHOUT rebuilding the ANN index.
+    const beta_v2_src = "pub fn beta_v2() void {}\n";
+    const gamma_src = "pub fn gamma() void {}\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/beta.zig", .data = beta_v2_src });
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/gamma.zig", .data = gamma_src });
+    try explorer.indexFile("src/beta.zig", beta_v2_src);
+    _ = try store.recordSnapshot("src/beta.zig", beta_v2_src.len, std.hash.Wyhash.hash(0, beta_v2_src));
+    try explorer.indexFile("src/gamma.zig", gamma_src);
+    _ = try store.recordSnapshot("src/gamma.zig", gamma_src.len, std.hash.Wyhash.hash(0, gamma_src));
+
+    // 3. Stale-ANN query tolerance:
+    //    - "find alpha" hits unchanged src/alpha.zig from HNSW (score 0.0).
+    //    - "find beta_v2" hits edited src/beta.zig via delta embedding in the same request (score 0.0).
+    //    - "find gamma" hits new src/gamma.zig via delta embedding in the same request (score 0.0).
+    //    - "find beta_v1" does NOT hit stale beta_v1 from HNSW (old HNSW node for src/beta.zig is excluded).
+    {
+        var mock = SemanticMockServer{ .server = &server, .expected_requests = 4 };
+        const thread = try std.Thread.spawn(.{}, SemanticMockServer.run, .{&mock});
+        var cache = SearchCache.init(testing.allocator);
+        defer cache.deinit();
+
+        var res_alpha = searchCached(io, testing.allocator, &cache, &explorer, &store, root_path, data_path, "find alpha", 5) catch |err| {
+            thread.join();
+            return err;
+        };
+        defer res_alpha.deinit(testing.allocator);
+        try testing.expectEqual(@as(usize, 4), res_alpha.documents_sent);
+        try testing.expect(res_alpha.hits.len >= 1);
+        try testing.expectEqualStrings("src/alpha.zig", res_alpha.hits[0].path);
+        try testing.expectApproxEqAbs(@as(f32, 0.0), res_alpha.hits[0].distance, 0.0001);
+
+        var res_beta2 = searchCached(io, testing.allocator, &cache, &explorer, &store, root_path, data_path, "find beta_v2", 5) catch |err| {
+            thread.join();
+            return err;
+        };
+        defer res_beta2.deinit(testing.allocator);
+        try testing.expect(res_beta2.hits.len >= 1);
+        try testing.expectEqualStrings("src/beta.zig", res_beta2.hits[0].path);
+        try testing.expectApproxEqAbs(@as(f32, 0.0), res_beta2.hits[0].distance, 0.0001);
+
+        var res_gamma = searchCached(io, testing.allocator, &cache, &explorer, &store, root_path, data_path, "find gamma", 5) catch |err| {
+            thread.join();
+            return err;
+        };
+        defer res_gamma.deinit(testing.allocator);
+        try testing.expect(res_gamma.hits.len >= 1);
+        try testing.expectEqualStrings("src/gamma.zig", res_gamma.hits[0].path);
+        try testing.expectApproxEqAbs(@as(f32, 0.0), res_gamma.hits[0].distance, 0.0001);
+
+        var res_beta1 = searchCached(io, testing.allocator, &cache, &explorer, &store, root_path, data_path, "find beta_v1", 5) catch |err| {
+            thread.join();
+            return err;
+        };
+        defer res_beta1.deinit(testing.allocator);
+        for (res_beta1.hits) |h| {
+            try testing.expect(h.distance > 0.5);
+        }
+
+        thread.join();
+        if (mock.failure) |err| return err;
+    }
+
+    // 4. Incremental rebuild: reuses src/alpha.zig from semantic-embeddings-v1.cache
+    //    and embeds only the 2 changed/new chunks (src/beta.zig and src/gamma.zig).
+    {
+        var mock = SemanticMockServer{ .server = &server, .expected_requests = 2 };
+        const thread = try std.Thread.spawn(.{}, SemanticMockServer.run, .{&mock});
+        const stats2 = build(io, testing.allocator, &explorer, &store, root_path, data_path) catch |err| {
+            thread.join();
+            return err;
+        };
+        thread.join();
+        if (mock.failure) |err| return err;
+        try testing.expectEqual(@as(usize, 3), stats2.records);
+        try testing.expectEqual(@as(usize, 1), stats2.reused_records);
+        try testing.expectEqual(@as(usize, 2), mock.last_batch_inputs);
+    }
 }

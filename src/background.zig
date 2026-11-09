@@ -74,45 +74,67 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     if (initial_scan_ok) persistWordIndexToDisk(io, explorer, data_dir, git_head);
 
     if (heads_match and initial_scan_ok) {
-        const current_count = @as(u32, @intCast(explorer.outlines.count()));
+        const current_count = blk: {
+            explorer.mu.lockShared();
+            defer explorer.mu.unlockShared();
+            break :blk @as(u32, @intCast(explorer.outlines.count()));
+        };
         if (disk_hdr != null and current_count == disk_hdr.?.file_count) {
             if (MmapTrigramIndex.initFromDisk(io, data_dir, allocator)) |loaded| {
                 explorer.adoptTrigramIndex(.{ .mmap = loaded });
-                scan_done.store(true, .release);
-                mcp_server.setScanState(.ready);
-                if (shutdown.load(.acquire)) return;
+                if (shutdown.load(.acquire)) {
+                    scan_done.store(true, .release);
+                    mcp_server.setScanState(.ready);
+                    return;
+                }
                 telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
                 const snap_path_1 = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
                 defer if (snap_path_1) |p| allocator.free(p);
                 snapshot_mod.writeSnapshotDual(io, explorer, abs_root, snap_path_1 orelse "codedb.snapshot", allocator) catch |err| {
                     std.log.warn("could not auto-write snapshot: {}", .{err});
                 };
-                const fc = explorer.outlines.count();
+                const fc = blk: {
+                    explorer.mu.lockShared();
+                    defer explorer.mu.unlockShared();
+                    break :blk explorer.outlines.count();
+                };
                 if (fc > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
                     explorer.releaseContents();
                     explorer.releaseSecondaryIndexes();
                 }
                 // Shrink index allocations to reclaim ArrayList over-allocation
+                explorer.mu.lock();
                 if (explorer.trigram_index.asHeap()) |heap| heap.shrinkPostingLists();
                 explorer.word_index.shrinkAllocations();
+                explorer.mu.unlock();
+                scan_done.store(true, .release);
+                mcp_server.setScanState(.ready);
                 return;
             }
             if (TrigramIndex.readFromDisk(io, data_dir, allocator)) |loaded| {
                 explorer.adoptTrigramIndex(.{ .heap = loaded });
-                scan_done.store(true, .release);
-                mcp_server.setScanState(.ready);
-                if (shutdown.load(.acquire)) return;
+                if (shutdown.load(.acquire)) {
+                    scan_done.store(true, .release);
+                    mcp_server.setScanState(.ready);
+                    return;
+                }
                 telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
                 const snap_path_2 = std.fmt.allocPrint(allocator, "{s}/codedb.snapshot", .{abs_root}) catch null;
                 defer if (snap_path_2) |p| allocator.free(p);
                 snapshot_mod.writeSnapshotDual(io, explorer, abs_root, snap_path_2 orelse "codedb.snapshot", allocator) catch |err| {
                     std.log.warn("could not auto-write snapshot: {}", .{err});
                 };
-                const fc = explorer.outlines.count();
+                const fc = blk: {
+                    explorer.mu.lockShared();
+                    defer explorer.mu.unlockShared();
+                    break :blk explorer.outlines.count();
+                };
                 if (fc > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null) {
                     explorer.releaseContents();
                     explorer.releaseSecondaryIndexes();
                 }
+                scan_done.store(true, .release);
+                mcp_server.setScanState(.ready);
                 return;
             }
         }
@@ -182,10 +204,11 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
         }
     }
 
-    scan_done.store(true, .release);
-    mcp_server.setScanState(.ready);
-
-    if (shutdown.load(.acquire)) return;
+    if (shutdown.load(.acquire)) {
+        scan_done.store(true, .release);
+        mcp_server.setScanState(.ready);
+        return;
+    }
 
     telem.recordCodebaseStats(explorer, @intCast(@max(cio.milliTimestamp() - startup_t0, 0)));
 
@@ -194,11 +217,17 @@ pub fn scanBg(io: std.Io, store: *Store, explorer: *Explorer, root: []const u8, 
     snapshot_mod.writeSnapshotDual(io, explorer, abs_root, snap_path_3 orelse "codedb.snapshot", allocator) catch |err| {
         std.log.warn("could not auto-write snapshot: {}", .{err});
     };
-    const file_count = explorer.outlines.count();
+    const file_count = blk: {
+        explorer.mu.lockShared();
+        defer explorer.mu.unlockShared();
+        break :blk explorer.outlines.count();
+    };
     if (trigram_adopted and (file_count > 1000 or cio.posixGetenv("CODEDB_LOW_MEMORY") != null)) {
         explorer.releaseContents();
         explorer.releaseSecondaryIndexes();
     }
+    scan_done.store(true, .release);
+    mcp_server.setScanState(.ready);
 }
 pub fn triggerScanFromRoots(ctx: *mcp_server.DeferredScan, abs_root: []const u8) void {
     ctx.explorer.setRoot(ctx.io, abs_root) catch {

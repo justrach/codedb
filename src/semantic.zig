@@ -82,6 +82,7 @@ pub const Config = struct {
     url: []const u8,
     model: []const u8,
     token: ?[]const u8,
+    space_id: ?[]const u8 = null,
     dimensions: u16,
     timeout_ms: u32,
 
@@ -89,6 +90,7 @@ pub const Config = struct {
         const url = nonEmptyEnv("CODEDB_EMBEDDINGS_URL") orelse default_url;
         const model = nonEmptyEnv("CODEDB_EMBEDDINGS_MODEL") orelse default_model;
         const token = nonEmptyEnv("CODEDB_EMBEDDINGS_TOKEN");
+        const space_id = nonEmptyEnv("CODEDB_EMBEDDINGS_SPACE_ID");
         const dimensions = if (nonEmptyEnv("CODEDB_EMBEDDINGS_DIMENSIONS")) |raw|
             parseDimensions(raw) orelse 0
         else
@@ -101,6 +103,7 @@ pub const Config = struct {
             .url = url,
             .model = model,
             .token = token,
+            .space_id = space_id,
             .dimensions = dimensions,
             .timeout_ms = timeout_ms,
         };
@@ -109,6 +112,7 @@ pub const Config = struct {
     pub fn validate(self: Config) !void {
         if (self.url.len > 2048 or self.model.len > 256) return error.InvalidEmbeddingConfig;
         if (self.token) |token| if (token.len > 4096) return error.InvalidEmbeddingConfig;
+        if (self.space_id) |space_id| if (space_id.len > 256) return error.InvalidEmbeddingConfig;
         if (self.dimensions < 64 or self.dimensions > 4096) return error.InvalidEmbeddingConfig;
         if (self.timeout_ms < min_timeout_ms or self.timeout_ms > max_timeout_ms) return error.InvalidEmbeddingConfig;
 
@@ -134,9 +138,30 @@ pub const Config = struct {
     }
 
     /// Stable identity for all client-controlled parts of the vector space.
-    /// The stored calibration vector separately detects server-side weight or
-    /// quantization changes behind an otherwise identical endpoint/model.
+    /// By default the endpoint URL is excluded so local caches, proxies, port
+    /// changes, and alternate loopback routes to the same model share one
+    /// vector space while the stored calibration vector detects server-side
+    /// weight or quantization changes. Operators can explicitly partition
+    /// identical model names with `CODEDB_EMBEDDINGS_SPACE_ID`.
     pub fn vectorSpaceId(self: Config) u64 {
+        var hash = std.hash.Wyhash.init(0x4344_4256_5350_4143);
+        if (self.space_id) |space_id| {
+            hash.update(space_id);
+            hash.update(&.{0});
+        }
+        hash.update(self.model);
+        hash.update(&.{0});
+        hash.update(std.mem.asBytes(&self.dimensions));
+        hash.update(queryEncodingVersion(self.model));
+        hash.update(&.{0});
+        hash.update(document_card_version);
+        return hash.final();
+    }
+
+    /// Historical URL-scoped vector-space hash retained so sidecars built by
+    /// earlier releases continue to validate when queried at the same URL
+    /// without an explicit `CODEDB_EMBEDDINGS_SPACE_ID` override.
+    pub fn legacyUrlVectorSpaceId(self: Config) u64 {
         var hash = std.hash.Wyhash.init(0x4344_4256_5350_4143);
         hash.update(self.url);
         hash.update(&.{0});
@@ -148,7 +173,17 @@ pub const Config = struct {
         hash.update(document_card_version);
         return hash.final();
     }
+
+    pub fn matchesVectorSpaceId(self: Config, stored_vector_space_id: u64) bool {
+        if (stored_vector_space_id == self.vectorSpaceId()) return true;
+        return self.space_id == null and stored_vector_space_id == self.legacyUrlVectorSpaceId();
+    }
 };
+
+pub fn exactFallbackDisabledFromEnv() bool {
+    const raw = nonEmptyEnv("CODEDB_SEMANTIC_NO_EXACT_FALLBACK") orelse return false;
+    return std.mem.eql(u8, raw, "1") or std.ascii.eqlIgnoreCase(raw, "true");
+}
 
 fn queryEncodingVersion(model: []const u8) []const u8 {
     if (std.mem.eql(u8, model, jina_model)) return jina_query_encoding_version;
@@ -349,11 +384,12 @@ fn fetchHttpResponseOnce(
         .response_writer = &response_writer,
     });
     if (fetch_result.status != .ok) {
-        return switch (fetch_result.status) {
-            .too_many_requests => error.EmbeddingRateLimited,
-            .internal_server_error, .bad_gateway, .service_unavailable, .gateway_timeout => error.EmbeddingProviderUnavailable,
-            else => error.EmbeddingProviderRejected,
-        };
+        if (fetch_result.status == .too_many_requests) return error.EmbeddingRateLimited;
+        // Gateways can emit non-standard 5xx codes that the status enum does
+        // not name. They are still provider failures, not client rejections.
+        const status_code = @intFromEnum(fetch_result.status);
+        if (status_code >= 500 and status_code < 600) return error.EmbeddingProviderUnavailable;
+        return error.EmbeddingProviderRejected;
     }
     return try allocator.dupe(u8, response_writer.buffer[0..response_writer.end]);
 }
@@ -410,6 +446,67 @@ fn waitForEmbeddingTimeout(io: std.Io, timeout_ms: u32) std.Io.Cancelable!void {
     try io.sleep(.fromMilliseconds(timeout_ms), .awake);
 }
 
+fn transientEmbeddingTransportError(err: anyerror) bool {
+    return err == error.UnknownHostName or err == error.TemporaryNameServerFailure or
+        err == error.ConnectionResetByPeer or err == error.ConnectionRefused or
+        err == error.HttpConnectionClosing;
+}
+
+// Retry only a transient transport failure, once, inside the existing request
+// deadline. Re-entering the signed request path creates a fresh nonce/proof.
+// Provider rejection, TLS errors, malformed vectors and calibration failures
+// remain failures; a retry never extends the caller's latency budget.
+fn fetchEmbeddingWithRetry(
+    comptime fetch: anytype,
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    config: Config,
+    body: []const u8,
+) ![]u8 {
+    return fetch(io, allocator, config, body) catch |err| {
+        if (!transientEmbeddingTransportError(err)) return err;
+        try io.sleep(.fromMilliseconds(100), .awake);
+        return fetch(io, allocator, config, body);
+    };
+}
+
+fn fetchEmbeddingResponseRetry(io: std.Io, allocator: std.mem.Allocator, config: Config, body: []const u8) ![]u8 {
+    return fetchEmbeddingWithRetry(fetchEmbeddingResponseOnce, io, allocator, config, body);
+}
+
+test "interactive embeddings retry transient DNS and closed connections once" {
+    const Fake = struct {
+        var calls: usize = 0;
+        var failure: anyerror = error.UnknownHostName;
+        var recover: bool = true;
+        fn fetch(_: std.Io, alloc: std.mem.Allocator, _: Config, _: []const u8) ![]u8 {
+            calls += 1;
+            if (calls == 1 or !recover) return failure;
+            return alloc.dupe(u8, "response");
+        }
+    };
+    const t = std.testing;
+    for ([_]anyerror{ error.UnknownHostName, error.HttpConnectionClosing }) |failure| {
+        Fake.calls = 0;
+        Fake.failure = failure;
+        Fake.recover = true;
+        const result = try fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}");
+        defer t.allocator.free(result);
+        try t.expectEqualStrings("response", result);
+        try t.expectEqual(@as(usize, 2), Fake.calls);
+        Fake.calls = 0;
+        Fake.recover = false;
+        try t.expectError(failure, fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}"));
+        try t.expectEqual(@as(usize, 2), Fake.calls);
+    }
+    for ([_]anyerror{ error.EmbeddingRateLimited, error.EmbeddingProviderRejected, error.InvalidEmbeddingResponse, error.TlsAlert }) |failure| {
+        Fake.calls = 0;
+        Fake.failure = failure;
+        try t.expectError(failure, fetchEmbeddingWithRetry(Fake.fetch, t.io, t.allocator, Config.fromEnv(), "{}"));
+        try t.expectEqual(@as(usize, 1), Fake.calls);
+    }
+}
+
 const EmbeddingRace = union(enum) {
     fetch: anyerror![]u8,
     timeout: std.Io.Cancelable!void,
@@ -434,7 +531,7 @@ fn fetchEmbeddingResponse(
 ) ![]u8 {
     var completed: [2]EmbeddingRace = undefined;
     var select = std.Io.Select(EmbeddingRace).init(io, &completed);
-    select.async(.fetch, fetchEmbeddingResponseOnce, .{ io, allocator, config, body });
+    select.async(.fetch, fetchEmbeddingResponseRetry, .{ io, allocator, config, body });
     select.async(.timeout, waitForEmbeddingTimeout, .{ io, config.timeout_ms });
 
     const first = try select.await();
@@ -543,11 +640,35 @@ pub fn embedQueryAndCalibrationRemote(
     allocator: std.mem.Allocator,
     task: []const u8,
 ) !EmbeddingBatchResult {
+    return embedQueryCalibrationAndCardsRemote(io, allocator, task, &.{});
+}
+
+/// Embed the private task, the fixed calibration canary, and an optional
+/// bounded set of unindexed delta chunk cards in a single request. Used when
+/// a few files have changed since the local ANN sidecar was built so unchanged
+/// files use HNSW and changed files get exact cosine scores without a second
+/// provider round trip.
+pub fn embedQueryCalibrationAndCardsRemote(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    task: []const u8,
+    extra_cards: []const []const u8,
+) !EmbeddingBatchResult {
     if (task.len < 3 or task.len > 1024) return error.InvalidEmbeddingQuery;
     const config = Config.fromEnv();
     const query = try formatQueryInput(allocator, config.model, task);
     defer allocator.free(query);
-    return embedRemoteTexts(io, allocator, &.{ query, calibration_text });
+    if (extra_cards.len == 0) {
+        return embedRemoteTexts(io, allocator, &.{ query, calibration_text });
+    }
+    const total = std.math.add(usize, extra_cards.len, 2) catch return error.InvalidEmbeddingBatch;
+    if (total > max_documents) return error.InvalidEmbeddingBatch;
+    const inputs = try allocator.alloc([]const u8, total);
+    defer allocator.free(inputs);
+    inputs[0] = query;
+    inputs[1] = calibration_text;
+    for (extra_cards, 0..) |card, i| inputs[i + 2] = card;
+    return embedRemoteTexts(io, allocator, inputs);
 }
 
 pub fn cosineF32(a: []const f32, b: []const f32) !f32 {

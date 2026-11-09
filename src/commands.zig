@@ -281,7 +281,7 @@ pub fn runSemanticIndex(ctx: *RunCtx) void {
         "{s}\xe2\x9c\x93{s} {s}semantic ANN ready{s}  {d} chunks from {d} files  {d}D\n" ++
             "  local sidecar: {s}/{s} ({d} bytes total; mmap slab {d} bytes; metadata {d} bytes)\n" ++
             "  persistent vector payload: {d} bytes  remote text sent: {d} bytes\n" ++
-            "  vector space: {x}  sensitive paths blocked: {d}  parallel batches: {d}\n" ++
+            "  vector space: {x}  reused: {d}  sensitive paths blocked: {d}  parallel batches: {d}\n" ++
             "  embedding wall: {d} ms  HNSW insertion: {d} ms  source revalidation: {d} ms  total: {s}\n",
         .{
             ctx.s.green,
@@ -299,6 +299,7 @@ pub fn runSemanticIndex(ctx: *RunCtx) void {
             stats.vector_payload_bytes,
             stats.text_bytes_sent,
             stats.vector_space_id,
+            stats.reused_records,
             stats.sensitive_paths_blocked,
             stats.parallel_batches,
             stats.embedding_wall_ns / std.time.ns_per_ms,

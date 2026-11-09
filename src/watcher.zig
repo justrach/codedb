@@ -887,6 +887,7 @@ fn collectInitialScanEntries(io: std.Io, store: *Store, dir: std.Io.Dir, allocat
     // traversal and let a directory-retarget race inject outside sizes into the
     // Store before content validation.
     while (try walker.next()) |entry| {
+        if (isCodedbSnapshotArtifact(entry.path)) continue;
         try entries.append(allocator, .{
             .path = try allocator.dupe(u8, entry.path),
             .size = entry.size,
@@ -3392,7 +3393,14 @@ const skip_extensions = [_][]const u8{
     ".sqlite3", ".lock", ".sum",
 };
 
+fn isCodedbSnapshotArtifact(path: []const u8) bool {
+    const base = std.fs.path.basename(path);
+    return std.mem.eql(u8, base, "codedb.snapshot") or
+        (std.mem.startsWith(u8, base, "codedb.snapshot.") and std.mem.endsWith(u8, base, ".tmp"));
+}
+
 fn shouldSkipFile(path: []const u8) bool {
+    if (isCodedbSnapshotArtifact(path)) return true;
     for (skip_extensions) |ext| {
         if (std.mem.endsWith(u8, path, ext)) return true;
     }
@@ -4101,6 +4109,10 @@ test "issue-756: policy-file events invalidate descendants despite metadata coll
     try testing.expect(shouldIgnoreRecursiveEvent("node_modules/.gitignore", true));
     try testing.expect(shouldIgnoreRecursiveEvent("generated.lock", true));
     try testing.expect(!shouldIgnoreRecursiveEvent("generated.lock", false));
+    try testing.expect(shouldSkipFile("codedb.snapshot"));
+    try testing.expect(shouldSkipFile("codedb.snapshot.deadbeef01234567.tmp"));
+    try testing.expect(shouldIgnoreRecursiveEvent("codedb.snapshot", true));
+    try testing.expect(shouldIgnoreRecursiveEvent("codedb.snapshot.deadbeef01234567.tmp", true));
     for ([_]bool{ false, true }) |nested| {
         var tmp = testing.tmpDir(.{});
         defer tmp.cleanup();

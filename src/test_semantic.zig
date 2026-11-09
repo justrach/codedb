@@ -28,7 +28,7 @@ const EnvVarGuard = struct {
 };
 
 const EmbeddingEnvGuards = struct {
-    guards: [5]EnvVarGuard,
+    guards: [7]EnvVarGuard,
 
     fn init() EmbeddingEnvGuards {
         const names = [_][]const u8{
@@ -37,6 +37,8 @@ const EmbeddingEnvGuards = struct {
             "CODEDB_EMBEDDINGS_TOKEN",
             "CODEDB_EMBEDDINGS_DIMENSIONS",
             "CODEDB_EMBEDDINGS_TIMEOUT_MS",
+            "CODEDB_EMBEDDINGS_SPACE_ID",
+            "CODEDB_SEMANTIC_NO_EXACT_FALLBACK",
         };
         var self: EmbeddingEnvGuards = undefined;
         for (names, 0..) |name, i| self.guards[i] = EnvVarGuard.save(name);
@@ -53,6 +55,8 @@ const MockEmbeddingServer = struct {
     response: []const u8,
     status: []const u8 = "200 OK",
     delay_ms: u32 = 0,
+    allow_head_probe: bool = true,
+    ignored_head_probes: usize = 0,
     request: [65536]u8 = undefined,
     request_len: usize = 0,
     failure: ?anyerror = null,
@@ -69,36 +73,53 @@ const MockEmbeddingServer = struct {
     }
 
     fn run(self: *MockEmbeddingServer) void {
-        const stream = self.server.accept(io) catch |err| {
-            self.failure = err;
+        while (true) {
+            const stream = self.server.accept(io) catch |err| {
+                self.failure = err;
+                return;
+            };
+            defer stream.close(io);
+
+            self.request_len = 0;
+            var is_head_probe = false;
+            while (self.request_len < self.request.len) {
+                var iov = [1][]u8{self.request[self.request_len..]};
+                const n = stream.read(io, &iov) catch |err| {
+                    self.failure = err;
+                    return;
+                };
+                if (n == 0) break;
+                self.request_len += n;
+                const header_end = std.mem.indexOf(u8, self.request[0..self.request_len], "\r\n\r\n") orelse continue;
+                if (self.allow_head_probe and std.mem.startsWith(u8, self.request[0..header_end], "HEAD / HTTP/1.1\r\n")) {
+                    is_head_probe = true;
+                    break;
+                }
+                const content_len = contentLength(self.request[0..header_end]) catch |err| {
+                    self.failure = err;
+                    return;
+                };
+                if (self.request_len >= header_end + 4 + content_len) break;
+            }
+            if (is_head_probe) {
+                self.ignored_head_probes += 1;
+                if (self.ignored_head_probes > 8) {
+                    self.failure = error.TooManyHeadProbes;
+                    return;
+                }
+                continue;
+            }
+
+            if (self.delay_ms > 0) io.sleep(.fromMilliseconds(self.delay_ms), .awake) catch {};
+            var writer_buf: [4096]u8 = undefined;
+            var writer = stream.writer(io, &writer_buf);
+            var header_buf: [256]u8 = undefined;
+            const header = std.fmt.bufPrint(&header_buf, "HTTP/1.1 {s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ self.status, self.response.len }) catch return;
+            writer.interface.writeAll(header) catch return;
+            writer.interface.writeAll(self.response) catch return;
+            writer.interface.flush() catch return;
             return;
-        };
-        defer stream.close(io);
-
-        while (self.request_len < self.request.len) {
-            var iov = [1][]u8{self.request[self.request_len..]};
-            const n = stream.read(io, &iov) catch |err| {
-                self.failure = err;
-                return;
-            };
-            if (n == 0) break;
-            self.request_len += n;
-            const header_end = std.mem.indexOf(u8, self.request[0..self.request_len], "\r\n\r\n") orelse continue;
-            const content_len = contentLength(self.request[0..header_end]) catch |err| {
-                self.failure = err;
-                return;
-            };
-            if (self.request_len >= header_end + 4 + content_len) break;
         }
-
-        if (self.delay_ms > 0) io.sleep(.fromMilliseconds(self.delay_ms), .awake) catch {};
-        var writer_buf: [4096]u8 = undefined;
-        var writer = stream.writer(io, &writer_buf);
-        var header_buf: [256]u8 = undefined;
-        const header = std.fmt.bufPrint(&header_buf, "HTTP/1.1 {s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ self.status, self.response.len }) catch return;
-        writer.interface.writeAll(header) catch return;
-        writer.interface.writeAll(self.response) catch return;
-        writer.interface.flush() catch return;
     }
 };
 
@@ -106,11 +127,13 @@ const RetryEmbeddingServer = struct {
     server: *std.Io.net.Server,
     response: []const u8,
     failure: ?anyerror = null,
+    ignored_head_probes: usize = 0,
 
     fn run(self: *RetryEmbeddingServer) void {
         for ([_][]const u8{ "429 Too Many Requests", "503 Service Unavailable", "200 OK" }) |status| {
             var one = MockEmbeddingServer{ .server = self.server, .response = self.response, .status = status };
             one.run();
+            self.ignored_head_probes += one.ignored_head_probes;
             if (one.failure) |err| {
                 self.failure = err;
                 return;
@@ -516,8 +539,10 @@ test "semantic: provider 4xx and 5xx responses fail closed with retryable classe
     defer guards.deinit();
 
     for ([_]struct { status: []const u8, expected: anyerror }{
+        .{ .status = "403 Forbidden", .expected = error.EmbeddingProviderRejected },
         .{ .status = "429 Too Many Requests", .expected = error.EmbeddingRateLimited },
         .{ .status = "500 Internal Server Error", .expected = error.EmbeddingProviderUnavailable },
+        .{ .status = "530 Origin DNS Error", .expected = error.EmbeddingProviderUnavailable },
     }) |case| {
         const addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
         var server = try addr.listen(io, .{ .reuse_address = true, .mode = .stream, .protocol = .tcp });
@@ -581,4 +606,46 @@ test "semantic: truncated and oversized provider bodies fail closed" {
         // writing, which is expected and deliberately not treated as a server
         // failure here.
     }
+}
+
+test "semantic: vectorSpaceId is URL-independent while preserving legacy URL space compatibility" {
+    var guards = EmbeddingEnvGuards.init();
+    defer guards.deinit();
+
+    const cfg_a = semantic.Config{
+        .url = "http://127.0.0.1:8080/v1/embeddings",
+        .model = "bge-m3",
+        .token = null,
+        .dimensions = 1024,
+        .timeout_ms = 2000,
+    };
+    const cfg_b = semantic.Config{
+        .url = "http://127.0.0.1:9090/v1/embeddings",
+        .model = "bge-m3",
+        .token = null,
+        .dimensions = 1024,
+        .timeout_ms = 2000,
+    };
+    try testing.expectEqual(cfg_a.vectorSpaceId(), cfg_b.vectorSpaceId());
+    try testing.expect(cfg_a.legacyUrlVectorSpaceId() != cfg_b.legacyUrlVectorSpaceId());
+    try testing.expect(cfg_a.matchesVectorSpaceId(cfg_a.legacyUrlVectorSpaceId()));
+    try testing.expect(cfg_b.matchesVectorSpaceId(cfg_a.vectorSpaceId()));
+
+    const cfg_custom = semantic.Config{
+        .url = "http://127.0.0.1:9090/v1/embeddings",
+        .model = "bge-m3",
+        .token = null,
+        .dimensions = 1024,
+        .timeout_ms = 2000,
+        .space_id = "custom-quant-q8",
+    };
+    try testing.expect(cfg_custom.vectorSpaceId() != cfg_a.vectorSpaceId());
+    try testing.expect(!cfg_custom.matchesVectorSpaceId(cfg_a.vectorSpaceId()));
+
+    cio.posixUnsetenv("CODEDB_SEMANTIC_NO_EXACT_FALLBACK");
+    try testing.expect(!semantic.exactFallbackDisabledFromEnv());
+    cio.posixSetenv("CODEDB_SEMANTIC_NO_EXACT_FALLBACK", "1");
+    try testing.expect(semantic.exactFallbackDisabledFromEnv());
+    cio.posixSetenv("CODEDB_SEMANTIC_NO_EXACT_FALLBACK", "0");
+    try testing.expect(!semantic.exactFallbackDisabledFromEnv());
 }

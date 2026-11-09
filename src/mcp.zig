@@ -4379,7 +4379,7 @@ fn handleContext(
         const data_dir = getProjectDataDir(A, rooted_project) orelse {
             retrieval.semantic = "unavailable";
             retrieval.detail = "AnnDataDirUnavailable";
-            use_exact_semantic_fallback = true;
+            use_exact_semantic_fallback = !semantic_mod.exactFallbackDisabledFromEnv();
             break :ann_lane;
         };
         if (searchSemanticAnnFresh(
@@ -4398,9 +4398,10 @@ fn handleContext(
             retrieval.rrf_k = semantic_mod.default_ann_rrf_k;
             retrieval.semantic_weight = semantic_mod.default_ann_semantic_weight;
             retrieval.dimensions = ann_result.dimensions;
-            // Query + fixed public calibration string share one request. No
-            // repository path or source chunk is transmitted on the ANN lane.
-            retrieval.documents_sent = 2;
+            // Query + fixed public calibration string share one request on the
+            // fresh ANN lane; when a few files changed since the ANN build,
+            // their bounded chunks share the same request.
+            retrieval.documents_sent = ann_result.documents_sent;
             retrieval.text_bytes_sent = ann_result.text_bytes_sent;
             retrieval.ann_records = ann_result.records;
             retrieval.ann_index_bytes = ann_result.index_bytes;
@@ -4510,7 +4511,7 @@ fn handleContext(
             retrieval.semantic = "unavailable";
             retrieval.detail = @errorName(err);
             schedule_legacy_semantic_migration = err == error.AnnModelMismatch;
-            use_exact_semantic_fallback = switch (err) {
+            use_exact_semantic_fallback = !semantic_mod.exactFallbackDisabledFromEnv() and switch (err) {
                 error.AnnIndexMissing,
                 error.InvalidAnnSidecar,
                 error.UnsupportedAnnSidecarVersion,
