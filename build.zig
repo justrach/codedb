@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
     // In ReleaseFast/Small, strip debug info to shrink the binary (~10%)
     // and the RSS at runtime (smaller __TEXT footprint = fewer pages
     // resident under load). Debug/ReleaseSafe keep symbols for stack traces.
-    const strip_debug = optimize == .ReleaseFast or optimize == .ReleaseSmall;
+    const strip_debug = optimize == .fast or optimize == .small;
     const exe = b.addExecutable(.{
         .name = "codedb",
         .root_module = b.createModule(.{
@@ -180,7 +180,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/bench.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .link_libc = true,
         }),
     });
@@ -197,7 +197,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/bench_edge.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .link_libc = true,
         }),
     });
@@ -214,7 +214,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/benchmark.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .link_libc = true,
         }),
     });
@@ -234,7 +234,7 @@ pub fn build(b: *std.Build) void {
                 .cpu_arch = .wasm32,
                 .os_tag = .freestanding,
             }),
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
         }),
     });
     wasm.root_module.addImport("nanoregex", nanoregex_dep.module("nanoregex"));

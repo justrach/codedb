@@ -8,6 +8,7 @@
 - Tolerate stale ANN sidecars across commits and working-tree edits: exclude HNSW hits from modified or deleted files, embed bounded chunks from changed or newly added safe files in the same single HTTP request as query + calibration, and merge exact-scored delta chunks with HNSW results (#775).
 - Make `Config.vectorSpaceId()` URL-independent while preserving legacy URL-hashed sidecar compatibility, add `CODEDB_EMBEDDINGS_SPACE_ID` and `CODEDB_SEMANTIC_NO_EXACT_FALLBACK=1` overrides, classify gateway `5xx` responses (`500..599`) as `EmbeddingProviderUnavailable`, and retry transient transport errors once within the request deadline (#750, #760, #761, #775).
 - Skip `codedb.snapshot` and `codedb.snapshot.*.tmp` during live indexing and recursive file events, and finish snapshot writes and index compaction before signaling background scan readiness (#766).
+- Upgrade the minimum and release toolchain to official Zig `0.17.0`.
 
 ## 0.2.5862 - 2026-10-27
 

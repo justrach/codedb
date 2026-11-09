@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 env:
-  ZIG_VERSION: 0.17.0-dev.813+2153f8143
-  ZIG_SHA256: b0d46ffc4587b9e8dd0b524ee5bc4da1e67f28bba55e7c534cec64af2f2d7a74
+  ZIG_VERSION: 0.17.0
+  ZIG_SHA256: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
   LEGACY_ZIG_VERSION: 0.16.0
   LEGACY_ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
   PAIRED_5829_BASE_SHA: dd36e9431925014ee2bed80346669a4afee7e42e
@@ -28,11 +28,11 @@ jobs:
           case "$(uname -m)" in
             arm64)
               zig_arch=aarch64
-              zig_sha=36673d2513afa4a96c86780648ba504beedd7f0451389091cf9d53e38d5b4840
+              zig_sha=b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a
               ;;
             x86_64)
               zig_arch=x86_64
-              zig_sha=3938c46ae4bca3c13f423b09503e3ef00bb4b7ef12b8bc1e5122ede366057a5b
+              zig_sha=4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6
               ;;
             *)
               echo "unsupported macOS architecture: $(uname -m)" >&2
@@ -42,7 +42,7 @@ jobs:
           archive="zig-${zig_arch}-macos-${ZIG_VERSION}.tar.xz"
           directory="zig-${zig_arch}-macos-${ZIG_VERSION}"
           curl --fail --show-error --location --retry 3 \
-            "https://ziglang.org/builds/${archive}" -o zig-macos.tar.xz || \
+            "https://ziglang.org/download/${ZIG_VERSION}/${archive}" -o zig-macos.tar.xz || \
           curl --fail --show-error --location --retry 3 \
             "https://zig.squirl.dev/${archive}" -o zig-macos.tar.xz || \
           curl --fail --show-error --location --retry 3 \
@@ -77,11 +77,10 @@ jobs:
 
           head_archive="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
           head_dir="zig-x86_64-linux-${ZIG_VERSION}"
-          # Old dev builds are rotated off ziglang.org; fall back to the
-          # hexops community mirror (byte-identical official tarballs).
+          # Official release tarball on ziglang.org, with community mirrors as fallback.
           # The pinned sha256 below is verified regardless of source.
           curl --fail --show-error --location --retry 3 \
-            "https://ziglang.org/builds/${head_archive}" -o zig-head.tar.xz || \
+            "https://ziglang.org/download/${ZIG_VERSION}/${head_archive}" -o zig-head.tar.xz || \
           curl --fail --show-error --location --retry 3 \
             "https://zig.squirl.dev/${head_archive}" -o zig-head.tar.xz || \
           curl --fail --show-error --location --retry 3 \

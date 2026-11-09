@@ -2574,10 +2574,11 @@ test "issue-775: semantic ANN tolerates stale index on file edits and reuses cac
                 var body_slice: []const u8 = &.{};
                 while (req_len < req_buf.len) {
                     var iov = [1][]u8{req_buf[req_len..]};
-                    const n = stream.read(io, &iov) catch |err| {
+                    const read_res = stream.readWithControl(io, &iov, &.{}) catch |err| {
                         self.failure = err;
                         return;
                     };
+                    const n = read_res.data_len;
                     if (n == 0) break;
                     req_len += n;
                     const header_end = std.mem.indexOf(u8, req_buf[0..req_len], "\r\n\r\n") orelse continue;

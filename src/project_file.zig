@@ -10,6 +10,8 @@ const builtin = @import("builtin");
 const project_path = @import("project_path.zig");
 const root_policy = @import("root_policy.zig");
 
+const max_path_bytes = if (builtin.os.tag == .freestanding) 4096 else std.fs.max_path_bytes;
+
 pub const isAllowedPath = project_path.isReadable;
 
 /// `follow_symlinks = false` maps to an asynchronous Windows handle in Zig
@@ -21,7 +23,7 @@ pub fn prepareNoFollowFile(file: *std.Io.File) void {
 }
 
 pub fn rootIsAllowed(io: std.Io, dir: std.Io.Dir) bool {
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var root_buf: [max_path_bytes]u8 = undefined;
     const root_len = dir.realPath(io, &root_buf) catch return false;
     return root_policy.isAdmissibleRoot(io, root_buf[0..root_len]);
 }
@@ -33,9 +35,9 @@ pub fn rootMatchesPath(io: std.Io, stable: std.Io.Dir, path: []const u8) bool {
     if (!root_policy.isAbsoluteRootRequest(path)) return false;
     var candidate = std.Io.Dir.cwd().openDir(io, path, .{ .follow_symlinks = false }) catch return false;
     defer candidate.close(io);
-    var stable_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var stable_buf: [max_path_bytes]u8 = undefined;
     const stable_len = stable.realPath(io, &stable_buf) catch return false;
-    var candidate_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var candidate_buf: [max_path_bytes]u8 = undefined;
     const candidate_len = candidate.realPath(io, &candidate_buf) catch return false;
     return std.mem.eql(u8, stable_buf[0..stable_len], candidate_buf[0..candidate_len]);
 }
@@ -66,19 +68,19 @@ fn openValidatedAtRoot(
     // handle cannot be retargeted underneath this check, so an allowed-looking
     // directory alias such as `alias -> .ssh` cannot bypass the sensitive-path
     // policy, while safe in-root directory aliases remain usable.
-    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var root_buf: [max_path_bytes]u8 = undefined;
     const root = canonical_root orelse blk: {
         const root_len = try dir.realPath(io, &root_buf);
         break :blk root_buf[0..root_len];
     };
-    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var target_buf: [max_path_bytes]u8 = undefined;
     const target_len = try file.realPath(io, &target_buf);
     const target = target_buf[0..target_len];
     if (!isWithinRoot(root, target)) return error.AccessDenied;
     var rel_start = root.len;
     while (rel_start < target.len and std.fs.path.isSep(target[rel_start])) rel_start += 1;
     if (rel_start == target.len) return error.AccessDenied;
-    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var normalized_buf: [max_path_bytes]u8 = undefined;
     const rel = target[rel_start..];
     if (rel.len > normalized_buf.len) return error.NameTooLong;
     for (rel, normalized_buf[0..rel.len]) |ch, *normalized| {

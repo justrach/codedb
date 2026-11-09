@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/bench.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .link_libc = true,
             .imports = &.{.{ .name = "nanoregex", .module = nanoregex_mod }},
         }),
@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/bench_comptime.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .link_libc = true,
             .imports = &.{.{ .name = "nanoregex", .module = nanoregex_mod }},
         }),

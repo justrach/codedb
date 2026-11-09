@@ -588,7 +588,7 @@ rm -f codedb.snapshot      # remove snapshot from current project only
 
 ## 🔨 Building from Source
 
-**Requirements:** Zig `0.17.0-dev.813+2153f8143` (the exact tested development snapshot). See the [migration guide](docs/zig-0.17-migration.md) for reproducible zigup setup.
+**Requirements:** Zig `0.17.0`. See the [migration guide](docs/zig-0.17-migration.md) for reproducible zigup setup.
 
 ```bash
 git clone https://github.com/justrach/codedb.git

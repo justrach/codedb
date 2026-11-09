@@ -62,7 +62,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     const argv = cio.bootstrapArgs(init.args);
     cio.setProcessArgs(argv);
     if (handleFastPath(argv)) return;
-    if (builtin.mode != .Debug) {
+    if (builtin.mode != .debug) {
         mainInner(argv);
         return;
     }
